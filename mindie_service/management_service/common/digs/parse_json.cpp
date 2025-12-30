@@ -29,12 +29,12 @@ int32_t Object2Double(Json& config, const std::string& key)
         try {
             config[key] = std::stod(config[key].get<std::string>());
         } catch (const std::invalid_argument& e) {
-            std::string str(e.what(), sizeof(e.what()) - 1);
+            std::string str(e.what());
             LOG_E("[%s] [DIGS] Parameter %s can not be convert to double. Exception: %s",
                   GetErrorCode(ErrorType::EXCEPTION, CommonFeature::DIGS).c_str(), key, str);
             return static_cast<int32_t>(common::Status::ILLEGAL_PARAMETER);
         } catch (std::out_of_range& e) {
-            std::string str(e.what(), sizeof(e.what()) - 1);
+            std::string str(e.what());
             LOG_E("[%s] [DIGS] Parameter %s can not be convert to double. Exception: %s",
                   GetErrorCode(ErrorType::EXCEPTION, CommonFeature::DIGS).c_str(), key, str);
             return static_cast<int32_t>(common::Status::ILLEGAL_PARAMETER);
