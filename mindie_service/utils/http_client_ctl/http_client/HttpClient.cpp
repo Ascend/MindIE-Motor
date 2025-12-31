@@ -58,7 +58,7 @@ int32_t HttpClient::SendRequest(const Request &request, int timeoutSeconds, int 
         return -1;
     }
     if (contentType == "application/json") {
-        if (!nlohmann::json::accept(responseBody)) {
+        if (!CheckJsonStringSize(responseBody) || !nlohmann::json::accept(responseBody)) {
             LOG_E("[%s] [HttpClient] Receive message is not in a valid JSON format.",
                 GetErrorCode(ErrorType::INVALID_PARAMETER, CommonFeature::HTTPCLIENT).c_str());
             return -1;

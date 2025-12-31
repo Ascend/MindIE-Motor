@@ -62,14 +62,14 @@ int32_t Configure::Init()
             configFile.c_str());
         return -1;
     }
-    if (!PreCheckJsonString(confStr)) {
+    if (!CheckJsonStringSize(confStr)) {
         LOG_E("[%s] [Configure] Failed to read Coordinator config: %s, json string invalid.",
             GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONFIGURE).c_str(),
             confStr.substr(0, JSON_STR_SIZE_HEAD).c_str());
         return -1;
     }
     try {
-        auto confJson = nlohmann::json::parse(confStr);
+        auto confJson = nlohmann::json::parse(confStr, CheckJsonDepthCallBack);
         if (CheckBackupValid(confJson) != 0) {
             return -1;
         }

@@ -986,12 +986,12 @@ static bool IsValidScheduleInstanceInfo(const nlohmann::json &instanceInfo)
 static bool IsValidCoordinatorInfoResp(std::string &response)
 {
     auto errCode = GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::NODE_SCHEDULER);
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         LOG_E("[%s] [NodeScheduler] Coordinator information response is not valid JSON.", errCode.c_str());
         return false;
     }
     try {
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!IsJsonArrayValid(bodyJson, "schedule_info", 0, MAX_SERVER_NUMBER) ||
             !IsJsonObjValid(bodyJson, "request_length_info") ||
             !IsJsonIntValid(bodyJson["request_length_info"], "input_len", MIN_INT_VALUE, MAX_INT_VALUE) ||
@@ -1025,7 +1025,7 @@ int32_t NodeScheduler::ParseCoordinatorInfoResp(std::string &response)
         return -1;
     }
     try {
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         auto scheduleInfo = bodyJson.at("schedule_info");
         MINDIE::MS::DIGSInstanceScheduleInfo info;
         for (const auto &infoIt : scheduleInfo) {

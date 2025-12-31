@@ -27,19 +27,19 @@ constexpr int64_t MAX_INT_VALUE = 4294967295;
 static bool IsValidStaticInfoResp(const std::string &response)
 {
     try {
-        if (!PreCheckJsonStringSize(response)) {
+        if (!CheckJsonStringSize(response)) {
             LOG_E("[%s] [ServerRequestHandler] Invalid response: %s",
                   GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
                   response.substr(0, JSON_STR_SIZE_HEAD).c_str());
             return false;
         }
-        if (!PreCheckJsonStringDepth(response) || !nlohmann::json::accept(response)) {
+        if (!nlohmann::json::accept(response)) {
             LOG_E("[%s] [ServerRequestHandler] Invalid response %s.",
                   GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
                   response.c_str());
             return false;
         }
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!IsJsonIntValid(bodyJson, "maxSeqLen", 0, MAX_INT_VALUE) ||
             !IsJsonIntValid(bodyJson, "maxOutputLen", 1, 4294967294) || // 取值范围1~4294967294
             !IsJsonIntValid(bodyJson, "cacheBlockSize", 1, 128) || // 取值范围1~128
@@ -58,13 +58,13 @@ static bool IsValidStaticInfoResp(const std::string &response)
 static int32_t ParseInstanceStaticInfoResp(const std::string &response, NodeInfo &info)
 {
     try {
-        if (!PreCheckJsonString(response)) {
+        if (!CheckJsonStringSize(response)) {
             LOG_E("[%s] [ServerRequestHandler] Failed to parse instance static information response, invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::SERVER_REQUEST_HANDLER).c_str());
             return -1;
         }
         LOG_I("[ServerRequestHandler] Parsing instance static information response: %s", response.c_str());
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         info.instanceInfo.staticInfo.maxSeqLen = bodyJson.at("maxSeqLen").get<size_t>();
         info.instanceInfo.staticInfo.maxOutputLen = bodyJson.at("maxOutputLen").get<size_t>();
         info.instanceInfo.staticInfo.blockSize = bodyJson.at("cacheBlockSize").get<size_t>();
@@ -193,19 +193,19 @@ static bool IsValidService(const nlohmann::json &service)
 static bool IsValidNodeStatusResp(const std::string &response)
 {
     try {
-        if (!PreCheckJsonStringSize(response)) {
+        if (!CheckJsonStringSize(response)) {
             LOG_E("[%s] [ServerRequestHandler] IsValidNodeStatusResp: invalid resp %s",
                   GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
                   response.substr(0, JSON_STR_SIZE_HEAD).c_str());
             return false;
         }
-        if (!PreCheckJsonStringDepth(response) || !nlohmann::json::accept(response)) {
+        if (!nlohmann::json::accept(response)) {
             LOG_E("[%s] [ServerRequestHandler] IsValidNodeStatusResp: invalid resp %s",
                   GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
                   response.c_str());
             return false;
         }
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!IsJsonObjValid(bodyJson, "service") || !IsValidService(bodyJson["service"]) ||
             !IsJsonObjValid(bodyJson, "resource")) {
             return false;
@@ -249,7 +249,7 @@ int32_t ServerRequestHandler::ParseNodeStatusRespToNodeStatus(NodeStatus &nodeSt
 {
     auto mode = ControllerConfig::GetInstance()->GetDeployMode();
     try {
-        if (!PreCheckJsonString(response)) {
+        if (!CheckJsonStringSize(response)) {
             LOG_E("[%s] [ServerRequestHandler] Failed to parse node status response to node status, invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::SERVER_REQUEST_HANDLER).c_str());
             nodeStatus.UpdateRoleState(nodeInfo.instanceInfo.staticInfo.id,
@@ -257,7 +257,7 @@ int32_t ServerRequestHandler::ParseNodeStatusRespToNodeStatus(NodeStatus &nodeSt
             return -1;
         }
         MINDIE::MS::DIGSInstanceDynamicInfo info;
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         auto roleStatus = bodyJson.at("service").at("roleStatus").get<std::string>();
         auto roleStr = bodyJson.at("service").at("currentRole").get<std::string>();
         auto role = ControllerConstant::GetInstance()->GetDIGSInstanceRoleByStr(roleStr);
@@ -346,14 +346,14 @@ int32_t ServerRequestHandler::ParseNodeStatusResp(NodeInfo &nodeInfo,
     auto mode = ControllerConfig::GetInstance()->GetDeployMode();
     nodeInfo.isHealthy = false;
     try {
-        if (!PreCheckJsonString(response)) {
+        if (!CheckJsonStringSize(response)) {
             LOG_E("[%s] [ServerRequestHandler] Faield to parse node status response, invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::SERVER_REQUEST_HANDLER).c_str());
             nodeInfo.roleState = ControllerConstant::GetInstance()->GetRoleState(RoleState::UNKNOWN);
             return -1;
         }
         MINDIE::MS::DIGSInstanceDynamicInfo info;
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         nodeInfo.roleState = bodyJson.at("service").at("roleStatus").get<std::string>();
         auto roleStr = bodyJson.at("service").at("currentRole").get<std::string>();
         nodeInfo.currentRole = ControllerConstant::GetInstance()->GetDIGSInstanceRoleByStr(roleStr);
@@ -938,7 +938,7 @@ int32_t ServerRequestHandler::LoopPostPDRole(HttpClient &client, NodeStatus &nod
     while (retryTimes-- > 0) {
         int32_t httpRet = client.SendRequest(req, ControllerConfig::GetInstance()->GetHttpTimeoutSeconds(),
                                              ControllerConfig::GetInstance()->GetHttpRetries(), response, code);
-        if (httpRet != 0 || code != CODE_OK || !PreCheckJsonStringSize(response)) {
+        if (httpRet != 0 || code != CODE_OK || !CheckJsonStringSize(response)) {
             LOG_E("[%s] [ServerRequestHandler] Send request failed, node ID %lu, IP %s, port %s, ret code %d, "
                   "request ret %d, response %s",
                   GetErrorCode(ErrorType::UNREACHABLE, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
@@ -948,7 +948,7 @@ int32_t ServerRequestHandler::LoopPostPDRole(HttpClient &client, NodeStatus &nod
                 ControllerConstant::GetInstance()->GetRoleState(RoleState::UNKNOWN), false, false);
             return -1;
         }
-        if (!PreCheckJsonStringDepth(response) || !nlohmann::json::accept(response)) {
+        if (!nlohmann::json::accept(response)) {
             LOG_E("[%s] [ServerRequestHandler] Send request failed, node ID %lu, IP %s, port %s, ret code %d, "
                   "request ret %d, response %s",
                   GetErrorCode(ErrorType::UNREACHABLE, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
@@ -960,7 +960,7 @@ int32_t ServerRequestHandler::LoopPostPDRole(HttpClient &client, NodeStatus &nod
         }
         LOG_D("[ServerRequestHandler] Send request successfully, node ID %lu, IP %s, port %s, response %s.",
               node.instanceInfo.staticInfo.id, node.ip.c_str(), node.mgmtPort.c_str(), response.c_str());
-        auto responseJson = nlohmann::json::parse(response);
+        auto responseJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         // when return message is ok, break the loop
         try {
             if (responseJson.at("result").get<std::string>() == "ok") {

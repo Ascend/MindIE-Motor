@@ -26,13 +26,13 @@ int32_t StatusHandler::GetStatusFromPath(nlohmann::json &statusJson)
             mStatusFile.c_str());
         return -1;
     }
-    if (!PreCheckJsonString(jsonString) || !nlohmann::json::accept(jsonString)) {
+    if (!CheckJsonStringSize(jsonString) || !nlohmann::json::accept(jsonString)) {
         LOG_E("[%s] [Deployer] Get status from path failed. File %s is not valid JSON format.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::STATUS_HANDLER).c_str(),
             mStatusFile.c_str());
         return -1;
     }
-    statusJson = nlohmann::json::parse(jsonString);
+    statusJson = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
     if (!statusJson.contains("server_list") || !statusJson["server_list"].is_array()) {
         LOG_E("[%s] [Deployer] Get status from path failed. Status JSON does not contain 'server_list'.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::STATUS_HANDLER).c_str());

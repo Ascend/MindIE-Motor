@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <sys/types.h>
 #include <string>
-
+#include "nlohmann/json.hpp"
 namespace MINDIE {
 namespace MS {
 
@@ -40,9 +40,9 @@ std::string GetUUID();
 
 constexpr size_t JSON_STR_SIZE_HEAD = 1024; // 日志仅打印前1k个字符
 
-bool PreCheckJsonString(const std::string &jsonstr);
-bool PreCheckJsonStringSize(const std::string &jsonstr);
-bool PreCheckJsonStringDepth(const std::string &jsonstr);
+bool CheckJsonStringSize(const std::string &jsonstr);
+bool CheckJsonDepth(int depth, nlohmann::json::parse_event_t ev);
+bool CheckJsonDepthCallBack(int depth, nlohmann::json::parse_event_t ev, nlohmann::json& parsed);
 
 }
 }

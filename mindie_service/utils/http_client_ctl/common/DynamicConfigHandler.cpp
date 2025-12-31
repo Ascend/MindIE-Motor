@@ -116,13 +116,13 @@ bool DynamicConfigHandler::IsTriggered(const std::string pathExpression) const
             LOG_E("Failed to open config path.");
             return false;
         }
-        if (!PreCheckJsonString(jsonString)) {
+        if (!CheckJsonStringSize(jsonString)) {
             LOG_E("Invalid json format.");
             return false;
         }
 
         std::vector<std::string> pathVec = SplitString(pathExpression);
-        nlohmann::json configJson = nlohmann::json::parse(jsonString);
+        nlohmann::json configJson = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
         for (std::string& path : pathVec) {
             configJson = configJson.at(path);
         }

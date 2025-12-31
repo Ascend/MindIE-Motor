@@ -93,13 +93,13 @@ static int32_t ParseInitConfig(ProbeCtlParams &params)
             GetErrorCode(ErrorType::NOT_FOUND, CommonFeature::HTTPCLIENT).c_str(), configFile.c_str());
         return -1;
     }
-    if (!PreCheckJsonString(jsonString) || !nlohmann::json::accept(jsonString)) {
+    if (!CheckJsonStringSize(jsonString) || !nlohmann::json::accept(jsonString)) {
         LOG_E("[%s] [ParseInitConfig] The configuration file '%s' has an invalid JSON format. "
             "Please ensure the file is properly formatted.",
             GetErrorCode(ErrorType::INVALID_INPUT, CommonFeature::HTTPCLIENT).c_str(), configFile.c_str());
         return -1;
     }
-    auto mainObj = nlohmann::json::parse(jsonString);
+    auto mainObj = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
     if (CheckConfigJsonValid(mainObj) != 0) {
         return -1;
     }
@@ -112,8 +112,8 @@ static int32_t ParseInitConfig(ProbeCtlParams &params)
 
 static void PrintResponse(const std::string &response)
 {
-    if (PreCheckJsonString(response) && nlohmann::json::accept(response)) {
-        nlohmann::json responseJsonObj = nlohmann::json::parse(response);
+    if (CheckJsonStringSize(response) && nlohmann::json::accept(response)) {
+        nlohmann::json responseJsonObj = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         std::cout << responseJsonObj.dump(4) << std::endl; // 4   换行缩进为4个空格
     } else if (response.size() != 0) {
         std::cout << response.substr(0, 256) << std::endl; // 256 最大打印长度

@@ -596,13 +596,13 @@ int32_t ParseKubeConfig(const nlohmann::json &mainObj, LoadServiceParams &server
 
 static int32_t ParseLoadParams(const std::string &jsonStr, bool mindieInitTlsSwitch, LoadServiceParams &serverParams)
 {
-    if (!PreCheckJsonString(jsonStr) || !nlohmann::json::accept(jsonStr)) {
+    if (!CheckJsonStringSize(jsonStr) || !nlohmann::json::accept(jsonStr)) {
         LOG_E("[%s] [Deployer] Invalid JSON format of deploy config.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
 
-    auto mainObj = nlohmann::json::parse(jsonStr);
+    auto mainObj = nlohmann::json::parse(jsonStr, CheckJsonDepthCallBack);
     if (!mainObj.contains("server_name") || !mainObj["server_name"].is_string()) {
         LOG_E("[%s] [Deployer] Lack of key 'server_name', or the value type is invalid.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::CROSSNODE_SERVER).c_str());
@@ -710,12 +710,12 @@ int CrossNodeServer::GetModelInfo(nlohmann::json &modelInfo)
             GetErrorCode(ErrorType::CALL_ERROR, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         LOG_E("[%s] [Deployer] Invalid JSON format response received when getting master pod information.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
-    modelInfo = nlohmann::json::parse(response);
+    modelInfo = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     return 0;
 }
 
@@ -735,12 +735,12 @@ int32_t CrossNodeServer::LabelMasterPod(const std::string &masterContainerIp, ui
     mInferInstance[ind].masterPodIp = masterContainerIp;
     mInferInstance[ind].masterPodCreateTime = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch());
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         LOG_E("[%s] [Deployer] Invalid JSON format response when getting master pod result.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
-    auto respJsonbObj = nlohmann::json::parse(response);
+    auto respJsonbObj = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     if (!respJsonbObj.contains("items") || !respJsonbObj["items"].is_array() || !(respJsonbObj["items"].size() > 0) ||
         !respJsonbObj["items"][0].contains("metadata")) {
         LOG_E("[%s] [Deployer] Missing or invalid 'metadata' in pod information response.",
@@ -836,11 +836,11 @@ int32_t CrossNodeServer::FindAndLabelMasterPod(uint32_t ind, bool &isLabeled)
         return -1;
     }
     std::string logCode = GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER);
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         LOG_E("[%s] [Deployer] Invalid JSON format of response when getting ranktable result.", logCode.c_str());
         return -1;
     }
-    nlohmann::json respJsonbObj = nlohmann::json::parse(response);
+    nlohmann::json respJsonbObj = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     if (!respJsonbObj.contains("data")) {
         LOG_E("[%s] [Deployer] Ranktable ConfigMap does not contain key data.", logCode.c_str());
         return -1;
@@ -850,11 +850,11 @@ int32_t CrossNodeServer::FindAndLabelMasterPod(uint32_t ind, bool &isLabeled)
         return -1;
     }
     std::string rankTableJsonStr = respJsonbObj["data"]["hccl.json"];
-    if (!PreCheckJsonString(rankTableJsonStr) || !nlohmann::json::accept(rankTableJsonStr)) {
+    if (!CheckJsonStringSize(rankTableJsonStr) || !nlohmann::json::accept(rankTableJsonStr)) {
         LOG_E("[%s] [Deployer] Format of hccl.json is invalid.", logCode.c_str());
         return -1;
     }
-    auto ranktable = nlohmann::json::parse(rankTableJsonStr);
+    auto ranktable = nlohmann::json::parse(rankTableJsonStr, CheckJsonDepthCallBack);
     if (!IsJsonStringValid(ranktable, "status")) {
         LOG_E("[%s] [Deployer] Ranktable ConfigMap does not contain key hccl.json.", logCode.c_str());
         return -1;
@@ -1067,12 +1067,12 @@ int32_t CrossNodeServer::GetMasterPodIPByLabel(const std::string &serverName, co
             GetErrorCode(ErrorType::CALL_ERROR, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         LOG_E("[%s] [Deployer] Format of pod information is not valid JSON",
             GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
-    auto respJsonbObj = nlohmann::json::parse(response);
+    auto respJsonbObj = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     if (!respJsonbObj.contains("items") || !respJsonbObj["items"].is_array() || !(respJsonbObj["items"].size() > 0)) {
         LOG_E("[%s] [Deployer] Pod information does not contain any valid items in the response.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER).c_str());
@@ -1100,13 +1100,13 @@ int32_t CrossNodeServer::FromDeployment(const std::string &deploymentName)
             GetErrorCode(ErrorType::CALL_ERROR, DeployerFeature::CROSSNODE_SERVER).c_str(), deploymentName.c_str());
         return -1;
     }
-    if (!PreCheckJsonString(responseBody) || !nlohmann::json::accept(responseBody)) {
+    if (!CheckJsonStringSize(responseBody) || !nlohmann::json::accept(responseBody)) {
         LOG_E("[%s] [Deployer] Recieve invalid JSON format while get deployment from Kubernetes.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER).c_str());
         return -1;
     }
 
-    auto deployJson = nlohmann::json::parse(responseBody);
+    auto deployJson = nlohmann::json::parse(responseBody, CheckJsonDepthCallBack);
     if (!deployJson.contains("metadata") || !deployJson["metadata"].contains("annotations")) {
         LOG_E("[%s] [Deployer] Deployment description does not contain key 'metadata' or the value missing "
             "'annotations'.", GetErrorCode(ErrorType::INVALID_PARAMETER, DeployerFeature::CROSSNODE_SERVER).c_str());

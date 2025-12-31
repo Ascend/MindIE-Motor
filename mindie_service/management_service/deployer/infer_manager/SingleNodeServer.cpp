@@ -244,11 +244,11 @@ int32_t ParseMindIEConfigParams(nlohmann::json &mainObj, bool mindieInitTlsSwitc
 
 int32_t SingleNodeServer::ParseLoadParams(const std::string &str)
 {
-    if (!PreCheckJsonString(str) || !nlohmann::json::accept(str)) {
+    if (!CheckJsonStringSize(str) || !nlohmann::json::accept(str)) {
         printf("deploying json accept error!\r\n");
         return -1;
     }
-    auto mainObj = nlohmann::json::parse(str);
+    auto mainObj = nlohmann::json::parse(str, CheckJsonDepthCallBack);
     if (!IsJsonStringValid(mainObj, "server_name", 1, 48) || // 48 最大长度，超过k8s不支持
         !IsJsonStringValid(mainObj, "scheduler") || !IsJsonStringValid(mainObj, "service_type")) {
         return -1;
@@ -547,10 +547,10 @@ std::pair<int32_t, std::string> SingleNodeServer::Update(const std::string &conf
 {
     std::set<int32_t> statusOk = {200, 201, 202, 203}; // 200 201 202 203: status ok
     LoadServiceParams params = serviceParams;
-    if (!PreCheckJsonString(config) || !nlohmann::json::accept(config)) {
+    if (!CheckJsonStringSize(config) || !nlohmann::json::accept(config)) {
         return std::make_pair(-1, "json accept error in UpdateServer.");
     }
-    auto mainObj = nlohmann::json::parse(config);
+    auto mainObj = nlohmann::json::parse(config, CheckJsonDepthCallBack);
     std::string nameSpace = serviceParams.nameSpace;
     std::string name = mainObj["server_name"];
     std::string response = "";
@@ -599,11 +599,11 @@ int32_t SingleNodeServer::GetPodInfo(nlohmann::json &modelInfo, std::map<std::st
     std::set<int32_t> statusOk = {200, 201, 202, 203}; // 200 201 202 203: status ok
 
     instanceStatus["pod_name"] = map->first;
-    if (!PreCheckJsonString(map->second) || !nlohmann::json::accept(map->second)) {
+    if (!CheckJsonStringSize(map->second) || !nlohmann::json::accept(map->second)) {
         instanceStatus["message"] = "status in GetDeployStatus is not json.";
         return -1;
     }
-    auto mainObj = nlohmann::json::parse(map->second);
+    auto mainObj = nlohmann::json::parse(map->second, CheckJsonDepthCallBack);
     if (!IsJsonStringValid(mainObj, "phase")) {
         instanceStatus["message"] = "phase value is not string.";
         return -1;
@@ -631,11 +631,11 @@ int32_t SingleNodeServer::GetPodInfo(nlohmann::json &modelInfo, std::map<std::st
         instanceStatus["message"] = "get mindie_server info failed.";
         return -1;
     }
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         instanceStatus["message"] = "info from mindie-server is not a valid json.";
         return -1;
     }
-    modelInfo = nlohmann::json::parse(response);
+    modelInfo = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     return 0;
 }
 
@@ -649,10 +649,10 @@ std::pair<int32_t, std::string> SingleNodeServer::GetDeployStatus()
     if (statusOk.count(ret) == 0) {
         return std::make_pair(-1, "Service is not exist.");
     }
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         return std::make_pair(-1, "Response in GetDeployStatus is not json.");
     }
-    auto mainObj = nlohmann::json::parse(response);
+    auto mainObj = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     std::string status;
     std::map<std::string, std::string> podStatus;
     nlohmann::json serverStatus;

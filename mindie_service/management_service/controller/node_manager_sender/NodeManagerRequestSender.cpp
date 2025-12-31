@@ -14,6 +14,7 @@
 #include "ControllerConfig.h"
 #include "ControllerConstant.h"
 #include "Logger.h"
+#include "Util.h"
 #include "NodeManagerRequestSender.h"
 
 namespace MINDIE {
@@ -43,7 +44,7 @@ int32_t NodeManagerRequestSender::SendCommandToNodeManager(HttpClient& client,
 
     // 添加DEBUG日志，记录完整请求信息 todo删掉
     try {
-        auto jsonBody = nlohmann::json::parse(body);
+        auto jsonBody = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         std::string prettyBody = jsonBody.dump(4);
         LOG_D("[NodeManagerRequestSender] Sending request to NodeManager:\n"
               "Target: %s:%s\n"
@@ -154,7 +155,7 @@ int32_t NodeManagerRequestSender::ParseNodeStatusResponse(const std::string& res
             return -1;
         }
 
-        auto json = nlohmann::json::parse(response);
+        auto json = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!json.contains("status")) {
             LOG_E("[NodeManagerRequestSender] Missing required 'status' field in response: %s", response.c_str());
             return -1;

@@ -149,13 +149,13 @@ std::pair<ErrorCode, Response> AlarmListener::CoordinatorAlarmHandler(const Http
     bool isAlarmValid = true;
     try {
         std::string reqBody = req.body();
-        if (!PreCheckJsonString(reqBody)) {
+        if (!CheckJsonStringSize(reqBody)) {
             LOG_E("[%s] [AlarmListener] The string of coordinator alarm is invalid: %s",
                 GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str(),
                 reqBody.substr(0, JSON_STR_SIZE_HEAD).c_str());
             return std::make_pair(ErrorCode::INVALID_PARAMETER, resp);
         }
-        auto alarmsJson = nlohmann::json::parse(reqBody);
+        auto alarmsJson = nlohmann::json::parse(reqBody, CheckJsonDepthCallBack);
         if (!alarmsJson.is_array()) {
             LOG_E("[%s] [AlarmListener] The type of coordinator alarm is wrong.",
                 GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
@@ -248,14 +248,14 @@ std::pair<ErrorCode, Response> AlarmListener::TerminateServiceHandler(const Http
 
 bool  AlarmListener::UpdateCoordinatorStatus(const std::string& alarmBody) const
 {
-    if (alarmBody.empty() || !PreCheckJsonString(alarmBody)) {
+    if (alarmBody.empty() || !CheckJsonStringSize(alarmBody)) {
         LOG_E("[%s] Coordinator alarm request body is invalid: %s",
             GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::ALARM_LISTENER).c_str(),
             alarmBody.substr(0, JSON_STR_SIZE_HEAD).c_str());
         return false;
     }
     
-    nlohmann::json alarmJson = nlohmann::json::parse(alarmBody);
+    nlohmann::json alarmJson = nlohmann::json::parse(alarmBody, CheckJsonDepthCallBack);
     const auto& alarmRecord = alarmJson[0];
     if (!alarmRecord.contains("alarmId") || !alarmRecord.contains("cleared")) {
         return false;

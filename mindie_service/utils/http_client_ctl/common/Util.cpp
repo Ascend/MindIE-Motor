@@ -452,30 +452,31 @@ std::string GetUUID()
 static constexpr size_t JSON_STR_SIZE_MAX = 1024 * 1024; // 限制1M
 static constexpr int JSON_STR_DEP_MAX = 50; // 限制嵌套层次50层
 
-bool PreCheckJsonStringSize(const std::string &jsonstr)
+bool CheckJsonStringSize(const std::string &jsonstr)
 {
     return jsonstr.size() <= JSON_STR_SIZE_MAX;
 }
 
-bool PreCheckJsonStringDepth(const std::string &jsonstr)
+bool CheckJsonDepth(int depth, nlohmann::json::parse_event_t ev)
 {
-    int depth = 0;
-    for (char c : jsonstr) {
-        if (c == '{' || c == '[') {
-            depth++;
-            if (depth > JSON_STR_DEP_MAX) {
-                return false;
-            }
-        } else if (c == '}' || c == ']') {
-            depth--;
-        }
+    switch (ev) {
+        case nlohmann::json::parse_event_t::object_start:
+            return depth <= JSON_STR_DEP_MAX;
+        case nlohmann::json::parse_event_t::array_start:
+            return depth <= JSON_STR_DEP_MAX;
+        default:
+            return true;
     }
-    return true;
 }
 
-bool PreCheckJsonString(const std::string &jsonstr)
+bool CheckJsonDepthCallBack(int depth, nlohmann::json::parse_event_t ev, nlohmann::json& parsed)
 {
-    return PreCheckJsonStringSize(jsonstr) && PreCheckJsonStringDepth(jsonstr);
+    if (!CheckJsonDepth(depth, ev)) {
+        LOG_E("[%s] [Util] Failed to parse json: depth is %d, object is %zu",
+            GetErrorCode(ErrorType::INVALID_INPUT, CommonFeature::UTIL).c_str(), depth, sizeof(parsed));
+        return false;
+    }
+    return true;
 }
 
 }

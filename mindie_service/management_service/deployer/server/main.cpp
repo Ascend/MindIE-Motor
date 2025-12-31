@@ -119,12 +119,12 @@ static int32_t ParseCommandArgs(const char* fileName, HttpClientParams &clientPa
             GetErrorCode(ErrorType::NOT_FOUND, DeployerFeature::SERVER).c_str());
         return ret;
     }
-    if (!PreCheckJsonString(jsonString) || !nlohmann::json::accept(jsonString)) {
+    if (!CheckJsonStringSize(jsonString) || !nlohmann::json::accept(jsonString)) {
         LOG_E("[%s] [Deployer] Failed to parse the server startup JSON file.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::SERVER).c_str());
         return -1;
     }
-    auto mainObj = nlohmann::json::parse(jsonString);
+    auto mainObj = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
     if (!IsJsonValid(mainObj)) {
         LOG_E("[%s] [Deployer] Server startup JSON config is invalid.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::SERVER).c_str());

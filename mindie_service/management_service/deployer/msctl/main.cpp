@@ -78,12 +78,12 @@ static int32_t ParseInitConfig(MSCtlParams &params)
             GetErrorCode(ErrorType::NOT_FOUND, DeployerFeature::MSCTL).c_str());
         return -1;
     }
-    if (!PreCheckJsonString(jsonString) || !nlohmann::json::accept(jsonString)) {
+    if (!CheckJsonStringSize(jsonString) || !nlohmann::json::accept(jsonString)) {
         LOG_E("[%s] [Msctl] Invalid json format",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::MSCTL).c_str());
         return -1;
     }
-    auto mainObj = nlohmann::json::parse(jsonString);
+    auto mainObj = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
     if (CheckInitConfigJsonValid(mainObj) != 0) {
         return -1;
     }
@@ -107,8 +107,8 @@ static int32_t g_totalArgs = 5; // 5 共5个参数
 
 static void PrintResponse(const std::string &response)
 {
-    if (PreCheckJsonString(response) && nlohmann::json::accept(response)) {
-        nlohmann::json responseJsonObj = nlohmann::json::parse(response);
+    if (CheckJsonStringSize(response) && nlohmann::json::accept(response)) {
+        nlohmann::json responseJsonObj = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         std::cout << responseJsonObj.dump(4) << std::endl; // 4   换行缩进为4个空格
     } else if (response.size() != 0) {
         std::cout << response.substr(0, 256) << std::endl; // 256 最大打印长度
@@ -156,12 +156,12 @@ static int32_t UpdateOp(std::string &response, int32_t code, const MSCtlParams &
             GetErrorCode(ErrorType::NOT_FOUND, DeployerFeature::MSCTL).c_str());
         return -1;
     }
-    if (!PreCheckJsonString(jsonStr) || !nlohmann::json::accept(jsonStr)) {
+    if (!CheckJsonStringSize(jsonStr) || !nlohmann::json::accept(jsonStr)) {
         LOG_E("[%s] [Msctl] File content is not json.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::MSCTL).c_str());
         return -1;
     }
-    nlohmann::json json = nlohmann::json::parse(jsonStr);
+    nlohmann::json json = nlohmann::json::parse(jsonStr, CheckJsonDepthCallBack);
     if (!IsJsonStringValid(json, "server_name")) {
         LOG_E("[%s] [Msctl] Update file should include server_name.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::MSCTL).c_str());

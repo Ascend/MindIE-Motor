@@ -682,11 +682,11 @@ static std::string FillRegisterRequest()
 static int32_t ParseResp(CCAEStatus &ccaeStatus, const std::string &response)
 {
     try {
-        if (!PreCheckJsonString(response)) {
+        if (!CheckJsonStringSize(response)) {
             LOG_E("[CCAERequestHandler] Invalid response string %s", response.substr(0, JSON_STR_SIZE_HEAD).c_str());
             return -1;
         }
-        nlohmann::json responseJson = nlohmann::json::parse(response);
+        nlohmann::json responseJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!responseJson.contains("reqList") || !responseJson["reqList"].is_array()) {
             LOG_E("[CCAERequestHandler] Missing or invalid reqList field");
             return -1;
@@ -709,17 +709,17 @@ static int32_t ParseResp(CCAEStatus &ccaeStatus, const std::string &response)
 
 static bool IsValidRegisterResp(const std::string &response)
 {
-    if (!PreCheckJsonStringSize(response)) {
+    if (!CheckJsonStringSize(response)) {
         LOG_E("[CCAERequestHandler] Invalid CCAE register response: %",
             response.substr(0, JSON_STR_SIZE_HEAD).c_str());
         return false;
     }
-    if (!PreCheckJsonStringDepth(response) || !nlohmann::json::accept(response)) {
+    if (!nlohmann::json::accept(response)) {
         LOG_E("[CCAERequestHandler] Invalid CCAE register response %s", response.c_str());
         return false;
     }
     // check if return code and message are valid
-    auto bodyJson = nlohmann::json::parse(response);
+    auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     if (!IsJsonIntValid(bodyJson, "retCode", 0, 1) ||
         !IsJsonStringValid(bodyJson, "retMsg", 0, 128)) { // return message should be between 0 and 128 charactors
         LOG_E("[CCAERequestHandler] Invalid CCAE register response return code or message data type");
@@ -769,13 +769,13 @@ static bool IsValidRegisterResp(const std::string &response)
 
 static bool IsSuccessInventoriesResp(const std::string &response)
 {
-    if (!PreCheckJsonString(response) || !nlohmann::json::accept(response)) {
+    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
         LOG_E("[CCAERequestHandler] Invalid CCAE inventories response");
         return false;
     }
 
     // check if return code and message are valid
-    auto bodyJson = nlohmann::json::parse(response);
+    auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
     if (!IsJsonIntValid(bodyJson, "retCode", 0, 1) || !IsValidString(bodyJson["retMsg"])) {
         LOG_E("[CCAERequestHandler] Invalid CCAE inventories response return code or message data type");
         return false;

@@ -14,8 +14,11 @@
 #include <vector>
 #include "gtest/gtest.h"
 #include "SecurityUtils.h"
+#include "Util.h"
+#include "nlohmann/json.hpp"
 
 using namespace MINDIE::MS;
+using Json = nlohmann::json;
 
 class TestSecurityUtils : public testing::Test {
 protected:
@@ -510,4 +513,217 @@ TEST_F(TestSecurityUtils, TestIsValidNodeName)
     EXPECT_TRUE(IsValidNodeName("-"));
     EXPECT_TRUE(IsValidNodeName("_"));
     EXPECT_TRUE(IsValidNodeName("."));
+}
+
+/*
+测试描述: 测试CheckJsonStringSize函数
+测试步骤:
+    1. 测试空字符串
+    2. 测试正常大小的字符串
+    3. 测试边界值（1MB）
+    4. 测试超过1MB限制的字符串
+预期结果:
+    1. 空字符串返回true
+    2. 正常大小返回true
+    3. 边界值（1MB）返回true
+    4. 超过限制返回false
+*/
+TEST_F(TestSecurityUtils, TestCheckJsonStringSize)
+{
+    // 测试空字符串
+    EXPECT_TRUE(CheckJsonStringSize(""));
+
+    // 测试正常大小的字符串
+    EXPECT_TRUE(CheckJsonStringSize("{}"));
+    EXPECT_TRUE(CheckJsonStringSize("{\"key\": \"value\"}"));
+    EXPECT_TRUE(CheckJsonStringSize("{\"array\": [1, 2, 3]}"));
+    constexpr size_t jsonStringSizeMax = 1024 * 1024; // 最大1MB，与Util.cpp一致
+
+    int normalStringSize = 100;
+    std::string normalSize(normalStringSize, 'a');
+    EXPECT_TRUE(CheckJsonStringSize(normalSize));
+    std::string largeButValid(jsonStringSizeMax - 1, 'a');  // 1MB - 1字节
+    EXPECT_TRUE(CheckJsonStringSize(largeButValid));
+
+    // 测试边界值（1MB）
+    std::string exactLimit(jsonStringSizeMax, 'a');  // 正好1MB
+    EXPECT_TRUE(CheckJsonStringSize(exactLimit));
+
+    // 测试超过1MB限制的字符串
+    std::string tooLarge(jsonStringSizeMax + 1, 'a');  // 1MB + 1字节
+    EXPECT_FALSE(CheckJsonStringSize(tooLarge));
+    std::string wayTooLarge(2 * jsonStringSizeMax, 'a');  // 2MB
+    EXPECT_FALSE(CheckJsonStringSize(wayTooLarge));
+    std::string hugeSize(10 * jsonStringSizeMax, 'a');  // 10MB
+    EXPECT_FALSE(CheckJsonStringSize(hugeSize));
+}
+
+/*
+测试描述: 测试CheckJsonDepthCallBack函数
+测试步骤:
+    1. 测试object_start事件的不同深度
+    2. 测试array_start事件的不同深度
+    3. 测试其他事件类型（应返回true）
+    4. 测试边界值（50层）
+    5. 测试超过限制的深度
+    6. 测试恶意payload深度校验
+预期结果:
+    1. object_start在限制内返回true，超过返回false
+    2. array_start在限制内返回true，超过返回false
+    3. 其他事件类型返回true
+    4. 边界值（50层）返回true
+    5. 超过限制返回false
+    6. 恶意payload应被正确检测和拒绝
+*/
+
+constexpr int JSON_STRING_DEPTH_MAX = 50;
+
+static std::string GenerateNestedObjectJson(int depth)
+{
+    std::string json = "{";
+    for (int i = 0; i < depth; ++i) {
+        json.append("\"level" + std::to_string(i) + "\":{");
+    }
+    json += "\"value\":\"test\"";
+    json.append(depth, '}');
+    json += "}";
+    return json;
+}
+
+static std::string GenerateNestedArrayJson(int depth)
+{
+    std::string json = "{\"level0\":";
+    for (int i = 0; i < depth; ++i) {
+        json += "[";
+    }
+    json += "[]";
+    for (int i = 0; i < depth; ++i) {
+        json += "]";
+    }
+    json += "}";
+    return json;
+}
+
+static std::string GenerateMaliciousPayload()
+{
+    std::string payload;
+    payload += "{\"mask\": \"";
+    payload.append(JSON_STRING_DEPTH_MAX + 1, ']');
+    payload += "\", \"bomb\": ";
+    payload.append(JSON_STRING_DEPTH_MAX + 1, '[');
+    payload.append(JSON_STRING_DEPTH_MAX + 1, ']');
+    payload += "}";
+    return payload;
+}
+
+TEST_F(TestSecurityUtils, CheckJsonDepthCallBack_PrimitiveEvents)
+{
+    Json dummyJson;
+    EXPECT_TRUE(CheckJsonDepthCallBack(0, Json::parse_event_t::object_start, dummyJson));
+    EXPECT_TRUE(
+        CheckJsonDepthCallBack(JSON_STRING_DEPTH_MAX, Json::parse_event_t::object_start, dummyJson));
+    EXPECT_FALSE(CheckJsonDepthCallBack(JSON_STRING_DEPTH_MAX + 1, Json::parse_event_t::object_start,
+                                              dummyJson));
+    EXPECT_TRUE(CheckJsonDepthCallBack(0, Json::parse_event_t::array_start, dummyJson));
+    EXPECT_TRUE(
+        CheckJsonDepthCallBack(JSON_STRING_DEPTH_MAX, Json::parse_event_t::array_start, dummyJson));
+    EXPECT_FALSE(
+        CheckJsonDepthCallBack(JSON_STRING_DEPTH_MAX + 1, Json::parse_event_t::array_start, dummyJson));
+    EXPECT_TRUE(CheckJsonDepthCallBack(0, Json::parse_event_t::object_end, dummyJson));
+    EXPECT_TRUE(
+        CheckJsonDepthCallBack(JSON_STRING_DEPTH_MAX, Json::parse_event_t::object_end, dummyJson));
+    EXPECT_TRUE(CheckJsonDepthCallBack(0, Json::parse_event_t::key, dummyJson));
+    EXPECT_TRUE(CheckJsonDepthCallBack(-1, Json::parse_event_t::object_start, dummyJson));
+}
+
+// 合法的深度边界和异常边界的对象和数组
+TEST_F(TestSecurityUtils, CheckJsonDepthCallBack_NestedJsonObjectArray)
+{
+    EXPECT_NO_THROW({
+        auto result = Json::parse(GenerateNestedObjectJson(10), CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+    });
+    EXPECT_NO_THROW({
+        auto result = Json::parse(GenerateNestedObjectJson(JSON_STRING_DEPTH_MAX), CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+    });
+    // 测试超过限制：nlohmann::json在回调返回false时会停止解析更深层，不会抛出异常
+    // 验证深度限制是否生效：检查是否能访问到第51层（应该不能）
+    EXPECT_NO_THROW({
+        auto result = Json::parse(GenerateNestedObjectJson(JSON_STRING_DEPTH_MAX + 1), CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+        // 检查最大访问深度
+        auto current = result;
+        int maxLevel = 0;
+        for (int i = 0; i <= JSON_STRING_DEPTH_MAX + 1; ++i) {
+            std::string key = "level" + std::to_string(i);
+            if (current.contains(key)) {
+                current = current[key];
+                maxLevel = i + 1;
+            } else {
+                break;
+            }
+        }
+        EXPECT_LE(maxLevel, JSON_STRING_DEPTH_MAX) << "深度限制应该生效，最大访问深度应该<=50层";
+    });
+
+    EXPECT_NO_THROW({
+        auto result = Json::parse(GenerateNestedArrayJson(10), CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+    });
+    EXPECT_NO_THROW({
+        auto result = Json::parse(GenerateNestedArrayJson(JSON_STRING_DEPTH_MAX), CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+    });
+    // 测试超过限制：检查嵌套数组的实际深度
+    EXPECT_NO_THROW({
+        auto result = Json::parse(GenerateNestedArrayJson(JSON_STRING_DEPTH_MAX + 1), CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+        // 检查嵌套数组的深度
+        if (result.contains("level0")) {
+            auto current = result["level0"];
+            int depth = 0;
+            while (current.is_array() && !current.empty()) {
+                current = current[0];
+                depth++;
+            }
+            EXPECT_LE(depth, JSON_STRING_DEPTH_MAX) << "深度限制应该生效，数组深度应该<=50层";
+        }
+    });
+}
+
+// 普通、小混合、恶意payload场景
+TEST_F(TestSecurityUtils, CheckJsonDepthCallBack_SimpleMixedMalicious)
+{
+    std::string mixedJson = R"({"level1":{"level2":[{"level3":{"level4":{}}}]}})";
+    std::string simpleJson = R"({"key":"value"})";
+    EXPECT_NO_THROW({
+        auto result = Json::parse(mixedJson, CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+    });
+    EXPECT_NO_THROW({
+        auto result = Json::parse(simpleJson, CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+    });
+
+    // 测试恶意payload：验证深度限制是否生效
+    std::string maliciousPayload = GenerateMaliciousPayload();
+    EXPECT_NO_THROW({
+        auto result = Json::parse(maliciousPayload, CheckJsonDepthCallBack);
+        EXPECT_TRUE(!result.is_null());
+        // 检查"bomb"字段的嵌套深度
+        if (result.contains("bomb")) {
+            auto bomb = result["bomb"];
+            int depth = 0;
+            auto current = bomb;
+            while (current.is_array() && !current.empty()) {
+                current = current[0];
+                depth++;
+            }
+            EXPECT_LE(depth, JSON_STRING_DEPTH_MAX) << "恶意payload应该被拒绝，bomb字段深度应该<=50层";
+        } else {
+            // 如果bomb字段无法解析，说明深度限制生效
+            EXPECT_TRUE(true) << "恶意payload被拒绝（无法解析bomb字段）";
+        }
+    });
 }

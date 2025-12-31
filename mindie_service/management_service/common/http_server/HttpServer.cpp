@@ -88,9 +88,9 @@ static Http::message_generator ResponseError(const Http::request<Http::string_bo
 static std::string GenerateResponse(const std::string &status, const Response &resp)
 {
     nlohmann::json jsonObj;
-    if (resp.data.size() != 0 && PreCheckJsonString(resp.data)) {
+    if (resp.data.size() != 0 && CheckJsonStringSize(resp.data)) {
         if (nlohmann::json::accept(resp.data)) {
-            nlohmann::json dataJsonObj = nlohmann::json::parse(resp.data);
+            nlohmann::json dataJsonObj = nlohmann::json::parse(resp.data, CheckJsonDepthCallBack);
             jsonObj["data"] = dataJsonObj;
         } else {
             jsonObj["data"] = resp.data;

@@ -18,6 +18,7 @@
 #include "ServerRequestHandler.h"
 #include "CoordinatorRequestHandler.h"
 #include "Logger.h"
+#include "Util.h"
 namespace MINDIE::MS {
 constexpr int32_t CODE_OK = 200;
 constexpr int64_t MIN_TASKS_NUMBER = -1;
@@ -675,13 +676,13 @@ static bool IsValidTasksResponse(const nlohmann::json bodyJson)
 
 static bool AssertInstanceTasksEnd(std::string &response)
 {
-    if (!PreCheckJsonStringSize(response)) {
+    if (!CheckJsonStringSize(response)) {
         LOG_E("[%s] [RoleSwitcher] Invalid instance task response: %s",
             GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
             response.substr(0, JSON_STR_SIZE_HEAD).c_str());
         return false;
     }
-    if (!PreCheckJsonStringDepth(response) || !nlohmann::json::accept(response)) {
+    if (!nlohmann::json::accept(response)) {
         LOG_E("[%s] [RoleSwitcher] Invalid instance task response %s.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
             response.c_str());
@@ -689,7 +690,7 @@ static bool AssertInstanceTasksEnd(std::string &response)
     }
     try {
         LOG_D("Instance tasks response: %s", response.c_str());
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!IsValidTasksResponse(bodyJson)) {
             LOG_E("[%s] [RoleSwitcher] Instance tasks response is invalid.",
                   GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str());
@@ -780,13 +781,13 @@ int32_t RoleSwitcher::QueryInstanceTasks(uint64_t id, uint64_t waitSeconds)
 
 static bool AssertInstancePeerTasksEnd(std::string &response)
 {
-    if (!PreCheckJsonStringSize(response)) {
+    if (!CheckJsonStringSize(response)) {
         LOG_E("[%s] [RoleSwitcher] Invalid instance peer tasks response: %s.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
             response.substr(0, JSON_STR_SIZE_HEAD).c_str());
         return false;
     }
-    if (!PreCheckJsonStringDepth(response) || !nlohmann::json::accept(response)) {
+    if (!nlohmann::json::accept(response)) {
         LOG_E("[%s] [RoleSwitcher] Invalid instance peer tasks response: %s.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
             response.c_str());
@@ -794,7 +795,7 @@ static bool AssertInstancePeerTasksEnd(std::string &response)
     }
     try {
         LOG_D("Instance peer tasks response: %s", response.c_str());
-        auto bodyJson = nlohmann::json::parse(response);
+        auto bodyJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!IsJsonBoolValid(bodyJson, "is_end")) {
             LOG_E("[%s] [RoleSwitcher] Instance task response is invalid.",
                   GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str());

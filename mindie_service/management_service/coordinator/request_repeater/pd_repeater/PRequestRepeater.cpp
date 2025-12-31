@@ -126,7 +126,7 @@ void RequestRepeater::DealPRes(std::shared_ptr<ReqAgent> reqInfo, std::shared_pt
         reqInfo->ClearRetry();
     }
     try {
-        if (!PreCheckJsonString(body)) {
+        if (!CheckJsonStringSize(body)) {
             LOG_E("[%s] [RequestRepeater] Failed to parse request body, json string invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::P_REQUESTREPEATER).c_str());
             SendErrorRes(serverConn, boost::beast::http::status::internal_server_error, "P instance error\r\n");
@@ -134,7 +134,7 @@ void RequestRepeater::DealPRes(std::shared_ptr<ReqAgent> reqInfo, std::shared_pt
             LogRequestCompletionStatus(reqId, RequestPhase::PREFILL, false);
             return;
         }
-        auto bodyJson = nlohmann::json::parse(body);
+        auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         auto rcvReqId = bodyJson.at("reqId").template get<std::string>();
         if (reqId != rcvReqId) {
             LOG_E("[%s] [RequestRepeater] Mismatched request ID, received %s, expected %s.", GetErrorCode(ErrorType::
@@ -284,12 +284,12 @@ void RequestRepeater::NotStreamSetOutputNum(boost::beast::string_view data, std:
 void RequestRepeater::SetOutputNumTriton(boost::beast::string_view data, std::shared_ptr<ReqAgent> reqInfo) const
 {
     try {
-        if (!PreCheckJsonString(data)) {
+        if (!CheckJsonStringSize(data)) {
             LOG_E("[%s] [RequestRepeater] Failed to parse request body, json string invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::P_REQUESTREPEATER).c_str());
             return;
         }
-        auto dataJson = nlohmann::json::parse(data);
+        auto dataJson = nlohmann::json::parse(data, CheckJsonDepthCallBack);
         if (dataJson.contains("text_output")) {
             auto textOutput = dataJson.at("text_output").template get<std::string>();
             reqInfo->AddOutputNum(
@@ -316,12 +316,12 @@ void RequestRepeater::SetOutputNumTriton(boost::beast::string_view data, std::sh
 void RequestRepeater::SetOutputNumOpenAI(boost::beast::string_view data, std::shared_ptr<ReqAgent> reqInfo) const
 {
     try {
-        if (!PreCheckJsonString(data)) {
+        if (!CheckJsonStringSize(data)) {
             LOG_E("[%s] [RequestRepeater] Failed to parse request body, json string invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::P_REQUESTREPEATER).c_str());
             return;
         }
-        auto dataJson = nlohmann::json::parse(data);
+        auto dataJson = nlohmann::json::parse(data, CheckJsonDepthCallBack);
         auto choices = dataJson.at("choices");
         for (auto it = choices.begin(); it != choices.end(); ++it) {
             auto message = it->at("message");
@@ -344,12 +344,12 @@ void RequestRepeater::SetOutputNumOpenAI(boost::beast::string_view data, std::sh
 void RequestRepeater::SetOutputNumVLLM(boost::beast::string_view data, std::shared_ptr<ReqAgent> reqInfo) const
 {
     try {
-        if (!PreCheckJsonString(data)) {
+        if (!CheckJsonStringSize(data)) {
             LOG_E("[%s] [RequestRepeater] Failed to parse request body, json string invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::P_REQUESTREPEATER).c_str());
             return;
         }
-        auto dataJson = nlohmann::json::parse(data);
+        auto dataJson = nlohmann::json::parse(data, CheckJsonDepthCallBack);
         auto text = dataJson.at("text").template get<std::vector<std::string>>();
         for (auto &elem : std::as_const(text)) {
             reqInfo->AddOutputNum(
@@ -370,12 +370,12 @@ void RequestRepeater::SetOutputNumVLLM(boost::beast::string_view data, std::shar
 void RequestRepeater::SetOutputNumTGIOrMindIE(boost::beast::string_view data, std::shared_ptr<ReqAgent> reqInfo) const
 {
     try {
-        if (!PreCheckJsonString(data)) {
+        if (!CheckJsonStringSize(data)) {
             LOG_E("[%s] [RequestRepeater] Failed to parse request body, json string invalid.",
                 GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::P_REQUESTREPEATER).c_str());
             return;
         }
-        auto dataJson = nlohmann::json::parse(data);
+        auto dataJson = nlohmann::json::parse(data, CheckJsonDepthCallBack);
         auto outputStr = dataJson.at("generated_text").template get<std::string>();
         reqInfo->AddOutputNum(
             static_cast<size_t>(static_cast<float>(outputStr.size()) / Configure::Singleton()->strTokenRate));

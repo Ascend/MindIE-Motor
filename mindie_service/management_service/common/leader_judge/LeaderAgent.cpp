@@ -73,12 +73,12 @@ bool LeaderAgent::ReadNodes(nlohmann::json& value)
         return false;
     }
     
-    if (!PreCheckJsonString(valueStr) || !nlohmann::json::accept(valueStr)) {
+    if (!CheckJsonStringSize(valueStr) || !nlohmann::json::accept(valueStr)) {
         LOG_E("[LeaderAgent] Invalid JSON data received");
         return false;
     }
     
-    value = nlohmann::json::parse(valueStr);
+    value = nlohmann::json::parse(valueStr, CheckJsonDepthCallBack);
     return true;
 }
 
@@ -100,7 +100,7 @@ bool LeaderAgent::ReadFaultsValue(nlohmann::json& value)
         return false;
     }
     
-    value = nlohmann::json::parse(valueStr);
+    value = nlohmann::json::parse(valueStr, CheckJsonDepthCallBack);
     return true;
 }
 

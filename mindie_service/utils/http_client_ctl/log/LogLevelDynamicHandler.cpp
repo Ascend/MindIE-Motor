@@ -381,13 +381,13 @@ void LogLevelDynamicHandler::InsertLogConfigToFile()
         LOG_E("Failed to open config file.");
         return;
     }
-    if (!PreCheckJsonString(jsonString)) {
+    if (!CheckJsonStringSize(jsonString)) {
         LOG_E("Invalid json format.");
         return;
     }
 
     try {
-        nlohmann::json config = nlohmann::json::parse(jsonString);
+        nlohmann::json config = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
         config["LogConfig"] = {
             {"dynamicLogLevel", ""},
             {"dynamicLogLevelValidHours", 2},

@@ -81,13 +81,13 @@ std::pair<ErrorCode, Response> ServerManager::LoadServer(const std::string &load
         response.message = "server number cannot over 1.";
         return std::make_pair(ErrorCode::INVALID_PARAMETER, response);
     }
-    if (!PreCheckJsonString(loadConfigJson) || !nlohmann::json::accept(loadConfigJson)) {
+    if (!CheckJsonStringSize(loadConfigJson) || !nlohmann::json::accept(loadConfigJson)) {
         LOG_E("[%s] [Deployer] Load config is not a valid JSON!", logCode.c_str());
         response.message = "load config is not a valid json!";
         return std::make_pair(ErrorCode::INVALID_PARAMETER, response);
     }
 
-    auto jsonObj = nlohmann::json::parse(loadConfigJson);
+    auto jsonObj = nlohmann::json::parse(loadConfigJson, CheckJsonDepthCallBack);
     if (!IsJsonStringValid(jsonObj, "server_name")) {
         response.message = "load config not contain server_name!";
         return std::make_pair(ErrorCode::INVALID_PARAMETER, response);
@@ -256,13 +256,13 @@ static int32_t CheckStatusFileHasList(const std::string &statusFile, nlohmann::j
             statusFile.c_str());
         return -1;
     }
-    if (!PreCheckJsonString(jsonString) || !nlohmann::json::accept(jsonString)) {
+    if (!CheckJsonStringSize(jsonString) || !nlohmann::json::accept(jsonString)) {
         LOG_E("[%s] [Deployer] Restoring from file. File %s is not valid JSON format.",
             GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::SERVER_MANAGER).c_str(),
             statusFile.c_str());
         return -1;
     }
-    statusJson = nlohmann::json::parse(jsonString);
+    statusJson = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
     if (!statusJson.contains("server_list") || !statusJson["server_list"].is_array()) {
         LOG_E("[%s] [Deployer] Restoring from file. Status JSON does not contain 'server_list'.",
               GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::SERVER_MANAGER).c_str());
@@ -312,14 +312,14 @@ int32_t ServerManager::FromStatusFile(const std::string &statusPath)
 std::pair<ErrorCode, Response> ServerManager::UpdateServer(const std::string &updateConfigJson)
 {
     Response resp;
-    if (!PreCheckJsonString(updateConfigJson) || !nlohmann::json::accept(updateConfigJson)) {
+    if (!CheckJsonStringSize(updateConfigJson) || !nlohmann::json::accept(updateConfigJson)) {
         LOG_E("[%s] [Deployer] Failed to load config. The provided configuration is not valid JSON.",
               GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::SERVER_MANAGER).c_str());
         resp.message = "load config is not a valid json!";
         return std::make_pair(ErrorCode::INVALID_PARAMETER, resp);
     }
 
-    auto jsonObj = nlohmann::json::parse(updateConfigJson);
+    auto jsonObj = nlohmann::json::parse(updateConfigJson, CheckJsonDepthCallBack);
     if (!jsonObj.contains("server_name") || !jsonObj["server_name"].is_string()) {
         LOG_E("[%s] [Deployer] The update configuration does not include a valid 'server_name' field.",
               GetErrorCode(ErrorType::INVALID_INPUT, DeployerFeature::SERVER_MANAGER).c_str());
