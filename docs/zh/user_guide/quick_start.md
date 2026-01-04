@@ -2,11 +2,11 @@
 
 ## 环境准备
 
-请参考《MindIE安装指南》进行环境的安装与部署，并参考《MindIE LLM开发指南》中的“核心概念与配置 \> 配置参数说明（服务化）”章节根据用户需要配置参数。
+请参考[安装指南](./installation_guide.md)进行环境的安装与部署，并参考[配置参数说明（服务化）](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/user_manual/service_parameter_configuration.md)根据用户需要配置参数。
 
 ## 操作步骤
 
-- Server可以部署兼容Triton/OpenAI/TGI/vLLM第三方框架接口的服务应用。推荐用户开启HTTPS通信，并按照《MindIE安装指南》中的“配置MindIE \> 配置Server \> 单机推理”章节，配置开启HTTPS通信所需服务证书、私钥等证书文件。
+- Server可以部署兼容Triton/OpenAI/TGI/vLLM第三方框架接口的服务应用。推荐用户开启HTTPS通信，并按照[单机部署](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/user_manual/PD%E6%B7%B7%E5%90%88%E9%83%A8%E7%BD%B2.md#%E5%8D%95%E6%9C%BA%E6%B7%B7%E9%83%A8)，配置开启HTTPS通信所需服务证书、私钥等证书文件。
 
 - Server启动的默认IP地址和端口号为`https://127.0.0.1:1025`，用户可修改config.json文件中的"ipAddress"和"port"参数来配置启动IP地址与端口号。
 - Server可实现服务状态查询，模型信息查询，文本/流式推理等功能。
@@ -16,43 +16,43 @@
 
 1.  两种启动服务方法如下所示。
 
-    启动命令需在/_\{MindIE安装目录\}_/latest/mindie-service目录中执行。
+    启动命令需在/*{MindIE安装目录}*/latest/mindie-service目录中执行。
 
     >[!NOTE]说明 
     >拉起服务前，建议用户使用MindStudio的预检工具进行配置文件字段校验，辅助校验配置的合法性，详情请参见[链接](https://gitcode.com/Ascend/msit/tree/master/msprechecker)。
 
     -   方式一（推荐）：使用后台进程方式启动服务。后台进程方式启动服务后，关闭窗口后进程也会保留。
 
-        ```
+        ```bash
         nohup ./bin/mindieservice_daemon > output.log 2>&1 &
         ```
 
         在标准输出流捕获到的文件中，打印如下信息说明启动成功。
 
-        ```
+        ```bash
         Daemon start success!
         ```
 
     -   方式二：直接启动服务。
 
-        ```
+        ```bash
         ./bin/mindieservice_daemon
         ```
 
         回显如下则说明启动成功。
 
-        ```
+        ```bash
         Daemon start success!
         ```
 
     >[!NOTE]说明
-    >-   bin目录按照安全要求，目录权限为550，没有写权限，但执行推理过程中，算子会在当前目录生成kernel_meta文件夹，需要写权限，因此不能直接在bin启动mindieservice_daemon。
-    >-   Ascend-cann-toolkit工具会在执行服务启动的目录下生成kernel_meta_temp_*xxxx*目录，该目录为算子的cce文件保存目录。因此需要在当前用户拥有写权限目录下（例如Ascend-mindie-server\_*\{version\}*\_linux-*{arch}* 目录，或者用户在Ascend-mindie-server\_*\{version\}*\_linux-*\{arch\}* 目录下自行创建临时目录）启动推理服务。
-    >-   如需切换用户，请在切换用户后执行 **rm -f /dev/shm/** 命令，删除由之前用户运行创建的共享文件。避免切换用户后，该用户没有之前用户创建的共享文件的读写权限，造成推理失败。
-    >-   标准输出流捕获到的文件output.log支持用户自定义文件和路径。
-    >-   如果您使用的模型为超大模型（比如1300B的超大模型），其模型加载时间将会很长，请参见[加载大模型时耗时过长](./FAQ.md#加载大模型时耗时过长)章节缩短加载时间。
+    >- bin目录按照安全要求，目录权限为550，没有写权限，但执行推理过程中，算子会在当前目录生成kernel_meta文件夹，需要写权限，因此不能直接在bin启动mindieservice_daemon。
+    >- Ascend-cann-toolkit工具会在执行服务启动的目录下生成kernel_meta_temp_*xxxx*目录，该目录为算子的cce文件保存目录。因此需要在当前用户拥有写权限目录下（例如Ascend-mindie-server\_*\{version\}*\_linux-*{arch}* 目录，或者用户在Ascend-mindie-server\_*\{version\}*\_linux-*\{arch\}* 目录下自行创建临时目录）启动推理服务。
+    >- 如需切换用户，请在切换用户后执行 **rm -f /dev/shm/** 命令，删除由之前用户运行创建的共享文件。避免切换用户后，该用户没有之前用户创建的共享文件的读写权限，造成推理失败。
+    >- 标准输出流捕获到的文件output.log支持用户自定义文件和路径。
+    >- 如果您使用的模型为超大模型（比如1300B的超大模型），其模型加载时间将会很长，请参见[加载大模型时耗时过长](./faq.md#jzdmxshsgc)章节缩短加载时间。
 
-2.  用户可使用HTTPS客户端（Linux curl命令，Postman工具等）发送HTTPS请求，此处以Linux curl命令为例进行说明。
+2. 用户可使用HTTPS客户端（Linux curl命令，Postman工具等）发送HTTPS请求，此处以Linux curl命令为例进行说明。
 
     重开一个窗口，使用以下命令发送请求。例如列出当前模型列表：
 
@@ -62,12 +62,12 @@
 
     >[!NOTE]说明
     请用户根据实际情况对相应参数进行修改。
-    >-   --cacert：验签证书文件路径。
-    >-   ca.pem：Server服务端证书的验签证书/根证书。
-    >-   --cert：客户端证书文件路径。
-    >-   client.pem：客户端证书。
-    >-   --key：客户端私钥文件路径。
-    >-   client.key.pem：客户端证书私钥（未加密，建议采用加密密钥）。
+    >- --cacert：验签证书文件路径。
+    >- ca.pem：Server服务端证书的验签证书/根证书。
+    >- --cert：客户端证书文件路径。
+    >- client.pem：客户端证书。
+    >- --key：客户端私钥文件路径。
+    >- client.key.pem：客户端证书私钥（未加密，建议采用加密密钥）。
 
 
 # 服务化接口调用
@@ -339,9 +339,9 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
 **操作步骤**
 
-1.  使用以下命令下载并安装AISBench工具。
+1. 使用以下命令下载并安装AISBench工具。
 
-    ```
+    ```bash
     git clone https://gitee.com/aisbench/benchmark.git 
     cd benchmark/ 
     pip3 install -e ./ --use-pep517
@@ -351,15 +351,15 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
     >[!NOTE]说明
     >pip安装方式适用于使用AISBench最新功能的场景（镜像安装MindIE方式除外）。AISBench工具已预装在MindIE镜像中，可使用以下命令查看AISBench工具在MindIE镜像中的安装路径。
-    >```
+    >```bash
     >pip show ais_bench_benchmark
     >```
 
-2.  准备数据集。
+2. 准备数据集。
 
     以gsm8k为例，单击[gsm8k数据集](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip)下载数据集，将解压后的gsm8k文件夹部署到工具根路径的ais\_bench/datasets文件夹下。
 
-3.  配置ais\_bench/benchmark/configs/models/vllm\_api/vllm\_api\_stream\_chat.py文件，示例如下所示。
+3. 配置ais\_bench/benchmark/configs/models/vllm\_api/vllm\_api\_stream\_chat.py文件，示例如下所示。
 
     ```
     from ais_bench.benchmark.models import VLLMCustomAPIChatStream  
@@ -387,15 +387,15 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
     ]
     ```
 
-4.  执行以下命令启动服务化精度测试。
+4. 执行以下命令启动服务化精度测试。
 
-    ```
+    ```bash
     ais_bench --models vllm_api_stream_chat --datasets demo_gsm8k_gen_4_shot_cot_chat_prompt --debug
     ```
 
     回显如下所示则表示执行成功：
 
-    ```
+    ```bash
     dataset                 version  metric   mode  vllm_api_general_chat 
     ----------------------- -------- -------- ----- ---------------------- 
     demo_gsm8k              401e4c   accuracy gen                   62.50
@@ -407,9 +407,9 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
 **操作步骤**
 
-1.  使用以下命令下载并安装AISBench工具。
+1. 使用以下命令下载并安装AISBench工具。
 
-    ```
+    ```bash
     git clone https://gitee.com/aisbench/benchmark.git 
     cd benchmark/ 
     pip3 install -e ./ --use-pep517
@@ -423,11 +423,11 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
     >pip show ais_bench_benchmark
     >```
 
-2.  准备数据集。   
+2. 准备数据集。   
 
     以gsm8k为例，单击[gsm8k数据集](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip)下载数据集，将解压后的gsm8k/文件夹部署到工具根路径的ais\_bench/datasets文件夹下。
 
-3.  配置ais\_bench/benchmark/configs/models/vllm\_api/vllm\_api\_stream\_chat.py文件，示例如下所示。
+3. 配置ais\_bench/benchmark/configs/models/vllm\_api/vllm\_api\_stream\_chat.py文件，示例如下所示。
 
     ```
     from ais_bench.benchmark.models import VLLMCustomAPIChatStream  
@@ -456,7 +456,7 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
     ]
     ```
 
-4.  执行以下命令启动服务化性能测试。
+4. 执行以下命令启动服务化性能测试。
 
     ```
     ais_bench --models vllm_api_stream_chat --datasets demo_gsm8k_gen_4_shot_cot_chat_prompt --mode perf --debug
@@ -493,7 +493,7 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
     ╘═════════════╧═════╧══════════╛
     ```
 
-    性能测试结果主要关注TTFT、TPOT、Request Throughput和Output Token Throughput输出参数，参数详情信息请参见[表2](service_oriented_optimization_tool.md#性能/精度测试工具#table_ptrm002)。
+    性能测试结果主要关注TTFT、TPOT、Request Throughput和Output Token Throughput输出参数，参数详情信息请参见[表2 性能测试结果指标](service_oriented_optimization_tool.md#性能/精度测试工具#table_ptrm002)。
 
     >[!NOTE]说明
     >任务执行的过程最终会落盘在默认的输出路径，该输出路径在运行中的打印日志中有提示，日志内容如下所示：
@@ -521,13 +521,13 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 -   方式一（推荐）：使用后台进程方式启动服务。
     -   使用kill命令停止进程。
 
-        ```
+        ```bash
         kill {mindieservice_daemon 进程id}
         ```
 
         >[!NOTE]说明
-        >Linux系统中查询mindieservice\_daemon主进程ID：
-        >1.  查看所有与MindIE Motor相关的进程列表。
+        >Linux系统中查询mindieservice_daemon主进程ID：
+        >1. 查看所有与MindIE Motor相关的进程列表。
         >    ```
         >    ps -ef | grep 'mindieservice_daemon'
         >    ```
@@ -546,7 +546,7 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
         >    xxxx     1606013 1595969  1 11:42 pts/1    00:00:01 ./bin/mindieservice_daemon
         >    xxxx     1616310  559909  0 11:44 pts/5    00:00:00 grep --color=auto mindieservice_daemon
         >    ```
-        >2.  在回显结果中找到PPID列，找出所有包含mindieservice\_daemon且PPID相同的进程，这个相同的PPID指向的进程即为mindieservice\_daemon主进程，它的PID即为主进程ID，回显示例中的主进程ID为：1595969。
+        >2. 在回显结果中找到PPID列，找出所有包含mindieservice\_daemon且PPID相同的进程，这个相同的PPID指向的进程即为mindieservice\_daemon主进程，它的PID即为主进程ID，回显示例中的主进程ID为：1595969。
 
     -   或使用pkill命令停止进程。
 

@@ -8,40 +8,40 @@
 
 |硬件|操作系统（建议）|
 |--|--|
-|Atlas 800I A2 推理服务器|Arm：Ubuntu 22.04|
-|Atlas 300I Duo 推理卡+Atlas 800 推理服务器（型号 3000）|Arm：Ubuntu 20.04|
+|Atlas 800I A2 推理服务器|Arm：<br>Ubuntu 22.04|
+|Atlas 300I Duo 推理卡+Atlas 800 推理服务器（型号 3000）|Arm：<br>Ubuntu 20.04|
 
 
-## 软件包获取
+## 准备软件包<a id="zbrjb"></a>
 
-制作MindIE镜像包对所依赖的软件版本有特定的要求，具体所需版本请参见[表1](#table1139317347263)。
+制作MindIE镜像包对所依赖的软件版本有特定的要求，具体所需版本请参见[表1 软件介绍](#table1139317347263)。
 
 **表 1**  软件介绍
 
 |软件类型|软件包名称|软件说明|获取链接|
 |--|--|--|--|
-|MindIE|Ascend-mindie_2.3.0_linux-aarch64_abi0.run|推理引擎软件包。|获取链接|
-|CANN|Ascend-cann-toolkit_8.5.0_linux-aarch64.run|开发套件包。|获取链接|
-|CANN|<li>Atlas 800I A2 推理服务器：Ascend-cann-910*x*-ops_8.5.0_linux-aarch64.run<li>Atlas 300I Duo 推理卡+Atlas 800 推理服务器（型号 3000）：Ascend-cann-310*x*-ops_8.5.0_linux-aarch64.run<br>以上软件包名中的910*x*和310*x*请根据具体的硬件型号进行替换。|二进制算子包。|获取链接|
-|CANN|Ascend-cann-nnal_8.5.0_linux-aarch64.run|加速库软件包|获取链接|
-|ATB Models|Ascend-mindie-atb-models_2.3.0_linux-aarch64_torch2.2.0-abi0.tar.gz|模型库安装包。|获取链接|
-|Ascend Extension for PyTorch|torch_npu-2.1.0.post10-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl|torch_npu插件whl包。|获取链接在Pytorch栏单击对应版本后方下载按钮，跳转至Pytorch的gitee仓库发布页，然后在页面下方获取对应版本的torch_npu。|
-|Ascend Extension for PyTorch|torch-2.1.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl|PyTorch框架2.1.0版本的whl包。|获取链接|
+|MindIE|Ascend-mindie_2.3.0_linux-aarch64_abi0.run|推理引擎软件包。|[获取链接](https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann)|
+|CANN|Ascend-cann-toolkit_8.5.0_linux-aarch64.run|开发套件包。|[获取链接](https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann)|
+|CANN|<li>Atlas 800I A2 推理服务器：<br>Ascend-cann-910*x*-ops_8.5.0_linux-aarch64.run<li>Atlas 300I Duo 推理卡+Atlas 800 推理服务器（型号 3000）：<br>Ascend-cann-310*x*-ops_8.5.0_linux-aarch64.run<br>以上软件包名中的910*x*和310*x*请根据具体的硬件型号进行替换。|二进制算子包。|[获取链接](https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann)|
+|CANN|Ascend-cann-nnal_8.5.0_linux-aarch64.run|加速库软件包|[获取链接](https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann)|
+|ATB Models|Ascend-mindie-atb-models_2.3.0_linux-aarch64_torch2.2.0-abi0.tar.gz|模型库安装包。|[获取链接](https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann)|
+|Ascend Extension for PyTorch|torch_npu-2.1.0.post10-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl|torch_npu插件whl包。|[获取链接](https://www.hiascend.com/developer/download/community/result?module=ie+pt+cann)<br>在Pytorch栏单击对应版本后方**获取源码**，跳转至Pytorch的gitcode仓库发布页，然后在页面下方获取对应版本的torch_npu。|
+|Ascend Extension for PyTorch|torch-2.1.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl|PyTorch框架2.1.0版本的whl包。|[获取链接](https://download.pytorch.org/whl/cpu/torch-2.1.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl)|
 
 
 ## 前提条件
 
--  在一个全新的容器内可能会出现apt源下载路径问题，请用户配置Ubuntu 22.04的专用源，提升下载速度。
--  安装过程需要下载相关依赖，请确保安装环境能够连接网络。
--  请在宿主机执行如下命令检查源是否可用。
+- 在一个全新的容器内可能会出现apt源下载路径问题，请用户配置Ubuntu 22.04的专用源，提升下载速度。
+- 安装过程需要下载相关依赖，请确保安装环境能够连接网络。
+- 请在宿主机执行如下命令检查源是否可用。
 
-    ```
+    ```bash
     apt update
     ```
 
-    如果命令执行报错或者后续安装依赖时等待时间过长甚至报错，则检查网络是否连接或者把“/etc/apt/sources.list”文件中的源更换为可用的源或使用镜像源（以配置华为镜像源为例，可参考[华为开源镜像站](https://mirrors.huaweicloud.com/)）。
+    如果命令执行报错或者后续安装依赖时等待时间过长甚至报错，则检查网络是否连接或者把 “/etc/apt/sources.list” 文件中的源更换为可用的源或使用镜像源（以配置华为镜像源为例，可参考[华为开源镜像站](https://mirrors.huaweicloud.com/)）。
 
--  用户在宿主机自行安装Docker（版本要求大于等于24.x.x）。
+- 用户在宿主机自行安装Docker（版本要求大于等于24.x.x）。
 
 ## 操作步骤
 
@@ -50,16 +50,16 @@
 >[!NOTE]说明
 >制作镜像时非root用户ID应该和执行环境上安装的驱动用户ID保持一致，或安装驱动时使用--install-for-all参数为所有用户安装。
 
-1.  将从[软件包获取](#section21214544562)下载或制作的软件放到某一目录下，例如：/home/package。
+1.  将从[软件包获取](#zbrjb)下载或制作的软件放到某一目录下，例如：/home/package。
 2.  使用以下命令拉取Ubuntu 22.04镜像。
 
-    ```
+    ```bash
     docker pull ubuntu:22.04
     ```
 
     执行以下命令检查Ubuntu镜像。
 
-    ```
+    ```bash
     docker images | grep ubuntu
     ```
 
@@ -69,7 +69,7 @@
     ubuntu                    22.04                         981912c48e9a   7 weeks ago    69.2MB
     ```
 
-3.  <a name="li818718573308"></a>在/home/package路径下编写Dockerfile及其他安装时需要的脚本文件，其文件目录结构必须为以下结构。
+3.  <a id="li818718573308"></a>在/home/package路径下编写Dockerfile及其他安装时需要的脚本文件，其文件目录结构必须为以下结构。
 
     ```
     ├── Ascend-cann-xxxx-ops_8.5.0_linux-aarch64.run
@@ -89,7 +89,7 @@
     └── torch-2.1.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
     ```
 
-    其中加粗文件为用户自行编写的文件。
+    其中docker_build.sh、Dockerfile、install_cann.sh、install_mindie.sh、install_pta.sh、requirements-2.1.0.txt、server.js文件为用户自行编写的文件。
 
     1.  编写docker\_build.sh文件。
 
@@ -107,13 +107,13 @@
         ```
 
         >[!NOTE]说明
-        >-   DEVICE为硬件型号。
-        >-   PY\_VERSION为Python版本号。
-        >-   mindie:2.3.0-aarch64-800I-A2为自定义的镜像名称。
+        >- DEVICE为硬件型号。
+        >- PY\_VERSION为Python版本号。
+        >- mindie:2.3.0-aarch64-800I-A2为自定义的镜像名称。
 
-    1.  编写Dockerfile文件。
+    2.  编写Dockerfile文件。
 
-        该Dockerfile默认使用Ubuntu 22.04、Arm架构以及Python 3.10，仅作为参考，用户可自行修改。（如果基于Ubuntu 24.04操作系统制作镜像，Dockerfile文件中的**libgl1-mesa-glx**需改为**libglx-mesa0**）
+        该Dockerfile默认使用Ubuntu 22.04、AArch架构以及Python 3.10，仅作为参考，用户可自行修改。（如果基于Ubuntu 24.04操作系统制作镜像，Dockerfile文件中的**libgl1-mesa-glx**需改为**libglx-mesa0**）
 
         ```
         # Please make sure all `ARG` have been set correctly
@@ -224,10 +224,10 @@
         ```
 
         >[!NOTE]说明
-        >-   Dockerfile文件中软件包的名称必须和实际准备的软件包名称保持一致。
-        >-   在pta构建阶段，可以自行指定transformers库的版本，因为有些模型对于其版本有较为严格的要求，在Dockerfile中已给出了示例修改的位置。在构建时修改，好处在于构建出来的镜像可以直接启动推理服务，而不再需要额外进入容器操作。
-        >-   由于当前版本同样适配Python 3.11.4，以下给出更换Python 3.11.4的参考方法。
-        >    1.  首先需要从Python官网获取Python 3.11.4压缩包，下载链接如下所示：
+        >- Dockerfile文件中软件包的名称必须和实际准备的软件包名称保持一致。
+        >- 在pta构建阶段，可以自行指定transformers库的版本，因为有些模型对于其版本有较为严格的要求，在Dockerfile中已给出了示例修改的位置。在构建时修改，好处在于构建出来的镜像可以直接启动推理服务，而不再需要额外进入容器操作。
+        >-  由于当前版本同样适配Python 3.11.4，以下给出更换Python 3.11.4的参考方法。
+        >    1. 首先需要从Python官网获取Python 3.11.4压缩包，下载链接如下所示：
         >        ```
         >        https://www.python.org/ftp/python/3.11.4/Python-3.11.4.tgz
         >        ```
@@ -624,10 +624,8 @@
         const http = require('http');
         const fs = require('fs');
         const path = require('path');
-        
         const port = 3000;
         const directory = __dirname;
-        
         const server = http.createServer((req, res) => {
             const filePath = path.join(directory, req.url); 
         
@@ -660,33 +658,31 @@
         ```
 
     >[!NOTE]说明
-    >-   镜像制作过程中，用户需自行关注所依赖的第三方软件的安全性，如有问题请及时更新并修复。
-    >-   Dockerfile文件关键信息说明：
-    >    -   设置镜像源：在Dockerfile的开头，可以设置Ubuntu的apt源，请设置为需要的地址，上面提供的地址仅供参考。
-    >    -   设置pip源：可以在Dockerfile中将pip源设置为合适地址，以加快镜像构建速度。
-    >    -   wget指令：通过wget命令替代COPY命令，实现将宿主机上文件移入容器中的功能，具体请看[4](#li143348723716)。其中http://172.17.0.1:3000为宿主机在Docker网络中的地址，无需修改，例如以下命令即可将宿主机上的toolkit软件包用于构建。
-```
-wget -q http://172.17.0.1:3000/Ascend-cann-toolkit_${CANN_VERSION}_linux-${ARCH}.run -P /opt/package/
-```
+    >- 镜像制作过程中，用户需自行关注所依赖的第三方软件的安全性，如有问题请及时更新并修复。
+    >- Dockerfile文件关键信息说明：
+        >   - 设置镜像源：在Dockerfile的开头，可以设置Ubuntu的apt源，请设置为需要的地址，上面提供的地址仅供参考。
+        >   - 设置pip源：可以在Dockerfile中将pip源设置为合适地址，以加快镜像构建速度。
+        >   - wget指令：通过wget命令替代COPY命令，实现将宿主机上文件移入容器中的功能，具体请看[4](#li143348723716)。其中http://172.17.0.1:3000为宿主机在Docker网络中的地址，无需修改，例如以下命令即可将宿主机上的toolkit软件包用于构建。
+        `wget -q http://172.17.0.1:3000/Ascend-cann-toolkit_${CANN_VERSION}_linux-${ARCH}.run -P /opt/package/`
 
-1.  <a name="li143348723716"></a>在宿主机上启动server.js。
+4.  <a id="li143348723716"></a>在宿主机上启动server.js。
 
-    1.  首先请确保宿主机上已安装好Node.js，用于启动服务。
+    1. 首先请确保宿主机上已安装好Node.js，用于启动服务。
 
         如果宿主机是Ubuntu系统，可以使用以下命令安装Node.js：
 
-        ```
+        ```bash
         apt install nodejs
         ```
 
-    2.  然后在构建环境中，执行以下命令。
+    2. 然后在构建环境中，执行以下命令。
 
-        ```
+        ```bash
         cd /home/package  # 进入构建目录
         node server.js
         ```
 
-    3.  回显如下所示，说明服务已启动成功。
+    3. 回显如下所示，说明服务已启动成功。
 
         ```
         Server is running at http://localhost:3000
@@ -694,13 +690,13 @@ wget -q http://172.17.0.1:3000/Ascend-cann-toolkit_${CANN_VERSION}_linux-${ARCH}
 
         **此时请保留该命令行窗口，等待构建完成后再行关闭。**
 
-    >[!NOTE]说明
-    >-   启动服务是为了让镜像构建时可以获取到对应软件包，Dockerfile中的wget命令等价于COPY命令，详情请参见[3](#li818718573308)。
-    >-   该方式主要有两个好处：缩减镜像体积（将镜像体积从20GB以上缩小至13GB左右），以及减少构建时间（减少加载构建上下文的时间）。如果不想使用这种方式，可以使用Docker原生的COPY命令，并将Dockerfile与所有依赖软件包放在同一目录组成构建上下文。
+        >[!NOTE]说明
+        >- 启动服务是为了让镜像构建时可以获取到对应软件包，Dockerfile中的wget命令等价于COPY命令，详情请参见[3](#li818718573308)。
+        >- 该方式主要有两个好处：缩减镜像体积（将镜像体积从20GB以上缩小至13GB左右），以及减少构建时间（减少加载构建上下文的时间）。如果不想使用这种方式，可以使用Docker原生的COPY命令，并将Dockerfile与所有依赖软件包放在同一目录组成构建上下文。
 
-2.  新建一个命令行窗口（请勿关闭步骤4中的命令行窗口），进入docker目录，开始构建镜像。
+5. 新建一个命令行窗口（请勿关闭步骤4中的命令行窗口），进入docker目录，开始构建镜像。
 
-    ```
+    ```bash
     cd /home/package/docker  # 进入docker目录
     bash docker_build.sh
     ```
@@ -708,33 +704,37 @@ wget -q http://172.17.0.1:3000/Ascend-cann-toolkit_${CANN_VERSION}_linux-${ARCH}
     当镜像构建完成时，会出现类似如下打印信息：
 
     ```
-    [+] Building 798.2s (9/9) FINISHED                                                                                                                                            docker:default
-     => [internal] load .dockerignore                                                                                                                                                       0.0s
-     => => transferring context: 2B                                                                                                                                                         0.0s
-     => [internal] load build definition from Dockerfile                                                                                                                                    0.0s
-     => => transferring dockerfile: 6.12kB                                                                                                                                                  0.0s
-     => [internal] load metadata for docker.io/library/ubuntu:22.04                                                                                                                         0.0s
-     => CACHED [base 1/2] FROM docker.io/library/ubuntu:22.04                                                                                                                               0.0s
-     => [base 2/2] RUN echo 'export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:$LD_LIBRARY_PATH' >> /root/.bashrc &&     echo 'export LD_LIBRARY_PATH=/usr/local/Ascend/drive  187.2s
-     => [cann 1/1] RUN echo "source /usr/local/Ascend/ascend-toolkit/set_env.sh" >> /home/mindieuser/.bashrc &&     echo "source /usr/local/Ascend/nnal/atb/set_env.sh" >> /home/mindieuser/.bashrc &&     wget  274.4s
-     => [pta 1/1] RUN wget -q http://172.17.0.1:3000/torch_npu-2.1.0.post8-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl -P /opt/package/ &&     wget -q http://172.17.0.  272.9s
-     => [mindie 1/1] RUN echo "source /usr/local/Ascend/mindie/set_env.sh" >> /home/mindieuser/.bashrc  &&     echo "source /usr/local/Ascend/atb-models/set_env.sh" >> /home/mindieuser/.bashrc &&     wget -q   31.6s 
-     => exporting to image                                                                                                                                                                 31.9s 
-     => => exporting layers                                                                                                                                                                31.9s 
-     => => writing image sha256:ddc1229a39be3e2b9f2d0d88e809a4dc2db17ac9ec67c4c178c21fe1359eb6d7                                                                                            0.0s
-     => => naming to docker.io/library/mindie:2.3.0-aarch64-800I-A2                                                                                                                       0.0s
+    [+] Building 798.2s (9/9) FINISHE                                                                                                               Ddocker:default
+     => [internal] load .dockerignore                                                                                                                          0.0s
+     => => transferring context: 2B                                                                                                                            0.0s
+     => [internal] load build definition from Dockerfile                                                                                                       0.0s
+     => => transferring dockerfile: 6.12kB                                                                                                                     0.0s
+     => [internal] load metadata for docker.io/library/ubuntu:22.04                                                                                            0.0s
+     => CACHED [base 1/2] FROM docker.io/library/ubuntu:22.04                                                                                                  0.0s
+     => [base 2/2] RUN echo 'export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:$LD_LIBRARY_PATH' >> /root/.bashrc &&     
+     echo 'export LD_LIBRARY_PATH=usr/local/Ascend/drive                                                                                                       187.2s
+     => [cann 1/1] RUN echo "source /usr/local/Ascend/ascend-toolkit/set_env.sh" >> /home/mindieuser/.bashrc &&     
+     echo "source /usr/local/Ascend/nnal/atb/set_env.sh" >> /home/mindieuser/.bashrc &&     wget                                                               274.4s
+     => [pta 1/1] RUN wget -q http://172.17.0.1:3000/torch_npu-2.1.0.post8-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl 
+     -P /opt/package/ &&     wget -q http://172.17.0.                                                                                                          272.9s
+     => [mindie 1/1] RUN echo "source /usr/local/Ascend/mindie/set_env.sh" >> /home/mindieuser/.bashrc  &&     
+     echo "source /usr/local/Ascend/atb-models/set_env.sh" >> /home/mindieuser/.bashrc &&     wget -q                                                          31.6s 
+     => exporting to image                                                                                                                                     31.9s 
+     => => exporting layers                                                                                                                                    31.9s 
+     => => writing image sha256:ddc1229a39be3e2b9f2d0d88e809a4dc2db17ac9ec67c4c178c21fe1359eb6d7                                                               0.0s
+     => => naming to docker.io/library/mindie:2.3.0-aarch64-800I-A2                                                                                            0.0s
     ```
 
     然后执行以下命令：
 
-    ```
+    ```bash
     docker images
     ```
 
     当回显以下信息，则表示镜像构建成功：
 
     ```
-    REPOSITORY                                           TAG                                                                                   IMAGE ID       CREATED              SIZE
-    mindie                                               2.3.0-aarch64-800I-A2                                                               ddc1229a39be   About a minute ago   12.3GB
+    REPOSITORY                    TAG                            IMAGE ID       CREATED              SIZE
+    mindie                        2.3.0-aarch64-800I-A2          ddc1229a39be   About a minute ago   12.3GB
     ```
 

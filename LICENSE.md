@@ -64,7 +64,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details.
 ```
 
-注意： 模板中的\[Year of First Publication\]、\[Year of Latest Update\]需要更改为贡献者首次创建年份和最近更新年份
+注意： 模板中的[Year of First Publication]、[Year of Latest Update]需要更改为贡献者首次创建年份和最近更新年份
 
 ## Mulan Permissive Software License，Version 2<a name="section18273540143715"></a>
 

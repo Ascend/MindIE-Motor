@@ -14,8 +14,8 @@ URL：https://{ip}:{port}/v1/startup
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令]参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令]参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令]参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令]参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 
 **请求参数**
 
@@ -57,8 +57,8 @@ URL：https://{ip}:{port}/v1/health
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 
 **请求参数**
 
@@ -96,8 +96,8 @@ URL：https://{ip}:{port}/v1/readiness
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 
 **请求参数**
 
@@ -138,8 +138,8 @@ URL：https://{ip}:{port}/v2/health/live
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 
 **请求参数**
 
@@ -177,8 +177,8 @@ URL：https://{ip}:{port}/v2/health/ready
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 
 **请求参数**
 
@@ -216,8 +216,8 @@ URL：https://{ip}:{port}/v2/models/{MODEL_NAME}/versions/${MODEL_VERSION}/ready
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 >-   ${MODEL_NAME}字段指定需要查询的模型名称。
 >-   /versions/${MODEL_VERSION}字段暂不支持，不传递。
 
@@ -261,8 +261,8 @@ URL：https://\{ip\}:\{port\}/v1/instances/refresh
 ```
 
 >![](public_sys-resources/icon-note.gif) **说明：** 
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“manage\_port“参数。
+>-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_ip"参数。
+>-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{manage\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"manage\_port"参数。
 
 <br>
 

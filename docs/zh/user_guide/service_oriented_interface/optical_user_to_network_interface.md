@@ -13,8 +13,8 @@ URL：https://{ip}:{port}/generate_stream
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 
 <br>
 
@@ -144,7 +144,7 @@ POST https://{ip}:{port}/generate_stream
     
     ```
 
--   响应样例2（配置项“fullTextEnabled“=true，使用sse格式返回）：
+-   响应样例2（配置项"fullTextEnabled"=true，使用sse格式返回）：
 
     ```
     data: {"token":{"id":[198],"text":"\n","logprob":null,"special":null},"generated_text":null,"details":null}
@@ -203,8 +203,8 @@ URL：https://{ip}:{port\}/generate
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 
 <br>
 
@@ -368,8 +368,8 @@ URL：https://{ip}:{port}/generate
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 
 **请求参数**
 
@@ -465,20 +465,20 @@ POST https://{ip}:{port}/generate
 
 响应样例：
 
--   文本推理（“stream“=false）：
+-   文本推理（"stream"=false）：
 
     ```
     {"text":["My name is Olivier and I am a Frenchman living in the UK. I am a keen photographer and"]}
     ```
 
--   流式推理（“stream“=true，使用sse格式返回）：
-    -   流式推理1（“stream“=true，使用sse格式返回）：
+-   流式推理（"stream"=true，使用sse格式返回）：
+    -   流式推理1（"stream"=true，使用sse格式返回）：
 
         ```
         {"text":["am"]}{"text":[" a"]}{"text":[" French"]}{"text":["man"]}{"text":[" living"]}{"text":[" in"]}{"text":[" the"]}{"text":[" UK"]}{"text":["."]}{"text":[" I"]} {"text":[" am"]}{"text":[" a"]}{"text":[" keen"]}{"text":[" photograph"]}{"text":["er"]}{"text":[" and"]}
         ```
 
-    -   流式推理2（“stream“=true，配置项“fullTextEnabled“=true，使用sse格式返回）：
+    -   流式推理2（"stream"=true，配置项"fullTextEnabled"=true，使用sse格式返回）：
 
         ```
         {"text":[" to"]}{"text":[" to travel"]}{"text":[" to travel."]}{"text":[" to travel. I"]}{"text":[" to travel. I'm"]}
@@ -507,6 +507,487 @@ POST https://{ip}:{port}/generate
 >}' https://{ip}:{port}/generate | cat
 >```
 
+# OpenAI推理接口
+
+>[!NOTE]说明
+>- 运行环境的transformers版本不可低于4.34.1，低版本tokenizer不支持"chat_template"方法。
+>- 推理模型权重路径下的tokenizer_config.json需要包含"chat_template"字段及其实现。
+>- Function call功能的相关参数tool_call_id、tool_calls、tools和tool_choice当前仅支持部分模型，使用其他模型可能会报错。目前支持的模型只有ChatGLM3-6B和Qwen2.5系列。
+
+**接口功能**
+
+提供文本/流式推理处理功能。
+
+**接口格式**
+
+操作类型：**POST**
+
+```
+URL：https://{ip}:{port}/v1/chat/completions
+```
+
+>[!NOTE]说明
+>- {ip}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的{predict_ip}；如果没有配置该命令行参数，则取配置文件ms_coordinator.json的"predict_ip"参数。
+>- {port}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的{predict_port}；如果没有配置该命令行参数，则取配置文件ms_coordinator.json的"predict_port"参数。
+
+<br>
+
+**请求参数**
+
+|参数|是否必选|说明|取值要求|
+|--|--|--|--|
+|model|必选|模型名。|与Server配置文件中modelName的取值保持一致。|
+|messages|必选|推理请求消息结构。|list类型，0KB<messages内容包含的字符数<=4MB，支持中英文。prompt经过tokenizer之后的token数量小于或等于maxInputTokenLen、maxSeqLen-1、max_position_embeddings和1MB之间的最小值。其中，max_position_embeddings从权重文件config.json中获取，其他相关参数从配置文件中获取。|
+|role|必选|推理请求消息角色。|字符串类型，可取角色有：<li>system：系统角色<li>user：用户角色<li>assistant：助手角色<li>tool：工具角色|
+|content|必选|推理请求内容。单模态文本模型为string类型，多模态模型为list类型。|<li>string：<br>-当role为assistant，且tool_calls非空时，content可以不传，其余角色非空。<br>-其余情况content非空。<li>list：请参见使用样例中多模态模型样例。|
+|type|可选|推理请求内容类型。|<li>text：文本<li>image_url：图片<li>video_url：视频<li>audio_url：音频<br>单个请求中image_url、video_url、audio_url数量总和<=20个。<br>**多媒体文件使用说明：** <br>本地文件方式：请将多媒体文件放置在以下目录：<br>/data/multimodal_inputs/<br>**安全风险提示：** 在使用前，请务必确保传入的多媒体文件来源可信、内容安全，有效预防潜在安全风险。|
+|text|可选|推理请求内容为文本。|非空，支持中英文。|
+|image_url|可选|推理请求内容为图片。|支持服务器本地路径的图片传入，图片类型支持jpg、png、jpeg和base64编码的jpg图片，支持URL图片传入，支持HTTP和HTTPS协议。当前支持传入的图片最大为20MB。|
+|video_url|可选|推理请求内容为视频。|支持服务器本地路径的视频传入，视频类型支持MP4、AVI、WMV，支持URL视频传入，支持HTTP和HTTPS协议。当前支持传入的视频最大512MB。|
+|audio_url|可选|推理请求内容为音频。|支持服务器本地路径的音频传入，音频类型支持MP3、WAV、FLAC，支持URL音频传入，支持HTTP和HTTPS协议。当前支持传入的音频最大20MB。|
+|tool_calls|可选|模型生成的工具调用。|类型为List[dict]，当role为assistant时，表示模型对工具的调用。|
+|tool_calls.function|必选|表示模型调用的工具。|dict类型。<li>arguments，必选，使用JSON格式的字符串，表示调用函数的参数。<li>name，必选，字符串，调用的函数名。|
+|tool_calls.id|必选|表示模型某次工具调用的ID。|字符串。|
+|tool_calls.type|必选|调用的工具类型。|字符串，仅支持"function"。|
+|tool_call_id|当role为tool时必选，否则可选|关联模型某次调用工具时的ID。|字符串。|
+|stream|可选|指定返回结果是文本推理还是流式推理。|bool类型参数，默认值false。<li>true：流式推理。<li>false：文本推理。|
+|presence_penalty|可选|存在惩罚介于-2.0和2.0之间，它影响模型如何根据到目前为止是否出现在文本中来惩罚新token。正值将通过惩罚已经使用的词，增加模型谈论新主题的可能性。|float类型，取值范围[-2.0, 2.0]，默认值0.0。|
+|frequency_penalty|可选|频率惩罚介于-2.0和2.0之间，它影响模型如何根据文本中词汇的现有频率惩罚新词汇。正值将通过惩罚已经频繁使用的词来降低模型一行中重复用词的可能性。|float类型，取值范围[-2.0, 2.0]，默认值0.0。|
+|repetition_penalty|可选|重复惩罚是一种技术，用于减少在文本生成过程中出现重复片段的概率。它对之前已经生成的文本进行惩罚，使得模型更倾向于选择新的、不重复的内容。|float类型，取值范围(0.0, 2.0]，默认值1.0。|
+|temperature|可选|控制生成的随机性，较高的值会产生更多样化的输出。|float类型，取值范围[0.0, 2.0]，默认值1.0。<br>取值越大，结果的随机性越大。推荐使用大于或等于0.001的值，小于0.001可能会导致文本质量不佳。|
+|top_p|可选|控制模型生成过程中考虑的词汇范围，使用累计概率选择候选词，直到累积概率超过给定的阈值。该参数也可以控制生成结果的多样性，它基于累积概率选择候选词，直到累积概率超过给定的阈值为止。|float类型，取值范围(1e-6, 1.0]，默认值1.0。|
+|top_k|可选|控制模型生成过程中考虑的词汇范围，只从概率最高的k个候选词中选择。|int32类型，取值范围[0, 2147483647]，字段未设置时，默认值由后端模型确定，详情请参见说明。取值大于或等于vocabSize时，默认值为vocabSize。<br>vocabSize是从modelWeightPath路径下的config.json文件中读取的vocab_size或者padded_vocab_size的值。建议用户在config.json文件中添加vocab_size或者padded_vocab_size参数，否则可能导致推理失败。|
+|seed|可选|用于指定推理过程的随机种子，相同的seed值可以确保推理结果的可重现性，不同的seed值会提升推理结果的随机性。|uint64_t类型，取值范围[0, 18446744073709551615]，不传递该参数，系统会产生一个随机seed值。<br>当seed取到临近最大值时，会有WARNING，但并不会影响使用。若想去掉WARNING，可以减小seed取值。|
+|stop|可选|停止推理的文本。输出结果默认不包含停止词列表文本。|List[string]类型或者string类型，默认值null。<li>List[string]：列表元素不超过1024个，每个元素的字符长度为[1,1024]，列表元素总字符长度不超过32768（256*128）。列表为空时相当于null。<li>string：字符长度范围为[1,1024]。<br>PD分离场景暂不支持该参数。|
+|stop_token_ids|可选|停止推理的token id列表。输出结果默认不包含停止推理列表中的token id。|List[int32]类型，超出int32的元素将会被忽略，默认值null。|
+|include_stop_str_in_output|可选|决定是否在生成的推理文本中包含停止字符串。|bool类型，默认值false。**PD分离场景不支持此参数**。<li>true：包含停止字符串。<li>false：不包含停止字符串。<br>不传入stop或stop_token_ids时，此字段会被忽略。|
+|skip_special_tokens|可选|指定在推理生成的文本中是否跳过特殊tokens。|bool类型，默认值true。<li>true：跳过特殊tokens。<li>false：保留特殊tokens。|
+|ignore_eos|可选|指定在推理文本生成过程中是否忽略eos_token结束符。|bool类型，默认值false。<li>true：忽略eos_token结束符。<li>false：不忽略eos_token结束符。|
+|max_tokens|可选|允许推理生成的最大token个数。实际产生的token数量同时受到配置文件maxIterTimes参数影响，推理token个数小于或等于min(maxIterTimes, max_tokens)。|uint32_t类型，取值范围(0，2147483647]，默认值为maxIterTimes的值。|
+|tools|可选|可能会使用的工具列表。|List[dict]类型。|
+|tools.type|必选|说明工具类型。|仅支持字符串"function"。|
+|tools.function|必选|函数描述。|dict类型。|
+|function.name|必选|函数名称。|字符串。|
+|function.strict|可选|表示生成tool calls是否严格遵循schema格式。|bool类型，默认false。|
+|function.description|可选|描述函数功能和使用。|字符串。|
+|function.parameters|可选|表示函数接受的参数。|JSON schema格式。|
+|parameters.type|必选|表示函数参数属性的类型。|字符串，仅支持object。|
+|parameters.properties|必选|函数参数的属性。每一个key表示一个参数名，由用户自定义。value为dict类型，表示参数描述，包含type和description两个参数。|dict类型。|
+|function.required|必选|表示函数必填参数列表。|List[string]类型。|
+|function.additionalProperties|可选|是否允许使用未提及的额外参数。|bool类型，默认值false。<li>true：允许使用未提及的额外参数。<li>false：不允许使用未提及的额外参数。|
+|tool_choice|可选|控制模型调用工具。|string类型或者dict类型，可以为null，默认值"auto"。<li>"none"：表示模型不会调用任何工具，而是生成一条消息。<li>"auto"：表示模型可以生成消息或调用一个或多个工具。|
+
+
+**使用样例**
+
+请求样例：
+
+```
+POST https://{ip}:{port}/v1/chat/completions
+```
+
+请求消息体：
+
+-   单轮对话：
+    -   单模态模型：
+
+        ```
+        {
+            "model": "deepseek",
+            "messages": [{
+                "role": "user",
+                "content": "You are a helpful assistant."
+            }],
+            "stream": false,
+            "presence_penalty": 1.03,
+            "frequency_penalty": 1.0,
+            "repetition_penalty": 1.0,
+            "temperature": 0.5,
+            "top_p": 0.95,
+            "top_k": 0,
+            "seed": null,
+            "stop": ["stop1", "stop2"],
+            "stop_token_ids": [2, 13],
+            "include_stop_str_in_output": false,
+            "skip_special_tokens": true,
+            "ignore_eos": false,
+            "max_tokens": 20
+        }
+        ```
+
+    -   多模态模型：
+
+        >[!NOTE]说明
+        >"image\_url"参数的取值请根据实际情况进行修改。
+
+        ```
+        {
+            "model": "qwen2.5_vl",
+            "messages": [{
+                "role": "user",
+                "content": [
+                   {"type": "text", "text": "My name is Olivier and I"},
+                   {"type": "image_url", "image_url": "/xxxx/test.png"}
+                ]
+            }],
+            "stream": false,
+            "presence_penalty": 1.03,
+            "frequency_penalty": 1.0,
+            "repetition_penalty": 1.0,
+            "temperature": 0.5,
+            "top_p": 0.95,
+            "top_k": 0,
+            "seed": null,
+            "stop": ["stop1", "stop2"],
+            "stop_token_ids": [2, 13],
+            "include_stop_str_in_output": false,
+            "skip_special_tokens": true,
+            "ignore_eos": false,
+            "max_tokens": 20
+        }
+        ```
+
+-   多轮对话：
+    -   请求样例1：
+
+        ```
+        {
+            "model": "deepseek",
+            "messages": [{
+                "role": "system",
+                "content": "You are a helpful customer support assistant. Use the supplied tools to assist the user."
+                },
+                {
+                "role": "user",
+                "content": "Hi, can you tell me the delivery date for my order? my order id is 12345."
+                }
+            ],
+            "stream": false,
+            "presence_penalty": 1.03,
+            "frequency_penalty": 1.0,
+            "repetition_penalty": 1.0,
+            "temperature": 0.5,
+            "top_p": 0.95,
+            "top_k": 0,
+            "seed": null,
+            "stop": ["stop1", "stop2"],
+            "stop_token_ids": [2],
+            "ignore_eos": false,
+            "max_tokens": 1024,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_delivery_date",
+                        "strict": true,
+                        "description": "Get the delivery date for a customer's order. Call this whenever you need to know the delivery date, for example when a customer asks 'Where is my package'",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "order_id": {
+                                    "type": "string",
+                                    "description": "The customer's order ID."
+                                }
+                            },
+                            "required": [
+                                "order_id"
+                            ],
+                            "additionalProperties": false
+                        }
+                    }
+                }
+            ],
+           "tool_choice": "auto"
+        }
+        ```
+
+    -   请求样例2：
+
+        ```
+        {
+            "model": "deepseek",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful customer support assistant. Use the supplied tools to assist the user."
+                },
+                {
+                    "role": "user",
+                    "content": "Hi, can you tell me the delivery date for my order? my order id is 12345."
+                },
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "arguments": "{\"order_id\": \"12345\"}",
+                                "name": "get_delivery_date"
+                            },
+                            "id": "tool_call_8p2Nk",
+                            "type": "function"
+                        }
+                    ]
+                },
+                {
+                    "role": "tool",
+                    "content": "the delivery date is 2024.09.10.",
+                    "tool_call_id": "tool_call_8p2Nk"
+                }
+            ],
+            "stream": false,
+            "repetition_penalty": 1.1,
+            "temperature": 0.9,
+            "top_p": 1,
+            "max_tokens": 1024,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_delivery_date",
+                        "strict": true,
+                        "description": "Get the delivery date for a customer's order. Call this whenever you need to know the delivery date, for example when a customer asks 'Where is my package'",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "order_id": {
+                                    "type": "string",
+                                    "description": "The customer's order ID."
+                                }
+                            },
+                            "required": [
+                                "order_id"
+                            ],
+                            "additionalProperties": false
+                        }
+                    }
+                }
+            ],
+            "tool_choice": "auto"
+        }
+        ```
+
+**响应样例：**
+
+-   文本推理（"stream"=false）：
+    -   单轮对话：
+
+        ```
+        {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "deepseek",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "\n\nHello there, how may I assist you today?"
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 9,
+                "completion_tokens": 12,
+                "total_tokens": 21
+            },
+            "prefill_time": 200,
+            "decode_time_arr": [56, 28, 28, 28, 32, 28, 28, 41, 28, 25, 28]
+        }
+        ```
+
+    -   多轮对话：
+        -   响应样例1：
+
+            ```
+            {
+                "id": "chatcmpl-123",
+                "object": "chat.completion",
+                "created": 1677652288,
+                "model": "deepseek",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "arguments": "{\"order_id\": \"12345\"}",
+                                        "name": "get_delivery_date"
+                                    },
+                                    "id": "call_JwmTNF3O",
+                                    "type": "function"
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 226,
+                    "completion_tokens": 122,
+                    "total_tokens": 348
+                },
+                "prefill_time": 200,
+                "decode_time_arr": [56, 28, 28, 28, 28, ..., 28, 32, 28, 28, 41, 28, 25, 28]
+            }
+            ```
+
+        -   响应样例2：
+
+            ```
+            {
+                "id": "endpoint_common_25",
+                "object": "chat.completion",
+                "created": 1728959154,
+                "model": "deepseek",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "\n Your order with ID 12345 is scheduled for delivery on September 10th, 2024.",
+                            "tool_calls": null
+                        },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 265,
+                    "completion_tokens": 30,
+                    "total_tokens": 295
+                }
+                "prefill_time": 200,
+                "decode_time_arr": [56, 28, 28, 28, 32, 28, 28, 41, 28, 25, 28, 28, 28, 28, 32, 28, 28, 41, 28, 25, 28, 28, 28, 28, 32, 28, 28, 41, 28]
+            }
+            ```
+
+-   流式推理：
+    -   流式推理1（"stream"=true，使用sse格式返回）：
+
+        ```
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"\t"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"\t"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_8","object":"chat.completion.chunk","created":1729614610,"model":"llama3_70b","usage":{"prompt_tokens":54,"completion_tokens":17,"total_tokens":71},"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}
+        
+        data: [DONE]
+        ```
+
+    -   流式推理2（"stream"=true，配置项"fullTextEnabled"=true，使用sse格式返回）：
+
+        ```
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello!"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can I"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can I assist"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can I assist you"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can I assist you today"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can I assist you today?"},"finish_reason":null}]}
+        
+        data: {"id":"endpoint_common_11","object":"chat.completion.chunk","created":1730184192,"model":"llama3_70b","full_text":"Hello! How can I assist you today?","usage":{"prompt_tokens":31,"completion_tokens":10,"total_tokens":41},"choices":[{"index":0,"delta":{"role":"assistant","content":"Hello! How can I assist you today?"},"finish_reason":"length"}]}
+        
+        data: [DONE]
+        ```
+
+<br>
+
+**输出说明**
+
+**表 1**  文本推理结果说明
+
+|参数名|类型|说明|
+|--|--|--|
+|id|string|请求ID。|
+|object|string|返回结果类型目前都返回"chat.completion"。|
+|created|integer|推理请求时间戳，精确到秒。|
+|model|string|使用的推理模型。|
+|choices|list|推理结果列表。|
+|index|integer|choices消息index，当前只能为0。|
+|message|object|推理消息。|
+|role|string|角色，目前都返回"assistant"。|
+|content|string|推理文本结果。|
+|tool_calls|list|模型工具调用输出。|
+|function|dict|函数调用说明。|
+|arguments|string|调用函数的参数，JSON格式的字符串。|
+|name|string|调用的函数名。|
+|tool_calls.id|string|模型调用工具的ID。|
+|type|string|工具的类型，目前仅支持function。|
+|finish_reason|string|结束原因。<li>stop：<br>-请求被CANCEL或STOP，用户不感知，丢弃响应。<br>-请求执行中出错，响应输出为空，err_msg非空。<br>-请求输入校验异常，响应输出为空，err_msg非空。<br>-请求遇eos结束符正常结束。<li>length：<br>-请求因达到最大序列长度而结束，响应为最后一轮迭代输出。<br>-请求因达到最大输出长度（包括请求和模型粒度）而结束，响应为最后一轮迭代输出。<li>tool_calls：表示模型调用了工具。|
+|usage|object|推理结果统计数据。|
+|prompt_tokens|int|用户输入的prompt文本对应的token长度。|
+|completion_tokens|int|推理结果token数量。PD场景下统计P和D推理结果的总token数量。当一个请求的推理长度上限取maxIterTimes的值时，D节点响应中completion_tokens数量为maxIterTimes+1，即增加了P推理结果的首token数量。|
+|total_tokens|int|请求和推理的总token数。|
+|prefill_time|float|推理首token时延。<br>当生成多个序列的情况时，为所有序列的首token时延。|
+|decode_time_arr|list|推理Decode时延数组。<br>当生成多个序列的情况时，为所有序列共同的Decode时延，时延数组长度为最长序列的Decode token数量。|
+
+
+**表 2**  流式推理结果说明
+
+|参数名|类型|说明|
+|--|--|--|
+|data|object|一次推理返回的结果。|
+|id|string|请求ID。|
+|object|string|目前都返回"chat.completion.chunk"。|
+|created|integer|推理请求时间戳，精确到秒。|
+|model|string|使用的推理模型。|
+|full_text|string|全量文本结果，配置项fullTextEnabled=true时才有此返回值。|
+|usage|object|推理结果统计数据。|
+|prompt_tokens|int|用户输入的prompt文本对应的token长度。|
+|completion_tokens|int|推理结果token数量。PD场景下统计P和D推理结果的总token数量。当一个请求的推理长度上限取maxIterTimes的值时，D节点响应中completion_tokens数量为maxIterTimes+1，即增加了P推理结果的首token数量。|
+|total_tokens|int|请求和推理的总token数。|
+|choices|list|流式推理结果。|
+|index|integer|choices消息index，当前只能为0。|
+|delta|object|推理返回结果，最后一个响应为空。|
+|role|string|角色，目前都返回"assistant"。|
+|content|string|推理文本结果。|
+|finish_reason|string|结束原因，只在最后一次推理结果返回。<li>stop：<br>-请求被CANCEL或STOP，用户不感知，丢弃响应。<br>-请求执行中出错，响应输出为空，err_msg非空。<br>-请求输入校验异常，响应输出为空，err_msg非空。<br>-请求遇eos结束符正常结束。<li>length：<br>-请求因达到最大序列长度而结束，响应为最后一轮迭代输出。<br>-请求因达到最大输出长度（包括请求和模型粒度）而结束，响应为最后一轮迭代输出。|
+
+
+
+
 # vLLM兼容OpenAI接口（v1/completions）
 
 >[!NOTE]说明
@@ -527,8 +1008,8 @@ URL：https://{ip}:{port}/v1/completions
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 
 <br>
 
@@ -769,8 +1250,8 @@ URL：https://{ip}:{port}/v2/models/${MODEL_NAME}[/versions/${MODEL_VERSION}]/ge
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 >-   $\{MODEL\_NAME\}字段指定需要查询的模型名称。
 >-   [/versions/${MODEL_VERSION}]字段暂不支持，不传递。
 
@@ -928,8 +1409,8 @@ URL：https://{ip}:{port}/v2/models/${MODEL_NAME}[/versions/${MODEL_VERSION}]/in
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 >-   $\{MODEL\_NAME\}字段指定需要查询的模型名称。
 >-   [/versions/${MODEL_VERSION}]字段暂不支持，不传递。
 
@@ -942,7 +1423,7 @@ URL：https://{ip}:{port}/v2/models/${MODEL_NAME}[/versions/${MODEL_VERSION}]/in
 |inputs|必选|只有一个元素的数组。|长度为1。|
 |inputs.name|必选|输入名称，固定"input0"。|字符串长度小于或等于256。|
 |inputs.shape|必选|参数维度，一维时代表data长度，二维时代表1行n列，n为data长度。|data长度范围为(0, min(1024*1024, maxInputTokenLen, maxSeqLen-1, max_position_embeddings)]。其中max_position_embeddings从权重文件config.json中获取，其他相关参数从配置文件中获取。|
-|inputs.datatype|必选|data数据类型，目前场景仅支持UINT32，传递tokenid。|“UINT32”。|
+|inputs.datatype|必选|data数据类型，目前场景仅支持UINT32，传递tokenid。|UINT32。|
 |inputs.data|必选|数组，代表输入的tokenId值。|data长度和shape中传入的data长度一致。tokenId的值需要在模型词表范围内。|
 |outputs|必选|推理结果输出结构。|outputs长度需要和inputs的长度保持一致。|
 |outputs.name|必选|推理结果输出名。|字符串。|
@@ -1072,8 +1553,8 @@ URL：https://{ip}:{port}/v2/models/${MODEL_NAME}[/versions/${MODEL_VERSION}]_/g
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 >-   $\{MODEL\_NAME\}字段指定需要查询的模型名称。
 >-   [/versions/${MODEL_VERSION}]字段暂不支持，不传递。
 
@@ -1247,8 +1728,8 @@ URL：https://{ip}:{port}/infer
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 
 <br>
 
@@ -1345,7 +1826,7 @@ POST https://{ip}:{port}/infer
 
 响应样例：
 
--   文本推理（“stream“=false）：
+-   文本推理（"stream"=false）：
 
     ```
     {
@@ -1359,7 +1840,7 @@ POST https://{ip}:{port}/infer
     ```
 
 -   流式推理：
-    -   流式推理1（“stream“=true，使用sse格式返回）：
+    -   流式推理1（"stream"=true，使用sse格式返回）：
 
         ```
         data: {"prefill_time":45.54,"decode_time":null,"token":{"id":[626],"text":"am"}}
@@ -1449,8 +1930,8 @@ URL：https://{ip}:{port}/v1/tokenizer
 ```
 
 >[!NOTE]说明
->-   \{ip\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_ip“参数。
->-   \{port\}优先取[启动命令](启动调度器.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的“predict\_port“参数。
+>-   \{ip\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_ip\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_ip"参数。
+>-   \{port\}优先取[启动命令](../cluster_management_component/coordinator.md#section733210894016)参数中的\{predict\_port\}；如果没有配置该命令行参数，则取配置文件ms\_coordinator.json的"predict\_port"参数。
 
 <br>
 

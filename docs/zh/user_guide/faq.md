@@ -145,7 +145,7 @@ glibc.so本身的bug。
 ```
 export LD_PRELOAD=$LD_PRELOAD:/usr/local/python3.10.2/lib/python3.10/site-packages/torch/lib/../../torch.libs/libgomp-6e1a1d1b.so.1.0.0
 ```
-# 加载大模型时耗时过长
+# 加载大模型时耗时过长<a id="jzdmxshsgc"></a>
 
 **问题描述**
 
@@ -233,9 +233,11 @@ export NPU_MEMORY_FRACTION=0.96
     比如修改输入inputs大小的限制为10MB，代码修改示例如下所示：
 
     **图 1**  示例一
+
     ![](../figures/faq006.png)
 
     **图 2**  示例二
+
     ![](../figures/faq007.png)
 
 
@@ -250,12 +252,15 @@ call calnnCat failed, detail:EZ1001: xxxxxxxx dimnum of tensor 5 is [1], should 
 ```
 
 **图 1**  报错信息
+
 ![](../figures/faq008.png)
 
 **图 2**  报错文件
+
 ![](../figures/faq009.png)
 
 **图 3**  报错文件
+
 ![](../figures/faq010.png)
 
 <br>
@@ -522,6 +527,7 @@ Failed to get vocab size from tokenizer wrapper with exception...
 ```
 
 **图 1**  报错提示
+
 ![](../figures/faq012.png)
 
 <br>
