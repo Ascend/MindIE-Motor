@@ -1,0 +1,187 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rings-config-mindie-server-heterogeneous  # The value of DepolymentName must be the same as the name attribute of the following deployment. The prefix rings-config- cannot be modified.
+  namespace: mindie
+  labels:
+    ring-controller.atlas: ascend-910b
+data:
+  hccl.json: |
+    {
+        "status":"initializing"
+    }
+  # hardware_type: "800I A2(64G)"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mindie-server-heterogeneous               # The value of this parameter must be consistent with the name of ConfigMap.
+  labels:
+    app: mindie-server-heterogeneous
+    ring-controller.atlas: ascend-910b
+  namespace: mindie                   # Select a proper namespace based on the site requirements. (The namespaces of ConfigMap and deployments must be the same.)
+spec:
+  replicas: 2                        # The value of replicas is 1 in a single-node scenario and N in an N-node scenario. The number of NPUs in the requests field is 8 in an N-node scenario.
+  selector:
+    matchLabels:
+      app: mindie-server-heterogeneous
+  template:
+    metadata:
+      labels:
+        app: mindie-server-heterogeneous
+        ring-controller.atlas: ascend-910b
+        deploy-name: mindie-server-heterogeneous  # The value must be the same as that of Deployment name.
+    spec:
+      # 节点反亲和部署场景配置，即同一个节点至多部署一个实例
+      # affinity:
+      #   podAntiAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       - labelSelector:
+      #           matchExpressions:
+      #             - key: deploy-name
+      #               operator: In
+      #               values:
+      #                 - mindie-server-heterogeneous
+      #         topologyKey: kubernetes.io/hostname
+      nodeSelector:
+        accelerator: huawei-Ascend910
+        # hardware-type: "800I-A2-64G"
+      terminationGracePeriodSeconds: 10
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - image: mindie:1.0.0-aarch64-800I-A2
+          imagePullPolicy: IfNotPresent
+          name: mindie-server-heterogeneous
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: "RuntimeDefault"
+          readinessProbe:
+            exec:
+              command:
+              - bash
+              - -c
+              - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh readiness"
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+              - bash
+              - -c
+              - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh liveness"
+            periodSeconds: 5
+          startupProbe:
+            exec:
+              command:
+              - bash
+              - -c
+              - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh startup"
+            periodSeconds: 5
+            failureThreshold: 100
+          env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: GLOBAL_RANK_TABLE_FILE_PATH
+            value: "/user/serverid/devindex/config/..data/global_ranktable.json"
+          - name: CANN_INSTALL_PATH
+            value: $(MINDIE_USER_HOME_PATH)/Ascend
+          - name: MIES_INSTALL_PATH
+            value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-service
+          - name: MINDIE_LLM_HOME_PATH
+            value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-llm
+          - name: CONFIG_FROM_CONFIGMAP_PATH
+            value: /mnt/configmap
+          - name: MINDIE_LOG_TO_FILE
+            value: "1"
+          - name: MINDIE_LOG_TO_STDOUT
+            value: "1"
+          - name: MINDIE_LOG_LEVEL
+            value: "INFO"
+          envFrom:
+            - configMapRef:
+                name: common-env
+          command: ["/bin/bash", "-c", "
+              /mnt/configmap/boot.sh; \n
+          "]
+          resources:
+            requests:
+              memory: "64Gi"
+              cpu: "16"
+              huawei.com/Ascend910: 2                         # Number of required NPUs. The maximum value is 16. You can add lines below to configure resources such as memory and CPU.
+            limits:
+              memory: "256Gi"
+              cpu: "64"
+              huawei.com/Ascend910: 2                         # The value must be consistent with that in requests.
+          volumeMounts:
+          - name: data
+            mountPath: /data
+            readOnly: true
+          - name: mindie-server-config
+            mountPath: /mnt/configmap/config.json
+            subPath: config.json
+          - name: mindie-http-client-ctl-config
+            mountPath: /mnt/configmap/http_client_ctl.json
+            subPath: http_client_ctl.json
+          - name: global-ranktable
+            mountPath: /user/serverid/devindex/config
+          - name: python-script-get-group-id
+            mountPath: /mnt/configmap/get_group_id.py
+            subPath: get_group_id.py
+          - name: python-script-update-server-conf
+            mountPath: /mnt/configmap/update_mindie_server_config.py
+            subPath: update_mindie_server_config.py
+          - name: boot-bash-script
+            mountPath: /mnt/configmap/boot.sh
+            subPath: boot.sh
+          - name: queue-schedule
+            mountPath: /var/queue_schedule
+          - name: dshm
+            mountPath: /dev/shm
+          - name: python-file-utils
+            mountPath: /mnt/configmap/file_utils.py
+            subPath: file_utils.py
+      volumes:
+      - name: data
+        hostPath:
+          path: /data
+      - name: queue-schedule
+        hostPath:
+          path: /var/queue_schedule
+      - name: global-ranktable
+        configMap:
+          name: global-ranktable
+          defaultMode: 0640
+      - name: mindie-server-config
+        configMap:
+          name: mindie-server-config
+          defaultMode: 0640
+      - name: mindie-http-client-ctl-config
+        configMap:
+          name: mindie-http-client-ctl-config
+          defaultMode: 0640
+      - name: python-script-get-group-id
+        configMap:
+          name: python-script-get-group-id
+          defaultMode: 0640
+      - name: python-script-update-server-conf
+        configMap:
+          name: python-script-update-server-conf
+          defaultMode: 0640
+      - name: boot-bash-script
+        configMap:
+          name: boot-bash-script
+          defaultMode: 0550
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
+      - name: python-file-utils
+        configMap:
+          name: python-file-utils
+          defaultMode: 0550

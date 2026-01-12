@@ -470,14 +470,19 @@ function install_mindie_llm() {
     [ -n "${mindie_llm_install_dir}" ] && rm -rf $mindie_llm_install_dir
 
     mkdir -p ${mindie_llm_install_dir}
+    # cp mindie-llm lib to mindie-service folder
     mindie_service_install_dir=${install_dir}/mindie-service
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libconfig_manager.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libmindieservice_tokenizer.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libmindieservice_common.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libmindieservice_endpoint.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/bin/mindieservice_daemon ${mindie_service_install_dir}/bin
+    cp -r -f ${temp_dir}/mindie_llm/latest/conf/config.json ${mindie_service_install_dir}/examples/kubernetes_deploy_scripts/conf/config.json
+    cp -r -f ${temp_dir}/mindie_llm/latest/conf/config.json ${mindie_service_install_dir}/examples/kubernetes_deploy_scripts/conf/config_p.json
+    cp -r -f ${temp_dir}/mindie_llm/latest/conf/config.json ${mindie_service_install_dir}/examples/kubernetes_deploy_scripts/conf/config_d.json
     cp -r -f ${temp_dir}/mindie_llm/latest/conf/config.json ${mindie_service_install_dir}/conf
     rm -rf ${temp_dir}/mindie_llm/latest/conf
+    chmod 640 ${mindie_service_install_dir}/examples/kubernetes_deploy_scripts/conf/*.json
     chmod 640 ${mindie_service_install_dir}/conf/config.json
     cp -r -f ${temp_dir}/mindie_llm/latest/server/scripts/* ${mindie_service_install_dir}/scripts
     cp -r -f ${temp_dir}/mindie_llm/latest/server/scripts/set_env.sh ${mindie_service_install_dir}

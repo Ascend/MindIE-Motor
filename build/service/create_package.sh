@@ -55,7 +55,7 @@ EOF
 
 
 function create_dir() {
-    sub_dirs=("bin" "conf" "lib" "include" "logs" "scripts/http_client_ctl" \
+    sub_dirs=("bin" "conf" "lib" "include" "logs" "scripts/http_client_ctl" "examples/kubernetes_deploy_scripts" \
               "security/certs" "security/ca" "security/keys" "security/pass")
     cd "$RELEASE_TMP_DIR"
     for dir in "${sub_dirs[@]}"; do
@@ -88,6 +88,15 @@ function copy_mindie_service() {
     cd "$BUILD_MINDIE_SERVICE_INSTALL_DIR"/dist
     cp -f mindiebenchmark-*-py3-*.whl mindieclient-*-py3-*.whl om_adapter-*-py3-*.whl node_manager-*-py3-*.whl \
           "$RELEASE_TMP_DIR"/bin/
+
+    mkdir -p "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf
+    cp -rf "$SERVICE_ROOT_DIR"/mindie_service/management_service/example/deploy_scripts/*  "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/
+
+    cp -f "$SERVICE_ROOT_DIR"/mindie_service/management_service/config/ms_coordinator.json "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf/
+    cp -f "$SERVICE_ROOT_DIR"/mindie_service/management_service/config/ms_controller.json "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf/
+    cp -f "$SERVICE_ROOT_DIR"/mindie_service/management_service/config/node_manager.json "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf/
+    cp -f "$SERVICE_ROOT_DIR"/mindie_service/utils/http_client_ctl/config/http_client_ctl.json "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf/
+    chmod 640 "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf/*.json
 
     cd "$SERVICE_ROOT_DIR"/mindie_service/utils/http_client_ctl
     mkdir -p "$RELEASE_TMP_DIR"/scripts/http_client_ctl
