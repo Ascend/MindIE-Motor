@@ -1,0 +1,490 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rings-config-xxxx-server-0  # The value of DepolymentName must be the same as the name attribute of the following deployment. The prefix rings-config- cannot be modified.
+  namespace: mindie
+  labels:
+    jobID: xxxx
+    ring-controller.atlas: ascend-910b
+    mx-consumer-cim: "true"
+    grt-group/deploy-server: 1
+data:
+  hccl.json: |
+    {
+        "status":"initializing"
+    }
+  # hardware_type: "800I A2(32G)"
+---
+# 定义 PriorityClass
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 100
+globalDefault: false
+description: "D used for high-priority jobs and P for low-priority jobs"
+---
+apiVersion: mindxdl.gitee.com/v1
+kind: AscendJob
+metadata:
+  name: xxxx-server-0        #以具体任务为准, xxxx默认mindie-ms,  x
+  namespace: mindie            #以MindIE为准，用户可修改
+  annotations:
+    sp-block: "384"
+  labels:
+    framework: pytorch
+    app: mindie-ms-server      #固定
+    jobID: xxxx               # 推理任务的名称，用户需配置，追加，xxxx默认mindie-ms
+    ring-controller.atlas: ascend-910b
+    fault-scheduling: force
+    fault-retry-times: "10000"
+    grt-group/deploy-server: 1
+spec:
+  schedulerName: volcano   # work when enableGangScheduling is true
+  runPolicy:
+    schedulingPolicy:      # work when enableGangScheduling is true
+      minAvailable: x      # 保持和replicas一致, x == 节点数量 == master replicas + worker replicas
+      queue: default
+      priorityClass: high-priority
+  successPolicy: AllWorkers
+  replicaSpecs:
+    Master:
+      replicas: 1           # server的副本数
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            ring-controller.atlas: ascend-910b
+            app: mindie-ms-server
+            jobID: xxxx      #推理任务的名称，用户需配置，追加，xxxx默认mindie
+        spec:
+          # 节点反亲和部署场景配置，即同一个节点至多部署一个实例
+          # affinity:
+          #   podAntiAffinity:
+          #     requiredDuringSchedulingIgnoredDuringExecution:
+          #       - labelSelector:
+          #           matchExpressions:
+          #             - key: deploy-name
+          #               operator: In
+          #               values:
+          #                 - mindie-server
+          #         topologyKey: kubernetes.io/hostname
+          nodeSelector:
+            accelerator: huawei-Ascend910
+            accelerator-type: module-910b-8
+            # hardware-type: "800I-A2-32G"
+          terminationGracePeriodSeconds: 60
+          automountServiceAccountToken: false
+          securityContext:
+            fsGroup: 1001
+          containers:
+            - image: mindie:dev-2.0.RC1-B087-800I-A2-py311-ubuntu22.04-aarch64
+              imagePullPolicy: IfNotPresent
+              name: ascend
+              securityContext:
+                privileged: true
+                capabilities:
+                  drop: [ "ALL" ]
+                seccompProfile:
+                  type: "RuntimeDefault"
+              # readinessProbe:
+              #   exec:
+              #     command:
+              #     - bash
+              #     - -c
+              #     - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh readiness"
+              #   periodSeconds: 5
+              # livenessProbe:
+              #   exec:
+              #     command:
+              #     - bash
+              #     - -c
+              #     - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh liveness"
+              #   periodSeconds: 5
+              #   initialDelaySeconds: 300
+              # startupProbe:
+              #   exec:
+              #     command:
+              #     - bash
+              #     - -c
+              #     - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh startup"
+              #   periodSeconds: 5
+              #   failureThreshold: 100
+              env:
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              - name: POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
+              - name: ROLE
+                value: prefill_or_decode
+              - name: MINDIE_LOG_CONFIG_PATH
+                value: /root/mindie
+              - name: GLOBAL_RANK_TABLE_FILE_PATH
+                value: "/user/serverid/devindex/config/..data/global_ranktable.json"
+              - name: CONFIG_FROM_CONFIGMAP_PATH
+                value: /mnt/configmap
+              - name: INITIAL_DP_SERVER_PORT
+                value: xxx
+              envFrom:
+                - configMapRef:
+                    name: common-env
+              command: ["/bin/bash", "-c", "
+                  /mnt/configmap/boot.sh; \n
+              "]
+              lifecycle:
+                preStop:
+                  exec:
+                    command: [ "/bin/bash", "-c", "/mnt/configmap/server_prestop.sh;" ]
+              resources:
+                requests:
+                  memory: "1000Gi"
+                  cpu: "16"
+                  huawei.com/Ascend910: 8                         # Number of required NPUs. The maximum value is 16. You can add lines below to configure resources such as memory and CPU.
+                limits:
+                  memory: "1000Gi"
+                  huawei.com/Ascend910: 8                         # The value must be consistent with that in requests.
+              volumeMounts:
+              - name: data
+                mountPath: /data
+                readOnly: true
+              - name: home
+                mountPath: /home
+              - name: mindie-server-config
+                mountPath: /mnt/configmap/config.json
+                subPath: config.json
+              - name: mindie-ms-node-manager-config
+                mountPath: /mnt/configmap/node_manager.json
+                subPath: node_manager.json
+              - name: mindie-http-client-ctl-config
+                mountPath: /mnt/configmap/http_client_ctl.json
+                subPath: http_client_ctl.json
+              - name: global-ranktable
+                mountPath: /user/serverid/devindex/config
+              - name: python-script-get-group-id
+                mountPath: /mnt/configmap/get_group_id.py
+                subPath: get_group_id.py
+              - name: python-script-update-server-conf
+                mountPath: /mnt/configmap/update_mindie_server_config.py
+                subPath: update_mindie_server_config.py
+              - name: boot-bash-script
+                mountPath: /mnt/configmap/boot.sh
+                subPath: boot.sh
+              - name: server-prestop-bash-script
+                mountPath: /mnt/configmap/server_prestop.sh
+                subPath: server_prestop.sh
+              - name: queue-schedule
+                mountPath: /var/queue_schedule
+              - name: dshm
+                mountPath: /dev/shm
+              - name: ascend-910-config
+                mountPath: /user/serverid/devindex/config/hccl
+              - name: localtime
+                mountPath: /etc/localtime
+              - name: python-script-gen-config-single-container
+                mountPath: /mnt/configmap/gen_config_single_container.py
+                subPath: gen_config_single_container.py
+              - name: mnt
+                mountPath: /mnt
+              - name: weight-mount-path
+                mountPath: /home
+              - name: python-file-utils
+                mountPath: /mnt/configmap/file_utils.py
+                subPath: file_utils.py
+              - name: hccn-conf
+                mountPath: /etc/hccn.conf
+                readOnly: true
+          volumes:
+          - name: data
+            hostPath:
+              path: /data
+          - name: weight-mount-path
+            hostPath:
+              path: /home
+          - name: home
+            hostPath:
+              path: /home
+          - name: queue-schedule
+            hostPath:
+              path: /var/queue_schedule
+          - name: localtime
+            hostPath:
+              path: /etc/localtime
+          - name: global-ranktable
+            configMap:
+              name: global-ranktable
+              defaultMode: 0640
+          - name: mindie-server-config
+            configMap:
+              name: mindie-server-config
+              defaultMode: 0640
+          - name: mindie-ms-node-manager-config
+            configMap:
+              name: mindie-ms-node-manager-config
+              defaultMode: 0640
+          - name: mindie-http-client-ctl-config
+            configMap:
+              name: mindie-http-client-ctl-config
+              defaultMode: 0640
+          - name: python-script-get-group-id
+            configMap:
+              name: python-script-get-group-id
+              defaultMode: 0640
+          - name: python-script-update-server-conf
+            configMap:
+              name: python-script-update-server-conf
+              defaultMode: 0550
+          - name: boot-bash-script
+            configMap:
+              name: boot-bash-script
+              defaultMode: 0550
+          - name: server-prestop-bash-script
+            configMap:
+              name: server-prestop-bash-script
+              defaultMode: 0550
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 16Gi
+          - name: ascend-910-config
+            configMap:
+              name: rings-config-mindie-server
+              defaultMode: 0640
+          - name: python-script-gen-config-single-container
+            configMap:
+              name: python-script-gen-config-single-container
+              defaultMode: 0550
+          - name: mnt
+            hostPath:
+              path: /mnt
+          - name: python-file-utils
+            configMap:
+              name: python-file-utils
+              defaultMode: 0550
+          - name: hccn-conf
+            hostPath:
+              path: /etc/hccn.conf
+              type: File
+    Worker:
+      replicas: 0           # server的副本数, 多容器场景下使用
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            ring-controller.atlas: ascend-910b
+            app: mindie-ms-server
+            jobID: xxxx      #推理任务的名称，用户需配置，追加，xxxx默认mindie
+        spec:
+          # 节点反亲和部署场景配置，即同一个节点至多部署一个实例
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: deploy-name
+                        operator: In
+                        values:
+                          - mindie-server
+                  topologyKey: kubernetes.io/hostname
+          nodeSelector:
+            accelerator: huawei-Ascend910
+            accelerator-type: module-910b-8
+            # hardware-type: "800I-A2-32G"
+          terminationGracePeriodSeconds: 60
+          automountServiceAccountToken: false
+          securityContext:
+            fsGroup: 1001
+          containers:
+            - image: mindie:dev-2.0.RC1-B087-800I-A2-py311-ubuntu22.04-aarch64
+              imagePullPolicy: IfNotPresent
+              name: ascend
+              securityContext:
+              #   allowPrivilegeEscalation: false
+              #   capabilities:
+              #     drop: ["ALL"]
+              #   seccompProfile:
+              #     type: "RuntimeDefault"
+                  privileged: true
+#              readinessProbe:
+#                exec:
+#                  command:
+#                  - bash
+#                  - -c
+#                  - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh readiness"
+#                periodSeconds: 5
+              # livenessProbe:
+              #   exec:
+              #     command:
+              #     - bash
+              #     - -c
+              #     - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh liveness"
+              #   periodSeconds: 5
+#              startupProbe:
+#                exec:
+#                  command:
+#                  - bash
+#                  - -c
+#                  - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh startup"
+#                periodSeconds: 5
+#                failureThreshold: 100
+              env:
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              - name: POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
+              - name: ROLE
+                value: prefill_or_decode
+              - name: MINDIE_LOG_CONFIG_PATH
+                value: /root/mindie
+              - name: GLOBAL_RANK_TABLE_FILE_PATH
+                value: "/user/serverid/devindex/config/..data/global_ranktable.json"
+              - name: CONFIG_FROM_CONFIGMAP_PATH
+                value: /mnt/configmap
+              - name: INITIAL_DP_SERVER_PORT
+                value: xxx
+              envFrom:
+                - configMapRef:
+                    name: common-env
+              command: ["/bin/bash", "-c", "
+                  /mnt/configmap/boot.sh; \n
+              "]
+              lifecycle:
+                preStop:
+                  exec:
+                    command: [ "/bin/bash", "-c", "/mnt/configmap/server_prestop.sh;" ]
+              resources:
+                requests:
+                  memory: "1000Gi"
+                  cpu: "16"
+                  huawei.com/Ascend910: 8                         # Number of required NPUs. The maximum value is 16. You can add lines below to configure resources such as memory and CPU.
+                limits:
+                  memory: "1000Gi"
+                  huawei.com/Ascend910: 8                         # The value must be consistent with that in requests.
+              volumeMounts:
+              - name: data
+                mountPath: /data
+                readOnly: true
+              - name: home
+                mountPath: /home
+              - name: mindie-server-config
+                mountPath: /mnt/configmap/config.json
+                subPath: config.json
+              - name: mindie-ms-node-manager-config
+                mountPath: /mnt/configmap/node_manager.json
+                subPath: node_manager.json
+              - name: mindie-http-client-ctl-config
+                mountPath: /mnt/configmap/http_client_ctl.json
+                subPath: http_client_ctl.json
+              - name: global-ranktable
+                mountPath: /user/serverid/devindex/config
+              - name: python-script-get-group-id
+                mountPath: /mnt/configmap/get_group_id.py
+                subPath: get_group_id.py
+              - name: python-script-update-server-conf
+                mountPath: /mnt/configmap/update_mindie_server_config.py
+                subPath: update_mindie_server_config.py
+              - name: boot-bash-script
+                mountPath: /mnt/configmap/boot.sh
+                subPath: boot.sh
+              - name: server-prestop-bash-script
+                mountPath: /mnt/configmap/server_prestop.sh
+                subPath: server_prestop.sh
+              - name: queue-schedule
+                mountPath: /var/queue_schedule
+              - name: dshm
+                mountPath: /dev/shm
+              - name: ascend-910-config
+                mountPath: /user/serverid/devindex/config/hccl
+              - name: localtime
+                mountPath: /etc/localtime
+              - name: python-script-gen-config-single-container
+                mountPath: /mnt/configmap/gen_config_single_container.py
+                subPath: gen_config_single_container.py
+              - name: mnt
+                mountPath: /mnt
+              - name: weight-mount-path
+                mountPath: /home
+              - name: python-file-utils
+                mountPath: /mnt/configmap/file_utils.py
+                subPath: file_utils.py
+              - name: hccn-conf
+                mountPath: /etc/hccn.conf
+                readOnly: true
+          volumes:
+          - name: data
+            hostPath:
+              path: /data
+          - name: weight-mount-path
+            hostPath:
+              path: /home
+          - name: home
+            hostPath:
+              path: /home
+          - name: queue-schedule
+            hostPath:
+              path: /var/queue_schedule
+          - name: localtime
+            hostPath:
+              path: /etc/localtime
+          - name: global-ranktable
+            configMap:
+              name: global-ranktable
+              defaultMode: 0640
+          - name: mindie-server-config
+            configMap:
+              name: mindie-server-config
+              defaultMode: 0640
+          - name: mindie-ms-node-manager-config
+            configMap:
+              name: mindie-ms-node-manager-config
+              defaultMode: 0640
+          - name: mindie-http-client-ctl-config
+            configMap:
+              name: mindie-http-client-ctl-config
+              defaultMode: 0640
+          - name: python-script-get-group-id
+            configMap:
+              name: python-script-get-group-id
+              defaultMode: 0640
+          - name: python-script-update-server-conf
+            configMap:
+              name: python-script-update-server-conf
+              defaultMode: 0550
+          - name: boot-bash-script
+            configMap:
+              name: boot-bash-script
+              defaultMode: 0550
+          - name: server-prestop-bash-script
+            configMap:
+              name: server-prestop-bash-script
+              defaultMode: 0550
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 16Gi
+          - name: ascend-910-config
+            configMap:
+              name: rings-config-mindie-server
+              defaultMode: 0640
+          - name: python-script-gen-config-single-container
+            configMap:
+              name: python-script-gen-config-single-container
+              defaultMode: 0550
+          - name: mnt
+            hostPath:
+              path: /mnt
+          - name: python-file-utils
+            configMap:
+              name: python-file-utils
+              defaultMode: 0550
+          - name: hccn-conf
+            hostPath:
+              path: /etc/hccn.conf
+              type: File

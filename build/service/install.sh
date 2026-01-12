@@ -116,6 +116,13 @@ function chmod_authority() {
 
     chmod 500 ${install_dir}/include
     chmod -R 700 ${install_dir}/security
+
+    chmod_file ${install_dir}/examples/kubernetes_deploy_scripts
+    chmod 550 ${install_dir}/examples/kubernetes_deploy_scripts
+    chmod 550 ${install_dir}/examples/kubernetes_deploy_scripts/boot_helper
+    chmod 550 ${install_dir}/examples/kubernetes_deploy_scripts/gen_ranktable_helper
+    chmod 750 ${install_dir}/examples/kubernetes_deploy_scripts/conf
+    chmod 750 ${install_dir}/examples/kubernetes_deploy_scripts/deployment
 }
 
 function chmod_file() {

@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mindie-ms-controller
+  labels:
+    app: mindie-ms-controller
+  namespace: mindie
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mindie-ms-controller
+  template:
+    metadata:
+      labels:
+        app: mindie-ms-controller
+        deploy-name: mindie-ms-controller
+    spec:
+      nodeSelector:
+        accelerator: huawei-Ascend910
+        # machine-id: "7"
+      terminationGracePeriodSeconds: 0
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - image: mindie:1.0.0-aarch64-800I-A2
+          imagePullPolicy: IfNotPresent
+          name: mindie-ms-controller
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: "RuntimeDefault"
+          readinessProbe:
+            exec:
+              command:
+              - bash
+              - -c
+              - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh readiness"
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+              - bash
+              - -c
+              - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh liveness"
+            periodSeconds: 5
+          startupProbe:
+            exec:
+              command:
+              - bash
+              - -c
+              - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh startup"
+            periodSeconds: 5
+            failureThreshold: 100
+          env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: GLOBAL_RANK_TABLE_FILE_PATH
+            value: "/user/serverid/devindex/config/..data/global_ranktable.json"
+          - name: MIES_INSTALL_PATH
+            value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-service
+          - name: MINDIE_LLM_HOME_PATH
+            value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-llm
+          - name: CONFIG_FROM_CONFIGMAP_PATH
+            value: /mnt/configmap
+          - name: MINDIE_LOG_TO_FILE
+            value: "1"
+          - name: MINDIE_LOG_TO_STDOUT
+            value: "1"
+          - name: MINDIE_LOG_LEVEL
+            value: "INFO"
+          envFrom:
+            - configMapRef:
+                name: common-env
+          command: ["/bin/bash", "-c", "
+              /mnt/configmap/boot.sh; \n
+          "]
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "4"
+            limits:
+              memory: "4Gi"
+              cpu: "8"
+          volumeMounts:
+          - name: global-ranktable
+            mountPath: /user/serverid/devindex/config
+          - name: mindie-http-client-ctl-config
+            mountPath: /mnt/configmap/http_client_ctl.json
+            subPath: http_client_ctl.json
+          - name: python-script-get-group-id
+            mountPath: /mnt/configmap/get_group_id.py
+            subPath: get_group_id.py
+          - name: python-file-utils
+            mountPath: /mnt/configmap/file_utils.py
+            subPath: file_utils.py
+          - name: boot-bash-script
+            mountPath: /mnt/configmap/boot.sh
+            subPath: boot.sh
+          - name: mindie-ms-controller-config
+            mountPath: /mnt/configmap/ms_controller.json
+            subPath: ms_controller.json
+          - name: status-data
+            mountPath: /usr/local/Ascend/mindie/latest/mindie-service/logs
+      volumes:
+      - name: global-ranktable
+        configMap:
+          name: global-ranktable
+          defaultMode: 0640
+      - name: mindie-http-client-ctl-config
+        configMap:
+          name: mindie-http-client-ctl-config
+          defaultMode: 0640
+      - name: python-script-get-group-id
+        configMap:
+          name: python-script-get-group-id
+          defaultMode: 0640
+      - name: python-file-utils
+        configMap:
+          name: python-file-utils
+          defaultMode: 0550
+      - name: boot-bash-script
+        configMap:
+          name: boot-bash-script
+          defaultMode: 0550
+      - name: mindie-ms-controller-config
+        configMap:
+          name: mindie-ms-controller-config
+          defaultMode: 0640
+      - name: status-data
+        hostPath:
+          path: /data/mindie-ms/status
+          type: Directory
