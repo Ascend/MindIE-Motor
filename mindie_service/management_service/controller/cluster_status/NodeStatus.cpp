@@ -775,12 +775,12 @@ bool NodeStatus::IsPostRoleNeeded(uint64_t id)
         return false;
     }
     if (iter->second->deleteTime > std::chrono::seconds(0)) {
-        LOG_W("[%s] [NodeStatus] Checking if post role is needed, node %lu is deleted.",
+        LOG_D("[%s] [NodeStatus] Checking if post role is needed, node %lu is deleted.",
             GetWarnCode(ErrorType::WARNING, ControllerFeature::NODE_STATUS).c_str(), id);
         return false;
     }
     if (!iter->second->isInitialized && iter->second->isHealthy) {
-        LOG_W("[%s] [NodeStatus] Checking if post role is needed,: node %lu is not initialized, is healthy %d.",
+        LOG_D("[%s] [NodeStatus] Checking if post role is needed, node %lu is not initialized, is healthy %d.",
             GetWarnCode(ErrorType::WARNING, ControllerFeature::NODE_STATUS).c_str(),
             id, iter->second->isHealthy);
         return true;
@@ -788,7 +788,7 @@ bool NodeStatus::IsPostRoleNeeded(uint64_t id)
     if ((iter->second->roleState == ControllerConstant::GetInstance()->GetRoleState(RoleState::UNKNOWN)) &&
         (iter->second->currentRole == MINDIE::MS::DIGSInstanceRole::UN_DEF_INSTANCE) &&
         iter->second->isHealthy) {
-        LOG_W("[%s] [NodeStatus] Checking if post role is needed, node %lu, role %c, current role %c, status %s, "
+        LOG_D("[%s] [NodeStatus] Checking if post role is needed, node %lu, role %c, current role %c, status %s, "
             "is healthy %d.", GetWarnCode(ErrorType::WARNING, ControllerFeature::NODE_STATUS).c_str(),
             id, iter->second->instanceInfo.staticInfo.role, iter->second->currentRole,
             iter->second->roleState.c_str(), iter->second->isHealthy);
@@ -797,7 +797,7 @@ bool NodeStatus::IsPostRoleNeeded(uint64_t id)
     // 对于P/D/FLEX实例，如果peers不为空但是activePeers为空，则需要向server发送请求
     if (!iter->second->isRoleChangeNode) {
         if (iter->second->activePeers.empty() && !iter->second->peers.empty() && iter->second->isHealthy) {
-            LOG_W("[NodeStatus]IsPostRoleNeeded: d node %lu, role %c, status %s, active peers %zu, peers %zu, "
+            LOG_D("[NodeStatus]IsPostRoleNeeded: d node %lu, role %c, status %s, active peers %zu, peers %zu, "
                   "is healthy %d",
                   id, iter->second->instanceInfo.staticInfo.role, iter->second->roleState.c_str(),
                   iter->second->activePeers.size(), iter->second->peers.size(), iter->second->isHealthy);
@@ -818,34 +818,34 @@ bool NodeStatus::IsIgnoredInPDSeparate(uint64_t id)
     }
     std::string warnCode = GetWarnCode(ErrorType::WARNING, ControllerFeature::NODE_STATUS);
     if (iter->second->deleteTime > std::chrono::seconds(0)) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is deleted.", warnCode.c_str(), id);
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is deleted.", warnCode.c_str(), id);
         return true;
     }
     if (!iter->second->isInitialized) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is not initialized.", warnCode.c_str(), id);
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is not initialized.", warnCode.c_str(), id);
         return true;
     }
     if (!iter->second->isHealthy) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is not healthy.", warnCode.c_str(), id);
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is not healthy.", warnCode.c_str(), id);
         return true;
     }
     if (iter->second->inferenceType == InferenceType::INITIALIZING_STATIC_TOTAL_INFO) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is initializing static total information.",
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu is initializing static total information.",
             warnCode.c_str(), id);
         return true;
     }
     if (iter->second->currentRole != iter->second->instanceInfo.staticInfo.role) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu, current role %c, role %c.",
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu, current role %c, role %c.",
             warnCode.c_str(), id, iter->second->currentRole, iter->second->instanceInfo.staticInfo.role);
         return true;
     }
     if (iter->second->roleState == ControllerConstant::GetInstance()->GetRoleState(RoleState::UNKNOWN)) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu, role %c, status %s.", warnCode.c_str(),
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu, role %c, status %s.", warnCode.c_str(),
               id, iter->second->instanceInfo.staticInfo.role, iter->second->roleState.c_str());
         return true;
     }
     if (iter->second->isRoleChangeNode) {
-        LOG_W("[NodeStatus] IsIgnoredInPDSeparate: node %lu, role %c, isRoleChangeNode %d", id,
+        LOG_D("[NodeStatus] IsIgnoredInPDSeparate: node %lu, role %c, isRoleChangeNode %d", id,
               iter->second->instanceInfo.staticInfo.role, iter->second->isRoleChangeNode);
         return true;
     }
@@ -853,7 +853,7 @@ bool NodeStatus::IsIgnoredInPDSeparate(uint64_t id)
     // 如果实例处于RoleSwithching状态，只要activePeers不为空，就表示该实例已经有link链路，可以将该实例发给coordinator
     if (iter->second->instanceInfo.staticInfo.role != MINDIE::MS::DIGSInstanceRole::FLEX_INSTANCE &&
         (iter->second->activePeers.empty() || iter->second->peers.empty())) {
-        LOG_W("[%s] [NodeStatus] Check if ignore for PD separate, node %lu, role %c, status %s, active peers %zu, "
+        LOG_D("[%s] [NodeStatus] Check if ignore for PD separate, node %lu, role %c, status %s, active peers %zu, "
               "peers %zu.",
               warnCode.c_str(), id, iter->second->instanceInfo.staticInfo.role, iter->second->roleState.c_str(),
               iter->second->activePeers.size(), iter->second->peers.size());
@@ -872,13 +872,13 @@ bool NodeStatus::IsIgnoredInSingleNode(uint64_t id)
         return true;
     }
     if (!iter->second->isHealthy) {
-        LOG_W("[%s] [NodeStatus] Check if ignore in single mode, node %lu, role %c, status %s",
+        LOG_D("[%s] [NodeStatus] Check if ignore in single mode, node %lu, role %c, status %s",
             GetWarnCode(ErrorType::WARNING, ControllerFeature::NODE_STATUS).c_str(),
             id, iter->second->instanceInfo.staticInfo.role, iter->second->roleState.c_str());
         return true;
     }
     if (iter->second->deleteTime > std::chrono::seconds(0)) {
-        LOG_W("[%s] [NodeStatus] Check if ignore in single mode, node %lu is deleted.",
+        LOG_D("[%s] [NodeStatus] Check if ignore in single mode, node %lu is deleted.",
             GetWarnCode(ErrorType::WARNING, ControllerFeature::NODE_STATUS).c_str(), id);
         return true;
     }

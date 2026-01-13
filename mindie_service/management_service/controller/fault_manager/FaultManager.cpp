@@ -281,6 +281,30 @@ void FaultManager::UpdateFaultyInstanceCnt(uint64_t groupId, MINDIE::MS::DIGSIns
     }
 }
 
+void FaultManager::FilterUnscalableInstances(uint64_t groupId, const VECTOR_PAIR_ID_ROLE &changeInfos,
+                                             GroupUpdateMsg &groupUpdateMsg)
+{
+    // filter out the unscalable instances when process scale out, if we don't do this, the unscalable
+    // instances ocupies the NPU resources. we tend to terminate this instance to release the resources
+    // for other instances.
+    for (const auto &[nodeId, role] : changeInfos) {
+        std::unique_ptr<NodeInfo> node = mNodeStatus->GetNode(nodeId);
+        if (node == nullptr) {
+            LOG_E("[%s] [FaultManager] Updating group info: node %lu not found.",
+                  GetErrorCode(ErrorType::NOT_FOUND, ControllerFeature::FAULT_MANAGER).c_str(), nodeId);
+            continue;
+        }
+        if (IsAllPeersUnAvailable(*node, groupUpdateMsg)) {
+            LOG_W("[FaultManager] Updating group info: node %lu's peers are all unavailable, terminate this "
+                  "instance.",
+                  nodeId);
+            ServerRequestHandler::GetInstance()->TerminateService(*mAbortSetupClient, *node);
+            continue;
+        }
+        UpdateFaultyInstanceCnt(groupId, role, -1);
+    }
+}
+
 void FaultManager::ScalingUpdateAllGroups(std::map<uint64_t, VECTOR_PAIR_ID_ROLE> changedGroups, ScalingMode mode)
 {
     LOG_I("[FaultManager] Updating group info: all changed group number %zu.", changedGroups.size());
@@ -288,25 +312,7 @@ void FaultManager::ScalingUpdateAllGroups(std::map<uint64_t, VECTOR_PAIR_ID_ROLE
         auto group = mNodeStatus->GetGroup(groupId);
         GroupUpdateMsg groupUpdateMsg = BuildGroupUpdateMsg(groupId, mode, changeInfos);
         if (mode == ScalingMode::SCALE_OUT) {
-            // filter out the unscalable instances when process scale out, if we don't do this, the unscalable
-            // instances ocupies the NPU resources. we tend to terminate this instance to release the resources
-            // for other instances.
-            for (const auto &[nodeId, role] : changeInfos) {
-                std::unique_ptr<NodeInfo> node = mNodeStatus->GetNode(nodeId);
-                if (node == nullptr) {
-                    LOG_E("[%s] [FaultManager] Updating group info: node %lu not found.",
-                          GetErrorCode(ErrorType::NOT_FOUND, ControllerFeature::FAULT_MANAGER).c_str(), nodeId);
-                    continue;
-                }
-                if (IsAllPeersUnAvailable(*node, groupUpdateMsg)) {
-                    LOG_W("[FaultManager] Updating group info: node %lu's peers are all unavailable, terminate this "
-                          "instance.",
-                          nodeId);
-                    ServerRequestHandler::GetInstance()->TerminateService(*mAbortSetupClient, *node);
-                    continue;
-                }
-                UpdateFaultyInstanceCnt(groupId, role, -1);
-            }
+            FilterUnscalableInstances(groupId, changeInfos, groupUpdateMsg);
         }
         // update group info and instance peers info
         mNodeStatus->UpdateGroup(groupId, std::make_pair(groupUpdateMsg.pNodes, groupUpdateMsg.dNodes));
@@ -314,20 +320,29 @@ void FaultManager::ScalingUpdateAllGroups(std::map<uint64_t, VECTOR_PAIR_ID_ROLE
 
         // Send postRole message to new nodes
         if (!groupUpdateMsg.targetNewNodeIds.empty()) {
+            LOG_I("[FaultManager] Now start to send new peers info to new instances.");
             ServerRequestHandler::GetInstance()->BatchPostRole(*mStatusQueryClient, *mNodeStatus,
                 groupUpdateMsg.targetNewNodeIds, groupUpdateMsg.success);
-            LOG_I("[FaultManager] Send role to new instance.");
+            LOG_I("[FaultManager] Now finish to send new peers info to new instances.");
         }
 
+        int64_t initRanktableChangeTime = mNodeStatus->GetRanktableChangeTime();
         if (isNeedWaitNpuProcessExit && mode == ScalingMode::SCALE_OUT) {
-            sleep(MAX_WAIT_TIME_FOR_NPU_PROCESS_EXIT);
+            for (uint32_t waitSeconds = 0; waitSeconds < MAX_WAIT_TIME_FOR_NPU_PROCESS_EXIT; ++waitSeconds) {
+                sleep(1);
+                if (initRanktableChangeTime != mNodeStatus->GetRanktableChangeTime()) {
+                    LOG_I("[FaultManager] Ranktable changed, skip send postRole message to old nodes.");
+                    return;
+                }
+            }
         }
 
         // Send postRole message to old nodes
         if (!groupUpdateMsg.targetOldNodeIds.empty()) {
+            LOG_I("[FaultManager] Now start to send new peers info to old instances.");
             ServerRequestHandler::GetInstance()->BatchPostRole(*mStatusQueryClient, *mNodeStatus,
                 groupUpdateMsg.targetOldNodeIds, groupUpdateMsg.success);
-            LOG_I("[FaultManager] Send new peers info to old instance.");
+            LOG_I("[FaultManager] Now finish to send new peers info to old instances.");
         }
 
         // update inference type for prefill instances

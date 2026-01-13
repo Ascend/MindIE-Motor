@@ -125,7 +125,7 @@ void StatusUpdater::UpdateAllNodeStatus()
     int32_t ret = 0;
     mNodeIds = mNodeStatus->GetAllNodeIds();
     if (mNodeIds.empty()) {
-        LOG_I("[StatusUpdater] No node IDs to update.");
+        LOG_D("[StatusUpdater] No node IDs to update.");
         return;
     }
     std::vector<uint64_t> ignoredNodes;
@@ -150,7 +150,7 @@ void StatusUpdater::UpdateAllNodeStatus()
         }
     }
     if (!ignoredNodes.empty()) {
-        LOG_I("[StatusUpdater] Ignore node id: %s.",
+        LOG_W("[StatusUpdater] Ignore node id: %s.",
             NodeStatus::ConvertNodeIdVector2Str(ignoredNodes).c_str());
     }
     if (!deletedNodes.empty()) {

@@ -308,7 +308,7 @@ int32_t ServerRequestHandler::ParseNodeStatusRespToNodeStatus(NodeStatus &nodeSt
 bool ServerRequestHandler::IsPostRoleNeeded(const NodeInfo &nodeInfo) const
 {
     if (nodeInfo.roleState == ControllerConstant::GetInstance()->GetRoleState(RoleState::UNKNOWN)) {
-        LOG_W("[%s] [ServerRequestHandler] Need post role, node %lu, role %c, status %s.",
+        LOG_D("[%s] [ServerRequestHandler] Need post role, node %lu, role %c, status %s.",
             GetWarnCode(ErrorType::WARNING, ControllerFeature::SERVER_REQUEST_HANDLER).c_str(),
             nodeInfo.instanceInfo.staticInfo.id, nodeInfo.instanceInfo.staticInfo.role, nodeInfo.roleState.c_str());
         return true;
@@ -1036,7 +1036,12 @@ void ServerRequestHandler::BatchPostRole(HttpClient &client, NodeStatus &nodeSta
     const std::vector<uint64_t> &nodes, std::vector<uint64_t> &success) const
 {
     success.clear();
+    int64_t initRanktableChangeTime = nodeStatus.GetRanktableChangeTime();
     for (auto &id : nodes) {
+        if (initRanktableChangeTime != nodeStatus.GetRanktableChangeTime()) {
+            LOG_I("[ServerRequestHandler] Ranktable changed, skip remaining postRole messages.");
+            break;
+        }
         if (PostSingleRoleById(client, nodeStatus, id) == 0) {
             success.push_back(id);
         }

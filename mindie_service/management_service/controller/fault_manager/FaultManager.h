@@ -114,6 +114,8 @@ private:
     int32_t FilterAvailableServers(std::vector<std::unique_ptr<NodeInfo>> &serverNodes,
         const std::vector<uint64_t> &availableNodeIDs, std::vector<std::unique_ptr<NodeInfo>> &availableServers);
     void UpdateFaultyInstanceCnt(uint64_t groupId, MINDIE::MS::DIGSInstanceRole role, int cnt);
+    void FilterUnscalableInstances(uint64_t groupId, const VECTOR_PAIR_ID_ROLE &changeInfos,
+                                   GroupUpdateMsg &groupUpdateMsg);
     void ScalingUpdateAllGroups(std::map<uint64_t, VECTOR_PAIR_ID_ROLE> changedGroups, ScalingMode mode);
     GroupUpdateMsg BuildGroupUpdateMsg(uint64_t groupId, ScalingMode mode, const VECTOR_PAIR_ID_ROLE &changedInfo);
     bool IsAllPeersUnAvailable(const NodeInfo &node, GroupUpdateMsg &groupUpdateMsg);
