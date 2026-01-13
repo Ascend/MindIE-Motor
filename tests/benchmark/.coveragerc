@@ -1,6 +1,0 @@
-[run]
-omit = 
-    benchmark/mindiebenchmark/common/dataset_loader.py
-    benchmark/mindiebenchmark/inference/inference_engine.py
-
-

@@ -86,7 +86,7 @@ function copy_mindie_service() {
     cp -rf config/* "$RELEASE_TMP_DIR"/conf/
 
     cd "$BUILD_MINDIE_SERVICE_INSTALL_DIR"/dist
-    cp -f mindiebenchmark-*-py3-*.whl mindieclient-*-py3-*.whl om_adapter-*-py3-*.whl node_manager-*-py3-*.whl \
+    cp -f om_adapter-*-py3-*.whl node_manager-*-py3-*.whl \
           "$RELEASE_TMP_DIR"/bin/
 
     mkdir -p "$RELEASE_TMP_DIR"/examples/kubernetes_deploy_scripts/conf

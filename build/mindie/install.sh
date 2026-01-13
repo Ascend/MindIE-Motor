@@ -474,7 +474,6 @@ function install_mindie_llm() {
     mindie_service_install_dir=${install_dir}/mindie-service
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libconfig_manager.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libmindieservice_tokenizer.so ${mindie_service_install_dir}/lib
-    cp -r -f ${temp_dir}/mindie_llm/latest/lib/libmindieservice_common.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/lib/libmindieservice_endpoint.so ${mindie_service_install_dir}/lib
     cp -r -f ${temp_dir}/mindie_llm/latest/bin/mindieservice_daemon ${mindie_service_install_dir}/bin
     cp -r -f ${temp_dir}/mindie_llm/latest/conf/config.json ${mindie_service_install_dir}/examples/kubernetes_deploy_scripts/conf/config.json

@@ -255,16 +255,6 @@ function install_python_api() {
 
     if [[ -n "${py_cmd}" ]]; then
         # Install new version
-        ${py_cmd} -m pip install ${benchmark_wheel_path} --log-file ${log_file} --force-reinstall
-        if [ $? -ne 0 ]; then
-            print "ERROR" "Failed to install benchmark wheel for mindie service"
-            exit 1
-        fi
-        ${py_cmd} -m pip install ${client_wheel_path} --log-file ${log_file} --force-reinstall
-        if [ $? -ne 0 ]; then
-            print "ERROR" "Failed to install client wheel for mindie service"
-            exit 1
-        fi
         ${py_cmd} -m pip install ${om_adapter_path} --log-file ${log_file} --force-reinstall
         if [ $? -ne 0 ]; then
             print "ERROR" "Failed to install adapter wheel for mindie service"
