@@ -1,0 +1,75 @@
+{
+  "hardware_model_config": {
+    "enable_auto_config": true,
+    "hbm_size": 64,
+    "world_size": 2,
+    "dp_size": 1,
+    "model_name": "llama3-8b",
+    "llm_size": 8,
+    "bytes_per_element": 2,
+    "hidden_size": 5120,
+    "num_hidden_layers": 80,
+    "num_attention_heads": 64,
+    "num_key_value_heads": 8
+  },
+  "single_sim": {
+    "npu_mem_size": -1,
+    "block_size": 128,
+    "concurrency": 1000,
+    "request_rate": 20,
+    "max_seq_len": 2560,
+    "max_input_len": 2048,
+    "max_prefill_batch_size": 50,
+    "max_prefill_tokens": 8192,
+    "prefill_time_ms_per_request": 150,
+    "decode_time_ms_per_request": 50,
+    "max_batch_size": 200,
+    "support_select_batch": true,
+    "recompute_ratio": 0.5
+  },
+  "param_tuning": {
+    "limits": {
+      "avg_prefill_time_thld": 1000,
+      "avg_decode_time_thld": 50,
+      "SLOP90_prefill_time_thld": 1000,
+      "SLOP90_decode_time_thld": 50
+    },
+    "fixed_params": {
+      "npu_mem_size": -1,
+      "block_size": 128,
+      "max_seq_len": 2560,
+      "max_input_len": 2048,
+      "max_prefill_tokens": 8192,
+      "decode_time_ms_per_request": 50,
+      "support_select_batch": true,
+      "recompute_ratio": 0.5
+    },
+    "param_ranges": {
+      "concurrency_range": [
+        1000,
+        1000,
+        10
+      ],
+      "request_rate_range": [
+        0.5,
+        30,
+        0.5
+      ],
+      "max_prefill_batch_size_range": [
+        1,
+        50,
+        5
+      ],
+      "prefill_time_ms_per_request_range": [
+        10,
+        1000,
+        10
+      ],
+      "max_batch_size_range": [
+        10,
+        200,
+        10
+      ]
+    }
+  }
+}

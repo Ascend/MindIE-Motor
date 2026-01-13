@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rings-config-mindie-server  # The value of DepolymentName must be the same as the name attribute of the following deployment. The prefix rings-config- cannot be modified.
+  namespace: mindie
+  labels:
+    jobID: xxxx
+    ring-controller.atlas: ascend-910b
+data:
+  hccl.json: |
+    {
+        "status":"initializing"
+    }
+---
+apiVersion: mindxdl.gitee.com/v1
+kind: AscendJob
+metadata:
+  name: mindie-server               # The value of this parameter must be consistent with the name of ConfigMap.
+  labels:
+    framework: pytorch
+    app: mindie-ms-server      #固定
+    jobID: xxxx               # 推理任务的名称，用户需配置，追加，xxxx默认mindie-ms
+    ring-controller.atlas: ascend-910b
+  namespace: mindie                   # Select a proper namespace based on the site requirements. (The namespaces of ConfigMap and deployments must be the same.)
+spec:
+  schedulerName: volcano   # work when enableGangScheduling is true
+  runPolicy:
+    schedulingPolicy:      # work when enableGangScheduling is true
+      minAvailable: 1      # 保持和replicas一致, x == 节点数量 == master replicas + worker replicas
+      queue: default
+  successPolicy: AllWorkers
+  replicaSpecs:
+    Master:
+      replicas: 1           # controller的副本数
+      restartPolicy: Always
+      template:
+        metadata:
+          labels:
+            ring-controller.atlas: ascend-910b
+            app: mindie-ms-server
+            jobID: xxxx      #推理任务的名称，用户需配置，追加，xxxx默认mindie
+        spec:
+          nodeSelector:
+            accelerator: huawei-Ascend910
+            accelerator-type: module-910b-8
+          terminationGracePeriodSeconds: 10
+          automountServiceAccountToken: false
+          securityContext:
+            fsGroup: 1001
+          containers:
+            - image: mindie:1.0.0-aarch64-800I-A2
+              imagePullPolicy: IfNotPresent
+              name: ascend
+              readinessProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh readiness single_container"
+                periodSeconds: 180
+              livenessProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh liveness single_container"
+                periodSeconds: 180
+              startupProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh startup single_container"
+                periodSeconds: 180
+                failureThreshold: 30
+              env:
+              - name: MINDIE_USER_HOME_PATH
+                value: /usr/local
+              - name: MIES_INSTALL_PATH
+                value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-service
+              - name: CONFIG_FROM_CONFIGMAP_PATH
+                value: /mnt/configmap
+              - name: CONFIG_FROM_CONFIG_FILE_PATH
+                value: /mnt/config-files
+              - name: MINDIE_MS_P_RATE
+                value: "1"
+              - name: MINDIE_MS_D_RATE
+                value: "1"
+              - name: MINDIE_MS_GEN_SERVER_PORT
+                value: "true"
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              command: ["/bin/bash", "-c", "/mnt/configmap/boot.sh single_container; \n"]
+              resources:
+                requests:
+                  huawei.com/Ascend910: 8                         # Number of required NPUs. The maximum value is 16. You can add lines below to configure resources such as memory and CPU.
+                limits:
+                  huawei.com/Ascend910: 8                         # The value must be consistent with that in requests.
+              volumeMounts:
+              - name: dshm
+                mountPath: /dev/shm
+              - name: model-path
+                mountPath: /mnt/mindie-service/ms/model
+              - name: ascend-910-config
+                mountPath: /user/serverid/devindex/config
+              - name: python-script-gen-config-single-container
+                mountPath: /mnt/configmap/gen_config_single_container.py
+                subPath: gen_config_single_container.py
+              - name: boot-bash-script
+                mountPath: /mnt/configmap/boot.sh
+                subPath: boot.sh
+              - name: config-volume
+                mountPath: /mnt/config-files
+              - name: python-file-utils
+                mountPath: /mnt/configmap/file_utils.py
+                subPath: file_utils.py
+          volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 16Gi
+          - name: model-path
+            hostPath:
+              path: /data/Qwen2.5-14B-Instruct # 宿主机的模型权重路径可以改这里
+          - name: ascend-910-config
+            configMap:
+              name: rings-config-mindie-server
+          - name: python-script-gen-config-single-container
+            configMap:
+              name: python-script-gen-config-single-container
+          - name: boot-bash-script
+            configMap:
+              name: boot-bash-script
+              defaultMode: 0750
+          - name: config-volume
+            configMap:
+              name: config-file-path
+          - name: python-file-utils
+            configMap:
+              name: python-file-utils
+              defaultMode: 0550
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: mindie-server
+  name: mindie-server-infer # 不能命名为mindie-ms-coordinator，k8s会在controller容器内导入MINDIE_MS_COORDINATOR_PORT=tcp://xxx.xxx:1025， 被controller读取，导致通信异常
+  namespace: mindie
+spec:
+  ports:
+  - nodePort: 31015
+    port: 1025
+    protocol: TCP
+    targetPort: 1025
+  selector:
+    app: mindie-server
+  sessionAffinity: None
+  type: NodePort
+status:
+  loadBalancer: {}

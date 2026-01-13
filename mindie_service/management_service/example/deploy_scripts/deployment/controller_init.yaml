@@ -1,0 +1,162 @@
+apiVersion: mindxdl.gitee.com/v1
+kind: AscendJob
+metadata:
+  name: mindie-ms-controller        #以具体任务为准, xxxx默认mindie-ms
+  namespace: mindie            #以MindIE为准，用户可修改
+  labels:
+    framework: pytorch
+    app: mindie-ms-controller      #固定
+    jobID: xxxx               # 推理任务的名称，用户需配置，追加，xxxx默认mindie-ms
+    ring-controller.atlas: ascend-910b
+spec:
+  schedulerName: volcano   # work when enableGangScheduling is true
+  runPolicy:
+    schedulingPolicy:      # work when enableGangScheduling is true
+      minAvailable: 1      # 保持和replicas一致
+      queue: default
+  successPolicy: AllWorkers
+  replicaSpecs:
+    Master:
+      replicas: 1           # controller的副本数
+      restartPolicy: Always
+      template:
+        metadata:
+          labels:
+            #ring-controller.atlas: ascend-910b
+            app: mindie-ms-controller
+            jobID: xxxx      #推理任务的名称，用户需配置，追加，xxxx默认mindie
+        spec:                              # 以下数据之前是怎么样的就怎么样
+          nodeSelector:
+            masterselector: dls-master-node
+            #accelerator: huawei-Ascend910
+            # machine-id: "7"
+          terminationGracePeriodSeconds: 0
+          automountServiceAccountToken: false
+          securityContext:
+            fsGroup: 1001
+          containers:
+            - image: mindie:dev-2.0.RC1-B087-800I-A2-py311-ubuntu22.04-aarch64
+              imagePullPolicy: IfNotPresent
+              name: ascend
+              securityContext:
+                # allowPrivilegeEscalation: false
+                privileged: true
+                capabilities:
+                  drop: [ "ALL" ]
+                seccompProfile:
+                  type: "RuntimeDefault"
+              readinessProbe:
+                exec:
+                  command:
+                    - bash
+                    - -c
+                    - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh readiness"
+                periodSeconds: 5
+              livenessProbe:
+                exec:
+                  command:
+                    - bash
+                    - -c
+                    - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh liveness"
+                periodSeconds: 5
+                timeoutSeconds: 4
+              startupProbe:
+                exec:
+                  command:
+                    - bash
+                    - -c
+                    - "$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh startup"
+                periodSeconds: 5
+                failureThreshold: 100
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: GLOBAL_RANK_TABLE_FILE_PATH
+                  value: "/user/serverid/devindex/config/..data/global_ranktable.json"
+                - name: MIES_INSTALL_PATH
+                  value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-service
+                - name: CONFIG_FROM_CONFIGMAP_PATH
+                  value: /mnt/configmap
+                - name: CONTROLLER_LOG_CONFIG_PATH
+                  value: /root/mindie
+              envFrom:
+                - configMapRef:
+                    name: common-env
+              command: [ "/bin/bash", "-c", "
+                  /mnt/configmap/boot.sh; \n
+              " ]
+              resources:
+                requests:
+                  memory: "2Gi"
+                  cpu: "4"
+                limits:
+                  memory: "4Gi"
+                  cpu: "8"
+              volumeMounts:
+                - name: global-ranktable
+                  mountPath: /user/serverid/devindex/config
+                - name: mindie-http-client-ctl-config
+                  mountPath: /mnt/configmap/http_client_ctl.json
+                  subPath: http_client_ctl.json
+                - name: python-script-get-group-id
+                  mountPath: /mnt/configmap/get_group_id.py
+                  subPath: get_group_id.py
+                - name: python-file-utils
+                  mountPath: /mnt/configmap/file_utils.py
+                  subPath: file_utils.py
+                - name: boot-bash-script
+                  mountPath: /mnt/configmap/boot.sh
+                  subPath: boot.sh
+                - name: mindie-ms-controller-config
+                  mountPath: /mnt/configmap/ms_controller.json
+                  subPath: ms_controller.json
+                - name: scaling-rule
+                  mountPath: /usr/local/Ascend/mindie/latest/mindie-service/conf/elastic_scaling.json
+                  subPath: elastic_scaling.json
+                - name: status-data
+                  mountPath: /usr/local/Ascend/mindie/latest/mindie-service/logs
+                - name: localtime
+                  mountPath: /etc/localtime
+                - name: mnt
+                  mountPath: /mnt
+          volumes:
+            - name: localtime
+              hostPath:
+                path: /etc/localtime
+            - name: global-ranktable
+              configMap:
+                name: global-ranktable
+                defaultMode: 0640
+            - name: mindie-http-client-ctl-config
+              configMap:
+                name: mindie-http-client-ctl-config
+                defaultMode: 0640
+            - name: python-script-get-group-id
+              configMap:
+                name: python-script-get-group-id
+                defaultMode: 0640
+            - name: python-file-utils
+              configMap:
+                name: python-file-utils
+                defaultMode: 0550
+            - name: boot-bash-script
+              configMap:
+                name: boot-bash-script
+                defaultMode: 0550
+            - name: mindie-ms-controller-config
+              configMap:
+                name: mindie-ms-controller-config
+                defaultMode: 0640
+            - name: scaling-rule
+              configMap:
+                name: scaling-rule
+                defaultMode: 0640
+            - name: status-data
+              hostPath:
+                path: /data/mindie-ms/status
+                type: Directory
+            - name: mnt
+              hostPath:
+                path: /mnt

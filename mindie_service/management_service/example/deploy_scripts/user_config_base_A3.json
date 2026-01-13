@@ -1,0 +1,280 @@
+{
+  "version": "v1.0",
+  "deploy_config": {
+    "p_instances_num": 4,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 1,
+    "single_d_instance_pod_num": 4,
+    "p_pod_npu_num": 16,
+    "d_pod_npu_num": 16,
+    "p_instances_scale_num": 0,
+    "d_instances_scale_num": 0,
+    "model_id": "",
+    "prefill_distribute_enable": 0,
+    "decode_distribute_enable": 1,
+    "image_name": "mindie:dev-2.0.RC1.B091-800I-A2-py311-ubuntu22.04-aarch64",
+    "job_id": "mindie",
+    "hardware_type": "800I_A3",
+    "mindie_env_path": "./conf/mindie_env_a3.json",
+    "mindie_host_log_path": "/root/log/ascend_log",
+    "mindie_container_log_path": "/root/mindie",
+    "weight_mount_path": "/weight/deepseek_r1_w8a8",
+    "fault_recovery_func_dict":{
+      "lingqu_link":true
+    },
+    "coordinator_backup_cfg": {
+      "function_enable": false
+    },
+    "controller_backup_cfg": {
+      "function_sw": false
+    },
+    "deploy_mount_path": {
+      "ms_controller_mount": {
+        "${user_define_host_path}": "${user_define_container_path}"
+      },
+      "ms_coordinator_mount": {
+        "${user_define_host_path}": "${user_define_container_path}"
+      },
+      "prefill_server_mount": {
+        "${user_define_host_path1}": "${user_define_container_path}",
+        "${user_define_host_path2}": "${user_define_container_path}"
+      },
+      "decode_server_mount": {
+        "${user_define_host_path1}": "${user_define_container_path}",
+        "${user_define_host_path2}": "${user_define_container_path}"
+      }
+    },
+    "tls_config": {
+      "tls_enable": true,
+      "infer_tls_enable": true,
+      "infer_tls_items": {
+        "ca_cert": "./security/infer/security/certs/ca.pem",
+        "tls_cert": "./security/infer/security/certs/cert.pem",
+        "tls_key": "./security/infer/security/keys/cert.key.pem",
+        "tls_passwd": "./security/infer/security/pass/key_pwd.txt",
+        "tls_crl": ""
+      },
+      "management_tls_enable": true,
+      "management_tls_items": {
+        "ca_cert": "./security/management/security/certs/ca.pem",
+        "tls_cert": "./security/management/security/certs/cert.pem",
+        "tls_key": "./security/management/security/keys/cert.key.pem",
+        "tls_passwd": "./security/management/security/pass/key_pwd.txt",
+        "tls_crl": ""
+      },
+      "metrics_tls_enable": true,
+      "metrics_tls_items": {
+        "ca_cert": "./security/metrics/security/certs/metrics_ca.pem",
+        "tls_cert": "./security/metrics/security/certs/cert.pem",
+        "tls_key": "./security/metrics/security/keys/cert.key.pem",
+        "tls_passwd": "./security/metrics/security/pass/key_pwd.txt",
+        "tls_crl": ""
+      },
+      "ccae_tls_enable": true,
+      "ccae_tls_items": {
+        "ca_cert": "./security/ccae/security/certs/ca.pem",
+        "tls_cert": "./security/ccae/security/certs/cert.pem",
+        "tls_key": "./security/ccae/security/keys/cert.key.pem",
+        "tls_passwd": "./security/ccae/security/pass/key_pwd.txt",
+        "tls_crl": ""
+      },
+      "cluster_tls_enable": true,
+      "cluster_tls_items": {
+        "ca_cert": "./security/clusterd/security/certs/ca.pem",
+        "tls_cert": "./security/clusterd/security/certs/cert.pem",
+        "tls_key": "./security/clusterd/security/keys/cert.key.pem",
+        "tls_passwd": "./security/clusterd/security/pass/key_pwd.txt",
+        "tls_crl": ""
+      },
+      "etcd_server_tls_enable": true,
+      "etcd_server_tls_items": {
+        "ca_cert" : "./security/etcd_server/security/certs/ca.pem",
+        "tls_cert": "./security/etcd_server/security/certs/cert.pem",
+        "tls_key": "./security/etcd_server/security/keys/cert.key.pem",
+        "tls_passwd": "./security/etcd_server/security/pass/key_pwd.txt",
+        "tls_crl": ""
+      }
+    }
+  },
+  "mindie_ms_controller_config": {
+    "deploy_mode": "pd_separate",
+    "digs_prefill_slo": 1000,
+    "digs_decode_slo": 50,
+    "multi_node_infer_config": {
+      "multi_node_infer_enable": true
+    }
+  },
+  "mindie_ms_coordinator_config": {
+    "http_config": {
+      "predict_ip": "127.0.0.1",
+      "predict_port": "1025",
+      "manage_ip": "127.0.0.1",
+      "manage_port": "1026",
+      "alarm_port": "1027",
+      "server_thread_num": 10,
+      "client_thread_num": 10,
+      "http_timeout_seconds": 10,
+      "keep_alive_seconds": 180
+    },
+    "request_limit": {
+      "single_node_max_requests": 4096,
+      "max_requests": 10000
+    },
+    "exception_config": {
+      "first_token_timeout": 600,
+      "schedule_timeout": 600,
+      "infer_timeout": 3600
+    }
+  },
+  "mindie_server_prefill_config": {
+    "ServerConfig": {
+      "maxLinkNum": 4096,
+      "inferMode": "dmi",
+      "tokenTimeout": 60,
+      "e2eTimeout": 600,
+      "distDPServerEnabled": false
+    },
+    "BackendConfig": {
+      "npuDeviceIds": [
+        [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      ],
+      "tokenizerProcessNumber": 1,
+      "multiNodesInferEnabled": false,
+      "kvPoolConfig" : {"backend":"", "configPath":""},
+      "ModelDeployConfig": {
+        "maxSeqLen": 4096,
+        "maxInputTokenLen": 2048,
+        "ModelConfig": [
+          {
+            "modelInstanceType": "Standard",
+            "modelName": "dsr1_w8a8",
+            "modelWeightPath": "/weight/deepseek_r1_w8a8",
+            "worldSize": 16,
+            "cpuMemSize": 5,
+            "npuMemSize": -1,
+            "backendType": "atb",
+            "trustRemoteCode": false,
+            "dp": 2,
+            "cp": 1,
+            "tp": 8,
+            "sp": 1,
+            "moe_ep": 16,
+            "pp": 1,
+            "moe_tp": 1,
+            "kv_link_timeout": 1080,
+            "modelCutPolicy": "custom",
+            "plugin_params": "{\"plugin_type\":\"mtp\",\"num_speculative_tokens\": 1}",
+            "models": {
+              "deepseekv2": {
+                "kv_cache_options": {
+                  "enable_nz": true
+                },
+                "ep_level": 2
+              }
+            }
+          }
+        ]
+      },
+      "ScheduleConfig": {
+        "distributedEnable": false,
+        "maxPrefillBatchSize": 16,
+        "maxPrefillTokens": 4096,
+        "dpScheduling": true
+      }
+    }
+  },
+  "mindie_server_decode_config": {
+    "ServerConfig": {
+      "maxLinkNum": 256,
+      "fullTextEnabled": false,
+      "inferMode": "dmi",
+      "tokenTimeout": 60,
+      "e2eTimeout": 600,
+      "distDPServerEnabled": true
+    },
+    "BackendConfig": {
+      "npuDeviceIds": [
+        [
+          0
+        ]
+      ],
+      "tokenizerProcessNumber": 1,
+      "multiNodesInferEnabled": false,
+      "kvPoolConfig" : {"backend":"", "configPath":""},
+      "ModelDeployConfig": {
+        "maxSeqLen": 4096,
+        "maxInputTokenLen": 2048,
+        "truncation": false,
+        "ModelConfig": [
+          {
+            "modelInstanceType": "Standard",
+            "modelName": "dsr1_w8a8",
+            "modelWeightPath": "/weight/deepseek_r1_w8a8",
+            "worldSize": 1,
+            "cpuMemSize": 5,
+            "npuMemSize": -1,
+            "backendType": "atb",
+            "trustRemoteCode": false,
+            "dp": 64,
+            "cp": 1,
+            "tp": 1,
+            "sp": 1,
+            "moe_ep": 64,
+            "pp": 1,
+            "moe_tp": 1,
+            "kv_trans_timeout": 10,
+            "kv_link_timeout": 1080,
+            "modelCutPolicy": "custom",
+            "plugin_params": "{\"plugin_type\":\"mtp\",\"num_speculative_tokens\": 1}",
+            "models": {
+              "deepseekv2": {
+                "kv_cache_options": {
+                  "enable_nz": true
+                },
+                "ep_level": 2,
+                "eplb": {
+                  "level": 0,
+                  "expert_map_file": "/example/expert_map_file.json",
+                  "num_redundant_experts": 64
+                },
+                "parallel_options": {
+                  "lm_head_local_tp": 16,
+                  "o_proj_local_tp": 2,
+                  "hccl_moe_ep_buffer": 4096,
+                  "hccl_moe_tp_buffer": 64
+                },
+                "enable_oproj_prefetch": true,
+                "enable_mlapo_prefetch": true
+              }
+            }
+          }
+        ]
+      },
+      "ScheduleConfig": {
+        "distributedEnable": true,
+        "maxPrefillBatchSize": 4,
+        "maxPrefillTokens": 4096,
+        "maxBatchSize": 64,
+        "maxIterTimes": 2048,
+        "maxQueueDelayMicroseconds": 5000
+      }
+    }
+  }
+}
