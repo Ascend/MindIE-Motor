@@ -104,7 +104,7 @@ function create_dir() {
 function copy_mindie_service() {
     echo "Copy mindie service libraries ..."
     cd "$BUILD_MINDIE_SERVICE_INSTALL_DIR"/bin
-    cp ms_coordinator ms_server http_client_ctl ms_controller msctl \
+    cp ms_coordinator http_client_ctl ms_controller \
         "$RELEASE_TMP_DIR"/bin/
 
     cd "$BUILD_MINDIE_SERVICE_INSTALL_DIR"

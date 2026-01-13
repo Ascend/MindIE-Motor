@@ -6,7 +6,6 @@
     -   [PD分离服务部署](./service_deployment/pd_separation_service_deployment.md)
 -   [集群管理组件](./cluster_management_component/)
     -   [概述](./cluster_management_component/general_comments.md)
-    -   [部署器（Deployer）](./cluster_management_component/deployer.md)
     -   [控制器（Controller）](./cluster_management_component/controller.md)
     -   [调度器（Coordinator）](./cluster_management_component/coordinator.md)
     -   [日志配置](./cluster_management_component/log_configuration.md)

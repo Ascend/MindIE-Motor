@@ -3,7 +3,6 @@ project(MindIE-MS)
 cmake_minimum_required(VERSION 3.18)
 set(CMAKE_CXX_STANDARD 17)
 
-option(ENABLE_DEPLOYER "Enable deployer module" ON)
 option(ENABLE_CONTROLLER "Enable controller module" ON)
 option(ENABLE_COORDINATOR "Enable coordinator module" ON)
 
@@ -68,9 +67,6 @@ link_directories(
 
 set(ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 set(UTILS_HTTP_CLIENT_CTL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../utils/http_client_ctl)
-if (ENABLE_DEPLOYER)
-    add_subdirectory(deployer)
-endif ()
 if (ENABLE_CONTROLLER)
     add_subdirectory(controller)
 endif()

@@ -2,7 +2,6 @@ project(MindIE-MS-DT)
 
 get_filename_component(MINDIE_SERVICE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
-set(ENABLE_DEPLOYER ON)
 set(ENABLE_CONTROLLER ON)
 set(ENABLE_COORDINATOR ON)
 set(ENABLE_IPC ON)
@@ -115,9 +114,6 @@ aux_source_directory(${MINDIE_MS_TEST_ROOT}/common/backtrace TEST_FRAMEWORK_SOUR
 add_library(test_framework SHARED ${TEST_FRAMEWORK_SOURCE_DIR})
 target_link_libraries(test_framework)
 
-if (ENABLE_DEPLOYER)
-    add_subdirectory(deployer)
-endif ()
 if (ENABLE_CONTROLLER)
     add_subdirectory(controller)
 endif()

@@ -61,12 +61,8 @@ std::string GetModelConfigTestJsonPath();
 std::string GetMachineConfigJsonPath();
 std::string GetMachineConfigTestJsonPath();
 
-std::string GetMSServerConfigJsonPath();
-std::string GetMSClientConfigJsonPath();
 std::string GetMSDeployConfigJsonPath();
 std::string GetMSControllerConfigJsonPath();
-std::string GetMSServerTestJsonPath();
-std::string GetMSClientTestJsonPath();
 std::string GetMSDeployTestJsonPath();
 std::string GetMSCoordinatorTestJsonPath();
 

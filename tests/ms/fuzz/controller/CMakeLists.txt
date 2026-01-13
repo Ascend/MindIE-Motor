@@ -43,10 +43,6 @@ include_directories(
     ${MINDIE_MS_SRC_ROOT}/common/http_server
     ${MINDIE_MS_SRC_ROOT}/common/http_client
 
-    ${MINDIE_MS_SRC_ROOT}/deployer/infer_manager
-    ${MINDIE_MS_SRC_ROOT}/deployer/server/http_server
-
-
     ${MINDIE_MS_SRC_ROOT}/controller/
     ${MINDIE_MS_SRC_ROOT}/controller/cluster_status
     ${MINDIE_MS_SRC_ROOT}/controller/constant

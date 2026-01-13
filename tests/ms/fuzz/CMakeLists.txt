@@ -2,7 +2,6 @@ project(MindIE-MS-DT)
 
 get_filename_component(MINDIE_SERVICE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
-set(ENABLE_DEPLOYER ON)
 set(ENABLE_CONTROLLER ON)
 set(ENABLE_COORDINATOR ON)
 
@@ -79,9 +78,6 @@ elseif("${BUILDING_STAGE}" STREQUAL "tsan")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE -fsanitize=thread")
 endif()
 
-if (ENABLE_DEPLOYER)
-    add_subdirectory(deployer)
-endif ()
 if (ENABLE_CONTROLLER)
     add_subdirectory(controller)
 endif()

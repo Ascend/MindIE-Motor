@@ -87,45 +87,6 @@ ibis缺少Python依赖。
 
 将生成服务器证书、CA证书、和服务器私钥等认证需要的文件，放置在对应的目录。
 
-# 使用集群管理组件部署单机任务后系统出现异常，不能通过集群管理组件客户端卸载
-
-**问题描述**
-
-使用集群管理组件部署单机任务后系统出现异常，不能通过集群管理组件客户端卸载，需要手动执行kubectl命令删除相关资源。
-
-**解决步骤**
-
-执行kubectl命令手动删除相关资源，命令如下：
-
-```
-kubectl delete deployment {server_name} -n {namespace}
-kubectl delete service {server_name} -n {namespace}
-```
-
-_\{server\_name\}_：是用户服务配置中[表2](准备Deployer-msctl命令行客户端.md#table67213616914)的server\_name。
-
-_\{namespace\}_：是用户服务配置中[表2](K8s集群部署Deployer服务端.md#table67213616398)的namespace。
-
-# 使用集群管理组件部署多机任务后系统出现异常，不能通过集群管理组件客户端卸载
-
-**问题描述**
-
-使用集群管理组件部署多机任务后系统出现异常，不能通过集群管理组件客户端卸载，需要手动执行kubectl命令删除相关资源。
-
-**解决步骤**
-
-执行kubectl命令手动删除相关资源，命令如下：
-
-```
-kubectl delete deployment {server_name}-deployment-0 -n {namespace}
-kubectl delete cm rings-config-{server_name}-deployment-0 -n {namespace}
-kubectl delete service {server_name}-service -n {namespace}
-```
-
-_\{server\_name\}_：是用户服务配置中[表2](准备Deployer-msctl命令行客户端.md#table67213616914)的server\_name。
-
-_\{namespace\}_：是用户服务配置中[表2](K8s集群部署Deployer服务端.md#table67213616589)的namespace。
-
 # 使用第三方库transformers跑模型推理时，报错“cannot allocate memory in static TLS block”
 
 **问题描述**

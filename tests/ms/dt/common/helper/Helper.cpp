@@ -281,43 +281,11 @@ std::string GetA3CrossNodeMSRankTableLoaderJsonPath()
     return jsonPath;
 }
 
-std::string GetMSServerConfigJsonPath()
-{
-    std::string exePath = GetExecutablePath();
-    std::string parentPath = GetParentPath(GetParentPath(GetParentPath(GetParentPath(exePath))));
-    std::string jsonPath = GetAbsolutePath(parentPath, "mindie_service/management_service/config/ms_server.json");
-    return jsonPath;
-}
-
-std::string GetMSClientConfigJsonPath()
-{
-    std::string exePath = GetExecutablePath();
-    std::string parentPath = GetParentPath(GetParentPath(GetParentPath(GetParentPath(exePath))));
-    std::string jsonPath = GetAbsolutePath(parentPath, "mindie_service/management_service/config/msctl.json");
-    return jsonPath;
-}
-
 std::string GetMSDeployConfigJsonPath()
 {
     std::string exePath = GetExecutablePath();
     std::string parentPath = GetParentPath(GetParentPath(GetParentPath(GetParentPath(exePath))));
     std::string jsonPath = GetAbsolutePath(parentPath, "mindie_service/management_service/config/infer_server.json");
-    return jsonPath;
-}
-
-std::string GetMSServerTestJsonPath()
-{
-    std::string exePath = GetExecutablePath();
-    std::string parentPath = GetParentPath(GetParentPath(GetParentPath(GetParentPath(exePath))));
-    std::string jsonPath = GetAbsolutePath(parentPath, "tests/ms/common/.mindie_ms/ms_server.json");
-    return jsonPath;
-}
-
-std::string GetMSClientTestJsonPath()
-{
-    std::string exePath = GetExecutablePath();
-    std::string parentPath = GetParentPath(GetParentPath(GetParentPath(GetParentPath(exePath))));
-    std::string jsonPath = GetAbsolutePath(parentPath, "tests/ms/common/.mindie_ms/msctl.json");
     return jsonPath;
 }
 
@@ -729,36 +697,26 @@ bool CopyFile(const std::string &sourcePath, const std::string &destPath)
 
 void CopyDefaultConfig()
 {
-    std::string serverConfigJsonPath = GetMSServerConfigJsonPath();
-    std::string clientConfigJsonPath = GetMSClientConfigJsonPath();
     std::string deployConfigJsonPath = GetMSDeployConfigJsonPath();
     std::string controllerConfigJsonPath = GetMSControllerConfigJsonPath();
     std::string coordinatorConfigJsonPath = GetMSCoordinatorConfigJsonPath();
 
-    std::string serverTestJsonPath = GetMSServerTestJsonPath();
-    std::string clientTestJsonPath = GetMSClientTestJsonPath();
     std::string deployTestJsonPath = GetMSDeployTestJsonPath();
     std::string controllerTestJsonPath = GetMSControllerTestJsonPath();
     std::string coordinatorTestJsonPath = GetMSCoordinatorTestJsonPath();
 
     mode_t oldMask = umask(027);
-    CopyFile(serverConfigJsonPath, serverTestJsonPath);
     umask(oldMask);
-    CopyFile(clientConfigJsonPath, clientTestJsonPath);
     CopyFile(deployConfigJsonPath, deployTestJsonPath);
     CopyFile(controllerConfigJsonPath, controllerTestJsonPath);
     CopyFile(coordinatorConfigJsonPath, coordinatorTestJsonPath);
     CopyFile(GetModelConfigJsonPath(), GetModelConfigTestJsonPath());
     CopyFile(GetMachineConfigJsonPath(), GetMachineConfigTestJsonPath());
 
-    SetMSServerJsonDefault(serverTestJsonPath);
-    SetMSClientJsonDefault(clientTestJsonPath);
     SetInferJsonDefault(deployTestJsonPath);
     SetMSCoordinatorJsonDefault(coordinatorTestJsonPath);
     SetMSControllerJsonDefault(controllerTestJsonPath);
 
-    ChangeFileMode600(serverTestJsonPath);
-    ChangeFileMode600(clientTestJsonPath);
     ChangeFileMode600(deployTestJsonPath);
     ChangeFileMode600(controllerTestJsonPath);
     ChangeFileMode600(coordinatorTestJsonPath);

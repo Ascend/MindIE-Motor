@@ -96,42 +96,10 @@ spec:
     bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_coordinator_fuzz
     cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_coordinator_fuzz --gtest_filter=TestCoordinator.TestCoordinatorRequest10 ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
     fun: MINDIE::MS::Configure::Init
-  - name: TestMindIEServerCrossNodeLoadServer
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIEServer.TestMindIEServerCrossNodeLoadServer ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: MINDIE::MS::CrossNodeServer::Deploy,MINDIE::MS::CrossNodeServer::Update,MINDIE::MS::CrossNodeServer::Unload
-  - name: TestMindIEServerCrossNodeLoadServerTC02
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIEServer.TestMindIEServerCrossNodeLoadServerTC02 ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: MINDIE::MS::CrossNodeServer::Deploy,MINDIE::MS::CrossNodeServer::Update,MINDIE::MS::CrossNodeServer::Unload,MINDIE::MS::CrossNodeServer::GetDeployStatus
-  - name: TestMindIEServerStartServer
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIEServer.TestMindIEServerStartServer ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: ParseCommandArgs
-  - name: TestMindIEServerServerStatus
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIEServer.TestMindIEServerServerStatus ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: MINDIE::MS::ServerManager::FromStatusFile
-  - name: TestMindIEServerCreateStartMSctl
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIEServer.TestMindIEServerCreateStartMSctl ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: ParseInitConfig
-  - name: TestMindIESingleServerSingleNodeLoadServer
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIESingleServer.TestMindIESingleServerSingleNodeLoadServer ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: MINDIE::MS::SingleNodeServer::Deploy,MINDIE::MS::SingleNodeServer::Update,MINDIE::MS::SingleNodeServer::Unload,MINDIE::MS::SingleNodeServer::GetDeployStatus,MINDIE::MS::SingleNodeServer::Init
-  - name: TestMindIESingleServerSingleNodeLoadServerTC02
-    bin: /src/mindie-service/tests/ms/fuzz/mindie_ms_deployer_fuzz
-    cmd: cd /src/mindie-service/tests/ms/fuzz && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_fuzz --gtest_filter=TestMindIESingleServer.TestMindIESingleServerSingleNodeLoadServerTC02 ${args} && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: MINDIE::MS::SingleNodeServer::Deploy,MINDIE::MS::SingleNodeServer::Update,MINDIE::MS::SingleNodeServer::Unload,MINDIE::MS::SingleNodeServer::GetDeployStatus,MINDIE::MS::SingleNodeServer::Init
   - name: mindie_ms_controller_ut
     bin: /src/mindie-service/tests/ms/dt/mindie_ms_controller_ut
     cmd: cd /src/mindie-service/tests/ms/dt && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_controller_ut && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
     fun: MINDIE::MS::Controller::Run
-  - name: mindie_ms_deployer_ut
-    bin: /src/mindie-service/tests/ms/dt/mindie_ms_deployer_ut
-    cmd: cd /src/mindie-service/tests/ms/dt && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_deployer_ut && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh
-    fun: ParseCommandArgs
   - name: TestClusterMonitor
     bin: /src/mindie-service/tests/ms/dt/mindie_ms_coordinator_ut
     cmd: cd /src/mindie-service/tests/ms/dt && export HSECEASY_PATH=/src/mindie-service/mindie_service/management_service/open_source/kmc/lib && ./mindie_ms_coordinator_ut --gtest_filter=TestClusterMonitor.* && bash /src/mindie-service/tests/ms/fuzz/script/run_lcov.sh

@@ -35,9 +35,6 @@ include_directories(
     ${MINDIE_MS_SRC_ROOT}/coordinator/resource
     ${MINDIE_MS_SRC_ROOT}/coordinator/digs_scheduler
 
-    ${MINDIE_MS_SRC_ROOT}/deployer/infer_manager
-    # ${MINDIE_MS_SRC_ROOT}/deployer/server/http_server
-
     #三方
     ${MINDIE_MS_SRC_ROOT}/build/open_source/boost
     ${MINDIE_MS_SRC_ROOT}/build/open_source/nlohmann/include

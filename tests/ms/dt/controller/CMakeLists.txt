@@ -28,8 +28,6 @@ include_directories(
     ${MINDIE_MS_SRC_ROOT}/common/cluster_grpc/grpc_proto/
     ${MINDIE_MS_SRC_ROOT}/common/leader_judge/
     ${MINDIE_MS_SRC_ROOT}/common/leader_judge/etcd_proto/
-    ${MINDIE_MS_SRC_ROOT}/deployer/infer_manager
-    ${MINDIE_MS_SRC_ROOT}/deployer/server/http_server
 
     ${MINDIE_MS_SRC_ROOT}/controller/
     ${MINDIE_MS_SRC_ROOT}/controller/ccae_reporter/

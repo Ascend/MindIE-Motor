@@ -92,7 +92,6 @@ _run_smoke_dt_test()
 {
     cd ${MINDIE_MS_TEST_PATH}/dt
     ./mindie_ms_controller_ut
-    ./mindie_ms_deployer_ut --gtest_filter=-TestPathCheck.*
     ./mindie_ms_ipc_ut
     ./mindie_ms_securityutils_ut
     ./mindie_service_utils_ut
@@ -217,7 +216,7 @@ _gen_coverage()
     echo "Line coverage: $line_coverage"
     line_coverage_value=$(echo "$line_coverage" | sed 's/%//')
 
-    COVERAGE_TARGET='71'
+    COVERAGE_TARGET='68'
     if (( $(echo "$line_coverage_value < $COVERAGE_TARGET" | bc -l) )); then
     echo "execute dt pipeline failed, line coverage ($line_coverage) is less than target value ($COVERAGE_TARGET%)"
         exit 1

@@ -88,7 +88,6 @@ main()
     _build_fuzz
     cp ${MINDIE_MS_TEST_PATH}/fuzz/mindie_ms_controller_fuzz /out/
     cp ${MINDIE_MS_TEST_PATH}/fuzz/mindie_ms_coordinator_fuzz /out/
-    cp ${MINDIE_MS_TEST_PATH}/fuzz/mindie_ms_deployer_fuzz /out/
 
     chmod 640 -R $MINDIE_MS_SRC_PATH/config/**/*.json
     chmod 640 -R $MINDIE_MS_SRC_PATH/output/config/**/*.json
