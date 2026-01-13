@@ -1,0 +1,60 @@
+{
+  "version": "1.0.0",
+  "mindie_common_env": {
+    "CANN_INSTALL_PATH": "/usr/local/Ascend",
+    "MIES_INSTALL_PATH": "/usr/local/Ascend/mindie/latest/mindie-service",
+    "MINDIE_LLM_HOME_PATH": "/usr/local/Ascend/mindie/latest/mindie-llm",
+    "TASK_QUEUE_ENABLE": 1,
+    "HCCL_BUFFSIZE": 120,
+    "MINDIE_LOG_TO_FILE": 1,
+    "MINDIE_LOG_TO_STDOUT": 1,
+    "MINDIE_LOG_LEVEL": "INFO",
+    "ASCEND_SLOG_PRINT_TO_STDOUT": 0,
+    "ASCEND_GLOBAL_LOG_LEVEL": 3,
+    "ASCEND_GLOBAL_EVENT_ENABLE": 1,
+    "ATB_LOG_TO_FILE": 0,
+    "ASDOPS_LOG_TO_STDOUT": 0,
+    "ASDOPS_LOG_LEVEL": "ERROR",
+    "MINDIE_LLM_CONTINUOUS_BATCHING": 1,
+    "MINDIE_LLM_RECOMPUTE_THRESHOLD": 0.5,
+    "DIST_PD_DISAGGREGATION": 1,
+    "HCCL_RDMA_RETRY_CNT": 7,
+    "HCCL_RDMA_TIMEOUT": 18,
+    "HCCL_EXEC_TIMEOUT": 60
+  },
+  "mindie_ms_controller_env": {
+  },
+  "mindie_ms_coordinator_env": {
+  },
+  "mindie_server_prefill_env": {
+    "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+    "OMP_NUM_THREADS": 8,
+    "HCCL_CONNECT_TIMEOUT": 7200,
+    "HCCL_ENTRY_LOG_ENABLE": 1,
+    "HCCL_ALGO": "level0:NA;level1:pipeline",
+    "DP_MOVE_UP_ENABLE": 1,
+    "MINDIE_ASYNC_SCHEDULING_ENABLE": 0,
+    "HCCL_OP_EXPANSION_MODE": "AIV",
+    "NPU_MEMORY_FRACTION": 0.92
+  },
+  "mindie_server_decode_env": {
+    "MINDIE_ENABLE_DP_DISTRIBUTED": 1,
+    "DP_PARTITION_UP_ENABLE": 1,
+    "DP_MOVE_UP_ENABLE": 1,
+    "HCCL_BUFFSIZE": 512,
+    "ATB_LAYER_INTERNAL_TENSOR_REUSE": 1,
+    "ATB_CONVERT_NCHW_TO_ND": 1,
+    "ATB_CONTEXT_WORKSPACE_SIZE": 0,
+    "ATB_LAUNCH_KERNEL_WITH_TILING": 1,
+    "ATB_LLM_ENABLE_AUTO_TRANSPOSE": 0,
+    "ATB_LLM_HCCL_ENABLE": 1,
+    "TASK_QUEUE_ENABLE": 1,
+    "INF_NAN_MODE_ENABLE": 0,
+    "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+    "OMP_NUM_THREADS": 8,
+    "NPU_MEMORY_FRACTION": 0.92,
+    "HCCL_ENTRY_LOG_ENABLE": 1,
+    "HCCL_CONNECT_TIMEOUT": 7200,
+    "MINDIE_ASYNC_SCHEDULING_ENABLE": 1
+  }
+}
