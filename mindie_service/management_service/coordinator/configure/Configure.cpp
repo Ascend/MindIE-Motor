@@ -307,29 +307,28 @@ int32_t Configure::ReadExceptionConfig(const nlohmann::json &config)
     exceptionConfig.firstTokenTimeout = config.at("first_token_timeout").template get<size_t>();
     exceptionConfig.inferTimeout = config.at("infer_timeout").template get<size_t>();
     exceptionConfig.tokenizerTimeout = config.at("tokenizer_timeout").template get<size_t>();
-
+    size_t minTimeout = std::min(exceptionConfig.firstTokenTimeout, exceptionConfig.inferTimeout);
     /*
         调度超时时间需要小于推理超时时间，避免高并发时序问题。
-        具体规则：schedule_timeout + ADJUSTMENT_SECONDS(20秒) <= infer_timeout
-        
-        如果schedule_timeout过大，例如和infer_timeout都设置为60秒，会发生以下时序问题：
-        1. 第59.5秒才完成调度，将请求转发到底层组件
+        具体规则：schedule_timeout + ADJUSTMENT_SECONDS(20秒) <= minTimeout
+        如果schedule_timeout过大，例如和minTimeout都是60秒，会发生以下时序问题：
+        1. 第59.9秒才完成调度，将请求转发到底层组件
         2. 第60秒调度器发现请求超时，发送stop请求
         3. 底层组件的stop thread比infer thread执行要快
         4. 可能会发生stop thread发现推理请求尚未入队，导致stop请求失败
-        
-        基于经验值，将schedule_timeout调整为infer_timeout - ADJUSTMENT_SECONDS
+        基于经验值，将schedule_timeout调整为minTimeout - ADJUSTMENT_SECONDS
         确保调度过程有20秒的安全余量，避免调度和推理过程在时间上产生冲突。
     */
-    if (exceptionConfig.scheduleTimeout  + ADJUSTMENT_SECONDS > exceptionConfig.inferTimeout) {
+    if (exceptionConfig.scheduleTimeout + ADJUSTMENT_SECONDS > minTimeout) {
         size_t originalScheduleTimeout = exceptionConfig.scheduleTimeout;
-        exceptionConfig.scheduleTimeout = (exceptionConfig.inferTimeout > ADJUSTMENT_SECONDS) ?
-                                         (exceptionConfig.inferTimeout - ADJUSTMENT_SECONDS) : 0;
+        exceptionConfig.scheduleTimeout = (minTimeout > ADJUSTMENT_SECONDS) ?
+                                         (minTimeout - ADJUSTMENT_SECONDS) : 0;
 
-        LOG_W("[%s] [Configure] schedule_timeout(%zu) should be less than infer_timeout(%zu), "
-              "automatically adjusted to %zu to avoid high concurrency timing issues!",
+        LOG_W("[%s] [Configure] schedule_timeout(%zu) should be less than the minimum of inferTimeout(%zu) "
+            "and firstTokenTimeout(%zu), automatically adjusted to %zu to avoid high concurrency timing issues!",
             GetErrorCode(ErrorType::INVALID_INPUT, CoordinatorFeature::CONFIGURE).c_str(),
-            originalScheduleTimeout, exceptionConfig.inferTimeout, exceptionConfig.scheduleTimeout);
+            originalScheduleTimeout, exceptionConfig.inferTimeout, exceptionConfig.firstTokenTimeout,
+            exceptionConfig.scheduleTimeout);
     }
     return 0;
 }
