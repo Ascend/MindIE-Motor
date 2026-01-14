@@ -96,7 +96,7 @@
 <tr id="row859820665317"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.4.1"><p id="p6598568538"><a name="p6598568538"></a><a name="p6598568538"></a><strong id="b35980655316"><a name="b35980655316"></a><a name="b35980655316"></a>请求示例</strong></p>
 </th>
 <td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.4.1 "><pre class="screen" id="screen1159826205313"><a name="screen1159826205313"></a><a name="screen1159826205313"></a>curl -H "Accept: application/json" -H "Content-type: application/json" --cacert ca.pem --cert client.pem  --key client.key.pem -X POST -d '{
-    "model": "llama",
+    "model": "Qwen",
     "messages": [
         {
             "role": "user",
@@ -120,7 +120,6 @@
 <tr id="row1598176155312"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.5.1"><p id="p259811635310"><a name="p259811635310"></a><a name="p259811635310"></a>返回示例</p>
 </th>
 <td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen1559816195311"><a name="screen1559816195311"></a><a name="screen1559816195311"></a>data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":0,"delta":{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}
-
 data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":1,"delta":{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}
 
 data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":0,"delta":{"role":"assistant","content":" are"},"logprobs":null,"finish_reason":null}]}

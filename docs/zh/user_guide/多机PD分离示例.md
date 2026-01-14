@@ -32,6 +32,14 @@
 │   └── update_mindie_server_config.py
 ├── chat.sh
 ├── conf
+│   ├── config_p.json
+│   ├── config_d.json
+│   ├── config.json
+│   ├── http_client_ctl.json
+│   ├── ms_controller.json
+│   ├── ms_coordinator.json
+│   ├── mindie_env_a3.json
+│   └── mindie_env.json
 ├── delete.sh
 ├── deploy.sh
 ├── deploy_ac_job.py
@@ -57,6 +65,10 @@
     ├── validate_config.py
     └── validate_utils.py
 ```
+
+[点此获取config.json](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/src/server/conf/config.json)
+
+其中config_p.json、config_d.json、config.json内容一样
 
 **多机PD分离部署场景相关的关键目录及文件解释如下表所示：**
 
