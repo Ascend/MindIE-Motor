@@ -381,11 +381,6 @@ void LogLevelDynamicHandler::InsertLogConfigToFile()
         LOG_E("Failed to open config file.");
         return;
     }
-    if (!CheckJsonStringSize(jsonString)) {
-        LOG_E("Invalid json format.");
-        return;
-    }
-
     try {
         nlohmann::json config = nlohmann::json::parse(jsonString, CheckJsonDepthCallBack);
         config["LogConfig"] = {

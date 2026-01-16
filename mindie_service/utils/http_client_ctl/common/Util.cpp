@@ -449,13 +449,7 @@ std::string GetUUID()
     return uuidStr;
 }
 
-static constexpr size_t JSON_STR_SIZE_MAX = 1024 * 1024; // 限制1M
-static constexpr int JSON_STR_DEP_MAX = 50; // 限制嵌套层次50层
-
-bool CheckJsonStringSize(const std::string &jsonstr)
-{
-    return jsonstr.size() <= JSON_STR_SIZE_MAX;
-}
+static constexpr int JSON_STR_DEP_MAX = 10; // 限制嵌套层次10层
 
 bool CheckJsonDepth(int depth, nlohmann::json::parse_event_t ev)
 {

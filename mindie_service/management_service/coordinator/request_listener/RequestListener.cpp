@@ -68,13 +68,6 @@ void RequestListener::TritonReqHandler(std::shared_ptr<ServerConnection> connect
     auto &req = connection->GetReq();
     auto body = boost::beast::buffers_to_string(req.body().data());
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to parse Triton request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         std::string reqIdStr = GenReqestId();
         auto ret = reqManage->AddReq(reqIdStr, ReqInferType::TRITON, connection, req);
@@ -147,13 +140,6 @@ void RequestListener::TGIOrVLLMReqHandler(std::shared_ptr<ServerConnection> conn
     auto &req = connection->GetReq();
     try {
         std::string bodyStr = boost::beast::buffers_to_string(req.body().data());
-        if (!CheckJsonStringSize(bodyStr)) {
-            LOG_E("[%s] [Configure] Failed to parse TGI/VLLM request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str(),
-                bodyStr.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(bodyStr, CheckJsonDepthCallBack);
         std::string reqIdStr = GenReqestId();
         int ret = 0;
@@ -367,13 +353,6 @@ int RequestListener::DealTritonReq(std::shared_ptr<ReqAgent> reqInfo)
     reqInfo->SetIsStream(TritonIsStream(req.target()));
     auto body = boost::beast::buffers_to_string(req.body().data());
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to parse Triton request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return -1;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         std::string prompt;
         std::vector<uint32_t> tokenList;
@@ -426,13 +405,6 @@ int RequestListener::DealTGIReq(std::shared_ptr<ReqAgent> reqInfo)
     auto connection = reqInfo->GetConnection();
     auto body = boost::beast::buffers_to_string(req.body().data());
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to parse TGI request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return -1;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         reqInfo->SetIsStream(TGIIsStream(req.target(), bodyJson));
         std::string inputs = bodyJson.at("inputs").template get<std::string>();
@@ -464,13 +436,6 @@ int RequestListener::DealVLLMReq(std::shared_ptr<ReqAgent> reqInfo)
     auto connection = reqInfo->GetConnection();
     auto body = boost::beast::buffers_to_string(req.body().data());
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to parse VLLM request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return -1;
-        }
         std::string inputs;
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         reqInfo->SetIsStream(VLLMIsStream(bodyJson));
@@ -502,13 +467,6 @@ int RequestListener::DealOpenAIReq(std::shared_ptr<ReqAgent> reqInfo)
     auto connection = reqInfo->GetConnection();
     auto body = boost::beast::buffers_to_string(req.body().data());
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to parse OpenAI request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return -1;
-        }
         std::string inputs;
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         reqInfo->SetIsStream(OpenAIIsStream(bodyJson));
@@ -551,12 +509,6 @@ int RequestListener::DealMindIEReq(std::shared_ptr<ReqAgent> reqInfo)
     auto connection = reqInfo->GetConnection();
     auto body = boost::beast::buffers_to_string(req.body().data());
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to parse MindIE request, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return -1;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         reqInfo->SetIsStream(MindIEIsStream(bodyJson));
         // inputs 和 input_id 不能同时存在
