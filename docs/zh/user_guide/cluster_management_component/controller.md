@@ -3,7 +3,7 @@
 
 控制器（Controller）作为整个Server集群的身份决策大脑及状态管控中心，主要功能包括：集群节点状态管控、PD身份决策与下发等，其架构如[图1 控制器（Controller）架构图](#fig12171552133317)所示。
 
-**图 1**  控制器（Controller）架构图<a id="fig12171552133317"></a>  
+**图 1**  控制器（Controller）架构图<a id="fig12171552133317"></a>
 ![](../../figures/controller_architecture.png)
 
 # 安装部署
@@ -59,7 +59,7 @@ ms_controller.json配置文件样例如下所示，参数解释请参见[ms_cont
   "mindie_server_metric_port": 1027,
   "controller_alarm_port": 1027,
   "mindie_ms_coordinator_port": 1026,
-  "node_manager_port": 1028, 
+  "node_manager_port": 1028,
   "mindie_ms_coordinator_external_port": 1028,
   "http_timeout_seconds": 5,
   "http_retries": 3,
@@ -686,7 +686,7 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
         [req] # 主要请求内容
         req_extensions = v3_req
         distinguished_name = req_distinguished_name
-        
+
         [req_distinguished_name] # 证书主体信息
         countryName = CN
         stateOrProvinceName = State
@@ -694,13 +694,13 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
         organizationName = Organization
         organizationalUnitName = Unit
         commonName = etcd-server
-        
+
         [v3_req] # 核心属性
         basicConstraints = CA:FALSE
         keyUsage = digitalSignature, keyEncipherment
         extendedKeyUsage = serverAuth, clientAuth
         subjectAltName = @alt_names
-        
+
         [alt_names] # 服务标识
         DNS.1 = etcd
         DNS.2 = etcd.default
@@ -720,7 +720,7 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
         [req] # 主要请求内容
         req_extensions = v3_req
         distinguished_name = req_distinguished_name
-        
+
         [req_distinguished_name] # 证书主体信息
         countryName = CN
         stateOrProvinceName = State
@@ -728,13 +728,13 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
         organizationName = Organization
         organizationalUnitName = Unit
         commonName = etcd-client
-        
+
         [v3_req] # 核心属性
         basicConstraints = CA:FALSE
         keyUsage = digitalSignature, keyEncipherment
         extendedKeyUsage = clientAuth
         subjectAltName = @alt_names
-        
+
         [alt_names] # 服务标识
         DNS.1 = mindie-service-controller
         DNS.2 = mindie-service-coordinator
@@ -759,13 +759,13 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
         serial          = $dir/serial
         database = /home/{用户名}/auto_gen_ms_cert/etcdca4/index.txt
         crlnumber = /home/{用户名}/auto_gen_ms_cert/etcdca4/pulp_crl_number
-        
-        
+
+
         default_days = 365 # how long to certify for
         default_crl_days= 365 # how long before next CRL
         default_md = default # use public key default MD
         preserve = no # keep passed DN ordering
-        
+
         ####################################################################
         [ crl_ext ] # CRL扩展属性
         # CRL extensions.
@@ -787,43 +787,43 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
         touch /home/{用户名}/auto_gen_ms_cert/etcdca4/index.txt
         echo 1000 > /home/{用户名}/auto_gen_ms_cert/etcdca4/pulp_crl_number
         echo "01" > /home/{用户名}/auto_gen_ms_cert/etcdca4/serial
-        
+
         # 2. 设置权限
         chmod 700 /home/{用户名}/auto_gen_ms_cert/etcdca4/newcerts
         chmod 600 /home/{用户名}/auto_gen_ms_cert/etcdca4/{index.txt,pulp_crl_number,serial}
-        
+
         # 3. 创建CA证书
         openssl genrsa -out ca.key 2048
         openssl req -x509 -new -nodes -key ca.key \
         -subj "/CN=my-cluster-ca" \
         -days 3650 -out ca.pem
-        
+
         # 4. 生成服务端证书
         openssl genrsa -out server.key 2048
         openssl req -new -key server.key -out server.csr \
         -subj "/CN=etcd-server" -config server.cnf
         openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
         -out server.pem -days 3650 -extensions v3_req -extfile server.cnf
-        
+
         #5. 吊销列表
         openssl ca -passin pass:{password} -revoke server.pem -keyfile ca.key -cert ca.pem -config crl.conf
         openssl ca -passin pass:{password}  -gencrl -keyfile ca.key -cert ca.pem -out server_crl.pem -config crl.conf
-        
+
         # 6. 生成客户端证书
         openssl genrsa -out client.key 2048
         openssl req -new -key client.key -out client.csr \
         -subj "/CN=etcd-client" -config client.cnf
         openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
         -out client.pem -days 3650 -extensions v3_req -extfile client.cnf
-        
+
         # 7. 加密公钥 (使用 KMC)
         # 以kmc_encrypt加密工具为例，并自行配置{password}
         kmc_encrypt -in client.key -out client.key.enc -key_id {password}
-        
+
         # 8. 设置权限
         chmod 0400 ./*.key
         chmod 0400 ./*.pem
-        
+
 
 2.  创建crl.conf所需文件和目录。
 
@@ -945,7 +945,7 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
                     - key: kubernetes.io/hostname
                       operator: In
                       values: ["ubuntu"]  # 绑定到特定节点
-        
+
         ---
         apiVersion: v1
         kind: PersistentVolume
@@ -966,7 +966,7 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
                     - key: kubernetes.io/hostname
                       operator: In
                       values: ["worker-80-39"]
-        
+
         ---
         apiVersion: v1
         kind: PersistentVolume
@@ -1327,7 +1327,7 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
                       mountPath: /mnt/configmap/ms_controller.json
                       subPath: ms_controller.json
                     - name: status-data
-                      mountPath: /usr/local/Ascend/mindie/latest/mindie-service/logs
+                      mountPath: $MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/logs
                     - name: localtime
                       mountPath: /etc/localtime
                     - name: mnt
@@ -1400,7 +1400,7 @@ Controller主备依赖ETCD分布式锁功能，涉及集群内不同POD间通信
           "controller_backup_cfg": {
             "function_sw": false
           },
-      
+
           "tls_config": {
             "tls_enable": true,
             "kmc_ksf_master": "/etc/ssl/certs/etcdca/tools/pmt/master/ksfa",
@@ -1517,7 +1517,7 @@ MindIE Motor提供了节点故障后的实例级Job重配置功能，无论是�
 -   **有冗余**：当冗余节点足够恢复故障实例时，则恢复仅涉及到故障的Prefill和Decode实例。
 -   **无冗余**：出现故障节点时，实例无法直接恢复，需要根据弹性模板释放其他实例来恢复故障实例。当前的恢复策略为**缩P保D**，即D实例故障后，当P实例个数大于1个的情况下，则释放P实例得到冗余节点，以此恢复D实例。
 
-<br>   
+<br>
 
 
 **操作步骤**
@@ -1557,9 +1557,9 @@ MindIE Motor提供了节点故障后的实例级Job重配置功能，无论是�
         fault-retry-times: "10000"
         grt-group/deploy-server: 1
     spec:
-      schedulerName: volcano   
+      schedulerName: volcano
       runPolicy:
-        schedulingPolicy:      
+        schedulingPolicy:
           minAvailable: x      # 与replicas保持一致
           queue: default
           priorityClass: high-priority

@@ -103,7 +103,7 @@ if __name__ == '__main__':
 
     # get config from test case
     container_name = environment_config["container_name"]
-    mies_install_path = environment_config.get("mies_install_path", '/usr/local/Ascend/mindie/latest/mindie-service')
+    mies_install_path = environment_config.get("mies_install_path", '$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor')
 
     # start container
     command_helper_instance.exec_command(server_id, f'docker start {container_name}', wait_time=5)
@@ -141,7 +141,7 @@ if __name__ == '__main__':
         # start service
         command_helper_instance.exec_command(server_id, f'export MIES_CONFIG_JSON_PATH={test_case["config_path"]}',
                                             wait_time=1)
-        command_helper_instance.exec_command(server_id, f'{mies_install_path}/bin/mindieservice_daemon',
+        command_helper_instance.exec_command(server_id, f"mindie_llm_server",
                                             True, wait_strs=["Daemon start success"], wait_time=180)
 
         # start client

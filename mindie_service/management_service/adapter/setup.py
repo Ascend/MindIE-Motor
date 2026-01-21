@@ -11,12 +11,28 @@
 # See the Mulan PSL v2 for more details.
 
 import os
+import logging
 from setuptools import setup, find_packages
 
 os.environ['SOURCE_DATE_EPOCH'] = '0'
+
+
+def get_version() -> str:
+    """
+    Return version string.
+
+    Priority:
+    1. Environment variable MINDIE_MOTOR_VERSION_OVERRIDE
+    2. Default version
+    """
+    version = os.getenv("MINDIE_MOTOR_VERSION_OVERRIDE", "1.0.0")
+    logging.info(f"Use mindie llm version: {version}")
+    return version
+
+
 setup(
     name='om_adapter',
-    version='0.0.1',
+    version=get_version(),
     description='om adapter',
     packages=find_packages(),
     python_requires=">=3.10",

@@ -102,7 +102,7 @@ if __name__ == '__main__':
         # get config from test case
         container_name = env_config["container_name"]
         container_names.append(container_name)
-        mies_install_path = env_config.get("mies_install_path", '/usr/local/Ascend/mindie/latest/mindie-service')
+        mies_install_path = env_config.get("mies_install_path", '$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor')
         mies_install_paths.append(mies_install_path)
 
         # start container
@@ -158,10 +158,10 @@ if __name__ == '__main__':
             kill_all_service(command_helper_instance, cur_id)
             command_helper_instance.exec_command(
                 cur_id, f'export MIES_CONFIG_JSON_PATH={test_case["config_path"][idx]}', wait_time=1)
-            command_helper_instance.exec_command(cur_id, f'{mies_install_path}/bin/mindieservice_daemon', wait_time=1)
+            command_helper_instance.exec_command(cur_id, "mindie_llm_server", wait_time=1)
 
         # start service for master node
-        command_helper_instance.exec_command(server_id[0], f'{mies_install_path}/bin/mindieservice_daemon',
+        command_helper_instance.exec_command(server_id[0], "mindie_llm_server",
                                             True, wait_strs=["Daemon start success"], wait_time=360)
 
         # start client

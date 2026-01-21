@@ -75,7 +75,7 @@ spec:
                 - name: GLOBAL_RANK_TABLE_FILE_PATH
                   value: "/user/serverid/devindex/config/..data/global_ranktable.json"
                 - name: MIES_INSTALL_PATH
-                  value: $(MINDIE_USER_HOME_PATH)/Ascend/mindie/latest/mindie-service
+                  value: $(MINDIE_USER_HOME_PATH)/lib/python3.11/site-packages/mindie_motor
                 - name: CONFIG_FROM_CONFIGMAP_PATH
                   value: /mnt/configmap
                 - name: COORDINATOR_LOG_CONFIG_PATH

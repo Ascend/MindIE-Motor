@@ -79,7 +79,7 @@ class ConfigLoader:
 
         self.dp = self.extract_dp()
         self.tp = self.extract_tp()
-        
+
         self.model_params.update({
             "model_name": self.model_name,
             "llm_size": self.llm_size
@@ -105,7 +105,7 @@ class ConfigLoader:
             vim_path = shutil.which('vim')
             if vim_path is None:
                 raise FileNotFoundError("vim not found in PATH!")
-                
+
             subprocess.run([vim_path, file_path], check=True)
         else:
             raise FileNotFoundError(f'Path validation failed: {error_msg}')
@@ -147,7 +147,7 @@ class ConfigLoader:
 
     def extract_bytes_per_element(self) -> int:
         """Extracts the number of bytes per element based on quantization configuration.
-            
+
         Returns:
             int: 1 for 8-bit quantization (w8a8), 2 otherwise (default).
         """
@@ -172,23 +172,23 @@ class ConfigLoader:
                         .get("ModelDeployConfig", {})
                         .get("ModelConfig", [{}])[0]
                         .get("worldSize"))
-            
+
             if world_size is None:
                 raise KeyError("worldSize not found in config")
-            
+
             # Prompt user to confirm/modify the value
             user_input = input(
                     f"The current WorldSize in config.json is {world_size}. "
                     f"Please enter the actual WorldSize (or press Enter to use current value): "
                     )
-            
+
             # Use user input if provided, else use config value
             if user_input.strip():
                 try:
                     return int(user_input)
                 except ValueError as e:
                     raise ValueError("Invalid input. Please enter an integer value for WorldSize.") from e
-            
+
             return int(world_size)
 
         except (KeyError, IndexError) as e:
@@ -281,7 +281,7 @@ class ConfigLoader:
     def get_config_file_path(self):
         self.config_file_path = os.path.join(
             os.getenv(
-                "MIES_INSTALL_PATH", "/usr/local/Ascend/mindie/latest/mindie-service"
+                "MIES_INSTALL_PATH", "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor"
             ), "conf/config.json"
         )
 
@@ -289,7 +289,7 @@ class ConfigLoader:
         self.version_info_path = os.path.abspath(
             os.path.join(
                 os.getenv(
-                    "MIES_INSTALL_PATH", "/usr/local/Ascend/mindie/latest/mindie-service"
+                    "MIES_INSTALL_PATH", "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor"
                 ), "../version.info"
             )
         )

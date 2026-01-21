@@ -5,7 +5,7 @@
     },
     "test_environment": {
         "container_name": "mindie_b092",
-        "mies_install_path": "/usr/local/Ascend/mindie/latest/mindie-service"
+        "mies_install_path": "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor"
     },
     "test_cases": [
         {
@@ -22,7 +22,7 @@
             "TestAccuracy": "True",
             "Tokenizer": "True",
             "MaxOutputLen": 256,
-            "config_path": "/usr/local/Ascend/mindie/latest/mindie-service/conf/config.json"
+            "config_path": "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/conf/config.json"
         },
         {
             "case_id": 1,
@@ -37,7 +37,7 @@
             "RequestRate": 2.65,
             "Tokenizer": "True",
             "MaxOutputLen": 512,
-            "config_path": "/usr/local/Ascend/mindie/latest/mindie-service/conf/config.json"
+            "config_path": "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/conf/config.json"
         }
     ]
 }

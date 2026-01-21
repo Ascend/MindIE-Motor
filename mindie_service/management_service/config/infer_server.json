@@ -19,7 +19,7 @@
         "npu_chip_num": 8
     },
     "mindie_server_config": {
-        "mies_install_path": "/usr/local/Ascend/mindie/latest/mindie-service",
+        "mies_install_path": "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor",
         "infer_port": 1025,
         "management_port": 1026,
         "enable_tls" : true
