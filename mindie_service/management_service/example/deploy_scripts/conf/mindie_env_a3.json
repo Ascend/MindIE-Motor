@@ -1,9 +1,9 @@
 {
   "version": "1.0.0",
   "mindie_common_env": {
-    "CANN_INSTALL_PATH": "$MINDIE_USER_HOME_PATH/Ascend",
-    "MIES_INSTALL_PATH": "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor",
-    "MINDIE_LLM_HOME_PATH": "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_llm",
+    "CANN_INSTALL_PATH": "/usr/local/Ascend",
+    "MIES_INSTALL_PATH": "/usr/local/lib/python3.11/site-packages/mindie_motor",
+    "MINDIE_LLM_HOME_PATH": "/usr/local/lib/python3.11/site-packages/mindie_llm",
     "TASK_QUEUE_ENABLE": 1,
     "HCCL_BUFFSIZE": 120,
     "MINDIE_LOG_TO_FILE": 1,

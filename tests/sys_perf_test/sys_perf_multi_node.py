@@ -102,7 +102,7 @@ if __name__ == '__main__':
         # get config from test case
         container_name = env_config["container_name"]
         container_names.append(container_name)
-        mies_install_path = env_config.get("mies_install_path", '$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor')
+        mies_install_path = env_config.get("mies_install_path", '/usr/local/lib/python3.11/site-packages/mindie_motor')
         mies_install_paths.append(mies_install_path)
 
         # start container

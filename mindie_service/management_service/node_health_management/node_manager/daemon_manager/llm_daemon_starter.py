@@ -37,9 +37,9 @@ class LLMDaemonManager(BaseDaemonManager, metaclass=_SingletonMeta):
     def build_daemon_command(self, config_file: Optional[str], instance_name: str, **kwargs) -> List[str]:
         cpu_binding = kwargs.get('cpu_binding')
         if cpu_binding:
-            cmd = ['taskset', '-c', cpu_binding, "$MINDIE_USER_HOME_PATH/bin/mindie_llm_server"]
+            cmd = ['taskset', '-c', cpu_binding, "/usr/local/bin/mindie_llm_server"]
         else:
-            cmd = ["$MINDIE_USER_HOME_PATH/bin/mindie_llm_server"]
+            cmd = ["/usr/local/bin/mindie_llm_server"]
         if config_file:
             cmd.extend(['--config-file', config_file])
         cmd.extend(['--expert-parallel', 'true'])

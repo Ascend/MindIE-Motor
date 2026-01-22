@@ -281,7 +281,7 @@ class ConfigLoader:
     def get_config_file_path(self):
         self.config_file_path = os.path.join(
             os.getenv(
-                "MIES_INSTALL_PATH", "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor"
+                "MIES_INSTALL_PATH", "/usr/local/lib/python3.11/site-packages/mindie_motor"
             ), "conf/config.json"
         )
 
@@ -289,7 +289,7 @@ class ConfigLoader:
         self.version_info_path = os.path.abspath(
             os.path.join(
                 os.getenv(
-                    "MIES_INSTALL_PATH", "$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor"
+                    "MIES_INSTALL_PATH", "/usr/local/lib/python3.11/site-packages/mindie_motor"
                 ), "../version.info"
             )
         )

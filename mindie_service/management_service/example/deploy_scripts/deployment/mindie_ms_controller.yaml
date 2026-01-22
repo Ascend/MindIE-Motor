@@ -106,7 +106,7 @@ spec:
             mountPath: /mnt/configmap/ms_controller.json
             subPath: ms_controller.json
           - name: status-data
-            mountPath: $MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/logs
+            mountPath: $(MINDIE_USER_HOME_PATH)/lib/python3.11/site-packages/mindie_motor/logs
       volumes:
       - name: global-ranktable
         configMap:

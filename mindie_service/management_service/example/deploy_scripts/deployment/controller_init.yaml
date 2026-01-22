@@ -113,10 +113,10 @@ spec:
                   mountPath: /mnt/configmap/ms_controller.json
                   subPath: ms_controller.json
                 - name: scaling-rule
-                  mountPath: $MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/conf/elastic_scaling.json
+                  mountPath: $(MINDIE_USER_HOME_PATH)/lib/python3.11/site-packages/mindie_motor/conf/elastic_scaling.json
                   subPath: elastic_scaling.json
                 - name: status-data
-                  mountPath: $MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/logs
+                  mountPath: $(MINDIE_USER_HOME_PATH)/lib/python3.11/site-packages/mindie_motor/logs
                 - name: localtime
                   mountPath: /etc/localtime
                 - name: mnt

@@ -103,7 +103,7 @@ if __name__ == '__main__':
 
     # get config from test case
     container_name = environment_config["container_name"]
-    mies_install_path = environment_config.get("mies_install_path", '$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor')
+    mies_install_path = environment_config.get("mies_install_path", '/usr/local/lib/python3.11/site-packages/mindie_motor')
 
     # start container
     command_helper_instance.exec_command(server_id, f'docker start {container_name}', wait_time=5)
