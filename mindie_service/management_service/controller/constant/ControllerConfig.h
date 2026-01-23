@@ -149,7 +149,7 @@ private:
     ProcessManagerConfig mProcessManagerConfig;
     ClusterStatusConfig mClusterStatusConfig;
     CtrlerBackUpConfig mCtrlerBackUpConfig;
-    uint32_t mServerOnlineAttemptTimes = 4;
+    uint32_t mServerOnlineAttemptTimes = 36;
     uint32_t mServerOnlineWaitSeconds = 5;
     uint32_t mInitRoleAttemptTimes = 5;
     uint32_t mCheckRoleAttemptTimes = 60;

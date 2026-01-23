@@ -136,8 +136,11 @@ private:
     void TryStopTimer(const std::vector<uint64_t> &newNodeIds);
     void StopTimer();
     int64_t SelectBestGroup(MINDIE::MS::DIGSInstanceRole role, const std::vector<uint64_t> &allGroupIds);
-    uint64_t AddInstance2GroupA2(NodeInfo &instance, std::vector<uint64_t> &allGroupIds);
-    uint64_t AddInstance2GroupA3(NodeInfo &instance, std::vector<uint64_t> &allGroupIds);
+    uint64_t AddInstance2Group(NodeInfo &instance, std::vector<uint64_t> &allGroupIds,
+        const std::map<uint64_t, std::pair<uint32_t, uint32_t>> &groupIfAvailServersAdded);
+    void PreAddAvailableServers2Group(const std::vector<uint64_t> &groupIds,
+        const std::vector<std::unique_ptr<NodeInfo>> &availableServers,
+        std::map<uint64_t, std::pair<uint32_t, uint32_t>> &groupIfAvailServersAdded);
     void AssignInstanceRole(NodeInfo &instance);
 
     DeployMode mDeployMode = DeployMode::SINGLE_NODE;

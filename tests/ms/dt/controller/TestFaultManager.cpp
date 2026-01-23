@@ -361,23 +361,141 @@ TEST_F(TestFaultManager, TestProcessScaleOutInSingleModeWithNewNodes)
     allNodes = nodeStatus->GetAllNodes();
 }
 
-TEST_F(TestFaultManager, TestAddInstance2GroupA3)
+/*
+ * 测试描述: 测试AddInstance2Group函数，当可用实例列表为空时扩容P实例
+ * 期望: 返回扩容目标组的groupId, 待扩容P实例Node不需要纠错
+ */
+TEST_F(TestFaultManager, TestAddInstance2GroupWithEmptyGroup)
 {
     uint64_t groupId = 1;
+    std::vector<uint64_t> allGroupIds = {groupId};
+    
     SetupTestGroup(groupId, {}, {});
-    std::vector<uint64_t> allGroupIds = {1};
     
-    auto node1 = CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
-    nodeStatus->AddNode(std::move(node1));
-    faultManager->AddInstance2GroupA3(*nodeStatus->GetNode(711), allGroupIds);
-    
-    auto node2 = CreateTestNode(822, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId);
-    nodeStatus->AddNode(std::move(node2));
-    faultManager->AddInstance2GroupA3(*nodeStatus->GetNode(822), allGroupIds);
+    // 构造待扩容的P实例
+    auto scaleOutPNode = CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    scaleOutPNode->serverInfoList = std::vector<ServerInfo>(1);
+    scaleOutPNode->serverInfoList[0].superPodId = std::nullopt; // 硬件类型为A2
 
-    auto node3 = CreateTestNode(933, MINDIE::MS::DIGSInstanceRole::UN_DEF_INSTANCE, groupId);
-    nodeStatus->AddNode(std::move(node3));
-    faultManager->AddInstance2GroupA3(*nodeStatus->GetNode(933), allGroupIds);
+    // 填充groupIfAvailServersAdded
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    availableServers.push_back(CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId));
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(allGroupIds, availableServers, groupIfAvailServersAdded);
+    
+    uint64_t result = faultManager->AddInstance2Group(*scaleOutPNode, allGroupIds, groupIfAvailServersAdded);
+    EXPECT_EQ(result, groupId);
+}
+
+/*
+ * 测试描述: 测试AddInstance2Group函数，当可用实例列表非空(0D1P)时扩容P实例
+ * 期望: 返回NOT_SCALE_OUT, 待扩容P实例Node不存在对端, 需要纠错
+ */
+TEST_F(TestFaultManager, TestAddInstance2GroupWithNoPeer)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> allGroupIds = {groupId};
+    
+    SetupTestGroup(groupId, {1044}, {});
+    
+    // 构造待扩容的P实例
+    auto scaleOutPNode = CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    scaleOutPNode->serverInfoList = std::vector<ServerInfo>(1);
+    scaleOutPNode->serverInfoList[0].superPodId = std::nullopt; // 硬件类型为A2
+
+    // 填充groupIfAvailServersAdded
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    availableServers.push_back(CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId));
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(allGroupIds, availableServers, groupIfAvailServersAdded);
+    
+    uint64_t result = faultManager->AddInstance2Group(*scaleOutPNode, allGroupIds, groupIfAvailServersAdded);
+    EXPECT_EQ(result, NOT_SCALE_OUT);
+}
+
+/*
+ * 测试描述: 测试AddInstance2Group函数，当可用实例列表非空(0D1P)时扩容未定义实例
+ * 期望: 返回NOT_SCALE_OUT, 未定义的实例Node被视为P实例, 没有对端, 需要纠错
+ */
+TEST_F(TestFaultManager, TestAddInstance2GroupWithUndefInstance)
+{
+    uint64_t groupId = 0; // Undefined的实例groupId默认为0
+    std::vector<uint64_t> allGroupIds = {groupId};
+    
+    SetupTestGroup(groupId, {1044}, {});
+    
+    // 构造待扩容的未定义实例
+    auto scaleOutNoDefinedNode = CreateTestNode(933, MINDIE::MS::DIGSInstanceRole::UN_DEF_INSTANCE, groupId);
+    scaleOutNoDefinedNode->serverInfoList = std::vector<ServerInfo>(1);
+    scaleOutNoDefinedNode->serverInfoList[0].superPodId = std::nullopt; // 硬件类型为A2
+
+    // 填充groupIfAvailServersAdded
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    availableServers.push_back(CreateTestNode(933, MINDIE::MS::DIGSInstanceRole::UN_DEF_INSTANCE, groupId));
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(allGroupIds, availableServers, groupIfAvailServersAdded);
+    
+    uint64_t result = faultManager->AddInstance2Group(*scaleOutNoDefinedNode, allGroupIds, groupIfAvailServersAdded);
+    EXPECT_EQ(result, NOT_SCALE_OUT);
+}
+
+/*
+ * 测试描述: 测试AddInstance2Group函数，当可用实例列表非空(1D1P)时扩容P实例
+ * 期望: 返回扩容目标组的groupId, 待扩容P实例Node存在对端, 不需要纠错
+ */
+TEST_F(TestFaultManager, TestAddInstance2GroupWithPeerExists)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> allGroupIds = {groupId};
+    
+    SetupTestGroup(groupId, {1044}, {1155});
+    
+    // 构造待扩容的P实例
+    auto scaleOutPNode = CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    scaleOutPNode->serverInfoList = std::vector<ServerInfo>(1);
+    scaleOutPNode->serverInfoList[0].superPodId = std::nullopt; // 硬件类型为A2
+    
+    // 填充groupIfAvailServersAdded
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    availableServers.push_back(CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId));
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(allGroupIds, availableServers, groupIfAvailServersAdded);
+    
+    uint64_t result = faultManager->AddInstance2Group(*scaleOutPNode, allGroupIds, groupIfAvailServersAdded);
+    EXPECT_EQ(result, groupId);
+}
+
+/*
+ * 测试描述: 测试AddInstance2Group函数，当可用实例列表非空(0D1P)时同时扩容1D1P实例
+ * 期望: 返回扩容目标组的groupId, 已就绪的1D1P实例Node均存在对端, 均不需要纠错
+ */
+TEST_F(TestFaultManager, TestAddInstance2GroupWithBothPDInstances)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> allGroupIds = {groupId};
+    
+    SetupTestGroup(groupId, {1044}, {});
+    
+    // 构造待扩容的P实例和D实例
+    auto scaleOutPNode = CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    scaleOutPNode->serverInfoList = std::vector<ServerInfo>(1);
+    scaleOutPNode->serverInfoList[0].superPodId = std::make_optional<std::string>("1000"); // 硬件类型为A3
+    auto scaleOutDNode = CreateTestNode(822, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId);
+    scaleOutDNode->serverInfoList = std::vector<ServerInfo>(1);
+    scaleOutDNode->serverInfoList[0].superPodId = std::make_optional<std::string>("1000"); // 硬件类型为A3
+    
+    // 填充groupIfAvailServersAdded
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    availableServers.push_back(CreateTestNode(711, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId));
+    availableServers.push_back(CreateTestNode(822, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId));
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(allGroupIds, availableServers, groupIfAvailServersAdded);
+    
+    uint64_t resultP = faultManager->AddInstance2Group(*scaleOutPNode, allGroupIds, groupIfAvailServersAdded);
+    uint64_t resultD = faultManager->AddInstance2Group(*scaleOutDNode, allGroupIds, groupIfAvailServersAdded);
+    
+    EXPECT_EQ(resultP, groupId);
+    EXPECT_EQ(resultD, groupId);
 }
 
 TEST_F(TestFaultManager, TestSelectGroup2ReleaseInstance)
@@ -413,5 +531,179 @@ TEST_F(TestFaultManager, TestSelectGroup2ReleaseInstance)
     ret = faultManager->SelectGroup2ReleaseInstance(0);
     EXPECT_EQ(ret, 0);
 }
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当availableServers为空时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithEmptyServers)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> prefillNodes = {100};
+    std::vector<uint64_t> decodeNodes = {200};
+    SetupTestGroup(groupId, prefillNodes, decodeNodes);
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：空的availableServers不会改变组内节点数量
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 1);  // PNodeNum = 1
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 1); // DNodeNum = 1
+}
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当添加PREFILL实例时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithPrefillInstance)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> prefillNodes = {100};
+    std::vector<uint64_t> decodeNodes = {200};
+    SetupTestGroup(groupId, prefillNodes, decodeNodes);
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
     
+    // 添加一个PREFILL实例
+    auto prefillServer = CreateTestNode(101, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    availableServers.push_back(std::move(prefillServer));
+
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：添加一个PREFILL实例后，PNodeNum应该增加1
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 2);  // PNodeNum = 1 + 1 = 2
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 1); // DNodeNum = 1
+}
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当添加DECODE实例时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithDecodeInstance)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> prefillNodes = {100};
+    std::vector<uint64_t> decodeNodes = {200};
+    SetupTestGroup(groupId, prefillNodes, decodeNodes);
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
     
+    // 添加一个DECODE实例
+    auto decodeServer = CreateTestNode(201, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId);
+    availableServers.push_back(std::move(decodeServer));
+
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：添加一个DECODE实例后，DNodeNum应该增加1
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 1);  // PNodeNum = 1
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 2); // DNodeNum = 1 + 1 = 2
+}
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当添加UN_DEF_INSTANCE实例时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithUndefInstance)
+{
+    uint64_t groupId = 0; // Undefined的实例groupId默认为0
+    std::vector<uint64_t> prefillNodes = {100};
+    std::vector<uint64_t> decodeNodes = {200};
+    SetupTestGroup(groupId, prefillNodes, decodeNodes);
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    
+    // 添加一个UN_DEF_INSTANCE实例（未定义角色的实例会被当作PREFILL处理）
+    auto undefServer = CreateTestNode(102, MINDIE::MS::DIGSInstanceRole::UN_DEF_INSTANCE, groupId);
+    availableServers.push_back(std::move(undefServer));
+
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：UN_DEF_INSTANCE被当作PREFILL处理，PNodeNum应该增加1
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 2);  // PNodeNum = 1 + 1 = 2
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 1); // DNodeNum = 1
+}
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当添加混合实例（PREFILL和DECODE）时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithMixedInstances)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> prefillNodes = {100};
+    std::vector<uint64_t> decodeNodes = {200};
+    SetupTestGroup(groupId, prefillNodes, decodeNodes);
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    
+    // 添加1个PREFILL实例和2个DECODE实例
+    auto prefillServer = CreateTestNode(101, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    auto decodeServer1 = CreateTestNode(201, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId);
+    auto decodeServer2 = CreateTestNode(202, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId);
+    availableServers.push_back(std::move(prefillServer));
+    availableServers.push_back(std::move(decodeServer1));
+    availableServers.push_back(std::move(decodeServer2));
+
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：添加1个PREFILL和2个DECODE后
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 2);  // PNodeNum = 1 + 1 = 2
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 3); // DNodeNum = 1 + 2 = 3
+}
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当存在空指针server时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithNullServer)
+{
+    uint64_t groupId = 1;
+    std::vector<uint64_t> prefillNodes = {100};
+    std::vector<uint64_t> decodeNodes = {200};
+    SetupTestGroup(groupId, prefillNodes, decodeNodes);
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    
+    // 添加一个空指针和一个有效的PREFILL实例
+    availableServers.push_back(nullptr);
+    auto prefillServer = CreateTestNode(101, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    availableServers.push_back(std::move(prefillServer));
+
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：空指针server会被跳过，只有有效的PREFILL实例被计入
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 2);  // PNodeNum = 1 + 1 = 2
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 1); // DNodeNum = 1
+}
+
+/*
+ * 测试描述: 测试PreAddAvailableServers2Group函数，当group初始为空时
+ */
+TEST_F(TestFaultManager, TestPreAddAvailableServers2GroupWithEmptyGroup)
+{
+    uint64_t groupId = 1;
+    SetupTestGroup(groupId, {}, {});  // 空的group
+
+    std::vector<uint64_t> groupIds = {groupId};
+    std::vector<std::unique_ptr<NodeInfo>> availableServers;
+    
+    // 添加1个PREFILL实例和1个DECODE实例
+    auto prefillServer = CreateTestNode(100, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, groupId);
+    auto decodeServer = CreateTestNode(200, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, groupId);
+    availableServers.push_back(std::move(prefillServer));
+    availableServers.push_back(std::move(decodeServer));
+
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    faultManager->PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
+    // 验证：从空group开始，添加1个P和1个D
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].first, 1);  // PNodeNum = 0 + 1 = 1
+    EXPECT_EQ(groupIfAvailServersAdded[groupId].second, 1); // DNodeNum = 0 + 1 = 1
+}

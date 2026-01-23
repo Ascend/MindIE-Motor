@@ -366,6 +366,17 @@ int32_t ServerRequestHandler::ParseNodeStatusResp(NodeInfo &nodeInfo,
     }
 }
 
+int32_t CheckGRTChanged(std::shared_ptr<NodeStatus> nodeStatus, int64_t initRanktableChangeTime)
+{
+    // Exit early if the node ranktable has changed during iteration
+    int64_t curRanktableChangeTime = nodeStatus->GetRanktableChangeTime();
+    if (curRanktableChangeTime != initRanktableChangeTime && initRanktableChangeTime != -1) {
+        LOG_I("[ServerRequestHandler] GetAvailableNodes exited early: global ranktable changed during iteration.");
+        return -1;
+    }
+    return 0;
+}
+
 int32_t ServerRequestHandler::GetAvailableNodes(HttpClient &client, std::vector<std::unique_ptr<NodeInfo>> &allNodes,
     std::vector<std::unique_ptr<NodeInfo>> &availableNodes, std::vector<std::unique_ptr<NodeInfo>> &faultyNodes,
     std::shared_ptr<NodeStatus> nodeStatus, uint32_t retryTimes)
@@ -377,6 +388,11 @@ int32_t ServerRequestHandler::GetAvailableNodes(HttpClient &client, std::vector<
     int64_t initRanktableChangeTime = nodeStatus->GetRanktableChangeTime();
     for (uint32_t attempt = 0; attempt < limit; ++attempt) {
         for (auto &node : allNodes) {
+            // Exit early if the node ranktable has changed during inner iteration
+            if (CheckGRTChanged(nodeStatus, initRanktableChangeTime) == -1) {
+                return -1;
+            }
+
             if (node == nullptr || finished.find(node->instanceInfo.staticInfo.id) != finished.end()) {
                 continue;
             }
@@ -397,10 +413,8 @@ int32_t ServerRequestHandler::GetAvailableNodes(HttpClient &client, std::vector<
             break;
         }
 
-        // Exit early if the node ranktable has changed during iteration
-        int64_t curRanktableChangeTime = nodeStatus->GetRanktableChangeTime();
-        if (curRanktableChangeTime != initRanktableChangeTime && initRanktableChangeTime != -1) {
-            LOG_I("[ServerRequestHandler] GetAvailableNodes exited early: global ranktable changed during iteration.");
+        // Exit early if the node ranktable has changed during outer iteration
+        if (CheckGRTChanged(nodeStatus, initRanktableChangeTime) == -1) {
             return -1;
         }
 

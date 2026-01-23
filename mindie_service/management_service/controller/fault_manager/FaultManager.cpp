@@ -663,6 +663,37 @@ void FaultManager::ProcessScaleOutInSingleMode(std::vector<std::unique_ptr<NodeI
     }
 }
 
+void FaultManager::PreAddAvailableServers2Group(const std::vector<uint64_t> &groupIds,
+    const std::vector<std::unique_ptr<NodeInfo>> &availableServers,
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> &groupIfAvailServersAdded)
+{
+    for (auto groupId : groupIds) {
+        auto group = mNodeStatus->GetGroup(groupId);
+        groupIfAvailServersAdded[groupId] = std::make_pair(group.first.size(), group.second.size());
+        LOG_D("[FaultManager] Before ScaleOut operation, group%zu has: PNodeNum=%zu, DNodeNum=%zu",
+            groupId, group.first.size(), group.second.size());
+    }
+
+    for (auto &server : availableServers) {
+        if (!server) {
+            continue;
+        }
+        MINDIE::MS::DIGSInstanceRole role = server->instanceInfo.staticInfo.role;
+        int64_t selectGroupId =  SelectBestGroup(role, groupIds);
+        if (role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
+            groupIfAvailServersAdded[selectGroupId].first++;
+        } else if (role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
+            groupIfAvailServersAdded[selectGroupId].second++;
+        } else {
+            // Node with UNDEF_ROLE will be set to Prefill Role during AddInstance2Group
+            groupIfAvailServersAdded[selectGroupId].first++;
+        }
+        LOG_D("[FaultManager] After adding new available node%zu to group%zu, "
+            "group will have: PNodeNum=%zu, DNodeNum=%zu", server->instanceInfo.staticInfo.id, selectGroupId,
+            groupIfAvailServersAdded[selectGroupId].first, groupIfAvailServersAdded[selectGroupId].second);
+    }
+}
+
 void FaultManager::ProcessScaleOut(std::vector<std::unique_ptr<NodeInfo>> &serverNodes, const NodeChanges &nodeChanges)
 {
     LOG_I("[FaultManager] Scale out operation: detected %zu new nodes.", nodeChanges.newIDs.size());
@@ -676,15 +707,36 @@ void FaultManager::ProcessScaleOut(std::vector<std::unique_ptr<NodeInfo>> &serve
         LOG_I("[FaultManager] Scale out operation interrupted: global ranktable changed.");
         return;
     }
+
+    /*
+        FilterAvailableServers后, 将进入纠错逻辑:
+        所有已就绪的待扩容实例, 通过可用实例列表, 判断是否存在可用的对端实例, 如果不存在对端, 将被纠错杀死, 拒绝扩容.
+    */
+
+    /*
+        OLD: 纠错逻辑 -> 未被纠错的已就绪待扩容实例, 加入可用实例列表
+        原先的纠错逻辑中, 使用扩容前的可用实例列表来判断是否需要纠错, 存在问题:
+        例如, 在故障触发后的场景, 可用实例列表0D1P. 如果此时scaleOut需要扩容新就绪的1D1P,
+        纠错逻辑会认为可用实例列表内没有P实例的可用对端, 会误杀新就绪的1P.
+        但实际上, 本次ScaleOut中存在一个新就绪D实例待加入可用实例列表. 新就绪P实例存在可用对端, 不需要被纠错.
+    */
+
+    /*
+        NEW: 将就绪的待扩容实例预先加入可用实例列表 -> 纠错逻辑 -> 未被纠错的已就绪待扩容实例, 正式加入可用实例列表.
+    */
+
     std::vector<uint64_t> groupIds = mNodeStatus->GetAllGroupIds();
+
+    // groupIfAvailServersAdded的map结构示例:
+    // <groupId, <PNodeNum, DNodeNum>>
+    // 例如：<1, <1, 2>>
+    // 表示：groupId=1的组内, 可用实例有: 1个PNode和2个DNode
+    std::map<uint64_t, std::pair<uint32_t, uint32_t>> groupIfAvailServersAdded;
+    PreAddAvailableServers2Group(groupIds, availableServers, groupIfAvailServersAdded);
+
     std::map<uint64_t, VECTOR_PAIR_ID_ROLE> changedGroups;
     for (auto &server : availableServers) {
-        uint64_t selectGroupId = 0;
-        if (server->serverInfoList[0].superPodId.has_value()) { // A3
-            selectGroupId = AddInstance2GroupA3(*server, groupIds);
-        } else { // A2
-            selectGroupId = AddInstance2GroupA2(*server, groupIds);
-        }
+        uint64_t selectGroupId = AddInstance2Group(*server, groupIds, groupIfAvailServersAdded);
         if (selectGroupId == NOT_SCALE_OUT) {
             LOG_W("[%s] [FaultManager] Add instance to group failed, instance %zu will not be scaled out.",
                   GetErrorCode(ErrorType::CALL_ERROR, ControllerFeature::FAULT_MANAGER).c_str(),
@@ -766,7 +818,16 @@ int64_t FaultManager::SelectBestGroup(MINDIE::MS::DIGSInstanceRole role, const s
     return selectGroupId;
 }
 
-uint64_t FaultManager::AddInstance2GroupA2(NodeInfo &instance, std::vector<uint64_t> &allGroupIds)
+std::string GetHardwareType(const NodeInfo &node)
+{
+    if (node.serverInfoList[0].superPodId.has_value()) {
+        return "A3";
+    }
+    return "A2";
+}
+
+uint64_t FaultManager::AddInstance2Group(NodeInfo &instance, std::vector<uint64_t> &allGroupIds,
+    const std::map<uint64_t, std::pair<uint32_t, uint32_t>> &groupIfAvailServersAdded)
 {
     // Only support PD separate mode
     uint64_t instanceId = instance.instanceInfo.staticInfo.id;
@@ -774,7 +835,10 @@ uint64_t FaultManager::AddInstance2GroupA2(NodeInfo &instance, std::vector<uint6
     instance.instanceInfo.staticInfo.groupId = SelectBestGroup(role, allGroupIds);
     uint64_t groupId = instance.instanceInfo.staticInfo.groupId;
     auto group = mNodeStatus->GetGroup(groupId);
-    LOG_I("[FaultManager] A2: Add %c instance %zu to group %zu.", role, instanceId, groupId);
+
+    std::string hardwareType = GetHardwareType(instance);
+
+    LOG_I("[FaultManager] %s: Add %c instance %zu to group %zu.", hardwareType.c_str(), role, instanceId, groupId);
     if (role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
         instance.peers = group.second;
         instance.instanceInfo.staticInfo.label = MINDIE::MS::DIGSInstanceLabel::PREFILL_STATIC;
@@ -786,44 +850,23 @@ uint64_t FaultManager::AddInstance2GroupA2(NodeInfo &instance, std::vector<uint6
         instance.instanceInfo.staticInfo.label = MINDIE::MS::DIGSInstanceLabel::PREFILL_STATIC;
         instance.peers = group.second;
     }
-    LOG_I("[FaultManager] A2: assign %c role to instance. peers number: %zu", instance.instanceInfo.staticInfo.role,
-          instance.peers.size());
+    LOG_I("[FaultManager] %s: assign %c role to instance. peers number: %zu", hardwareType.c_str(),
+        instance.instanceInfo.staticInfo.role, instance.peers.size());
     if (group.first.empty() && group.second.empty()) {
-        LOG_W("[FaultManager] A2: group %zu has no peers, instance %zu should be scaled out.", groupId, instanceId);
+        LOG_W("[FaultManager] %s: group %zu has no peers, instance %zu should be scaled out.",
+            hardwareType.c_str(), groupId, instanceId);
         return groupId;
     } else {
-        return instance.peers.empty() ? NOT_SCALE_OUT : groupId;
-    }
-}
-
-uint64_t FaultManager::AddInstance2GroupA3(NodeInfo &instance, std::vector<uint64_t> &allGroupIds)
-{
-    // Only support PD separate mode, Use super pod id as group id
-    uint64_t instanceId = instance.instanceInfo.staticInfo.id;
-    MINDIE::MS::DIGSInstanceRole role = instance.instanceInfo.staticInfo.role;
-    instance.instanceInfo.staticInfo.groupId = SelectBestGroup(role, allGroupIds);
-    uint64_t groupId = instance.instanceInfo.staticInfo.groupId;
-    LOG_I("[FaultManager] A3: Add %c instance %zu to group %zu.", role, instanceId, groupId);
-    auto group = mNodeStatus->GetGroup(groupId);
-    std::string roleName;
-    if (role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
-        instance.peers = group.second;
-        instance.instanceInfo.staticInfo.label = MINDIE::MS::DIGSInstanceLabel::PREFILL_STATIC;
-    } else if (role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
-        instance.peers = group.first;
-        instance.instanceInfo.staticInfo.label = MINDIE::MS::DIGSInstanceLabel::DECODE_STATIC;
-    } else { // UNDEF_ROLE
-        instance.instanceInfo.staticInfo.role = MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE;
-        instance.instanceInfo.staticInfo.label = MINDIE::MS::DIGSInstanceLabel::PREFILL_STATIC;
-        instance.peers = group.second;
-    }
-    LOG_I("[FaultManager] A3: assign %c role to instance. peers number: %zu", instance.instanceInfo.staticInfo.role,
-          instance.peers.size());
-    if (group.first.empty() && group.second.empty()) {
-        LOG_W("[FaultManager] A3: group %zu has no peers, instance %zu should be scaled out.", groupId, instanceId);
-        return groupId;
-    } else {
-        return instance.peers.empty() ? NOT_SCALE_OUT : groupId;
+        auto iter = groupIfAvailServersAdded.find(groupId);
+        if (iter == groupIfAvailServersAdded.end()) {
+            LOG_W("[FaultManager] %s: Do not find target group %zu, instance %zu should not be scaled out.",
+                hardwareType.c_str(), groupId, instanceId);
+            return NOT_SCALE_OUT;
+        }
+        // iter->second记录了: 将新就绪实例预先加入可用实例列表后, groupId对应组内可用实例Node数量.
+        // 数据类型为pair, 分别存储组中PNode(first)个数和DNode(second)个数.
+        // 如果PNode和DNode的个数都大于0, 代表当前实例Node可以扩容, 返回扩容目标组的groupId, 否则返回NOT_SCALE_OUT.
+        return iter->second.first > 0 && iter->second.second > 0 ? groupId : NOT_SCALE_OUT;
     }
 }
 

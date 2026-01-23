@@ -27,7 +27,7 @@
   "default_p_rate": 0,
   "default_d_rate": 0,
   "is_heterogeneous": false,
-  "server_online_attempt_times": 4,
+  "server_online_attempt_times": 36,
   "server_online_wait_seconds": 5,
   "init_role_attempt_times": 2,
   "check_role_attempt_times": 300,
