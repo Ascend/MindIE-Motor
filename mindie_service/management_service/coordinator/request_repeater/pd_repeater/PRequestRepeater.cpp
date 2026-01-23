@@ -80,7 +80,7 @@ void RequestRepeater::PResErrorHandler(std::shared_ptr<ClientConnection> connect
             GetWarnCode(ErrorType::WARNING, CoordinatorFeature::P_REQUESTREPEATER).c_str(), reqId.c_str());
         return;
     }
-    LOG_D("[Request_Trace] The response has been sent to the user, request ID is %s %s", reqId.c_str());
+    LOG_D("[Request_Trace] The response has been sent to the user, request ID is %s", reqId.c_str());
     auto serverConn = reqInfo->GetConnection();
     SendErrorRes(serverConn, boost::beast::http::status::internal_server_error,
         "Receive messages from p instance failed\r\n");

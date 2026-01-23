@@ -80,6 +80,8 @@ void ServerConnection::SendRes(const ServerRes &res)
         }
         // chunk类的消息，用queue转发
         resQueue.PushBack(res);
+        LOG_D("[ServerConnection] Push back res to queue, request ID is %s, resQueue.size() is %zu",
+            mReqId.c_str(), resQueue.Size());
         // asyncChunkPending 表征，正在发送某个chunk的执行过程中
         if (!asyncChunkPending) {
             DoWriteChunk();

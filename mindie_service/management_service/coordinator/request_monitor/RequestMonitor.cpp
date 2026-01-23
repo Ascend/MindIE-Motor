@@ -81,7 +81,7 @@ void RequestMonitor::OnWork()
         auto scheduledFlag = reqInfo->HasState(ReqState::SCHEDULED);
         if (!scheduledFlag) {
             if (ScheduleTimeOut(reqInfo)) {
-                LOG_I("[RequestMonitor] Request %s exceeded schedule timeout.", it.first.c_str());
+                LOG_W("[RequestMonitor] Request %s exceeded schedule timeout.", it.first.c_str());
                 exceptionMonitor->PushReqException(ReqExceptionType::SCHEDULE_TIMEOUT, it.first);
                 continue;
             }
@@ -90,7 +90,7 @@ void RequestMonitor::OnWork()
         // 如果请求是Tokenizer类型，则判断Tokenizer是否超时
         if (reqInfo->GetType() == ReqInferType::TOKENIZER) {
             if (TokenizerTimeout(reqInfo)) {
-                LOG_I("[RequestMonitor] Request %s exceeded tokenizer timeout.", it.first.c_str());
+                LOG_W("[RequestMonitor] Request %s exceeded tokenizer timeout.", it.first.c_str());
                 exceptionMonitor->PushReqException(ReqExceptionType::TOKENIZER_TIMEOUT, it.first);
             }
             continue;
@@ -105,7 +105,7 @@ void RequestMonitor::OnWork()
             // 检查分配的PD实例是否还存在
             if (!reqManage->ArePDInstancesValid(it.first)) {
                 // PD实例已经不存在，直接更新状态为EXCEPTION
-                LOG_I("[RequestMonitor] PD instances not exist, "
+                LOG_W("[RequestMonitor] PD instances not exist, "
                       "update request %s to EXCEPTION state", it.first.c_str());
                 reqManage->UpdateState(it.first, ReqState::EXCEPTION);
                 continue;
@@ -130,7 +130,7 @@ bool RequestMonitor::HandleFirstTokenTimeout(const std::pair<const std::string, 
                 reqManage->UpdateState(reqPair.first, ReqState::EXCEPTION);
                 return false;
             }
-            LOG_I("[RequestMonitor] Request %s exceeded first token timeout.", reqPair.first.c_str());
+            LOG_W("[RequestMonitor] Request %s exceeded first token timeout.", reqPair.first.c_str());
             exceptionMonitor->PushReqException(ReqExceptionType::FIRST_TOKEN_TIMEOUT, reqPair.first);
             return false;
         }

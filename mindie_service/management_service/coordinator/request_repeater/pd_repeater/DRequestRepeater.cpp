@@ -69,11 +69,16 @@ bool RequestRepeater::CheckLinkWithDNode(boost::beast::string_view ip, boost::be
     for (auto &connId : connIds) {
         std::shared_ptr<ClientConnection> conn = httpClient.GetConnection(connId);
         if (conn == nullptr) {
+            LOG_D("[RequestRepeater] Connection ID %u is null, continuing to check next connection", connId);
             continue;
         } else {
+            LOG_D("[RequestRepeater] Found valid connection ID %u for %s:%s",
+                connId, std::string(ip).c_str(), std::string(port).c_str());
             return true;
         }
     }
+    LOG_D("[RequestRepeater] No valid connections found for decode node at %s:%s",
+        std::string(ip).c_str(), std::string(port).c_str());
     return false;
 }
 
@@ -206,7 +211,8 @@ void RequestRepeater::DResultNormalToken(boost::beast::string_view reqId, boost:
     auto isStream = reqInfo->GetIsStream();
     res.contentType = isStream ? "text/event-stream" : "application/json";
     res.isFinish = false;
-
+    LOG_D("[RequestRepeater] Send normal decode token to user, request ID is %s, body.size() is %zu",
+        reqId.data(), body.size());
     bool isFinishFlag = false;
     reqInfo->RepeatDStreamToken(res, isFinishFlag);
     if (isFinishFlag) {
@@ -242,7 +248,8 @@ void RequestRepeater::DResultError(boost::beast::string_view reqId, boost::beast
     auto isStream = reqInfo->GetIsStream();
     res.contentType = isStream ? "text/event-stream" : "application/json";
     res.isFinish = true;
-    LOG_D("[RequestRepeater] The response has been sent to the user, request ID is %s", reqId.data());
+    LOG_D("[RequestRepeater] Send error response to the user, request ID is %s, body.size() is %zu",
+        reqId.data(), body.size());
     conn->SendRes(res);
     reqManage->UpdateState(reqId, ReqState::EXCEPTION);
 }
@@ -265,7 +272,8 @@ void RequestRepeater::DResultRetry(boost::beast::string_view reqId, boost::beast
             GetWarnCode(ErrorType::WARNING, CoordinatorFeature::D_REQUESTREPEATER).c_str(), reqId.data());
         return;
     }
-    LOG_D("[RequestRepeater] Decode request retrying, request ID is %s.", reqId.data());
+    LOG_D("[RequestRepeater] Decode request retrying, request ID is %s, body.size() is %zu.",
+        reqId.data(), body.size());
     auto req = reqInfo->GetReq();
     req.set("is-recompute", "true");
     req.body().clear();
@@ -313,7 +321,8 @@ void RequestRepeater::DResultLast(boost::beast::string_view reqId, boost::beast:
 
     if (!reqInfo->GetIsStream()) { // 非流式D token转发
         NotStreamSetOutputNum(body, reqInfo);
-        LOG_D("[RequestRepeater] Send last decode token to user, id is %s.", reqId.data());
+        LOG_D("[RequestRepeater] Send last decode token to user, id is %s, body.size() is %zu.",
+            reqId.data(), body.size());
         userConn->SendRes(res);
         reqManage->UpdateState(reqId, ReqState::FINISH);
         return;

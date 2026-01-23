@@ -36,8 +36,10 @@ void RequestRepeater::DecodeDisConnHandler(const std::string &reqId)
         return;
     }
     if (reqInfo->HasState(ReqState::REPEATED)) {
+        LOG_I("[DecodeDisConnHandler] Request %s stop inference with PD separate mode.", reqId.c_str());
         ReqPDStopInferHandler(reqId, false);
     } else {
+        LOG_I("[DecodeDisConnHandler] Request updating state to EXCEPTION.", reqId.c_str());
         reqManage->UpdateState(reqId, ReqState::EXCEPTION);
     }
 }
@@ -68,11 +70,14 @@ void RequestRepeater::UserDisConnHandler(const std::string &reqId)
         if ((deployMode == "pd_separate" || deployMode == "pd_disaggregation" ||
              deployMode == "pd_disaggregation_single_container") &&
             !(prefillIp == decodeIp && prefillPort == decodePort)) {
+            LOG_I("[UserDisConnHandler] Request %s stop inference with PD separate mode.", reqId.c_str());
             ReqPDStopInferHandler(reqId, false);
         } else {
+            LOG_I("[UserDisConnHandler] Request %s stop inference with Mixed mode.", reqId.c_str());
             ReqMixStopInferHandler(reqId);
         }
     } else {
+        LOG_I("[UserDisConnHandler] Request updating state to EXCEPTION.", reqId.c_str());
         reqManage->UpdateState(reqId, ReqState::EXCEPTION);
     }
 }
@@ -136,8 +141,13 @@ void RequestRepeater::ReqPDStopInferHandler(const std::string &reqId, bool skipD
             }
         }
         if (stopSuccess) {
+            LOG_D("[RequestRepeater] Successfully stopped inference for request %s", reqId.c_str());
             break;
         }
+    }
+    if (!stopSuccess) {
+        LOG_W("[RequestRepeater] Failed to stop inference for request %s after %zu retries", reqId.c_str(),
+              Configure::Singleton()->exceptionConfig.maxRetry);
     }
 }
 

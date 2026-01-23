@@ -92,6 +92,7 @@ void ExceptionMonitor::ExecuteAbnormalEvents()
             fun(reqId);
         }
     }
+    LOG_D("[ExceptionMonitor] After processing request exceptions, remaining: %zu", reqExceptionQueue.Size());
 
     if (!insExceptionQueue.Empty()) {
         auto &message = insExceptionQueue.Front();
@@ -105,6 +106,7 @@ void ExceptionMonitor::ExecuteAbnormalEvents()
             fun(insId);
         }
     }
+    LOG_D("[ExceptionMonitor] After processing instance exceptions, remaining: %zu", insExceptionQueue.Size());
 
     if (!userExceptionQueue.Empty()) {
         auto &message = userExceptionQueue.Front();
@@ -118,6 +120,7 @@ void ExceptionMonitor::ExecuteAbnormalEvents()
             fun(conn);
         }
     }
+    LOG_D("[ExceptionMonitor] After processing user exceptions, remaining: %zu", userExceptionQueue.Size());
 }
 
 void ExceptionMonitor::OnWork()
@@ -130,13 +133,17 @@ void ExceptionMonitor::OnWork()
     }
  
     if (!running) {
+        LOG_D("[ExceptionMonitor] ExceptionMonitor is not running, returning from OnWork.");
         return;
     }
 
     while (running) {
         if (reqExceptionQueue.Empty() && insExceptionQueue.Empty() && userExceptionQueue.Empty()) {
+            LOG_D("[ExceptionMonitor] All exception queues are empty, returning from OnWork.");
             return;
         } else {
+            LOG_D("[ExceptionMonitor] Processing abnormal events - req:%zu, ins:%zu, user:%zu",
+                  reqExceptionQueue.Size(), insExceptionQueue.Size(), userExceptionQueue.Size());
             ExecuteAbnormalEvents();
         }
         // 是否需要加sleep

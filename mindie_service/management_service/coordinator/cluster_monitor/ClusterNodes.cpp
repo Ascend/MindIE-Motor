@@ -58,9 +58,13 @@ void ClusterNodes::RemoveInstance(uint64_t id)
     auto ip = GetIp(id);
     auto port = GetPort(id);
     auto role = GetRole(id);
+    LOG_D("[ClusterNodes] RemoveInstance %lu info - IP: %s, Port: %s, Role: %d", id, ip.c_str(), port.c_str(),
+        static_cast<int>(role));
+
     std::unique_lock<std::shared_mutex> lock(mtx);
     std::list<uint64_t>::const_iterator iter = std::find(ids.begin(), ids.end(), id);
     if (iter == ids.end()) {
+        LOG_W("[ClusterNodes] Instance %lu not found in ids list, cannot remove", id);
         return;
     } else {
         ids.erase(iter);
@@ -94,18 +98,20 @@ bool ClusterNodes::IsFaultyNode(uint64_t id)
     const auto& nodeInfo = instanceInfos.find(id);
     if (nodeInfo == instanceInfos.end()) {
         if (faultIds.find(id) == faultIds.end()) {
+            LOG_D("[ClusterNodes] Instance %lu is not faulty (not in active list and not in fault list).", id);
             return false;
         } else {
+            LOG_D("[ClusterNodes] Instance %lu is faulty (in fault list).", id);
             return true;
         }
     }
-    
+
     // 检查节点的虚拟ID是否在故障列表中
     if (faultVirtualIds.find(nodeInfo->second->virtualId) != faultVirtualIds.end()) {
+        LOG_D("[ClusterNodes] Instance %lu is faulty (virtualId %lu in fault list).", id, nodeInfo->second->virtualId);
         return true;
-    } else {
-        return false;
     }
+    return false;
 }
 
 bool ClusterNodes::HasInstance(uint64_t id)
@@ -130,6 +136,7 @@ void ClusterNodes::AddFaultNode(uint64_t id)
     faultIds.insert(id);
     virtualIdToDelTimeMap[virtualId] = system_clock::now();
     idToDelTimeMap[id] = system_clock::now();
+    LOG_I("[ClusterNodes] Add fault node: instance id %lu, virtual id %lu.", id, virtualId);
 }
 
 void ClusterNodes::RemoveFaultNode(uint64_t id)
@@ -153,6 +160,7 @@ void ClusterNodes::RemoveFaultNode(uint64_t id)
         faultIds.erase(iterId);
     }
     virtualToIdsMap.erase(virtualId);
+    LOG_I("[ClusterNodes] Remove fault node: instance id %lu, virtual id %lu.", id, virtualId);
 }
 
 std::unordered_set<uint64_t> ClusterNodes::GetVirtualIdToIds(uint64_t id)
@@ -308,9 +316,15 @@ bool ClusterNodes::IsAvailable()
                 break;
             }
         }
-        return hasP && hasD;
+        bool isAvailable = hasP && hasD;
+        LOG_D("[ClusterNodes] PD mode - Has PREFILL_INSTANCE: %s, Has DECODE_INSTANCE: %s, Available: %s",
+              hasP ? "yes" : "no", hasD ? "yes" : "no", isAvailable ? "yes" : "no");
+        return isAvailable;
     } else {
-        return !instanceInfos.empty();
+        bool isAvailable = !instanceInfos.empty();
+        LOG_D("[ClusterNodes] Non-PD mode - Instance count: %lu, Available: %s",
+              instanceInfos.size(), isAvailable ? "yes" : "no");
+        return isAvailable;
     }
 }
 

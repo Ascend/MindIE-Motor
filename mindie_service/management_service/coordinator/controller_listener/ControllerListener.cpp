@@ -372,6 +372,7 @@ void ControllerListener::IdsAddOrUpdate(const std::vector<uint64_t> &addVec, con
         if (timeSinceDeletion > expirationTime) {
             // 超过两分钟，从map中删除
             instancesRecord->RemoveFaultNode(id);
+            LOG_D("[ControllerListener] Instance %lu is expired, removed from fault tracking.", id);
         } else {
             return;
         }
@@ -380,6 +381,7 @@ void ControllerListener::IdsAddOrUpdate(const std::vector<uint64_t> &addVec, con
     auto iter = std::find(addVec.begin(), addVec.end(), id);
     if (iter != addVec.end()) {
         ret = Add(it); // 新增实例
+        LOG_D("[ControllerListener] Instance %lu is added.", id);
         if (ret != 0) {
             LOG_E("[%s] [ControllerListener] Add instance failed",
                 GetErrorCode(ErrorType::CALL_ERROR, CoordinatorFeature::CONTROLLER_LISTENER).c_str());
@@ -390,6 +392,7 @@ void ControllerListener::IdsAddOrUpdate(const std::vector<uint64_t> &addVec, con
         if (iter == updateVec.end()) {
             return;
         }
+        LOG_D("[ControllerListener] Instance %lu is updated.", id);
         ret = Update(it); // 更新实例
         if (ret != 0) {
             LOG_E("[%s] [ControllerListener] Update instance failed",
@@ -618,6 +621,7 @@ int32_t ControllerListener::AddInsWithoutBackup(const nlohmann::json::const_iter
     std::string port;
     std::string modelName;
     if (ParseInstance(it, newInstance, ip, port, modelName) != 0) {
+        LOG_E("[ControllerListener] Failed to parse instance info for id %lu in AddInsWithoutBackup.", id);
         return -1;
     }
     if (newInstance.role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
@@ -658,6 +662,9 @@ int32_t ControllerListener::Update(const nlohmann::json::const_iterator &it)
         updateStatus.totalBlockNum = it->at("static_info").at("total_block_num").template get<uint32_t>();
         updateStatus.availSlotsNum = dynamicInfo.at("avail_slots_num").template get<uint32_t>();
         updateStatus.availBlockNum = dynamicInfo.at("avail_block_num").template get<uint32_t>();
+        LOG_D("[ControllerListener] Parsed instance %lu resource info - total_slots:%u, total_blocks:%u, "
+              "avail_slots:%u, avail_blocks:%u", id, updateStatus.totalSlotsNum,
+              updateStatus.totalBlockNum, updateStatus.availSlotsNum, updateStatus.availBlockNum);
         if (dynamicInfo.contains("peers")) {
             updateStatus.peers = dynamicInfo.at("peers").template get<std::vector<uint64_t>>();
         }
@@ -689,6 +696,7 @@ void ControllerListener::Remove(const std::vector<uint64_t> &removeVec)
         auto ip = instancesRecord->GetIp(id);
         auto port = instancesRecord->GetPort(id);
         instancesRecord->RemoveInstance(id);
+        LOG_I("[ControllerListener] Removed instance %lu at %s:%s from cluster.", id, ip.c_str(), port.c_str());
     }
 }
 

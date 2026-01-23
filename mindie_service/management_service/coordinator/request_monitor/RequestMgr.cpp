@@ -104,7 +104,7 @@ void ReqManage::ReleaseFinishedRequest()
                 clientConn->GraceClose();
             }
             iter->second->ClearLargeMembers();
-            LOG_D("[ReqManage] Release finished request. Remove request id %s.", iter->first.c_str());
+            LOG_I("[ReqManage] Release finished request. Remove request id %s.", iter->first.c_str());
             iter = reqIdMap.erase(iter);
         } else {
             iter++;
@@ -412,6 +412,8 @@ void ReqManage::ClearReq(boost::beast::string_view reqId, ReqState state, uint64
     auto reqInfo = GetReqInfo(reqId);  // 尽量减少find的次数，把find的动作提到前面
     if (reqInfo == nullptr) {
         // 防止没有释放资源, Finish的时候，必须确保调度器释放资源
+        LOG_D("[RequestMgr] Request %s not found in ClearReq, skipping.",
+            std::string(reqId).c_str());
         scheduler->UpdateReq(reqId, MINDIE::MS::DIGSReqStage::DECODE, 0, 0);
         return;  // 请求已经不存在了
     }

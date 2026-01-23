@@ -70,8 +70,11 @@ int32_t DIGSSchedulerImpl::UpdateReq(std::string reqId, MINDIE::MS::DIGSReqStage
 {
     switch (stage) {
         case DIGSReqStage::PREFILL:
+            LOG_D("[DIGS] Updating request %s in PREFILL stage with end time %lu", reqId.c_str(), prefillEndTime);
             return requestManager_->UpdateReq(reqId, prefillEndTime);
         case DIGSReqStage::DECODE:
+            LOG_D("[DIGS] Removing request %s in DECODE stage with prefill end time %lu, decode end time %lu",
+                  reqId.c_str(), prefillEndTime, decodeEndTime);
             return requestManager_->RemoveReq(reqId, prefillEndTime, decodeEndTime, outputLength);
         default:
             LOG_W("[%s] [DIGS] Unsupported request stage %d",

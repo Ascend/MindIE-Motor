@@ -9,6 +9,7 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PSL v2 for more details.
  */
+
 #include <string>
 #include "boost/uuid/uuid_io.hpp"
 #include "Logger.h"
@@ -29,28 +30,28 @@ void RequestRepeater::ConnDErrHandler(uint64_t insId)
             GetErrorCode(ErrorType::INVALID_INPUT, CoordinatorFeature::D_EXCEPTIONHANDLER).c_str(), insId);
         return;
     }
-
     auto role = instancesRecord->GetRole(insId);
     if (role != MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
-        LOG_D("[RequestRepeater] Instance %s:%s is not a D instance, skipping D connection error handling.",
-            ip.c_str(), port.c_str());
+        LOG_I("[DExceptionHandler] Skip processing instance %lu due to role change (not DECODE_INSTANCE).", insId);
         return; // 身份切换
     }
+
     if (Configure::Singleton()->CheckBackup() && !Configure::Singleton()->IsMaster()) {
-        LOG_D("[RequestRepeater] Instance %s:%s is standby in master-standby mode, "
-            "skipping D connection error handling.", ip.c_str(), port.c_str());
+        LOG_I("[DExceptionHandler] Skip processing instance %lu in backup mode (not master node).", insId);
         return; // 开启主备且为备的情况下不进行重连
     }
 
     // 调用 /v1/terminate-service
-    LOG_E("[%s] [HttpClientAsync] Abnormal node, address: %s:%s.",
+    LOG_E("[%s] [HttpClientAsync] Abnormal node, ip: %s, port:%s.",
         GetErrorCode(ErrorType::UNREACHABLE, CoordinatorFeature::HTTPCLIENT_ASYNC).c_str(),
         ip.c_str(), port.c_str());
-    
+
     nlohmann::json jsonObj = nlohmann::json::object();
     jsonObj["ip"] = ip;
     jsonObj["port"] = port;
     std::string jsonString = jsonObj.dump();
+
+    LOG_I("[DExceptionHandler] Reporting abnormal node %lu (%s:%s) to controller.", insId, ip.c_str(), port.c_str());
     ReportAbnormalNodeToController(jsonString);
 }
 }
