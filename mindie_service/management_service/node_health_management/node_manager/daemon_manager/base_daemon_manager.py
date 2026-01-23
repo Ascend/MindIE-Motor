@@ -69,6 +69,10 @@ class BaseDaemonManager(ABC):
     def start_daemon_instances(self, daemon_args: Dict):
         pass
 
+    @abstractmethod
+    def is_child_process_detected(self, pid: int) -> bool:
+        pass
+
     def child_process_handler(self, signum, frame):
         with self._shutdown_lock:
             if self.shutting_down:
@@ -97,6 +101,9 @@ class BaseDaemonManager(ABC):
             except OSError:
                 break  # No more child processes
         if exit_flag:
+            while self.is_child_process_detected(pid):
+                self.logger.info("waiting for child processes to terminate!")
+                time.sleep(1)
             self._terminate_all_processes()
 
     def signal_handler(self, signum, frame):

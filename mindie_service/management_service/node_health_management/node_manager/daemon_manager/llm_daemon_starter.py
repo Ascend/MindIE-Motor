@@ -115,6 +115,25 @@ class LLMDaemonManager(BaseDaemonManager, metaclass=_SingletonMeta):
                 daemon_args['role']
             )
 
+    def is_child_process_detected(self, pid: int) -> bool:
+        process_infos = subprocess.run(
+            ["/bin/ps", "-efH"],
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout
+        process_info_lines = process_infos.splitlines()
+        # Fetch the PID and CMD from `ps -efH`
+        # wait until the OS kill the PID of `mindieservice_daemon`
+        pid_idx = process_info_lines[0].find("PID")
+        cmd_idx = process_info_lines[0].find("CMD")
+        for line in process_infos.split("\n"):
+            cur_pid = line[pid_idx:].split(" ")[0].strip()
+            cur_cmd = line[cmd_idx:].split(" ")[0].strip()
+            if str(pid) == cur_pid and "mindieservice_daemon" in cur_cmd:
+                return True
+        return False
+
     def start_distributed_mode(self, server_count: int, role: str):
         for i in range(1, server_count + 1):
             config_file = os.path.join(self.config_dir, f'config{i}.json')

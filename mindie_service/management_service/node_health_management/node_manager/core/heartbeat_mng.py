@@ -10,6 +10,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import subprocess
 import threading
 from collections import deque
 from datetime import datetime
@@ -52,6 +53,16 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             if tmp_dict != {}:
                 data_lst.append(tmp_dict)
         return data_lst
+
+    @staticmethod
+    def _is_child_process_detected() -> bool:
+        process_infos = subprocess.run(
+            ["/bin/ps", "-efH"],
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout
+        return "mindieservice_daemon" in process_infos
 
     def start_monitoring(self):
         self.running = True
@@ -131,8 +142,11 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             self.heartbeat_mng.set_running_status(node_running_status)
             if (node_running_status == NodeRunningStatus.ABNORMAL.value): # abnormal情况下发异常给ctrler 并自杀
                 if self.heartbeat_mng.heartbeat_check_allowed:
-                    self.logger.error(
-                        f"Detected ABNORMAL status while heartbeat_check_allowed is True, terminating all processes")
+                    self.logger.error("Detected ABNORMAL status while heartbeat_check_allowed is True.")
+                    while self._is_child_process_detected():
+                        self.logger.info("Daemon process detected, waiting for it to terminate")
+                        time.sleep(1)
+                    self.logger.error(f"Start to Terminating all processes")
                     llm_daemon_manager.terminate_all_processes()
                 data_lst = self._extract_error_data_to_ctrl(result_all)
                 ctl_rpl = self._send_ep_state_info_to_ctrler(data_lst)
