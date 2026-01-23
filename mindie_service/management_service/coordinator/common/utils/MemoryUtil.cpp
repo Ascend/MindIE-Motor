@@ -1,5 +1,13 @@
-/**
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+ * MindIE is licensed under Mulan PSL v2.
+ * You can use this software according to the terms and conditions of the Mulan PSL v2.
+ * You may obtain a copy of Mulan PSL v2 at:
+ *         http://license.coscl.org.cn/MulanPSL2
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PSL v2 for more details.
  */
 #include "MemoryUtil.h"
 #include "Logger.h"
@@ -23,6 +31,9 @@ constexpr const char* CGROUP_V1_MEMORY_USAGE = "/sys/fs/cgroup/memory/memory.usa
 // System memory info
 constexpr const char* PROC_MEMINFO = "/proc/meminfo";
 
+// set of decimal digit characters
+constexpr const char* DECIMAL_DIGITS = "0123456789";
+
 // Unit conversion constants
 constexpr int64_t ONE_KB = 1024LL;
 constexpr int64_t ONE_MB = 1024LL * 1024LL;
@@ -30,6 +41,10 @@ constexpr int64_t ONE_GB = 1024LL * 1024LL * 1024LL;
 
 // cgroup v1 "unlimited" threshold (close to 2^63)
 constexpr int64_t CGROUP_V1_UNLIMITED_THRESHOLD = 1LL << 60;
+
+// Margin for memory risk check
+constexpr double MEMORY_RISK_MARGIN = 1.2;
+constexpr int DECIMAL_PRECISION = 2;
 
 /**
  * @brief Read first line from file
@@ -75,7 +90,7 @@ int64_t MemoryUtil::GetMemoryLimitFromCgroupV2()
 
     int64_t limit = -1;
     if (SafeStringToInt64(content, limit)) {
-        LOG_D("[MemoryUtil] Memory limit from cgroup v2: %ld bytes", limit);
+        LOG_D("[MemoryUtil] Memory limit from cgroup v2: %lld bytes", limit);
         return limit;
     }
 
@@ -98,11 +113,11 @@ int64_t MemoryUtil::GetMemoryLimitFromCgroupV1()
 
     // cgroup v1 "unlimited" is usually a very large number
     if (limit > CGROUP_V1_UNLIMITED_THRESHOLD) {
-        LOG_D("[MemoryUtil] cgroup v1 memory limit appears unlimited: %ld", limit);
+        LOG_D("[MemoryUtil] cgroup v1 memory limit appears unlimited: %lld", limit);
         return -1;
     }
 
-    LOG_D("[MemoryUtil] Memory limit from cgroup v1: %ld bytes", limit);
+    LOG_D("[MemoryUtil] Memory limit from cgroup v1: %lld bytes", limit);
     return limit;
 }
 
@@ -121,7 +136,7 @@ int64_t MemoryUtil::GetMemoryLimitFromProc()
         }
 
         // Format: "MemTotal:       16384000 kB"
-        size_t pos = line.find_first_of("0123456789");
+        size_t pos = line.find_first_of(DECIMAL_DIGITS);
         if (pos == std::string::npos) {
             break;
         }
@@ -132,7 +147,7 @@ int64_t MemoryUtil::GetMemoryLimitFromProc()
         }
 
         int64_t memBytes = memKB * ONE_KB;
-        LOG_D("[MemoryUtil] System total memory from /proc/meminfo: %ld bytes", memBytes);
+        LOG_D("[MemoryUtil] System total memory from /proc/meminfo: %lld bytes", memBytes);
         file.close();
         return memBytes;
     }
@@ -185,6 +200,71 @@ int64_t MemoryUtil::GetMemoryUsage()
         return usage;
     }
 
+    usage = GetMemoryUsageFromProc();
+    if (usage >= 0) {
+        return usage;
+    }
+
+    return -1;
+}
+
+int64_t MemoryUtil::GetMemoryUsageFromProc()
+{
+    std::ifstream file(PROC_MEMINFO);
+    if (!file.is_open()) {
+        return -1;
+    }
+
+    int64_t memTotal = -1;
+    int64_t memAvailable = -1;
+    std::string line;
+
+    while (std::getline(file, line)) {
+        if (line.find("MemTotal:") == 0) {
+            size_t pos = line.find_first_of(DECIMAL_DIGITS);
+            if (pos != std::string::npos) {
+                SafeStringToInt64(line.substr(pos), memTotal);
+            }
+        } else if (line.find("MemAvailable:") == 0) {
+            size_t pos = line.find_first_of(DECIMAL_DIGITS);
+            if (pos != std::string::npos) {
+                SafeStringToInt64(line.substr(pos), memAvailable);
+            }
+        }
+    }
+
+    file.close();
+
+    if (memTotal > 0 && memAvailable > 0) {
+        int64_t usedKB = memTotal - memAvailable;
+        LOG_D("[MemoryUtil] Memory usage from /proc/meminfo: %lld bytes", usedKB * ONE_KB);
+        return usedKB * ONE_KB;
+    }
+
+    return -1;
+}
+
+int64_t MemoryUtil::GetMemoryLimit()
+{
+    // Try cgroup v2 first
+    int64_t limitBytes = GetMemoryLimitFromCgroupV2();
+    if (limitBytes > 0) {
+        return limitBytes;
+    }
+
+    // Try cgroup v1
+    limitBytes = GetMemoryLimitFromCgroupV1();
+    if (limitBytes > 0) {
+        return limitBytes;
+    }
+
+    // Fall back to /proc/meminfo
+    limitBytes = GetMemoryLimitFromProc();
+    if (limitBytes > 0) {
+        return limitBytes;
+    }
+
+    LOG_W("[MemoryUtil] Failed to obtain memory limit from all sources");
     return -1;
 }
 
@@ -229,7 +309,7 @@ std::string MemoryUtil::FormatBytes(int64_t bytes)
     }
 
     std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2); // 2: decimal places
+    oss << std::fixed << std::setprecision(DECIMAL_PRECISION);
 
     if (bytes >= ONE_GB) {
         oss << (static_cast<double>(bytes) / ONE_GB) << " GB";
@@ -265,31 +345,35 @@ void MemoryUtil::CheckRequestConfigMemoryRisk() noexcept
         size_t bodyLimit = configure->reqLimit.bodyLimit;
 
         // Calculate theoretical max memory demand: maxReqs * bodyLimit
-        // Use int64_t to avoid size_t multiplication overflow
+
         int64_t theoreticalMaxMemory = static_cast<int64_t>(maxReqs) * static_cast<int64_t>(bodyLimit);
 
-        // Add 20% margin
-        int64_t theoreticalMaxMemoryWithMargin = static_cast<int64_t>(theoreticalMaxMemory * 1.2); // 1.2: 20% margin
+        // Add margin for safety
+        int64_t theoreticalMaxMemoryWithMargin = static_cast<int64_t>(
+            static_cast<double>(theoreticalMaxMemory) * MEMORY_RISK_MARGIN);
 
         LOG_M("[MemoryUtil] Request Config Check:");
         LOG_M("[MemoryUtil]   maxReqs:                %zu", maxReqs);
-        LOG_M("[MemoryUtil]   bodyLimit:              %s (%zu bytes)", FormatBytes(bodyLimit).c_str(), bodyLimit);
-        LOG_M("[MemoryUtil]   Theoretical Max Memory: %s (%ld bytes)",
-              FormatBytes(theoreticalMaxMemory).c_str(), theoreticalMaxMemory);
-        LOG_M("[MemoryUtil]   With 20%% Margin:        %s (%ld bytes)",
-              FormatBytes(theoreticalMaxMemoryWithMargin).c_str(), theoreticalMaxMemoryWithMargin);
-        LOG_M("[MemoryUtil]   Pod Memory Limit:       %s (%ld bytes)",
-              FormatBytes(info.limitBytes).c_str(), info.limitBytes);
+        LOG_M("[MemoryUtil]   bodyLimit:              %s (%zu bytes)",
+            FormatBytes(static_cast<int64_t>(bodyLimit)).c_str(), bodyLimit);
+        LOG_M("[MemoryUtil]   Theoretical Max Memory: %s (%lld bytes)",
+            FormatBytes(theoreticalMaxMemory).c_str(), theoreticalMaxMemory);
+        LOG_M("[MemoryUtil]   With 20%% Margin:        %s (%lld bytes)",
+            FormatBytes(theoreticalMaxMemoryWithMargin).c_str(), theoreticalMaxMemoryWithMargin);
+        LOG_M("[MemoryUtil]   Pod Memory Limit:       %s (%lld bytes)",
+            FormatBytes(info.limitBytes).c_str(), info.limitBytes);
 
         // Compare theoretical max memory (with margin) against Pod memory limit
         if (theoreticalMaxMemoryWithMargin > info.limitBytes) {
-            double ratio = static_cast<double>(theoreticalMaxMemoryWithMargin) / static_cast<double>(info.limitBytes);
+            double ratio = static_cast<double>(theoreticalMaxMemoryWithMargin) /
+                        static_cast<double>(info.limitBytes);
             LOG_W("[MemoryUtil] ==================== MEMORY CONFIG WARNING ====================");
             LOG_W("[MemoryUtil] Request configuration (with 20%% margin) may exceed Pod memory limit!");
             LOG_W("[MemoryUtil]   maxReqs (%zu) * bodyLimit (%s) * 1.2 = %s",
-                  maxReqs, FormatBytes(bodyLimit).c_str(), FormatBytes(theoreticalMaxMemoryWithMargin).c_str());
+                maxReqs, FormatBytes(static_cast<int64_t>(bodyLimit)).c_str(),
+                FormatBytes(theoreticalMaxMemoryWithMargin).c_str());
             LOG_W("[MemoryUtil]   This is %.2fx of Pod memory limit (%s)",
-                  ratio, FormatBytes(info.limitBytes).c_str());
+                ratio, FormatBytes(info.limitBytes).c_str());
             LOG_W("[MemoryUtil] Recommendation: Reduce 'max_requests' or 'body_limit' in config,");
             LOG_W("[MemoryUtil]                 or increase Pod memory limit.");
             LOG_W("[MemoryUtil] ================================================================");
@@ -297,7 +381,8 @@ void MemoryUtil::CheckRequestConfigMemoryRisk() noexcept
         }
 
         // Calculate config (with margin) usage percentage of memory limit
-        double usagePercent = (static_cast<double>(theoreticalMaxMemoryWithMargin) / info.limitBytes) * 100.0;
+        double usagePercent = (static_cast<double>(theoreticalMaxMemoryWithMargin) /
+                            static_cast<double>(info.limitBytes)) * 100.0;
         LOG_M("[MemoryUtil]   Config (with margin) uses %.2f%% of Pod memory limit", usagePercent);
     } catch (const std::exception& e) {
         LOG_W("[MemoryUtil] Exception during memory config risk check: %s", e.what());
@@ -307,3 +392,4 @@ void MemoryUtil::CheckRequestConfigMemoryRisk() noexcept
 }
 
 } // namespace MINDIE::MS
+

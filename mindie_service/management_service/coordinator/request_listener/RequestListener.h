@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2024-2025. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2024-2026. All rights reserved.
  * MindIE is licensed under Mulan PSL v2.
  * You can use this software according to the terms and conditions of the Mulan PSL v2.
  * You may obtain a copy of Mulan PSL v2 at:
@@ -26,6 +26,10 @@
 #include "PerfMonitor.h"
 #include "RequestRepeater.h"
 #include "ReqAgent.h"
+#include "Logger.h"
+#include "RequestMgr.h"
+#include "FrequencyLogger.h"
+#include "HealthMonitor.h"
 
 namespace MINDIE::MS {
 
@@ -104,6 +108,35 @@ public:
 
     void CreateLinkWithDNode();
 
+    /**
+    * @brief Initialize the health monitor
+    * @param reqManage Pointer to request manager
+    * @return true if initialization successful
+    */
+    bool InitHealthMonitor(ReqManage* reqManage);
+
+    /**
+    * @brief Check and intercept request based on memory pressure
+    * @param requestType Type of request for logging
+    * @return true if request should be intercepted
+    */
+    bool ShouldIntercept(const std::string& requestType);
+    
+    /**
+    * @brief Get intercept statistics
+    */
+    struct InterceptStats {
+        bool healthMonitorValid = false;       ///< Whether health monitor is valid
+        double currentMemoryUsage = 0.0;       ///< Memory usage (0.0-1.0)
+        int64_t currentMemoryBytes = 0;        ///< Current memory usage (bytes)
+        int64_t memoryLimit = 0;               ///< Memory limit (bytes)
+        int totalIntercepts = 0;               ///< Total intercept count
+        int consecutiveIntercepts = 0;         ///< Consecutive intercept count
+        int activeRequests = 0;                ///< Active request count
+    };
+    
+    InterceptStats GetInterceptStats() const;
+
 private:
     std::unique_ptr<MINDIE::MS::DIGSScheduler>& scheduler;
     std::unique_ptr<ReqManage>& reqManage;
@@ -131,7 +164,30 @@ private:
     
     void CheckMasterAndCreateLinkWithDNode();
     int32_t LinkWithDNodeInMaxRetry(const std::string &ip, const std::string &port);
-};
+    /**
+    * @brief Pre-request check including memory pressure
+    */
+    bool PreRequestCheck(const std::string& requestType,
+                        std::shared_ptr<ServerConnection> connection);
 
+    /**
+    * @brief Send memory limit error response
+    */
+    void SendMemoryLimitError(std::shared_ptr<ServerConnection> connection,
+                            const std::string& requestType);
+
+    /**
+    * @brief Log intercept event with rate limiting
+    */
+    void LogIntercept(const std::string& requestType, double memoryUsage);
+
+private:
+    // Local intercept counter for this listener (for logging purposes)
+    std::atomic<int> localInterceptCount_{0};
+    
+    // Log interval (30 seconds)
+    static constexpr uint64_t logPrintIntervalMs = 30 * 1000;
+    FrequencyLogger freqLogger_{logPrintIntervalMs};
+};
 }
 #endif

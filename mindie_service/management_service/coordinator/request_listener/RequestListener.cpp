@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2024-2025. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2024-2026. All rights reserved.
  * MindIE is licensed under Mulan PSL v2.
  * You can use this software according to the terms and conditions of the Mulan PSL v2.
  * You may obtain a copy of Mulan PSL v2 at:
@@ -17,6 +17,8 @@
 #include "Configure.h"
 #include "Communication.h"
 #include "Util.h"
+#include "HealthMonitor.h"
+#include "MemoryUtil.h"
 
 namespace MINDIE::MS {
 
@@ -30,6 +32,15 @@ RequestListener::RequestListener(std::unique_ptr<MINDIE::MS::DIGSScheduler> &sch
     : scheduler(schedulerInit), reqManage(reqManager), instancesRecord(instancesRec),
       exceptionMonitor(exceptionMonitorInit), requestRepeater(requestRepeaterInit)
 {
+    LOG_I("[RequestListener] Health monitor initialization started");
+    if (reqManage) {
+        bool success = InitHealthMonitor(reqManage.get());
+        if (!success) {
+            LOG_W("[RequestListener] Memory-based request interception is disabled");
+        }
+    } else {
+        LOG_W("[RequestListener] reqManage is null, health monitor initialization skipped");
+    }
 }
 
 int RequestListener::Init() const
@@ -59,6 +70,9 @@ void RequestListener::TritonReqHandler(std::shared_ptr<ServerConnection> connect
     if (reqManage->GetReqNum() >= Configure::Singleton()->reqLimit.maxReqs) {
         SendErrorRes(connection, boost::beast::http::status::too_many_requests,
             "Too many requests\r\n");
+        return;
+    }
+    if (!PreRequestCheck("Triton", connection)) {
         return;
     }
     if (Configure::Singleton()->IsAbnormal() && !Configure::Singleton()->IsMaster()) { // 异常且为备节点则不做处理
@@ -104,6 +118,9 @@ void RequestListener::TGIStreamReqHandler(std::shared_ptr<ServerConnection> conn
             "Too many requests\r\n");
         return;
     }
+    if (!PreRequestCheck("TGIStream", connection)) {
+        return;
+    }
     if (Configure::Singleton()->IsAbnormal() && !Configure::Singleton()->IsMaster()) { // 异常且为备节点则不做处理
         return;
     }
@@ -134,6 +151,9 @@ void RequestListener::TGIOrVLLMReqHandler(std::shared_ptr<ServerConnection> conn
     reqManage->CheckAndHandleReqCongestionAlarm();
     if (reqManage->GetReqNum() >= Configure::Singleton()->reqLimit.maxReqs) {
         return SendErrorRes(connection, boost::beast::http::status::too_many_requests, "Too many requests\r\n");
+    }
+    if (!PreRequestCheck("TGIOrVLLM", connection)) {
+        return;
     }
     if (Configure::Singleton()->IsAbnormal() && !Configure::Singleton()->IsMaster()) { return; }
     CheckMasterAndCreateLinkWithDNode();
@@ -192,6 +212,9 @@ void RequestListener::OpenAIReqHandler(std::shared_ptr<ServerConnection> connect
             "Too many requests\r\n");
         return;
     }
+    if (!PreRequestCheck("OpenAI", connection)) {
+        return;
+    }
     if (Configure::Singleton()->IsAbnormal() && !Configure::Singleton()->IsMaster()) { // 异常且为备节点则不做处理
         return;
     }
@@ -224,6 +247,9 @@ void RequestListener::MindIEReqHandler(std::shared_ptr<ServerConnection> connect
     if (reqManage->GetReqNum() >= Configure::Singleton()->reqLimit.maxReqs) {
         SendErrorRes(connection, boost::beast::http::status::too_many_requests,
             "Too many requests\r\n");
+        return;
+    }
+    if (!PreRequestCheck("MindIE", connection)) {
         return;
     }
     if (Configure::Singleton()->IsAbnormal() && !Configure::Singleton()->IsMaster()) { // 异常且为备节点则不做处理
@@ -628,6 +654,9 @@ void RequestListener::TokenizerReqHandler(std::shared_ptr<ServerConnection> conn
         SendErrorRes(connection, boost::beast::http::status::too_many_requests, "Too many requests\r\n");
         return;
     }
+    if (!PreRequestCheck("Tokenizer", connection)) {
+        return;
+    }
     if (Configure::Singleton()->IsAbnormal() && !Configure::Singleton()->IsMaster()) { // 异常且为备节点则不做处理
         return;
     }
@@ -699,6 +728,108 @@ int32_t RequestListener::LinkWithDNodeInMaxRetry(const std::string &ip, const st
         GetErrorCode(ErrorType::UNREACHABLE, CoordinatorFeature::REQUEST_LISTENER).c_str(),
         ip.c_str(), port.c_str());
     return -1;
+}
+
+bool RequestListener::PreRequestCheck(const std::string& requestType,
+    std::shared_ptr<ServerConnection> connection)
+{
+    if (ShouldIntercept(requestType)) {
+        // Send memory limit error response
+        SendMemoryLimitError(connection, requestType);
+        return false;  // Request intercepted
+    }
+    
+    return true;  // Request can proceed
+}
+
+void RequestListener::SendMemoryLimitError(std::shared_ptr<ServerConnection> connection,
+    const std::string& requestType)
+{
+    std::string errorResponse;
+    
+    if (requestType.find("Triton") != std::string::npos) {
+        errorResponse = R"({"error": "Memory limit exceeded", "code": 429})";
+    } else if (requestType.find("OpenAI") != std::string::npos) {
+        errorResponse = R"({"error": {"message": "Memory limit exceeded", "type": "server_error", "code": 429}})";
+    } else if (requestType.find("TGI") != std::string::npos ||
+            requestType.find("vLLM") != std::string::npos) {
+        errorResponse = R"({"error": "Memory limit exceeded", "error_type": "overloaded"})";
+    } else {
+        errorResponse = R"({"error": "Memory limit exceeded", "code": 429})";
+    }
+    
+    SendErrorRes(connection, boost::beast::http::status::too_many_requests, errorResponse);
+}
+
+bool RequestListener::InitHealthMonitor(ReqManage* reqManage)
+{
+    if (reqManage == nullptr) {
+        LOG_E("[RequestListener] reqManage is null");
+        return false;
+    }
+    auto& healthMonitor = HealthMonitor::GetInstance();
+    LOG_I("[RequestListener] Initializing health monitor...");
+
+    bool success = healthMonitor.Initialize(reqManage);
+    if (!success) {
+        LOG_W("[RequestListener] Health monitor initialization failed. "
+            "Memory-based request interception will be disabled.");
+    } else {
+        auto stats = healthMonitor.GetStats();
+        LOG_I("[RequestListener] Health monitor initialized successfully with memory limit: %s",
+            MemoryUtil::FormatBytes(stats.memoryLimitBytes).c_str());
+    }
+    
+    return success;
+}
+
+bool RequestListener::ShouldIntercept(const std::string& requestType)
+{
+    auto& healthMonitor = HealthMonitor::GetInstance();
+    
+    // If health monitor is invalid, do not intercept
+    if (!healthMonitor.IsValid()) {
+        return false;
+    }
+    
+    // Check if memory usage exceeds threshold
+    if (!healthMonitor.ShouldInterceptRequest()) {
+        return false;
+    }
+    
+    // Record intercept (this may trigger graceful shutdown if conditions are met)
+    localInterceptCount_++;
+    healthMonitor.RecordIntercept();
+    
+    // Get current memory usage for logging
+    double currentUsage = healthMonitor.GetCurrentMemoryUsage();
+    
+    // Log with rate limiting
+    LogIntercept(requestType, currentUsage);
+    
+    return true;
+}
+
+RequestListener::InterceptStats RequestListener::GetInterceptStats() const
+{
+    auto healthStats = HealthMonitor::GetInstance().GetStats();
+    
+    InterceptStats stats;
+    stats.healthMonitorValid = healthStats.valid;
+    stats.currentMemoryUsage = healthStats.currentMemoryUsage;
+    stats.currentMemoryBytes = healthStats.currentMemoryBytes;
+    stats.memoryLimit = healthStats.memoryLimitBytes;
+    stats.totalIntercepts = healthStats.totalIntercepts;
+    stats.consecutiveIntercepts = healthStats.consecutiveIntercepts;
+    stats.activeRequests = healthStats.activeRequests;
+    
+    return stats;
+}
+
+void RequestListener::LogIntercept(const std::string& requestType, double memoryUsage)
+{
+    freqLogger_.Warn("[RequestListener] Intercepted %s request due to memory pressure. "
+        "Memory usage: %.2f%%", requestType.c_str(), memoryUsage);
 }
 
 }
