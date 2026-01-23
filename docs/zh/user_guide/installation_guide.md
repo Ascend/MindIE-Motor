@@ -4,11 +4,9 @@
 
 ## 1.1 安装方案
 
-**本文档包含镜像/容器、物理机场景下，安装MindIE软件的方案部署。**
+**主要包含镜像场景下安装方式，安装MindIE软件的方案部署。**
 
-- 镜像安装：该方式是最简单的一种安装方式，用户直接从昇腾社区下载已经打包好的镜像，镜像中已经包含了CANN、PTA、MindIE等必要的依赖与软件，用户只需拉取镜像并启动容器即可。
-- 物理机安装：该方式是在不使用Docker容器的情况下，将CANN、PTA、MindIE等软件逐个手动安装到物理机上。这种方式将所有软件直接安装到物理机的操作系统中。
-- 容器安装：该方式是将CANN、PTA、MindIE等软件逐个安装到容器中，相当于手动创建镜像。这种方式为用户提供了更高的灵活性，用户可以自由选择和指定软件版本，同时每个容器中的软件环境都是独立的。
+镜像安装：该方式是最简单的一种安装方式，用户直接从昇腾社区下载已经打包好的镜像，镜像中已经包含了CANN、PTA、MindIE等必要的依赖与软件，用户只需拉取镜像并启动容器即可。
 
 建议使用镜像安装方式，本文仅介绍镜像安装相关内容
 
@@ -38,9 +36,6 @@ uname -m && cat /etc/*release
    ```
 
    ubuntu系统显示结果：
-
-   
-
    ```
    PRETTY_NAME="Ubuntu 22.04 LTS"
    NAME="Ubuntu"
@@ -57,7 +52,6 @@ uname -m && cat /etc/*release
    ```
 
    关注**NAME**、**ID**等参数，确认是否为Ubuntu系统
-
 2. ubuntu系统安装docker app：
 
    - 切换可用源：
@@ -110,7 +104,7 @@ uname -m && cat /etc/*release
    Setting up docker.io (28.2.2-0ubuntu1~22.04.1) ...
    Warning: The unit file, source configuration file or drop-ins of docker.service changed on disk. Run 'systemctl daemon-reload' to reload units.
    Processing triggers for man-db (2.10.2-1) ...
-   Scanning processes...                                                                                                         
+   Scanning processes...
    Scanning processor microcode...
    Scanning linux images...
    
@@ -169,7 +163,11 @@ uname -m && cat /etc/*release
 
 # 4 镜像安装与使用
 
-1. 下载镜像：请从昇腾官网中下载镜像（[点此下载](https://www.hiascend.com/developer/ascendhub/detail/af85b724a7e5469ebd7ea13c3439d48f)），点击镜像版本栏目进行下载。请根据机器型号（A2、A3、DUO）、操作系统版本（ubuntu、openeuler）选择镜像进行下载。如需体验新特性、当前最优精度性能，请尽量选择最新版本。
+1. 下载镜像：请从昇腾官网中下载镜像（[点此下载](https://www.hiascend.com/developer/ascendhub/detail/af85b724a7e5469ebd7ea13c3439d48f)），点击镜像版本栏目进行下载。请根据机器型号、操作系统版本（Ubuntu、openEuler）选择镜像进行下载，其中机器型号包括Atlas 800I A2 推理服务器、Atlas 800I A3 超节点服务器、Atlas 300I DUO推理卡。如需体验新特性、当前最优精度性能，请尽量选择最新版本。
+
+   注意，请点击此处下载镜像：
+
+   ![img](https://raw.gitcode.com/user-images/assets/8772838/244fd6e6-2b68-4932-994c-0a89116858cf/image.png)
 
 2. 安装镜像：
 
@@ -178,7 +176,7 @@ uname -m && cat /etc/*release
    安装指令：
 
    ```
-   docker load <image_file_name
+   docker load < image_file_name
    ```
 
    查看指令：
@@ -228,9 +226,9 @@ uname -m && cat /etc/*release
    bash start_docker.sh your_docker_name
    ```
 
-   输入:wq保存退出，得到一个创建容器的脚本，脚本的最后一行为镜像的REPOSITORY:TAG，REPOSITORY保持为mindie不用改，TAG需要根据你要选择的镜像来创建容器。
+   输入:wq保存退出，得到一个创建容器的脚本，脚本的最后一行为镜像的REPOSITORY:TAG，REPOSITORY保持为MindIE不用改，TAG需要根据要选择的镜像来创建容器。
 
-   创建容器指令（your_docker_name是你自定义的容器名，建议姓名+mindie版本）：
+   创建容器指令（your_docker_name是自定义的容器名，建议姓名+MindIE版本）：
 
    ```
    bash start_docker.sh your_docker_name
@@ -276,16 +274,14 @@ uname -m && cat /etc/*release
    docker rmi image_id
    ```
 
-
 # 5 源码编译与安装
 
-1. 根据前面的内容创建mindie镜像对应的容器，然后进入容器后编译代码（说明：编译的前提是已经安装好docker app、镜像、容器、HDK等环境，mindie镜像的容器已经配好所有需要编译的环境）
+1. 根据前面的内容创建MindIE镜像对应的容器，然后进入容器后编译代码（说明：编译的前提是已经安装好docker app、镜像、容器、HDK等环境，MindIE镜像的容器已经配好所有需要编译的环境）
 
 2. 编译代码需要执行下列环境变量：
 
    ```
    export NO_CHECK_CERTIFICATE=1
-   unset TUNE_BANK_PATH
    ```
 
    请保证服务器可以联网
@@ -305,7 +301,49 @@ uname -m && cat /etc/*release
    cd ..
    ```
 
-4. 执行编译：
+4. 版本匹配
+
+   <div style="background:#f0f9ff;border-left:4px solid #2196f3;padding:14px;margin:16px 0;border-radius:6px;">
+   <strong>💡 说明</strong>
+   <ul style="margin:8px 0;padding-left:20px;">
+       拉取大EP服务需要自行选择一个版本的MindIE镜像。如果需要修改MindIE-Motor、MindIE-LLM代码仓的代码（比如添加打印），在进行编译之前，需要将代码仓版本回退到和需要使用的MindIE镜像版本一致，如果不一致可能会报错。
+   </ul></div>
+
+   - 参考前面的步骤创建并进入要使用的MindIE镜像对应的容器
+
+   - 进入容器后，查看代码版本：
+
+     ```
+     cat /usr/local/Ascend/atb-models/version.info
+     ```
+
+   - 打屏显示：
+
+     ```
+     MindIE-ATB Tag/Branch : master
+     MindIE-ATB Version :
+     ATB-Models Version : 2.2.RC1.B120
+     Commit id : 0245b1fe907844715fe260528943c9b9f61be862
+     Platform : aarch64
+     Time: 2025-10-24 12:26:52 PM CST
+     ```
+
+   - 请选择第四行的commit id来回退MindIE-LLM代码仓，回退指令为（以上面的结果举例）：
+
+     ```
+     git checkout 0245b1fe907844715fe260528943c9b9f61be862
+     ```
+
+   - 根据上面的时间2025-10-24 12:26:52 PM CST，在MindIE-Motor代码仓中，找出最接近这个时间点的[commit id(点此链接进行查找)](https://gitcode.com/Ascend/MindIE-Motor/commits/master)，并用此commit id对Motor仓进行回退
+
+   - 执行界面如图：
+
+   ![img](https://raw.gitcode.com/user-images/assets/8772838/cb6b6c4e-482c-47c0-8b35-9743c06a812b/image.png)
+
+5. 执行编译：
+
+   执行编译之前，请确认是否已经将代码仓调整到正确的版本。
+
 
    一键编译所有组件指令：
 
@@ -331,11 +369,11 @@ uname -m && cat /etc/*release
      - service对应MindIE-Motor仓
      - server对应MindIE-LLM仓的server模块
      - ms对应MindIE-Motor仓的ms（management service）模块
-   - -p为打包，将MindIE-LLM的包和MindIE-Motor的包打包成MindIE包
+   - -p为打包，将MindIE LLM的包和MindIE Motor的包打包成MindIE包
 
    首次编译时间约为45分钟，受磁盘传输数据速度影响
 
-5. 编译成功会得到三个包
+6. 编译成功会得到三个包
 
    - MindIE-LLM仓编译出的包：
 
@@ -343,42 +381,39 @@ uname -m && cat /etc/*release
      #your_code_path为代码仓路径
      /your_code_path/MindIE-Motor/output/modules/Ascend-mindie-llm_1.0.RC3_py311_linux-aarch64.run
      ```
-
    - MindIE-Motor仓编译出的包：
 
      ```
      /your_code_path/MindIE-Motor/output/modules/Ascend-mindie-service_1.0.0_py311_linux-aarch64.run
      ```
-
-   - 两个仓打包成的mindie包：
+   - 两个仓打包成的MindIE包：
 
      ```
      /your_code_path/MindIE-Motor/output/aarch64/Ascend-mindie_1.0.0_linux-aarch64.run
      ```
-
    - 打印对应包的hash值：
 
      ```
      md5sum /your_code_path/MindIE-Motor/output/aarch64/Ascend-mindie_1.0.0_linux-aarch64.run
      ```
 
-6. 在PD分离拉起服务脚本中的boot.sh中，在#!/bin/bash和set_common_env之间加入下列代码，安装编译得到的mindie包：
+7. 在PD分离拉起服务脚本中的boot.sh中，在#!/bin/bash和set_common_env之间加入下列代码，安装编译得到的MindIE包：
 
-```
-#!/bin/bash
-unset TUNE_BANK_PATH
-bash_path=/your_code_path/1209/MindIE-Motor/output/aarch64
-mindie_run=Ascend-mindie_1.0.0_linux-aarch64.run
-cd ${bash_path} && chmod +x ./${mindie_run} && echo "y" | ./${mindie_run} --install
-md5sum  ${bash_path}/${mindie_run} 
-unset http_proxy https_proxy
-set_common_env
-```
+   ```
+   #!/bin/bash
+   bash_path=/your_code_path/1209/MindIE-Motor/output/aarch64
+   mindie_run=Ascend-mindie_1.0.0_linux-aarch64.run
+   cd ${bash_path} && chmod +x ./${mindie_run} && echo "y" | ./${mindie_run} --install
+   md5sum  ${bash_path}/${mindie_run} 
+   unset http_proxy https_proxy
+   set_common_env
+   ```
 
-k8s集群在拉起服务时，会创建各个节点对应的容器，每个容器创建后，均会执行boot.sh脚步，即每个容器都会安装你编译的mindie包
+k8s集群在拉起服务时，会创建各个节点对应的容器，每个容器创建后，均会执行boot.sh脚本，即每个容器都会安装编译的MindIE包
 
 PD分离环境配置请参考此[教程](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/User_Guide/PD%E5%88%86%E7%A6%BB%E7%8E%AF%E5%A2%83%E9%85%8D%E7%BD%AE.md)
 
 # 6 常见问题
 
 请参考[FAQ的编译类问题](https://gitcode.com/Ascend/MindIE-Motor/blob/dev/docs/zh/user_guide/faq.md)章节
+

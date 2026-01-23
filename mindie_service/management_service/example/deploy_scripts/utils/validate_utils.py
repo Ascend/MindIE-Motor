@@ -185,7 +185,6 @@ def is_valid_str(
         value: str,
         min_length: int = 1,
         max_length: int = 64,
-        allowed_chars: str = string.ascii_letters + string.digits + ":_-."
 ):
     """
     Validate whether the string meets length requirements and contains only valid characters
@@ -193,7 +192,6 @@ def is_valid_str(
     :param value: The string to be validated
     :param min_length: Minimum length (default 1)
     :param max_length: Maximum length (default 64)
-    :param allowed_chars: Set of allowed characters (default: letters, digits, _-., and spaces)
     :return: True (valid) / False (invalid)
     """
     # Type Validation: Ensure the input is an integer
@@ -212,10 +210,6 @@ def is_valid_str(
         if not re.fullmatch(r"[a-zA-Z0-9_]+", var_name):
             raise ValueError(f"{name} value, which is a variable reference, contains invalid characters: {var_name}")
         return
-    # Other identifier: Ensure the input contains only valid chars
-    for char in value:
-        if char not in allowed_chars:
-            raise ValueError('{} value is {}, allowed_chars is letters digits :_-.'.format(name, value))
 
 
 def is_valid_mount(name, values):

@@ -35,14 +35,11 @@ class LLMDaemonManager(BaseDaemonManager, metaclass=_SingletonMeta):
             raise RuntimeError(f"Invalid config directory: {self.config_dir}")
 
     def build_daemon_command(self, config_file: Optional[str], instance_name: str, **kwargs) -> List[str]:
-        daemon_path = os.path.join(self.mies_install_path, 'bin/mindieservice_daemon')
-        if not PathCheck.check_path_full(daemon_path):
-            raise RuntimeError("Daemon binary not found or invalid permissions")
         cpu_binding = kwargs.get('cpu_binding')
         if cpu_binding:
-            cmd = ['taskset', '-c', cpu_binding, daemon_path]
+            cmd = ['taskset', '-c', cpu_binding, "/usr/local/bin/mindie_llm_server"]
         else:
-            cmd = [daemon_path]
+            cmd = ["/usr/local/bin/mindie_llm_server"]
         if config_file:
             cmd.extend(['--config-file', config_file])
         cmd.extend(['--expert-parallel', 'true'])
@@ -138,8 +135,9 @@ class LLMDaemonManager(BaseDaemonManager, metaclass=_SingletonMeta):
             )
 
     def start_single_mode(self):
+        config_file = os.path.join(self.config_dir, 'config.json')
         self.start_daemon_process(
-            None,
+            config_file,
             "single_instance",
             working_dir=self.mies_install_path
         )

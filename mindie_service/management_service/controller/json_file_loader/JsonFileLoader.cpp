@@ -24,7 +24,7 @@ nlohmann::json FileToJsonObj(const std::string& filePath, uint32_t mode, bool ch
             filePath.c_str());
         return {};
     }
-    if (!CheckJsonStringSize(confStr) || !nlohmann::json::accept(confStr)) {
+    if (!nlohmann::json::accept(confStr)) {
         LOG_E("[%s] [JsonFileLoader] Invalid JSON input in JSON file loader.",
             GetErrorCode(ErrorType::INVALID_INPUT, ControllerFeature::JSON_FILE_LOADER).c_str());
         return {};

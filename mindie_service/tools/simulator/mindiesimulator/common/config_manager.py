@@ -31,7 +31,7 @@ class ConfigManager:
     # Version file path and key
     VERSION_INFO_PATH = os.path.abspath(
         os.path.join(
-            os.getenv("MIES_INSTALL_PATH", "/usr/local/Ascend/mindie/latest/mindie-service"),
+            os.getenv("MIES_INSTALL_PATH", "/usr/local/lib/python3.11/site-packages/mindie_motor"),
             "../version.info"
         )
     )

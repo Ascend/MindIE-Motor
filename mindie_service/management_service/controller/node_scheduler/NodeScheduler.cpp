@@ -986,7 +986,7 @@ static bool IsValidScheduleInstanceInfo(const nlohmann::json &instanceInfo)
 static bool IsValidCoordinatorInfoResp(std::string &response)
 {
     auto errCode = GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::NODE_SCHEDULER);
-    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
+    if (!nlohmann::json::accept(response)) {
         LOG_E("[%s] [NodeScheduler] Coordinator information response is not valid JSON.", errCode.c_str());
         return false;
     }

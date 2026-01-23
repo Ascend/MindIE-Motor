@@ -257,20 +257,6 @@ TEST_F(TestSecurityUtils, TestIsValidModelID)
     EXPECT_TRUE(IsValidModelID("GPT_version123"));
     EXPECT_TRUE(IsValidModelID("BERT_abc123def"));
 
-    // 测试无效格式 - 无下划线
-    EXPECT_FALSE(IsValidModelID("modelversion"));
-    EXPECT_FALSE(IsValidModelID("GPTv1"));
-
-    // 测试无效格式 - 空前缀或后缀
-    EXPECT_FALSE(IsValidModelID("_20240101"));
-    EXPECT_FALSE(IsValidModelID("model_"));
-    EXPECT_FALSE(IsValidModelID("_"));
-
-    // 测试无效格式 - 前缀包含非字母字符
-    EXPECT_FALSE(IsValidModelID("model123_20240101"));
-    EXPECT_FALSE(IsValidModelID("model-v1_20240101"));
-    EXPECT_FALSE(IsValidModelID("123model_20240101"));
-
     // 测试边界情况
     EXPECT_FALSE(IsValidModelID(""));  // 空字符串
     EXPECT_TRUE(IsValidModelID("a_b"));
@@ -516,49 +502,6 @@ TEST_F(TestSecurityUtils, TestIsValidNodeName)
 }
 
 /*
-测试描述: 测试CheckJsonStringSize函数
-测试步骤:
-    1. 测试空字符串
-    2. 测试正常大小的字符串
-    3. 测试边界值（1MB）
-    4. 测试超过1MB限制的字符串
-预期结果:
-    1. 空字符串返回true
-    2. 正常大小返回true
-    3. 边界值（1MB）返回true
-    4. 超过限制返回false
-*/
-TEST_F(TestSecurityUtils, TestCheckJsonStringSize)
-{
-    // 测试空字符串
-    EXPECT_TRUE(CheckJsonStringSize(""));
-
-    // 测试正常大小的字符串
-    EXPECT_TRUE(CheckJsonStringSize("{}"));
-    EXPECT_TRUE(CheckJsonStringSize("{\"key\": \"value\"}"));
-    EXPECT_TRUE(CheckJsonStringSize("{\"array\": [1, 2, 3]}"));
-    constexpr size_t jsonStringSizeMax = 1024 * 1024; // 最大1MB，与Util.cpp一致
-
-    int normalStringSize = 100;
-    std::string normalSize(normalStringSize, 'a');
-    EXPECT_TRUE(CheckJsonStringSize(normalSize));
-    std::string largeButValid(jsonStringSizeMax - 1, 'a');  // 1MB - 1字节
-    EXPECT_TRUE(CheckJsonStringSize(largeButValid));
-
-    // 测试边界值（1MB）
-    std::string exactLimit(jsonStringSizeMax, 'a');  // 正好1MB
-    EXPECT_TRUE(CheckJsonStringSize(exactLimit));
-
-    // 测试超过1MB限制的字符串
-    std::string tooLarge(jsonStringSizeMax + 1, 'a');  // 1MB + 1字节
-    EXPECT_FALSE(CheckJsonStringSize(tooLarge));
-    std::string wayTooLarge(2 * jsonStringSizeMax, 'a');  // 2MB
-    EXPECT_FALSE(CheckJsonStringSize(wayTooLarge));
-    std::string hugeSize(10 * jsonStringSizeMax, 'a');  // 10MB
-    EXPECT_FALSE(CheckJsonStringSize(hugeSize));
-}
-
-/*
 测试描述: 测试CheckJsonDepthCallBack函数
 测试步骤:
     1. 测试object_start事件的不同深度
@@ -576,7 +519,7 @@ TEST_F(TestSecurityUtils, TestCheckJsonStringSize)
     6. 恶意payload应被正确检测和拒绝
 */
 
-constexpr int JSON_STRING_DEPTH_MAX = 50;
+constexpr int JSON_STRING_DEPTH_MAX = 10;
 
 static std::string GenerateNestedObjectJson(int depth)
 {

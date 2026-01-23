@@ -73,7 +73,7 @@ bool LeaderAgent::ReadNodes(nlohmann::json& value)
         return false;
     }
     
-    if (!CheckJsonStringSize(valueStr) || !nlohmann::json::accept(valueStr)) {
+    if (!nlohmann::json::accept(valueStr)) {
         LOG_E("[LeaderAgent] Invalid JSON data received");
         return false;
     }

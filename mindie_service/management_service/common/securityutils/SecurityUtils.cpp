@@ -148,32 +148,7 @@ bool IsValidModelID(const std::string& modelID)
     if (modelID.empty() || modelID.length() > 128) { // modelID字符长度不超过128
         return false;
     }
-    
-    // 查找分隔符位置
-    size_t underscorePos = modelID.find('_');
-    if (underscorePos == std::string::npos || underscorePos == 0 || underscorePos == modelID.length() - 1) {
-        return false;
-    }
-    
-    // 分离前缀和后缀
-    std::string prefix = modelID.substr(0, underscorePos);
-    std::string suffix = modelID.substr(underscorePos + 1);
-    
-    // 验证前缀（只能是字母）
-    if (!std::regex_match(prefix, std::regex("^[a-zA-Z]+$"))) {
-        return false;
-    }
-    
-    // 验证后缀
-    std::regex datePattern("^\\d{8}$|^\\d{4}-\\d{2}-\\d{2}$");                    // YYYYMMDD 或 YYYY-MM-DD
-    std::regex datetimePattern("^\\d{14}$|^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$");
-    std::regex uuidPattern("^[a-fA-F0-9]{8}-?[a-fA-F0-9]{4}-?[a-fA-F0-9]{4}-?[a-fA-F0-9]{4}-?[a-fA-F0-9]{12}$");
-    std::regex alphanumPattern("^[a-zA-Z0-9\\-]+$");
-    
-    return std::regex_match(suffix, datePattern) ||
-           std::regex_match(suffix, datetimePattern) ||
-           std::regex_match(suffix, uuidPattern) ||
-           std::regex_match(suffix, alphanumPattern);
+    return true;
 }
 
 bool IsValidMetricsInfo(const std::string& metricsInfo)

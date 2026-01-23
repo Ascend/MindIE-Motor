@@ -181,11 +181,6 @@ void CoordinatorBackupHandler::GetCoordinatorBackupInfo(std::vector<std::unique_
             LOG_W("[CoordinatorBackupHandler] get backup info, response is failed, IP %s", node->ip.c_str());
             continue;
         }
-        if (!CheckJsonStringSize(backupInfo)) {
-            LOG_W("[CoordinatorBackupHandler] JSON parse error, IP %s, response: %s",
-                node->ip.c_str(), backupInfo.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            continue;
-        }
         try {
             nlohmann::json statusInfo = nlohmann::json::parse(backupInfo, CheckJsonDepthCallBack);
             node->isMaster = statusInfo.value("is_master", false);

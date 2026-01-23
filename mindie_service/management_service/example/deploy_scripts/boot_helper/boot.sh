@@ -9,8 +9,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-source "$MINDIE_USER_HOME_PATH/Ascend/mindie/latest/mindie-service/set_env.sh"
-source "$MINDIE_USER_HOME_PATH/Ascend/mindie/latest/mindie-llm/set_env.sh"
+
+source "$MINDIE_LLM_HOME_PATH/set_env.sh"
 export MINDIE_LOG_TO_STDOUT=1
 export MINDIE_LOG_LEVEL=info
 export MINDIE_LOG_TO_FILE=1
@@ -28,7 +28,6 @@ else
     echo "Please make sure jemalloc is installed."
 fi
 
-export HSECEASY_PATH="$MIES_INSTALL_PATH/lib"
 CONFIG_DIR="$MIES_INSTALL_PATH/conf"
 
 cd "$MIES_INSTALL_PATH"
@@ -60,8 +59,6 @@ if [ $# -eq 0 ]; then
         export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common"
         python3 /mnt/configmap/file_utils.py "$CANN_INSTALL_PATH/ascend-toolkit/set_env.sh" --permission-mode 555 --max-size 104857600 || exit 1
         source "$CANN_INSTALL_PATH/ascend-toolkit/set_env.sh"
-        python3 /mnt/configmap/file_utils.py "$CANN_INSTALL_PATH/atb-models/set_env.sh" --permission-mode 550 --max-size 104857600 || exit 1
-        source "$CANN_INSTALL_PATH/atb-models/set_env.sh"
         python3 /mnt/configmap/file_utils.py "$CANN_INSTALL_PATH/nnal/atb/set_env.sh" --permission-mode 555 --max-size 104857600 || exit 1
         source "$CANN_INSTALL_PATH/nnal/atb/set_env.sh"
         export GRPC_POLL_STRATEGY=poll
@@ -152,8 +149,7 @@ if [ $# -eq 0 ]; then
             export HCCL_RDMA_TIMEOUT=18
             export HCCL_EXEC_TIMEOUT=60
             if [ ! -n "$APP_TYPE" ]; then
-                python3 /mnt/configmap/file_utils.py "./bin/mindieservice_daemon" --permission-mode 550 || exit 1
-                ./bin/mindieservice_daemon &
+                mindie_llm_server --config-file "$CONFIG_DIR/config.json" &
             else
                 node_manager &
             fi
@@ -162,7 +158,7 @@ if [ $# -eq 0 ]; then
         wait $pid
         exit_code=$?
         if [ $exit_code -ne 0 ]; then
-            echo "Error: mindie daemon exited with code $exit_code"
+            echo "Error: mindie llm server exited with code $exit_code"
             exit 1
         fi
         echo "All processes finished successfully."
@@ -190,8 +186,7 @@ if [ $# -eq 0 ]; then
         fi
         set_controller_env
         om_adapter Controller &
-        python3 /mnt/configmap/file_utils.py "./bin/ms_controller" --permission-mode 550 || exit 1
-        ./bin/ms_controller
+        mindie_motor_controller
     fi
 
     if [ $exit_code -eq 0 ]; then
@@ -219,8 +214,7 @@ if [ $# -eq 0 ]; then
             source $CANN_INSTALL_PATH/ascend-toolkit/set_env.sh
         fi
         om_adapter Coordinator &
-        python3 /mnt/configmap/file_utils.py "./bin/ms_coordinator" --permission-mode 550 || exit 1
-        ./bin/ms_coordinator "$POD_IP" 1025 "$POD_IP" 1026
+        mindie_motor_coordinator "$POD_IP" 1025 "$POD_IP" 1026
     fi
 elif [ $# -eq 1 ]; then
     if [[ "$1" == "single_container" ]]; then
@@ -258,8 +252,6 @@ elif [ $# -eq 1 ]; then
         #pull up all server
         python3 /mnt/configmap/file_utils.py "$CANN_INSTALL_PATH/ascend-toolkit/set_env.sh" --permission-mode 555 || exit 1
         source "$CANN_INSTALL_PATH/ascend-toolkit/set_env.sh"
-        python3 /mnt/configmap/file_utils.py "$CANN_INSTALL_PATH/atb-models/set_env.sh" --permission-mode 550 || exit 1
-        source "$CANN_INSTALL_PATH/atb-models/set_env.sh"
         python3 /mnt/configmap/file_utils.py "$CANN_INSTALL_PATH/nnal/atb/set_env.sh" --permission-mode 555 || exit 1
         source "$CANN_INSTALL_PATH/nnal/atb/set_env.sh"
         export GRPC_POLL_STRATEGY=poll
@@ -272,22 +264,20 @@ elif [ $# -eq 1 ]; then
             export HCCL_RDMA_TIMEOUT=18
             export HCCL_EXEC_TIMEOUT=60
             sleep 1
-            python3 /mnt/configmap/file_utils.py "./bin/mindieservice_daemon" --permission-mode 550 || exit 1
-            ./bin/mindieservice_daemon --config-file "$CONFIG_DIR/config$i.json" &
+            mindie_llm_server --config-file "$CONFIG_DIR/config$i.json" &
         done
 
         # pull up coordinator
         export MINDIE_MS_COORDINATOR_CONFIG_FILE_PATH="$CONFIG_DIR/ms_coordinator.json"
         om_adapter Coordinator &
-        python3 /mnt/configmap/file_utils.py "./bin/ms_coordinator" --permission-mode 550 || exit 1
-        ./bin/ms_coordinator "$POD_IP" 1025 &
+        # 1025为ServerConfig中配置的业务端口
+        mindie_motor_coordinator "$POD_IP" 1025 &
 
         # pull up controller
         export GLOBAL_RANK_TABLE_FILE_PATH="$MIES_INSTALL_PATH/global_ranktable.json"
         export MINDIE_MS_CONTROLLER_CONFIG_FILE_PATH="$CONFIG_DIR/ms_controller.json"
         om_adapter Controller &
-        python3 /mnt/configmap/file_utils.py "./bin/ms_controller" --permission-mode 550 || exit 1
-        ./bin/ms_controller
+        mindie_motor_controller
 
     fi
 fi

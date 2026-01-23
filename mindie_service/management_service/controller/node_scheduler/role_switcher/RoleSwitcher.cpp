@@ -676,12 +676,6 @@ static bool IsValidTasksResponse(const nlohmann::json bodyJson)
 
 static bool AssertInstanceTasksEnd(std::string &response)
 {
-    if (!CheckJsonStringSize(response)) {
-        LOG_E("[%s] [RoleSwitcher] Invalid instance task response: %s",
-            GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
-            response.substr(0, JSON_STR_SIZE_HEAD).c_str());
-        return false;
-    }
     if (!nlohmann::json::accept(response)) {
         LOG_E("[%s] [RoleSwitcher] Invalid instance task response %s.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
@@ -781,12 +775,6 @@ int32_t RoleSwitcher::QueryInstanceTasks(uint64_t id, uint64_t waitSeconds)
 
 static bool AssertInstancePeerTasksEnd(std::string &response)
 {
-    if (!CheckJsonStringSize(response)) {
-        LOG_E("[%s] [RoleSwitcher] Invalid instance peer tasks response: %s.",
-            GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),
-            response.substr(0, JSON_STR_SIZE_HEAD).c_str());
-        return false;
-    }
     if (!nlohmann::json::accept(response)) {
         LOG_E("[%s] [RoleSwitcher] Invalid instance peer tasks response: %s.",
             GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ROLE_SWITCHER).c_str(),

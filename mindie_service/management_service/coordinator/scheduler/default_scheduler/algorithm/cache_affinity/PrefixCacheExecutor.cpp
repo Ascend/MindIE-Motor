@@ -93,11 +93,6 @@ bool PrefixCacheExecutor::RoundRobin(uint64_t &bestNode)
 bool PrefixCacheExecutor::PreProcessMessage(const std::string &requestBody, size_t &historyHash, size_t &newHash) const
 {
     try {
-        if (!CheckJsonStringSize(requestBody)) {
-            LOG_E("[%s] [PrefixCacheExecutor] Invalid request format.",
-                GetErrorCode(ErrorType::INVALID_PARAMETER, CoordinatorFeature::PREFIXCACHE_EXECUTOR).c_str());
-            return false;
-        }
         // parse request and get message
         nlohmann::json dataObj = nlohmann::json::parse(requestBody, CheckJsonDepthCallBack);
         if (!dataObj.is_array() || !(dataObj.size() >= 2)) { // 2是最小的messages条数
@@ -164,11 +159,6 @@ bool PrefixCacheExecutor::CacheAffinity(size_t &historyHash, uint64_t &pickedNod
 int32_t PrefixCacheExecutor::ProcessFirstRequest(const std::string &requestBody, std::vector<uint64_t> &pickedNodes)
 {
     try {
-        if (!CheckJsonStringSize(requestBody)) {
-            LOG_E("[%s] [PrefixCacheExecutor] Invalid request format.",
-                GetErrorCode(ErrorType::INVALID_PARAMETER, CoordinatorFeature::PREFIXCACHE_EXECUTOR).c_str());
-            return -1;
-        }
         // parse request and get message
         nlohmann::json dataObj = nlohmann::json::parse(requestBody, CheckJsonDepthCallBack);
         if (!dataObj.is_array() || !(dataObj.size() > 0)) {

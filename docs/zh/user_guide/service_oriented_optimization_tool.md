@@ -334,7 +334,7 @@ export MINDIE_LOG_TO_STDOUT=1
 
 # 日志配置
 export MINDIE_LOG_LEVEL=INFO
-export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹 
+export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 ```
 
 **使用指南**
@@ -351,7 +351,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 gen_cert CA证书配置文件路径 --ip 证书ip
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} gen_cert /home/Ascend-mindie-service_{version}_linux-{arch}/conf/gen_cert.json --ip=1.1.1.1,2.2.2.2
     ```
 
@@ -359,7 +359,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 import_ca CA文件列表（不超过5个）
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} import_ca /home/ca.pem /home/ca2.pem
     ```
 
@@ -367,7 +367,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 delete_ca CA文件名称列表（不超过5个）
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} delete_ca ca.pem ca2.pem
     ```
 
@@ -375,7 +375,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 import_cert 服务证书路径 服务私钥路径
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} import_cert /home/server.pem /home/server.key.pem
     ```
 
@@ -383,7 +383,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 delete_cert
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} delete_cert --cert_file=server.pem --key_file=server.key.pem
     ```
 
@@ -396,7 +396,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 import_crl 吊销列表文件路径
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} import_crl /home/server_crl.pem
     ```
 
@@ -404,7 +404,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
 
     ```
     python3 scripts/config_mindie_server_tls_cert.py 软件包安装目录 query
-    # 样例 
+    # 样例
     python3 scripts/config_mindie_server_tls_cert.py /home/Ascend-mindie-service_{version}_linux-{arch} query --cert_file=server.pem --crl_file=server_crl.pem
     ```
 
@@ -468,7 +468,7 @@ export MINDIE_LOG_PATH=~/mindie/log   # 日志保存文件夹
           |--|--|
           |domainId|域ID，取值不能大于domainCount，当前业务要求取值为1。|
           |domainCount|域的数量，取值范围为[2,1023]，当前业务要求取值为2。|
-     
+
 - **activeKey**
 <br>
 
@@ -629,38 +629,38 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
 1. 打开CCAE证书配置开关。
     1.  在CCAE业务面主菜单中选择“系统  >  系统设置  >  配置项管理”，如[图1 配置项管理](#fig1790823617105)所示。
 
-        **图 1**  配置项管理<a id="fig1790823617105"></a>  
+        **图 1**  配置项管理<a id="fig1790823617105"></a>
         ![](../figures/configuration_item_management.png "配置项管理")
 
     2.  在“证书认证配置”页面，找到以MindIE命名开头的三个配置项，在后方“操作”列中选择“开启”，如[图2 证书认证配置](#fig124812229199)所示。
 
-        **图 2**  证书认证配置<a id="fig124812229199"></a>  
+        **图 2**  证书认证配置<a id="fig124812229199"></a>
         ![](../figures/certificate_authentication_configuration.png)
 
 2.  获取CA证书文件，即为Controller的ms_controller.json配置文件中"ccae_tls_items"字段下"ca_cert"参数所需要配置的文件路径。
     1.  在CCAE业务面主菜单中选择“系统  >  安全管理  >  CA服务”，进入CA证书管理界面，如[图3 CA管理](#fig4103518422)所示。
 
-        **图 3**  CA管理<a id="fig4103518422"></a>  
+        **图 3**  CA管理<a id="fig4103518422"></a>
         ![](../figures/ca_mange.png)
 
     2.  单击“下载CA证书”下载CA证书，得到一个.pem文件，即为不带信任链的CA证书。
 
-        **图 4**  下载CA证书<a id="fig10396719441"></a>  
+        **图 4**  下载CA证书<a id="fig10396719441"></a>
         ![](../figures/download_ca_certificates.png)
 
     3.  在CCAE业务面主菜单中选择“系统  >  安全管理  >  证书管理”，进入“服务列表”页面获取CA证书信任链，如[图5 证书管理](#fig834614510511)所示。
 
-        **图 5**  证书管理<a id="fig834614510511"></a>  
+        **图 5**  证书管理<a id="fig834614510511"></a>
         ![](../figures/certificate_management.png)
 
     4.  选择“SouthBoundService”，进入“SouthBoundService证书列表”界面。
 
-        **图 6**  SouthBoundService<a id="fig1263102411524"></a>  
+        **图 6**  SouthBoundService<a id="fig1263102411524"></a>
         ![](../figures/SouthBoundService.png)
 
     5.  单击右上方“导出信任链”按钮，得到一个.pem文件，即为CA证书信任链文件。
 
-        **图 7**  导出信任链<a id="fig29614261127"></a>  
+        **图 7**  导出信任链<a id="fig29614261127"></a>
         ![](../figures/export_trust_chain.png)
 
     6.  复制CA证书信任链文件中的内容粘贴到CA证书文件后面，即将两个文件内容合并为一个.pem文件，即为完整CA证书文件。
@@ -668,7 +668,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
 3.  获取tls证书文件和tls私钥，即为Controller的ms_controller.json配置文件中"ccae_tls_items"字段下"tls_cert"和"tls_key"参数所需要配置的文件路径。
     1.  在CCAE业务面主菜单中选择“系统  >  安全管理  >  CA服务”，进入“CA服务”界面，如[图8 CA服务](#fig13969591238)所示。
 
-        **图 8**  CA服务<a id="fig13969591238"></a>  
+        **图 8**  CA服务<a id="fig13969591238"></a>
         ![](../figures/ca_service.png)
 
     2.  在左侧导航栏中选择“证书申请  >  证书申请”，进入“证书申请”界面，在“基本信息申请证书”页签输入以下内容，然后提交申请，如[图9 证书申请](#fig134037181238)所示。
@@ -677,7 +677,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
         -   证书模板：选择“CCAGENT_ENTITY_60YEARS”。
         -   公共名称(CN)：用户自定义名称。
 
-        **图 9**  证书申请<a id="fig134037181238"></a>  
+        **图 9**  证书申请<a id="fig134037181238"></a>
         ![](../figures/certificate_application.png)
 
     3.  在左侧导航栏中选择“PKI  \>  证书管理”，进入“证书管理”界面，如[图10 获取tls证书文件](#fig521415100485)所示。
@@ -688,7 +688,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
         -   文件名：需要用户自定义，如“tls\_cert”。
         -   文件格式：选择“PEM(.pem)”。
 
-        **图 10**  获取tls证书文件<a id="fig521415100485"></a>  
+        **图 10**  获取tls证书文件<a id="fig521415100485"></a>
         ![](../figures/obtain_tls_certificate_file.png)
 
     4.  在[3.c](#li1371271219172)中“下载证书”弹窗中填充以下信息，然后单击“提交”进行下载即可获取tls私钥，如[图11 获取tls私钥](#fig3321229115517)所示。
@@ -699,7 +699,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
 
         -   文件口令：需要用户自定义。
 
-        **图 11**  获取tls私钥<a id="fig3321229115517"></a>  
+        **图 11**  获取tls私钥<a id="fig3321229115517"></a>
         ![](../figures/obtain_tls_private_key.png)
 
 4.  <a id="li85842047175916"></a>获取密文数据，即为Controller的ms\_controller.json配置文件中"ccae\_tls\_items"字段下"tls\_passwd"参数所需要配置的文件路径。
@@ -709,7 +709,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
     1.  使用以下命令进入MindIE Service的安装目录。
 
         ```
-        cd /usr/local/Ascend/mindie/latest/mindie-service
+        cd $MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor
         ```
 
     2.  使用以下命令生成密文。
@@ -721,8 +721,8 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
     3.  根据回显提示输入[3.d](#li109144522235)获取tls私钥文件时配置的口令，即可在encrypted:后方生成密文，如下所示。
 
         ```
-        root@mindie-controller-master-0:/usr/local/Ascend/mindie/latest/mindie-service# ./bin/seceasy_encrypt --encrypt 1 2
-        please input the password to encrypt 
+        root@mindie-controller-master-0:$MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor# ./bin/seceasy_encrypt --encrypt 1 2
+        please input the password to encrypt
         please input the password to encrypt again
         encrypted: AAAAAgAAAAAAAAABAAAQAAAl+zJLrsq6Bduk6QPIWUNIsc+DyyOnVmy2xtrh2AAAAAEAAAAEAAAAAAAAAGXqKpZ+ZKbuFdCHBZH9ZYCYOTBTbxyIlRQ=
         ```
@@ -730,7 +730,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
     4.  自行创建一个.txt文件，将encrypted:后方生成密文复制至该.txt文件中即可。
 
 5.  [4](#li85842047175916)执行完成后，会在当前目录生成一个/tools文件夹，该文件夹中的/tools/pmt/master/ksfa和/tools/pmt/standby/ksfb即为Controller的ms_controller.json配置文件中"ccae_tls_items"字段下"kmc_ksf_master"和"kmc_ksf_standby"参数所需要配置的文件路径。
-   
+
 
 6.  将[2](#li7101714411)\~[5](#li92514562597)中获取的文件或目录放在物理机同一目录下，以/mnt为例，如果环境中没有该目录，请使用以下自行创建。
 
@@ -890,7 +890,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
                           mountPath: /mnt/configmap/ms_controller.json
                           subPath: ms_controller.json
                         - name: status-data
-                          mountPath: /usr/local/Ascend/mindie/latest/mindie-service/logs
+                          mountPath: $MINDIE_USER_HOME_PATH/lib/python3.11/site-packages/mindie_motor/logs
                         - name: localtime
                           mountPath: /etc/localtime
                         - name: mnt
@@ -937,7 +937,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
         -   当“tls\_enable”为“false”时，所有“xxx\_tls\_enable”会置为“false”且所有“xxx\_tls\_enable”的配置项不会生效。
 
         ```
-        ...    
+        ...
               "tls_config": {
               "tls_enable": true,
               "kmc_ksf_master": "./security/master/tools/pmt/master/ksfa",
@@ -1040,7 +1040,7 @@ OM Adapter对接CCAE可自行选择是否需要配置证书，如需配置证书
 
 1.  查看原主Controller所在服务器是否发生硬件故障。
 2.  查看原主Controller日志当中是否有软件故障发生。
-  
+
 <br>
 
 **事件清除**
@@ -1468,7 +1468,7 @@ node\_manager.json配置文件样例如下所示，参数解释请参见[表1](#
 }
 ```
 
-**表 1** node\_manager.json配置文件 
+**表 1** node\_manager.json配置文件
 
 |参数名称|取值范围|配置说明|
 |--|--|--|

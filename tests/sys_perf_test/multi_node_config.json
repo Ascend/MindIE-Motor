@@ -4,14 +4,14 @@
             "ip": "127.0.0.10",
             "user": "root",
             "container_name": "mindie_b092",
-            "mies_install_path": "/usr/local/Ascend/mindie/latest/mindie-service",
+            "mies_install_path": "/usr/local/lib/python3.11/site-packages/mindie_motor",
             "RankTableFile": "rank_table_file.json"
         },
         {
             "ip": "127.0.0.20",
             "user": "root",
             "container_name": "mindie_b092",
-            "mies_install_path": "/usr/local/Ascend/mindie/latest/mindie-service",
+            "mies_install_path": "/usr/local/lib/python3.11/site-packages/mindie_motor",
             "RankTableFile": "rank_table_file.json"
         }
     ],
@@ -34,8 +34,7 @@
             "Tokenizer": "True",
             "MaxOutputLen": 256,
             "config_path": [
-                "/usr/local/Ascend/mindie/latest/mindie-service/conf/config.json",
-                "/usr/local/Ascend/mindie/latest/mindie-service/conf/config.json"
+                "/usr/local/lib/python3.11/site-packages/mindie_motor/conf/config.json"
             ]
         }
     ]

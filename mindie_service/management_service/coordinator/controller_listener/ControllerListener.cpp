@@ -108,13 +108,6 @@ void ControllerListener::InstancesRefreshHandler(std::shared_ptr<ServerConnectio
     auto body = boost::beast::buffers_to_string(req.body().data());
     ServerRes res;
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to read controller instance refresh request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONTROLLER_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         auto instances = bodyJson.at("instances");
         if (!init) {
@@ -211,13 +204,6 @@ void ControllerListener::InstancesOfflineHandler(std::shared_ptr<ServerConnectio
     auto body = boost::beast::buffers_to_string(req.body().data());
     ServerRes res;
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to read controller instance offline request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONTROLLER_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         auto ids = bodyJson.at("ids").template get<std::vector<uint64_t>>();
         instancesRecord->ProcInstanceIdsUnderFlexSituation(ids);
@@ -260,13 +246,6 @@ void ControllerListener::InstancesOnlineHandler(std::shared_ptr<ServerConnection
     auto body = boost::beast::buffers_to_string(req.body().data());
     ServerRes res;
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to read controller instance online request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONTROLLER_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         auto ids = bodyJson.at("ids").template get<std::vector<uint64_t>>();
         auto insNumMax = instancesRecord->GetInsNumMax();
@@ -353,13 +332,6 @@ void ControllerListener::AbnormalStatusHandler(std::shared_ptr<ServerConnection>
     ServerRes res;
     nlohmann::json abnormalStatusReply;
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to read controller instance update request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONTROLLER_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         bool isMaster = bodyJson.at("is_master").get<bool>();
         bool isAbnormal = bodyJson.at("is_abnormal").get<bool>();
@@ -860,13 +832,6 @@ void ControllerListener::InstancesQueryTasksHandler(std::shared_ptr<ServerConnec
     uint64_t dId;
     MINDIE::MS::DIGSRoleChangeType roleChangeType;
     try {
-        if (!CheckJsonStringSize(body)) {
-            LOG_E("[%s] [Configure] Failed to read controller instance query request: %s, json string invalid.",
-                GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONTROLLER_LISTENER).c_str(),
-                body.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            SendErrorRes(connection, boost::beast::http::status::bad_request, "Request format is invalid\r\n");
-            return;
-        }
         auto bodyJson = nlohmann::json::parse(body, CheckJsonDepthCallBack);
         pId = bodyJson.at("p_id").template get<uint64_t>();
         dId = bodyJson.at("d_id").template get<uint64_t>();

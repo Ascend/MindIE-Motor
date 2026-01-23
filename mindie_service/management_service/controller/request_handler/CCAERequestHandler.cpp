@@ -682,10 +682,6 @@ static std::string FillRegisterRequest()
 static int32_t ParseResp(CCAEStatus &ccaeStatus, const std::string &response)
 {
     try {
-        if (!CheckJsonStringSize(response)) {
-            LOG_E("[CCAERequestHandler] Invalid response string %s", response.substr(0, JSON_STR_SIZE_HEAD).c_str());
-            return -1;
-        }
         nlohmann::json responseJson = nlohmann::json::parse(response, CheckJsonDepthCallBack);
         if (!responseJson.contains("reqList") || !responseJson["reqList"].is_array()) {
             LOG_E("[CCAERequestHandler] Missing or invalid reqList field");
@@ -709,11 +705,6 @@ static int32_t ParseResp(CCAEStatus &ccaeStatus, const std::string &response)
 
 static bool IsValidRegisterResp(const std::string &response)
 {
-    if (!CheckJsonStringSize(response)) {
-        LOG_E("[CCAERequestHandler] Invalid CCAE register response: %",
-            response.substr(0, JSON_STR_SIZE_HEAD).c_str());
-        return false;
-    }
     if (!nlohmann::json::accept(response)) {
         LOG_E("[CCAERequestHandler] Invalid CCAE register response %s", response.c_str());
         return false;
@@ -769,7 +760,7 @@ static bool IsValidRegisterResp(const std::string &response)
 
 static bool IsSuccessInventoriesResp(const std::string &response)
 {
-    if (!CheckJsonStringSize(response) || !nlohmann::json::accept(response)) {
+    if (!nlohmann::json::accept(response)) {
         LOG_E("[CCAERequestHandler] Invalid CCAE inventories response");
         return false;
     }

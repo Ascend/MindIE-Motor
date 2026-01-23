@@ -78,7 +78,7 @@ class TestLLMDaemonManager(unittest.TestCase):
             process=self.create_mock_process(12345),
             name="test_process",
             config_file=None,
-            command="./bin/mindieservice_daemon"
+            command="mindie_llm_server"
         )
         self.daemon_manager.process_info.append(proc_info)
         mock_waitpid.side_effect = [
