@@ -28,8 +28,8 @@ class TestLLMDaemonManager(unittest.TestCase):
         self.signal_patcher = patch('signal.signal')
         self.signal_patcher.start()
         from node_manager.daemon_manager.llm_daemon_starter import LLMDaemonManager
-        if hasattr(LLMDaemonManager, '_instances'):
-            LLMDaemonManager._instances.clear()
+        if hasattr(LLMDaemonManager, 'reset_instance'):
+            LLMDaemonManager.reset_instance()
         self.daemon_manager = LLMDaemonManager()
     
     def tearDown(self):
@@ -52,8 +52,8 @@ class TestLLMDaemonManager(unittest.TestCase):
         """Test that RuntimeError is raised when path validation fails"""
         self.mock_path_check.return_value = False
         from node_manager.daemon_manager.llm_daemon_starter import LLMDaemonManager
-        if hasattr(LLMDaemonManager, '_instances'):
-            LLMDaemonManager._instances.clear()
+        if hasattr(LLMDaemonManager, 'reset_instance'):
+            LLMDaemonManager.reset_instance()
         with self.assertRaises(RuntimeError) as context:
             self.daemon_manager.init_daemon_config()
         self.assertIn("Invalid", str(context.exception))

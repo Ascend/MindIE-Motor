@@ -39,6 +39,15 @@ class Server(FastAPI, metaclass=_SingletonMeta):
         self._server = None
         self.include_router(router)
 
+    @property
+    def should_exit(self) -> bool:
+        """
+        Public view of server shutdown flag.
+
+        This avoids tests (and callers) touching the private ``_server`` member.
+        """
+        return bool(self._server and getattr(self._server, "should_exit", False))
+
     def run(self, ms_node_manager: dict = None):
         if not ms_node_manager:
             from node_manager.core.config import GeneralConfig

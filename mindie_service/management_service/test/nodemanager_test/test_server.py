@@ -49,7 +49,7 @@ class TestServer(unittest.TestCase):
     def test_shutdown(self):
         app.shutdown()
         time.sleep(1)
-        self.assertTrue(app._server.should_exit)
+        self.assertTrue(app.should_exit)
 
 
 if __name__ == "__main__":

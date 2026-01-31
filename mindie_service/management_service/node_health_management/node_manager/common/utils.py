@@ -28,6 +28,17 @@ class _SingletonMeta(ABCMeta):
                     cls._instances[cls] = instance
         return cls._instances[cls]
 
+    def reset_instance(cls) -> None:
+        """
+        Reset the singleton instance of the current class.
+
+        This is primarily used by tests to ensure isolation between cases,
+        without accessing the protected internal cache directly.
+        """
+        # cls is the singleton class (e.g. LLMDaemonManager), type(cls) is _SingletonMeta
+        with type(cls)._lock:
+            type(cls)._instances.pop(cls, None)
+
 
 def safe_open(file, *args, **kwargs):
     if not PathCheck.check_path_full(file):
