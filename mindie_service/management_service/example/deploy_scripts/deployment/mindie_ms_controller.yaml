@@ -62,6 +62,8 @@ spec:
                 fieldPath: status.podIP
           - name: GLOBAL_RANK_TABLE_FILE_PATH
             value: "/user/serverid/devindex/config/..data/global_ranktable.json"
+          - name: TORCH_DEVICE_BACKEND_AUTOLOAD
+            value: "0"
           - name: MIES_INSTALL_PATH
             value: /usr/local/lib/python3.11/site-packages/mindie_motor
           - name: MINDIE_LLM_HOME_PATH
