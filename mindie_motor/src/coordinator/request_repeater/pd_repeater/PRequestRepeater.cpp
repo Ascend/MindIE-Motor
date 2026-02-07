@@ -404,7 +404,10 @@ void RequestRepeater::PResNotStreamHandler(std::shared_ptr<ClientConnection> pCo
             reqId.c_str());
         NotStreamSetOutputNum(data, reqInfo);
         userConn->SendRes(res);
+        LogRequestCompletionStatus(reqId, RequestPhase::PREFILL, true);
+        PResFinish(pConn);
         reqManage->UpdateState(reqId, ReqState::FINISH);
+        return;
     }
     LogRequestCompletionStatus(reqId, RequestPhase::PREFILL, true);
     PResFinish(pConn); // 置位P状态

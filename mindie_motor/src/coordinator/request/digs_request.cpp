@@ -68,10 +68,11 @@ int32_t DIGSRequest::UpdateState2DecodeEnd(uint64_t prefillEndTime, uint64_t dec
 {
     auto state = state_.load(std::memory_order_acquire);
     if (state == DIGSReqState::PREFILL_END or state == DIGSReqState::ALLOCATED) {
-        LOG_I("[DIGS] Update state to DECODE_END(5) from %d, Request ID: %s State: %d",
+        LOG_I("[DIGS] Update state to DECODE_END(5) from %d, Request ID: %s State: %d, decode token count: %zu",
               static_cast<int32_t>(state),
               reqId_.c_str(),
-              static_cast<int32_t>(state));
+              static_cast<int32_t>(state),
+              outputLength);
         if (prefillEndTime != 0) {
             prefillEndTime_ = prefillEndTime;
         }
@@ -86,9 +87,10 @@ int32_t DIGSRequest::UpdateState2DecodeEnd(uint64_t prefillEndTime, uint64_t dec
 
     // 请求超时，直接通过状态更新清理请求
     if (state == DIGSReqState::SCHEDULING) {
-        LOG_W("[%s] [DIGS] Update state to DECODE_END(5) from SCHEDULING(2), Request ID: %s",
+        LOG_W("[%s] [DIGS] Update state to DECODE_END(5) from SCHEDULING(2), Request ID: %s, decode token count: %zu",
               GetWarnCode(ErrorType::WARNING, CommonFeature::DIGS).c_str(),
-              reqId_.c_str());
+              reqId_.c_str(),
+              outputLength);
         state_.store(DIGSReqState::DECODE_END, std::memory_order_release);
         return static_cast<int32_t>(common::Status::OK);
     }

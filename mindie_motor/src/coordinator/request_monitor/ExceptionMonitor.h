@@ -46,6 +46,24 @@ enum class ReqExceptionType {
     DECODE_DIS_CONN, // Decode实例断开
 };
 
+inline const char *ReqExceptionTypeToStr(ReqExceptionType t)
+{
+    switch (t) {
+        case ReqExceptionType::SEND_P_ERR: return "FAILED_TO_SEND_REQUEST_TO_PREFILL_INSTANCE";
+        case ReqExceptionType::RETRY: return "REQUEST_RETRY_OR_RESCHEDULE";
+        case ReqExceptionType::SEND_MIX_ERR: return "FAILED_TO_SEND_REQUEST_TO_MIXED_INSTANCE";
+        case ReqExceptionType::USER_DIS_CONN: return "USER_CONNECTION_DISCONNECTED";
+        case ReqExceptionType::INFER_TIMEOUT: return "INFERENCE_TIMEOUT";
+        case ReqExceptionType::FIRST_TOKEN_TIMEOUT: return "FIRST_TOKEN_TIMEOUT";
+        case ReqExceptionType::SCHEDULE_TIMEOUT: return "SCHEDULE_TIMEOUT";
+        case ReqExceptionType::SEND_TOKEN_ERR: return "FAILED_TO_FORWARD_REQUEST_DURING_TOKEN_COMPUTATION";
+        case ReqExceptionType::TOKENIZER_TIMEOUT: return "TOKENIZER_TIMEOUT";
+        case ReqExceptionType::RETRY_DUPLICATE_REQID: return "RETRY_FAILED_DUE_TO_DUPLICATE_REQUEST_ID";
+        case ReqExceptionType::DECODE_DIS_CONN: return "DECODE_INSTANCE_DISCONNECTED";
+        default: return "UNKNOWN_EXCEPTION_TYPE";
+    }
+}
+
 // 用户链接异常
 enum class UserExceptionType {
     CONN_USER_ERR, // 与用户连接断开
