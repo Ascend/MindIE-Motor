@@ -90,7 +90,14 @@ class LogFile:
             meta_data=[log_line for log_line in self.read_new_lines()]
         )
 
-    def read_new_lines(self, max_line_num_for_once=300):
+    def read_new_lines(self, max_line_num_for_once=3000):
+        """
+        Args:
+            max_line_num_for_once: max number of lines to read at once, update its default value from 300 to 3000,
+            to solve the latency issue of ccae log synchronization.
+        Returns:
+            a generator that yields the new lines of the log file.
+        """
         with safe_open(self.file_path, 'r', encoding='utf-8') as f:
             f.seek(self.last_read_position)
             # 首次监控的日志文件，跳过存量已有日志文本，只读取增量日志
