@@ -120,7 +120,7 @@ int32_t AlarmListener::Run()
     return 0;
 }
 
-bool IsCoordinatorAlarmValid(const nlohmann::json &alarm)
+bool AlarmListener::IsCoordinatorAlarmValid(const nlohmann::json &alarm) const
 {
     if (!IsJsonIntValid(alarm, "category", g_alarmCategoryMin, g_alarmCategoryMax) ||
         !IsJsonIntValid(alarm, "cleared", g_alarmClearedMin, g_alarmClearedMax) ||
@@ -143,6 +143,24 @@ bool IsCoordinatorAlarmValid(const nlohmann::json &alarm)
     return true;
 }
 
+bool AlarmListener::CoordinatorAlarmPreproccessor(nlohmann::json &alarmsJson) const
+{
+    bool isAlarmValid = true;
+    auto validAlarmsJson = nlohmann::json::array();
+    for (auto& alarm : alarmsJson) {
+        if (!IsCoordinatorAlarmValid(alarm)) {
+            isAlarmValid = false;
+            LOG_E("[%s] [AlarmListener] Invalid coordinator alarm detected and filtered: %s",
+                GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str(),
+                alarm.dump().c_str());
+        } else {
+            validAlarmsJson.push_back(alarm);
+        }
+    }
+    alarmsJson = validAlarmsJson;
+    return isAlarmValid;
+}
+
 std::pair<ErrorCode, Response> AlarmListener::CoordinatorAlarmHandler(const Http::request<Http::string_body> &req) const
 {
     Response resp;
@@ -154,15 +172,7 @@ std::pair<ErrorCode, Response> AlarmListener::CoordinatorAlarmHandler(const Http
                 GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
             return std::make_pair(ErrorCode::INVALID_PARAMETER, resp);
         }
-        auto it = alarmsJson.begin();
-        while (it != alarmsJson.end()) {
-            if (!IsCoordinatorAlarmValid(*it)) {
-                it = alarmsJson.erase(it);  // 删除当前元素，返回下一个元素的迭代器
-                isAlarmValid = false;
-            } else {
-                ++it;  // 校验通过，移动到下一个元素
-            }
-        }
+        isAlarmValid = CoordinatorAlarmPreproccessor(alarmsJson);
         if (alarmsJson.size() != 0) {
             std::string alarmsString = alarmsJson.dump();
             if (UpdateCoordinatorStatus(alarmsString)) {
@@ -239,7 +249,7 @@ std::pair<ErrorCode, Response> AlarmListener::TerminateServiceHandler(const Http
     return std::make_pair(ErrorCode::OK, resp);
 }
 
-bool  AlarmListener::UpdateCoordinatorStatus(const std::string& alarmBody) const
+bool AlarmListener::UpdateCoordinatorStatus(const std::string& alarmBody) const
 {
     if (alarmBody.empty()) {
         LOG_E("[%s] Coordinator alarm request body is invalid",

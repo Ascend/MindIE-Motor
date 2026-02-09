@@ -341,6 +341,16 @@ bool CCAERequestHandler::ParsePDInstance(std::shared_ptr<NodeStatus> nodeStatus)
     return true;
 }
 
+std::string CCAERequestHandler::GetLogicIDByServerIP(const std::string serverIP)
+{
+    auto it = mServerIPToInstLogicIDMap.find(serverIP);
+    if (it != mServerIPToInstLogicIDMap.end()) {
+        return it->second;
+    }
+    LOG_E("[CCAERequestHandler] Cannot find the logic ID corresponding to the IP.");
+    return "";  // 或者返回一个空字符串
+}
+
 std::string GetDPRole(NodeInfo &nodeInfo, const ServerInfo &serverInfo)
 {
     if (nodeInfo.isDistribute) {

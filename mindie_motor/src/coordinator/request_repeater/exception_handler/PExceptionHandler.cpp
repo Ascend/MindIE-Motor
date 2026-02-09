@@ -17,6 +17,7 @@
 #include "Communication.h"
 #include "Communication.h"
 #include "RequestRepeater.h"
+#include "AlarmRequestHandler.h"
 
 namespace MINDIE::MS {
 
@@ -34,6 +35,13 @@ void RequestRepeater::ConnPErrHandler(uint64_t insId)
     LOG_E("[%s] [RequestRepeater] Prefill instance %s:%s connect failed.",
         GetErrorCode(ErrorType::UNREACHABLE, CoordinatorFeature::P_EXCEPTIONHANDLER).c_str(),
         ip.c_str(), port.c_str());
+    std::string alarmMsg = AlarmRequestHandler::GetInstance()->FillCoordinatorConnPDExceptionAlarmnfo(
+        AlarmCategory::ALARM_CATEGORY_ALARM, CoordinatorConnPDReason::HTTP_EXCEPTION,
+        "prefill instance address=" + ip + ":" + port);
+    if (AlarmRequestHandler::GetInstance()->SendAlarmToAlarmManager(alarmMsg) != 0) {
+        LOG_E("[%s] [RequestRepeater] Send connection alarm failed.",
+            GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str());
+    }
     scheduler->RemoveInstance({insId});
     instancesRecord->RemoveInstance(insId);
 }

@@ -49,6 +49,8 @@ private:
     mutable std::atomic<bool> firstCoordinatorFaultFiltered{false};
     mutable std::atomic<bool> firstCoordinatorRecoverFiltered{false};
     bool  UpdateCoordinatorStatus(const std::string& alarmBody) const;
+    bool IsCoordinatorAlarmValid(const nlohmann::json &alarm) const;
+    bool CoordinatorAlarmPreproccessor(nlohmann::json &alarmsJson) const;
     const std::map<std::string, AlarmHandler> mUrlHandlers = {
         {"/v1/alarm/coordinator", std::bind(&AlarmListener::CoordinatorAlarmHandler, this, std::placeholders::_1)},
         {"/v1/alarm/llm_engine", std::bind(&AlarmListener::ServerAlarmHandler, this, std::placeholders::_1)},

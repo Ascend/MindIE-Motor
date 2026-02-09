@@ -77,7 +77,8 @@ enum class AlarmType : int32_t {
     SERVER_EXCEPTION,
     COORDINATOR_EXCEPTION,
     REQ_CONGESTION,
-    CLUSTER_CONNECTION
+    CLUSTER_CONNECTION,
+    COORDINATOR_CONN_PD_EXCEPTION
 };
 
 enum class ControllerToSlaveReason : int32_t {
@@ -105,6 +106,10 @@ enum class CoordinatorExceptionReason : int32_t {
 
 enum class RequestCongestionReason : int32_t {
     DEALING_WITH_CONGESTION = 1,
+};
+
+enum class CoordinatorConnPDReason : int32_t {
+    HTTP_EXCEPTION = 1,
 };
 
 enum class ClusterConnectionReason : int32_t {

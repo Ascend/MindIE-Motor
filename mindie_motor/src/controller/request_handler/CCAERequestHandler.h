@@ -63,6 +63,7 @@ public:
     void GenerateServerIPToInstLogicIDMap(MINDIE::MS::DIGSInstanceRole role);
     bool ParsePDInstance(std::shared_ptr<NodeStatus> nodeStatus);
     void SetRankTableLoader(std::shared_ptr<RankTableLoader> loader);
+    std::string GetLogicIDByServerIP(const std::string serverIP);
     std::shared_ptr<RankTableLoader> GetRankTableLoader() const;
     std::string GetPDInstIDForDPGroup(NodeInfo &nodeInfo, const ServerInfo &serverInfo);
     nlohmann::json GetDPGroupList(std::shared_ptr<NodeStatus> nodeStatus,

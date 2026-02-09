@@ -18,6 +18,7 @@
 #include "Communication.h"
 #include "Communication.h"
 #include "RequestRepeater.h"
+#include "AlarmRequestHandler.h"
 
 namespace MINDIE::MS {
 
@@ -46,12 +47,50 @@ void RequestRepeater::ConnDErrHandler(uint64_t insId)
         GetErrorCode(ErrorType::UNREACHABLE, CoordinatorFeature::HTTPCLIENT_ASYNC).c_str(),
         ip.c_str(), port.c_str());
 
-    nlohmann::json jsonObj = nlohmann::json::object();
-    jsonObj["ip"] = ip;
-    jsonObj["port"] = port;
-    std::string jsonString = jsonObj.dump();
+    if (!instancesRecord->IsFaultyNode(insId)) {
+        SendAlarm("decode instance address=" + ip + ":" + port);
+        const auto maxRetries = Configure::Singleton()->exceptionConfig.maxRetry;
+        for (size_t i = 0; i < maxRetries; ++i) {
+            auto ret = LinkWithDNode(ip, port);
+            LOG_D("[RequestRepeater] ConnDErrHandler Successfully add link with decode node at %s:%s.",
+                ip.c_str(), port.c_str());
+            if (ret == 0) {
+                LOG_D("[%s] [RequestRepeater] ConnDErrHandler Successfully add link with decode node at %s:%s.",
+                    GetErrorCode(ErrorType::UNREACHABLE, CoordinatorFeature::D_EXCEPTIONHANDLER).c_str(),
+                    ip.c_str(), port.c_str());
+                return;
+            }
+        }
+        LOG_E("[%s] [RequestRepeater] Decode instance %s:%s connect failed.",
+              GetErrorCode(ErrorType::UNREACHABLE, CoordinatorFeature::D_EXCEPTIONHANDLER).c_str(),
+              ip.c_str(), port.c_str());
+        AddToFaulty(insId);
+    } else {
+        LOG_D("[RequestRepeater] Decode instance %lu has been removed.", insId);
+    }
+}
 
-    LOG_I("[DExceptionHandler] Reporting abnormal node %lu (%s:%s) to controller.", insId, ip.c_str(), port.c_str());
-    ReportAbnormalNodeToController(jsonString);
+void RequestRepeater::AddToFaulty(uint64_t insId)
+{
+    instancesRecord->AddFaultNode(insId);
+    const auto &virtualIds = instancesRecord->GetVirtualIdToIds(insId);
+    if (!virtualIds.empty()) {
+        for (uint64_t iterId : virtualIds) {
+            LOG_D("[RequestRepeater] Remove Decode instance %lu.", iterId);
+            instancesRecord->AddFaultNode(iterId);
+            scheduler->RemoveInstance({iterId});
+            instancesRecord->RemoveInstance(iterId);
+        }
+    }
+}
+
+void RequestRepeater::SendAlarm(std::string additionalInfo)
+{
+    std::string alarmMsg = AlarmRequestHandler::GetInstance()->FillCoordinatorConnPDExceptionAlarmnfo(
+        AlarmCategory::ALARM_CATEGORY_ALARM, CoordinatorConnPDReason::HTTP_EXCEPTION, additionalInfo);
+    if (AlarmRequestHandler::GetInstance()->SendAlarmToAlarmManager(alarmMsg) != 0) {
+        LOG_E("[%s] [RequestRepeater] Send connection alarm failed.",
+            GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::REQUEST_LISTENER).c_str());
+    }
 }
 }

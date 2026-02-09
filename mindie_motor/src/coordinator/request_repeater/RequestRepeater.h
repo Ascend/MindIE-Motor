@@ -117,6 +117,8 @@ private:
     void PSendErrorHandler(std::shared_ptr<ClientConnection> connection);
     void DSendErrorHandler(std::shared_ptr<ClientConnection> connection);
     int32_t ReportAbnormalNodeToController(std::string nodeInfo);
+    void SendAlarm(std::string additionalInfo);
+    void AddToFaulty(uint64_t insId);
     
     void SingleResHandler(std::shared_ptr<ClientConnection> connection);
     void SingleSendHandler(std::shared_ptr<ClientConnection> connection);

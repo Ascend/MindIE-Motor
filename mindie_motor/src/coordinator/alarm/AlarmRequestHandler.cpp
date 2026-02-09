@@ -128,6 +128,46 @@ std::string AlarmRequestHandler::FillCoordinatorReqCongestionAlarmInfo(RequestCo
     return FillAlarmJson(alarm);
 }
 
+std::string AlarmRequestHandler::FillCoordinatorConnPDExceptionAlarmnfo(AlarmCategory category,
+    CoordinatorConnPDReason reasonID, std::string additionalInfo) const
+{
+    AlarmRecord alarm;
+
+    alarm.reasonId = static_cast<int32_t>(reasonID);
+    alarm.category = static_cast<int32_t>(category);
+    if (category == AlarmCategory::ALARM_CATEGORY_ALARM) {
+        alarm.cleared = static_cast<int32_t>(AlarmCleared::ALARM_CLEARED_NO);
+    } else {
+        alarm.cleared = static_cast<int32_t>(AlarmCleared::ALARM_CLEARED_YES);
+    }
+    
+    const char* podIpEnv = std::getenv("POD_IP");
+    std::string podIp = (podIpEnv != nullptr) ? podIpEnv : "";
+    size_t max_env_len = 256;
+    if (podIp.size() > max_env_len) {
+        podIp = podIp.substr(0, max_env_len);
+    }
+    std::string serviceLocation = "service name=Coordinator, service ip=" + podIp + ", " + additionalInfo;
+
+    alarm.occurUtc = GetTimeStampNowInMillisec();
+    alarm.occurTime = GetLocalTimesMillisec();
+
+    alarm.location = serviceLocation;
+    alarm.moi = serviceLocation;
+    alarm.additionalInformation = serviceLocation;
+
+    alarm.eventType = static_cast<int32_t>(EventType::EVENT_TYPE_COMMUNICATION);
+    alarm.severity = static_cast<int32_t>(AlarmSeverity::ALARM_SEVERITY_MAJOR);
+    alarm.serviceAffectedType = static_cast<int32_t>(ServiceAffectedType::SERVICE_AFFECTED_YES);
+    alarm.clearCategory = static_cast<int32_t>(AlarmClearCategory::ALARM_CLEAR_CATEGORY_MANUAL);
+
+    alarm.alarmId = AlarmConfig::GetInstance()->GetAlarmIDString(AlarmType::COORDINATOR_CONN_PD_EXCEPTION);
+    alarm.alarmName = AlarmConfig::GetInstance()->GetAlarmNameString(AlarmType::COORDINATOR_CONN_PD_EXCEPTION);
+    alarm.probableCause = AlarmConfig::GetInstance()->GetProbableCauseString(AlarmType::COORDINATOR_CONN_PD_EXCEPTION);
+
+    return FillAlarmJson(alarm);
+}
+
 int32_t AlarmRequestHandler::SendAlarmToAlarmManager(std::string alarmInfo)
 {
     if (!Configure::Singleton()->IsMaster()) {

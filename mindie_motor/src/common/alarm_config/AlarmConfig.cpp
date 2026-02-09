@@ -32,6 +32,7 @@ void AlarmConfig::InitAlarmID()
     mAlarmIDToString[AlarmType::COORDINATOR_EXCEPTION] =  "0xFC001004";
     mAlarmIDToString[AlarmType::REQ_CONGESTION] =  "0xFC001005";
     mAlarmIDToString[AlarmType::CLUSTER_CONNECTION] = "0xFC001006";
+    mAlarmIDToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] = "0xFC001007";
 }
 
 void AlarmConfig::InitAlarmName()
@@ -43,6 +44,8 @@ void AlarmConfig::InitAlarmName()
     mAlarmNameToString[AlarmType::COORDINATOR_EXCEPTION] = "Coordinator Service Exception Alarm";
     mAlarmNameToString[AlarmType::REQ_CONGESTION] = "Coordinator Request Congestion Alarm";
     mAlarmNameToString[AlarmType::CLUSTER_CONNECTION] = "Cluster Connection Exception Alarm";
+    mAlarmNameToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] =
+ 	        "Coordinator Connection To PD instance Exception Alarm";
 }
 
 void AlarmConfig::InitProbableCause()
@@ -55,6 +58,7 @@ void AlarmConfig::InitProbableCause()
     mProbableCauseToString[AlarmType::COORDINATOR_EXCEPTION] = "1:无可用P或者D实例组;2:coordinator自身状态异常";
     mProbableCauseToString[AlarmType::REQ_CONGESTION] = "1:Coordinator正在处理的请求拥塞";
     mProbableCauseToString[AlarmType::CLUSTER_CONNECTION] = "1:集群服务连接失败;2:订阅RankTable失败;3:订阅故障消息失败;4:连接中断";
+    mProbableCauseToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] = "1:Coordinator与PD实例之间通信异常";
 }
 
 std::string AlarmConfig::GetAlarmIDString(AlarmType alarmType)
@@ -93,4 +97,3 @@ std::string AlarmConfig::GetProbableCauseString(AlarmType alarmType)
     return iter->second;
 }
 }
-

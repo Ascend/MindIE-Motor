@@ -14,6 +14,7 @@
 #include "Logger.h"
 #include "AlarmConfig.h"
 #include "Util.h"
+#include "digs_instance.h"
 
 namespace MINDIE::MS {
 
@@ -27,6 +28,8 @@ public:
     std::string FillCoordinatorExceptionAlarmInfo(AlarmCategory category, CoordinatorExceptionReason reasonID);
     std::string FillCoordinatorReqCongestionAlarmInfo(RequestCongestionReason reasonID,
         std::string additionalInformation);
+    std::string FillCoordinatorConnPDExceptionAlarmnfo(AlarmCategory category,
+        CoordinatorConnPDReason reasonID, std::string additionalInfo) const;
     int32_t SendAlarmToAlarmManager(std::string alarmInfo);
 private:
     AlarmRequestHandler(const AlarmRequestHandler &obj) = delete;
