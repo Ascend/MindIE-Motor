@@ -110,6 +110,12 @@ request_prompt_tokens_bucket{model_name="llama_65b",le="1000"} 400
 request_prompt_tokens_bucket{model_name="llama_65b",le="2000"} 400
 request_prompt_tokens_bucket{model_name="llama_65b",le="5000"} 400
 request_prompt_tokens_bucket{model_name="llama_65b",le="10000"} 400
+request_prompt_tokens_bucket{model_name="llama_65b",le="16000"} 400
+request_prompt_tokens_bucket{model_name="llama_65b",le="20000"} 400
+request_prompt_tokens_bucket{model_name="llama_65b",le="32000"} 400
+request_prompt_tokens_bucket{model_name="llama_65b",le="50000"} 400
+request_prompt_tokens_bucket{model_name="llama_65b",le="64000"} 400
+request_prompt_tokens_bucket{model_name="llama_65b",le="128000"} 400
 request_prompt_tokens_bucket{model_name="llama_65b",le="+Inf"} 400
 # HELP request_generation_tokens Number of generation tokens processed.
 # TYPE request_generation_tokens histogram
@@ -124,4 +130,10 @@ request_generation_tokens_bucket{model_name="llama_65b",le="1000"} 400
 request_generation_tokens_bucket{model_name="llama_65b",le="2000"} 400
 request_generation_tokens_bucket{model_name="llama_65b",le="5000"} 400
 request_generation_tokens_bucket{model_name="llama_65b",le="10000"} 400
+request_generation_tokens_bucket{model_name="llama_65b",le="16000"} 400
+request_generation_tokens_bucket{model_name="llama_65b",le="20000"} 400
+request_generation_tokens_bucket{model_name="llama_65b",le="32000"} 400
+request_generation_tokens_bucket{model_name="llama_65b",le="50000"} 400
+request_generation_tokens_bucket{model_name="llama_65b",le="64000"} 400
+request_generation_tokens_bucket{model_name="llama_65b",le="128000"} 400
 request_generation_tokens_bucket{model_name="llama_65b",le="+Inf"} 400

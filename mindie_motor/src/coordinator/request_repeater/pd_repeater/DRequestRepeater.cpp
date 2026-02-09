@@ -17,8 +17,12 @@
 #include "Communication.h"
 #include "Communication.h"
 #include "RequestRepeater.h"
+#include "metrics/Metrics.h"
 
 namespace MINDIE::MS {
+std::map<int, std::map<int, int>> token_distribution;
+constexpr int MAX_TOKEN_RANGE = 128000;
+const std::vector<int> token_ranges = {10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 16000, 20000, 30000, 50000, 64000, MAX_TOKEN_RANGE};
 static size_t StrFindRepeat(boost::beast::string_view str, char c, size_t i)
 {
     size_t j = i + 1;
@@ -159,6 +163,33 @@ void RequestRepeater::DResChunkHandler(std::shared_ptr<ClientConnection> connect
         } else if (keyWord == "data") { // 普通token
             DResultNormalToken(reqId, oneMessage);
         } else if (keyWord == "lastData") { // 最后一个token
+            try {
+                nlohmann::json jsonData = nlohmann::json::parse(oneMessage);
+                if (jsonData.contains("usage") && jsonData["usage"].contains("prompt_tokens") &&
+                    jsonData["usage"].contains("completion_tokens")) {
+                    int input_tokens = jsonData["usage"]["prompt_tokens"].get<int>();
+                    int output_tokens = jsonData["usage"]["completion_tokens"].get<int>();
+                    int input_range = MAX_TOKEN_RANGE;
+                    for (int range : token_ranges) {
+                        if (input_tokens <= range) {
+                            input_range = range;
+                            break;
+                        }
+                    }
+                    int output_range = MAX_TOKEN_RANGE;
+                    for (int range : token_ranges) {
+                        if (output_tokens <= range) {
+                            output_range = range;
+                            break;
+                        }
+                    }
+                    token_distribution[input_range][output_range]++;
+                }
+            } catch (const nlohmann::json::exception &e) {
+                LOG_W("[%s] [RequestRepeater] Parse lastData usage json failed, reqId: %s, exception: %s",
+                    GetWarnCode(ErrorType::WARNING, CoordinatorFeature::D_REQUESTREPEATER).c_str(),
+                    reqId.c_str(), e.what());
+            }
             DResultLast(reqId, oneMessage);
         } else if (keyWord == "error") { // 错误消息
             DResultError(reqId, oneMessage);

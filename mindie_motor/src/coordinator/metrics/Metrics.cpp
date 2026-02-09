@@ -10,6 +10,7 @@
  * See the Mulan PSL v2 for more details.
  */
 #include "Metrics.h"
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -18,6 +19,8 @@
 #include "HttpClient.h"
 #include "Configure.h"
 #include "RequestMgr.h"
+#include <iomanip>
+#include <sstream>
 
 namespace MINDIE::MS {
 
@@ -479,6 +482,77 @@ std::string Metrics::SerializeMetrics(const nlohmann::json &metrics) const
     return out.str();
 }
 
+void Metrics::ComputeSeqLenTableWidths(const std::vector<int>& bounds, int& colWidth, int& maxLabelWidth,
+    int& totalWidth) const
+{
+    constexpr int TABLE_MIN_COL_WIDTH = 6;
+    constexpr int TABLE_MIN_LABEL_WIDTH = 11;
+    constexpr int TABLE_COL_SEP_WIDTH = 1;
+
+    int maxNumWidth = 0;
+    for (int b : bounds) {
+        int w = static_cast<int>(std::to_string(b).length());
+        if (w > maxNumWidth) {
+            maxNumWidth = w;
+        }
+    }
+    int maxCellValue = 0;
+    for (const auto& inPair : token_distribution) {
+        for (const auto& outPair : inPair.second) {
+            if (outPair.second > maxCellValue) {
+                maxCellValue = outPair.second;
+            }
+        }
+    }
+    int maxValueDigits = static_cast<int>(std::to_string(maxCellValue).length());
+    colWidth = std::max({maxNumWidth, maxValueDigits, TABLE_MIN_COL_WIDTH});
+    maxLabelWidth = TABLE_MIN_LABEL_WIDTH;
+    for (int b : bounds) {
+        int labelWidth = 5 + static_cast<int>(std::to_string(b).length());
+        if (labelWidth > maxLabelWidth) {
+            maxLabelWidth = labelWidth;
+        }
+    }
+    totalWidth = maxLabelWidth + static_cast<int>(bounds.size()) * (colWidth + TABLE_COL_SEP_WIDTH);
+}
+
+void Metrics::PrintTokenDistribution() const
+{
+    const std::vector<int>& bounds = token_ranges;
+    int colWidth = 0;
+    int maxLabelWidth = 0;
+    int totalWidth = 0;
+    ComputeSeqLenTableWidths(bounds, colWidth, maxLabelWidth, totalWidth);
+    std::string startLine(totalWidth, '=');
+    std::string sepLine(totalWidth, '-');
+    LOG_M("[Metrics][Seq_Len_Table] %s", startLine.c_str());
+    std::stringstream header;
+    header << std::setfill('_') << std::left << std::setw(maxLabelWidth) << "OUTPUT";
+    for (size_t col = 0; col < bounds.size(); col++) {
+        header << "|" << std::setw(colWidth) << bounds[col];
+    }
+    LOG_M("[Metrics][Seq_Len_Table] %s", header.str().c_str());
+    LOG_M("[Metrics][Seq_Len_Table] %s", sepLine.c_str());
+    for (size_t in = 0; in < bounds.size(); in++) {
+        std::stringstream row;
+        std::string label = "INPUT" + std::to_string(bounds[in]);
+        row << std::setfill('_') << std::left << std::setw(maxLabelWidth) << label;
+        for (size_t out = 0; out < bounds.size(); out++) {
+            int value = 0;
+            auto it = token_distribution.find(bounds[in]);
+            if (it != token_distribution.end()) {
+                auto it2 = it->second.find(bounds[out]);
+                if (it2 != it->second.end()) {
+                    value = it2->second;
+                }
+            }
+            row << "|" << std::setw(colWidth) << value;
+        }
+        LOG_M("[Metrics][Seq_Len_Table] %s", row.str().c_str());
+    }
+    LOG_M("[Metrics][Seq_Len_Table] %s", startLine.c_str());
+}
+
 std::string Metrics::GetAndAggregateMetrics(const std::map<uint64_t, std::unique_ptr<InstanceInfo>> &podInfos)
 {
     LOG_D("[Metrics]GetAndAggregateMetrics");
@@ -509,6 +583,7 @@ std::string Metrics::GetAndAggregateMetrics(const std::map<uint64_t, std::unique
             GetErrorCode(ErrorType::CALL_ERROR, CoordinatorFeature::METRICS).c_str(),
             e.what());
     }
+    PrintTokenDistribution();
     return ret;
 }
 

@@ -43,6 +43,8 @@ public:
     std::string GetAndAggregateMetrics(const std::map<uint64_t, std::unique_ptr<InstanceInfo>> &podInfos);
 
 private:
+    void ComputeSeqLenTableWidths(const std::vector<int>& bounds, int& colWidth, int& maxLabelWidth, int& totalWidth) const;
+    void PrintTokenDistribution() const;
     // 根据Pod节点信息，获取Server的Metric文本
     nlohmann::json GetServerMetircs(const std::map<uint64_t, std::unique_ptr<InstanceInfo>> &podInfos) const;
     // 解析单个pod的Metric字段，并存到对应的json中
@@ -64,6 +66,7 @@ private:
     std::vector<std::regex> patterns {};
     uint32_t metricCount = 0;
 };
-
+extern std::map<int, std::map<int, int>> token_distribution;
+extern const std::vector<int> token_ranges;
 }
 #endif

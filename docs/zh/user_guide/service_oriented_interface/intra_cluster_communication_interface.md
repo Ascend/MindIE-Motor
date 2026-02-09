@@ -705,6 +705,12 @@ request_prompt_tokens_bucket{model_name="llama3-8b",le="1000"} 3188
 request_prompt_tokens_bucket{model_name="llama3-8b",le="2000"} 3188
 request_prompt_tokens_bucket{model_name="llama3-8b",le="5000"} 3188
 request_prompt_tokens_bucket{model_name="llama3-8b",le="10000"} 3188
+request_prompt_tokens_bucket{model_name="llama3-8b",le="16000"} 3188
+request_prompt_tokens_bucket{model_name="llama3-8b",le="20000"} 3188
+request_prompt_tokens_bucket{model_name="llama3-8b",le="32000"} 3188
+request_prompt_tokens_bucket{model_name="llama3-8b",le="50000"} 3188
+request_prompt_tokens_bucket{model_name="llama3-8b",le="64000"} 3188
+request_prompt_tokens_bucket{model_name="llama3-8b",le="128000"} 3188
 request_prompt_tokens_bucket{model_name="llama3-8b",le="+Inf"} 3188
 # HELP request_generation_tokens Number of generation tokens processed.
 # TYPE request_generation_tokens histogram
@@ -719,6 +725,12 @@ request_generation_tokens_bucket{model_name="llama3-8b",le="1000"} 2267
 request_generation_tokens_bucket{model_name="llama3-8b",le="2000"} 2267
 request_generation_tokens_bucket{model_name="llama3-8b",le="5000"} 2267
 request_generation_tokens_bucket{model_name="llama3-8b",le="10000"} 2267
+request_generation_tokens_bucket{model_name="llama3-8b",le="16000"} 2267
+request_generation_tokens_bucket{model_name="llama3-8b",le="20000"} 2267
+request_generation_tokens_bucket{model_name="llama3-8b",le="32000"} 2267
+request_generation_tokens_bucket{model_name="llama3-8b",le="50000"} 2267
+request_generation_tokens_bucket{model_name="llama3-8b",le="64000"} 2267
+request_generation_tokens_bucket{model_name="llama3-8b",le="128000"} 2267
 request_generation_tokens_bucket{model_name="llama3-8b",le="+Inf"} 2267
 ```
 <br>
