@@ -274,7 +274,10 @@ void CoordinatorRequestHandler::SendNodeStatus(std::shared_ptr<HttpClient> clien
 
     for (auto &node : std::as_const(coordinatorNodes)) {
         if (!SendNodeStatus2SingleCoordinatorNode(client, nodeStatus, coordinatorStore, node, printInfoLog)) {
-            return;
+            LOG_E("[%s] [CoordinatorRequestHandler] Failed to send node status, ip is %s.",
+                  GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::COORDINATOR_REQUEST_HANDLER).c_str(),
+                  node->ip.c_str()
+                  );
         }
     }
 }

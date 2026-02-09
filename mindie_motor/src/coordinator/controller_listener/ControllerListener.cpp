@@ -325,6 +325,8 @@ void ControllerListener::AbnormalStatusHandler(std::shared_ptr<ServerConnection>
     LOG_D("[ControllerListener] Handling abnormal and master information from controller.");
     if (!init) {
         SendErrorRes(connection, boost::beast::http::status::service_unavailable, "");
+        LOG_E("[%s] [ControllerListener] Failed to handle instance from controller, because it is not init.",
+              GetErrorCode(ErrorType::EXCEPTION, CoordinatorFeature::CONTROLLER_LISTENER).c_str());
         return;
     }
     auto &req = connection->GetReq();

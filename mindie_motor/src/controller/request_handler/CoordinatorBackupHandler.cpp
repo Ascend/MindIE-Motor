@@ -90,9 +90,10 @@ int32_t CoordinatorBackupHandler::SendCoordinatorBackupRequest(const std::unique
     ret = mCoordinatorClient->SendRequest(req, ControllerConfig::GetInstance()->GetHttpTimeoutSeconds(),
         ControllerConfig::GetInstance()->GetHttpRetries(), response, code);
     if (ret != 0 || code != CODE_OK) {
-        LOG_W("[%s] [CoordinatorBackupHandler] POST coordinator BackupStatus information failed, IP %s, port %s, "
+        LOG_W("[%s] [CoordinatorBackupHandler] %s coordinator BackupStatus information failed, IP %s, port %s, "
                 "ret code %d, request ret %d",
               GetErrorCode(ErrorType::UNREACHABLE, ControllerFeature::COORDINATOR_REQUEST_HANDLER).c_str(),
+              boost::beast::http::to_string(verb).data(),
               node->ip.c_str(), port.c_str(), code, ret);
         mCoordinatorStore->UpdateCoordinatorStatus(node->ip, false);
         mCoordinatorStoreWithMasterInfo->UpdateCoordinatorStatus(node->ip, false);
@@ -227,6 +228,8 @@ void CoordinatorBackupHandler::DealWithCoordinatorBackup()
             jsonString, response) != 0) {
             LOG_W("[CoordinatorBackupHandler] Post backup info, response is failed, IP %s.", node->ip.c_str());
             continue;
+        } else {
+            LOG_D("[CoordinatorBackupHandler] Post backup info successfully, IP %s.", node->ip.c_str());
         }
     }
     mCoordinatorStoreWithMasterInfo->UpdateCoordinators(coordinatorNodes);
