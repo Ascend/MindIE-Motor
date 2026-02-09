@@ -428,12 +428,12 @@ int32_t ControllerListener::IdsTraverse(const std::vector<uint64_t> &ids, const 
         std::pair<size_t, size_t> pdNodeNum = {0, 0};
         auto instanceMap = instancesRecord->GetInstanceInfos();
         for (const auto &[id, instance] : instanceMap) {
-            if (instance.role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
+            if (instance->role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
                 pdNodeNum.first++;
-            } else if (instance.role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
+            } else if (instance->role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
                 pdNodeNum.second++;
             }
-            LOG_I("[ControllerListener] instance %d is %s.\n", id, instance.role);
+            LOG_I("[ControllerListener] instance %d is %s.\n", id, instance->role);
         }
         LOG_I("[ControllerListener] instance update success, add %zu instance, update %zu instance, "
                 "remove %zu instance.(%zu P + %zu D)\n", addVec.size(), updateVec.size(), removeVec.size(),
