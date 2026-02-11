@@ -433,7 +433,7 @@ int32_t ControllerListener::IdsTraverse(const std::vector<uint64_t> &ids, const 
             } else if (instance->role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
                 pdNodeNum.second++;
             }
-            LOG_I("[ControllerListener] instance %zu is %c.\n", id, instance->role);
+            LOG_D("[ControllerListener] instance %zu is %c.\n", id, instance->role);
         }
         LOG_I("[ControllerListener] instance update success, add %zu instance, update %zu instance, "
                 "remove %zu instance.(%zu P + %zu D)\n", addVec.size(), updateVec.size(), removeVec.size(),
