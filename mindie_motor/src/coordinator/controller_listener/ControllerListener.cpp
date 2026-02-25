@@ -427,6 +427,19 @@ int32_t ControllerListener::IdsTraverse(const std::vector<uint64_t> &ids, const 
             IdsAddOrUpdate(addVec, updateVec, it, id);
         }
         Remove(removeVec);
+        std::pair<size_t, size_t> pdNodeNum = {0, 0};
+        const auto& instanceMap = instancesRecord->GetInstanceInfos();
+        for (const auto &[id, instance] : instanceMap) {
+            if (instance->role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
+                pdNodeNum.first++;
+            } else if (instance->role == MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE) {
+                pdNodeNum.second++;
+            }
+            LOG_D("[ControllerListener] instance %zu is %c.\n", id, instance->role);
+        }
+        LOG_I("[ControllerListener] instance update success, add %zu instance, update %zu instance, "
+                "remove %zu instance.(%zu P + %zu D)\n", addVec.size(), updateVec.size(), removeVec.size(),
+                pdNodeNum.second, pdNodeNum.first);
         return 0;
     } catch (const std::exception &e) {
         LOG_E("[%s] [ControllerListener] Exception while processing instance identifiers: %s.\n",
