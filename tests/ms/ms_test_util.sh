@@ -118,6 +118,7 @@ _run_smoke_dt_test()
     ./mindie_ms_coordinator_ut --gtest_filter=TestDResError.*
     ./mindie_ms_coordinator_ut --gtest_filter=TestMaxReq.*
     ./mindie_ms_coordinator_ut --gtest_filter=TestOpenAI.*
+    ./mindie_ms_coordinator_ut --gtest_filter=TestRequestListener.*
     ./mindie_ms_coordinator_ut --gtest_filter=TestPResError.*
     ./mindie_ms_coordinator_ut --gtest_filter=TestPResInvalid.*
     ./mindie_ms_coordinator_ut --gtest_filter=TestRetry.*
