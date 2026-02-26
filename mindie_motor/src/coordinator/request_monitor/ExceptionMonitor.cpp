@@ -66,7 +66,8 @@ void ExceptionMonitor::PushInsException(InsExceptionType exceptionType, uint64_t
 
 void ExceptionMonitor::PushReqException(ReqExceptionType exceptionType, const std::string &reqId)
 {
-    LOG_I("[ExceptionMonitor] Push req exception type:%d, request ID %s.", exceptionType, reqId.data());
+    LOG_I("[ExceptionMonitor] Push req exception type: %s, request ID %s.",
+        ReqExceptionTypeToStr(exceptionType), reqId.data());
     reqExceptionQueue.PushBack(std::make_pair(exceptionType, reqId));
     cv.notify_one();
 }
@@ -87,8 +88,8 @@ void ExceptionMonitor::ExecuteAbnormalEvents()
         reqExceptionQueue.PopFront();
         auto fun = reqExceptionHandlers.Get(exceptionType);
         if (fun != nullptr) {
-            LOG_I("[ExceptionMonitor] Execute abnormal events for request, abnormal type is %d, ID is %s.",
-                exceptionType, reqId.c_str());
+            LOG_I("[ExceptionMonitor] Execute abnormal events for request, abnormal type is %s, ID is %s.",
+                ReqExceptionTypeToStr(exceptionType), reqId.c_str());
             fun(reqId);
         }
     }

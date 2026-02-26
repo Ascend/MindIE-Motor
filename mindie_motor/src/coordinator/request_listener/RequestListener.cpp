@@ -848,8 +848,13 @@ RequestListener::InterceptStats RequestListener::GetInterceptStats() const
 
 void RequestListener::LogIntercept(const std::string& requestType, double memoryUsage)
 {
-    freqLogger_.Warn("[RequestListener] Intercepted %s request due to memory pressure. "
-        "Memory usage: %.2f%%", requestType.c_str(), memoryUsage);
+    if (memoryUsage < 0) {
+        freqLogger_.Warn("[RequestListener] Intercepted %s request due to memory pressure. "
+            "Memory usage: N/A", requestType.c_str());
+    } else {
+        freqLogger_.Warn("[RequestListener] Intercepted %s request due to memory pressure. "
+            "Memory usage: %.2f%%", requestType.c_str(), memoryUsage * 100); // 100：转换为百分比
+    }
 }
 
 }

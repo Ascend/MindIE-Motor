@@ -389,14 +389,14 @@ template <typename T>
 bool IsIgnoreNode(DeployMode deployMode, std::shared_ptr<NodeStatus> nodeStatus, const T &it)
 {
     if (deployMode == DeployMode::PD_SEPARATE && nodeStatus->IsIgnoredInPDSeparate(it.first)) {
-        LOG_D("[CoordinatorRequestHandler] Generating node status string, ignore node %lu, IP %s, healthy %d, "
+        LOG_D("[CoordinatorRequestHandler] Generating server status string, ignore server %lu, IP %s, healthy %d, "
               "initialized %d, role state %s in PD separate mode.",
               it.first, it.second->ip.c_str(), it.second->isHealthy, it.second->isInitialized,
               it.second->roleState.c_str());
         return false;
     }
     if (deployMode == DeployMode::SINGLE_NODE && nodeStatus->IsIgnoredInSingleNode(it.first)) {
-        LOG_D("[CoordinatorRequestHandler] Generating node status string, ignore node %lu, IP %s, healthy %d, "
+        LOG_D("[CoordinatorRequestHandler] Generating server status string, ignore server %lu, IP %s, healthy %d, "
               "initialized %d, role state %s in single node mode.",
               it.first, it.second->ip.c_str(), it.second->isHealthy, it.second->isInitialized,
               it.second->roleState.c_str());
@@ -412,7 +412,7 @@ void GenerateSingleNodeStatusStr(nlohmann::json& nodes, nlohmann::json& node, nl
     nodes["instances"].emplace_back(node);
     nodes["ids"].emplace_back(it.first);
 
-    LOG_D("[CoordinatorRequestHandler] Generating node status string, ID %lu, role %c.", it.first,
+    LOG_D("[CoordinatorRequestHandler] Generating server status string, ID %lu, role %c.", it.first,
         it.second->instanceInfo.staticInfo.role);
 }
 
@@ -443,7 +443,7 @@ std::string CoordinatorRequestHandler::GenerateNodeStatusStr(std::shared_ptr<Nod
                 std::string pdRole = it.second->instanceInfo.staticInfo.role ==
                                     MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE ? "prefill" : "decode";
                 if (dynamicInfo["peers"].empty()) {
-                    LOG_D("[%s] [CoordinatorRequestHandler] Generating node status string, ignore %s node %lu, "
+                    LOG_D("[%s] [CoordinatorRequestHandler] Generating server status string, ignore %s server %lu, "
                         "IP %s, which has empty available peers.",
                         GetWarnCode(ErrorType::WARNING, ControllerFeature::COORDINATOR_REQUEST_HANDLER).c_str(),
                         pdRole.c_str(), it.first, it.second->ip.c_str());
@@ -462,7 +462,7 @@ std::string CoordinatorRequestHandler::GenerateNodeStatusStr(std::shared_ptr<Nod
                                 static_cast<uint64_t>(pdNodeNum.second);
     uint64_t lastConcatPDNodeNum = mLastPDNodeCounter.exchange(concatPDNodeNum, std::memory_order_relaxed);
     if (lastConcatPDNodeNum != concatPDNodeNum || printInfoLog) {
-        LOG_I("[CoordinatorRequestHandler] Generating node status string, number of nodes in body is %zu."
+        LOG_I("[CoordinatorRequestHandler] Generating server status string, number of servers in body is %zu."
             "(%zu P + %zu D)", nodes["instances"].size(), pdNodeNum.second, pdNodeNum.first);
     }
     return nodes.dump();
