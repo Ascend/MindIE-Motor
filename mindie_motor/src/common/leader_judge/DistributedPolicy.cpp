@@ -24,6 +24,16 @@
 
 namespace MINDIE {
 namespace MS {
+// 获取POD_NAMESPACE作为操作etcd的key前缀,如果要新增etcd的key,请以/开头,这样拼接后的key格式为/namespace/xx,是etcd中key的推荐格式
+std::string PrefixedByPodNamespace(const std::string &key)
+{
+    const char* podNamespace = std::getenv("POD_NAMESPACE");
+    // 环境变量未设置或未空,则不处理
+    if (podNamespace == nullptr || std::strlen(podNamespace) == 0) {
+        return key;
+    }
+    return "/" + std::string(podNamespace) + key;
+}
 
 // --------------------------
 // 构造函数与析构函数
@@ -34,7 +44,7 @@ EtcdDistributedLock::EtcdDistributedLock(const std::string& etcdAddr,
                                          TlsItems& tlsConfig,
                                          EtcdTimeInfo etcdTimeInfo)
     : clientId(clientId),
-      lockKey(lockKey),
+      lockKey(PrefixedByPodNamespace(lockKey)),
       leaseTtl(etcdTimeInfo.staticLeaseTtl),
       etcdTimeInfo(etcdTimeInfo) {
     InitializeEtcdClient(etcdAddr, tlsConfig);
@@ -55,7 +65,7 @@ EtcdDistributedLock::EtcdDistributedLock(
     lease_stub_ = std::static_pointer_cast<etcdserverpb::Lease::StubInterface>(leaseStub);
 
     clientId = clientIdRef;
-    lockKey = lockKeyRef;
+    lockKey = PrefixedByPodNamespace(lockKeyRef);
 }
 
 bool EtcdDistributedLock::IsLocked()
@@ -230,6 +240,7 @@ void EtcdDistributedLock::Unlock()
     }
 }
 
+// GetCurrentModVer方法仅在SafePut使用,key的namespace前缀在SafePut中添加
 int64_t EtcdDistributedLock::GetCurrentModVer(const std::string& key)
 {
     if (kv_stub_ == nullptr) {
@@ -252,11 +263,12 @@ int64_t EtcdDistributedLock::GetCurrentModVer(const std::string& key)
 // --------------------------
 bool EtcdDistributedLock::SafePut(const std::string& key, const std::string& value)
 {
-    auto expectedRevision = GetCurrentModVer(key);
+    std::string prefixedKey = PrefixedByPodNamespace(key);
+    auto expectedRevision = GetCurrentModVer(prefixedKey);
     etcdserverpb::TxnRequest txn_req;
     auto* compare = txn_req.add_compare();
     if (compare != nullptr) {
-        compare->set_key(key);
+        compare->set_key(prefixedKey);
         compare->set_target(etcdserverpb::Compare::MOD);
         compare->set_mod_revision(expectedRevision);
     }
@@ -265,7 +277,7 @@ bool EtcdDistributedLock::SafePut(const std::string& key, const std::string& val
     if (success_op != nullptr) {
         auto* put_op = success_op->mutable_request_put();
         if (put_op != nullptr) {
-            put_op->set_key(key);
+            put_op->set_key(prefixedKey);
             put_op->set_value(value);
         }
     }
@@ -296,7 +308,7 @@ bool EtcdDistributedLock::SafePut(const std::string& key, const std::string& val
 bool EtcdDistributedLock::GetWithRevision(const std::string& key, std::string& value)
 {
     etcdserverpb::RangeRequest req;
-    req.set_key(key);
+    req.set_key(PrefixedByPodNamespace(key));
     
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(etcdTimeInfo.staticRpcTimeout));
@@ -364,7 +376,7 @@ void EtcdDistributedLock::RevokeLease()
     
     etcdserverpb::LeaseRevokeRequest req;
     req.set_id(leaseId);
-    
+
     etcdserverpb::LeaseRevokeResponse resp;
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(etcdTimeInfo.staticRpcTimeout));

@@ -82,6 +82,10 @@ spec:
                   value: /mnt/configmap
                 - name: COORDINATOR_LOG_CONFIG_PATH
                   value: /root/mindie
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
               envFrom:
                 - configMapRef:
                     name: common-env

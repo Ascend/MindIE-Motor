@@ -34,6 +34,8 @@ constexpr int MIN_INTERVAL = 1; // 最小间隔1秒
 constexpr int MAX_RETRY = 5;
 constexpr uint32_t ETCD_WATCH_GAP_SECONDS = 5;
 
+std::string PrefixedByPodNamespace(const std::string &key);
+
 // 默认etcdTimeInfo
 struct EtcdTimeInfo {
     const int staticEtcdWatchGap;
