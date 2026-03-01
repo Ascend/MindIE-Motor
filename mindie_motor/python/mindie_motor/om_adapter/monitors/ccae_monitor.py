@@ -63,7 +63,7 @@ class CCAEMonitor(BaseMonitor):
             raise RuntimeError("Environment variable $MIES_INSTALL_PATH is not set.")
         with safe_open(os.path.join(server_dir, "version.info")) as f:
             for line in f:
-                if "Ascend-mindie-service" in line:
+                if "mindie-service" in line:
                     return line.split(":")[-1].strip()
         self.logger.error("Failed to fetch version info.")
         return "UNKNOWN VERSION"

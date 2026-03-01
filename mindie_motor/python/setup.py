@@ -88,6 +88,9 @@ class CustomBuildPy(_build_py):
             build_pkg / "scripts" / "http_client_ctl", dirs_exist_ok=True)
         shutil.copy(project_root / "mindie_motor/src/config/node_manager.json",
             build_pkg / examples_str / scripts_str / config_str)
+        version_info = "version.info"
+        if (project_root / version_info).exists():
+            shutil.copy(project_root / version_info, build_pkg / version_info)
         self.copy_third_party()
 
         super().run()
