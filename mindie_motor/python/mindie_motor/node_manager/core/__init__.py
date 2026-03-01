@@ -14,10 +14,12 @@ __all__ = [
     "Service",
     "HeartBeatMng",
     "FaultManager",
-    "GeneralConfig"
+    "GeneralConfig",
+    "RuntimeParamChecker"
 ]
 
 from .service import Service
 from .heartbeat_mng import HeartBeatMng
 from .fault_mng import FaultManager
 from .config import GeneralConfig
+from .runtime_param_checker import RuntimeParamChecker

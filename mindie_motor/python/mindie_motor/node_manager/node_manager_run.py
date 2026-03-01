@@ -16,6 +16,7 @@ import threading
 from node_manager.daemon_manager.llm_daemon_starter import llm_daemon_manager
 from node_manager.framework.server import app as http_server
 from node_manager.core.heartbeat_mng import heartbeat_mng
+from node_manager.core.runtime_param_checker import runtime_param_checker
 from node_manager.common.logging import Log
 
 
@@ -34,11 +35,19 @@ def main():
         except Exception as e:
             logger.error(f"Heartbeat Manager error: {e}", exc_info=True)
 
+    def run_runtime_param_checker():
+        try:
+            runtime_param_checker.run()
+        except Exception as e:
+            logger.error(f"Runtime Param Checker error: {e}", exc_info=True)
+
     # Create and start threads
     http_thread = threading.Thread(target=run_http_server, daemon=False)
     heartbeat_thread = threading.Thread(target=run_heartbeat_manager, daemon=False)
+    runtime_param_thread = threading.Thread(target=run_runtime_param_checker, daemon=False)
     http_thread.start()
     heartbeat_thread.start()
+    runtime_param_thread.start()
 
     try:
         result = llm_daemon_manager.run()
@@ -55,8 +64,13 @@ def main():
         except Exception as e:
             logger.error(f"Heartbeat Manager stop error: {e}", exc_info=True)
 
+        try:
+            runtime_param_checker.stop()
+        except Exception as e:
+            logger.error(f"Runtime Param Checker stop error: {e}", exc_info=True)
+
         # Wait for threads to finish
-        for thread in [http_thread, heartbeat_thread]:
+        for thread in [http_thread, heartbeat_thread, runtime_param_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=2.0)
 
