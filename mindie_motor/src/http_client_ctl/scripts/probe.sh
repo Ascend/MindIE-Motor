@@ -27,6 +27,8 @@ if [ -z "$1" ]; then
     exit 1
 fi
 PROBE_TYPE=$1
+TIMEOUT_SECONDS=${2:-1}
+RETRY_TIMES=${3:-0}
 cd $MIES_INSTALL_PATH
 CURRENT_DIR=$(cd "$(dirname "$0")"; pwd)
 
@@ -164,14 +166,14 @@ case "$PROBE_TYPE" in
             if [[ "$SCRIPT_MODE" == "single_container" ]]; then
                 URL=${url_list[$i]}
                 if [ $i -eq 0 ]; then
-                    $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                 elif [ $i -eq 1 ]; then
-                    $MIES_INSTALL_PATH/bin/http_client_ctl $COORDINATOR_IP $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl $COORDINATOR_IP $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                 else
-                    $MIES_INSTALL_PATH/bin/http_client_ctl "127.0.0.1" $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl "127.0.0.1" $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                 fi
             else
-                $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $STARTUP_URL 600 0
+                $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $STARTUP_URL $TIMEOUT_SECONDS $RETRY_TIMES
             fi
             if [ $? -ne 0 ]; then
                 echo "Service is not running."
@@ -191,11 +193,11 @@ case "$PROBE_TYPE" in
             if [[ "$SCRIPT_MODE" == "single_container" ]]; then
                 URL=${url_list[$i]}
                 if [ $i -eq 0 ]; then
-                    $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                 elif [ $i -eq 1 ]; then
-                    $MIES_INSTALL_PATH/bin/http_client_ctl $COORDINATOR_IP $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl $COORDINATOR_IP $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                 else
-                    $MIES_INSTALL_PATH/bin/http_client_ctl "127.0.0.1" $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl "127.0.0.1" $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                 fi
             else
                 if [ "${SERVICE_TYPE}X" = "miesX" ]; then
@@ -205,7 +207,7 @@ case "$PROBE_TYPE" in
                         exit 1
                     fi
                 fi
-                $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $READINESS_URL 600 0
+                $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $READINESS_URL $TIMEOUT_SECONDS $RETRY_TIMES
             fi
             if [ $? -ne 0 ]; then
                 echo "Service is not ready."
@@ -226,23 +228,23 @@ case "$PROBE_TYPE" in
             if [[ "$SCRIPT_MODE" == "single_container" ]]; then
                 URL=${url_list[$i]}
                 if [ $i -eq 0 ]; then
-                    $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                     if [ $? -ne 0 ]; then
                         health_status=1
                     fi
                 elif [ $i -eq 1 ]; then
-                    $MIES_INSTALL_PATH/bin/http_client_ctl $COORDINATOR_IP $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl $COORDINATOR_IP $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                     if [ $? -ne 0 ]; then
                         health_status=1
                     fi
                 else
-                    $MIES_INSTALL_PATH/bin/http_client_ctl "127.0.0.1" $PORT $URL 600 0
+                    $MIES_INSTALL_PATH/bin/http_client_ctl "127.0.0.1" $PORT $URL $TIMEOUT_SECONDS $RETRY_TIMES
                     if [ $? -ne 0 ]; then
                         health_status=1
                     fi
                 fi
             else
-                $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $LIVENESS_URL 600 0
+                $MIES_INSTALL_PATH/bin/http_client_ctl $POD_IP $PORT $LIVENESS_URL $TIMEOUT_SECONDS $RETRY_TIMES
                 if [ $? -ne 0 ]; then
                     health_status=1
                 fi

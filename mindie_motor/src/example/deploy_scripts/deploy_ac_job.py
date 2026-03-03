@@ -176,6 +176,8 @@ DECODE_DEPLOY = "1"
 POD_RESCHEDULING = "pod-rescheduling"
 FAULT_RECOVERY_FUNC = "fault_recovery_func_dict"
 LINGQU_LINK = "lingqu_link"
+EXEC = "exec"
+COMMAND = "command"
 context = dict()
 
 
@@ -606,6 +608,7 @@ def modify_controller_yaml(data, config, env_config):
         )
     modify_controller_env(data, config)
     modify_controller_mount(data, config)
+    modify_probe_commands(data, has_worker=False)
 
 
 def modify_controller_replicas(data, config):
@@ -651,6 +654,7 @@ def modify_coordinator_yaml_app_v1(data, config):
         )
     modify_coordinator_env(data, config)
     modify_coordinator_mount(data, config)
+    modify_probe_commands(data, has_worker=False)
 
 
 def modify_coordinator_yaml_v1(data, config, coordinator_config):
@@ -971,6 +975,40 @@ def create_external_soft_anti_affinity(app_label):
     ]))
     logging.info(f"Inject soft anti_affinity between {APP_NAME_COORDINATOR} and {APP_NAME_CONTROLLER}!")
     return other_anti_affinity_terms
+
+
+def modify_probe_commands(data, has_worker=False):
+    """
+    Modify probe commands to include periodSeconds and timeoutSeconds as parameters to probe.sh.
+    Extracts periodSeconds and timeoutSeconds from each probe and passes them as script arguments.
+    Usage: probe.sh <type> <timeoutSeconds> <retryTimes>
+    """
+    containers = [data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0]]
+    if has_worker:
+        containers.append(data[SPEC][REPLICA_SPECS][WORKER][TEMPLATE][SPEC][CONTAINERS][0])
+    
+    probe_types = ['readinessProbe', 'livenessProbe', 'startupProbe']
+    
+    for container in containers:
+        for probe_type in probe_types:
+            if probe_type in container:
+                probe_config = container[probe_type]
+                if EXEC in probe_config and COMMAND in probe_config[EXEC]:
+                    # Get periodSeconds and timeoutSeconds values
+                    period_seconds = probe_config.get('periodSeconds', 5)
+                    timeout_seconds = probe_config.get('timeoutSeconds', 1)
+                    retry_times = 0  # Default retry times
+                    
+                    # Ensure timeout is less than period
+                    if timeout_seconds >= period_seconds:
+                        timeout_seconds = max(1, period_seconds - 1)
+                    
+                    # Extract the probe command
+                    cmd = probe_config[EXEC][COMMAND]
+                    # cmd is usually: ['bash', '-c', '$MIES_INSTALL_PATH/scripts/http_client_ctl/probe.sh <type>']
+                    if len(cmd) >= 3 and 'probe.sh' in cmd[2]:
+                        # Append timeout and retry parameters to probe.sh call
+                        cmd[2] = f'{cmd[2]} {timeout_seconds} {retry_times}'
 
 
 def modify_env_common(data, env_key, env_value, has_worker=False):
