@@ -184,6 +184,7 @@ class FaultManager(metaclass=_SingletonMeta):
         if after_state is not None:
             self.heartbeat_mng.set_running_status(after_state)
             self._set_heartbeat_check_allowed(False)
+
             ret_info_all = self._parse_cmd_to_client(cmd=EngineCmd.PAUSE_ENGINE.value)
             ret_success = self._extract_info(ret_info_all, field="success")
             if all(ret_success):
@@ -198,7 +199,7 @@ class FaultManager(metaclass=_SingletonMeta):
                 else:
                     # 请求发送成功,命令执行有失败
                     self.logger.error(
-                        f"FaulhaiytManager: PAUSE ENGINE cmd sent successfully, but the cmd execution failed."
+                        f"FaultManager: PAUSE ENGINE cmd sent successfully, but the cmd execution failed."
                     )
                     self._set_heartbeat_check_allowed(
                         True

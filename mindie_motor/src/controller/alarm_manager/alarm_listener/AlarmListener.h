@@ -39,7 +39,7 @@ public:
 
     std::pair<ErrorCode, Response> CoordinatorAlarmHandler(const Http::request<Http::string_body> &req) const;
 
-    std::pair<ErrorCode, Response> ServerAlarmHandler(const Http::request<Http::string_body> &req) const;
+    std::pair<ErrorCode, Response> LLMEngineAlarmHandler(const Http::request<Http::string_body> &req) const;
 
     std::pair<ErrorCode, Response> TerminateServiceHandler(const Http::request<Http::string_body> &req) const;
 private:
@@ -53,7 +53,7 @@ private:
     bool CoordinatorAlarmPreproccessor(nlohmann::json &alarmsJson) const;
     const std::map<std::string, AlarmHandler> mUrlHandlers = {
         {"/v1/alarm/coordinator", std::bind(&AlarmListener::CoordinatorAlarmHandler, this, std::placeholders::_1)},
-        {"/v1/alarm/llm_engine", std::bind(&AlarmListener::ServerAlarmHandler, this, std::placeholders::_1)},
+        {"/v1/alarm/llm_engine", std::bind(&AlarmListener::LLMEngineAlarmHandler, this, std::placeholders::_1)},
         {"/v1/terminate-service", std::bind(&AlarmListener::TerminateServiceHandler, this, std::placeholders::_1)}
     };
     std::shared_ptr<NodeStatus> mNodeStatus = nullptr;

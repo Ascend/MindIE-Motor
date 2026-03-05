@@ -176,6 +176,7 @@ DECODE_DEPLOY = "1"
 POD_RESCHEDULING = "pod-rescheduling"
 FAULT_RECOVERY_FUNC = "fault_recovery_func_dict"
 LINGQU_LINK = "lingqu_link"
+OUT_OF_MEMORY = "oom"
 EXEC = "exec"
 COMMAND = "command"
 context = dict()
@@ -1660,6 +1661,9 @@ def update_ms_controller_config(controller_config, p_server_config, d_server_con
     if FAULT_RECOVERY_FUNC in deploy_config and LINGQU_LINK in deploy_config[FAULT_RECOVERY_FUNC]:
         temp_updated = update_json_value(temp_updated, "fault_recovery_func_dict/lingqu_link",
                                          deploy_config[FAULT_RECOVERY_FUNC][LINGQU_LINK])
+    if FAULT_RECOVERY_FUNC in deploy_config and OUT_OF_MEMORY in deploy_config[FAULT_RECOVERY_FUNC]:
+        temp_updated = update_json_value(temp_updated, "fault_recovery_func_dict/oom",
+                                         deploy_config[FAULT_RECOVERY_FUNC][OUT_OF_MEMORY])
     return temp_updated
 
 

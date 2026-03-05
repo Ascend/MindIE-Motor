@@ -34,6 +34,8 @@ public:
         InstanceExceptionReason reasonID) const;
     std::string FillServerExceptionEventInfo(std::string ip, ServerExceptionReason reasonID) const;
     std::string FillClusterConnectionAlarmInfo(AlarmCategory category, ClusterConnectionReason reasonID) const;
+    std::string FillLLMEngineAlarmInfo(AlarmCategory category, LLMEngineFaultReason reasonID,
+        std::string errorLocation) const;
 
     AlarmRequestHandler(const AlarmRequestHandler &obj) = delete;
     AlarmRequestHandler &operator=(const AlarmRequestHandler &obj) = delete;

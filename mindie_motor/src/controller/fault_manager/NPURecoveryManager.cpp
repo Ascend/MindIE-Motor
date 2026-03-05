@@ -19,6 +19,8 @@
 #include "ControllerConfig.h"
 #include "node_manager_sender/NodeManagerRequestSender.h"
 #include "ControllerLeaderAgent.h"
+#include "AlarmManager.h"
+#include "AlarmRequestHandler.h"
 #include "NPURecoveryManager.h"
 
 namespace MINDIE {
@@ -85,12 +87,143 @@ bool NPURecoveryManager::HasCriticalFaultLevel(const fault::NodeFaultInfo& nodeI
     return false;
 }
 
+/*************************以下是OOM故障快恢相关方法*******************************/
+// LLMEngine alarm处理主入口
+void NPURecoveryManager::ProcessLLMEngineAlarm(const nlohmann::json& alarmJson)
+{
+    // 只有coordinator is ready后, 才对LLMEngine alarm中携带的可恢复故障码进行处理
+    if (!IsFirstCoordinatorReady()) {
+        return;
+    }
+
+    // AlarmListener中已对alarmInfoJson的格式进行了校验
+    auto errorInfo = alarmJson["alarm_info"];
+    std::string nodeManagerIP = alarmJson["node_manager_ip"].get<std::string>();
+
+    // 根据Pod IP获取实例Id
+    uint64_t instanceId = GetInstanceIdByPodIP(nodeManagerIP);
+    if (instanceId == INVALID_ID) {
+        LOG_I("[NPURecoveryManager] Cannot find instance including Pod IP: %s", nodeManagerIP.c_str());
+        return;
+    }
+
+    // 如果errorInfo包含无法进行恢复的故障码, 不处理, nodeManager会进行实例重配置
+    if (IsNonRecoverableErrCodeExists(errorInfo)) {
+        LOG_I("[NPURecoveryManager] Some errors in instance %lu are not recoverable, skip handling.", instanceId);
+        return;
+    }
+
+    // 执行故障码对应的快恢流程
+    // 故障码为全量上报, 按vector顺序决定优先级(靠前优先), 只执行第一个匹配的快恢流程函数
+    for (const auto& processor : mErrCodeProcessors) {
+        if (IsErrCodeExists(errorInfo, processor.errCode)) {
+            if (!ControllerConfig::GetInstance()->GetFaultRecoveryEnableByConfigKey(processor.recoveryFuncKey)) {
+                LOG_I("[NPURecoveryManager] Find error code %s in instance %lu, "
+                    "but do not enable %s recovery, just send STOP_ENGINE.",
+                    processor.errCode.c_str(), instanceId, processor.recoveryFuncKey.c_str());
+                    (void)SendNodeManagerCommandToPodsParallel(GetAllPodIPsInInstance(instanceId),
+                        instanceId, NodeManagerCmd::STOP_ENGINE);
+                return;
+            }
+            
+            LOG_I("[NPURecoveryManager] Start %s recovery to handle error code %s in instance %lu",
+                processor.recoveryFuncKey.c_str(), processor.errCode.c_str(), instanceId);
+
+            // 根据 processor.faultReason上报故障告警
+            if (mErrCodeAlarmExisted.Insert(instanceId)) {
+                std::string errorLocationStr = GetErrorLocationStr(errorInfo, processor.errCode);
+                std::string alarmsString = AlarmRequestHandler::GetInstance()->FillLLMEngineAlarmInfo(
+                    AlarmCategory::ALARM_CATEGORY_EVENT,
+                    processor.faultReason,
+                    errorLocationStr);
+                AlarmManager::GetInstance()->AlarmAdded(alarmsString);
+                LOG_M("[NPURecoveryManager] Add LLMEngine alarm. Contents: %s", alarmsString.c_str());
+            }
+            processor.handler(instanceId);
+            return;
+        }
+    }
+
+    LOG_D("[NPURecoveryManager] No recoverable error codes found, skip processing LLMEngine alarm.");
+}
+
+bool NPURecoveryManager::IsNonRecoverableErrCodeExists(const nlohmann::json& errorInfo)
+{
+    for (const auto& epErrors : errorInfo) {
+        for (const auto& entry : epErrors) {
+            if (!entry.contains("errCode")) {
+                continue;
+            }
+            std::string errCode = entry["errCode"];
+            auto it = std::find_if(mErrCodeProcessors.begin(), mErrCodeProcessors.end(),
+                [&errCode](const auto& processor) { return processor.errCode == errCode; });
+            if (it == mErrCodeProcessors.end()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool NPURecoveryManager::IsErrCodeExists(const nlohmann::json& errorInfo, const std::string& errCode)
+{
+    for (const auto& epErrors : errorInfo) {
+        for (const auto& entry : epErrors) {
+            if (!entry.contains("errCode")) {
+                continue;
+            }
+            if (entry["errCode"] == errCode) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::string NPURecoveryManager::GetErrorLocationStr(const nlohmann::json& errorInfo, const std::string& errCode)
+{
+    std::set<std::string> errorLocations;
+    for (const auto& epErrors : errorInfo) {
+        for (const auto& entry : epErrors) {
+            if (!entry.contains("errCode") || !entry.contains("errorLocation")) {
+                continue;
+            }
+            if (entry["errCode"] == errCode) {
+                errorLocations.insert(entry["errorLocation"].get<std::string>());
+            }
+        }
+    }
+
+    std::string errorLocationStr = "";
+    bool isFirst = true;
+    for (const auto& location : errorLocations) {
+        if (!isFirst) {
+            errorLocationStr += ", ";
+        }
+        errorLocationStr += location;
+        isFirst = false;
+    }
+    return errorLocationStr;
+}
+
+void NPURecoveryManager::OOMRecoveryHandler(uint64_t instanceId)
+{
+    // 存在OOM故障码, 进入FullNPURecovery流程
+    std::vector<uint64_t> instanceNodeIds = GetAllNodesInInstance(instanceId);
+    std::unordered_set<std::string> instancePodIps = GetAllPodIPsInInstance(instanceId);
+    std::vector<FaultNodeInfo> faultNodes = std::vector<FaultNodeInfo>(instancePodIps.size());
+
+    LOG_I("[NPURecoveryManager] Enable full NPU recovery strategy to process OOM errors in instance %lu.", instanceId);
+    
+    ProcessFullNPURecovery(instanceId, faultNodes, instanceNodeIds, instancePodIps);
+}
+
 /******************以下是灵衢故障恢复相关方法********************************/
 
 // 故障消息处理主入口
 void NPURecoveryManager::ProcessFaultMessage(const fault::FaultMsgSignal &faultMsg)
 {
-    if (!(ControllerConfig::GetInstance()->GetNPURecoveryEnableConfig())) {
+    if (!(ControllerConfig::GetInstance()->GetFaultRecoveryEnableByConfigKey("lingqu_link"))) {
         LOG_I("[NPURecoveryManager] Skip processing fault message");
         return;
     }
@@ -428,7 +561,7 @@ void NPURecoveryManager::ProcessInstanceFaults(const std::unordered_map<uint64_t
             LOG_D("[NPURecoveryManager] Instance %lu is already in recovery, skipping", instanceId);
             continue;
         }
-        
+
         // 获取节点信息
         std::vector<uint64_t> instanceNodeIds = GetAllNodesInInstance(instanceId);
         std::unordered_set<std::string> instancePodIPs = GetAllPodIPsInInstance(instanceId);
@@ -550,6 +683,12 @@ void NPURecoveryManager::ProcessFullNPURecovery(uint64_t instanceId,
                                                 const std::vector<uint64_t>& instanceNodeIds,
                                                 const std::unordered_set<std::string>& instancePodIPs)
 {
+    // 设置实例恢复信息
+    if (!mInstanceRecoveryInfo.Insert(instanceId, InstanceRecoveryInfo(faultNodes, instancePodIPs))) {
+        LOG_D("[NPURecoveryManager] Instance %lu is already in recovery, skipping", instanceId);
+        return;
+    }
+
     LOG_I("[NPURecoveryManager] Processing instance %lu with full NPU recovery, %zu fault nodes",
           instanceId, faultNodes.size());
 
@@ -558,15 +697,13 @@ void NPURecoveryManager::ProcessFullNPURecovery(uint64_t instanceId,
         SetNodeUnavailable(nodeId);
     }
 
-    // 设置实例恢复信息
-    mInstanceRecoveryInfo.Set(instanceId, InstanceRecoveryInfo(faultNodes, instancePodIPs));
-
     // 向该实例中的所有 pod 发送 PAUSE_ENGINE,若失败则发送STOP_ENGINE停止服务
     if (!SendNodeManagerCommandToInstancePods(instanceId, NodeManagerCmd::PAUSE_ENGINE)) {
         LOG_D("[NPURecoveryManager] PAUSE_ENGINE failed for instance %lu, aborting recovery process", instanceId);
         (void)SendNodeManagerCommandToPodsParallel(instancePodIPs, instanceId, NodeManagerCmd::STOP_ENGINE);
         // 清理恢复信息，避免资源泄漏
         mInstanceRecoveryInfo.Erase(instanceId);
+        mErrCodeAlarmExisted.Erase(instanceId);
         LOG_I("[NPURecoveryManager] Removed instance %lu from recovery queue (PAUSE_ENGINE failed)", instanceId);
         return;
     }
@@ -581,6 +718,7 @@ void NPURecoveryManager::ProcessFullNPURecovery(uint64_t instanceId,
         (void)SendNodeManagerCommandToPodsParallel(instancePodIPs, instanceId, NodeManagerCmd::STOP_ENGINE);
         // 清理恢复信息，避免资源泄漏
         mInstanceRecoveryInfo.Erase(instanceId);
+        mErrCodeAlarmExisted.Erase(instanceId);
         LOG_I("[NPURecoveryManager] Removed instance %lu from recovery queue (REINIT_NPU failed)", instanceId);
         return;
     }
@@ -602,6 +740,14 @@ void NPURecoveryManager::ProcessFullNPURecovery(uint64_t instanceId,
           instanceId, instanceNodeIds.size(), instancePodIPs.size());
 }
 
+uint64_t NPURecoveryManager::GetInstanceIdByPodIP(const std::string& podIP)
+{
+    uint64_t nodeId = FindFirstNodeIdByPodIP(podIP);
+    if (nodeId == INVALID_ID) {
+        return INVALID_ID;
+    }
+    return GetInstanceIdByNodeId(nodeId);
+}
 
 uint64_t NPURecoveryManager::GetInstanceIdByNodeIP(const std::string& nodeIP)
 {
@@ -609,6 +755,11 @@ uint64_t NPURecoveryManager::GetInstanceIdByNodeIP(const std::string& nodeIP)
     if (nodeId == INVALID_ID) {
         return INVALID_ID;
     }
+    return GetInstanceIdByNodeId(nodeId);
+}
+
+uint64_t NPURecoveryManager::GetInstanceIdByNodeId(uint64_t nodeId)
+{
     auto node = mNodeStatus->GetNode(nodeId);
     if (node == nullptr) {
         return INVALID_ID;
@@ -674,6 +825,28 @@ FaultNodeInfo NPURecoveryManager::ConvertToFaultNodeInfo(const fault::NodeFaultI
     return faultNodeInfo;
 }
 
+uint64_t NPURecoveryManager::FindFirstNodeIdByPodIP(const std::string& podIP)
+{
+    std::vector<uint64_t> nodeIds = mNodeStatus->GetAllNodeIds();
+    if (nodeIds.empty()) {
+        LOG_D("[NPURecoveryManager] No node IDs found when looking for nodes with pod IP: %s", podIP.c_str());
+        return INVALID_ID;
+    }
+    
+    for (auto id : nodeIds) {
+        auto node = mNodeStatus->GetNode(id);
+        if (node == nullptr) {
+            continue;
+        }
+        // 检查NodeInfo的ip
+        if (node->ip == podIP) {
+            return id;
+        }
+    }
+    LOG_D("[NPURecoveryManager] Cannot find node with pod IP: %s", podIP.c_str());
+    return INVALID_ID;
+}
+
 uint64_t NPURecoveryManager::FindNodeIdByIP(const std::string& nodeIP)
 {
     std::vector<uint64_t> nodeIds = mNodeStatus->GetAllNodeIds();
@@ -701,6 +874,12 @@ bool NPURecoveryManager::IsFirstCoordinatorReady()
     if (mCoordinatorReadyChecked.load()) {
         return true;
     }
+
+    if (mNodeStatus == nullptr) {
+        LOG_D("[NPURecoveryManager] Node status is null when checking coordinator readiness");
+        return false;
+    }
+
     std::vector<uint64_t> nodeIds = mNodeStatus->GetAllNodeIds();
     if (nodeIds.empty()) {
         LOG_D("[NPURecoveryManager] No node IDs found when checking coordinator readiness");
@@ -955,6 +1134,7 @@ void NPURecoveryManager::ProcessRecoveredAndTimeoutInstances(const std::vector<u
         if (recoveryInfo.has_value()) {
             timeoutPodIPs[instanceId] = recoveryInfo->podIPs;
             mInstanceRecoveryInfo.Erase(instanceId);
+            mErrCodeAlarmExisted.Erase(instanceId);
         }
     }
     // 处理已恢复实例：先保存podIPs，再移除
@@ -963,6 +1143,7 @@ void NPURecoveryManager::ProcessRecoveredAndTimeoutInstances(const std::vector<u
         if (recoveryInfo.has_value()) {
             recoveredPodIPs[instanceId] = recoveryInfo->podIPs;
             mInstanceRecoveryInfo.Erase(instanceId);
+            mErrCodeAlarmExisted.Erase(instanceId);
         }
     }
     // 批量移除时统一记录日志
@@ -1074,6 +1255,7 @@ void NPURecoveryManager::AbortInstanceRecovery(uint64_t instanceId)
 
     // 从恢复队列中移除该实例
     mInstanceRecoveryInfo.Erase(instanceId);
+    mErrCodeAlarmExisted.Erase(instanceId);
     LOG_I("[NPURecoveryManager] Removed instance %lu from recovery queue (aborted)", instanceId);
 
     // 检查是否需要停止全局轮询

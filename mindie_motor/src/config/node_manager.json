@@ -2,7 +2,7 @@
   "version": "v1.0",
   "controller_alarm_port": 1027,
   "node_manager_port": 1028,
-  "heartbeat_interval_seconds": 5,
+  "heartbeat_interval_seconds": 1,
   "tls_config": {
     "server_tls_enable": true,
     "server_tls_items": {

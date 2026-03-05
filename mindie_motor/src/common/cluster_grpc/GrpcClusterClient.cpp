@@ -17,6 +17,8 @@
 #include "GrpcClusterClient.h"
 
 namespace MINDIE::MS {
+
+const int32_t MIN_SENT_PING_INTERVAL_WITHOUT_DATA_MS = 5000;
     
 bool GetCertificateProvider(std::shared_ptr<grpc::experimental::CertificateProviderInterface>& certificateProvider,
     const TlsItems& mTlsConfig)
@@ -104,6 +106,13 @@ std::shared_ptr<grpc::Channel> CreateGrpcChannel(const std::string serverAddr, c
     channelArgs.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, MAX_KEEPALIVE_TIMEOUT_MS);
     // 允许在没有 RPC 调用时发送 Ping
     channelArgs.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+
+    // 允许在没有数据时发送更多 PING
+    channelArgs.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);  // 0 = 无限制
+
+    // 设置最小 PING 间隔（防止被服务端拒绝）
+    channelArgs.SetInt(GRPC_ARG_HTTP2_MIN_SENT_PING_INTERVAL_WITHOUT_DATA_MS,
+        MIN_SENT_PING_INTERVAL_WITHOUT_DATA_MS);
 
     std::shared_ptr<grpc::Channel> retChannel;
 

@@ -33,6 +33,7 @@ void AlarmConfig::InitAlarmID()
     mAlarmIDToString[AlarmType::REQ_CONGESTION] =  "0xFC001005";
     mAlarmIDToString[AlarmType::CLUSTER_CONNECTION] = "0xFC001006";
     mAlarmIDToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] = "0xFC001007";
+    mAlarmIDToString[AlarmType::LLM_ENGINE_FAULT] = "0xFC001008";
 }
 
 void AlarmConfig::InitAlarmName()
@@ -46,6 +47,7 @@ void AlarmConfig::InitAlarmName()
     mAlarmNameToString[AlarmType::CLUSTER_CONNECTION] = "Cluster Connection Exception Alarm";
     mAlarmNameToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] =
  	        "Coordinator Connection To PD instance Exception Alarm";
+    mAlarmNameToString[AlarmType::LLM_ENGINE_FAULT] = "LLM Engine Fault Alarm";
 }
 
 void AlarmConfig::InitProbableCause()
@@ -59,6 +61,7 @@ void AlarmConfig::InitProbableCause()
     mProbableCauseToString[AlarmType::REQ_CONGESTION] = "1:Coordinator正在处理的请求拥塞";
     mProbableCauseToString[AlarmType::CLUSTER_CONNECTION] = "1:集群服务连接失败;2:订阅RankTable失败;3:订阅故障消息失败;4:连接中断";
     mProbableCauseToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] = "1:Coordinator与PD实例之间通信异常";
+    mProbableCauseToString[AlarmType::LLM_ENGINE_FAULT] = "1:LLM Engine故障";
 }
 
 std::string AlarmConfig::GetAlarmIDString(AlarmType alarmType)

@@ -73,16 +73,23 @@ class Client:
         url = f'{self.protocol}{self.engine_ip}:{port}/v1/engine-server/running-status'
         return self._send_request(GET, url)
 
-    def send_ctrler_error_info(self, err_code_list: list) -> dict:
+    def send_alarm_info_to_ctrler(self, error_info: list) -> dict:
         ip = self.config.get_controller_ip()
         port = self.config.get_controller_port()
         if not ip or not port:
             self.logger.error("controller's ip or port not exist")
             return {SUCCESS: False, MSG: "controller's ip or port not exist"}
-        url = f'{self.protocol}{ip}:{port}/v1/controller/alarm-info'
+
+        for idx, ep_errors in enumerate(error_info):
+            ep_str = self._get_endpoint_string(idx)
+            for error in ep_errors:
+                if isinstance(error, dict) and 'errorLocation' not in error:
+                    error['errorLocation'] = ep_str
+            
+        url = f'{self.protocol}{ip}:{port}/v1/alarm/llm_engine'
         report_data = {
-            'alarm_info': err_code_list,
-            'reporter': 'node_manager',
+            'alarm_info': error_info,
+            'node_manager_ip': self.engine_ip
         }
         return self._send_request(POST, url, data=report_data)
 
@@ -113,6 +120,12 @@ class Client:
             self.logger.error(f'do not find port with index({engine_index})')
             return None
         return port
+
+    def _get_endpoint_string(self, engine_index: int) -> str:
+        port = self._get_engine_port(engine_index)
+        if self.engine_ip and port:
+            return f'{self.engine_ip}:{port}'
+        return f'index={engine_index}'
 
     def _send_request(self, method: str, url: str, data=None) -> dict:
         method = method.upper()

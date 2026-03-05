@@ -10,6 +10,7 @@
  * See the Mulan PSL v2 for more details.
  */
 #include "ControllerConfig.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 #include "nlohmann/json.hpp"
@@ -407,7 +408,7 @@ void ControllerConfig::InitConfig(const nlohmann::json &rawConfig,
     InitCCAE(rawConfig);
     InitClusterD(rawConfig);
     InitAlarm(rawConfig);
-    InitNPURecoveryEnable(rawConfig);
+    InitFaultRecoveryFunction(rawConfig);
     auto deployModeStr = rawConfig.at("deploy_mode").get<std::string>();
     mDeployMode = ControllerConstant::GetInstance()->GetDeployModeByStr(deployModeStr);
     mServerOnlineAttemptTimes = rawConfig.at("server_online_attempt_times").get<uint32_t>();
@@ -752,21 +753,28 @@ void ControllerConfig::InitCtrlBackupConfig(const nlohmann::json &rawConfig)
         mCtrlerBackUpConfig.serverPort = rawConfig["controller_backup_cfg"].at("database_server_port").get<uint32_t>();
     }
 }
-void ControllerConfig::InitNPURecoveryEnable(const nlohmann::json &rawConfig)
+
+void ControllerConfig::InitFaultRecoveryFunction(const nlohmann::json &rawConfig)
 {
-    if (!rawConfig.contains("fault_recovery_func_dict") ||
-        !rawConfig["fault_recovery_func_dict"].contains("lingqu_link")) {
-        LOG_I("[InitNPURecoveryEnable] Controller backup function is not configured.");
-        recoverySw = false;
-        return;
-    }
-    if (!IsJsonBoolValid(rawConfig["fault_recovery_func_dict"], "lingqu_link")) {
-        LOG_I("[InitNPURecoveryEnable] fun cfg is invalid, funsw is false.");
-            recoverySw = false;
+    auto initRecoveryEnableByKey = [&rawConfig, this](const std::string &key) {
+        if (!rawConfig.contains("fault_recovery_func_dict") ||
+            !rawConfig["fault_recovery_func_dict"].contains(key)) {
+            LOG_I("[InitFaultRecoveryFunction] %s recovery function is not configured.", key.c_str());
+            mFaultRecoverySw[key] = false;
             return;
-    }
-    recoverySw = rawConfig["fault_recovery_func_dict"].at("lingqu_link").get<bool>();
+        }
+        if (!IsJsonBoolValid(rawConfig["fault_recovery_func_dict"], key)) {
+            LOG_I("[InitFaultRecoveryFunction] %s recovery function is disabled because "
+                "configuration value is not a bool type.", key.c_str());
+            mFaultRecoverySw[key] = false;
+            return;
+        }
+        mFaultRecoverySw[key] = rawConfig["fault_recovery_func_dict"].at(key).get<bool>();
+    };
+    initRecoveryEnableByKey("lingqu_link");
+    initRecoveryEnableByKey("oom");
 }
+
 std::string ControllerConfig::GetPodIP() const
 {
     auto envParam = ControllerConstant::GetInstance()->GetEnvParam(EnvParam::POD_IP);
@@ -841,9 +849,20 @@ bool ControllerConfig::GetHasFlex() const
     return mHasFlex;
 }
 
-bool ControllerConfig::GetNPURecoveryEnableConfig() const
+bool ControllerConfig::GetFaultRecoveryEnableByConfigKey(const std::string &key) const
 {
-    return recoverySw;
+    if (mFaultRecoverySw.find(key) != mFaultRecoverySw.end()) {
+        auto it = mFaultRecoverySw.find(key);
+        return it->second;
+    }
+    return false;
+}
+
+// 判断是否存在快恢功能开启
+bool ControllerConfig::IsAnyFaultRecoveryEnable() const
+{
+    return std::any_of(mFaultRecoverySw.begin(), mFaultRecoverySw.end(),
+        [](const auto& p) { return p.second; });
 }
 
 std::string ControllerConfig::GetMindIEServerControlPort() const
