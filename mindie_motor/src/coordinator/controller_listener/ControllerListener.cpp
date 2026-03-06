@@ -437,9 +437,12 @@ int32_t ControllerListener::IdsTraverse(const std::vector<uint64_t> &ids, const 
             }
             LOG_D("[ControllerListener] instance %zu is %c.\n", id, instance.role);
         }
-        LOG_I("[ControllerListener] instance update success, add %zu instance, update %zu instance, "
+        // 新增和删除时打印
+        if (addVec.size() > 0 || removeVec.size() > 0) {
+            LOG_I("[ControllerListener] instance update success, add %zu instance, update %zu instance, "
                 "remove %zu instance.(%zu P + %zu D)\n", addVec.size(), updateVec.size(), removeVec.size(),
                 pdNodeNum.second, pdNodeNum.first);
+        }
         return 0;
     } catch (const std::exception &e) {
         LOG_E("[%s] [ControllerListener] Exception while processing instance identifiers: %s.\n",
