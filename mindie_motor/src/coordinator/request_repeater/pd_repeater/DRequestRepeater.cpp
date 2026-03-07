@@ -130,6 +130,9 @@ static std::string ParseKeyWord(boost::beast::string_view body, size_t pos)
 // Used for both lastData and data (streaming may send final chunk with usage as "data").
 static void TryUpdateTokenDistributionFromUsage(boost::beast::string_view body)
 {
+    if (body.empty() || body.find("usage") == boost::beast::string_view::npos) {
+        return;
+    }
     try {
         nlohmann::json jsonData = nlohmann::json::parse(body);
         if (!jsonData.contains("usage") || !jsonData["usage"].contains("prompt_tokens") ||
