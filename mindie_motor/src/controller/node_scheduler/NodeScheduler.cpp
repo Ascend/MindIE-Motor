@@ -516,7 +516,7 @@ int32_t NodeScheduler::InitServerCluster()
         mNodeStatus->AddFaultyNodes(faultyNodes);
         CoordinatorRequestHandler::GetInstance()->SetRunStatus(true);
         // 灵衢故障读取入口
-        if (ControllerConfig::GetInstance()->GetNPURecoveryEnableConfig()) {
+        if (ControllerConfig::GetInstance()->GetFaultRecoveryEnableByConfigKey("lingqu_link")) {
             RecoveryNPUFaultID();
         }
         return 0;
@@ -603,7 +603,7 @@ int32_t NodeScheduler::RecoverServerCluster(const nlohmann::json& processFile,
 void NodeScheduler::StopUnavailableNodes(
     const std::vector<std::unique_ptr<NodeInfo>> &availableNodes) const
 {
-    if (!ControllerConfig::GetInstance()->GetNPURecoveryEnableConfig()) {
+    if (!ControllerConfig::GetInstance()->IsAnyFaultRecoveryEnable()) {
         return;
     }
     // Step 1: Collect unique IPs of nodes marked as UNAVAILABLE with non-empty IP addresses.
@@ -834,8 +834,8 @@ int32_t NodeScheduler::Run()
             LOG_I("[NodeScheduler] Role is not leader, no need to detect change.");
             Wait();
         }
-        // 判断是否有灵渠快恢进行中，如果有则等待恢复完成
-        if (ControllerConfig::GetInstance()->GetNPURecoveryEnableConfig() &&
+        // 判断是否有FullNPURecovery流程正在进行中，如果有则等待其执行完成
+        if (ControllerConfig::GetInstance()->IsAnyFaultRecoveryEnable() &&
             NPURecoveryManager::GetInstance()->IsInstanceRecoveryInProgress()) {
             LOG_I("[NodeScheduler] Instance recovery is in progress, waiting for completion.");
             Wait();

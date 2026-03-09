@@ -43,6 +43,10 @@ void StatusUpdater::Stop()
         mOmControllerHBProducer->Stop();
         LOG_I("[StatusUpdater] MS Controller Heartbeat stopped successfully.");
     }
+    if (mQueryNodeManagerThread != nullptr && mQueryNodeManagerThread->joinable()) {
+        mQueryNodeManagerThread->join();
+        LOG_I("[StatusUpdater] Query node manager thread stopped successfully.");
+    }
     if (mSendThread != nullptr && mSendThread->joinable()) {
         mSendThread->join();
         LOG_I("[StatusUpdater] Send thread stopped successfully.");
@@ -67,13 +71,18 @@ int32_t StatusUpdater::Init(DeployMode deployMode)
     try {
         mServerClient = std::make_shared<HttpClient>();
         mCoordinatorClient = std::make_shared<HttpClient>();
-        if (mServerClient == nullptr || mCoordinatorClient == nullptr ||
+        mNodeManagerClient = std::make_shared<HttpClient>();
+        if (mServerClient == nullptr || mCoordinatorClient == nullptr || mNodeManagerClient == nullptr ||
             mServerClient->Init("", "", ControllerConfig::GetInstance()->GetRequestServerTlsItems()) != 0 ||
-            mCoordinatorClient->Init("", "", ControllerConfig::GetInstance()->GetRequestCoordinatorTlsItems()) != 0) {
+            mCoordinatorClient->Init("", "", ControllerConfig::GetInstance()->GetRequestCoordinatorTlsItems()) != 0 ||
+            mNodeManagerClient->Init("", "", ControllerConfig::GetInstance()->GetRequestServerTlsItems()) != 0) {
             LOG_E("[%s] [StatusUpdater] Initialize status updater failed because create server client or coordinator "
                 "client failed.", GetErrorCode(ErrorType::CALL_ERROR, ControllerFeature::STATUS_UPDATER).c_str());
             return -1;
         }
+        mNodeManagerSender = std::make_shared<NodeManagerRequestSender>();
+        mNodeManagerSender->Init(mNodeStatus);
+
         mMainThread = std::make_unique<std::thread>([this]() {
             while (mRun.load()) {
                 LOG_D("[StatusUpdater] Start main thread.");
@@ -81,6 +90,17 @@ int32_t StatusUpdater::Init(DeployMode deployMode)
                     UpdateAllNodeStatus();
                 }
                 LOG_D("[StatusUpdater] End main thread.");
+                Wait();
+            }
+        });
+
+        mQueryNodeManagerThread = std::make_unique<std::thread>([this]() {
+            while (mRun.load()) {
+                LOG_D("[StatusUpdater] Start query node manager thread.");
+                if (ControllerConfig::GetInstance()->IsLeader()) {
+                    QueryNodeManagers();
+                }
+                LOG_D("[StatusUpdater] End query node manager thread.");
                 Wait();
             }
         });
@@ -162,6 +182,29 @@ void StatusUpdater::UpdateAllNodeStatus()
         LOG_E("[%s] [StatusUpdater] Updating all node status, failed to update status for nodes: %s.",
             GetErrorCode(ErrorType::CALL_ERROR, ControllerFeature::STATUS_UPDATER).c_str(),
             NodeStatus::ConvertNodeIdVector2Str(updateFailedNodes).c_str());
+    }
+}
+
+std::unordered_set<std::string> GetNodeManagerIPs(const std::map<uint64_t, std::unique_ptr<NodeInfo>>& nodes)
+{
+    std::unordered_set<std::string> nodeManagerIPs;
+    for (auto& [_, nodeInfo] : std::as_const(nodes)) {
+        if (!nodeInfo) {
+            continue;
+        }
+        nodeManagerIPs.insert(nodeInfo->ip);
+    }
+    return nodeManagerIPs;
+}
+
+void StatusUpdater::QueryNodeManagers()
+{
+    auto nodes = mNodeStatus->GetAllNodes();
+    std::unordered_set<std::string> nodeManagerIPs = GetNodeManagerIPs(nodes);
+
+    for (auto& nodeManagerIP : std::as_const(nodeManagerIPs)) {
+        NPUStatus status;
+        mNodeManagerSender->GetNodeManagerNodeStatus(*mNodeManagerClient, nodeManagerIP, status);
     }
 }
 

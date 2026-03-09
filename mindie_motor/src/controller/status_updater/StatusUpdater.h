@@ -23,6 +23,8 @@
 #include "HttpClient.h"
 #include "digs_instance.h"
 #include "HeartbeatProducer.h"
+#include "node_manager_sender/NodeManagerRequestSender.h"
+
 namespace MINDIE::MS {
 class StatusUpdater {
 public:
@@ -38,15 +40,19 @@ public:
 private:
     std::shared_ptr<HttpClient> mServerClient = nullptr;
     std::shared_ptr<HttpClient> mCoordinatorClient = nullptr;
+    std::shared_ptr<HttpClient> mNodeManagerClient = nullptr;
+    std::shared_ptr<NodeManagerRequestSender> mNodeManagerSender = nullptr;
     std::shared_ptr<NodeStatus> mNodeStatus = nullptr;
     std::shared_ptr<CoordinatorStore> mCoordinatorStore = nullptr;
     std::vector<uint64_t> mNodeIds {};
     DeployMode mDeployMode = DeployMode::SINGLE_NODE;
     std::atomic<bool> mRun = { true };
     std::unique_ptr<std::thread> mMainThread = nullptr;
+    std::unique_ptr<std::thread> mQueryNodeManagerThread = nullptr;
     std::unique_ptr<std::thread> mSendThread = nullptr;
     std::shared_ptr<HeartbeatProducer> mOmControllerHBProducer;
     void UpdateAllNodeStatus();
+    void QueryNodeManagers();
     void SetPeers(nlohmann::json &dynamicInfo, const NodeInfo &nodeInfo);
     void SetStaticInfo(nlohmann::json &staticInfo, const NodeInfo &nodeInfo);
     void ParseNodeStatusResp(uint32_t id, std::string &response, bool initStaticTotalInfo);

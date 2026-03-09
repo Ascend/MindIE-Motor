@@ -72,7 +72,8 @@ public:
     std::string GetDIGSPrefillSLO() const;
     std::string GetDIGSDecodeSLO() const;
     std::string GetDIGSTimePeriod() const;
-    bool GetNPURecoveryEnableConfig() const;
+    bool GetFaultRecoveryEnableByConfigKey(const std::string &key) const;
+    bool IsAnyFaultRecoveryEnable() const;
     bool GetDIGSIsAutoSwitching() const;
     bool GetDIGSIsHeterogeneous() const;
     bool GetDIGSIsSingleContainer() const;
@@ -167,7 +168,7 @@ private:
     bool mIsHeterogeneous = false;
     bool mAllowAllZeroIpListening = false;
     bool mIsSingleContainer = false;
-    bool recoverySw = false;
+    std::unordered_map<std::string, bool> mFaultRecoverySw = {};
     TlsItems mRequestCoordinatorTlsItems;
     TlsItems mRequestServerTlsItems;
     TlsItems mHttpServerTlsItems;
@@ -211,7 +212,7 @@ private:
     void InitCCAE(const nlohmann::json &rawConfig);
     void InitAlarm(const nlohmann::json &rawConfig);
     void InitClusterD(const nlohmann::json &rawConfig);
-    void InitNPURecoveryEnable(const nlohmann::json &rawConfig);
+    void InitFaultRecoveryFunction(const nlohmann::json &rawConfig);
     int32_t InitLog(const nlohmann::json &rawConfig, const std::string& configFilePath) const;
     bool IsValidDefaultPDRateConfig(const nlohmann::json &config) const;
     bool IsConfigJsonValid(const nlohmann::json &config,

@@ -334,7 +334,10 @@ TEST_F(TestAlarmManager, AlarmManagerRunSuccess)
         AlarmCategory::ALARM_CATEGORY_ALARM, CoordinatorExceptionReason::INSTANCE_MISSING);
     bool success1 =
         (SendHttpRequestMock("127.0.0.1", std::to_string(port), "/v1/alarm/coordinator", params, coorAlarmStr) == 0);
-    bool success2 = (SendHttpRequestMock("127.0.0.1", std::to_string(port), "/v1/alarm/llm_engine", params, "") == 0);
+    // LLMEngine alarm 需要合法JSON格式: node_manager_ip + alarm_info (可为空数组)
+    std::string llmEngineAlarmStr = R"({"node_manager_ip": "127.0.0.1", "alarm_info": []})";
+    bool success2 = (SendHttpRequestMock("127.0.0.1", std::to_string(port), "/v1/alarm/llm_engine", params,
+        llmEngineAlarmStr) == 0);
     
     EXPECT_TRUE(success1);
     EXPECT_TRUE(success2);

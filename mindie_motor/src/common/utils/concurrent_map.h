@@ -25,11 +25,13 @@ public:
 
     ~ConcurrentMap() { pthread_spin_destroy(&spinlock_); }
 
-    void Insert(const K &key, const V &value)
+    // 插入键值对, key已存在时不覆盖. 返回true表示新插入, false表示key已存在
+    bool Insert(const K &key, const V &value)
     {
         pthread_spin_lock(&spinlock_);
-        map_.insert(std::make_pair(key, value));
+        auto result = map_.insert(std::make_pair(key, value));
         pthread_spin_unlock(&spinlock_);
+        return result.second;
     }
 
     void Erase(const K &key)

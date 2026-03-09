@@ -175,7 +175,6 @@ PREFILL_DEPLOY = "2"
 DECODE_DEPLOY = "1"
 POD_RESCHEDULING = "pod-rescheduling"
 FAULT_RECOVERY_FUNC = "fault_recovery_func_dict"
-LINGQU_LINK = "lingqu_link"
 EXEC = "exec"
 COMMAND = "command"
 context = dict()
@@ -1657,9 +1656,15 @@ def update_ms_controller_config(controller_config, p_server_config, d_server_con
     if CONTROLLER_BACKUP_CFG in deploy_config and CONTROLLER_BACKUP_SW in deploy_config[CONTROLLER_BACKUP_CFG]:
         temp_updated = update_json_value(temp_updated, "controller_backup_cfg/function_sw",
                                          deploy_config[CONTROLLER_BACKUP_CFG][CONTROLLER_BACKUP_SW])
-    if FAULT_RECOVERY_FUNC in deploy_config and LINGQU_LINK in deploy_config[FAULT_RECOVERY_FUNC]:
-        temp_updated = update_json_value(temp_updated, "fault_recovery_func_dict/lingqu_link",
-                                         deploy_config[FAULT_RECOVERY_FUNC][LINGQU_LINK])
+    if FAULT_RECOVERY_FUNC in deploy_config:
+        if FAULT_RECOVERY_FUNC in deploy_config:
+            fault_recovery_dict = deploy_config[FAULT_RECOVERY_FUNC]
+            for key in fault_recovery_dict:
+                temp_updated = update_json_value(
+                    temp_updated,
+                    f"fault_recovery_func_dict/{key}",
+                    fault_recovery_dict[key],
+                )
     return temp_updated
 
 

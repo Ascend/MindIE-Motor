@@ -46,7 +46,7 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             max_workers=GeneralConfig().server_engine_cnt
         )
         
-        self.simulate_fail_count = [0] * GeneralConfig().server_engine_cnt # 记录每一个endpoint连续虚推失败的次数
+        self.simulate_fail_count = [0] * GeneralConfig().server_engine_cnt # 记录每一个engine server连续虚推失败的次数
 
     @staticmethod
     def _extract_error_info(res_all):
@@ -172,8 +172,8 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
                     self._process_abnormal_status_with_error_info(error_info)
                 else:
                     self._reset_simulate_fail_count()
-
-            self._send_error_info_to_ctrler(error_info)
+                    # NORMAL状态下, 如果存在快恢故障码, 需要上报给controller
+                    self._send_error_info_to_ctrler(error_info)
 
             time.sleep(self.query_interval)
 
@@ -187,7 +187,7 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
         # 更新虚推失败计数器
         self._update_simulate_fail_count(error_info)
 
-        # 检查是否有endpoint虚推失败次数超过阈值
+        # 检查是否有engine server连续虚推失败次数超过阈值
         if self._is_simulate_fail_count_exceeded(error_info):
             if terminate_daemon_reason == "":
                 terminate_daemon_reason = f"{MAX_CONTINUOUS_SIMULATE_FAIL_COUNT} times failed simulate"
@@ -197,6 +197,9 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             self.logger.error("Detected ABNORMAL status with " + terminate_daemon_reason +
                 ", while heartbeat_check_allowed is True, should terminate all processes.")
 
+            # 虚推失败故障码仅在连续失败次数达到阈值后, 才向上报给Contorller, 以向CCAE上报告警
+            self._send_error_info_to_ctrler(error_info)
+            
             # 当终止daemon的原因为daemon进程上报故障码时, 等待daemon保存coredump文件并自杀后, 再终止所有子进程
             if terminate_daemon_reason == "error code from llm daemon":
                 while self._is_child_process_detected():
@@ -205,9 +208,11 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             llm_daemon_manager.terminate_all_processes()
 
     def _update_simulate_fail_count(self, error_info: List[List[dict]]):
-        """更新每个endpoint的虚推失败计数器"""
+        """更新每个engine server的虚推失败计数器"""
         if len(error_info) != GeneralConfig().server_engine_cnt:
-            self.logger.error(f"Size of error info is not equal to endpoint count {GeneralConfig().server_engine_cnt}.")
+            self.logger.error(
+                f"Size of error info is not equal to engine server count {GeneralConfig().server_engine_cnt}."
+            )
             return
 
         for idx, errors in enumerate(error_info):
@@ -226,15 +231,16 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
                 self.simulate_fail_count[idx] < MAX_CONTINUOUS_SIMULATE_FAIL_COUNT:
                 self.simulate_fail_count[idx] = 0
 
-        self.logger.warning(f"Continuous simulate fail count for each endpoint is: "
-                                    f"{self.simulate_fail_count}.")
+        self.logger.warning(
+            f"Continuous simulate fail count for each engine server is: {self.simulate_fail_count}."
+        )
 
     def _reset_simulate_fail_count(self):
-        """重置每个endpoint的虚推失败计数器"""
+        """重置每个engine server的虚推失败计数器"""
         self.simulate_fail_count = [0] * GeneralConfig().server_engine_cnt
 
     def _is_simulate_fail_count_exceeded(self, error_info: List[List[dict]]) -> bool:
-        """检查是否有endpoint连续虚推失败次数超过阈值"""
+        """检查是否有engine server连续虚推失败次数超过阈值"""
         for count in self.simulate_fail_count:
             if count >= MAX_CONTINUOUS_SIMULATE_FAIL_COUNT:
                 return True
@@ -242,10 +248,10 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             
     def _send_error_info_to_ctrler(self, error_info):
         """
-        向controller发送ep的非健康状态(如果查询状态信息失败,不向controller上报)
+        向controller发送engine server的非健康状态(如果查询状态信息失败,不向controller上报)
 
         参数:
-        error_info(list): 包含controller的ep不健康状态信息。
+        error_info(list): 包含所有engine server的不健康状态信息。
                         示例:
                         [
                             [
@@ -274,7 +280,7 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
 
         if not self.client:
             self.client = Client()
-        resp = self.client.send_ctrler_error_info(error_info)
+        resp = self.client.send_alarm_info_to_ctrler(error_info)
 
         if resp.get(DATA_STR, {}).get("status", "") == str(ControllerReply.SEND_CONTROLLER_ALARM_SUCCESS.value):
             self.logger.info(f"Has successfully send alarm to controller.")

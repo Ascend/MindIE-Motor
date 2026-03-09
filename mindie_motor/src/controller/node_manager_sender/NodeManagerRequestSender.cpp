@@ -106,7 +106,7 @@ int32_t NodeManagerRequestSender::GetNodeManagerNodeStatus(HttpClient& client,
         return -1;
     }
 
-    LOG_I("[NodeManagerRequestSender] Successfully get node status from NodeManager %s:%s",
+    LOG_D("[NodeManagerRequestSender] Successfully get node status from NodeManager %s:%s",
           nodeManagerIP.c_str(), port.c_str());
     return ParseNodeStatusResponse(response, status);
 }

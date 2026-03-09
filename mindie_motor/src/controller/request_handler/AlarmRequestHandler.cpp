@@ -217,5 +217,38 @@ std::string AlarmRequestHandler::FillClusterConnectionAlarmInfo(
 
     return FillAlarmJson(alarm);
 }
+
+std::string AlarmRequestHandler::FillLLMEngineAlarmInfo(
+    AlarmCategory category,
+    LLMEngineFaultReason reasonID,
+    std::string errorLocation
+    ) const
+{
+    AlarmRecord alarm;
+
+    alarm.category = static_cast<int32_t>(category);
+    alarm.cleared = static_cast<int32_t>(AlarmCleared::ALARM_CLEARED_YES);
+    alarm.clearCategory = static_cast<int32_t>(AlarmClearCategory::ALARM_CLEAR_CATEGORY_AUTO);
+
+    alarm.occurUtc = GetTimeStampNowInMillisec();
+    alarm.occurTime = GetLocalTimesMillisec();
+
+    std::string serviceLocation = "service name=LLM Engine, service ip=" + errorLocation;
+    alarm.location = serviceLocation;
+    alarm.moi = serviceLocation;
+    alarm.additionalInformation = serviceLocation;
+    
+    alarm.eventType = static_cast<int32_t>(EventType::EVENT_TYPE_STATE_CHANGE);
+    alarm.severity = static_cast<int32_t>(AlarmSeverity::ALARM_SEVERITY_MAJOR);
+    alarm.serviceAffectedType = static_cast<int32_t>(ServiceAffectedType::SERVICE_AFFECTED_YES);
+    alarm.reasonId = static_cast<int32_t>(reasonID);
+
+    alarm.alarmId = AlarmConfig::GetInstance()->GetAlarmIDString(AlarmType::LLM_ENGINE_FAULT);
+    alarm.alarmName = AlarmConfig::GetInstance()->GetAlarmNameString(AlarmType::LLM_ENGINE_FAULT);
+    alarm.probableCause = AlarmConfig::GetInstance()->GetProbableCauseString(AlarmType::LLM_ENGINE_FAULT);
+
+    return FillAlarmJson(alarm);
+}
+
 }
 }

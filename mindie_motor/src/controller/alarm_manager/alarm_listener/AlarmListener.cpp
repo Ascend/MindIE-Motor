@@ -19,14 +19,14 @@
 #include "CCAERequestHandler.h"
 #include "Util.h"
 #include "ServerRequestHandler.h"
-#include "AlarmListener.h"
+#include "NPURecoveryManager.h"
 
 namespace MINDIE {
 namespace MS {
 constexpr size_t INITIAL_TIME = 2;
 constexpr size_t IO_CONTEXT_POOL_SIZE = 1;
 constexpr size_t MAX_CONN = 256;
-
+constexpr size_t MAX_IP_LENGTH = 45;
 static int32_t g_alarmCategoryMin = static_cast<int32_t>(AlarmCategory::ALARM_CATEGORY_ALARM);
 static int32_t g_alarmCategoryMax = static_cast<int32_t>(AlarmCategory::ALARM_CATEGORY_OTHER_CHANGE);
 static int32_t g_alarmClearedMin = static_cast<int32_t>(AlarmCleared::ALARM_CLEARED_NO);
@@ -143,6 +143,57 @@ bool AlarmListener::IsCoordinatorAlarmValid(const nlohmann::json &alarm) const
     return true;
 }
 
+// NodeManager告警JSON验证函数
+bool IsLLMEngineAlarmValid(const nlohmann::json &alarmJson)
+{
+    // 验证必需字段存在性
+    if (!alarmJson.contains("alarm_info") || !alarmJson.contains("node_manager_ip")) {
+        LOG_E("[%s] [AlarmListener] Missing required fields in LLMEngine alarm JSON",
+            GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
+        return false;
+    }
+
+    // 验证基础字段类型
+    
+    if (!IsJsonStringValid(alarmJson, "node_manager_ip", 1, MAX_IP_LENGTH) ||
+        !IsValidIp(alarmJson["node_manager_ip"].get<std::string>())) {
+        LOG_E("[%s] [AlarmListener] Invalid field types in LLMEngine alarm JSON",
+            GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
+        return false;
+    }
+
+    // 验证alarm_info格式：嵌套数组，每个元素包含timestamp, errCode, createdBy, errorLocation字段
+    if (!alarmJson["alarm_info"].is_array()) {
+        LOG_E("[%s] [AlarmListener] In LLMEngine alarm JSON, alarm_info field type must be array, but got %s",
+            GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str(),
+            alarmJson["alarm_info"].type_name());
+        return false;
+    }
+
+    // 校验alarm_info内容格式
+    for (const auto& epErrors : alarmJson["alarm_info"]) {
+        if (!epErrors.is_array()) {
+            LOG_E("[%s] [AlarmListener] In LLMEngine alarm JSON, Each entry in alarm_info field must be an array",
+                GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
+            return false;
+        }
+
+        for (const auto& error : epErrors) {
+            if (!error.is_object() ||
+                !error.contains("timestamp") || !error.contains("errCode") ||
+                !error.contains("createdBy") || !error.contains("errorLocation") ||
+                !error["timestamp"].is_number_integer() || !error["errCode"].is_string() ||
+                !error["createdBy"].is_string() || !error["errorLocation"].is_string()) {
+                LOG_E("[%s] [AlarmListener] Invalid error format in LLMEngine alarm JSON",
+                    GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 bool AlarmListener::CoordinatorAlarmPreproccessor(nlohmann::json &alarmsJson) const
 {
     bool isAlarmValid = true;
@@ -198,20 +249,29 @@ std::pair<ErrorCode, Response> AlarmListener::CoordinatorAlarmHandler(const Http
     return std::make_pair(ErrorCode::OK, resp);
 }
 
-std::pair<ErrorCode, Response> AlarmListener::ServerAlarmHandler(const Http::request<Http::string_body> &req) const
+std::pair<ErrorCode, Response> AlarmListener::LLMEngineAlarmHandler(const Http::request<Http::string_body> &req) const
 {
     Response resp;
     try {
-        // The alarm format of the llm component has not yet been determined.
-        // It is only recorded in the log and not queued.
-        LOG_M("[AlarmListener] Add server alarm. Contents: %s", req.body().c_str());
+        auto alarmJson = nlohmann::json::parse(req.body());
+        if (!IsLLMEngineAlarmValid(alarmJson)) {
+            LOG_E("[%s] [AlarmListener] LLMEngine alarm JSON validation failed",
+                GetErrorCode(ErrorType::INVALID_PARAMETER, ControllerFeature::ALARM_LISTENER).c_str());
+            return std::make_pair(ErrorCode::INVALID_PARAMETER, resp); // ret=2
+        }
+        
+        // LLMEngine alarm的格式需要进一步转换后, 才能加入告警队列
+        // 调用NPURecoveryManager处理NodeManager透传的LLMEngine alarm,
+        // 如果存在可恢复的故障码, 执行对应的快恢流程
+        NPURecoveryManager::GetInstance()->ProcessLLMEngineAlarm(alarmJson);
+    
+        return std::make_pair(ErrorCode::OK, resp); // ret=0
     } catch (const std::exception& e) {
-        LOG_E("[%s] [AlarmListener] Handling coordinator llm engine alarm exceptions error: %s",
-              GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::ALARM_LISTENER).c_str(),
-              e.what());
-        return std::make_pair(ErrorCode::INTERNAL_ERROR, resp);
+        LOG_E("[%s] [AlarmListener] Handling LLMEngine alarm exceptions, error: %s",
+            GetErrorCode(ErrorType::EXCEPTION, ControllerFeature::ALARM_LISTENER).c_str(),
+            e.what());
+        return std::make_pair(ErrorCode::INTERNAL_ERROR, resp); // ret=3
     }
-    return std::make_pair(ErrorCode::OK, resp);
 }
 
 std::pair<ErrorCode, Response> AlarmListener::TerminateServiceHandler(const Http::request<Http::string_body>

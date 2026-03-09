@@ -29,6 +29,7 @@
 #include "grpc_proto/cluster_fault.grpc.pb.h"
 #include "concurrent_map.h"
 #include "concurrent_set.h"
+#include "AlarmConfig.h"
 
 namespace MINDIE {
 namespace MS {
@@ -74,6 +75,9 @@ public:
     NPURecoveryManager& operator=(NPURecoveryManager&&) = delete;
     
     int32_t Init(std::shared_ptr<NodeStatus> nodeStatus);
+
+    // 由NodeManager透传的LLMEngine故障码处理主入口
+    void ProcessLLMEngineAlarm(const nlohmann::json& alarmJson);
     
     // 灵衢故障消息处理主入口
     void ProcessFaultMessage(const fault::FaultMsgSignal &faultMsg);
@@ -130,8 +134,30 @@ private:
         "[0x08520003,na,L2,na]"
     };
     std::set<std::string> mFaultRecoveringCodeWhitelist = {
-        "80CB8009"
+        "80CB8009", // 灵衢伴生故障码
+        "80CB800A", // hbm伴生故障码
+        "80E01801", // hbm伴生故障码
+        "80E18404"  // hbm伴生故障码
     };
+
+    using ErrCodeHandler = std::function<void(uint64_t)>;
+    struct ErrCodeProcessor {
+        std::string errCode;
+        std::string recoveryFuncKey;       // 故障快恢配置项名
+        LLMEngineFaultReason faultReason; // 告警填充故障原因
+        ErrCodeHandler handler; // 故障快恢处理函数
+    };
+
+    // 故障码为全量上报, 按vector顺序决定优先级(靠前优先), 只执行第一个匹配的快恢流程函数
+    std::vector<ErrCodeProcessor> mErrCodeProcessors = {
+        {"MIE05E01000A", "oom", LLMEngineFaultReason::TEXT_GENERATOR_OUT_OF_MEMORY,
+            std::bind(&NPURecoveryManager::OOMRecoveryHandler, this, std::placeholders::_1)},
+        {"MIE05E01000B", "hbm", LLMEngineFaultReason::HBM_MULTI_BIT_ERROR,
+            std::bind(&NPURecoveryManager::OOMRecoveryHandler, this, std::placeholders::_1)},
+    };
+
+    ConcurrentSet<uint64_t> mErrCodeAlarmExisted;
+  
     // 故障处理相关
     ConcurrentSet<std::string> mProcessedSwitchFaults;
     
@@ -166,6 +192,12 @@ private:
     void RestoreInstanceNodeAvailability(uint64_t instanceId);
     void RestartInstance(const std::unordered_set<uint64_t>& faultyInstanceIds);
     
+    // 故障码处理相关方法
+    bool IsNonRecoverableErrCodeExists(const nlohmann::json& errorInfo);
+    bool IsErrCodeExists(const nlohmann::json& errorInfo, const std::string& errCode);
+    std::string GetErrorLocationStr(const nlohmann::json& errorInfo, const std::string& errCode);
+    void OOMRecoveryHandler(uint64_t instanceId);
+
     // 灵衢故障处理相关方法
     std::unordered_map<uint64_t, std::vector<FaultNodeInfo>> FindFaultyInstances(const fault::FaultMsgSignal &faultMsg,
                                                                                  bool &isNeedToRestart);
@@ -186,8 +218,11 @@ private:
     
     // 辅助方法
     bool IsFaultCodeInWhitelist(const std::string& faultCode);
+    uint64_t GetInstanceIdByPodIP(const std::string& podIP);
     uint64_t GetInstanceIdByNodeIP(const std::string& nodeIP);
+    uint64_t GetInstanceIdByNodeId(uint64_t nodeId);
     FaultNodeInfo ConvertToFaultNodeInfo(const fault::NodeFaultInfo& nodeInfo);
+    uint64_t FindFirstNodeIdByPodIP(const std::string& podIP);
     uint64_t FindNodeIdByIP(const std::string& nodeIP);
     bool SendNodeManagerCommandToInstancePods(uint64_t instanceId, NodeManagerCmd cmd);
     // 并发发送NodeManagerM命令到多个pod的公共函数

@@ -21,7 +21,7 @@
     "mindie_container_log_path": "/root/mindie",
     "weight_mount_path": "/weight/deepseek_r1_w8a8",
     "fault_recovery_func_dict":{
-      "lingqu_link":true
+      "lingqu_link": true
     },
     "coordinator_backup_cfg": {
       "function_enable": false

@@ -78,7 +78,13 @@ enum class AlarmType : int32_t {
     COORDINATOR_EXCEPTION,
     REQ_CONGESTION,
     CLUSTER_CONNECTION,
-    COORDINATOR_CONN_PD_EXCEPTION
+    COORDINATOR_CONN_PD_EXCEPTION,
+    LLM_ENGINE_FAULT
+};
+
+enum class LLMEngineFaultReason : int32_t {
+    TEXT_GENERATOR_OUT_OF_MEMORY = 1,
+    HBM_MULTI_BIT_ERROR = 2,
 };
 
 enum class ControllerToSlaveReason : int32_t {
