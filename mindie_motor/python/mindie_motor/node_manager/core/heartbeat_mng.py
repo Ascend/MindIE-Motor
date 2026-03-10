@@ -28,6 +28,10 @@ from node_manager.daemon_manager.llm_daemon_starter import llm_daemon_manager
 
 DATA_STR = "data"
 SIMULATE_FAILED_ERROR_CODE = "[MIE04E071106] "
+SIMULATE_NORMAL_CODE = "[MIE04I071120] "
+# 虚推相关：状态正常(normal和busy)与异常
+SIMULATE_ERR_CODE_PREFIXES = ("MIE04E071106", "MIE04I071120")
+SIMULATE_NORMAL_PREFIXES = ("MIE04I071120",)  # 正常 置0
 MAX_CONTINUOUS_SIMULATE_FAIL_COUNT = 5
 
 
@@ -73,6 +77,23 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
                 if created_by == "daemon":
                     return True
         return False
+    
+    @staticmethod
+    def _remove_simulate_from_error_info(error_info: List[List[dict]]) -> List[List[dict]]:
+        """从error_info中移除虚推相关的内容(health_checker上报的状态正常/异常)"""
+        result = []
+        for ep_errors in error_info:
+            filtered = []
+            for err in ep_errors:
+                created_by = err.get("createdBy", "")
+                err_code = err.get("errCode", err.get("code", ""))
+                is_simulate = created_by == "health_checker" and any(
+                    prefix in err_code for prefix in SIMULATE_ERR_CODE_PREFIXES
+                )
+                if not is_simulate:
+                    filtered.append(err)
+            result.append(filtered)
+        return result
 
     @staticmethod
     def _is_child_process_detected() -> bool:
@@ -168,38 +189,35 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
 
             # abnormal情况下结合error_info检查是否需要终止daemon
             if self.heartbeat_mng.heartbeat_check_allowed:
-                if node_running_status == NodeRunningStatus.ABNORMAL.value:
-                    self._process_abnormal_status_with_error_info(error_info)
-                else:
-                    self._reset_simulate_fail_count()
-                    # NORMAL状态下, 如果存在快恢故障码, 需要上报给controller
-                    self._send_error_info_to_ctrler(error_info)
+                self._process_engine_server_error_info(error_info)
 
             time.sleep(self.query_interval)
 
-    def _process_abnormal_status_with_error_info(self, error_info: List[List[dict]]):
-        terminate_daemon_reason = ""
+    def _process_engine_server_error_info(self, error_info: List[List[dict]]):
+        # 为空则跳过
+        if self._is_error_info_empty(error_info):
+            self.logger.debug("error_info is empty, skip sending to controller.")
+            return
 
-        # 检查是否有daemon上报的故障码
-        if self._has_llm_daemon_err_code(error_info):
-            terminate_daemon_reason = "error code from llm daemon"
-
-        # 更新虚推失败计数器
+        # 更新虚推计数：状态正常置0，异常+1，为空pass
         self._update_simulate_fail_count(error_info)
 
-        # 检查是否有engine server连续虚推失败次数超过阈值
-        if self._is_simulate_fail_count_exceeded(error_info):
-            if terminate_daemon_reason == "":
-                terminate_daemon_reason = f"{MAX_CONTINUOUS_SIMULATE_FAIL_COUNT} times failed simulate"
+        # 检查是否需要终止daemon（daemon故障码 或 虚推失败次数超阈值）
+        terminate_daemon_reason = ""
+        if self._has_llm_daemon_err_code(error_info):
+            terminate_daemon_reason = "error code from llm daemon"
+        elif self._is_simulate_fail_count_exceeded(error_info):
+            terminate_daemon_reason = f"{MAX_CONTINUOUS_SIMULATE_FAIL_COUNT} times failed simulate"
+        else:
+            error_info = self._remove_simulate_from_error_info(error_info)
+
+        self._send_error_info_to_ctrler(error_info)    
 
         # 当前是否需要终止daemon
         if terminate_daemon_reason != "":
             self.logger.error("Detected ABNORMAL status with " + terminate_daemon_reason +
                 ", while heartbeat_check_allowed is True, should terminate all processes.")
 
-            # 虚推失败故障码仅在连续失败次数达到阈值后, 才向上报给Contorller, 以向CCAE上报告警
-            self._send_error_info_to_ctrler(error_info)
-            
             # 当终止daemon的原因为daemon进程上报故障码时, 等待daemon保存coredump文件并自杀后, 再终止所有子进程
             if terminate_daemon_reason == "error code from llm daemon":
                 while self._is_child_process_detected():
@@ -208,7 +226,7 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             llm_daemon_manager.terminate_all_processes()
 
     def _update_simulate_fail_count(self, error_info: List[List[dict]]):
-        """更新每个engine server的虚推失败计数器"""
+        """更新每个engine server的虚推失败计数器。状态正常置0，异常+1，为空pass"""
         if len(error_info) != GeneralConfig().server_engine_cnt:
             self.logger.error(
                 f"Size of error info is not equal to engine server count {GeneralConfig().server_engine_cnt}."
@@ -216,28 +234,28 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
             return
 
         for idx, errors in enumerate(error_info):
-            is_simulate_fail = False
+            simulate_result = None  # None=无结果pass, "fail"=异常+1, "normal"=正常/busy置0
             for error in errors:
                 created_by = error.get("createdBy", "")
                 if created_by != "health_checker":
                     continue
-                err_code = error.get("errCode", "")
-                if err_code != SIMULATE_FAILED_ERROR_CODE:
-                    continue
-                is_simulate_fail = True
+                err_code = error.get("errCode", error.get("code", ""))
+                if "MIE04E071106" in err_code:
+                    simulate_result = "fail"
+                    break
+                if any(prefix in err_code for prefix in SIMULATE_NORMAL_PREFIXES):
+                    simulate_result = "normal"
+                    break
+
+            if simulate_result == "fail":
                 self.simulate_fail_count[idx] += 1
-                break
-            if not is_simulate_fail and \
-                self.simulate_fail_count[idx] < MAX_CONTINUOUS_SIMULATE_FAIL_COUNT:
+            elif simulate_result == "normal":
                 self.simulate_fail_count[idx] = 0
+            # else: 为空无虚推结果，pass
 
         self.logger.warning(
             f"Continuous simulate fail count for each engine server is: {self.simulate_fail_count}."
         )
-
-    def _reset_simulate_fail_count(self):
-        """重置每个engine server的虚推失败计数器"""
-        self.simulate_fail_count = [0] * GeneralConfig().server_engine_cnt
 
     def _is_simulate_fail_count_exceeded(self, error_info: List[List[dict]]) -> bool:
         """检查是否有engine server连续虚推失败次数超过阈值"""

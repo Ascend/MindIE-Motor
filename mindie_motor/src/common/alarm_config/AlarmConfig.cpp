@@ -61,7 +61,7 @@ void AlarmConfig::InitProbableCause()
     mProbableCauseToString[AlarmType::REQ_CONGESTION] = "1:Coordinator正在处理的请求拥塞";
     mProbableCauseToString[AlarmType::CLUSTER_CONNECTION] = "1:集群服务连接失败;2:订阅RankTable失败;3:订阅故障消息失败;4:连接中断";
     mProbableCauseToString[AlarmType::COORDINATOR_CONN_PD_EXCEPTION] = "1:Coordinator与PD实例之间通信异常";
-    mProbableCauseToString[AlarmType::LLM_ENGINE_FAULT] = "1:LLM Engine故障";
+    mProbableCauseToString[AlarmType::LLM_ENGINE_FAULT] = "1:LLM Engine故障;2:HBM多比特错误;3:虚推失败;4:非快恢故障";
 }
 
 std::string AlarmConfig::GetAlarmIDString(AlarmType alarmType)
