@@ -587,4 +587,45 @@ std::string Metrics::GetAndAggregateMetrics(const std::map<uint64_t, InstanceInf
     return ret;
 }
 
+void TryUpdateTokenDistributionFromUsage(const std::string& body)
+{
+    if (body.empty() || body.find("usage") == std::string::npos) {
+        return;
+    }
+    std::string toParse = body;
+    const std::string dataPrefix = "data: ";
+    if (body.size() >= dataPrefix.size() && body.substr(0, dataPrefix.size()) == dataPrefix) {
+        size_t start = dataPrefix.size();
+        size_t end = body.find('\n', start);
+        toParse = (end != std::string::npos) ? body.substr(start, end - start) : body.substr(start);
+        if (toParse == "[DONE]") {
+            return;
+        }
+    }
+    try {
+        nlohmann::json jsonData = nlohmann::json::parse(toParse);
+        if (!jsonData.contains("usage") || !jsonData["usage"].contains("prompt_tokens") ||
+            !jsonData["usage"].contains("completion_tokens")) {
+            return;
+        }
+        int inputTokens = jsonData["usage"]["prompt_tokens"].get<int>();
+        int outputTokens = jsonData["usage"]["completion_tokens"].get<int>();
+        int inputRange = token_ranges.back();
+        for (int range : token_ranges) {
+            if (inputTokens <= range) {
+                inputRange = range;
+                break;
+            }
+        }
+        int outputRange = token_ranges.back();
+        for (int range : token_ranges) {
+            if (outputTokens <= range) {
+                outputRange = range;
+                break;
+            }
+        }
+        token_distribution[inputRange][outputRange]++;
+    } catch (const nlohmann::json::exception &) {
+    }
+}
 }

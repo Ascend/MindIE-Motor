@@ -17,6 +17,7 @@
 #include "Communication.h"
 #include "Communication.h"
 #include "RequestRepeater.h"
+#include "metrics/Metrics.h"
 #include "Util.h"
 
 namespace MINDIE::MS {

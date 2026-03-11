@@ -68,5 +68,6 @@ private:
 };
 extern std::map<int, std::map<int, int>> token_distribution;
 extern const std::vector<int> token_ranges;
+void TryUpdateTokenDistributionFromUsage(const std::string& body);
 }
 #endif
