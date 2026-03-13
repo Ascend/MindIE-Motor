@@ -31,7 +31,12 @@ router = APIRouter()
 def running_status(request: Request):
     x_forwarded_for = request.headers.get("x-forwarded-for")
     ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else request.client.host
-    if ip != socket.gethostbyname(socket.gethostname()):
+    local_addrs = ["127.0.0.1", "::1"]
+    try:
+        local_addrs += [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None)]
+    except OSError:
+        pass
+    if ip not in local_addrs:
         Service.log_controller_ip(ip)
 
     node_running_status = Service.get_node_running_status()
