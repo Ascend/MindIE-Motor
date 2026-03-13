@@ -595,12 +595,13 @@ def modify_d_server_mount(data, config):
     add_mount_dir(data, config["deploy_mount_path"]["decode_server_mount"], True)
 
 
-def modify_controller_yaml(data, config, env_config):
+def modify_controller_yaml(data, config, env_config, image_name=None):
     data[METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
     data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
     data[METADATA][NAME] = config[CONFIG_JOB_ID] + "-controller"
     data[METADATA][NAMESPACE] = config[CONFIG_JOB_ID]
-    data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = config[IMAGE_NAME]
+    data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = \
+        image_name if image_name else config[IMAGE_NAME]
     if POD_RESCHEDULING in data[METADATA][LABELS]:
         data[METADATA][LABELS][POD_RESCHEDULING] = DoubleQuotedScalarString(
             str(data[METADATA][LABELS][POD_RESCHEDULING])
@@ -641,12 +642,13 @@ def modify_controller_yaml_affinity(data, config):
     return data
 
 
-def modify_coordinator_yaml_app_v1(data, config):
+def modify_coordinator_yaml_app_v1(data, config, image_name=None):
     data[METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
     data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
     data[METADATA][NAME] = config[CONFIG_JOB_ID] + "-coordinator"
     data[METADATA][NAMESPACE] = config[CONFIG_JOB_ID]
-    data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = config[IMAGE_NAME]
+    data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = \
+        image_name if image_name else config[IMAGE_NAME]
     if POD_RESCHEDULING in data[METADATA][LABELS]:
         data[METADATA][LABELS][POD_RESCHEDULING] = DoubleQuotedScalarString(
             str(data[METADATA][LABELS][POD_RESCHEDULING])
@@ -701,7 +703,7 @@ def modify_server_yaml_priority(priority_data, data, pd_flag, deploy_config, ind
 
 
 def modify_server_yaml_mind_v1(data, config, index, pd_flag, ext):
-    modify_server_yaml_common(config, data, ext["env_config"], pd_flag)
+    modify_server_yaml_common(config, data, ext["env_config"], pd_flag, ext[IMAGE_NAME])
     modify_npu_num(data, config, pd_flag)
     modify_name_labels(config, data, index, pd_flag)
     modify_ascend_config(data, index, pd_flag)
@@ -841,14 +843,16 @@ def modify_weight_mount_path(config, data):
         config)[WEIGHT_MOUNT_PATH]
 
 
-def modify_server_yaml_common(config, data, env_config, pd_flag):
+def modify_server_yaml_common(config, data, env_config, pd_flag, image_name=None):
     modify_server_env(data, config, env_config, pd_flag)
     data[METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
     data[METADATA][NAMESPACE] = config[CONFIG_JOB_ID]
     data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
     data[SPEC][REPLICA_SPECS][WORKER][TEMPLATE][METADATA][LABELS][JOB_ID] = config[CONFIG_JOB_ID]
-    data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = config[IMAGE_NAME]
-    data[SPEC][REPLICA_SPECS][WORKER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = config[IMAGE_NAME]
+    data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = \
+        image_name if image_name else config[IMAGE_NAME]
+    data[SPEC][REPLICA_SPECS][WORKER][TEMPLATE][SPEC][CONTAINERS][0][IMAGE] = \
+        image_name if image_name else config[IMAGE_NAME]
     if HARDWARE_TYPE in config and config["hardware_type"] == "800I_A3":
         data[SPEC][REPLICA_SPECS][MASTER][TEMPLATE][SPEC]["nodeSelector"]["accelerator-type"] = "module-a3-16"
         data[SPEC][REPLICA_SPECS][WORKER][TEMPLATE][SPEC]["nodeSelector"]["accelerator-type"] = "module-a3-16"
@@ -1048,15 +1052,16 @@ def generator_yaml(input_yaml, output_file, json_path, single_doc=False, env_con
     check_config(json_config)
     ext = dict()
     if "controller" in input_yaml:
+        controller_config = json_config_original["mindie_ms_controller_config"]
         data = load_yaml(input_yaml, single_doc)
-        modify_controller_yaml(data, json_config, env_config)
+        modify_controller_yaml(data, json_config, env_config, controller_config.get(IMAGE_NAME))
         modify_controller_replicas(data, json_config)
         update_shell_script_safely(BOOT_SHELL_PATH, env_config, "mindie_ms_controller_env", "set_controller_env")
         write_yaml(data, output_file, single_doc)
     elif "coordinator" in input_yaml:
         coordinator_config = json_config_original["mindie_ms_coordinator_config"]
         data = load_yaml(input_yaml, single_doc)
-        modify_coordinator_yaml_app_v1(data[0], json_config)
+        modify_coordinator_yaml_app_v1(data[0], json_config, coordinator_config.get(IMAGE_NAME))
         modify_coordinator_yaml_v1(data[1], json_config, coordinator_config)
         update_shell_script_safely(BOOT_SHELL_PATH, env_config, "mindie_ms_coordinator_env", "set_coordinator_env")
         modify_coordinator_yaml_replicas(data[0], json_config)
@@ -1066,12 +1071,15 @@ def generator_yaml(input_yaml, output_file, json_path, single_doc=False, env_con
         p_base, d_base = obtain_server_instance_base_config(json_config)
         p_max = max(p_total, p_base)
         d_max = max(d_total, d_base)
+        prefill_config = json_config_original["mindie_server_prefill_config"]
+        decode_config = json_config_original["mindie_server_decode_config"]
         for p_index in range(p_max):
             data = load_yaml(input_yaml, single_doc)
             modify_server_yaml_v1(data[0], json_config, p_index, "p")
 
             ext["env_config"] = env_config
             ext["single_instance_pod_num"] = json_config[SINGER_P_INSTANCES_NUM]
+            ext[IMAGE_NAME] = prefill_config.get(IMAGE_NAME)
             modify_server_yaml_mind_v1(data[2], json_config, p_index, "p", ext)
             modify_server_yaml_priority(data[1], data[2], "p", json_config, p_index)
             last_output_file = output_file + "_p" + str(p_index) + ".yaml"
@@ -1081,6 +1089,7 @@ def generator_yaml(input_yaml, output_file, json_path, single_doc=False, env_con
             modify_server_yaml_v1(data[0], json_config, d_index, "d")
             ext["env_config"] = env_config
             ext["single_instance_pod_num"] = json_config[SINGER_D_INSTANCES_NUM]
+            ext[IMAGE_NAME] = decode_config.get(IMAGE_NAME)
             modify_server_yaml_mind_v1(data[2], json_config, d_index, "d", ext)
             modify_server_yaml_priority(data[1], data[2], "d", json_config, d_index)
             last_output_file = output_file + "_d" + str(d_index) + ".yaml"

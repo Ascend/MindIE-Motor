@@ -10,6 +10,7 @@
  * See the Mulan PSL v2 for more details.
  */
 #include <algorithm>
+#include <string>
 #include <thread>
 #include <future>
 #include <atomic>
@@ -33,6 +34,8 @@ constexpr int64_t FAULT_TIMESTAMP_THRESHOLD_MILLISECONDS = 5000;
 constexpr int STALE_FAULT_THRESHOLD_MILLISECONDS = 52000;
 constexpr uint64_t INVALID_ID = UINT64_MAX;
 constexpr int PREFILL_ISOLATION_TIMEOUT_SECONDS = 52; // PREFILL实例隔离恢复时间
+// 虚推失败故障码(health_checker上报的071106)，与Python侧heartbeat_mng保持一致
+constexpr const char* SIMULATE_FAILED_ERROR_CODE_PREFIX = "[MIE04E071106] ";
 
 int32_t NPURecoveryManager::Init(std::shared_ptr<NodeStatus> nodeStatus)
 {
@@ -110,6 +113,19 @@ void NPURecoveryManager::ProcessLLMEngineAlarm(const nlohmann::json& alarmJson)
     // 如果errorInfo包含无法进行恢复的故障码, 不处理, nodeManager会进行实例重配置
     if (IsNonRecoverableErrCodeExists(errorInfo)) {
         LOG_I("[NPURecoveryManager] Some errors in instance %lu are not recoverable, skip handling.", instanceId);
+        for (const auto& errCode : GetNonRecoverableErrCodes(errorInfo)) {
+            LLMEngineFaultReason faultReason;
+            if (errCode.find(SIMULATE_FAILED_ERROR_CODE_PREFIX) != std::string::npos) {
+                faultReason = LLMEngineFaultReason::SIMULATE_FAILED;
+                LOG_I("[NPURecoveryManager] Simulate failed error code %s in instance %lu, "
+                    "fault reason: simulate failed", errCode.c_str(), instanceId);
+            } else {
+                faultReason = LLMEngineFaultReason::NON_RECOVERABLE;
+                LOG_I("[NPURecoveryManager] Non-recoverable error code %s in instance %lu, "
+                    "fault reason: for unknown reason", errCode.c_str(), instanceId);
+            }
+            ReportLLMEngineAlarm(instanceId, errorInfo, errCode, faultReason);
+        }
         return;
     }
 
@@ -131,13 +147,7 @@ void NPURecoveryManager::ProcessLLMEngineAlarm(const nlohmann::json& alarmJson)
 
             // 根据 processor.faultReason上报故障告警
             if (mErrCodeAlarmExisted.Insert(instanceId)) {
-                std::string errorLocationStr = GetErrorLocationStr(errorInfo, processor.errCode);
-                std::string alarmsString = AlarmRequestHandler::GetInstance()->FillLLMEngineAlarmInfo(
-                    AlarmCategory::ALARM_CATEGORY_EVENT,
-                    processor.faultReason,
-                    errorLocationStr);
-                AlarmManager::GetInstance()->AlarmAdded(alarmsString);
-                LOG_M("[NPURecoveryManager] Add LLMEngine alarm. Contents: %s", alarmsString.c_str());
+                ReportLLMEngineAlarm(instanceId, errorInfo, processor.errCode, processor.faultReason);
             }
             processor.handler(instanceId);
             return;
@@ -149,6 +159,12 @@ void NPURecoveryManager::ProcessLLMEngineAlarm(const nlohmann::json& alarmJson)
 
 bool NPURecoveryManager::IsNonRecoverableErrCodeExists(const nlohmann::json& errorInfo)
 {
+    return !GetNonRecoverableErrCodes(errorInfo).empty();
+}
+
+std::set<std::string> NPURecoveryManager::GetNonRecoverableErrCodes(const nlohmann::json& errorInfo)
+{
+    std::set<std::string> nonRecoverableErrCodes;
     for (const auto& epErrors : errorInfo) {
         for (const auto& entry : epErrors) {
             if (!entry.contains("errCode")) {
@@ -158,11 +174,23 @@ bool NPURecoveryManager::IsNonRecoverableErrCodeExists(const nlohmann::json& err
             auto it = std::find_if(mErrCodeProcessors.begin(), mErrCodeProcessors.end(),
                 [&errCode](const auto& processor) { return processor.errCode == errCode; });
             if (it == mErrCodeProcessors.end()) {
-                return true;
+                nonRecoverableErrCodes.insert(errCode);
             }
         }
     }
-    return false;
+    return nonRecoverableErrCodes;
+}
+
+void NPURecoveryManager::ReportLLMEngineAlarm(uint64_t instanceId, const nlohmann::json& errorInfo,
+    const std::string& errCode, LLMEngineFaultReason faultReason)
+{
+    std::string errorLocationStr = GetErrorLocationStr(errorInfo, errCode);
+    std::string alarmsString = AlarmRequestHandler::GetInstance()->FillLLMEngineAlarmInfo(
+        AlarmCategory::ALARM_CATEGORY_EVENT,
+        faultReason,
+        errorLocationStr);
+    AlarmManager::GetInstance()->AlarmAdded(alarmsString);
+    LOG_M("[NPURecoveryManager] Add LLMEngine alarm. Contents: %s", alarmsString.c_str());
 }
 
 bool NPURecoveryManager::IsErrCodeExists(const nlohmann::json& errorInfo, const std::string& errCode)

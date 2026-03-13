@@ -196,6 +196,9 @@ private:
     bool IsNonRecoverableErrCodeExists(const nlohmann::json& errorInfo);
     bool IsErrCodeExists(const nlohmann::json& errorInfo, const std::string& errCode);
     std::string GetErrorLocationStr(const nlohmann::json& errorInfo, const std::string& errCode);
+    void ReportLLMEngineAlarm(uint64_t instanceId, const nlohmann::json& errorInfo,
+        const std::string& errCode, LLMEngineFaultReason faultReason);
+    std::set<std::string> GetNonRecoverableErrCodes(const nlohmann::json& errorInfo);
     void OOMRecoveryHandler(uint64_t instanceId);
 
     // 灵衢故障处理相关方法
