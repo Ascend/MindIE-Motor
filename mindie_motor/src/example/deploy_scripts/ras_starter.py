@@ -97,11 +97,16 @@ def fetch_ip_with_namespace_and_name(namespace: str, name: str) -> str:
     pod_info_lines = pods_info.split("\n")
     ip_idx = pod_info_lines[0].find("IP")
     namespace_idx = pod_info_lines[0].find("NAMESPACE")
+    ready_idx = pod_info_lines[0].find("READY")
     for line in pod_info_lines:
         if not line or len(line) <= namespace_idx:
             continue
         if line[namespace_idx:].split()[0].strip() == namespace and name in line:
-            return line[ip_idx:].split()[0].strip()
+            # Check if READY status is 1/1
+            if ready_idx >= 0 and len(line) > ready_idx:
+                ready_status = line[ready_idx:].split()[0].strip()
+                if ready_status == "1/1":
+                    return line[ip_idx:].split()[0].strip()
     return ""
 
 
@@ -154,12 +159,15 @@ def fetch_config(config_path: str) -> dict:
 
 def check_service_status(http_pool_manager, params: CheckParams) -> bool:
     try:
-        ip_and_port = fetch_ip_with_namespace_and_name(params.namespace, "coordinator") + ':' + params.coordinator_port
-        logging.info(f"Fetch server ip and port successfully: {ip_and_port}")
+        ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
+        if not ip:
+            return False
+        port = params.coordinator_port
+        logging.info(f"Fetch server ip and port successfully: {ip}:{port}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request(
             "POST",
-            f"{http_prefix}://{ip_and_port}/v1/completions",
+            f"{http_prefix}://{ip}:{port}/v1/completions",
             headers={"Content-Type": "application/json"},
             body=json.dumps({
                 "model": params.model_name,
@@ -175,7 +183,6 @@ def check_service_status(http_pool_manager, params: CheckParams) -> bool:
     except Exception as e:
         logging.info(f"Failed to connect to coordinator because {e}")
         return False
-    logging.info("MindIE MS service status is OK.")
     return True
 
 
@@ -239,6 +246,8 @@ def restart_service(namespace: str, boot_args):
 def get_metrics_from_metrics_api(http_pool_manager, params: CheckParams) -> str:
     try:
         coordinator_ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
+        if not coordinator_ip:
+            return ""
         logging.info(f"Fetch coordinator ip successfully: {coordinator_ip}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request(
