@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <chrono>
+#include <thread>
 #include <iostream>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -26,6 +27,7 @@
 #include "NodeStatus.h"
 #include "grpc_proto/cluster_fault.pb.h"
 #include "node_manager_sender/NodeManagerRequestSender.h"
+#include <nlohmann/json.hpp>
 
 using namespace MINDIE::MS;
 
@@ -156,6 +158,7 @@ TEST_F(TestNPURecoveryManager, TestInitSuccess)
     int32_t ret = NPURecoveryManager::GetInstance()->Init(testNodeStatus);
     EXPECT_EQ(ret, 0);
 }
+
 /*
  * 测试描述: 测试不开灵衢恢复功能时，故障消息被忽略
  */
@@ -172,6 +175,33 @@ TEST_F(TestNPURecoveryManager, TestProcessFaultMessageWhenNPURecoveryDisabled)
     NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
     auto processedFaults = NPURecoveryManager::GetInstance()->GetProcessedSwitchFaults();
     EXPECT_EQ(processedFaults.size(), 0);
+}
+
+/*
+ * 测试描述: 测试不开roce恢复功能时，故障消息被忽略
+ */
+TEST_F(TestNPURecoveryManager, TestProcessLLMEngineAlarmWhenRecoveryFunctionDisabled)
+{
+    auto testJson = GetServerRequestHandlerTestJsonPath();
+    ModifyJsonItem(testJson, "fault_recovery_func_dict", "roce", false);
+    ModifyJsonItem(testJson, "fault_recovery_func_dict", "oom", false);
+    ControllerConfig::GetInstance()->Init();
+
+    uint64_t nodeId = 100;
+    std::string ip = "127.0.0.1";
+    auto node = CreateTestNode(nodeId, ip, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE);
+    nodeStatus->AddNode(std::move(node));
+
+    nlohmann::json alarmJson;
+    alarmJson["node_manager_ip"] = ip;
+    alarmJson["alarm_info"] = nlohmann::json::array({ nlohmann::json::array({
+        nlohmann::json::object({{"errCode", "MIE05E01001B"}, {"errorLocation", "0:0"}})
+    })});
+    NPURecoveryManager::GetInstance()->ProcessLLMEngineAlarm(alarmJson);
+
+    // 关闭 RoCE 时只发 STOP_ENGINE 并 return，不会 Insert(instanceId)，故列表为空
+    auto errCodeAlarmExisted = NPURecoveryManager::GetInstance()->GetErrCodeAlarmExisted();
+    EXPECT_EQ(errCodeAlarmExisted.size(), 0);
 }
 
 /*

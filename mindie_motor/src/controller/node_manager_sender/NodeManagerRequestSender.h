@@ -27,7 +27,8 @@ enum class NodeManagerCmd {
     PAUSE_ENGINE = 0,
     REINIT_NPU,
     START_ENGINE,
-    STOP_ENGINE
+    STOP_ENGINE,
+    PAUSE_ENGINE_ROCE
 };
 
 enum class NPUStatus {

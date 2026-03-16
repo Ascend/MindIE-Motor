@@ -38,21 +38,26 @@ class FaultManager(metaclass=_SingletonMeta):
 
         self.fault_handle_map = {
             "PAUSE_ENGINE": self._pause_engine,
+            "PAUSE_ENGINE_ROCE": lambda: self._pause_engine(roce=True),
             "REINIT_NPU": self._reinit_npu,
             "START_ENGINE": self._start_engine,
         }
+        # PAUSE_ENGINE 与 PAUSE_ENGINE_ROCE 状态转移一致，共用同一表避免不同步
+        _pause_transitions = [
+            [NodeRunningStatus.NORMAL.value, NodeRunningStatus.PAUSE.value],
+            [NodeRunningStatus.ABNORMAL.value, NodeRunningStatus.PAUSE.value],
+            [NodeRunningStatus.BUSY.value, NodeRunningStatus.PAUSE.value],
+        ]
         self.cmd_state_transition_table = {
             # key:cmd, value:[[cmd执行之前的状态,cmd执行之后的状态]]
-            "PAUSE_ENGINE": [
-                [NodeRunningStatus.NORMAL.value, NodeRunningStatus.PAUSE.value],
-                [NodeRunningStatus.ABNORMAL.value, NodeRunningStatus.PAUSE.value],
-                [NodeRunningStatus.BUSY.value, NodeRunningStatus.PAUSE.value],
-            ],
+            "PAUSE_ENGINE": _pause_transitions,
+            "PAUSE_ENGINE_ROCE": _pause_transitions,
             "REINIT_NPU": [
                 [NodeRunningStatus.PAUSE.value, NodeRunningStatus.READY.value],
             ],
             "START_ENGINE": [
-                [NodeRunningStatus.READY.value, NodeRunningStatus.NORMAL.value]
+                [NodeRunningStatus.READY.value, NodeRunningStatus.NORMAL.value],
+                [NodeRunningStatus.PAUSE.value, NodeRunningStatus.NORMAL.value]
             ],
         }
         self.last_cmd_rpl = True  # 上一条cmd命令是否收到回复,只有TRUE才能下发新命令
@@ -163,12 +168,14 @@ class FaultManager(metaclass=_SingletonMeta):
             self.heartbeat_mng.set_heartbeat_check_allowed(next_state)
         self.logger.info(f"Set heartbeat_check_allowed={next_state}")
 
-    def _pause_engine(self) -> dict:
+    def _pause_engine(self, roce: bool = False) -> dict:
         """
         Sends a pause engine cmd to the engine server and returns the execution status and reason.
 
         Args:
             cmd: The command to be sent, can be a string or other type.
+            should_delay: Whether to delay the execution of the command.
+            roce: Whether to execute the command for RoCE recovery.
 
         Returns:
             dict: Contains the following keys:
@@ -177,15 +184,22 @@ class FaultManager(metaclass=_SingletonMeta):
         """
         self.logger.info(f"FaultManager: pause engine starts.")
         self.init_heartbeat_mng()
+        # 状态表用 ControllerCmd 字符串，下发给引擎用 EngineCmd 枚举，按 roce 一次分支
+        if roce:
+            pause_cmd = ControllerCmd.PAUSE_ENGINE_ROCE.value
+            pause_engine_cmd = EngineCmd.PAUSE_ENGINE_ROCE.value
+        else:
+            pause_cmd = ControllerCmd.PAUSE_ENGINE.value
+            pause_engine_cmd = EngineCmd.PAUSE_ENGINE.value
         _, after_state = self._find_matching_index(
-            cmd=ControllerCmd.PAUSE_ENGINE.value,
+            cmd=pause_cmd,
             target_defore_status=self.heartbeat_mng.get_running_status(),
         )
         if after_state is not None:
             self.heartbeat_mng.set_running_status(after_state)
             self._set_heartbeat_check_allowed(False)
 
-            ret_info_all = self._parse_cmd_to_client(cmd=EngineCmd.PAUSE_ENGINE.value)
+            ret_info_all = self._parse_cmd_to_client(cmd=pause_engine_cmd)
             ret_success = self._extract_info(ret_info_all, field="success")
             if all(ret_success):
                 # 所有请求发送成功

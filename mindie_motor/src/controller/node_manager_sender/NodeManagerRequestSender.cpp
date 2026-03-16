@@ -122,6 +122,8 @@ std::string NodeManagerRequestSender::NodeManagerCmdToString(NodeManagerCmd cmd)
             return "START_ENGINE";
         case NodeManagerCmd::STOP_ENGINE:
             return "STOP_ENGINE";
+        case NodeManagerCmd::PAUSE_ENGINE_ROCE:
+            return "PAUSE_ENGINE_ROCE";
         default:
             return "UNKNOWN";
     }

@@ -19,7 +19,8 @@
   "fault_recovery_func_dict":{
     "lingqu_link": false,
     "oom": true,
-    "hbm": false
+    "hbm": false,
+    "roce": true
   },
   "global_rank_table_file_path": "./conf/global_rank_table_file.json",
   "scaling_rule_file_path": "./conf/elastic_scaling.json",

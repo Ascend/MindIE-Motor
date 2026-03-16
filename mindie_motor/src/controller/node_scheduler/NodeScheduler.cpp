@@ -1301,6 +1301,120 @@ void NodeScheduler::ProcessRoleUnknownForPD(std::vector<uint64_t> &nodeIds)
     LOG_I("[NodeScheduler]ProcessRoleUnknownForPD: end");
 }
 
+bool NodeScheduler::BatchUnlinkNodes(const std::vector<uint64_t> &nodeIds)
+{
+    std::vector<uint64_t> postId;
+    std::vector<uint64_t> success;
+    const std::string stateReady = ControllerConstant::GetInstance()->GetRoleState(RoleState::READY);
+    const std::vector<uint64_t> emptyPeers;
+
+    for (uint64_t nodeId : nodeIds) {
+        auto node = mNodeStatus->GetNode(nodeId);
+        if (node == nullptr) {
+            LOG_W("[NodeScheduler]BatchUnlinkNodes: node %lu not found", nodeId);
+            return false;
+        }
+        for (auto &peer : std::as_const(node->peers)) {
+            auto peerNode = mNodeStatus->GetNode(peer);
+            if (peerNode == nullptr) {
+                LOG_W("[NodeScheduler]BatchUnlinkNodes: peer %lu not found", peer);
+                return false;
+            }
+            auto it = std::find(peerNode->peers.begin(), peerNode->peers.end(), nodeId);
+            if (it != peerNode->peers.end()) {
+                peerNode->peers.erase(it);
+                mNodeStatus->UpdateRoleStateAndPeers(peerNode->instanceInfo.staticInfo.groupId, peer, stateReady,
+                    peerNode->peers);
+                postId.push_back(peer);
+            }
+        }
+    }
+    std::sort(postId.begin(), postId.end());
+    postId.erase(std::unique(postId.begin(), postId.end()), postId.end());
+    LOG_I("[NodeScheduler]BatchUnlinkNodes: postId size %zu (unique peers to receive new role).", postId.size());
+
+    for (uint64_t nodeId : nodeIds) {
+        auto node = mNodeStatus->GetNode(nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        mNodeStatus->UpdateRoleStateAndPeers(node->instanceInfo.staticInfo.groupId, nodeId, stateReady, emptyPeers);
+    }
+    for (uint64_t nodeId : nodeIds) {
+        postId.push_back(nodeId);
+    }
+
+    std::sort(postId.begin(), postId.end());
+    postId.erase(std::unique(postId.begin(), postId.end()), postId.end());
+    ServerRequestHandler::GetInstance()->BatchPostRole(*mServerClient, *mNodeStatus, postId, success);
+    LOG_I("[NodeScheduler]BatchUnlinkNodes: BatchPostRole done, success %zu / postId %zu.",
+          success.size(), postId.size());
+    return true;
+}
+
+bool NodeScheduler::BatchLinkNodes(const std::vector<uint64_t> &nodeIds)
+{
+    std::set<uint64_t> groupIds;
+    for (uint64_t nodeId : nodeIds) {
+        auto node = mNodeStatus->GetNode(nodeId);
+        if (node == nullptr) {
+            LOG_W("[NodeScheduler]BatchLinkNodes: node %lu not found", nodeId);
+            return false;
+        }
+        groupIds.insert(node->instanceInfo.staticInfo.groupId);
+    }
+
+    const std::string stateReady = ControllerConstant::GetInstance()->GetRoleState(RoleState::READY);
+    std::vector<uint64_t> postId;
+    std::vector<uint64_t> success;
+    for (uint64_t groupId : groupIds) {
+        auto group = mNodeStatus->GetGroup(groupId);
+        const std::vector<uint64_t> &pNodes = group.first;
+        const std::vector<uint64_t> &dNodes = group.second;
+        LOG_I("[NodeScheduler]BatchLinkNodes: group %lu pNodes %zu, dNodes %zu", groupId, pNodes.size(), dNodes.size());
+        if (pNodes.empty() && dNodes.empty()) {
+            LOG_I("[NodeScheduler]BatchLinkNodes: group %lu empty, skip", groupId);
+            continue;
+        }
+        for (uint64_t pNodeId : pNodes) {
+            mNodeStatus->UpdateRoleStateAndPeers(groupId, pNodeId, stateReady, dNodes);
+            postId.push_back(pNodeId);
+        }
+        for (uint64_t dNodeId : dNodes) {
+            mNodeStatus->UpdateRoleStateAndPeers(groupId, dNodeId, stateReady, pNodes);
+            postId.push_back(dNodeId);
+        }
+    }
+    std::sort(postId.begin(), postId.end());
+    postId.erase(std::unique(postId.begin(), postId.end()), postId.end());
+
+    ServerRequestHandler::GetInstance()->BatchPostRole(*mServerClient, *mNodeStatus, postId, success);
+    auto readyIds = ServerRequestHandler::GetInstance()->CheckStatus(*mServerClient, *mNodeStatus, postId, false);
+    if (readyIds.size() < postId.size()) {
+        LOG_E("[NodeScheduler]BatchLinkNodes: CheckStatus not ready, count %zu", postId.size() - readyIds.size());
+        return false;
+    }
+    LOG_I("[NodeScheduler]BatchLinkNodes: CheckStatus done, ready %zu / postId %zu.", readyIds.size(), postId.size());
+    return true;
+}
+
+bool NodeScheduler::ProcessBatchUnlinkAndLink(const std::vector<uint64_t> &nodeIds)
+{
+    if (nodeIds.empty()) {
+        return true;
+    }
+    if (!BatchUnlinkNodes(nodeIds)) {
+        LOG_E("[NodeScheduler]ProcessBatchUnlinkAndLink: BatchUnlinkNodes failed");
+        return false;
+    }
+    if (!BatchLinkNodes(nodeIds)) {
+        LOG_E("[NodeScheduler]ProcessBatchUnlinkAndLink: BatchLinkNodes failed");
+        return false;
+    }
+    LOG_I("[NodeScheduler]BatchUnlinkAndLink done");
+    return true;
+}
+
 void NodeScheduler::ProcessRoleUnknown()
 {
     std::vector<uint64_t> pIds;

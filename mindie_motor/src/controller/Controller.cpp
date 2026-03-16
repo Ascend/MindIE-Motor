@@ -45,7 +45,7 @@ int32_t Controller::CreatePointers()
         coordinatorStore = std::make_shared<CoordinatorStore>();
         coordinatorStoreWithMasterInfo = std::make_shared<CoordinatorStore>();
         nodeStatus = std::make_shared<NodeStatus>();
-        nodeScheduler = std::make_unique<NodeScheduler>(nodeStatus, coordinatorStore);
+        nodeScheduler = std::make_shared<NodeScheduler>(nodeStatus, coordinatorStore);
         statusUpdater = std::make_unique<StatusUpdater>(nodeStatus, coordinatorStore);
         mCoordinatorBackupHandler = std::make_unique<CoordinatorBackupHandler>(
             coordinatorStore, coordinatorStoreWithMasterInfo);
@@ -94,7 +94,7 @@ int32_t Controller::InitParams()
     }
     FaultManager::GetInstance()->SetRankTableLoader(nodeScheduler->GetRankTableLoader());
     
-    if (NPURecoveryManager::GetInstance()->Init(nodeStatus) != 0) {
+    if (NPURecoveryManager::GetInstance()->Init(nodeStatus, nodeScheduler) != 0) {
         LOG_E("[%s] [Controller] Initializing controller, initialize fault manager failed.",
             GetErrorCode(ErrorType::CALL_ERROR, ControllerFeature::CONTROLLER).c_str());
         return -1;
