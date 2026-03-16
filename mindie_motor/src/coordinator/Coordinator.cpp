@@ -20,6 +20,7 @@
 #include "IPCConfig.h"
 #include "HeartbeatProducer.h"
 #include "MemoryUtil.h"
+#include "msServiceProfiler/Tracer.h"
 
 using namespace MINDIE::MS;
 namespace {
@@ -349,6 +350,19 @@ int32_t Coordinator::StartManagerServer()
 }
 
 
+void TraceInit()
+{
+    try {
+        if (!msServiceProfiler::Tracer::IsEnable()) {
+            return;
+        }
+        msServiceProfiler::TraceContext::addResAttribute("service.name", "mindie.motor");
+    } catch (const std::exception& e) {
+        LOG_W("Trace Module maybe init failed, ignore and continue, warning is %s", e.what());
+    }
+}
+
+
 int32_t Coordinator::Run()
 {
     try {
@@ -393,6 +407,7 @@ int32_t Coordinator::Run()
     MemoryUtil::CheckRequestConfigMemoryRisk();
     LOG_M("[Start] MindIE-MS coordinator start successful.");
     LOG_I("MindIE-MS coordinator is not ready...");
+    TraceInit();
     // start to work and ready to rcv request from controller and requestRepeater
     try {
         LOG_M("[Start] MindIE-MS coordinator start data server.");

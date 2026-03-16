@@ -157,6 +157,8 @@ bool IsValidIpv4(const std::string &ip, bool allowAllZeroIp, const std::string &
 
 bool IsValidIpv6(const std::string &ip, bool allowAllZeroIp, const std::string &logCode);
 
+std::string FormatHostPort(const std::string &host, int port);
+
 bool IsValidPort(int64_t port);
 
 bool IsValidPortString(const std::string &s);

@@ -16,6 +16,7 @@
 #include "Configure.h"
 #include "DynamicConfigHandler.h"
 
+
 using namespace MINDIE::MS;
 
 static bool ParsingParams(int argc, char *argv[])

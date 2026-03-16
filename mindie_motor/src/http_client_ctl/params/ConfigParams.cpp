@@ -96,12 +96,24 @@ bool IsValidIpv6(const std::string &ip, bool allowAllZeroIp, const std::string &
         return false;
     }
 
-    struct in_addr addr;
+    struct in6_addr addr;
     if (inet_pton(AF_INET6, ip.c_str(), &addr) != 1) {
         LOG_E("[%s] [ConfigParams] Invalid IPv6 address format: '%s'.", logCode.c_str(), ip.c_str());
         return false;
     }
     return true;
+}
+
+std::string FormatHostPort(const std::string &host, int port)
+{
+    if (host.empty()) {
+        return "";
+    }
+    struct in6_addr addr;
+    if (inet_pton(AF_INET6, host.c_str(), &addr) == 1) {
+        return "[" + host + "]:" + std::to_string(port);
+    }
+    return host + ":" + std::to_string(port);
 }
 
 bool IsValidPort(int64_t port)

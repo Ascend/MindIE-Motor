@@ -12,7 +12,94 @@
 #include "Logger.h"
 #include "HttpServer.h"
 #include "Configure.h"
+#include "msServiceProfiler/Tracer.h"
 #include "ServerConnection.h"
+
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <vector>
+
+
+namespace {
+
+// 每个字节用 2 个十六进制字符表示
+constexpr int HEX_DIGITS_PER_BYTE = 2;
+// spanId 在 traceparent 中的下标（version=0, traceId=1, spanId=2, flags=3）
+constexpr size_t TRACEPARENT_SPAN_ID_INDEX = 2;
+// spanId 在 B3 格式中的下标（traceId=0, spanId=1, sampled=2）
+constexpr size_t B3_SPAN_ID_INDEX = 1;
+
+std::string TraceIdToHex(const TraceId& traceId)
+{
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (size_t i = 0; i < sizeof(TraceId); ++i) {
+        oss << std::setw(HEX_DIGITS_PER_BYTE) << static_cast<unsigned>(traceId.as_char[i]);
+    }
+    return oss.str();
+}
+
+std::string SpanIdToHex(const SpanId& spanId)
+{
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (size_t i = 0; i < sizeof(SpanId); ++i) {
+        oss << std::setw(HEX_DIGITS_PER_BYTE) << static_cast<unsigned>(spanId.as_char[i]);
+    }
+    return oss.str();
+}
+
+std::string BuildTraceparent(const TraceId& traceId, const SpanId& spanId, bool isSampled)
+{
+    return "00-" + TraceIdToHex(traceId) + "-" + SpanIdToHex(spanId) + "-" +
+           (isSampled ? "01" : "00");
+}
+
+std::string get_header(const boost::beast::http::request<boost::beast::http::dynamic_body>& req,
+                       const std::string& headerName)
+{
+    auto it = req.find(headerName);
+    if (it != req.end()) {
+        return std::string(it->value());
+    }
+    return "";
+}
+
+std::string ReplaceSpanIdInHeader(const std::string& header, const std::string& newSpanIdHex, size_t spanIdIndex)
+{
+    std::vector<std::string> parts;
+    size_t start = 0;
+    size_t pos = 0;
+    while ((pos = header.find('-', start)) != std::string::npos) {
+        parts.push_back(header.substr(start, pos - start));
+        start = pos + 1;
+    }
+    parts.push_back(header.substr(start));
+    if (parts.size() > spanIdIndex) {
+        parts[spanIdIndex] = newSpanIdHex;
+        std::string r;
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (i > 0) r += '-';
+            r += parts[i];
+        }
+        return r;
+    }
+    return header;
+}
+
+std::string ReplaceSpanIdInTraceparent(const std::string& traceparent, const std::string& newSpanIdHex)
+{
+    return ReplaceSpanIdInHeader(traceparent, newSpanIdHex, TRACEPARENT_SPAN_ID_INDEX);
+}
+
+std::string ReplaceSpanIdInB3(const std::string& b3, const std::string& newSpanIdHex)
+{
+    return ReplaceSpanIdInHeader(b3, newSpanIdHex, B3_SPAN_ID_INDEX);
+}
+
+}  // namespace
+
 
 namespace MINDIE::MS {
 ServerConnection::ServerConnection(boost::asio::io_context& ioContext, ServerHandler& serverHandler,
@@ -137,6 +224,12 @@ void ServerConnection::OnRead(boost::beast::error_code ec, std::size_t bytes)
         return;
     }
     version_ = req.version();
+
+    // 增加 Trace 采样信息，不开启不采样
+    if (req.target() != "/v1/instances/refresh") {
+        StartRequestTrace(req);
+    }
+
     auto fun = serverHandler_.GetFun(req.method(), req.target());
     if (fun == nullptr) {
         keepAlive_ = false;
@@ -168,6 +261,10 @@ void ServerConnection::DoWriteFinishRes(const ServerRes &res)
     res_.result(res.state);
     boost::beast::ostream(res_.body()) << res.body;
     res_.prepare_payload();
+
+    // 增加 Trace 采样信息，不开启不采样
+    SetResponseStatusTrace(res);
+
     if (timeout_ > 0) {
         stream_.expires_after(std::chrono::seconds(timeout_));
     } else {
@@ -204,6 +301,8 @@ void ServerConnection::OnWriteFinishRes(bool keepAlive, boost::beast::error_code
     }
 
     asyncNotChunkPending = false;
+    // 请求完成，结束当前请求的Trace
+    EndRequestTrace();
     // 一个非chunk消息完成，开始下一次Read, 此时如果有chunk消息来临，则会异常
     DoRead();
 }
@@ -290,6 +389,8 @@ void ServerConnection::OnWriteChunkTailer(bool keepAlive, boost::beast::error_co
     }
     // 一轮chunking 结束
     chunking = false;
+    // 请求完成，结束当前请求的Trace
+    EndRequestTrace();
     // 可以开始下一次read了
     DoRead();
 }
@@ -391,6 +492,117 @@ void ServerConnection::DoClose(boost::beast::error_code ec)
                 fun(shared_from_this());
             }
         }
+
+        // 增加 Trace 采样信息，不开启不采样
+        EndRequestTrace();
     }
 }
+
+void ServerConnection::SetAttributesTrace(
+    boost::beast::http::request<boost::beast::http::dynamic_body>& req)
+{
+    if (span == nullptr) {
+        return;
+    }
+    try {
+        auto remoteEp = stream_.socket().remote_endpoint();
+        span->SetAttribute("server.net.peer.ip", remoteEp.address().to_string().c_str());
+        span->SetAttribute("server.net.peer.port", std::to_string(remoteEp.port()).c_str());
+    } catch (...) {
+        // 连接已关闭或无效时 remote_endpoint 可能抛异常，忽略并继续
+    }
+    try {
+        auto localEp = stream_.socket().local_endpoint();
+        span->SetAttribute("server.net.host.ip", localEp.address().to_string().c_str());
+        span->SetAttribute("server.net.host.port", std::to_string(localEp.port()).c_str());
+    } catch (...) {
+        // 连接已关闭或无效时 local_endpoint 可能抛异常，忽略并继续
+    }
+    span->SetAttribute("server.path", std::string(req.target()).c_str());
+    span->SetAttribute("server.method", std::string(req.method_string()).c_str());
+}
+
+void ServerConnection::StartRequestTrace(
+    boost::beast::http::request<boost::beast::http::dynamic_body>& req)
+{
+    if (!msServiceProfiler::Tracer::IsEnable()) {
+        return;
+    }
+
+    std::string traceparent = get_header(req, "traceparent");
+    std::string b3 = get_header(req, "b3");
+    std::string xB3TraceId = get_header(req, "X-B3-TraceId");
+    std::string xB3SpanId = get_header(req, "X-B3-SpanId");
+
+    std::string outB3 = b3;
+    if (outB3.empty() && !xB3TraceId.empty() && !xB3SpanId.empty()) {
+        std::string xB3Sampled = get_header(req, "X-B3-Sampled");
+        std::string sampled = xB3Sampled.empty() ? "0" : xB3Sampled;
+        outB3 = xB3TraceId + "-" + xB3SpanId + "-" + sampled;
+    }
+
+    attachIndex = msServiceProfiler::TraceContext::GetTraceCtx().ExtractAndAttach(
+        traceparent, outB3);
+
+    span = std::make_unique<msServiceProfiler::Span>(
+        msServiceProfiler::Tracer::StartSpanAsActive("server.Request", "Motor", false));
+
+    const auto& ctxInfo = msServiceProfiler::TraceContext::GetTraceCtx().GetCurrent();
+    auto traceId = std::get<0>(ctxInfo);
+    auto spanId = std::get<1>(ctxInfo);
+    bool isSampled = std::get<2>(ctxInfo);
+
+    SetAttributesTrace(req);
+
+    if (spanId.as_uint64 != 0) {
+        std::string spanIdHex = SpanIdToHex(spanId);
+        if (outB3.empty() && traceparent.empty()) {
+            std::string newTraceparent = BuildTraceparent(traceId, spanId, isSampled);
+            req.set("traceparent", newTraceparent);
+        } else {
+            if (!traceparent.empty()) {
+                req.set("traceparent", ReplaceSpanIdInTraceparent(traceparent, spanIdHex));
+            }
+            if (!b3.empty()) {
+                req.set("b3", ReplaceSpanIdInB3(b3, spanIdHex));
+            }
+            if (!xB3TraceId.empty()) {
+                req.set("X-B3-SpanId", spanIdHex);
+            }
+        }
+    }
+}
+
+void ServerConnection::SetResponseStatusTrace(const ServerRes& res)
+{
+    if (!msServiceProfiler::Tracer::IsEnable()) {
+        return;
+    }
+    if (span == nullptr) {
+        return;
+    }
+    int statusCode = static_cast<int>(res.state);
+    span->SetAttribute("server.response.status", std::to_string(statusCode).c_str());
+    if (res.state == boost::beast::http::status::ok) {
+        span->SetStatus(true, "");
+    } else {
+        span->SetStatus(false, "");
+    }
+}
+
+void ServerConnection::EndRequestTrace()
+{
+    if (!msServiceProfiler::Tracer::IsEnable()) {
+        return;
+    }
+
+    if (span == nullptr) {
+        return;
+    }
+
+    span->End();
+    msServiceProfiler::TraceContext::GetTraceCtx().Unattach(attachIndex);
+    span = nullptr;
+}
+
 }

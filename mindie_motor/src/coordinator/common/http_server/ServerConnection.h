@@ -24,6 +24,7 @@
 #include "boost/beast/ssl.hpp"
 #include "ServerHandler.h"
 #include "WriteDeque.h"
+#include "msServiceProfiler/Tracer.h"
 
 #include "Logger.h"
 
@@ -136,6 +137,16 @@ protected:
     std::mutex resMtx;
     std::string mReqId;
     static constexpr uint32_t HEADER_LIMIT = 8 * 1024; // 请求头的最大上限8 * 1024
+
+    // Trace 采样
+    std::unique_ptr<msServiceProfiler::Span> span = nullptr;
+    size_t attachIndex = 0;
+
+private:
+    void StartRequestTrace(boost::beast::http::request<boost::beast::http::dynamic_body>& req);
+    void SetAttributesTrace(boost::beast::http::request<boost::beast::http::dynamic_body>& req);
+    void SetResponseStatusTrace(const ServerRes& res);
+    void EndRequestTrace();
 };
 
 }

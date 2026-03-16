@@ -256,7 +256,7 @@ int32_t ClusterClient::Register()
     }
     LOG_I("[ClusterClient] get ClusterDomain %s, ClusterPort %d success.",
         clusterIp, clusterPort);
-    auto serverAddr = std::string(clusterIp) + ":" + std::to_string(clusterPort);
+    auto serverAddr = FormatHostPort(clusterIp, clusterPort);
     mGrpcChannel = CreateGrpcChannel(serverAddr, mTlsConfig);
     if (mGrpcChannel == nullptr) {
         LOG_E("[%s] [ClusterClient] Create channel failed.",

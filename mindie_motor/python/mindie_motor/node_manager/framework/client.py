@@ -10,6 +10,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import ipaddress
+
 import requests
 from requests.adapters import HTTPAdapter
 
@@ -47,6 +49,18 @@ class Client:
             self.protocol = 'https://'
             self._initialize_tls_context(ms_node_manager)
             self.logger.info('node_manager client enable tls verify')
+    
+    @staticmethod
+    def build_url(protocol: str, host: str, port, path: str = '') -> str:
+        """Build URLwith format of http://host:port/path. IPv6 addresses are wrapped in square brackets per RFC 3986."""
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.version == 6:
+                host = f'[{host}]'
+        except ValueError:
+            # 解析IP地址失败, 则将host作为主机名构建url
+            pass
+        return f'{protocol}{host}:{port}{path}'
 
     def setup_logging(self):
         self.log_instance = Log(__name__)
@@ -60,7 +74,7 @@ class Client:
         port = self._get_engine_port(engine_index)
         if not port:
             return {SUCCESS: False, MSG: f'do not find ip or port with index({engine_index})'}
-        url = f'{self.protocol}{self.engine_ip}:{port}/v1/engine-server/fault-handling-command'
+        url = self.build_url(self.protocol, self.engine_ip, port, '/v1/engine-server/fault-handling-command')
         data = {
             'cmd': cmd
         }
@@ -70,7 +84,7 @@ class Client:
         port = self._get_engine_port(engine_index)
         if not port:
             return {SUCCESS: False, MSG: f'do not find ip or port with index({engine_index})'}
-        url = f'{self.protocol}{self.engine_ip}:{port}/v1/engine-server/running-status'
+        url = self.build_url(self.protocol, self.engine_ip, port, '/v1/engine-server/running-status')
         return self._send_request(GET, url)
 
     def send_alarm_info_to_ctrler(self, error_info: list) -> dict:
@@ -86,7 +100,7 @@ class Client:
                 if isinstance(error, dict) and 'errorLocation' not in error:
                     error['errorLocation'] = ep_str
             
-        url = f'{self.protocol}{ip}:{port}/v1/alarm/llm_engine'
+        url = self.build_url(self.protocol, ip, port, '/v1/alarm/llm_engine')
         report_data = {
             'alarm_info': error_info,
             'node_manager_ip': self.engine_ip
@@ -124,7 +138,7 @@ class Client:
     def _get_endpoint_string(self, engine_index: int) -> str:
         port = self._get_engine_port(engine_index)
         if self.engine_ip and port:
-            return f'{self.engine_ip}:{port}'
+            return self.build_url('', self.engine_ip, port)
         return f'index={engine_index}'
 
     def _send_request(self, method: str, url: str, data=None) -> dict:

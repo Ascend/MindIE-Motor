@@ -160,36 +160,11 @@ void RequestRepeater::DResChunkHandler(std::shared_ptr<ClientConnection> connect
         oneMessage = oneMessage.substr(pos1 + 1); // 取出 : 后面的消息体
         if (keyWord == "reqId") { // 解析reqId
             reqId = oneMessage;
-        } else if (keyWord == "data") { // 普通token
+        } else if (keyWord == "data") { // 普通token（流式时最后一条可能带 usage，需参与二维表统计）
+            TryUpdateTokenDistributionFromUsage(std::string(oneMessage.data(), oneMessage.size()));
             DResultNormalToken(reqId, oneMessage);
         } else if (keyWord == "lastData") { // 最后一个token
-            try {
-                nlohmann::json jsonData = nlohmann::json::parse(oneMessage);
-                if (jsonData.contains("usage") && jsonData["usage"].contains("prompt_tokens") &&
-                    jsonData["usage"].contains("completion_tokens")) {
-                    int input_tokens = jsonData["usage"]["prompt_tokens"].get<int>();
-                    int output_tokens = jsonData["usage"]["completion_tokens"].get<int>();
-                    int input_range = MAX_TOKEN_RANGE;
-                    for (int range : token_ranges) {
-                        if (input_tokens <= range) {
-                            input_range = range;
-                            break;
-                        }
-                    }
-                    int output_range = MAX_TOKEN_RANGE;
-                    for (int range : token_ranges) {
-                        if (output_tokens <= range) {
-                            output_range = range;
-                            break;
-                        }
-                    }
-                    token_distribution[input_range][output_range]++;
-                }
-            } catch (const nlohmann::json::exception &e) {
-                LOG_W("[%s] [RequestRepeater] Parse lastData usage json failed, reqId: %s, exception: %s",
-                    GetWarnCode(ErrorType::WARNING, CoordinatorFeature::D_REQUESTREPEATER).c_str(),
-                    reqId.c_str(), e.what());
-            }
+            TryUpdateTokenDistributionFromUsage(std::string(oneMessage.data(), oneMessage.size()));
             DResultLast(reqId, oneMessage);
         } else if (keyWord == "error") { // 错误消息
             DResultError(reqId, oneMessage);
