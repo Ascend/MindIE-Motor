@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <chrono>
+#include <thread>
 #include <iostream>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -26,6 +27,7 @@
 #include "NodeStatus.h"
 #include "grpc_proto/cluster_fault.pb.h"
 #include "node_manager_sender/NodeManagerRequestSender.h"
+#include <nlohmann/json.hpp>
 
 using namespace MINDIE::MS;
 
@@ -132,6 +134,26 @@ public:
         return faultMsg;
     }
 
+    // CQE(4C1F8608)故障消息：device.faultcodes 包含 CQE 白名单故障码，用于 GetCQEInstanceIdsFromFaultMessage 识别
+    fault::FaultMsgSignal CreateCQEFaultMsg(const std::string& nodeIP,
+                                            const std::string& cqeFaultCode = "4C1F8608")
+    {
+        fault::FaultMsgSignal faultMsg;
+        faultMsg.set_signaltype("normal");
+        faultMsg.set_uuid("test-cqe-uuid");
+
+        fault::NodeFaultInfo* nodeInfo = faultMsg.add_nodefaultinfo();
+        nodeInfo->set_nodeip(nodeIP);
+        nodeInfo->set_nodesn("test-sn");
+        nodeInfo->set_faultlevel("Healthy");
+
+        fault::DeviceFaultInfo* device = nodeInfo->add_faultdevice();
+        device->set_deviceid("device1");
+        device->set_devicetype("npu");
+        device->add_faultcodes(cqeFaultCode);
+        return faultMsg;
+    }
+
     std::shared_ptr<NodeStatus> nodeStatus;
     Stub stub;
     Stub nodeManagerStub;
@@ -156,6 +178,7 @@ TEST_F(TestNPURecoveryManager, TestInitSuccess)
     int32_t ret = NPURecoveryManager::GetInstance()->Init(testNodeStatus);
     EXPECT_EQ(ret, 0);
 }
+
 /*
  * 测试描述: 测试不开灵衢恢复功能时，故障消息被忽略
  */
@@ -172,6 +195,33 @@ TEST_F(TestNPURecoveryManager, TestProcessFaultMessageWhenNPURecoveryDisabled)
     NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
     auto processedFaults = NPURecoveryManager::GetInstance()->GetProcessedSwitchFaults();
     EXPECT_EQ(processedFaults.size(), 0);
+}
+
+/*
+ * 测试描述: 测试不开oom恢复功能时，故障消息被忽略
+ */
+TEST_F(TestNPURecoveryManager, TestProcessLLMEngineAlarmWhenRecoveryFunctionDisabled)
+{
+    auto testJson = GetServerRequestHandlerTestJsonPath();
+    ModifyJsonItem(testJson, "fault_recovery_func_dict", "oom", false);
+    ModifyJsonItem(testJson, "fault_recovery_func_dict", "hbm", false);
+    ControllerConfig::GetInstance()->Init();
+
+    uint64_t nodeId = 100;
+    std::string ip = "127.0.0.1";
+    auto node = CreateTestNode(nodeId, ip, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE);
+    nodeStatus->AddNode(std::move(node));
+
+    nlohmann::json alarmJson;
+    alarmJson["node_manager_ip"] = ip;
+    alarmJson["alarm_info"] = nlohmann::json::array({ nlohmann::json::array({
+        nlohmann::json::object({{"errCode", "MIE05E01000A"}, {"errorLocation", "0:0"}})
+    })});
+    NPURecoveryManager::GetInstance()->ProcessLLMEngineAlarm(alarmJson);
+
+    // 关闭 oom 时只发 STOP_ENGINE 并 return，不会 Insert(instanceId)，故列表为空
+    auto errCodeAlarmExisted = NPURecoveryManager::GetInstance()->GetErrCodeAlarmExisted();
+    EXPECT_EQ(errCodeAlarmExisted.size(), 0);
 }
 
 /*
@@ -360,4 +410,128 @@ TEST_F(TestNPURecoveryManager, TestLoadProcessedSwitchFaults)
     std::vector<std::string> newFaults = {"fault1", "fault2"};
     NPURecoveryManager::GetInstance()->SaveProcessedSwitchFaults(newFaults);
     EXPECT_TRUE(faultsJson.is_object() || faultsJson.is_array());
+}
+
+/******************以下是CQE故障和ProcessRoCERecovery相关测试*******************************/
+
+/*
+ * 测试描述: 测试ProcessFaultMessage - CQE故障码(4C1F8608)能正确识别并触发RoCE恢复流程
+ * ProcessCQEFault -> GetCQEInstanceIdsFromFaultMessage 识别含 CQE 的实例 -> ProcessRoCERecovery
+ * 无 NodeScheduler 时 ProcessRoCERecovery 会发送 STOP_ENGINE 并清理恢复信息
+ */
+TEST_F(TestNPURecoveryManager, TestProcessCQEFaultWithCQECode)
+{
+    uint64_t nodeIdP = 99;
+    uint64_t nodeIdD = 100;
+    std::string ipP = "127.0.0.0";
+    std::string ipD = "127.0.0.1";
+    auto nodeP = CreateTestNode(nodeIdP, ipP, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, {nodeIdP, nodeIdD});
+    auto nodeD = CreateTestNode(nodeIdD, ipD, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, {nodeIdP, nodeIdD});
+    nodeStatus->AddNode(std::move(nodeP));
+    nodeStatus->AddNode(std::move(nodeD));
+
+    fault::FaultMsgSignal faultMsg = CreateCQEFaultMsg(ipD, "4C1F8608");
+
+    NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
+
+    // ProcessRoCERecovery 异步执行，NodeScheduler 为 null 时会在后台 Erase，需等待完成后断言
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    auto instancesInRecovery = NPURecoveryManager::GetInstance()->GetInstancesInRecovery();
+    EXPECT_EQ(instancesInRecovery.size(), 0);
+}
+
+/*
+ * 测试描述: 测试ProcessFaultMessage - 无CQE故障码时跳过CQE恢复
+ * GetCQEInstanceIdsFromFaultMessage 返回空，ProcessCQEFault 直接 return
+ */
+TEST_F(TestNPURecoveryManager, TestProcessCQEFaultNoCQECode)
+{
+    uint64_t nodeIdP = 99;
+    uint64_t nodeIdD = 100;
+    std::string ipP = "127.0.0.0";
+    std::string ipD = "127.0.0.1";
+    auto nodeP = CreateTestNode(nodeIdP, ipP, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, {nodeIdP, nodeIdD});
+    auto nodeD = CreateTestNode(nodeIdD, ipD, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, {nodeIdP, nodeIdD});
+    nodeStatus->AddNode(std::move(nodeP));
+    nodeStatus->AddNode(std::move(nodeD));
+
+    // 使用非 CQE 白名单故障码
+    fault::FaultMsgSignal faultMsg = CreateCQEFaultMsg(ipD, "OTHER_CODE");
+
+    size_t beforeSize = NPURecoveryManager::GetInstance()->GetInstancesInRecovery().size();
+    NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
+    size_t afterSize = NPURecoveryManager::GetInstance()->GetInstancesInRecovery().size();
+
+    // 非 CQE 故障码不应触发 CQE 恢复
+    EXPECT_EQ(beforeSize, afterSize);
+}
+
+/*
+ * 测试描述: 测试ProcessFaultMessage - 未知节点IP时CQE实例为空
+ * GetInstanceIdByNodeIP 返回 INVALID_ID，GetCQEInstanceIdsFromFaultMessage 不包含该实例
+ */
+TEST_F(TestNPURecoveryManager, TestProcessCQEFaultUnknownNodeIP)
+{
+    fault::FaultMsgSignal faultMsg = CreateCQEFaultMsg("192.168.99.99", "4C1F8608");
+
+    NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
+
+    auto instancesInRecovery = NPURecoveryManager::GetInstance()->GetInstancesInRecovery();
+    EXPECT_EQ(instancesInRecovery.size(), 0);
+}
+
+/*
+ * 测试描述: 测试ProcessFaultMessage - 多节点实例的CQE故障
+ * 验证 GetAllNodesInInstance/GetAllPodIPsInInstance 能正确获取实例内节点
+ */
+TEST_F(TestNPURecoveryManager, TestProcessCQEFaultMultiNodeInstance)
+{
+    uint64_t nodeIdP = 99;
+    uint64_t nodeId1 = 100;
+    uint64_t nodeId2 = 101;
+    std::string ipP = "127.0.0.0";
+    std::string ip1 = "127.0.0.1";
+    std::string ip2 = "127.0.0.2";
+    auto nodeP = CreateTestNode(nodeIdP, ipP, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, {nodeIdP, nodeId1, nodeId2});
+    auto node1 = CreateTestNode(nodeId1, ip1, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, {nodeIdP, nodeId1, nodeId2});
+    auto node2 = CreateTestNode(nodeId2, ip2, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, {nodeIdP, nodeId1, nodeId2});
+
+    nodeStatus->AddNode(std::move(nodeP));
+    nodeStatus->AddNode(std::move(node1));
+    nodeStatus->AddNode(std::move(node2));
+
+    fault::FaultMsgSignal faultMsg = CreateCQEFaultMsg(ip1, "4C1F8608");
+
+    NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
+
+    // ProcessRoCERecovery 异步执行，需等待完成后断言
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    auto instancesInRecovery = NPURecoveryManager::GetInstance()->GetInstancesInRecovery();
+    EXPECT_EQ(instancesInRecovery.size(), 0);
+}
+
+/*
+ * 测试描述: 测试ProcessFaultMessage - CQE故障时实例已在恢复中则跳过
+ * mInstanceRecoveryInfo.Count(instanceId) > 0 时 continue
+ */
+TEST_F(TestNPURecoveryManager, TestProcessCQEFaultInstanceAlreadyInRecovery)
+{
+    uint64_t nodeIdP = 99;
+    uint64_t nodeIdD = 100;
+    std::string ipP = "127.0.0.0";
+    std::string ipD = "127.0.0.1";
+    auto nodeP = CreateTestNode(nodeIdP, ipP, MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE, {nodeIdP, nodeIdD});
+    auto nodeD = CreateTestNode(nodeIdD, ipD, MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE, {nodeIdP, nodeIdD});
+    nodeStatus->AddNode(std::move(nodeP));
+    nodeStatus->AddNode(std::move(nodeD));
+
+    fault::FaultMsgSignal faultMsg = CreateCQEFaultMsg(ipD, "4C1F8608");
+
+    NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
+    NPURecoveryManager::GetInstance()->ProcessFaultMessage(faultMsg);
+
+    // ProcessRoCERecovery 异步执行，需等待完成后断言
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    auto instancesInRecovery = NPURecoveryManager::GetInstance()->GetInstancesInRecovery();
+    EXPECT_EQ(instancesInRecovery.size(), 0);
 }

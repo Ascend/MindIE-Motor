@@ -60,7 +60,7 @@ private:
     std::shared_ptr<CoordinatorStore> coordinatorStore = nullptr;
     std::shared_ptr<CoordinatorStore> coordinatorStoreWithMasterInfo = nullptr;
     std::shared_ptr<CCAEStatus> mCCAEStatus = nullptr;
-    std::unique_ptr<NodeScheduler> nodeScheduler = nullptr;
+    std::shared_ptr<NodeScheduler> nodeScheduler = nullptr;
     std::shared_ptr<CoordinatorBackupHandler> mCoordinatorBackupHandler = nullptr;
     std::unique_ptr<StatusUpdater> statusUpdater = nullptr;
     std::unique_ptr<ProbeServer> probeServer = nullptr;

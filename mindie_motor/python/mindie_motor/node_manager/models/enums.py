@@ -32,12 +32,14 @@ class ControllerCmd(str, Enum):
     REINIT_NPU = 'REINIT_NPU'
     START_ENGINE = 'START_ENGINE'
     STOP_ENGINE = 'STOP_ENGINE'
+    PAUSE_ENGINE_ROCE = 'PAUSE_ENGINE_ROCE'
 
 
 class EngineCmd(Enum):
     PAUSE_ENGINE = 0
     REINIT_NPU = 1
     START_ENGINE = 2
+    PAUSE_ENGINE_ROCE = 3
 
 
 class ServiceStatus(Enum):

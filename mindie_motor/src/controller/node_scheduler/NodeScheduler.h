@@ -50,6 +50,8 @@ public:
         mWaitClusterDGRTSave = waitClusterDGRTSave;
     }
 
+    bool ProcessBatchUnlinkAndLink(const std::vector<uint64_t> &nodeIds);
+
 private:
     std::vector<MINDIE::MS::DIGSRoleDecision> mRoleDecisions {};
     std::shared_ptr<HttpClient> mServerClient = nullptr;
@@ -117,6 +119,8 @@ private:
     void ProcessRoleUnknownForPD(std::vector<uint64_t> &nodeIds);
     void UnlinkNodeFromPeers(uint64_t nodeId);
     void LinkNodeToPeers(uint64_t nodeId);
+    bool BatchUnlinkNodes(const std::vector<uint64_t> &nodeIds);
+    bool BatchLinkNodes(const std::vector<uint64_t> &nodeIds, uint32_t maxCheckAttempts = 0);
     void UpdateNodeStatusAfterSendRole(std::vector<std::unique_ptr<NodeInfo>> &servers,
                                        std::pair<std::vector<uint64_t>, std::vector<uint64_t>> &group,
                                        std::vector<uint64_t> &flexGroup, uint64_t groupId,

@@ -146,7 +146,7 @@ public:
     /// \param initStaticTotalInfo Whether to initialize the total resources.
     /// \return The vector of the ID of the RoleReady servers.
     std::vector<uint64_t> CheckStatus(HttpClient &client, NodeStatus &nodeStatus,
-        const std::vector<uint64_t> &nodeIds, bool initStaticTotalInfo = false);
+        const std::vector<uint64_t> &nodeIds, bool initStaticTotalInfo = false, uint32_t maxAttemptsOverride = 0);
 
     /// Query the dynamic status of the server in batches.
     ///

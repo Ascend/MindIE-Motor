@@ -34,6 +34,8 @@ logging.basicConfig(
     ]
 )
 
+TEST_METRIC_NAME = "request_success_total"
+
 
 @dataclass
 class CheckParams:
@@ -97,11 +99,16 @@ def fetch_ip_with_namespace_and_name(namespace: str, name: str) -> str:
     pod_info_lines = pods_info.split("\n")
     ip_idx = pod_info_lines[0].find("IP")
     namespace_idx = pod_info_lines[0].find("NAMESPACE")
+    ready_idx = pod_info_lines[0].find("READY")
     for line in pod_info_lines:
         if not line or len(line) <= namespace_idx:
             continue
         if line[namespace_idx:].split()[0].strip() == namespace and name in line:
-            return line[ip_idx:].split()[0].strip()
+            # Check if READY status is 1/1
+            if ready_idx >= 0 and len(line) > ready_idx:
+                ready_status = line[ready_idx:].split()[0].strip()
+                if ready_status == "1/1":
+                    return line[ip_idx:].split()[0].strip()
     return ""
 
 
@@ -154,12 +161,15 @@ def fetch_config(config_path: str) -> dict:
 
 def check_service_status(http_pool_manager, params: CheckParams) -> bool:
     try:
-        ip_and_port = fetch_ip_with_namespace_and_name(params.namespace, "coordinator") + ':' + params.coordinator_port
-        logging.info(f"Fetch server ip and port successfully: {ip_and_port}")
+        ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
+        if not ip:
+            return False
+        port = params.coordinator_port
+        logging.info(f"Fetch server ip and port successfully: {ip}:{port}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request(
             "POST",
-            f"{http_prefix}://{ip_and_port}/v1/completions",
+            f"{http_prefix}://{ip}:{port}/v1/completions",
             headers={"Content-Type": "application/json"},
             body=json.dumps({
                 "model": params.model_name,
@@ -175,15 +185,24 @@ def check_service_status(http_pool_manager, params: CheckParams) -> bool:
     except Exception as e:
         logging.info(f"Failed to connect to coordinator because {e}")
         return False
-    logging.info("MindIE MS service status is OK.")
     return True
 
 
 def infer_with_retry(http_pool_manager, params: CheckParams, max_retries: int = 5, interval_seconds: int = 180):
+    logging.info(f"Start to do virtual inference with metrics monitoring...")
+    last_success_count, = get_metrics_values(http_pool_manager, params, TEST_METRIC_NAME)
     for i in range(max_retries):
-        logging.info(f"retry round {i+1}")
+        logging.info(f"Infer request for testing round {i+1}")
         if check_service_status(http_pool_manager, params):
+            logging.info(f"Coordinator is ready, infer successfully!")
             return True
+        cur_success_count, = get_metrics_values(http_pool_manager, params, TEST_METRIC_NAME)
+        logging.info(f"current success count: {cur_success_count}, last success count: {last_success_count}")
+        if cur_success_count > last_success_count:
+            logging.info(f"Metrics {TEST_METRIC_NAME} increased, infer successfully!")
+            return True
+        if cur_success_count > 0:
+            last_success_count = cur_success_count
         time.sleep(interval_seconds)
     return False
 
@@ -236,9 +255,23 @@ def restart_service(namespace: str, boot_args):
         logging.info(f"Restart service successfully!")
 
 
-def get_metrics_from_metrics_api(http_pool_manager, params: CheckParams) -> str:
+def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) -> tuple:
+    """
+    Get multiple metric values from metrics API.
+    Args:
+        http_pool_manager: HTTP pool manager for making requests
+        params: CheckParams object containing configuration
+        *metric_names: Variable number of metric names to retrieve
+    
+    Returns:
+        Tuple of metric values in the same order as metric_names.
+        Returns tuple of -1 if metrics API call fails or metric not found.
+    """
+    # Fetch metrics from API
     try:
         coordinator_ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
+        if not coordinator_ip:
+            return tuple(-1 for _ in metric_names)
         logging.info(f"Fetch coordinator ip successfully: {coordinator_ip}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request(
@@ -247,26 +280,27 @@ def get_metrics_from_metrics_api(http_pool_manager, params: CheckParams) -> str:
         )
         if response.status >= 400:
             logging.info(f"Response from Coordinator metrics failed, status is {response.status}, "
-                             f"content is {response.data.decode()}")
-            return ""
+                         f"content is {response.data.decode()}")
+            return tuple(-1 for _ in metric_names)
         resp_text = response.data.decode(errors="ignore")
-        return resp_text
     except Exception as e:
         logging.info(f"Failed to connect to coordinator because {e}")
-    return ""
-
-
-def find_metric_values(resp_text: str, metric_name: str) -> int:
-    try:
-        for line in resp_text.split('\n'):
-            stripped = line.strip()
-            if metric_name in line and not (stripped.startswith('#')):
-                metric_value = int(float(line.split(" ")[-1]))
-                logging.info(f"Successfully get metrics info from coordinator, {metric_name}: {metric_value}")
-                return metric_value
-    except Exception as e:
-        logging.warning(f"Metric value for {metric_name} in response is not found: {e}")
-    return -1
+        return tuple(-1 for _ in metric_names)
+    
+    # Parse metric values from response text
+    def find_metric_value(metric_name: str) -> int:
+        try:
+            for line in resp_text.split('\n'):
+                stripped = line.strip()
+                if metric_name in line and not (stripped.startswith('#')):
+                    metric_value = int(float(line.split(" ")[-1]))
+                    logging.info(f"Successfully get metrics info from coordinator, {metric_name}: {metric_value}")
+                    return metric_value
+        except Exception as e:
+            logging.warning(f"Metric value for {metric_name} in response is not found: {e}")
+        return -1
+    
+    return tuple(find_metric_value(metric_name) for metric_name in metric_names)
 
 
 def main():
@@ -279,7 +313,6 @@ def main():
     do_inference_retries = 5
     do_inference_interval = 180
     input_content = "相对论的提出者是谁？"    # Probe prompt
-    max_unavailable_time = 1200             # Maximum service unavailable time
     http_timeout = 60                       # urllib3 request timeout
     cert_context = load_cert()
     if cert_context:
@@ -348,19 +381,32 @@ def main():
         while True:
             time.sleep(10)
             logging.info(f"Start to monitor service, getting metrics with interval {probe_interval}s...")
-            resp_text = get_metrics_from_metrics_api(http_pool_manager, params)
-            last_success_count = find_metric_values(resp_text, "request_success_total")
-            last_failed_count = find_metric_values(resp_text, "request_failed_total")
-            last_running_count = find_metric_values(resp_text, "num_requests_running")
+            last_success_count, last_failed_count, last_running_count = get_metrics_values(
+                http_pool_manager, params,
+                "request_success_total",
+                "request_failed_total",
+                "num_requests_running"
+            )
 
             time.sleep(probe_interval)
             
             logging.info(f"Start to examine service status...")
-            resp_text = get_metrics_from_metrics_api(http_pool_manager, params)
-            cur_success_count = find_metric_values(resp_text, "request_success_total")
-            cur_failed_count = find_metric_values(resp_text, "request_failed_total")
-            cur_running_count = find_metric_values(resp_text, "num_requests_running")
+            # Check if metrics are available by trying to get one metric value
+            test_metric, = get_metrics_values(http_pool_manager, params, TEST_METRIC_NAME)
+            if test_metric == -1:
+                logging.info(f"Metrics not available, doing virtual inference...")
+                if not infer_with_retry(http_pool_manager, params, do_inference_retries, do_inference_interval):
+                    logging.info(f"Virtual inference failed, restart service!")
+                    break
+                logging.info(f"Virtual inference succeeded, continue to monitor...")
             
+            cur_success_count, cur_failed_count, cur_running_count = get_metrics_values(
+                http_pool_manager, params,
+                "request_success_total",
+                "request_failed_total",
+                "num_requests_running"
+            )
+
             delta_success = (cur_success_count - last_success_count
                              if cur_success_count >= 0 and last_success_count >= 0 else -1)
             delta_failed = (cur_failed_count - last_failed_count
@@ -392,14 +438,10 @@ def main():
                             continue
                         logging.info(f"Virtual inference failed in idle state, restart service!")    
                         break
-                    elif cur_running_count > 0:       # Running state, e.g. long sequence inference
-                        logging.info(f"Doing virtual inference in running state, "
-                                     f"start to retry {do_inference_retries} times "
-                                     f"with interval {do_inference_interval}s")
-                        if infer_with_retry(http_pool_manager, params, do_inference_retries, do_inference_interval):
-                            continue
-                        logging.info(f"Virtual inference failed in running state, restart service!")
-                        break
+                    elif cur_running_count > 0:
+                        # running state, e.g. long sequence request
+                        logging.info(f"System is busy, continue to monitor...")
+                        continue
                 
         restart_service(params.namespace, boot_args)
 

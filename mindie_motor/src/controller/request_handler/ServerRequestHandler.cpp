@@ -1120,13 +1120,14 @@ static void UpdateIsInitializingStaticTotalInfo(NodeStatus &nodeStatus,
 }
 
 std::vector<uint64_t> ServerRequestHandler::CheckStatus(HttpClient &client, NodeStatus &nodeStatus,
-    const std::vector<uint64_t> &nodeIds, bool initStaticTotalInfo)
+    const std::vector<uint64_t> &nodeIds, bool initStaticTotalInfo, uint32_t maxAttemptsOverride)
 {
     if (nodeIds.empty()) {
         return {};
     }
     auto waitSeconds = ControllerConfig::GetInstance()->GetCheckRoleWaitSeconds();
-    auto limit = ControllerConfig::GetInstance()->GetCheckRoleAttemptTimes();
+    auto limit = (maxAttemptsOverride > 0) ? maxAttemptsOverride
+        : ControllerConfig::GetInstance()->GetCheckRoleAttemptTimes();
     std::vector<uint64_t> ret;
     uint32_t unknown;
     bool isReady = false;

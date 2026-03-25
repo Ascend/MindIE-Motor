@@ -12,6 +12,8 @@
 #ifndef MINDIE_MS_NPU_RECOVERY_MANAGER_H
 #define MINDIE_MS_NPU_RECOVERY_MANAGER_H
 
+#include <deque>
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,6 +32,7 @@
 #include "concurrent_map.h"
 #include "concurrent_set.h"
 #include "AlarmConfig.h"
+#include "NodeScheduler.h"
 
 namespace MINDIE {
 namespace MS {
@@ -74,10 +77,12 @@ public:
     NPURecoveryManager(NPURecoveryManager&&) = delete;
     NPURecoveryManager& operator=(NPURecoveryManager&&) = delete;
     
-    int32_t Init(std::shared_ptr<NodeStatus> nodeStatus);
+    int32_t Init(std::shared_ptr<NodeStatus> nodeStatus,
+                 std::shared_ptr<NodeScheduler> nodeScheduler = nullptr);
 
     // 由NodeManager透传的LLMEngine故障码处理主入口
     void ProcessLLMEngineAlarm(const nlohmann::json& alarmJson);
+    std::vector<uint64_t> GetErrCodeAlarmExisted() const;
     
     // 灵衢故障消息处理主入口
     void ProcessFaultMessage(const fault::FaultMsgSignal &faultMsg);
@@ -105,7 +110,8 @@ private:
     std::shared_ptr<NodeStatus> mNodeStatus = nullptr;
     std::shared_ptr<NodeManagerRequestSender> mNodeManagerSender = nullptr;
     std::shared_ptr<HttpClient> mNodeManagerClient = nullptr;
-    
+    std::shared_ptr<NodeScheduler> mNodeScheduler = nullptr;
+
     // 实例恢复信息结构体，将相关数据聚合在一起，减少查找次数并提高数据一致性
     struct InstanceRecoveryInfo {
         std::vector<FaultNodeInfo> faultNodes;
@@ -140,6 +146,11 @@ private:
         "80E18404"  // hbm伴生故障码
     };
 
+    // CQE(4C1F8608) 设备故障码白名单，用于 GetCQEInstanceIdsFromFaultMessage 识别 CQE 实例
+    std::set<std::string> mDeviceFaultCQECodesWhitelist = {
+        "4C1F8608"
+    };
+
     using ErrCodeHandler = std::function<void(uint64_t)>;
     struct ErrCodeProcessor {
         std::string errCode;
@@ -163,11 +174,15 @@ private:
     
     // 实例恢复定时器相关
     ConcurrentMap<uint64_t, std::shared_ptr<InstanceRecoveryTimer>> mInstanceRecoveryTimers;
-    
+
     // Coordinator相关
     std::atomic<bool> mCoordinatorReadyChecked{false};
     // Coordinator 未 ready 时的故障队列
     ConcurrentSet<std::string> mCoordinatorNotReadyFaults;
+
+    // RoCE 异步恢复：ClusterClient callback同步阻塞，通过std::async+保存future使callback快速返回。
+    std::deque<std::future<void>> mRoCERecoveryFutures;
+    void PruneCompletedRoCEFutures();
     
     // NPU恢复相关方法
     void StartGlobalNPUPolling();
@@ -196,10 +211,19 @@ private:
     bool IsNonRecoverableErrCodeExists(const nlohmann::json& errorInfo);
     bool IsErrCodeExists(const nlohmann::json& errorInfo, const std::string& errCode);
     std::string GetErrorLocationStr(const nlohmann::json& errorInfo, const std::string& errCode);
-    void ReportLLMEngineAlarm(uint64_t instanceId, const nlohmann::json& errorInfo,
-        const std::string& errCode, LLMEngineFaultReason faultReason);
+    std::string GetErrorLocationStrFromFaultMsg(const fault::FaultMsgSignal& faultMsg,
+        uint64_t instanceId, const std::string& targetErrCode);
+    void ReportLLMEngineAlarm(const std::string& errorLocationStr, LLMEngineFaultReason faultReason);
     std::set<std::string> GetNonRecoverableErrCodes(const nlohmann::json& errorInfo);
     void OOMRecoveryHandler(uint64_t instanceId);
+
+    // RoCE 故障恢复相关方法
+    void ProcessCQEFault(const fault::FaultMsgSignal& faultMsg);
+    std::unordered_set<uint64_t> GetCQEInstanceIdsFromFaultMessage(const fault::FaultMsgSignal& faultMsg);
+    void ProcessRoCERecovery(uint64_t instanceId,
+                             const std::vector<FaultNodeInfo>& faultNodes,
+                             const std::vector<uint64_t>& instanceNodeIds,
+                             const std::unordered_set<std::string>& instancePodIPs);
 
     // 灵衢故障处理相关方法
     std::unordered_map<uint64_t, std::vector<FaultNodeInfo>> FindFaultyInstances(const fault::FaultMsgSignal &faultMsg,
