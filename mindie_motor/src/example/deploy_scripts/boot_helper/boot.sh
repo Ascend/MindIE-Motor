@@ -17,6 +17,14 @@ export MINDIE_LOG_TO_FILE=1
 # set_common_env支持用户修改环境变量覆盖原始MindIE环境变量
 set_common_env
 
+# DFX: copy failure must be logged and abort boot immediately
+copy_or_fail() {
+    if ! cp "$@"; then
+        echo "Error: copy failed: cp $(printf '%q ' "$@")"
+        exit 1
+    fi
+}
+
 jemalloc_path=$(find /usr/lib /usr/lib64 -maxdepth 2 -type f -name "libjemalloc.so.2" 2>/dev/null | head -n 1)
 
 if [[ -n "$jemalloc_path" ]]; then
@@ -96,7 +104,7 @@ if [ $# -eq 0 ]; then
                 echo "$status";
                 if [[ "$status" = "completed" ]]; then
                     echo "status is completed";
-                    cp /user/serverid/devindex/config/hccl/hccl.json "$HOME_HCCL_PATH"
+                    copy_or_fail /user/serverid/devindex/config/hccl/hccl.json "$HOME_HCCL_PATH"
                     chmod 640 "$HOME_HCCL_PATH"
                     break;
                 fi;

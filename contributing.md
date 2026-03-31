@@ -1,6 +1,6 @@
 # 贡献者指南
 
-- [issue提交指南](#https://gitcode.com/Ascend/community/blob/master/docs/contributor/issue-guide.md)
+- [issue提交指南](https://gitcode.com/Ascend/community/blob/master/docs/contributor/issue-guide.md)
 - [社区 Issue 处理流程指导](https://gitcode.com/Ascend/community/blob/master/docs/contributor/issue-workflow-guidelines.md)
 - [PR提交指南](https://gitcode.com/Ascend/community/blob/master/docs/contributor/pr-guide.md)
 - [Ascend 社区开发者测试贡献指南](https://gitcode.com/Ascend/community/blob/master/docs/contributor/developer-testing-guide.md)

@@ -1,6 +1,6 @@
 # 日志配置
 
-日志文件目前有三种配置方式，分别为配置新环境变量、配置旧环境变量和配置文件，优先级从高到底。配置旧环境变量和配置文件方式将在后续不再提供，建议使用配置新环境变量进行日志配置。新环境变量的日志配置详情请参见[MindIE日志参考](https://www.hiascend.com/document/detail/zh/mindie/23RC1/ref/logreference/mindie_log_0213.html)。
+日志文件目前有三种配置方式，分别为配置新环境变量、配置旧环境变量和配置文件，优先级从高到低。配置旧环境变量和配置文件方式将在后续不再提供，建议使用配置新环境变量进行日志配置。新环境变量的日志配置详情请参见[MindIE日志参考](https://www.hiascend.com/document/detail/zh/mindie/23RC1/ref/logreference/mindie_log_0213.html)。
 
 - 配置新环境变量：
 
@@ -15,8 +15,7 @@
     |MINDIE_LOG_PATH|~/mindie/log|统一设置MindIE各组件日志写入文件的保存目录。<br>若用户设置该环境变量，需要在该环境变量设置的路径后方新建log/。则调试日志记录在`$MINDIE_LOG_PATH/log/debug`路径下，安全日志默认记录在`$MINDIE_LOG_PATH/log/security`路径下。<br>- 若路径开头为"/"，则表明该路径为绝对路径；<br>- 若路径开头无"/"，则表明该路径为相对路径，且是相对于“~/mindie/log”的路径；<br>- 如果设置环境变量，将覆盖json配置文件中run_log_path和operation_log_path参数。|
     |MINDIE_LOG_ROTATE|- fs：默认值为20 (MB)<br>- r：默认值为10|统一设置MindIE各组件日志轮转。<br>设置某个组件的日志轮转格式为：*组件名称* : -fs *filesize* -r *rotate*<br>- 如果“:”前无组件名称，则默认为对所有组件统一进行设置；<br>- *filesize*表示每个日志文件大小（单位MB），取值范围 [1, 500]。如果设置环境变量，将覆盖json配置文件中max_log_file_size参数；<br>- *rotate*表示每个进程可写的最多日志文件个数，取值范围 [1, 64]。如果设置环境变量，将覆盖json配置文件中max_log_file_num参数。|
 
-
-    ```
+    ```bash
     示例1：统一将MindIE所有组件的日志级别设成debug,将集群管理组件的日志级别设置为info (用户输入的值不区分大小写)
     export MINDIE_LOG_LEVEL=debug; ms:INfo
     
@@ -54,8 +53,7 @@
     |--|--|
     |MINDIEMS_LOG_LEVEL|**当前保留MINDIEMS_LOG_LEVEL是为了兼容旧版本配置方式。**<br>**若MINDIE_LOG_LEVEL设置为空则使用MINDIEMS_LOG_LEVEL。**<br>用户可动态设置集群管理组件客户端输出的日志等级。<br>默认值为空，环境变量的优先级高于json配置文件中log_level参数。日志级别如下所示：<br>- DEBUG<br>- INFO<br>- WARNING<br>- ERROR<br>- CRITICAL|
 
-
-    集群管理组件客户端可通过MINDIEMS\_LOG\_LEVEL环境变量动态设置日志打印等级，如下所示：
+    集群管理组件客户端可通过MINDIEMS_LOG_LEVEL环境变量动态设置日志打印等级，如下所示：
 
     ```bash
     export MINDIEMS_LOG_LEVEL={日志打印等级}
@@ -71,7 +69,7 @@
     - 客户端日志会根据 *{$HOME}*/.mindie_ms/msxxx.json配置的日志等级log_level参数进行过滤，将日志内容打印到客户端屏幕上。
     - 服务端日志会根据服务端配置文件ms_xxx.json中的以下代码进行设置。
 
-        ```
+        ```json
         "log_info": {
             "log_level": "INFO",                             // 日志级别
             "run_log_path": "/var/log/mindie-ms/run/log.txt",  // 运行日志写入的文件路径
@@ -83,9 +81,10 @@
 
         >[!NOTE]说明
         >- 过滤等级后，将日志内容写入"log_path"路径中的日志文件，服务端报错可以通过日志进行定位；当前日志写入策略是循环写入，默认最多保存10个日志文件，默认每个日志文件最大为20M。
-        >-   将日志写入日志文件时，需要导入以下KMC依赖的环境变量。
-        >       ```bash
-        >       export HSECEASY_PATH=$MIES_INSTALL_PATH/lib
-        >       ```
-        >-  对于用户将配置文件中的必选项配置错误，导致的服务启动失败的情况，将通过打印并落盘保存错误日志信息到默认目录~/mindie/log来提示以便问题定位。
-
+        >- 将日志写入日志文件时，需要导入以下KMC依赖的环境变量。
+        >
+        >   ```bash
+        >   export HSECEASY_PATH=$MIES_INSTALL_PATH/lib
+        >   ```
+        >
+        >- 对于用户将配置文件中的必选项配置错误，导致的服务启动失败的情况，将通过打印并落盘保存错误日志信息到默认目录~/mindie/log来提示以便问题定位。

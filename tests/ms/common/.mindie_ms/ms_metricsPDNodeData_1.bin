@@ -42,7 +42,7 @@ npu_cache_usage_perc{model_name="llama_65b"} 0.2
 cpu_cache_usage_perc{model_name="llama_65b"} 0.3
 # HELP npu_prefix_cache_hit_rate NPU prefix cache block hit rate..
 # TYPE npu_prefix_cache_hit_rate gauge
-npu_prefix_cache_hit_rate{model_name="llama_65b"} Nan
+npu_prefix_cache_hit_rate{model_name="llama_65b"} 0.1
 # HELP time_to_first_token_seconds Histogram of time to first token in seconds.
 # TYPE time_to_first_token_seconds histogram
 time_to_first_token_seconds_count{model_name="llama_65b"} 2523

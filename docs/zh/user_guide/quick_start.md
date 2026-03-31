@@ -2,11 +2,11 @@
 
 ## 环境准备
 
-请参考[安装指南](./installation_guide.md)进行环境的安装与部署，并参考[配置参数说明（服务化）](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/user_manual/service_parameter_configuration.md)根据用户需要配置参数。
+请参考[安装指南](./install/environment_preparation.md)进行环境的安装与部署，并参考[配置参数说明（服务化）](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/user_manual/service_parameter_configuration.md)根据用户需要配置参数。
 
 ## 操作步骤
 
-- Server可以部署兼容Triton/OpenAI/TGI/vLLM第三方框架接口的服务应用。推荐用户开启HTTPS通信，并按照[单机部署](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/user_manual/PD%E6%B7%B7%E5%90%88%E9%83%A8%E7%BD%B2.md#%E5%8D%95%E6%9C%BA%E6%B7%B7%E9%83%A8)，配置开启HTTPS通信所需服务证书、私钥等证书文件。
+- Server可以部署兼容Triton/OpenAI/TGI/vLLM第三方框架接口的服务应用。推荐用户开启HTTPS通信，并按照[单机部署](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/user_manual/prefill_decode_mixed_deployment.md)，配置开启HTTPS通信所需服务证书、私钥等证书文件。
 
 - Server启动的默认IP地址和端口号为`https://127.0.0.1:1025`，用户可修改config.json文件中的"ipAddress"和"port"参数来配置启动IP地址与端口号。
 - Server可实现服务状态查询，模型信息查询，文本/流式推理等功能。
@@ -14,14 +14,14 @@
 >[!WARNING]警告
 >HTTP缺乏必要的安全机制，容易受到数据泄露、数据篡改和中间人攻击的威胁，建议用户谨慎使用HTTP协议。
 
-1.  两种启动服务方法如下所示。
+1. 两种启动服务方法如下所示。
 
     启动命令需在/*{MindIE安装目录}*/latest/mindie-service目录中执行。
 
     >[!NOTE]说明 
     >拉起服务前，建议用户使用MindStudio的预检工具进行配置文件字段校验，辅助校验配置的合法性，详情请参见[链接](https://gitcode.com/Ascend/msit/tree/master/msprechecker)。
 
-    -   方式一（推荐）：使用后台进程方式启动服务。后台进程方式启动服务后，关闭窗口后进程也会保留。
+    - 方式一（推荐）：使用后台进程方式启动服务。后台进程方式启动服务后，关闭窗口后进程也会保留。
 
         ```bash
         nohup ./bin/mindieservice_daemon > output.log 2>&1 &
@@ -33,7 +33,7 @@
         Daemon start success!
         ```
 
-    -   方式二：直接启动服务。
+    - 方式二：直接启动服务。
 
         ```bash
         ./bin/mindieservice_daemon
@@ -50,13 +50,13 @@
     >- Ascend-cann-toolkit工具会在执行服务启动的目录下生成kernel_meta_temp_*xxxx*目录，该目录为算子的cce文件保存目录。因此需要在当前用户拥有写权限目录下（例如Ascend-mindie-server\_*\{version\}*\_linux-*{arch}* 目录，或者用户在Ascend-mindie-server\_*\{version\}*\_linux-*\{arch\}* 目录下自行创建临时目录）启动推理服务。
     >- 如需切换用户，请在切换用户后执行 **rm -f /dev/shm/** 命令，删除由之前用户运行创建的共享文件。避免切换用户后，该用户没有之前用户创建的共享文件的读写权限，造成推理失败。
     >- 标准输出流捕获到的文件output.log支持用户自定义文件和路径。
-    >- 如果您使用的模型为超大模型（比如1300B的超大模型），其模型加载时间将会很长，请参见[加载大模型时耗时过长](./faq.md#jzdmxshsgc)章节缩短加载时间。
+    >- 如果您使用的模型为超大模型（比如1300B的超大模型），其模型加载时间将会很长，请参见[加载大模型时耗时过长](https://gitcode.com/Ascend/MindIE-LLM/blob/master/docs/zh/faq/faq.md#%E5%8A%A0%E8%BD%BD%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%97%B6%E8%80%97%E6%97%B6%E8%BF%87%E9%95%BF)章节缩短加载时间。
 
 2. 用户可使用HTTPS客户端（Linux curl命令，Postman工具等）发送HTTPS请求，此处以Linux curl命令为例进行说明。
 
     重新打开一个窗口，使用以下命令发送请求。例如列出当前模型列表：
 
-    ```
+    ```json
     curl -H "Accept: application/json" -H "Content-type: application/json" --cacert ca.pem --cert client.pem  --key client.key.pem -X GET https://127.0.0.1:1025/v1/models
     ```
 
@@ -69,18 +69,17 @@
     >- --key：客户端私钥文件路径。
     >- client.key.pem：客户端证书私钥（未加密，建议采用加密密钥）。
 
-
 # 服务化接口调用
 
 ## 使用vLLM兼容OpenAI接口
 
-本章节以v1/chat流式推理接口和v1/completions流式推理接口为例介绍接口调用，其他接口的调用方法请参见[用户侧接口](./SERVICE_ORIENTED_INTERFACE/optical_user_to_network_interface.md)章节。
+本章节以v1/chat流式推理接口和v1/completions流式推理接口为例介绍接口调用，其他接口的调用方法请参见[EndPoint业务面RESTful接口](https://www.hiascend.com/document/detail/zh/mindie/230/mindiellm/llmdev/mindie_service0065.html)章节。
 
 **1. v1/chat流式推理接口**
 
-<table><tbody><tr id="row0597176155320"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.1.1"><p id="p1359710615314"><strong id="b15977665315">接口名</strong></p>
+<table><tbody><tr><th>接口名
 </th>
-<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.1.1 "><p id="p1759713618530">v1/chat流式推理接口</p>
+<td>v1/chat流式推理接口
 </td>
 </tr>
 <tr id="row1459719619535"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.2.1"><p id="p35979619535"><strong id="b859713619535">URL</strong></p>
@@ -95,7 +94,7 @@
 </tr>
 <tr id="row859820665317"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.4.1"><p id="p6598568538"><a name="p6598568538"></a><a name="p6598568538"></a><strong id="b35980655316"><a name="b35980655316"></a><a name="b35980655316"></a>请求示例</strong></p>
 </th>
-<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.4.1 "><pre class="screen" id="screen1159826205313"><a name="screen1159826205313"></a><a name="screen1159826205313"></a>curl -H "Accept: application/json" -H "Content-type: application/json" --cacert ca.pem --cert client.pem  --key client.key.pem -X POST -d '{
+<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.4.1 "><pre class="screen" id="screen1159826205313">curl -H "Accept: application/json" -H "Content-type: application/json" --cacert ca.pem --cert client.pem  --key client.key.pem -X POST -d '{
     "model": "Qwen",
     "messages": [
         {
@@ -117,9 +116,9 @@
 }' https://127.0.0.1:1025/v1/chat/completions</pre>
 </td>
 </tr>
-<tr id="row1598176155312"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.5.1"><p id="p259811635310"><a name="p259811635310"></a><a name="p259811635310"></a>返回示例</p>
+<tr id="row1598176155312"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.5.1">返回示例
 </th>
-<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen1559816195311"><a name="screen1559816195311"></a><a name="screen1559816195311"></a>data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":0,"delta":{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}
+<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen1559816195311"></pre><a name="screen1559816195311"></a><a name="screen1559816195311"></a>data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":0,"delta":{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}
 data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":1,"delta":{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}
 
 data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","choices":[{"index":0,"delta":{"role":"assistant","content":" are"},"logprobs":null,"finish_reason":null}]}
@@ -138,14 +137,13 @@ data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744
 
 data: {"id":"endpoint_common_10","object":"chat.completion.chunk","created":1744038509,"model":"llama","usage":{"prompt_tokens":24,"prompt_tokens_details": {"cached_tokens": 0},"completion_tokens":5,"total_tokens":29,"batch_size":[1,1,1,1,1],"queue_wait_time":[5318,117,82,72,196]},"choices":[{"index":1,"delta":{"role":"assistant","content":" assistant"},"logprobs":null,"finish_reason":"length"}]}
 
-data: [DONE]</pre>
+data: [DONE]
 </td>
 </tr>
 </tbody>
 </table>
 
 **2. v1/completions流式推理接口**
-
 
 <table><tbody><tr id="row449917161206"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.1.1"><p id="p449961614018"><a name="p449961614018"></a><a name="p449961614018"></a><strong id="b04997161103"><a name="b04997161103"></a><a name="b04997161103"></a>接口名</strong></p>
 </th>
@@ -180,9 +178,9 @@ data: [DONE]</pre>
 </tr>
 <tr id="row949916161501"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.5.1"><p id="p144991116705"><a name="p144991116705"></a><a name="p144991116705"></a>返回示例</p>
 </th>
-<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen2499181615013"><a name="screen2499181615013"></a><a name="screen2499181615013"></a>data: {"id":"endpoint_common_1","object":"text_completion","created":1744948803,"model":"Qwen2.5-7B-Instruct","choices":[{"index":0,"text":"\nI am a large","logprobs":{"text_offset":[0,1,2,5,7],"token_logprobs":[-1.8828125,-0.018310546875,-0.054931640625,-0.435546875,-0.0286865234375],"tokens":["\n","I"," am"," a"," large"],"top_logprobs":[{"\n":-1.8828125,"\n\n":-2.0},{"I":-0.018310546875,"Hello":-4.53125},{" am":-0.054931640625,"'m":-2.9375},{" a":-0.435546875," Q":-1.1875},{" large":-0.0286865234375," language":-4.78125}]},"stop_reason":null,"finish_reason":"length"},{"index":1,"text":"\n\nI am a large","logprobs":{"text_offset":[13,15,16,19,21],"token_logprobs":[-2.0,-0.031494140625,-0.0791015625,-0.5546875,-0.01092529296875],"tokens":["\n\n","I"," am"," a"," large"],"top_logprobs":[{"\n\n":-2.0,"\n":-1.8828125},{"I":-0.031494140625,"Hello":-4.28125},{" am":-0.0791015625,"'m":-2.578125},{" a":-0.5546875," Q":-1.0546875},{" large":-0.01092529296875," language":-6.375}]},"stop_reason":null,"finish_reason":"length"}],"usage":{"prompt_tokens":3,"prompt_tokens_details": {"cached_tokens": 0},"completion_tokens":10,"total_tokens":13,"batch_size":[1,1,1,1,1,1,1,1,1,1],"queue_wait_time":[5496,146,65,60,111,42,27,70,64,51]}}
+<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen2499181615013"></pre><a name="screen2499181615013"></a><a name="screen2499181615013"></a>data: {"id":"endpoint_common_1","object":"text_completion","created":1744948803,"model":"Qwen2.5-7B-Instruct","choices":[{"index":0,"text":"\nI am a large","logprobs":{"text_offset":[0,1,2,5,7],"token_logprobs":[-1.8828125,-0.018310546875,-0.054931640625,-0.435546875,-0.0286865234375],"tokens":["\n","I"," am"," a"," large"],"top_logprobs":[{"\n":-1.8828125,"\n\n":-2.0},{"I":-0.018310546875,"Hello":-4.53125},{" am":-0.054931640625,"'m":-2.9375},{" a":-0.435546875," Q":-1.1875},{" large":-0.0286865234375," language":-4.78125}]},"stop_reason":null,"finish_reason":"length"},{"index":1,"text":"\n\nI am a large","logprobs":{"text_offset":[13,15,16,19,21],"token_logprobs":[-2.0,-0.031494140625,-0.0791015625,-0.5546875,-0.01092529296875],"tokens":["\n\n","I"," am"," a"," large"],"top_logprobs":[{"\n\n":-2.0,"\n":-1.8828125},{"I":-0.031494140625,"Hello":-4.28125},{" am":-0.0791015625,"'m":-2.578125},{" a":-0.5546875," Q":-1.0546875},{" large":-0.01092529296875," language":-6.375}]},"stop_reason":null,"finish_reason":"length"}],"usage":{"prompt_tokens":3,"prompt_tokens_details": {"cached_tokens": 0},"completion_tokens":10,"total_tokens":13,"batch_size":[1,1,1,1,1,1,1,1,1,1],"queue_wait_time":[5496,146,65,60,111,42,27,70,64,51]}}
 
-data: [DONE]</pre>
+data: [DONE]
 </td>
 </tr>
 </tbody>
@@ -190,7 +188,7 @@ data: [DONE]</pre>
 
 ## 使用MindIE原生接口
 
-本章节以文本推理接口和流式推理接口为例介绍接口调用，其他接口的调用方法请参见[用户侧接口](./SERVICE_ORIENTED_INTERFACE/optical_user_to_network_interface.md)章节。
+本章节以文本推理接口和流式推理接口为例介绍接口调用，其他接口的调用方法请参见[EndPoint业务面RESTful接口](https://www.hiascend.com/document/detail/zh/mindie/230/mindiellm/llmdev/mindie_service0065.html)章节。
 
 **1. 文本推理接口**
 
@@ -201,7 +199,7 @@ data: [DONE]</pre>
 </tr>
 <tr id="row167610411112"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.2.1"><p id="p126761742120"><strong id="b267614113">URL</strong></p>
 </th>
-<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.2.1 "><p id="p76761947119"></a><strong id="b467664619">https://</strong><em>{服务IP地址}:{端口号}</em><strong id="b16761046117">/infer</strong></p>
+<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.2.1 "><p id="p76761947119"><strong id="b467664619">https://</strong><em>{服务IP地址}:{端口号}</em><strong id="b16761046117">/infer</strong></p>
 </td>
 </tr>
 <tr id="row9676141111"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.3.1"><p id="p86761241814"><a name="p86761241814"></a><a name="p86761241814"></a><strong id="b0676204110"><a name="b0676204110"></a><a name="b0676204110"></a>请求类型</strong></p>
@@ -288,7 +286,7 @@ data: [DONE]</pre>
 </tr>
 <tr id="row132361071019"><th class="firstcol" valign="top" width="13.36%" id="mcps1.1.3.5.1"><p id="p9236871213"><a name="p9236871213"></a><a name="p9236871213"></a>返回示例</p>
 </th>
-<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen13236274110"><a name="screen13236274110"></a><a name="screen13236274110"></a>data: {"prefill_time":45.54,"decode_time":null,"token":{"id":[626],"text":"am"}}
+<td class="cellrowborder" valign="top" width="86.64%" headers="mcps1.1.3.5.1 "><pre class="screen" id="screen13236274110"></pre><a name="screen13236274110"></a><a name="screen13236274110"></a>data: {"prefill_time":45.54,"decode_time":null,"token":{"id":[626],"text":"am"}}
 
 data: {"prefill_time":null,"decode_time":128.32,"token":{"id":[263],"text":" a"}}
 
@@ -326,7 +324,7 @@ data: {"prefill_time":null,"decode_time":16.80,"token":{"id":[29871],"text":" "}
 
 data: {"prefill_time":null,"decode_time":16.80,"token":{"id":[29896],"text":"1"}}
 
-data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French photographer based in Paris.\nI have been shooting since I was 15","details":{"finish_reason":"length","generated_tokens":20,"seed":846930886},"token":{"id":[29945],"text":null}}</pre>
+data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French photographer based in Paris.\nI have been shooting since I was 15","details":{"finish_reason":"length","generated_tokens":20,"seed":846930886},"token":{"id":[29945],"text":null}}
 </td>
 </tr>
 </tbody>
@@ -350,24 +348,25 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
     >[!NOTE]说明
     >pip安装方式适用于使用AISBench最新功能的场景（镜像安装MindIE方式除外）。AISBench工具已预装在MindIE镜像中，可使用以下命令查看AISBench工具在MindIE镜像中的安装路径。
+    >
     >```bash
     >pip show ais_bench_benchmark
     >```
 
 2. 准备数据集。
 
-    以gsm8k为例，单击[gsm8k数据集](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip)下载数据集，将解压后的gsm8k文件夹部署到工具根路径的ais\_bench/datasets文件夹下。
+    以gsm8k为例，单击[gsm8k数据集](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip)下载数据集，将解压后的gsm8k文件夹放置于工具根路径的ais\_bench/datasets文件夹下。
 
 3. 配置ais\_bench/benchmark/configs/models/vllm\_api/vllm\_api\_stream\_chat.py文件，示例如下所示。
 
-    ```
+    ```python
     from ais_bench.benchmark.models import VLLMCustomAPIChatStream  
     models = [     
         dict(         
             attr="service",
             type=VLLMCustomAPIChatStream,
             abbr='vllm-api-stream-chat',
-            path="",                    # 指定模型序列化词表文件绝对路径，一般来说就是模型权重文件夹路径        
+            path="",                    # 指定模型序列化词表文件绝对路径，即是模型权重文件夹路径        
             model="DeepSeek-R1",        # 指定服务端已加载模型名称，依据实际VLLM推理服务拉取的模型名称配置（配置成空字符串会自动获取）        
             request_rate = 0,           # 请求发送频率，每1/request_rate秒发送1个请求给服务端，小于0.1则一次性发送所有请求        
             retry = 2,         
@@ -418,24 +417,25 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
     >[!NOTE]说明
     >pip安装方式适用于使用AISBench最新功能的场景（镜像安装MindIE方式除外）。AISBench工具已预装在MindIE镜像中，可使用以下命令查看AISBench工具在MindIE镜像中的安装路径。
-    >```
+    >
+    >```bash
     >pip show ais_bench_benchmark
     >```
 
 2. 准备数据集。   
 
-    以gsm8k为例，单击[gsm8k数据集](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip)下载数据集，将解压后的gsm8k/文件夹部署到工具根路径的ais\_bench/datasets文件夹下。
+    以gsm8k为例，单击[gsm8k数据集](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip)下载数据集，将解压后的gsm8k/文件夹放置于工具根路径的ais_bench/datasets文件夹下。
 
-3. 配置ais\_bench/benchmark/configs/models/vllm\_api/vllm\_api\_stream\_chat.py文件，示例如下所示。
+3. 配置ais_bench/benchmark/configs/models/vllm_api/vllm_api_stream_chat.py文件，示例如下所示。
 
-    ```
+    ```python
     from ais_bench.benchmark.models import VLLMCustomAPIChatStream  
     models = [     
         dict(         
             attr="service",         
             type=VLLMCustomAPIChatStream,         
             abbr='vllm-api-stream-chat',         
-            path="",                    # 指定模型序列化词表文件绝对路径，一般来说就是模型权重文件夹路径        
+            path="",                    # 指定模型序列化词表文件绝对路径，即是模型权重文件夹路径        
             model="DeepSeek-R1",        # 指定服务端已加载模型名称，依据实际VLLM推理服务拉取的模型名称配置（配置成空字符串会自动获取）        
             request_rate = 0,           # 请求发送频率，每1/request_rate秒发送1个请求给服务端，小于0.1则一次性发送所有请求        
             retry = 2,         
@@ -449,7 +449,7 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
                 top_p = 0.95,             
                 seed = None,             
                 repetition_penalty = 1.03,             
-                ignore_eos = True,      # 推理服务输出忽略eos（输出长度一定会达到max_out_len）        
+                ignore_eos = True,      # 推理服务输出忽略eos（输出长度会达到max_out_len）        
             )     
         ) 
     ]
@@ -457,17 +457,17 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
 4. 执行以下命令启动服务化性能测试。
 
-    ```
+    ```bash
     ais_bench --models vllm_api_stream_chat --datasets demo_gsm8k_gen_4_shot_cot_chat_prompt --mode perf --debug
     ```
 
     回显如下所示则表示执行成功：       
 
-    ```
+    ```linux
     ╒════════════╤════╤════════╤═══════╤══════╤═══════╤══════╤═══════╤═══════╤═══╕
     │ Performance Parameters │ Stage  │ Average        │ Min          │ Max        │ Median       │ P75        │ P90          │ P99          │ N    │ 
     │ E2EL                   │total   │ 2048.2945  ms  │ 1729.7498 ms │ 3450.96 ms │ 2491.8789 ms │ 2750.85 ms │ 3184.9186 ms │ 3424.4354 ms │ 8    │
-    │ TTFT                   │total   │ 50.332 ms      │ 50.6244 ms   │ 52.0585 ms │ 50.3237 ms   │ 50.5872 ms │ 50.7566 ms   │ 50 .0551 ms  │ 8    │
+    │ TTFT                   │total   │ 50.332 ms      │ 50.6244 ms   │ 52.0585 ms │ 50.3237 ms   │ 50.5872 ms │ 50.7566 ms   │ 50.0551 ms  │ 8    │
     │ TPOT                   │total   │ 10.6965 ms     │ 10.061 ms    │ 10.8805 ms │ 10.7495 ms   │ 10.7818 ms │ 10.808 ms    │ 10.8582 ms   │ 8    │ 
     │ ITL                    │total   │ 10.6965 ms     │ 7.3583 ms    │ 13.7707 ms │ 10.7513 ms   │ 10.8009 ms │ 10.8358 ms   │ 10.9322 ms   │ 8    │ 
     │ InputTokens            │total   │ 1512.5         │ 1481.0       │ 1566.0     │ 1511.5       │ 1520.25    │ 1536.6       │ 1563.06      │ 8    │ 
@@ -492,15 +492,18 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
     ╘═════════════╧═════╧══════════╛
     ```
 
-    性能测试结果主要关注TTFT、TPOT、Request Throughput和Output Token Throughput输出参数，参数详情信息请参见[表2 性能测试结果指标](service_oriented_optimization_tool.md#性能/精度测试工具#table_ptrm002)。
+    性能测试结果主要关注TTFT、TPOT、Request Throughput和Output Token Throughput输出参数，参数详情信息请参见[表2 性能测试结果指标](service_oriented_optimization_tool.md#table_ptrm002)。
 
     >[!NOTE]说明
-    >任务执行的过程最终会落盘在默认的输出路径，该输出路径在运行中的打印日志中有提示，日志内容如下所示：
-    >```
+    >任务执行的过程会落盘在默认的输出路径，该输出路径在运行中的打印日志中有提示，日志内容如下所示：
+    >
+    >```linux
     >08/28 15:13:26 - AISBench - INFO - Current exp folder: outputs/default/20250828_151326
     >```
+    >
     >命令执行结束后，outputs/default/20250828\_151326中的任务执行的详情如下所示：
-    >```
+    >
+    >```linux
     >20250828_151326           # 每次实验基于时间戳生成的唯一目录 
     >├── configs               # 自动存储的所有已转储配置文件 
     >├── logs                  # 执行过程中日志，命令中如果加--debug，不会有过程日志落盘（都直接打印出来了） 
@@ -517,8 +520,8 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
 
 使用安装用户登录安装节点，两种停止Server服务方式如下所示。
 
--   方式一（推荐）：使用后台进程方式启动服务。
-    -   使用kill命令停止进程。
+- 方式一（推荐）：若使用后台进程方式启动服务，两种停止服务方式如下所示：
+    - 使用kill命令停止进程。
 
         ```bash
         kill {mindieservice_daemon 进程id}
@@ -527,11 +530,14 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
         >[!NOTE]说明
         >Linux系统中查询mindieservice_daemon主进程ID：
         >1. 查看所有与MindIE Motor相关的进程列表。
-        >    ```
+        >
+        >    ```bash
         >    ps -ef | grep 'mindieservice_daemon'
         >    ```
+        >
         >    回显示例如下：
-        >    ```
+        >
+        >    ```linux
         >    (base) [xxxx@localhost test]# ps -ef | grep 'mindieservice_daemon'
         >    UID          PID    PPID  C STIME TTY          TIME CMD 
         >    xxxx     1595969  386706  5 11:37 pts/1    00:00:24 ./bin/mindieservice_daemon
@@ -545,12 +551,13 @@ data: {"prefill_time":null,"decode_time":16.80,"generated_text":"am a French pho
         >    xxxx     1606013 1595969  1 11:42 pts/1    00:00:01 ./bin/mindieservice_daemon
         >    xxxx     1616310  559909  0 11:44 pts/5    00:00:00 grep --color=auto mindieservice_daemon
         >    ```
-        >2. 在回显结果中找到PPID列，找出所有包含mindieservice\_daemon且PPID相同的进程，这个相同的PPID指向的进程即为mindieservice\_daemon主进程，它的PID即为主进程ID，回显示例中的主进程ID为：1595969。
+        >
+        >2. 在回显结果中找到PPID列，找出所有包含mindieservice_daemon且PPID相同的进程，这个相同的PPID指向的进程即为mindieservice_daemon主进程，它的PID即为主进程ID，回显示例中的主进程ID为：1595969。
 
-    -   或使用pkill命令停止进程。
+    - 或使用pkill命令停止进程。
 
-        ```
+        ```bash
         pkill -9 mindie
         ```
 
--   方式二：以直接启动进程方式启动服务，可以通过直接按ctrl+c停止服务。
+- 方式二：若直接启动进程方式启动服务，可以通过按ctrl+c停止服务。

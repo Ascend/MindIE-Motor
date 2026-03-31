@@ -1,12 +1,11 @@
 # MindIE-Motor DT
 
-
 ## 使用方法
 
 1. **克隆项目**并在**MindIE-Motor项目根目录**下
 2. **运行脚本**：
 
-   ```
+   ```bash
    bash tests/run_all_tests.sh --component [benchmark|mindieclient|all]  [--report-path REPORT_PATH] [--subdir SUBDIR]
    ```
 
@@ -20,7 +19,6 @@
 
 - `--subdir`  
   指定测试某个组件下的子目录/文件（可选）。
-
 
 ### 示例
 

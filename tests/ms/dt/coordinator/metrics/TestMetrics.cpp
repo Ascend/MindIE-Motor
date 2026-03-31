@@ -86,6 +86,50 @@ nlohmann::json AggregateMetricsStub(nlohmann::json &podMetric)
     return aggregate;
 }
 
+int32_t ParseMetricsFailStub(nlohmann::json &podMetric)
+{
+    return -1;
+}
+
+nlohmann::json AggregateMetricsEmptyStub(nlohmann::json &podMetric)
+{
+    return nlohmann::json::array();
+}
+
+static nlohmann::json BuildSinglePodMetric(const std::string &metrics, const std::string &identity = "U")
+{
+    nlohmann::json podMetric = nlohmann::json::array();
+    podMetric.push_back({
+        {"NPU_mem_size", 320},
+        {"identity", identity},
+        {"ip", "172.17.0.7"},
+        {"metrics_str", metrics},
+        {"port", "1027"}
+    });
+    return podMetric;
+}
+
+static std::map<std::string, uint64_t> BuildEmptyStats()
+{
+    return {
+        {"numAllRequests", 0},
+        {"numFailRequests", 0},
+        {"numSuccessRequests", 0}
+    };
+}
+
+static void ExpectMetricValue(const nlohmann::json &metrics, const std::string &name, double expected)
+{
+    bool found = false;
+    for (const auto &item : metrics) {
+        if (item["NAME"] == name) {
+            EXPECT_DOUBLE_EQ(item["VALUE"][0].get<double>(), expected);
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
 /*
 测试描述:ParseMetrics测试，测试函数在异常场景能够正常运行，podMetric为空
 测试步骤:
@@ -881,13 +925,44 @@ request_success_total{model_name=\"llama_65b\"} 400
     EXPECT_EQ(ret, -1);
 }
 
-/*
-测试描述:SerializeMetrics测试，测试函数能够正常运行,VALUE为+Inf
-测试步骤:
-    1.调用函数进行操作
-预期结果:
-    1.调用成功
-*/
+TEST_F(TestMetrics, UTMetricTC20)
+{
+    Metrics metricInstance;
+    metricInstance.InitMetricsPattern();
+    std::string hitOnlyMetrics = R"(# HELP all_radix_match_num all
+# TYPE all_radix_match_num gauge
+all_radix_match_num{model_name="llama_65b"} 0
+# HELP npu_radix_match_hit_num hit
+# TYPE npu_radix_match_hit_num gauge
+npu_radix_match_hit_num{model_name="llama_65b"} 5
+# HELP npu_prefix_cache_hit_rate rate
+# TYPE npu_prefix_cache_hit_rate gauge
+npu_prefix_cache_hit_rate{model_name="llama_65b"} 0.2
+)";
+    auto podMetric = BuildSinglePodMetric(hitOnlyMetrics);
+    ASSERT_EQ(metricInstance.ParseMetrics(podMetric), 0);
+    auto aggregated = metricInstance.AggregateMetrics(podMetric, BuildEmptyStats());
+    ExpectMetricValue(aggregated, "npu_prefix_cache_hit_rate", 1.0);
+
+    std::string invalidMetrics = R"(# HELP all_radix_match_num all
+# TYPE all_radix_match_num gauge
+all_radix_match_num{model_name="llama_65b"} 1
+# HELP npu_radix_match_hit_num hit
+# TYPE npu_radix_match_hit_num gauge
+npu_radix_match_hit_num{model_name="llama_65b"} 1
+# HELP npu_prefix_cache_hit_rate rate
+# TYPE npu_prefix_cache_hit_rate gauge
+npu_prefix_cache_hit_rate{model_name="llama_65b"} 0.2
+)";
+    podMetric = BuildSinglePodMetric(invalidMetrics);
+    ASSERT_EQ(metricInstance.ParseMetrics(podMetric), 0);
+    podMetric[0]["metrics"][0]["VALUE"][0] = -1.0;
+    podMetric[0]["metrics"][1]["VALUE"][0] = -1.0;
+    podMetric[0]["metrics"][2]["VALUE"][0] = -1.0;
+    aggregated = metricInstance.AggregateMetrics(podMetric, BuildEmptyStats());
+    ExpectMetricValue(aggregated, "npu_prefix_cache_hit_rate", 0.0);
+}
+
 TEST_F(TestMetrics, SerializeMetricsTC01)
 {
     Metrics metricInstance;
@@ -898,13 +973,23 @@ TEST_F(TestMetrics, SerializeMetricsTC01)
             {"TYPE", "counter"},
             {"LABEL", {"request_success_total{model_name=\"llama_65b\"}"}},
             {"VALUE", {std::numeric_limits<double>::infinity()}}
+        },
+        {
+            {"NAME", "request_failed_total"},
+            {"HELP", "Number of responses failed so far"},
+            {"TYPE", "counter"},
+            {"LABEL", {"request_failed_total{model_name=\"llama_65b\"}"}},
+            {"VALUE", {std::numeric_limits<double>::quiet_NaN()}}
         }
     };
     std::string result = metricInstance.SerializeMetrics(metrics);
 
     std::string expected = "# HELP request_success_total Count of successfully processed requests.\n"
                            "# TYPE request_success_total counter\n"
-                           "request_success_total{model_name=\"llama_65b\"} +Inf\n";
+                           "request_success_total{model_name=\"llama_65b\"} +Inf\n"
+                           "# HELP request_failed_total Number of responses failed so far\n"
+                           "# TYPE request_failed_total counter\n"
+                           "request_failed_total{model_name=\"llama_65b\"} Nan\n";
 
     EXPECT_EQ(result, expected);
 }
@@ -958,6 +1043,44 @@ TEST_F(TestMetrics, GetAndAggregateMetricsTC02)
     std::string result = metricInstance.GetAndAggregateMetrics(podInfos);
     std::string expected = "";
     EXPECT_EQ(result, expected);
+}
+
+TEST_F(TestMetrics, GetAndAggregateMetricsTC03)
+{
+    Metrics metricInstance;
+    std::map<uint64_t, InstanceInfo> podInfos;
+    podInfos[1] = InstanceInfo(
+        "127.0.0.1",
+        "8080",
+        MINDIE::MS::DIGSInstanceRole::PREFILL_INSTANCE,
+        "model1");
+    Stub stub;
+    stub.set(ADDR(Metrics, GetServerMetircs), &GetServerMetircsStub);
+    stub.set(ADDR(Metrics, ParseMetrics), &ParseMetricsFailStub);
+    EXPECT_EQ(metricInstance.GetAndAggregateMetrics(podInfos), "");
+    stub.reset(ADDR(Metrics, GetServerMetircs));
+    stub.reset(ADDR(Metrics, ParseMetrics));
+
+    stub.set(ADDR(Metrics, ParseMetrics), &ParseMetricsStub);
+    stub.set(ADDR(Metrics, AggregateMetrics), &AggregateMetricsEmptyStub);
+    EXPECT_EQ(metricInstance.GetAndAggregateMetrics(podInfos), "");
+    stub.reset(ADDR(Metrics, GetServerMetircs));
+    stub.reset(ADDR(Metrics, ParseMetrics));
+    stub.reset(ADDR(Metrics, AggregateMetrics));
+}
+
+TEST_F(TestMetrics, TryUpdateTokenDistributionFromUsageTC01)
+{
+    token_distribution.clear();
+    std::string body = "data: {\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":55}}\n";
+    TryUpdateTokenDistributionFromUsage(body);
+    EXPECT_EQ(token_distribution[50][100], 1);
+    token_distribution.clear();
+    TryUpdateTokenDistributionFromUsage("data: [DONE]\n");
+    EXPECT_TRUE(token_distribution.empty());
+    TryUpdateTokenDistributionFromUsage("data: {\"usage\":{\"prompt_tokens\":1}}\n");
+    TryUpdateTokenDistributionFromUsage("data: {\"usage\": }\n");
+    EXPECT_TRUE(token_distribution.empty());
 }
 
 /*

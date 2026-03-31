@@ -13,6 +13,7 @@
 import argparse
 import os
 import json
+import re
 import subprocess
 import logging
 import sys
@@ -1219,6 +1220,46 @@ def exec_cm_elastic_kubectl(deploy_config, out_path):
     logging.info("End to execute kubectl update configmap elastic")
 
 
+def get_p_instance_scale_in_delete_order(job_id, p_base, p_total):
+    """
+    获取P实例缩容时的删除顺序：检查所有P实例(0到p_base-1)的pod状态，
+    优先删除有Pending状态pod的实例，否则按索引从小到大删除。
+    :param job_id: 命名空间
+    :param p_base: 缩容前P实例总数
+    :param p_total: 缩容后P实例总数
+    :return: 按优先级排序后待删除的索引列表
+    """
+    num_to_delete = p_base - p_total
+    if num_to_delete <= 0:
+        return []
+    indices_all = list(range(p_base))
+    default_order = list(range(p_base - num_to_delete, p_base))
+    try:
+        cmd_parts = ['kubectl', 'get', 'pods', '-n', job_id, '-o', 'json']
+        result = subprocess.run(cmd_parts, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logging.warning(f"kubectl get pods failed, use default ascending order. stderr: {result.stderr}")
+            return default_order
+        pods_data = json.loads(result.stdout)
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logging.warning(f"Failed to get pod status: {e}, use default ascending order")
+        return default_order
+    index_has_pending = {i: False for i in indices_all}
+    pattern = re.compile(r'mindie-server-p(\d+)')
+    for item in pods_data.get('items', []):
+        pod_name = item.get('metadata', {}).get('name', '')
+        phase = item.get('status', {}).get('phase', '')
+        match = pattern.search(pod_name)
+        if match and phase == 'Pending':
+            idx = int(match.group(1))
+            if idx < p_base:
+                index_has_pending[idx] = True
+    pending_indices = [i for i in indices_all if index_has_pending[i]]
+    non_pending_indices = [i for i in indices_all if not index_has_pending[i]]
+    full_priority_order = pending_indices + non_pending_indices
+    return full_priority_order[:num_to_delete]
+
+
 def elastic_distributed_server_deploy(deploy_config, out_conf_path, out_deploy_yaml_path):
     elastic_distributed_server_deploy_p(deploy_config, out_conf_path, out_deploy_yaml_path)
     elastic_distributed_server_deploy_d(deploy_config, out_conf_path, out_deploy_yaml_path)
@@ -1230,7 +1271,8 @@ def elastic_distributed_server_deploy_p(deploy_config, out_conf_path, out_deploy
     p_base, _ = obtain_server_instance_base_config(deploy_config)
     if p_total < p_base:
         logging.info(f"Scale-in p instance, {p_base} -> {p_total}")
-        for index in range(p_total, p_base):
+        delete_order = get_p_instance_scale_in_delete_order(job_id, p_base, p_total)
+        for index in delete_order:
             configmap_name = f"mindie-server-p{index}-config"
             # 删除旧的configmap
             exec_cmd(f"kubectl delete configmap {configmap_name} -n {job_id}")

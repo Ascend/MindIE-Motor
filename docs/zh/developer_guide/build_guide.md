@@ -6,7 +6,14 @@
 
 ## 环境准备
 
-详情请参见[环境准备](../user_guide/install/environment_preparation.md)章节。
+## 镜像安装方式
+
+MindIE镜像获取请参见[镜像安装方式](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/install/source/image_usage_guide.md#%E8%8E%B7%E5%8F%96mindie%E9%95%9C%E5%83%8F)。
+
+## 容器/物理机安装方式
+
+1. 容器/物理机安装方式，需要准备的软件包和依赖请参见[准备软件包和依赖](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/install/source/preparing_software_and_dependencies.md)。
+2. 容器/物理机安装方式，软件包和依赖的安装请参见[安装软件包和依赖](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/install/source/installing_software_and_dependencies.md)。
 
 ## 编译安装
 
@@ -43,7 +50,9 @@
     ```bash
     export MINDIE_MOTOR_VERSION_OVERRIDE=3.0.0
     ```
+
 5. 编译生成 `.whl` 包。
+
     ```bash
     cd mindie_motor/python
     pip wheel . --no-build-isolation -v
@@ -58,6 +67,7 @@
     ```bash
     pip install mindie_motor*.whl
     ```
+
 7. 权限配置。
     由于whl包安装后是按照系统设定的权限，如下权限可能需要适配（可根据实际权限报错处理），以大EP为例，在boot.sh中添加如下命令：
 
@@ -71,12 +81,10 @@
     chmod 640 /usr/local/lib/python3.11/site-packages/mindie_motor/conf/machine_config/*.json;
     ```
 
-
-
 ## 升级
 
 详情请参见[升级](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/install/source/upgrade.md)章节。
 
 ## 卸载
 
-详情请参见[卸载]([./source/uninstallation.md](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/install/source/uninstallation.md))章节。
+详情请参见[卸载](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/install/source/uninstallation.md)章节。

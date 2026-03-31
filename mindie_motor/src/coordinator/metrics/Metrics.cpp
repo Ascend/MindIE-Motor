@@ -286,21 +286,6 @@ static void AggregateCacheUsagePerc(nlohmann::json &pods, nlohmann::json &single
     singleMetirc["VALUE"].emplace_back(metricValue);
 }
 
-static void AggregateMetricByMean(nlohmann::json &pods, nlohmann::json &singleMetirc, uint32_t index)
-{
-    if (singleMetirc["TYPE"] == "counter" || singleMetirc["TYPE"] == "gauge") {
-        uint32_t podCount = pods.size();
-        double sum = 0;
-        for (uint32_t i = 0; i < podCount; i++) {
-            double value = pods[i]["metrics"][index]["VALUE"][0];
-            sum += value;
-        }
-        double metricValue = sum / static_cast<double>(podCount); // 浮点数除法，允许nan和inf
-        singleMetirc["VALUE"].emplace_back(metricValue);
-        return;
-    }
-}
-
 static void AggregateMetricBySum(nlohmann::json &pods, nlohmann::json &singleMetirc, uint32_t index)
 {
     if (singleMetirc["TYPE"] == "counter" || singleMetirc["TYPE"] == "gauge") {
@@ -323,6 +308,77 @@ static void AggregateMetricBySum(nlohmann::json &pods, nlohmann::json &singleMet
     singleMetirc["VALUE"] = sumArr;
 }
 
+static void AccumulatePrefixCacheStats(const nlohmann::json &pods,
+    double &totalAllRadixMatchNum, double &totalNpuRadixMatchHitNum,
+    double &sumReportedHitRate, uint32_t &reportedHitRateCount)
+{
+    bool hasPrefillNode = false;
+    for (uint32_t i = 0; i < pods.size(); i++) {
+        if (pods[i].contains("identity") && pods[i]["identity"].is_string() &&
+            pods[i]["identity"].get<std::string>() == "P") {
+            hasPrefillNode = true;
+            break;
+        }
+    }
+    for (uint32_t i = 0; i < pods.size(); i++) {
+        bool isPrefill = pods[i].contains("identity") && pods[i]["identity"].is_string() &&
+            pods[i]["identity"].get<std::string>() == "P";
+        if (hasPrefillNode && !isPrefill) {
+            continue;
+        }
+        double podAllRadixMatchNum = 0.0;
+        double podNpuRadixMatchHitNum = 0.0;
+        for (uint32_t j = 0; j < pods[i]["metrics"].size(); j++) {
+            const auto &metric = pods[i]["metrics"][j];
+            if (!metric.contains("NAME") || !metric["NAME"].is_string()) {
+                continue;
+            }
+            std::string metricName = metric["NAME"];
+            if (!metric.contains("VALUE") || metric["VALUE"].empty()) {
+                continue;
+            }
+            double value = metric["VALUE"][0].get<double>();
+            value = (std::isfinite(value) && value >= 0) ? value : 0.0;
+            if (metricName == "all_radix_match_num") {
+                podAllRadixMatchNum = value;
+                continue;
+            }
+            if (metricName == "npu_radix_match_hit_num") {
+                podNpuRadixMatchHitNum = value;
+                continue;
+            }
+            if (metricName == "npu_prefix_cache_hit_rate") {
+                sumReportedHitRate += value;
+                reportedHitRateCount++;
+            }
+        }
+        totalAllRadixMatchNum += podAllRadixMatchNum;
+        totalNpuRadixMatchHitNum += podNpuRadixMatchHitNum;
+    }
+}
+
+static void AggregatePrefixCacheHitRate(nlohmann::json &pods, nlohmann::json &singleMetirc)
+{
+    double totalAllRadixMatchNum = 0;
+    double totalNpuRadixMatchHitNum = 0;
+    double sumReportedHitRate = 0.0;
+    uint32_t reportedHitRateCount = 0;
+    AccumulatePrefixCacheStats(pods, totalAllRadixMatchNum, totalNpuRadixMatchHitNum,
+        sumReportedHitRate, reportedHitRateCount);
+    double hitRate = 0.0;
+    if (totalAllRadixMatchNum > 0) {
+        hitRate = totalNpuRadixMatchHitNum / totalAllRadixMatchNum;
+    } else if (totalNpuRadixMatchHitNum > 0) {
+        hitRate = 1.0;
+    } else if (reportedHitRateCount > 0) {
+        hitRate = sumReportedHitRate / static_cast<double>(reportedHitRateCount);
+    }
+    if (!std::isfinite(hitRate)) {
+        hitRate = 0.0;
+    }
+    singleMetirc["VALUE"].emplace_back(hitRate);
+}
+
 nlohmann::json Metrics::AggregateMetrics(nlohmann::json &podMetric, const std::map<std::string, uint64_t>& stats) const
 {
     uint64_t numAllRequests = stats.at("numAllRequests");
@@ -341,7 +397,6 @@ nlohmann::json Metrics::AggregateMetrics(nlohmann::json &podMetric, const std::m
         singleMetirc["LABEL"] = pod["metrics"][index]["LABEL"];
         std::map<std::string, uint64_t> statsMetrics;
         statsMetrics["numAllRequests"] = numAllRequests;
-        statsMetrics["numFailRequests"] = numFailRequests;
         statsMetrics["numFailRequests"] = numFailRequests;
         statsMetrics["numSuccessRequests"] = numSuccessRequests;
         statsMetrics["index"] = index;
@@ -380,7 +435,7 @@ uint64_t Metrics::ProcessSingleMetric(nlohmann::json &podMetric, nlohmann::json 
         return failReqIndex;
     }
     if (singleMetric["NAME"] == "npu_prefix_cache_hit_rate") {
-        AggregateMetricByMean(podMetric, singleMetric, index);
+        AggregatePrefixCacheHitRate(podMetric, singleMetric);
         aggregate.emplace_back(singleMetric);
         return failReqIndex;
     }
@@ -426,7 +481,7 @@ nlohmann::json Metrics::GetServerMetircs(const std::map<uint64_t, InstanceInfo> 
         auto metricPort = pair.second.metricPort;
         podCollect["ip"] = ip;
         podCollect["port"] = metricPort;
-        podCollect["identity"] = std::to_string(static_cast<char>(pair.second.role));
+        podCollect["identity"] = std::string(1, static_cast<char>(pair.second.role));
         podCollect["NPU_mem_size"] = pair.second.totalBlockNum;
 
         LOG_M("[Get] Get mindie-server metric: ID %lu, IP %s, port %s.",

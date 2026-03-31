@@ -142,8 +142,7 @@ def parse_boot_args(boot_args: list) -> dict:
                 default_boot_args[match_arg] = next_value
             except StopIteration:
                 raise ValueError(f"Invalid input args, please check boot arg {cur_arg}!") from None
-        elif cur_arg.startswith("--"):
-            # Unknown parameter, throw error
+        else:
             valid_args = ", ".join(default_boot_args.keys())
             raise ValueError(
                 f"Unknown boot argument: {cur_arg}. "
@@ -152,6 +151,24 @@ def parse_boot_args(boot_args: list) -> dict:
 
     logging.info(f"boot args: {default_boot_args}")
     return default_boot_args
+
+
+def filter_deprecated_attach_from_boot_args(boot_args: list) -> list:
+    """Remove deprecated --attach (and optional value) from boot args."""
+    out = []
+    removed = False
+    it = iter(boot_args)
+    for arg in it:
+        if arg != "--attach":
+            out.append(arg)
+            continue
+        removed = True
+        nxt = next(it, None)
+        if nxt is not None and nxt.startswith("--"):
+            out.append(nxt)
+    if removed:
+        logging.warning("--attach is deprecated, please remove it from boot arguments.")
+    return out
 
 
 def fetch_config(config_path: str) -> dict:
@@ -306,6 +323,7 @@ def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) ->
 def main():
     parser = argparse.ArgumentParser(description="MindIE RAS Starter")
     _, boot_args = parser.parse_known_args()
+    boot_args = filter_deprecated_attach_from_boot_args(boot_args)
     logging.info(f"Boot arguments: {boot_args}")
     boot_config = parse_boot_args(boot_args)
 

@@ -69,6 +69,94 @@ class TestParseBootArgs(unittest.TestCase):
             ras_starter.parse_boot_args(args)
         self.assertIn("Invalid input args", str(ctx.exception))
 
+    def test_parse_boot_args_unknown_positional_raises(self):
+        """Stray token (not a known option name) raises ValueError."""
+        args = ["orphan", "--conf_path", "/c"]
+        with self.assertRaises(ValueError) as ctx:
+            ras_starter.parse_boot_args(args)
+        self.assertIn("Unknown boot argument", str(ctx.exception))
+        self.assertIn("orphan", str(ctx.exception))
+
+    def test_parse_boot_args_unknown_short_flag_raises(self):
+        """Single-dash token raises ValueError like other unknown args."""
+        args = ["-x", "y"]
+        with self.assertRaises(ValueError) as ctx:
+            ras_starter.parse_boot_args(args)
+        self.assertIn("Unknown boot argument", str(ctx.exception))
+
+    def test_parse_boot_args_prefix_match_unique(self):
+        """Unique prefix resolves to full boot arg name."""
+        args = ["--user", "/u.json"]
+        result = ras_starter.parse_boot_args(args)
+        self.assertEqual(result["--user_config_path"], "/u.json")
+
+    def test_parse_boot_args_ambiguous_prefix_raises(self):
+        """Prefix matching more than one key raises ValueError."""
+        args = ["--", "/x"]
+        with self.assertRaises(ValueError) as ctx:
+            ras_starter.parse_boot_args(args)
+        self.assertIn("mismatch", str(ctx.exception))
+
+    def test_parse_boot_args_attach_not_recognized(self):
+        """--attach is not a valid boot arg unless filtered earlier."""
+        with self.assertRaises(ValueError) as ctx:
+            ras_starter.parse_boot_args(["--attach"])
+        self.assertIn("Unknown boot argument", str(ctx.exception))
+
+    def test_parse_boot_args_attach_equals_not_recognized(self):
+        """--attach= form is not stripped; treated as unknown option name."""
+        with self.assertRaises(ValueError) as ctx:
+            ras_starter.parse_boot_args(["--attach=1", "--conf_path", "/c"])
+        self.assertIn("Unknown boot argument", str(ctx.exception))
+
+
+class TestFilterDeprecatedAttachFromBootArgs(unittest.TestCase):
+    """Test filter_deprecated_attach_from_boot_args (main() step before parse_boot_args)."""
+
+    def test_no_attach_unchanged(self):
+        args = ["--conf_path", "/c"]
+        self.assertEqual(
+            ras_starter.filter_deprecated_attach_from_boot_args(list(args)),
+            args,
+        )
+
+    def test_strips_standalone_attach(self):
+        args = ["--attach", "--conf_path", "/c"]
+        self.assertEqual(
+            ras_starter.filter_deprecated_attach_from_boot_args(args),
+            ["--conf_path", "/c"],
+        )
+
+    def test_strips_attach_with_value(self):
+        args = ["--conf_path", "/c", "--attach", "1", "--deploy_yaml_path", "/d"]
+        self.assertEqual(
+            ras_starter.filter_deprecated_attach_from_boot_args(args),
+            ["--conf_path", "/c", "--deploy_yaml_path", "/d"],
+        )
+
+    def test_attach_before_next_option_does_not_consume_option(self):
+        """Next token starting with '-' is kept (not treated as attach value)."""
+        args = ["--attach", "--conf_path", "/c"]
+        self.assertEqual(
+            ras_starter.filter_deprecated_attach_from_boot_args(args),
+            ["--conf_path", "/c"],
+        )
+
+    def test_logs_when_attach_removed(self):
+        with self.assertLogs(level="WARNING") as cm:
+            ras_starter.filter_deprecated_attach_from_boot_args(["--attach"])
+        self.assertTrue(
+            any("deprecated" in m.lower() and "attach" in m.lower() for m in cm.output),
+            msg=f"expected deprecated attach log, got: {cm.output}",
+        )
+
+    def test_filter_then_parse_boot_args(self):
+        """Pipeline used in main(): strip --attach then parse."""
+        raw = ["--attach", "--conf_path", "/c"]
+        filtered = ras_starter.filter_deprecated_attach_from_boot_args(raw)
+        result = ras_starter.parse_boot_args(filtered)
+        self.assertEqual(result["--conf_path"], "/c")
+
 
 class TestGetMetricsValues(unittest.TestCase):
     """Test get_metrics_values function."""

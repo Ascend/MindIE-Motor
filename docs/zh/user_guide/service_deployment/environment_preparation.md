@@ -14,7 +14,6 @@
 |单机服务（非分布式）|单个Server可以独立作为推理服务实例对外提供推理服务，根据集群计算节点资源情况，整个集群可以支持一个或多个计算节点，单个计算节点可部署一个或多个Server，单机部署详情请参见[单机（非分布式）服务部署](./single_machine_service_deployment.md)。|
 |PD分离服务|多个Server在一个或多个计算节点上联合部署，分为P实例（Prefill计算实例）和D实例（Decode计算实例），P实例与D实例分离部署，协同推理，整体作为一个Group对外提供推理服务，PD分离部署详情请参见[PD分离服务部署](./pd_separation_service_deployment.md)。|
 
-
 >[!NOTE]说明
 >一体机单实例（单机蒸馏版或双机满血版）场景下，硬件故障会导致业务中断，业务恢复时长不可控，因此，一体机建议部署多实例，在单点硬件故障场景下可通过多实例之间的负载均衡继续提供业务。
 
@@ -52,10 +51,10 @@
     >- 支持Kubernetes的版本为1.18.x\~1.25.x，推荐使用1.19.x及以上版本。
     >- kubeadm和kubelet需要安装在所有节点上，kubectl只需要安装在管理节点上。
 
-2. 使用kubeadm工具创建Kubernetes集群，安装kubeadm和创建kubernetes集群请参见Kubernetes官网中的[使用Kubeadm创建集群](https://kubernetes.io/zh-cn/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/)章节。
+2. 使用kubeadm工具创建Kubernetes集群，安装kubeadm和创建Kubernetes集群请参见Kubernetes官网中的[使用Kubeadm创建集群](https://kubernetes.io/zh-cn/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/)章节。
 
     >[!NOTE]说明
-    >集群初始化过程如遇到问题，请参见《MindCluster  集群调度用户指南》的“参考 \> FAQ \> 安装时出现的故障 \> 初始化kubernetes失败”章节。
+    >集群初始化过程如遇到问题，请参见《MindCluster  集群调度用户指南》的“参考 > FAQ > 安装时出现的故障 > 初始化kubernetes失败”章节。
 
 **安装方式二：**
 
@@ -70,6 +69,7 @@
     >[!NOTE]说明
     >如果出现 “No match for argument: socat” 或者 “nothing provides socat needed by xxx” 等回显信息，表示环境缺少socat库，解决方式如下所示。（其他库缺失也会有同样的回显，比如iptables、conntrak等）
     >使用以下命令自行安装缺失的库。
+    >
     >```bash
     >#以CentOS系统为例
     >yum install -y socat
@@ -92,7 +92,7 @@
     docker pull k8s.gcr.io/kube-apiserver:v1.23.0
     ```
 
-4.  使用以下命令初始化Kubernetes集群，当出现如[图3 Kubernetes集群初始化成功](#fig17764145015239)所示回显时，表示初始化成功。
+4. 使用以下命令初始化Kubernetes集群，当出现如[图3 Kubernetes集群初始化成功](#fig17764145015239)所示回显时，表示初始化成功。
 
     ```bash
     kubeadm init
@@ -110,7 +110,7 @@
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
     ```
 
-5.  执行以下命令查看当前默认启动项状态是否正常，如[图4 查看状态](#fig669924115221)所示，状态为Running即为正常。
+5. 执行以下命令查看当前默认启动项状态是否正常，如[图4 查看状态](#fig669924115221)所示，状态为Running即为正常。
 
     ```bash
     kubectl get pods -A
@@ -149,13 +149,13 @@ kubeadm reset
 
     token和ca-cert码的有效期为24小时，如果已过期，请使用以下命令创建。
 
-    -   创建token
+    - 创建token
 
         ```bash
         kubeadm token create
         ```
 
-    -   创建ca-cert码
+    - 创建ca-cert码
 
         ```bash
         openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
@@ -164,15 +164,18 @@ kubeadm reset
     >[!NOTE]说明
     >- 由于上述命令包含明文token，执行后可通过历史操作查询方式打印，导致敏感信息暴露，建议用户采用以下方式进行设置。
     >   - 在执行敏感命令前执行以下命令临时禁用历史操作查询功能。
+    >
     >        ```bash
     >        set +o history
     >        ```
-    >   -   完成敏感命令操作后执行以下命令恢复历史查询功能。
+    >
+    >   - 完成敏感命令操作后执行以下命令恢复历史查询功能。
+    >
     >        ```bash
     >        set -o history
     >        ```
 
-2.  在新节点上执行以下命令加入集群。
+2. 在新节点上执行以下命令加入集群。
 
     ```bash
     kubeadm join ip:port --token {token} \
@@ -181,11 +184,11 @@ kubeadm reset
 
     参数解释：
 
-    -   ip:port：管理节点上Kubernetes的IP地址和端口。
-    -   --token：节点加入的令牌。
-    -   --discovery-token-ca-cert-hash：加入集群的证书哈希值。
+    - ip:port：管理节点上Kubernetes的IP地址和端口。
+    - --token：节点加入的令牌。
+    - --discovery-token-ca-cert-hash：加入集群的证书哈希值。
 
-3.  在新节点上使用以下命令查询当前节点主机名称。
+3. 在新节点上使用以下命令查询当前节点主机名称。
 
     ```bash
     hostname
@@ -193,21 +196,21 @@ kubeadm reset
 
     如节点主机名和集群中其他节点名称冲突，修改/etc/hostname文件更改节点的主机名。
 
-4.  在管理节点上使用以下命令kubectl get nodes -A查看节点信息，如[图6 新增节点](#fig1471911375514)所示，localhost.localdomain即为新增节点。
+4. 在管理节点上使用以下命令kubectl get nodes -A查看节点信息，如[图6 新增节点](#fig1471911375514)所示，localhost.localdomain即为新增节点。
 
     **图 6**  新增节点<a id="fig1471911375514"></a>  
     ![](../../figures/new_node.png)
 
-5.  在管理节点上使用以下命令根据实际的NPU设备类型为新增节点打上accelerator=huawei-Ascend910或者accelerator=huawei-Ascend310x标签。
+5. 在管理节点上使用以下命令根据实际的NPU设备类型为新增节点打上accelerator=huawei-Ascend910或者accelerator=huawei-Ascend310x标签。
 
     ```bash
     #kubectl label nodes {节点名称} accelerator=huawei-Ascend910
     kubectl label nodes localhost.localdomain accelerator=huawei-Ascend910
     ```
 
-6.  在管理节点上使用以下命令查看为新增节点打上的"accelerator=huawei-Ascend910"标签，如[图7 accelerator=huawei-Ascend910标签](#fig4827123110205)所示，有"accelerator=huawei-Ascend910"则表示成功。
+6. 在管理节点上使用以下命令查看为新增节点打上的"accelerator=huawei-Ascend910"标签，如[图7 accelerator=huawei-Ascend910标签](#fig4827123110205)所示，有"accelerator=huawei-Ascend910"则表示成功。
 
-    ```
+    ```bash
     kubectl get nodes --show-labels
     ```
 
@@ -231,8 +234,6 @@ kubeadm reset
     >[!NOTE]说明
     >- 请使用v1.7.0版本的Volcano进行安装。
     >- 在单机场景下，参考《MindCluster  集群调度用户指南》的 “安装 > 安装部署 > 手动安装 > Volcano” 章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的volcano-v1.7.0目录下的volcano-v1.7.0.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
-    >  ![](../../figures/volcano.png)
+    >![](../../figures/volcano.png)
 
-5.  请参考《MindCluster  集群调度用户指南》的 “安装 > 安装部署 > 手动安装 > Ascend Operator” 章节安装Ascend Operator。
-
-
+5. 请参考《MindCluster  集群调度用户指南》的 “安装 > 安装部署 > 手动安装 > Ascend Operator” 章节安装Ascend Operator。

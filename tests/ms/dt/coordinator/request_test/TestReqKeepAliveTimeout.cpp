@@ -15,6 +15,7 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
+#include <cstdlib>
 #include "gtest/gtest.h"
 #define main __main_coordinator__
 #include "coordinator/main.cpp"
@@ -155,6 +156,7 @@ TEST_F(TestReqKeepAliveTimeout, TestReqKeepAliveTimeoutTC01)
     }
     std::cout << "--------------------- Test end ----------------------" << std::endl;
     sleep(2); // 睡眠2s，供请求退出
+    std::_Exit(0);
 }
 
 /*

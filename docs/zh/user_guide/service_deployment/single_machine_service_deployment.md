@@ -1,18 +1,10 @@
 # 场景介绍
 
-单机服务部署为非分布式实例部署的场景，即在一个计算节点内可部署一个完整独立的Server推理服务实例。根据设备资源情况，同一个计算节点可部署多个Server服务实例，也支持在多个计算节点上部署多个服务实例。 用户根据使用场景选择不同的组件作为服务请求入口，提供以下两种方案。
-
-**Server作为对外服务入口**
-
-推理请求：通过第三方平台的调度入口（由用户部署平台而定，比如K8s的调度入口或MA的调度入口等），基于特定的调度算法，直接调度请求发送给各个单机版的Server实例。使用该部署方式部署单机（非分布式）服务时，其支持的接口请参见《MindIE LLM开发指南》中的“API接口说明 > RESTful API参考”。
-
-**图 1** Server作为对外服务入口
-
-![](../../figures/server_external_service.png)
+单机服务部署为非分布式实例部署的场景，即在一个计算节点内可部署一个完整独立的Server推理服务实例。根据设备资源情况，同一个计算节点可部署多个Server服务实例，也支持在多个计算节点上部署多个服务实例。
 
 **Coordinator作为对外服务入口**
 
-推理请求：通过第三方平台的调度入口（由用户部署平台而定，比如K8s的调度入口或MA的调度入口等），将所有请求发送给Coordinator，Coordinator基于本身支持的负载调度算法，调度请求发送给各个Server实例。具体部署详情请参见[使用kubectl部署服务示例](#方式二使用kubectl部署服务示例)章节。使用该部署方式部署单机（非分布式）服务时，其支持的接口请参见[RESTful接口API](../service_oriented_interface/description.md)。
+推理请求：通过第三方平台的调度入口（由用户部署平台而定，比如K8s的调度入口或MA的调度入口等），将所有请求发送给Coordinator，Coordinator基于本身支持的负载调度算法，调度请求发送给各个Server实例。具体部署详情请参见[使用kubectl部署服务示例](#使用kubectl部署服务示例)章节。使用该部署方式部署单机（非分布式）服务时，其支持的接口请参见[RESTful接口API](https://www.hiascend.com/document/detail/zh/mindie/230/mindiemotor/motordev/mindie_service0256.html)。
 
 **图 2**  Coordinator作为对外服务入口
 
@@ -20,19 +12,18 @@
 
 单机部署场景支持的调度算法如下表所示：
 
-|调度算法|含义|部署建议|接口详情|
-|--|--|--|--|
-|cache_affinity|Cache亲和调度算法：当前只支持OpenAI多轮会话场景的亲和调度算法。|OpenAI多轮会话场景，推荐配置。|[OpenAI推理接口](../service_oriented_interface/optical_user_to_network_interface.md#openai推理接口)|
-|round_robin|轮询调度算法：非OpenAI多轮会话场景的调度算法。|使用非OpenAI多轮会话接口时默认执行此算法，用户无须配置。|<li>[TGI流式推理接口](../service_oriented_interface/optical_user_to_network_interface.md#tgi流式推理接口)<li>[TGI文本推理接口](../service_oriented_interface/optical_user_to_network_interface.md#tgi文本推理接口)<li>[vLLM文本/流式推理接口](../service_oriented_interface/optical_user_to_network_interface.md#vllm文本流式推理接口)<li>[Triton流式推理接口](../service_oriented_interface/optical_user_to_network_interface.md#triton流式推理接口)<li>[Triton Token推理接口](../service_oriented_interface/optical_user_to_network_interface.md#triton-token推理接口)<li>[Triton文本推理接口](../service_oriented_interface/optical_user_to_network_interface.md#triton文本推理接口)<li>[MindIE原生文本/流式推理接口](../service_oriented_interface/optical_user_to_network_interface.md#mindie原生文本流式推理接口)<li>[Token计算接口](../service_oriented_interface/optical_user_to_network_interface.md#token计算接口)|
-
+|调度算法|含义|部署建议|
+|--|--|--|
+|cache_affinity|Cache亲和调度算法：当前只支持OpenAI多轮会话场景的亲和调度算法。|OpenAI多轮会话场景，推荐配置。|
+|round_robin|轮询调度算法：非OpenAI多轮会话场景的调度算法。|使用非OpenAI多轮会话接口时默认执行此算法，用户无须配置。|
 
 >[!NOTE]说明
 >为保障业务稳定运行，用户应严格控制自建Pod的权限，避免高权限Pod修改MindIE内部参数而导致异常。
 
 # 使用kubectl部署服务示例
 
-
 >[!NOTE]说明
+>
 >- 该示例支持部署单机版的Server、Coordinator和Controller。
 >- Atlas 800I A2 推理服务器需要配置卡IP并安装Ascend Operator组件；Atlas 300I Duo 推理卡+Atlas 800 推理服务器（型号 3000）无需配置和安装。
 >- 当前部署脚本不支持NPU故障重调度场景。
@@ -43,7 +34,7 @@
 
 脚本文件所在目录结构如下所示：
 
-```
+```txt
 ├── boot_helper
 │   ├── boot.sh
 │   ├── gen_config_single_container.py
@@ -65,11 +56,10 @@
 │   └── global_ranktable.json
 └── log.sh
 ```
-<br>
 
 **关键目录及文件解释如下所示：**
 
-- `boot_helper`：包含容器启动脚本`boot.sh`，获取group\_id，刷新环境变量到配置文件，设置启动程序的环境变量等，用户可根据需要在这里调整日志等级等。
+- `boot_helper`：包含容器启动脚本`boot.sh`，获取group_id，刷新环境变量到配置文件，设置启动程序的环境变量等，用户可根据需要在这里调整日志等级等。
 - `chat.sh`：使用curl发送HTTP请求给推理服务的简单对话示例。
 - `conf`：集群管理组件和Server的主要业务配置文件，PD分离管理调度策略和模型相关配置。
 - `delete.sh`：卸载脚本，一键卸载所有MindIE组件。
@@ -100,20 +90,20 @@
 
         将部署模式配置为单机（非分布式）服务部署模式，需配置以下参数。
 
-        ```
+        ```bash
         "deploy_mode"= "single_node"
         ```
 
    - 配置ms_coordinator.json文件，参数详情请参见[配置说明](../cluster_management_component/coordinator.md#配置说明)章节。
-        -  配置单机（非分布式）服务部署模式，需配置以下参数。
+        - 配置单机（非分布式）服务部署模式，需配置以下参数。
 
-            ```
+            ```bash
             "deploy_mode"= "single_node"
             ```
 
-        -  配置OpenAI多轮会话Cache亲和调度场景，需配置以下参数。
+        - 配置OpenAI多轮会话Cache亲和调度场景，需配置以下参数。
 
-            ```
+            ```bash
             "scheduler_type": "default_scheduler",
             "algorithm_type": "cache_affinity",
             ```
@@ -126,13 +116,13 @@
     - 使能Prefix Cache：
         - 在ModelDeployConfig中的ModelConfig下添加以下配置：
 
-            ```
+            ```bash
             "plugin_params": "{\"plugin_type\":\"prefix_cache\"}"
             ```
 
         - 在ScheduleConfig中添加以下信息：
 
-            ```
+            ```bash
             "enablePrefixCache": true
             ```
 
@@ -152,10 +142,10 @@
 
     >[!NOTE]说明
     >- 本脚本仅作为一个部署参考，Pod容器的安全性由用户自行保证，实际生产环境请针对镜像和Pod安全进行加固。
-    >- 用户在使用kubetl部署Deployment时，需要修改deployment的配置yaml文件，请避免使用危险配置，确保使用安全镜像（非root权限用户），配置安全的Pod上下文。
+    >- 用户在使用kubectl部署Deployment时，需要修改deployment的配置yaml文件，请避免使用危险配置，确保使用安全镜像（非root权限用户），配置安全的Pod上下文。
     >- 用户应挂载安全路径（非软链接，非系统危险路径，非业务敏感路径），并设置合理的文件目录权限，避免挂载/home等公共目录，防止被非法用户篡改，导致容器逃逸问题。
 
-    -  mindie_server.yaml文件主要配置的字段如下所示：
+    - mindie_server.yaml文件主要配置的字段如下所示：
         - replicas：配置总实例数。
         - `huawei.com/Ascend910`：resources资源请求，配置一个实例占用的910 NPU卡数，与MindIE Serve的config.json配置文件中worldSize参数配置的卡数保持一致。
         - image：配置镜像名。
@@ -190,29 +180,38 @@
 
     >[!NOTE]说明
     >- 集群默认刷新挂载到容器内的configmap的频率是60s，如遇到容器内打印“status of ranktable is not completed”日志信息的时间偏久，可在每个待调度的计算节点修改kubelet同步configmap的周期，即修改/var/lib/kubelet/config.yaml中的syncFrequency参数，将周期减少到5s，注意此修改可能影响集群性能。
-    >    ```
+    >
+    >    ```bash
     >    syncFrequency: 5s
     >    ```
+    >
     >    然后使用以下命令重启kubelet：
-    >    ```
+    >
+    >    ```bash
     >    swapoff -a
     >    systemctl restart  kubelet.service
     >    systemctl status kubelet
     >    ```
+    >
     >- 确保Docker配置了标准输出流写入到文件的最大规格，防止磁盘占满导致Pod被驱逐。
     >    需在待部署服务的计算节点上修改Docker配置文件后重启Docker：
     >    1. 使用以下命令打开daemon.json文件。
+    >
     >        ```bash
     >        vim /etc/docker/daemon.json
     >        ```
+    >
     >        在daemon.json文件中添加日志选项"log-opts"，具体内容如下所示。
-    >        ```
+    >
+    >        ```bash
     >        "log-opts":{"max-size":"500m", "max-file":"3"}
     >        ```
+    >
     >        参数解释：
     >        max-size=500m：表示一个容器日志大小上限是500M。
     >        max-file=3：表示一个容器最多有三个日志，超过会自动滚动更新。
     >    2. 使用以下命令重启Docker.
+    >
     >        ```bash
     >        systemctl daemon-reload
     >        systemctl restart docker
@@ -228,19 +227,19 @@
 
     如启动4个Server实例，回显如下所示：
 
-    ```
+    ```bash
     NAME                                     READY   STATUS    RESTARTS   AGE    IP               NODE       NOMINATED NODE   READINESS GATES
     mindie-ms-controller-7845dcd697-h4gw7    1/1     Running   0          145m   xxx.xxx.xxx    ubuntu10   <none>           <none>
     mindie-ms-coordinator-6bff995ff8-l6fwz   1/1     Running   0          145m   xxx.xxx.xxx    ubuntu10   <none>           <none>
-    mindie-server-7b795f8df9-2xvh4           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
-    mindie-server-7b795f8df9-j4z7d           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
-    mindie-server-7b795f8df9-v2tcz           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
-    mindie-server-7b795f8df9-vl9hv           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
+    mindie-llm-7b795f8df9-2xvh4           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
+    mindie-llm-7b795f8df9-j4z7d           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
+    mindie-llm-7b795f8df9-v2tcz           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
+    mindie-llm-7b795f8df9-vl9hv           1/1     Running   0          145m   xxx.xxx.xxx   ubuntu     <none>           <none>
     ```
 
     - 以mindie-ms-controller开头的为集群管理组件的Controller控制器组件。
     - 以mindie-ms-coordinator开头的为集群管理组件的Coordinator调度器组件。
-    - 以mindie-server开头的为Server推理服务。
+    - 以mindie-llm开头的为Server推理服务。
 
     如观察Pod进入Running状态，表示Pod容器已成功被调度到节点并正常启动，但还需要进一步确认业务程序是否启动成功。
 
@@ -250,19 +249,19 @@
     bash log.sh
     ```
 
-    -   如需要查询具体某个Pod（如上面mindie-server-7b795f8df9-2xvh4）的日志，则执行以下命令：
+    - 如需要查询具体某个Pod（如上面mindie-server-7b795f8df9-2xvh4）的日志，则执行以下命令：
 
         ```bash
         kubectl logs mindie-server-7b795f8df9-2xvh4 -n mindie
         ```
 
-    -   如需要进入容器查找更多定位信息，则执行以下命令：
+    - 如需要进入容器查找更多定位信息，则执行以下命令：
 
         ```bash
         kubectl exec -it mindie-server-7b795f8df9-2xvh4 -n mindie -- bash
         ```
 
-8.  通过脚本示例提供的chat.sh发起推理请求。
+8. 通过脚本示例提供的chat.sh发起推理请求。
 
     需修改chat.sh中的IP地址为集群管理节点宿主机的IP地址，其中role配置为user。
 
@@ -270,7 +269,7 @@
     bash chat.sh
     ```
 
-9.  卸载集群。
+9. 卸载集群。
 
     如需停止单机服务或者修改业务配置重新部署实例，需要调用以下命令卸载已部署的实例，重新部署请执行[6](#li1651115619332)。
 
