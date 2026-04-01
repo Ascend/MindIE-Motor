@@ -716,14 +716,23 @@ void RequestListener::CreateLinkWithDNode()
     const auto& instanceInfos = instancesRecord->GetInstanceInfos();
     int32_t ret = 0;
     for (auto it = instanceInfos.begin(); it != instanceInfos.end(); ++it) {
-        if (it->second.role == MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
-            std::string ip = it->second.ip;
-            std::string port = it->second.port;
-            {
-                std::lock_guard<std::mutex> lock(linkMutex);
-                if (!requestRepeater->CheckLinkWithDNode(ip, port)) {
-                    ret = LinkWithDNodeInMaxRetry(ip, port);
-                }
+        if (it->second.role != MINDIE::MS::DIGSInstanceRole::DECODE_INSTANCE) {
+            LOG_D("[RequestListener] CreateLinkWithDNode: skip instance id %llu, not a decode instance.",
+                static_cast<unsigned long long>(it->first));
+            continue;
+        }
+        const uint64_t insId = it->first;
+        const std::string ip = instancesRecord->GetIp(insId);
+        const std::string port = instancesRecord->GetPort(insId);
+        if (ip.empty() || port.empty()) {
+            LOG_D("[RequestListener] CreateLinkWithDNode: skip instance id %llu, empty ip or port.",
+                static_cast<unsigned long long>(insId));
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(linkMutex);
+            if (!requestRepeater->CheckLinkWithDNode(ip, port)) {
+                ret = LinkWithDNodeInMaxRetry(ip, port, insId);
             }
         }
         if (ret != 0) {
@@ -733,9 +742,15 @@ void RequestListener::CreateLinkWithDNode()
     }
 }
 
-int32_t RequestListener::LinkWithDNodeInMaxRetry(const std::string &ip, const std::string &port)
+int32_t RequestListener::LinkWithDNodeInMaxRetry(const std::string &ip, const std::string &port, uint64_t insId)
 {
     for (size_t i = 0; i < Configure::Singleton()->exceptionConfig.maxRetry + 1; ++i) {
+        if (!instancesRecord->HasInstance(insId)) {
+            LOG_I("[RequestListener] LinkWithDNodeInMaxRetry: instance id %llu "
+                "no longer in cluster, skip link for %s:%s.",
+                static_cast<unsigned long long>(insId), ip.c_str(), port.c_str());
+            return 0;
+        }
         if (requestRepeater->LinkWithDNode(ip, port) != 0) {
             LOG_D("[RequestListener] LinkWithDNodeInMaxRetry failed add link with decode node at %s:%s, with %u times.",
                 ip.c_str(), port.c_str(), i);

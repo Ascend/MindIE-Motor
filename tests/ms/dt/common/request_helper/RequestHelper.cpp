@@ -368,8 +368,9 @@ int LinkWithDNodeMock(const std::string &ip, const std::string &port)
     return 1;
 }
 
-int32_t LinkWithDNodeInMaxRetryMock(const std::string &ip, const std::string &port)
+int32_t LinkWithDNodeInMaxRetryMock(const std::string &ip, const std::string &port, uint64_t insId)
 {
+    (void)insId;
     std::cout << "enter LinkWithDNodeInMaxRetryMock" << std::endl;
     return 1;
 }

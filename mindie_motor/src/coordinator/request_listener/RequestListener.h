@@ -166,7 +166,7 @@ private:
     bool MindIEIsStream(const nlohmann::json &bodyJson) const;
 
     void CheckMasterAndCreateLinkWithDNode();
-    int32_t LinkWithDNodeInMaxRetry(const std::string &ip, const std::string &port);
+    int32_t LinkWithDNodeInMaxRetry(const std::string &ip, const std::string &port, uint64_t insId);
     /**
     * @brief Pre-request check including memory pressure
     */
