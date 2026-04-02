@@ -33,13 +33,14 @@ SIMULATE_NORMAL_CODE = "[MIE04I071120] "
 SIMULATE_ERR_CODE_PREFIXES = ("MIE04E071106", "MIE04I071120")
 SIMULATE_NORMAL_PREFIXES = ("MIE04I071120",)  # 正常 置0
 MAX_CONTINUOUS_SIMULATE_FAIL_COUNT = 5
+MAX_CONTINUOUS_QUERY_STATUS_FAIL_COUNT = 5
 
 
 class NodeStatusMonitor(metaclass=_SingletonMeta):
 
     def __init__(self, hbm, eng_st: deque):
         self.query_interval = GeneralConfig().heartbeat_interval
-        self.engine_state = eng_st  # 心跳,若engine数量为2,格式为['<时间>','engine server1状态','engine server2状态']
+        self.engine_server_status_queue = eng_st  # 心跳,若engine数量为2,格式为['<时间>','engine server1状态','engine server2状态']
         self.running = False
         self.heartbeat_mng = hbm
         self.client = None
@@ -51,6 +52,9 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
         )
         
         self.simulate_fail_count = [0] * GeneralConfig().server_engine_cnt # 记录每一个engine server连续虚推失败的次数
+
+        self.query_status_first_success = False
+        self.query_status_fail_count = 0
 
     @staticmethod
     def _extract_error_info(res_all):
@@ -109,13 +113,13 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
         self.running = True
         if not self.client:
             self.client = Client()
-        self._monitor_state()
+        self._monitor_engine_server_status()
 
     def stop_monitoring(self):
         self.running = False
         self.executor.shutdown()
 
-    def _query_ep_status(self) -> Tuple[List[Any], List[Any]]:
+    def _query_engine_server_status(self) -> Tuple[List[Any], List[Any]]:
         """使用线程池查询node状态"""
         result_dict = {}
         future_to_idx = {
@@ -129,39 +133,40 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
         result_all = [result_dict[idx] for idx in range(GeneralConfig().server_engine_cnt)]
         return result_all
 
-    def _parse_engine_state(self) -> tuple[bool, bool, str]:
-        # 在当前不执行指令时候才解析, 不会出现server engine状态不一致的问题
-        engine_state_cur = self.engine_state[-1] # 首字段engine_state_cur[0]是时间戳
-        if ServiceStatus.SERVICE_READY.value in engine_state_cur[1:]:
-            self.logger.error(f"[parse_engine_state] Contain SERVICE_READY in engine state while no CMD executing")
+    def _parse_engine_server_status(self) -> tuple[bool, bool, str]:
+        # 在当前不执行指令时候才解析, 不会出现engine server状态不一致的问题
+        cur_engine_server_status = self.engine_server_status_queue[-1] # 首字段engine_server_status_cur[0]是时间戳
+        if ServiceStatus.SERVICE_READY.value in cur_engine_server_status[1:]:
+            self.logger.error(f"[parse_engine_server_status] Contain SERVICE_READY in engine server status "
+                "while no CMD executing.")
             return NodeRunningStatus.ABNORMAL.value
-        if ServiceStatus.SERVICE_PAUSE.value in engine_state_cur[1:]:
-            self.logger.error(f"[parse_engine_state] Contain SERVICE_PAUSE in engine state while no CMD executing")
+        if ServiceStatus.SERVICE_PAUSE.value in cur_engine_server_status[1:]:
+            self.logger.error(f"[parse_engine_server_status] Contain SERVICE_PAUSE in engine server status "
+                "while no CMD executing.")
             return NodeRunningStatus.ABNORMAL.value
-        if ServiceStatus.SERVICE_ABNORMAL.value in engine_state_cur[1:]:
+        if ServiceStatus.SERVICE_ABNORMAL.value in cur_engine_server_status[1:]:
             return NodeRunningStatus.ABNORMAL.value
         # 只剩init, normal和busy
-        if ServiceStatus.SERVICE_INIT.value in engine_state_cur[1:]:
+        if ServiceStatus.SERVICE_INIT.value in cur_engine_server_status[1:]:
             return NodeRunningStatus.INIT.value
-        if ServiceStatus.SERVICE_BUSY.value in engine_state_cur[1:]:
+        if ServiceStatus.SERVICE_BUSY.value in cur_engine_server_status[1:]:
             return NodeRunningStatus.BUSY.value
         all_normal = all(
-            s == ServiceStatus.SERVICE_NORMAL.value for s in engine_state_cur[1:]
+            s == ServiceStatus.SERVICE_NORMAL.value for s in cur_engine_server_status[1:]
         )
         if all_normal:
             return NodeRunningStatus.NORMAL.value
         else:
             self.logger.error(
-                f"Unrecognizable server engine state={engine_state_cur}"
+                f"Unrecognizable engine server status={cur_engine_server_status}"
             )
             return NodeRunningStatus.ABNORMAL.value
 
-    def _monitor_state(self):
+    def _monitor_engine_server_status(self):
         while self.running:
-            self.logger.info(f"Monitering EP status")
-            result_all = self._query_ep_status()
+            self.logger.debug(f"Monitering Engine Server status")
             if not self.heartbeat_mng.heartbeat_check_allowed:
-                # CMD在运行或者heartbeatmng在处理异常,不做状态更新和处理
+                # 快恢命令在运行或者heartbeatmng在处理异常,不做状态更新和处理
                 self.logger.info(f"while handling cmd, not update heartbeat")
                 time.sleep(self.query_interval)
                 continue
@@ -169,29 +174,51 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
                 self.logger.error(f"heartBeatMng is Paused while no cmd is executing")
                 time.sleep(self.query_interval)
                 continue
-            now = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M:%S")
-            cur_success = [res.get("success", None) for res in result_all]
-            if False in cur_success or None in cur_success:  # 查询ep status请求发送失败, 此时不向ctrler上报异常
-                cur_msg = ""
-                for res in result_all:
-                    cur_msg = cur_msg + res.get("msg", "")
-                self.logger.warning(f"get_ep_state fails, reason: request send fails,msg={cur_msg}")
+            query_results = self._query_engine_server_status()
+            query_status_timestamp = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M:%S")
+            
+            if not all(res.get("success", None) is True for res in query_results):
+                # 心跳探测失败
+                self._process_query_status_fail(query_results)
                 time.sleep(self.query_interval)
                 continue
-            # 请求发送成功
-            cur_state = [int(res.get(DATA_STR, {}).get("status", "")) for res in result_all]
-            self.engine_state.append([now] + cur_state)# 更新heartbeat_mng的engine_state
-            node_running_status = self._parse_engine_state()
+            
+            # 心跳探测成功
+            if not self.query_status_first_success:
+                self.query_status_first_success = True
+            self.query_status_fail_count = 0
+            
+            # 1. 更新nodeManager的running_status
+            cur_engine_server_status = [int(res.get(DATA_STR, {}).get("status", "")) for res in query_results]
+            self.engine_server_status_queue.append([query_status_timestamp] + cur_engine_server_status)
+            node_running_status = self._parse_engine_server_status()
             self.heartbeat_mng.set_running_status(node_running_status)
 
-            # 提取心跳中的故障码
-            error_info = self._extract_error_info(result_all)
-
-            # abnormal情况下结合error_info检查是否需要终止daemon
+            # 2. 提取并处理心跳中的故障码
+            error_info = self._extract_error_info(query_results)
             if self.heartbeat_mng.heartbeat_check_allowed:
                 self._process_engine_server_error_info(error_info)
 
             time.sleep(self.query_interval)
+
+    def _process_query_status_fail(self, query_results: List[dict]):
+        self.query_status_fail_count += 1
+        cur_msg = ""
+        for res in query_results:
+            cur_msg = cur_msg + res.get("msg", "")
+        self.logger.warning(
+            f"Failed to query engine server status {self.query_status_fail_count} times "
+            f"continuously, reason: failed to send request, msg={cur_msg}."
+        )
+
+        if self.query_status_fail_count >= MAX_CONTINUOUS_QUERY_STATUS_FAIL_COUNT:
+            if not self.query_status_first_success:
+                self.logger.warning("Engine servers have not all started up, "
+                    "waiting for first query status success.")
+            else:
+                self.logger.error(f"Query failed times reach {MAX_CONTINUOUS_QUERY_STATUS_FAIL_COUNT} times"
+                    f", should terminate all processes.")
+                llm_daemon_manager.terminate_all_processes()
 
     def _process_engine_server_error_info(self, error_info: List[List[dict]]):
         # 为空则跳过
@@ -296,6 +323,8 @@ class NodeStatusMonitor(metaclass=_SingletonMeta):
         if self._is_error_info_empty(error_info):
             return
 
+        self.logger.info(f"Sending error info to controller: {error_info}")
+
         if not self.client:
             self.client = Client()
         resp = self.client.send_alarm_info_to_ctrler(error_info)
@@ -318,12 +347,12 @@ class HeartBeatMng(metaclass=_SingletonMeta):
         self._running_status = running_status
         self._lock = threading.Lock()
         self.query_interval = GeneralConfig().heartbeat_interval  # 轮训间隔时间,单位s
-        self.mem_window_len = 1  # server engine状态保存的时间窗长度
+        self.mem_window_len = 1  # engine server状态保存的时间窗长度
         # 心跳状态
         # 若engine数量为2,格式为['<时间>',server1状态,server2状态],状态值是int,相关枚举值是ServiceStatus
-        self.engine_state = deque(maxlen=self.mem_window_len)
+        self.engine_server_status_queue = deque(maxlen=self.mem_window_len)
         self.heartbeat_check_allowed = True
-        self._status_monitor = NodeStatusMonitor(self, eng_st=self.engine_state)
+        self._status_monitor = NodeStatusMonitor(self, eng_st=self.engine_server_status_queue)
         self._initialized = True
         self.logger = Log(__name__).getlog()
 
@@ -331,12 +360,12 @@ class HeartBeatMng(metaclass=_SingletonMeta):
         if not GeneralConfig().has_endpoint:
             self.logger.info(f"Heartbeat Manager: No endpoint configured, skipping monitoring.")
             return
-        self.logger.info(f"Heartbeat Manager:Start monitoring engine state.")
+        self.logger.info(f"Heartbeat Manager:Start monitoring engine server status.")
         self._status_monitor.start_monitoring()
 
     def stop(self):
         self._status_monitor.stop_monitoring()
-        self.logger.info(f"Heartbeat Manager: Monitoring engine state stopped.")
+        self.logger.info(f"Heartbeat Manager: Monitoring engine server status stopped.")
 
     def get_heartbeat_check_allowed(self) -> bool:
         return self.heartbeat_check_allowed
