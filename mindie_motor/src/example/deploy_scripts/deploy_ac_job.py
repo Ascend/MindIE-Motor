@@ -176,6 +176,9 @@ PREFILL_DEPLOY = "2"
 DECODE_DEPLOY = "1"
 POD_RESCHEDULING = "pod-rescheduling"
 FAULT_RECOVERY_FUNC = "fault_recovery_func_dict"
+HBM = "hbm"
+SCHEDULER_FILTER_FAULT_CODE = "huawei.com/schedule.filter.faultCode"
+SCHEDULER_FILTER_FAULT_CODE_VALUE = "80E18404:200"
 EXEC = "exec"
 COMMAND = "command"
 context = dict()
@@ -711,12 +714,37 @@ def modify_server_yaml_mind_v1(data, config, index, pd_flag, ext):
     modify_server_config(data, index, pd_flag)
     modify_weight_mount_path(config, data)
     modify_replica_num(data, ext["single_instance_pod_num"])
+    modify_fault_recovery_annotations(data, config)
     modify_sp_block_num(data, pd_flag, config)
+
+
+def modify_fault_recovery_annotations(data, config):
+    if FAULT_RECOVERY_FUNC not in config:
+        return
+    fault_recovery_dict = config[FAULT_RECOVERY_FUNC]
+    if not isinstance(fault_recovery_dict, dict) or not fault_recovery_dict.get(HBM):
+        return
+    if METADATA not in data:
+        return
+    if ANNOTATIONS not in data[METADATA] or data[METADATA][ANNOTATIONS] is None:
+        data[METADATA][ANNOTATIONS] = CommentedMap()
+    data[METADATA][ANNOTATIONS][SCHEDULER_FILTER_FAULT_CODE] = DoubleQuotedScalarString(
+        SCHEDULER_FILTER_FAULT_CODE_VALUE
+    )
 
 
 def modify_sp_block_num(data, pd_flag, config):
     if HARDWARE_TYPE not in config or config[HARDWARE_TYPE] == "800I_A2":
-        del data[METADATA][ANNOTATIONS]
+        if ANNOTATIONS not in data[METADATA]:
+            return
+        ann = data[METADATA][ANNOTATIONS]
+        if ann is None:
+            del data[METADATA][ANNOTATIONS]
+            return
+        if SP_BLOCK in ann:
+            del ann[SP_BLOCK]
+        if len(ann) == 0:
+            del data[METADATA][ANNOTATIONS]
         return
     if pd_flag == "d":
         single_d_instance_pod_num = int(config[SINGER_D_INSTANCES_NUM])
