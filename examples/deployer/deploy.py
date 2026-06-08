@@ -39,6 +39,7 @@ from lib.config_validator import (
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
 )
+from lib.step import start_monitor
 
 
 def handle_update_config(user_config):
@@ -330,7 +331,35 @@ def parse_arguments():
         action="store_true",
         help="Automatically start log collection after deployment",
     )
+    parser.add_argument(
+        "--nostep",
+        action="store_true",
+        help="The service startup progress bar is not displayed",
+    )
     return parser.parse_args()
+
+
+def calculate_pod_count(deploy_config):
+    p_pod_cnt = deploy_config[C.P_INSTANCES_NUM] * deploy_config[C.SINGER_P_INSTANCES_NUM]
+    d_pod_cnt = deploy_config[C.D_INSTANCES_NUM] * deploy_config[C.SINGER_D_INSTANCES_NUM]
+
+    if C.E_INSTANCES_NUM in deploy_config and C.SINGER_E_INSTANCES_NUM in deploy_config:
+        e_pod_cnt = deploy_config[C.E_INSTANCES_NUM] * deploy_config[C.SINGER_E_INSTANCES_NUM]
+    else:
+        e_pod_cnt = 0
+    if C.HYBRID_INSTANCES_NUM in deploy_config and C.SINGLE_HYBRID_INSTANCE_POD_NUM in deploy_config:
+        u_pod_cnt = deploy_config[C.HYBRID_INSTANCES_NUM] * deploy_config[C.SINGLE_HYBRID_INSTANCE_POD_NUM]
+    else:
+        u_pod_cnt = 0
+
+    return e_pod_cnt + p_pod_cnt + d_pod_cnt + u_pod_cnt
+
+
+def start_monitoring(user_config):
+    deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
+    name_space = deploy_config[C.CONFIG_JOB_ID]
+    pod_cnt = calculate_pod_count(deploy_config)
+    start_monitor(name_space, pod_cnt)
 
 
 def main():
@@ -359,6 +388,9 @@ def main():
         return
 
     deploy_services(user_config, env_config_path, dry_run=args.dry_run, auto_log_collect=args.auto_log_collect)
+
+    if not args.nostep:
+        start_monitoring(user_config)
 
 
 if __name__ == "__main__":
