@@ -27,6 +27,7 @@ SLEEP_LINE_INTERVAL = 0.05
 PROCESS_TERMINATE_TIMEOUT = 5
 SEPARATOR_WIDTH = 80
 
+
 class VLLMProgressMonitor:
     """
     Monitor vLLM pod startup progress by parsing log output.
@@ -78,7 +79,7 @@ class VLLMProgressMonitor:
             if step_name == 'Loading safetensors':
                 percent_match = re.search(r'(\d+)%', line)
                 if percent_match:
-                    return int(percent_match.group(1))/SAFETENSORS_WEIGHT + step_value
+                    return int(percent_match.group(1)) / SAFETENSORS_WEIGHT + step_value
             return step_value
 
         return 0
@@ -105,7 +106,7 @@ class VLLMProgressMonitor:
             with self.lock:
                 progress_bar.update(step - progress_bar.n)
 
-    def update_description(self, pod_name: str, line_index:int, error_cnt: int, is_error: bool) -> None:
+    def update_description(self, pod_name: str, line_index: int, error_cnt: int, is_error: bool) -> None:
         progress_bar = self.data.get(pod_name)
         if not progress_bar:
             return
@@ -128,55 +129,53 @@ class VLLMProgressMonitor:
         Returns:
             None
         """
-        progress_bar = tqdm(total=PROGRESS_TOTAL, desc="vLLM start step", unit="%",
-                           bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+        progress_bar = tqdm(
+            total=PROGRESS_TOTAL,
+            desc="vLLM start step",
+            unit="%",
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+        )
         self.data[pod_name] = progress_bar
 
-        process = None
         try:
-            process = subprocess.Popen(
+            with subprocess.Popen(
                 [CMD_KUBECTL, 'logs', '-f', '-n', name_space, pod_name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                universal_newlines=True
-            )
-            
-            line_index = 0
-            error_cnt = 0
-            while True:
-                line_index += 1
-                line = process.stdout.readline()
+            ) as process:
+                line_index = 0
+                error_cnt = 0
+                while True:
+                    line_index += 1
+                    line = process.stdout.readline()
 
-                if not line:
-                    if process.poll() is not None:
-                        self.update_description(pod_name, line_index, error_cnt, True)
-                        break
-                    time.sleep(SLEEP_POLL_INTERVAL)
-                    continue
-                    
-                log_line = line.rstrip('\n')
-                if log_line:
-                    if "ERROR" in log_line:
-                        error_cnt += 1
-                    self.update_description(pod_name, line_index, error_cnt, False)
+                    if not line:
+                        if process.poll() is not None:
+                            self.update_description(pod_name, line_index, error_cnt, True)
+                            break
+                        time.sleep(SLEEP_POLL_INTERVAL)
+                        continue
 
-                    step = self.parse_log_line(log_line)
-                    if step > 0:
-                        self.update_progress(step, pod_name)
+                    log_line = line.rstrip('\n')
+                    if log_line:
+                        if "ERROR" in log_line:
+                            error_cnt += 1
+                        self.update_description(pod_name, line_index, error_cnt, False)
 
-                    if step == PROGRESS_TOTAL:
-                        self.completed[pod_name] = True
-                        break
-                time.sleep(SLEEP_LINE_INTERVAL)
-                
-        except Exception as e:
-            print(f"{pod_name} :Exception: {e}")
-        finally:
-            if process:
+                        step = self.parse_log_line(log_line)
+                        if step > 0:
+                            self.update_progress(step, pod_name)
+
+                        if step == PROGRESS_TOTAL:
+                            self.completed[pod_name] = True
+                            break
+                    time.sleep(SLEEP_LINE_INTERVAL)
                 process.terminate()
                 process.wait(timeout=PROCESS_TERMINATE_TIMEOUT)
+        except Exception as e:
+            print(f"{pod_name} :Exception: {e}")
 
     def start(self, list_pod: list[str], name_space: str) -> None:
         """
@@ -199,9 +198,12 @@ class VLLMProgressMonitor:
         for pod_name in list_pod:
             thread = threading.Thread(
                 target=self.shell_pull_log,
-                args=(name_space, pod_name,),
+                args=(
+                    name_space,
+                    pod_name,
+                ),
                 name=f"t-{pod_name}",
-                daemon=True
+                daemon=True,
             )
             thread_list.append(thread)
             thread.start()
@@ -231,22 +233,22 @@ def shell_get_pod(name_space: str) -> list[str] | None:
         or None if an error occurs during command execution.
     """
     try:
-        kubectl_cmd = subprocess.Popen(
-            [CMD_KUBECTL, 'get', 'pods', '-n', name_space],
-            stdout=subprocess.PIPE
-        )
-        awk_cmd = subprocess.Popen(
-            [CMD_AWK, 'NR>1 && $3=="Running" {print $1}'],
-            stdin=kubectl_cmd.stdout,
-            stdout=subprocess.PIPE
-        )
-        grep_cmd = subprocess.Popen(
-            [CMD_GREP, 'vllm-'],
-            stdin=awk_cmd.stdout,
-            stdout=subprocess.PIPE
-        )
-        output, _ = grep_cmd.communicate()
-        return output.decode(ENCODE_TYPE).strip().splitlines()
+        with (
+            subprocess.Popen([CMD_KUBECTL, 'get', 'pods', '-n', name_space], stdout=subprocess.PIPE) as kubectl_cmd,
+            subprocess.Popen(
+                [CMD_AWK, 'NR>1 && $3=="Running" {print $1}'],
+                stdin=kubectl_cmd.stdout,
+                stdout=subprocess.PIPE,
+            ) as awk_cmd,
+            subprocess.Popen([CMD_GREP, 'vllm-'], stdin=awk_cmd.stdout, stdout=subprocess.PIPE) as grep_cmd,
+            subprocess.Popen(
+                [CMD_GREP, '-v', '-e', '-controller-', '-e', '-coordinator-', '-e', '-kv-'],
+                stdin=grep_cmd.stdout,
+                stdout=subprocess.PIPE,
+            ) as grep_v_cmd,
+        ):
+            output, _ = grep_v_cmd.communicate()
+            return output.decode(ENCODE_TYPE).strip().splitlines()
     except Exception as e:
         print(f"shell_get_pod Exception: {e}")
         return None
@@ -305,6 +307,7 @@ def start_monitor(name_space: str, pod_num: int) -> None:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("namespace", type=str, help="Namespace name to monitor")
     parser.add_argument("pod_cnt", type=int, help="Count of pod")
