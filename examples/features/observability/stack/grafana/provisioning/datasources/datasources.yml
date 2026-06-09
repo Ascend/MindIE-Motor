@@ -1,5 +1,5 @@
 # Grafana datasource provisioning.
-# 预置 Prometheus / Tempo / Loki，并配置 Trace<->Log 双向跳转。
+# Provision Prometheus / Tempo / Loki with bidirectional Trace<->Log linking.
 apiVersion: 1
 
 datasources:
@@ -50,11 +50,11 @@ datasources:
     jsonData:
       derivedFields:
         - name: TraceID
-          matcherRegex: '(?:trace_id|traceID|traceId)\s*[:=]\s*"?([A-Fa-f0-9]+)"?'
-          url: '$${__value.raw}'
+          matcherRegex: '(?:trace_id|traceID|traceId)\s*[:=]\s*"?([A-Fa-f0-9]{32})"?'
+          url: '${__value.raw}'
           datasourceUid: tempo
         - name: x_request_id
           matcherRegex: '(?:x_request_id|x-request-id)\s*[:=]\s*"?([A-Za-z0-9_-]+)"?'
-          url: '$${__value.raw}'
+          url: '{ .x_request_id = "${__value.raw}" }'
           datasourceUid: tempo
           urlDisplayLabel: 'Find by request_id'

@@ -1,4 +1,9 @@
 # OpenTelemetry Collector configuration for minimal mode.
+# Receives OTLP traces/logs from pyMotor and routes:
+#   traces → Tempo
+#   logs   → Loki
+#
+# start.sh ensure_loki_image() 会在 Hub 拉取失败时本地 build Loki 镜像。
 
 receivers:
   otlp:
@@ -17,12 +22,19 @@ processors:
       - key: deployment.environment
         value: pymotor-observability-minimal
         action: upsert
+  attributes/loki:
+    actions:
+      - key: loki.format
+        value: json
+        action: insert
 
 exporters:
   otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
   debug:
     verbosity: basic
 
@@ -32,6 +44,10 @@ service:
       receivers: [otlp]
       processors: [batch, resource]
       exporters: [otlp/tempo, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch, resource, attributes/loki]
+      exporters: [loki, debug]
   telemetry:
     logs:
       level: info

@@ -42,9 +42,7 @@ def fetch_metric_names(prometheus_url: str) -> List[str]:
 def infer_query(metric_name: str) -> str:
     if metric_name.endswith("_bucket"):
         metric = metric_name
-        return (
-            f"histogram_quantile(0.95, sum(rate({metric}[5m])) by (le, pd_role, role, instance_id))"
-        )
+        return f"histogram_quantile(0.95, sum(rate({metric}[5m])) by (le, pd_role, role, instance_id))"
     if metric_name.endswith("_total") or metric_name.endswith("_count"):
         return f"sum(rate({metric_name}[5m])) by (pd_role, role, instance_id)"
     if metric_name.endswith("_sum"):

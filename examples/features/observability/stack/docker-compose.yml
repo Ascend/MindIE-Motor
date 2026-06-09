@@ -73,10 +73,10 @@ services:
   # Core: Loki (logs)
   # ---------------------------------------------------------------
   loki:
-    image: ${REGISTRY_PREFIX:-}grafana/loki:${LOKI_VERSION:-3.3.0}
+    image: ${LOKI_IMAGE:-grafana/loki:3.3.0}
+    pull_policy: if_not_present
     container_name: pymotor-loki
     restart: unless-stopped
-    profiles: [full]
     networks: [obs]
     ports:
       - "${LOKI_PORT:-3100}:3100"
@@ -94,7 +94,7 @@ services:
     container_name: pymotor-otel-collector
     restart: unless-stopped
     networks: [obs]
-    depends_on: [tempo]
+    depends_on: [tempo, loki]
     command: ["--config=/etc/otelcol/otel-collector.yaml"]
     volumes:
       - ${OTEL_CONFIG_FILE:-./otel-collector/otel-collector.yaml}:/etc/otelcol/otel-collector.yaml:ro
@@ -112,7 +112,7 @@ services:
     container_name: pymotor-grafana
     restart: unless-stopped
     networks: [obs]
-    depends_on: [prometheus, tempo]
+    depends_on: [prometheus, tempo, loki]
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-motor}
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-motor}
@@ -123,8 +123,8 @@ services:
       HTTPS_PROXY: ""
       http_proxy: ""
       https_proxy: ""
-      NO_PROXY: prometheus,tempo,otel-collector,localhost,127.0.0.1,host.docker.internal,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-      no_proxy: prometheus,tempo,otel-collector,localhost,127.0.0.1,host.docker.internal,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      NO_PROXY: prometheus,tempo,loki,otel-collector,localhost,127.0.0.1,host.docker.internal,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      no_proxy: prometheus,tempo,loki,otel-collector,localhost,127.0.0.1,host.docker.internal,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:

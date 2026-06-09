@@ -18,7 +18,7 @@ if [[ -f .env ]]; then
   load_dotenv .env
 fi
 
-STACK_MODE="${OBS_STACK_MODE:-full}"
+STACK_MODE="${OBS_STACK_MODE:-minimal}"
 WITH_MOCK="${OBS_WITH_MOCK:-0}"
 PROFILES="${OBS_COMPOSE_PROFILES:-}"
 
@@ -38,7 +38,6 @@ if "${DOCKER_BIN}" compose version >/dev/null 2>&1; then
       PROFILE_ARGS+=(--profile "${p}")
     done
   fi
-  # Ascend NPU exporter uses profile npu; include it so down matches typical up.
   PROFILE_ARGS+=(--profile npu)
 
   ARGS=(compose "${PROFILE_ARGS[@]}" down)

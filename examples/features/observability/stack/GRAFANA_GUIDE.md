@@ -30,7 +30,7 @@
 |--------|-----|------|------|
 | **Prometheus** | `prometheus` | `http://prometheus:9090` | 指标查询（默认数据源） |
 | **Tempo** | `tempo` | `http://tempo:3200` | 分布式追踪（Trace） |
-| **Loki** | `loki` | `http://loki:3100` | 日志（仅 full 模式拉起） |
+| **Loki** | `loki` | `http://loki:3100` | 日志（minimal / full 均包含） |
 
 并已配置三者间的联动跳转：
 

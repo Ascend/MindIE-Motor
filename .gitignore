@@ -115,7 +115,7 @@ venv.bak/
 # deployer
 deployer/output/*
 
-# observability stack runtime artifacts
+# observability stack local build artifacts
+examples/features/observability/stack/loki/.build/
 examples/features/observability/stack/generated/
 examples/features/observability/stack/.native-runtime/
-examples/features/observability/stack/.env

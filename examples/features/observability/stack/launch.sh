@@ -15,7 +15,7 @@ OBS_HOST_INPUT="${OBS_HOST:-}"
 FORCE_NATIVE=0
 DISCOVER_ONLY=0
 DRY_RUN=0
-STACK_MODE="${OBS_STACK_MODE:-full}"
+STACK_MODE="${OBS_STACK_MODE:-minimal}"
 
 usage() {
   cat <<'EOF'
@@ -25,8 +25,8 @@ Options:
   --namespace <namespace>     Kubernetes namespace / job_id
   --node-ip <node-ip>         Node IP used for NodePort access
   --user-config <path>        pyMotor user_config.json path
-  --minimal                   Start minimal Docker stack (Prometheus/Grafana/Tempo/OTel)
-  --full                      Start full Docker stack (adds Loki/node-exporter/cAdvisor)
+  --minimal                   Start core stack with Loki (default)
+  --full                      Add node-exporter/cAdvisor infra exporters
   --discover-only             Only run discovery, do not start stack
   --dry-run                   Run discovery and print generated Prometheus config
   --native                    Skip Docker Compose and run native runtime
@@ -46,6 +46,7 @@ Proxy (see SERVICE_GUIDE.md §2.4):
   - Native runtime: set PROXY_SH=/path/to/dotenv in .env (optional; default empty).
   - Grafana container: HTTP_PROXY cleared for in-stack prometheus/tempo.
   - OBS_COMPOSE_PULL=never|missing|always  OBS_COMPOSE_BUILD=0|1
+  - OBS_FORCE_NATIVE_FALLBACK=1  only then fall back to full native runtime on Docker failure
 EOF
 }
 
@@ -144,6 +145,65 @@ run_native() {
     --prometheus-file "./generated/prometheus.yml"
 }
 
+wait_for_http() {
+  local url=$1
+  local label=$2
+  local max_attempts="${3:-30}"
+  local sleep_sec="${4:-2}"
+
+  local attempt=1
+  while (( attempt <= max_attempts )); do
+    if curl -fsS "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( attempt == 1 )); then
+      echo "[launch] waiting for ${label}..."
+    fi
+    sleep "${sleep_sec}"
+    attempt=$((attempt + 1))
+  done
+
+  echo "[launch] ${label} readiness check failed: ${url}" >&2
+  return 1
+}
+
+check_core_stack() {
+  local docker_bin="${DOCKER_BIN:-docker}"
+  local missing=()
+  local core_containers=(
+    pymotor-prometheus
+    pymotor-grafana
+    pymotor-tempo
+    pymotor-loki
+    pymotor-otel-collector
+  )
+
+  for name in "${core_containers[@]}"; do
+    if ! "${docker_bin}" inspect -f '{{.State.Running}}' "${name}" 2>/dev/null | grep -qx 'true'; then
+      missing+=("${name}")
+    fi
+  done
+
+  if ((${#missing[@]} > 0)); then
+    echo "[launch] core stack unhealthy; not running containers: ${missing[*]}" >&2
+    return 1
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    local loki_port="${LOKI_PORT:-3100}"
+    local loki_attempts="${LOKI_READY_MAX_ATTEMPTS:-30}"
+    local loki_sleep="${LOKI_READY_SLEEP_SEC:-2}"
+    wait_for_http \
+      "http://127.0.0.1:${loki_port}/ready" \
+      "Loki :${loki_port}" \
+      "${loki_attempts}" \
+      "${loki_sleep}" || return 1
+  fi
+
+  echo "[launch] core stack healthy (includes pymotor-loki)"
+  return 0
+}
+
 if [[ "${FORCE_NATIVE}" -eq 1 ]]; then
   run_native
   exit 0
@@ -158,7 +218,23 @@ DOCKER_RC=$?
 set -e
 
 if [[ "${DOCKER_RC}" -ne 0 ]]; then
-  echo "[launch] Docker startup failed (exit=${DOCKER_RC}), cleaning partial Docker stack before native fallback."
-  ./stop.sh || true
-  run_native
+  if [[ "${OBS_FORCE_NATIVE_FALLBACK:-0}" == "1" ]]; then
+    echo "[launch] Docker startup failed (exit=${DOCKER_RC}); OBS_FORCE_NATIVE_FALLBACK=1, switching to native runtime."
+    ./stop.sh || true
+    run_native
+    exit 0
+  fi
+  echo "[launch] Docker startup failed (exit=${DOCKER_RC}). Set OBS_FORCE_NATIVE_FALLBACK=1 to fall back to native runtime." >&2
+  exit "${DOCKER_RC}"
+fi
+
+if ! check_core_stack; then
+  if [[ "${OBS_FORCE_NATIVE_FALLBACK:-0}" == "1" ]]; then
+    echo "[launch] core stack check failed; OBS_FORCE_NATIVE_FALLBACK=1, switching to native runtime."
+    ./stop.sh || true
+    run_native
+    exit 0
+  fi
+  echo "[launch] core stack check failed. Set OBS_FORCE_NATIVE_FALLBACK=1 to fall back to native runtime." >&2
+  exit 1
 fi
