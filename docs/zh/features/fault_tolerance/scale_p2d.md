@@ -11,6 +11,8 @@
 - [触发与调度](#触发与调度)
 - [恢复流程](#恢复流程)
 - [配置说明](#配置说明)
+  - [Controller 配置](#controller-配置)
+  - [InferServiceSet YAML 配置（CRD 部署）](#inferserviceset-yaml-配置crd-部署)
 - [日志与排查](#日志与排查)
 - [限制与后续规划](#限制与后续规划)
 - [相关代码与测试](#相关代码与测试)
@@ -440,6 +442,10 @@ flowchart TD
 
 ## 配置说明
 
+启用 ScaleP2D 需同时完成 **Controller 侧 JSON 配置**与 **InferServiceSet YAML 配置**（CRD 部署场景）。
+
+### Controller 配置
+
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
 | `enable_fault_tolerance` | bool | 须 `true` 才启动 FaultManager |
@@ -455,6 +461,71 @@ flowchart TD
   }
 }
 ```
+
+### InferServiceSet YAML 配置（CRD 部署）
+
+除上述 Controller 配置外，ScaleP2D 还依赖 InferServiceSet CRD 侧的**优先级调度**与**实例强制删除**能力：策略通过 NodeManager 停止 P 实例后，需由 CRD Controller 强制回收对应 Pod 并释放节点，供故障 D 实例恢复使用。
+
+修改文件：`examples/deployer/yaml_template/infer_service_template.yaml`（CRD 模式下 deploy 脚本据此生成 `output_yamls/infer_service.yaml`）。
+
+#### 1. 开启优先级调度
+
+在 `InferServiceSet.spec.template` 下增加 `schedulingStrategy`，类型设为 `Priority`：
+
+```yaml
+spec:
+  template:
+    schedulingStrategy:
+      type: Priority
+    roles:
+      # ...
+```
+
+#### 2. 为 prefill / decode 角色配置 priority
+
+在 `prefill`、`decode` 两个 role 的 `spec` 同级增加 `priority` 字段（**仅开启优先级调度时生效**）：
+
+| 字段 | 类型 | 取值范围 | 说明 |
+|------|------|----------|------|
+| `priority` | int | 1–32 | 数值越小，调度优先级越高 |
+
+PD 分离场景下，建议 **prefill 的 `priority` 数值大于 decode**（即 decode 优先级更高、prefill 更易被抢占），与 ScaleP2D「优先释放 P 算力」的策略一致。示例：
+
+```yaml
+    - name: prefill
+      # ...
+      spec:
+        replicas: 2
+        priority: 2          # 优先级低于 decode
+        # ...
+
+    - name: decode
+      # ...
+      spec:
+        replicas: 2
+        priority: 1          # 优先级高于 prefill
+        # ...
+```
+
+#### 3. 将 Pod 标签 fault-scheduling 改为 external-force
+
+将 `prefill`、`decode` 角色 Pod 模板（`spec.template.metadata.labels`）中的 `fault-scheduling` 由默认的 `grace` 改为 `external-force`：
+
+| 标签 | 修改前 | 修改后 | 说明 |
+|------|--------|--------|------|
+| `fault-scheduling` | `grace` | `external-force` | 开启实例级重调度；强制删除原实例并级联删除 Pod，供 ScaleP2D 实现 P 实例的强制释放 |
+
+```yaml
+        template:
+          metadata:
+            labels:
+              fault-scheduling: external-force   # 原为 grace
+              fault-retry-times: "10000"
+              app: mindie-server
+              # ...
+```
+
+> **说明：** 以上 YAML 改动仅作用于 `prefill`、`decode` 推理角色；`controller`、`coordinator` 等角色无需修改。
 
 **类常量：**
 
