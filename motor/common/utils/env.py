@@ -84,9 +84,5 @@ class _Environment:
     def conductor_service(self):
         return os.getenv("KV_CONDUCTOR_SERVICE", "")
 
-    @property
-    def disaggregation_bootstrap_port(self):
-        return os.getenv("DISAGGREGATION_BOOTSTRAP_PORT", "")
-
 
 Env = _Environment()

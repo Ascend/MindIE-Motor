@@ -122,7 +122,7 @@ class EngineManager(ThreadSafeSingleton):
             else:
                 rk_dump = ins_ranktable
 
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(rk_dump, f, ensure_ascii=False, indent=2)
 
             logger.info("Ranktable written to %s", output_path)
@@ -200,7 +200,7 @@ class EngineManager(ThreadSafeSingleton):
             logger.info("A5 platform does not require ranktable, skip loading from HCCL file")
             return None
         try:
-            with open(Env.hccl_path, "r") as f:
+            with open(Env.hccl_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if self._config.single_container_config.single_container_flag:
                 device_offset = self._config.single_container_config.device_offset
@@ -230,6 +230,8 @@ class EngineManager(ThreadSafeSingleton):
         with self.config_lock:
             job_name = self._config.basic_config.job_name
             model_name = self._config.basic_config.model_name
+            engine_type = self._config.basic_config.engine_type
+            dispatch_capabilities = self._config.basic_config.dispatch_capabilities
             role = self._config.basic_config.role
             pod_ip = self._config.api_config.pod_ip
             business_port = self._config.endpoint_config.service_ports
@@ -243,6 +245,8 @@ class EngineManager(ThreadSafeSingleton):
         register_msg = RegisterMsg(
             job_name=job_name,
             model_name=model_name,
+            engine_type=engine_type,
+            dispatch_capabilities=dispatch_capabilities,
             role=role,
             pod_ip=pod_ip,
             business_port=business_port,
@@ -271,6 +275,8 @@ class EngineManager(ThreadSafeSingleton):
         with self.config_lock:
             job_name = self._config.basic_config.job_name
             model_name = self._config.basic_config.model_name
+            engine_type = self._config.basic_config.engine_type
+            dispatch_capabilities = self._config.basic_config.dispatch_capabilities
             role = self._config.basic_config.role
             pod_ip = self._config.api_config.pod_ip
             node_manager_port = self._config.api_config.node_manager_port
@@ -282,6 +288,8 @@ class EngineManager(ThreadSafeSingleton):
         reregister_msg = ReregisterMsg(
             job_name=job_name,
             model_name=model_name,
+            engine_type=engine_type,
+            dispatch_capabilities=dispatch_capabilities,
             role=role,
             pod_ip=pod_ip,
             nm_port=str(node_manager_port),

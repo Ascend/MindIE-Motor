@@ -16,7 +16,6 @@ Inference plane: Worker subprocess only; provides /v1/completions, /v1/chat/comp
 import asyncio
 import json
 import os
-import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -37,7 +36,7 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.router.dispatch import handle_request, handle_metaserver_request
+from motor.coordinator.router.dispatch import handle_request
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
@@ -105,10 +104,7 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
         if OpenAIField.ROLE not in message or OpenAIField.CONTENT not in message:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Invalid message at index {i}: missing "
-                    f"{OpenAIField.ROLE} or {OpenAIField.CONTENT}"
-                ),
+                detail=(f"Invalid message at index {i}: missing {OpenAIField.ROLE} or {OpenAIField.CONTENT}"),
             )
         if message[OpenAIField.ROLE] not in ["system", "user", "assistant", "tool"]:
             raise HTTPException(
@@ -173,38 +169,6 @@ class InferenceServer(BaseCoordinatorServer):
                 logger.warning("TracerManager shutdown during lifespan: %s", e)
             await self._scheduler_connection.disconnect()
 
-    async def handle_metaserver_request(self, request: Request):
-        t0 = time.perf_counter()
-        try:
-            if not await self._is_available():
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Service is not available",
-                )
-            result = await handle_metaserver_request(
-                request,
-                self.coordinator_config,
-                scheduler=self._get_scheduler_client(),
-                request_manager=request.app.state.request_manager,
-            )
-            logger.info(
-                "Metaserver latency stage=metaserver_request_total elapsed_ms=%.2f",
-                (time.perf_counter() - t0) * 1000,
-            )
-            return result
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.info(
-                "Metaserver latency stage=metaserver_request_total elapsed_ms=%.2f error=%s",
-                (time.perf_counter() - t0) * 1000,
-                e,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            ) from e
-
     def verify_api_key(self, request: Request) -> None:
         if not self._api_key_config.enable_api_key:
             return
@@ -220,7 +184,7 @@ class InferenceServer(BaseCoordinatorServer):
             )
         api_key = authorization
         if self._api_key_config.key_prefix and authorization.startswith(self._api_key_config.key_prefix):
-            api_key = authorization[len(self._api_key_config.key_prefix):]
+            api_key = authorization[len(self._api_key_config.key_prefix) :]
         if api_key in self._api_key_config.valid_keys:
             return
         if verify_api_key_against_valid_keys(api_key, self._api_key_config.valid_keys):
@@ -240,11 +204,10 @@ class InferenceServer(BaseCoordinatorServer):
                 path = rate_limit_config.olc_config_path
                 os.environ['OLC_CONFIG_PATH'] = path
                 from olc.adapters.fastapi import OlcFastAPIAdapter, OlcAdapterConfig
+
                 adapter_config = OlcAdapterConfig(tag_extractor=self._extract_tags_from_request)
                 self._inference_app.add_middleware(OlcFastAPIAdapter, adapter_config)
-                logger.info(
-                    "Olc limit setup succeeded, config path: %s", path
-                )
+                logger.info("Olc limit setup succeeded, config path: %s", path)
             except Exception as e:
                 logger.error("Using simple rate limit, Failed to create olc limit middleware: %s", e, exc_info=True)
                 self.build_simple_rate_limit(rate_limit_config)
@@ -290,14 +253,13 @@ class InferenceServer(BaseCoordinatorServer):
         pool = HTTPClientPool()
 
         async def _callback(active_endpoints: list[tuple[str, str]]) -> None:
-            active_keys = pool.get_pool_keys_for_endpoints(
-                active_endpoints, tls_config=tls_config
-            )
+            active_keys = pool.get_pool_keys_for_endpoints(active_endpoints, tls_config=tls_config)
             closed_count = await pool.cleanup_unused_clients(active_keys)
             if closed_count > 0:
                 logger.info(
                     "HTTP pool cleanup on instance change: closed %d unused client(s), active=%d",
-                    closed_count, len(active_keys),
+                    closed_count,
+                    len(active_keys),
                 )
             if active_endpoints:
                 results = await pool.warmup_clients(
@@ -336,7 +298,8 @@ class InferenceServer(BaseCoordinatorServer):
 
     async def _is_available(self) -> bool:
         """Whether instances are available (Worker reads SchedulerClient cache).
-        PD mode: available if has P or P+D."""
+        PD mode: available if has P or P+D.
+        """
         client = self._scheduler_connection.get_client()
         if client is None:
             return False
@@ -370,7 +333,10 @@ class InferenceServer(BaseCoordinatorServer):
         ):
             self.verify_api_key(request)
             return await self._handle_anthropic_request(
-                request, RequestType.ANTHROPIC, request_manager, require_max_tokens=True,
+                request,
+                RequestType.ANTHROPIC,
+                request_manager,
+                require_max_tokens=True,
             )
 
         @self._inference_app.post("/v1/messages/count_tokens")
@@ -381,7 +347,10 @@ class InferenceServer(BaseCoordinatorServer):
         ):
             self.verify_api_key(request)
             return await self._handle_anthropic_request(
-                request, RequestType.ANTHROPIC, request_manager, require_max_tokens=False,
+                request,
+                RequestType.ANTHROPIC,
+                request_manager,
+                require_max_tokens=False,
             )
 
         @self._inference_app.get("/v1/models")

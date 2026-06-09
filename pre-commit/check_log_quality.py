@@ -114,18 +114,25 @@ def in_scope(rel_path: str, prefixes: Iterable[str]) -> bool:
     return any(rel_path.startswith(prefix) for prefix in prefixes)
 
 
-def parse_staged_changed_lines(rel_path: str) -> set[int] | None:
-    result = subprocess.run(
-        [_GIT_EXE, "diff", "--cached", "-U0", "--", rel_path],
+def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
-    if result.returncode != 0 and not result.stdout.strip():
+
+
+def parse_staged_changed_lines(rel_path: str) -> set[int] | None:
+    result = _run_git([_GIT_EXE, "diff", "--cached", "-U0", "--", rel_path])
+    stdout = result.stdout or ""
+    if result.returncode != 0 and not stdout.strip():
         return None
 
     changed: set[int] = set()
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if line.startswith("@@"):
             match = re.search(r"\+(\d+)(?:,(\d+))?", line)
             if not match:
@@ -364,13 +371,9 @@ def check_file(path: Path, rules: Rules, incremental: bool) -> list[Issue]:
 
     changed_lines = parse_staged_changed_lines(rel_path) if incremental else None
     if incremental and changed_lines is not None and not changed_lines:
-        status = subprocess.run(
-            [_GIT_EXE, "diff", "--cached", "--name-status", "--", rel_path],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if status.stdout.startswith("A\t") or status.stdout.startswith("A "):
+        status = _run_git([_GIT_EXE, "diff", "--cached", "--name-status", "--", rel_path])
+        status_out = status.stdout or ""
+        if status_out.startswith("A\t") or status_out.startswith("A "):
             changed_lines = None  # new file: check entire file
 
     checker = LogQualityChecker(path, rel_path, rules, changed_lines)

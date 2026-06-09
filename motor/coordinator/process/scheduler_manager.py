@@ -18,7 +18,10 @@ import os
 import asyncio
 from multiprocessing.process import BaseProcess
 
-import uvloop
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
 
 from motor.coordinator.process.base import BaseProcessManager
 from motor.coordinator.scheduler.runtime.scheduler_server import SchedulerServer
@@ -37,6 +40,7 @@ def run_scheduler_server_proc(config: CoordinatorConfig) -> None:
     # Set process title
     try:
         import setproctitle
+
         setproctitle.setproctitle("SchedulerServer")
     except ImportError:
         pass
@@ -44,10 +48,7 @@ def run_scheduler_server_proc(config: CoordinatorConfig) -> None:
     logger.info("Scheduler server process starting (PID: %s)", os.getpid())
 
     # Create and start async Scheduler server (first version uses default config)
-    server = SchedulerServer(
-        config=config,
-        frontend_address=DEFAULT_SCHEDULER_PROCESS_CONFIG.frontend_address
-    )
+    server = SchedulerServer(config=config, frontend_address=DEFAULT_SCHEDULER_PROCESS_CONFIG.frontend_address)
     scheduler_config_watcher = None
 
     # Scheduler process watches config file for hot-reload (config.reload updates in-memory config).
@@ -71,7 +72,10 @@ def run_scheduler_server_proc(config: CoordinatorConfig) -> None:
 
     try:
         # Run async server
-        uvloop.run(server.start())
+        if uvloop is not None:
+            uvloop.run(server.start())
+        else:
+            asyncio.run(server.start())
     except KeyboardInterrupt:
         logger.info("Scheduler server process received interrupt signal")
     except Exception as e:

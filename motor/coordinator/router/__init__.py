@@ -4,6 +4,6 @@
 
 """Coordinator HTTP routing layer: dispatch entry and strategy implementations."""
 
-__all__ = ["handle_metaserver_request", "handle_request"]
+__all__ = ["handle_request"]
 
-from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
+from motor.coordinator.router.dispatch import handle_request

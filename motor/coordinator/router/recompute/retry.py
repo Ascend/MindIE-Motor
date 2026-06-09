@@ -38,14 +38,10 @@ _REQ_ID_RETRY_LEN = 2
 def modify_req_id_retry_segment(req_id: str) -> str:
     """Bump a 2-digit segment in ``req_id`` at a fixed offset when digits are present."""
     if len(req_id) > _REQ_ID_RETRY_INDEX:
-        target = req_id[_REQ_ID_RETRY_INDEX:_REQ_ID_RETRY_INDEX + _REQ_ID_RETRY_LEN]
+        target = req_id[_REQ_ID_RETRY_INDEX : _REQ_ID_RETRY_INDEX + _REQ_ID_RETRY_LEN]
         if target.isdigit():
             new_digit = (int(target) + 1) % 100
-            return (
-                req_id[:_REQ_ID_RETRY_INDEX]
-                + f"{new_digit:02d}"
-                + req_id[_REQ_ID_RETRY_INDEX + _REQ_ID_RETRY_LEN:]
-            )
+            return req_id[:_REQ_ID_RETRY_INDEX] + f"{new_digit:02d}" + req_id[_REQ_ID_RETRY_INDEX + _REQ_ID_RETRY_LEN :]
         return req_id
     return req_id
 
@@ -130,10 +126,7 @@ def validate_nonstream_recompute_body(
         )
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Recompute requires non-stream prompt_token_ids; "
-                "ensure decode returns return_token_ids."
-            ),
+            detail=("Recompute requires non-stream prompt_token_ids; ensure decode returns return_token_ids."),
         )
 
     token_ids = choices[0].get(OpenAIField.TOKEN_IDS)
@@ -147,11 +140,7 @@ def validate_nonstream_recompute_body(
             detail="Recompute token cache corrupted: non-stream choices[0].token_ids is not a list.",
         )
 
-    usage = (
-        resp_json.get(OpenAIField.USAGE)
-        if isinstance(resp_json.get(OpenAIField.USAGE), dict)
-        else {}
-    )
+    usage = resp_json.get(OpenAIField.USAGE) if isinstance(resp_json.get(OpenAIField.USAGE), dict) else {}
     raw_ct = usage.get(OpenAIField.COMPLETION_TOKENS, 0)
     try:
         usage_ct = int(raw_ct) if raw_ct is not None else 0
@@ -160,17 +149,13 @@ def validate_nonstream_recompute_body(
     if usage_ct > 0:
         if not isinstance(token_ids, list) or len(token_ids) == 0:
             log.error(
-                "Recompute aborted for request %s: non-stream output token_ids missing "
-                "but usage.completion_tokens=%s",
+                "Recompute aborted for request %s: non-stream output token_ids missing but usage.completion_tokens=%s",
                 req_id,
                 usage_ct,
             )
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "Recompute requires non-stream choices[0].token_ids when "
-                    "usage.completion_tokens > 0."
-                ),
+                detail=("Recompute requires non-stream choices[0].token_ids when usage.completion_tokens > 0."),
             )
 
 
@@ -269,9 +254,7 @@ def prepare_retry_request(
         )
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Recompute requires token id cache (all_token_ids and prompt_token_ids)"
-            ),
+            detail=("Recompute requires token id cache (all_token_ids and prompt_token_ids)"),
         )
 
     try:
@@ -314,12 +297,10 @@ def prepare_retry_request(
             leg_completion,
         )
     req_data[OpenAIField.MAX_TOKENS] = max(1, raw_max_tokens)
-    req_data.pop("kv_transfer_params", None)
     if request_info["chat_flag"]:
         if not completions_retry_eligible_for_chat_request(req_data):
             logger.error(
-                "Recompute aborted for request %s: Chat ingress ineligible for "
-                "Completions-style token-id replay.",
+                "Recompute aborted for request %s: Chat ingress ineligible for Completions-style token-id replay.",
                 req_id,
             )
             raise HTTPException(

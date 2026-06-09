@@ -8,20 +8,24 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import inspect
 import json
 import multiprocessing
 from abc import abstractmethod
 from http import HTTPStatus
-from typing import Annotated, Any, AsyncGenerator, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
-from motor.engine_server.core.config import IConfig
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
+from motor.common.resources.dispatch import DispatchStopState, MotorDispatch
+from motor.engine_server.core.dispatch_adapter import create_dispatch_adapter
+from motor.engine_server.core.config import IConfig
+from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
 from motor.engine_server.core.endpoint import Endpoint
 from motor.engine_server.utils.cancellation import with_cancellation
 
@@ -31,6 +35,9 @@ CONFIG_KEY = "_config"
 
 
 class InferEndpoint(Endpoint):
+    chat_completion_request: type[Any]
+    completion_request: type[Any]
+
     def __init__(self, config: IConfig):
         self.config = config
         self.host = config.get_endpoint_config().host
@@ -44,12 +51,11 @@ class InferEndpoint(Endpoint):
         self._stop_event = multiprocessing.Event()
         self._server: uvicorn.Server | None = None
         self._server_process = multiprocessing.Process(
-            target=self._run_server,
-            name="infer_endpoint_process",
-            daemon=False
+            target=self._run_server, name="infer_endpoint_process", daemon=False
         )
         self._run_http_in_process = True
         self.engine_type = config.get_endpoint_config().engine_type
+        self.dispatch_adapter = create_dispatch_adapter(config)
         self.init_request_handlers()
         self._register_routes()
 
@@ -87,19 +93,162 @@ class InferEndpoint(Endpoint):
         self._stop_event.set()
         logger.info("InferEndpoint stopped completely")
 
-    async def _parse_openai_request(self, raw_request: Request, model: type[Any]) -> Any:
+    async def _parse_openai_request(
+        self, raw_request: Request, model: type[Any]
+    ) -> tuple[Any | None, JSONResponse | None, DispatchResponseContext]:
+        dispatch: MotorDispatch | None = None
+        context: DispatchResponseContext | None = None
         try:
-            body = await raw_request.json()
-            return model.model_validate(body)
-        except (json.JSONDecodeError, ValidationError) as e:
-            detail = (
-                e.errors()
-                if isinstance(e, ValidationError)
-                else f"Invalid JSON body: {e.msg}"
+            original_body = await raw_request.json()
+            body = original_body.copy()
+            body, dispatch = await self.dispatch_adapter.adapt_request_body(body)
+            context = DispatchResponseContext(
+                api=raw_request.url.path.strip("/"),
+                raw_path=raw_request.url.path,
+                request_body=body,
+                dispatch=dispatch,
+                stream=bool(body.get("stream", False)),
+                client_return_token_ids=bool(original_body.get("return_token_ids", False)),
+                client_expects_chat_shape=("messages" in original_body or "chat/completions" in raw_request.url.path),
             )
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST.value, detail=detail
-            ) from e
+            prepared = await self.dispatch_adapter.maybe_prepare_response(body, dispatch)
+            if prepared is not None:
+                if await self.dispatch_adapter.should_finish_prepared_response(prepared, dispatch):
+                    await self.dispatch_adapter.finish_dispatch(dispatch)
+                return None, JSONResponse(content=prepared), context
+            # Keep raw_request consistent for engine serving code that reads
+            # the request body again after protocol validation.
+            self._replace_request_body(raw_request, body)
+            return model.model_validate(body), None, context
+        except (json.JSONDecodeError, ValidationError) as e:
+            if context is not None:
+                await self._handle_dispatch_failure(context)
+            detail = e.errors() if isinstance(e, ValidationError) else f"Invalid JSON body: {e.msg}"
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST.value, detail=detail) from e
+        except HTTPException:
+            if context is not None:
+                await self._handle_dispatch_failure(context)
+            raise
+
+    async def _call_openai_serving(
+        self,
+        call: Callable[[], Awaitable[Any]],
+        context: DispatchResponseContext,
+        *,
+        normalize: bool = True,
+    ) -> Any:
+        try:
+            response = await call()
+            if await self.dispatch_adapter.is_dispatch_stopped(context.dispatch):
+                raise HTTPException(
+                    status_code=499,
+                    detail="Dispatch stopped by peer.",
+                )
+            if (
+                context.dispatch is not None
+                and isinstance(response, Response)
+                and response.status_code >= HTTPStatus.BAD_REQUEST.value
+            ):
+                await self._handle_dispatch_failure(context)
+                return await self._normalize_openai_response(response, context) if normalize else response
+        except Exception as e:
+            if context.dispatch is None:
+                raise
+            await self._handle_dispatch_failure(context)
+            mapped = self.dispatch_adapter.map_engine_error(e, context)
+            if isinstance(mapped, HTTPException):
+                raise mapped from e
+            return mapped
+        normalized = await self._normalize_openai_response(response, context) if normalize else response
+        if not isinstance(normalized, StreamingResponse):
+            await self.dispatch_adapter.finish_dispatch(context.dispatch)
+        return normalized
+
+    async def _normalize_openai_response(
+        self,
+        response: Any,
+        context: DispatchResponseContext,
+    ) -> Any:
+        if isinstance(response, StreamingResponse):
+            return self._wrap_streaming_response(response, context)
+        if isinstance(response, Response):
+            return await self.dispatch_adapter.normalize_response(response, context)
+        return response
+
+    def _wrap_streaming_response(
+        self,
+        response: StreamingResponse,
+        context: DispatchResponseContext,
+    ) -> StreamingResponse:
+        async def _normalized_body():
+            try:
+                state: dict[str, Any] = {}
+                async for chunk in response.body_iterator:
+                    if await self.dispatch_adapter.is_dispatch_stopped(context.dispatch):
+                        raise HTTPException(
+                            status_code=499,
+                            detail="Dispatch stopped by peer.",
+                        )
+                    normalized = await self.dispatch_adapter.normalize_stream_chunk(chunk, context, state)
+                    if normalized:
+                        yield normalized
+            except Exception:
+                await self._handle_dispatch_failure(context)
+                raise
+            finally:
+                await self.dispatch_adapter.finish_dispatch(context.dispatch)
+
+        headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in ("content-length", "content-type")
+        }
+        return StreamingResponse(
+            _normalized_body(),
+            status_code=response.status_code,
+            media_type=response.media_type,
+            headers=headers,
+            background=response.background,
+        )
+
+    @staticmethod
+    def _replace_request_body(raw_request: Request, body: dict[str, Any]) -> None:
+        encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        raw_request._body = encoded
+        raw_request._json = body
+
+    async def _handle_dispatch_failure(self, context: DispatchResponseContext) -> None:
+        if context.dispatch is None:
+            return
+        if not await self.dispatch_adapter.is_dispatch_stopped(context.dispatch):
+            await self.dispatch_adapter.stop_peer(context.dispatch)
+        await self.dispatch_adapter.finish_dispatch(context.dispatch)
+
+    async def _abort_engine_request(self, engine_request_id: str | None) -> None:
+        if not engine_request_id:
+            return
+        candidates = [
+            getattr(self.app.state, "engine_client", None),
+            getattr(self.app.state, "tokenizer_manager", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            abort = getattr(candidate, "abort", None) or getattr(candidate, "abort_request", None)
+            if abort is None:
+                continue
+            try:
+                result = abort(engine_request_id)
+                if inspect.isawaitable(result):
+                    await result
+                return
+            except Exception as e:
+                logger.warning(
+                    "Dispatch engine abort failed engine_request_id=%s error=%s",
+                    engine_request_id,
+                    e,
+                )
+                return
 
     async def _chat_completion_body(self, raw_request: Request) -> Any:
         return await self._parse_openai_request(raw_request, self.chat_completion_request)
@@ -113,9 +262,7 @@ class InferEndpoint(Endpoint):
         if args is None:
             return
         profiler_config = getattr(args, "profiler_config", None)
-        profiler = (
-            getattr(profiler_config, "profiler", None) if profiler_config is not None else None
-        )
+        profiler = getattr(profiler_config, "profiler", None) if profiler_config is not None else None
         if profiler is None:
             return
         logger.warning(
@@ -154,23 +301,70 @@ class InferEndpoint(Endpoint):
         @self.app.post("/v1/chat/completions")
         @with_cancellation
         async def create_chat_completion(
-            request: Annotated[Any, Depends(self._chat_completion_body)],
             raw_request: Request,
         ):
-            return await self.app.state.openai_serving_chat.handle_request(
-                request, raw_request
+            request, prepared_response, context = await self._parse_openai_request(
+                raw_request, self.chat_completion_request
+            )
+            if prepared_response is not None:
+                return prepared_response
+            return await self._call_openai_serving(
+                lambda: self.app.state.openai_serving_chat.handle_request(request, raw_request),
+                context,
             )
 
         @self.app.post("/v1/completions")
         @with_cancellation
         async def create_completion(
-            request: Annotated[Any, Depends(self._completion_body)],
             raw_request: Request,
         ):
-            return await self.app.state.openai_serving_completion.handle_request(
-                request, raw_request
+            request, prepared_response, context = await self._parse_openai_request(raw_request, self.completion_request)
+            if prepared_response is not None:
+                return prepared_response
+            return await self._call_openai_serving(
+                lambda: self.app.state.openai_serving_completion.handle_request(request, raw_request),
+                context,
             )
-        
+
+        @self.app.post("/v1/metaserver")
+        async def metaserver(raw_request: Request):
+            try:
+                body = await raw_request.json()
+            except json.JSONDecodeError as e:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST.value,
+                    detail=f"Invalid JSON body: {e.msg}",
+                ) from e
+            metaserver_request = await self.dispatch_adapter.prepare_metaserver_request(body)
+            engine_body = metaserver_request.engine_body
+            context = DispatchResponseContext(
+                api="v1/metaserver",
+                raw_path="/v1/metaserver",
+                request_body=engine_body,
+                dispatch=metaserver_request.dispatch,
+                stream=False,
+                client_return_token_ids=False,
+                client_expects_chat_shape="messages" in engine_body,
+            )
+            self._replace_request_body(raw_request, engine_body)
+            try:
+                if "messages" in engine_body:
+                    request = self.chat_completion_request.model_validate(engine_body)
+                    return await self._call_openai_serving(
+                        lambda: self.app.state.openai_serving_chat.handle_request(request, raw_request),
+                        context,
+                        normalize=False,
+                    )
+                request = self.completion_request.model_validate(engine_body)
+            except ValidationError as e:
+                await self._handle_dispatch_failure(context)
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST.value, detail=e.errors()) from e
+            return await self._call_openai_serving(
+                lambda: self.app.state.openai_serving_completion.handle_request(request, raw_request),
+                context,
+                normalize=False,
+            )
+
         @self.app.get("/v1/models")
         async def list_models():
             models = getattr(self.app.state, "openai_serving_models", None)
@@ -186,6 +380,23 @@ class InferEndpoint(Endpoint):
             is_healthy = await self.app.state.health_checker()
             return is_healthy
 
+        @self.app.post("/v1/dispatch/stop")
+        async def dispatch_stop(raw_request: Request):
+            try:
+                body = await raw_request.json()
+            except json.JSONDecodeError as e:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST.value,
+                    detail=f"Invalid JSON body: {e.msg}",
+                ) from e
+            response = await self.dispatch_adapter.handle_stop(body)
+            if response.state in (
+                DispatchStopState.STOPPED,
+                DispatchStopState.ALREADY_STOPPED,
+            ):
+                await self._abort_engine_request(body.get("engine_request_id"))
+            return response.model_dump(mode="json")
+
         self._register_profile_routes_if_enabled()
 
     def _run_server(self):
@@ -196,7 +407,7 @@ class InferEndpoint(Endpoint):
             "log_level": "warning",
             "workers": 1,
             "loop": "uvloop",
-            "http": "httptools"
+            "http": "httptools",
         }
         config = uvicorn.Config(**config_kwargs)
 

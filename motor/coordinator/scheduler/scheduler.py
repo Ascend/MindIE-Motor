@@ -12,8 +12,15 @@
 import asyncio
 
 from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint, WorkloadAction, Workload
-from motor.coordinator.domain import InstanceReadiness, UpdateWorkloadParams
+from motor.common.resources.endpoint import WorkloadAction, Workload
+from motor.coordinator.domain import (
+    InstanceReadiness,
+    ScheduledPair,
+    ScheduledResource,
+    UpdateWorkloadParams,
+    build_release_workload_params,
+    readiness_from_instances,
+)
 from motor.common.resources.http_msg_spec import EventType
 from motor.common.logger import get_logger
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
@@ -50,7 +57,7 @@ class Scheduler:
         """
         if config is None:
             config = CoordinatorConfig()
-        
+
         if isinstance(config, SchedulerType):
             self._policy_type = config
             self._config: CoordinatorConfig | None = None
@@ -59,21 +66,17 @@ class Scheduler:
             self._config = config
 
         self._instance_provider = instance_provider
-        self._scheduling_policy = SchedulingPolicyFactory.create(
-            self._policy_type, self._instance_provider
-        )
-        if self._config and hasattr(
-            self._scheduling_policy, "set_endpoint_instance_score_weight"
-        ):
+        self._scheduling_policy = SchedulingPolicyFactory.create(self._policy_type, self._instance_provider)
+        if self._config and hasattr(self._scheduling_policy, "set_endpoint_instance_score_weight"):
             self._scheduling_policy.set_endpoint_instance_score_weight(
                 self._config.scheduler_config.endpoint_instance_score_weight
             )
         logger.info("Scheduler started.")
-    
+
     def get_scheduling_policy(self) -> BaseSchedulingPolicy:
         """
         Get the current scheduling policy.
-        
+
         Returns:
             Current scheduling policy
         """
@@ -83,10 +86,10 @@ class Scheduler:
         """
         Select an instance and endpoint based on the current scheduling algorithm.
         If policy is async, awaits and returns.
-        
+
         Args:
             role: Optional PDRole to filter instances by role (prefill/decode)
-            
+
         Returns:
             (Instance, Endpoint) tuple or None if no instance available
         """
@@ -97,7 +100,7 @@ class Scheduler:
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
         Allocation workload is decided here: zero for policies without update_workload (e.g. RR), demand for LB.
-        
+
         Returns:
             (Instance, Endpoint, Workload) tuple or None (no instance or update_workload failed).
             The returned Workload is what was allocated; caller records it for release.
@@ -125,6 +128,30 @@ class Scheduler:
             return None
         return (instance, endpoint, workload)
 
+    async def select_pair_and_allocate(self, req_info: RequestInfo) -> ScheduledPair | None:
+        p_result = await self.select_and_allocate(PDRole.ROLE_P, req_info)
+        if p_result is None:
+            return None
+        p_instance, p_endpoint, p_workload = p_result
+        d_result = await self.select_and_allocate(PDRole.ROLE_D, req_info)
+        if d_result is None:
+            for params in build_release_workload_params(
+                p_instance.id,
+                p_endpoint.id,
+                PDRole.ROLE_P,
+                req_info.req_id,
+                p_workload,
+            ):
+                await self.update_workload(params)
+            return None
+        d_instance, d_endpoint, d_workload = d_result
+        return ScheduledPair(
+            prefill=ScheduledResource(instance=p_instance, endpoint=p_endpoint),
+            decode=ScheduledResource(instance=d_instance, endpoint=d_endpoint),
+            prefill_workload=p_workload,
+            decode_workload=d_workload,
+        )
+
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         """
         Update workload information for load-aware scheduling strategies (by id only).
@@ -140,9 +167,7 @@ class Scheduler:
             )
         return True  # Ignore for strategies that don't support workload tracking
 
-    async def get_available_instances(
-        self, role: PDRole | None = None
-    ) -> dict[int, Instance]:
+    async def get_available_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
         """
         Get available instance list (for metrics/readiness etc.).
         In-process provider is fast and lock-free; direct call avoids to_thread overhead.
@@ -154,14 +179,12 @@ class Scheduler:
         Check by deploy mode; returns InstanceReadiness (REQUIRED_MET, ONLY_PREFILL, ONLY_DECODE, NONE, UNKNOWN).
         deploy_mode from init config; default DeployMode.PD_SEPARATE when no config.
         """
-        deploy_mode = (
-            self._config.scheduler_config.deploy_mode
-            if self._config
-            else DeployMode.PD_SEPARATE
-        )
-        return await asyncio.to_thread(
-            self._instance_provider.get_required_instances_status, deploy_mode
-        )
+        deploy_mode = self._config.scheduler_config.deploy_mode if self._config else DeployMode.PD_SEPARATE
+        instances = await self.get_available_instances(None)
+        readiness = readiness_from_instances(instances.values())
+        if readiness != InstanceReadiness.NONE:
+            return readiness
+        return await asyncio.to_thread(self._instance_provider.get_required_instances_status, deploy_mode)
 
     async def get_all_instances(self) -> tuple[dict[int, Instance], dict[int, Instance]]:
         """Return (available, unavailable) instance dicts from in-process InstanceManager."""

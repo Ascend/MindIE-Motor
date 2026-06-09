@@ -10,10 +10,14 @@
 Mgmt process manager: run_mgmt_server_proc, MgmtProcessManager.
 """
 
+import asyncio
 import os
 from multiprocessing.process import BaseProcess
 
-import uvloop
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
 
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_server.management_server import ManagementServer
@@ -60,7 +64,10 @@ def run_mgmt_server_proc(
             logger.warning("Mgmt process: failed to start config watcher (hot-reload disabled): %s", e)
 
     try:
-        uvloop.run(server.run())
+        if uvloop is not None:
+            uvloop.run(server.run())
+        else:
+            asyncio.run(server.run())
     finally:
         if mgmt_config_watcher is not None:
             try:

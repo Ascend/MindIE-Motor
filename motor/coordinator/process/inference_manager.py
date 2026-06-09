@@ -14,15 +14,18 @@ from multiprocessing import connection
 from multiprocessing.process import BaseProcess
 from typing import Any
 
-import uvloop
 import uvicorn
-from fastapi import FastAPI, Request
+
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
 
 from motor.common.http.cert_util import CertUtil
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.http.http_client import HTTPClientPool
 from motor.common.logger import get_logger, reconfigure_logging
-from motor.config.coordinator import CoordinatorConfig, DeployMode
+from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_server.inference_server import InferenceServer
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.process.base import BaseProcessManager
@@ -56,28 +59,7 @@ def run_inference_worker_proc(
     # Set process title
     set_process_title(name=str(worker_index))
 
-    logger.info(
-        f"Inference worker process {worker_index} starting (PID: {os.getpid()})"
-    )
-
-    # D direct Worker metaserver: set worker port when CDP/PD separate and worker_metaserver_base_port > 0.
-    # Each inference worker (num_workers >= 1) uses this port to receive metaserver callbacks from D instances.
-    mp_cfg = config.inference_workers_config
-    base_port = mp_cfg.worker_metaserver_base_port
-    deploy_mode = config.scheduler_config.deploy_mode
-    if base_port > 0 and deploy_mode in (
-        DeployMode.CDP_SEPARATE,
-        DeployMode.PD_SEPARATE,
-        DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
-    ):
-        config.worker_index = worker_index
-        config.worker_metaserver_port = base_port + worker_index
-        logger.info(
-            "Worker %s: metaserver port enabled: %s (base=%s)",
-            worker_index,
-            config.worker_metaserver_port,
-            base_port,
-        )
+    logger.info(f"Inference worker process {worker_index} starting (PID: {os.getpid()})")
 
     # Create RequestManager first, then InferenceServer (business plane only)
     request_manager = RequestManager(config)
@@ -136,60 +118,23 @@ def run_inference_worker_proc(
 
     # Create and run server(s)
     server = uvicorn.Server(uvicorn_config)
-    metaserver_server = None
-    if getattr(config, "worker_metaserver_port", None) is not None:
-        # minimal metaserver app (only POST /v1/metaserver) on dedicated port
-        metaserver_app = FastAPI(title="Inference Worker Metaserver")
-        metaserver_app.state.request_manager = request_manager
-        host_metaserver = (
-            config.api_config.coordinator_api_host
-        )  # so D (e.g. same pod) can reach this Worker
-        port_metaserver = config.worker_metaserver_port
-
-        @metaserver_app.post("/v1/metaserver")
-        @inference_server.timeout_handler()
-        async def metaserver_endpoint(request: Request):
-            return await inference_server.handle_metaserver_request(request)
-
-        metaserver_config_kwargs = InferenceServer.create_base_uvicorn_config(
-            metaserver_app,
-            host_metaserver,
-            port_metaserver,
-        )
-        inference_server.apply_timeout_to_config(metaserver_config_kwargs)
-        metaserver_uvicorn_config = uvicorn.Config(**metaserver_config_kwargs)
-        metaserver_uvicorn_config.load()
-        metaserver_server = uvicorn.Server(metaserver_uvicorn_config)
-        logger.info(
-            "Worker %s: metaserver listening on %s:%s (Scheme 3)",
-            worker_index,
-            host_metaserver,
-            port_metaserver,
-        )
 
     async def _run_servers():
-        if metaserver_server is not None:
-            await asyncio.gather(
-                server.serve(sockets=[sock] if sock else None),
-                metaserver_server.serve(),
-            )
-        else:
-            await server.serve(sockets=[sock] if sock else None)
+        await server.serve(sockets=[sock] if sock else None)
 
     try:
-        # Run server with shared socket (and optionally metaserver on dedicated port)
+        # Run server with shared socket.
         # Note: Multiple processes can share the same socket with SO_REUSEPORT
         # The OS kernel will distribute connections among processes
         # Each process will handle requests independently with its own engine clients
-        uvloop.run(_run_servers())
+        if uvloop is not None:
+            uvloop.run(_run_servers())
+        else:
+            asyncio.run(_run_servers())
     except KeyboardInterrupt:
-        logger.info(
-            f"Inference worker process {worker_index} received interrupt signal"
-        )
+        logger.info(f"Inference worker process {worker_index} received interrupt signal")
     except Exception as e:
-        logger.error(
-            f"Inference worker process {worker_index} error: {e}", exc_info=True
-        )
+        logger.error(f"Inference worker process {worker_index} error: {e}", exc_info=True)
         raise
     finally:
         # Stop config watcher if started
@@ -238,9 +183,7 @@ def run_inference_worker_proc(
             try:
                 sock.close()
             except Exception as e:
-                logger.warning(
-                    "Ignored error closing socket in worker %s: %s", worker_index, e
-                )
+                logger.warning("Ignored error closing socket in worker %s: %s", worker_index, e)
         logger.info(f"Inference worker process {worker_index} stopped")
 
 
@@ -270,39 +213,25 @@ class InferenceProcessManager(BaseProcessManager):
         """Wait for all processes to complete or detect if any fail"""
         try:
             logger.info("Waiting for Inference API server processes to complete...")
-            sentinel_to_proc: dict[Any, BaseProcess] = {
-                proc.sentinel: proc
-                for proc in self._processes
-            }
+            sentinel_to_proc: dict[Any, BaseProcess] = {proc.sentinel: proc for proc in self._processes}
             # Wait for any process to terminate (loop until all sentinels are consumed)
             while sentinel_to_proc:
                 # Wait for any process to terminate
-                ready_sentinels: list[Any] = connection.wait(
-                    sentinel_to_proc, timeout=5
-                )
+                ready_sentinels: list[Any] = connection.wait(sentinel_to_proc, timeout=5)
 
                 # Process any terminated processes
                 for sentinel in ready_sentinels:
                     proc = sentinel_to_proc.pop(sentinel)
                     # Check if process exited with error
                     if proc.exitcode != 0:
-                        raise RuntimeError(
-                            f"Process {proc.name} (PID: {proc.pid}) "
-                            f"died with exit code {proc.exitcode}"
-                        )
+                        raise RuntimeError(f"Process {proc.name} (PID: {proc.pid}) died with exit code {proc.exitcode}")
                     else:
-                        logger.info(
-                            f"Process {proc.name} (PID: {proc.pid}) exited normally"
-                        )
+                        logger.info(f"Process {proc.name} (PID: {proc.pid}) exited normally")
 
         except KeyboardInterrupt:
-            logger.info(
-                "Received KeyboardInterrupt, shutting down Inference API servers..."
-            )
+            logger.info("Received KeyboardInterrupt, shutting down Inference API servers...")
         except Exception as e:
-            logger.exception(
-                "Exception occurred while running Inference API servers: %s", e
-            )
+            logger.exception("Exception occurred while running Inference API servers: %s", e)
             raise
         finally:
             logger.info("Terminating remaining processes...")

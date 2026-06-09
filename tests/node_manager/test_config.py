@@ -413,14 +413,15 @@ def test_save_to_json_success():
     config = create_config_object()
     config.config_path = "/tmp/test_config.json"
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        temp_path = f.name
+    temp_path = "tmp_node_manager_save.json"
+    with open(temp_path, "w", encoding="utf-8"):
+        pass
 
     try:
         result = config.save_to_json(temp_path)
         assert result is True
 
-        with open(temp_path, 'r', encoding='utf-8') as f:
+        with open(temp_path, "r", encoding="utf-8") as f:
             saved_config = json.load(f)
         assert saved_config["api_config"][("node_manager_port")] == 1026
     finally:
@@ -520,12 +521,13 @@ def test_from_json_loads_union_config_for_hybrid():
         },
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    temp_path = "tmp_node_manager_union.json"
+    with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
-        temp_path = f.name
 
     try:
-        config = NodeManagerConfig.from_json(temp_path)
+        with patch("motor.config.node_manager.safe_open", open):
+            config = NodeManagerConfig.from_json(temp_path)
     finally:
         os.unlink(temp_path)
 

@@ -43,6 +43,11 @@ class RegisterMsg(BaseModel):
 
     job_name: str = Field(..., description="Instance job name")
     model_name: str = Field(..., description="Instance model name")
+    engine_type: str | None = Field(default=None, description="Inference engine family")
+    dispatch_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Supported Motor dispatch plans for this instance",
+    )
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")
     business_port: list[str] = Field(..., description="Business port for all endpoints managed by this nm")
@@ -83,6 +88,11 @@ class ReregisterMsg(BaseModel):
 
     job_name: str = Field(..., description="Instance job name")
     model_name: str = Field(..., description="Instance model name")
+    engine_type: str | None = Field(default=None, description="Inference engine family")
+    dispatch_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Supported Motor dispatch plans for this instance",
+    )
     instance_id: int = Field(..., description="Instance id")
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")

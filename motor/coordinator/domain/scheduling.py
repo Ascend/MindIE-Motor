@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, Tuple
+from typing import Iterable, Protocol, Tuple
 
 from pydantic import BaseModel
 
@@ -45,11 +45,46 @@ class InstanceReadiness(str, Enum):
 
     def is_ready(self) -> bool:
         """True if required instances are present for the deploy mode."""
-        return self in (InstanceReadiness.REQUIRED_MET, InstanceReadiness.REQUIRED_MET_EPD)
+        return self in {InstanceReadiness.REQUIRED_MET, InstanceReadiness.REQUIRED_MET_EPD}
 
     def is_run(self) -> bool:
         """True indicates that it can run normally."""
-        return self.is_ready() or self == InstanceReadiness.ONLY_PREFILL or self == InstanceReadiness.ENCODE_PREFILL
+        return self.is_ready() or self in {InstanceReadiness.ONLY_PREFILL, InstanceReadiness.ENCODE_PREFILL}
+
+
+def readiness_from_instances(instances: Iterable[Instance]) -> InstanceReadiness:
+    """Infer readiness from currently available instance roles."""
+    has_e = False
+    has_p = False
+    has_d = False
+    has_u = False
+    for instance in instances:
+        role = getattr(instance, "role", None)
+        role_value = role.value if hasattr(role, "value") else str(role)
+        if role_value == PDRole.ROLE_E.value:
+            has_e = True
+        elif role_value == PDRole.ROLE_P.value:
+            has_p = True
+        elif role_value == PDRole.ROLE_D.value:
+            has_d = True
+        elif role_value in (PDRole.ROLE_U.value, "both", "hybrid"):
+            has_u = True
+
+    if has_e and has_p and has_d:
+        return InstanceReadiness.REQUIRED_MET_EPD
+    if has_p and has_d:
+        return InstanceReadiness.REQUIRED_MET
+    if has_e and has_p:
+        return InstanceReadiness.ENCODE_PREFILL
+    if has_p:
+        return InstanceReadiness.ONLY_PREFILL
+    if has_d:
+        return InstanceReadiness.ONLY_DECODE
+    if has_e:
+        return InstanceReadiness.ONLY_ENCODE
+    if has_u:
+        return InstanceReadiness.REQUIRED_MET
+    return InstanceReadiness.NONE
 
 
 class ScheduledResource(BaseModel):
@@ -60,6 +95,14 @@ class ScheduledResource(BaseModel):
 
     instance: Instance | None = None
     endpoint: Endpoint | None = None
+
+
+@dataclass(frozen=True)
+class ScheduledPair:
+    prefill: ScheduledResource
+    decode: ScheduledResource
+    prefill_workload: Workload
+    decode_workload: Workload
 
 
 @dataclass(frozen=True)
@@ -74,6 +117,34 @@ class UpdateWorkloadParams:
     req_id: str
     workload_action: WorkloadAction
     workload_change: Workload
+
+
+def build_release_workload_params(
+    instance_id: int,
+    endpoint_id: int,
+    role: PDRole,
+    req_id: str,
+    workload: Workload,
+) -> tuple[UpdateWorkloadParams, UpdateWorkloadParams]:
+    """Build token and KV releases that compensate one allocation."""
+    common = {
+        "instance_id": instance_id,
+        "endpoint_id": endpoint_id,
+        "role": role,
+        "req_id": req_id,
+    }
+    return (
+        UpdateWorkloadParams(
+            **common,
+            workload_action=WorkloadAction.RELEASE_TOKENS,
+            workload_change=Workload(active_tokens=-workload.active_tokens),
+        ),
+        UpdateWorkloadParams(
+            **common,
+            workload_action=WorkloadAction.RELEASE_KV,
+            workload_change=Workload(active_kv_cache=-workload.active_kv_cache),
+        ),
+    )
 
 
 class SchedulingFacade(Protocol):
@@ -92,6 +163,13 @@ class SchedulingFacade(Protocol):
         Atomic: select instance + one workload allocation (ALLOCATION).
         Returns (instance, endpoint, allocation_workload). Caller records allocation_workload for release.
         """
+        ...
+
+    async def select_pair_and_allocate(
+        self,
+        req_info: RequestInfo,
+    ) -> ScheduledPair | None:
+        """Select and allocate a P/D pair as one scheduling operation."""
         ...
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:

@@ -16,6 +16,13 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 from motor.common.resources.instance import ParallelConfig, PDRole
+from motor.common.resources.dispatch import (
+    DISPATCH_PROFILE_KEY,
+    DispatchPlan,
+    DispatchProfile,
+    classify_vllm_dispatch_profile,
+    dispatch_capabilities_for_profile,
+)
 from motor.config.resolver import ConfigResolver
 from motor.config.tls_config import TLSConfig
 from motor.common.utils.env import Env
@@ -57,7 +64,12 @@ SERVER_LIST = "server_list"
 DEVICE = "device"
 HARDWARE_TYPE_KEY = "hardware_type"
 MODEL_NAME_KEY = "model_name"
+ENGINE_TYPE_KEY = "engine_type"
+DISPATCH_CAPABILITIES_KEY = "dispatch_capabilities"
 ENABLE_MULTI_ENDPOINTS_KEY = "enable_multi_endpoints"
+
+ENGINE_TYPE_VLLM = "vllm"
+ENGINE_TYPE_SGLANG = "sglang"
 
 
 logger = get_logger(__name__)
@@ -91,6 +103,8 @@ class BasicConfig:
     job_name: str = Env.job_name
     role: PDRole = PDRole.ROLE_U
     model_name: str = ""
+    engine_type: str | None = None
+    dispatch_capabilities: list[str] = field(default_factory=list)
     hardware_type: HardwareType = HardwareType.TYPE_800I_A3
 
     # Heartbeat sending configuration
@@ -327,6 +341,13 @@ class NodeManagerConfig:
 
         resolver = ConfigResolver(engine_config)
         config_data[BASIC_CONFIG_KEY][MODEL_NAME_KEY] = resolver.get_model_name("")
+        config_data[BASIC_CONFIG_KEY][ENGINE_TYPE_KEY] = engine_config.get(ENGINE_TYPE_KEY)
+        if DISPATCH_CAPABILITIES_KEY in engine_config:
+            config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = engine_config[DISPATCH_CAPABILITIES_KEY]
+        else:
+            dispatch_capabilities = cls._infer_dispatch_capabilities(engine_config)
+            if dispatch_capabilities:
+                config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = dispatch_capabilities
         config_data[BASIC_CONFIG_KEY][HARDWARE_TYPE_KEY] = user_cfg["motor_deploy_config"][HARDWARE_TYPE_KEY]
 
         # Read nnodes from engine_config for cross-node PCP support
@@ -360,6 +381,30 @@ class NodeManagerConfig:
         _update_tls_config([MGMT_TLS_CONFIG], config_data, user_cfg)
 
         return config_data
+
+    @classmethod
+    def _infer_dispatch_capabilities(cls, engine_config: dict[str, Any]) -> list[str]:
+        """Infer Motor dispatch capabilities from engine-native config."""
+        engine_type = str(engine_config.get(ENGINE_TYPE_KEY, "")).strip().lower()
+        native_engine_config = engine_config.get(ENGINE_CONFIG_KEY, {})
+        if not isinstance(native_engine_config, dict):
+            native_engine_config = {}
+
+        if engine_type == ENGINE_TYPE_SGLANG:
+            return [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+        if engine_type == ENGINE_TYPE_VLLM:
+            profile = classify_vllm_dispatch_profile(
+                native_engine_config,
+                explicit_profile=engine_config.get(DISPATCH_PROFILE_KEY),
+            )
+            capabilities = dispatch_capabilities_for_profile(profile)
+            if not capabilities and profile == DispatchProfile.UNKNOWN:
+                logger.warning(
+                    "Unable to infer vLLM dispatch capability from kv_transfer_config. "
+                    "Set dispatch_profile or dispatch_capabilities explicitly."
+                )
+            return capabilities
+        return []
 
     @classmethod
     def _update_from_config_data(cls, config: "NodeManagerConfig", cfg: dict[str, Any]):

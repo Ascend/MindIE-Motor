@@ -95,6 +95,18 @@ disable = [
   "wrong-import-order",
   "wrong-import-position",
   "import-error",
+
+  # 全库存量风格/误报：与 enable 中 E/W 级 bug 检查无关
+  "logging-fstring-interpolation",
+  "comparison-with-callable",
+  "unnecessary-ellipsis",
+  "duplicate-code",
+  "too-many-lines",
+  "too-many-nested-blocks",
+  "redefined-outer-name",
+  "assignment-from-none",
+  "consider-using-from-import",
+  "use-implicit-booleaness-not-comparison",
 ]
 
 # ==============================================

@@ -142,6 +142,11 @@ class Instance(BaseModel):
 
     job_name: str = Field(..., description="Instance job name")
     model_name: str = Field(..., description="Instance model name")
+    engine_type: str | None = Field(default=None, description="Inference engine family, e.g. vllm or sglang")
+    dispatch_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Supported Motor dispatch plans for this instance",
+    )
     id: int = Field(..., description="Instance ID")
     role: str = Field(..., description="Instance role")
     status: InsStatus = Field(default=InsStatus.INITIAL, description="Instance status")

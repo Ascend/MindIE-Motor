@@ -303,6 +303,8 @@ class InstanceAssembler(ThreadSafeSingleton):
                 instance = Instance(
                     job_name=msg.job_name,
                     model_name=msg.model_name,
+                    engine_type=msg.engine_type,
+                    dispatch_capabilities=msg.dispatch_capabilities,
                     id=self.ins_id_cnt,
                     role=msg.role,
                     parallel_config=msg.parallel_config,
@@ -358,6 +360,8 @@ class InstanceAssembler(ThreadSafeSingleton):
                 instance = Instance(
                     job_name=msg.job_name,
                     model_name=msg.model_name,
+                    engine_type=msg.engine_type,
+                    dispatch_capabilities=msg.dispatch_capabilities,
                     id=msg.instance_id,
                     role=msg.role,
                     parallel_config=msg.parallel_config,
@@ -403,7 +407,7 @@ class InstanceAssembler(ThreadSafeSingleton):
             return RegisterStatus.ASSEMBLED
 
         # Then check if instance is still being assembled locally
-        if job_name in self.instances.keys():
+        if job_name in self.instances:
             return RegisterStatus.ASSEMBLING
 
         # Instance not found anywhere
@@ -599,7 +603,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                 job_name=metadata.instance.job_name,
                 role=metadata.instance.role,
                 instance_id=metadata.instance.id,
-                endpoints=[endpoint for endpoint in endpoints.values()],
+                endpoints=list(endpoints.values()),
                 master_dp_ip=master_dp_ip,
                 ranktable=metadata.ranktable,
                 d2d_peer_ips=d2d_peer_ips,

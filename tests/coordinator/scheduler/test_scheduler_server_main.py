@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 license for more details.
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -31,11 +31,9 @@ from motor.coordinator.scheduler.runtime.scheduler_server import (
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
     CANDIDATE_POLICY_LOAD_BALANCE,
-    KNOWN_CANDIDATE_POLICIES,
     SchedulerRequest,
     SchedulerRequestType,
     SchedulerResponseType,
-    ZMQMessageSerializer,
 )
 from motor.coordinator.scheduler.scheduler import Scheduler
 
@@ -43,6 +41,7 @@ from motor.coordinator.scheduler.scheduler import Scheduler
 # ---------------------------------------------------------------------------
 # Shared test helpers
 # ---------------------------------------------------------------------------
+
 
 class _DummyWorkloadWriter:
     """Minimal workload-writer stub reused across dispatcher tests."""
@@ -119,7 +118,6 @@ def _make_dispatcher(
     return dispatcher, instance_manager, scheduler, config
 
 
-
 class TestShouldLogSchedulingSample:
     def test_empty_string_returns_false(self):
         assert _should_log_scheduling_sample("") is False
@@ -175,7 +173,9 @@ class TestSerializeInstanceMinimal:
         assert result["role"] == PDRole.ROLE_D
         assert result["job_name"] == inst.job_name
         assert result["model_name"] == "test_model"
-        assert len(result) == 4
+        assert result["engine_type"] is None
+        assert result["dispatch_capabilities"] == []
+        assert len(result) == 6
 
 
 class TestSerializeEndpointMinimal:
@@ -192,7 +192,10 @@ class TestSerializeEndpointMinimal:
 
     def test_endpoint_with_status_serializes_value(self):
         ep = Endpoint(
-            id=12, ip="5.6.7.8", business_port="8081", mgmt_port="9090",
+            id=12,
+            ip="5.6.7.8",
+            business_port="8081",
+            mgmt_port="9090",
             status=EndpointStatus.NORMAL,
         )
         result = _serialize_endpoint_minimal(ep)
@@ -203,7 +206,6 @@ class TestSerializeEndpointMinimal:
         ep = Endpoint(id=13, ip="9.9.9.9", business_port="9000", mgmt_port="")
         result = _serialize_endpoint_minimal(ep)
         assert result["mgmt_port"] == ""
-
 
 
 class TestDispatchUnknownType:
@@ -266,19 +268,8 @@ class TestHandleUpdateWorkload:
     @pytest.mark.asyncio
     async def test_invalid_workload_format_returns_error(self):
         dispatcher, *_ = _make_dispatcher()
-        request = SchedulerRequest(
-            request_type=SchedulerRequestType.UPDATE_WORKLOAD,
-            request_id="req-4",
-            data={
-                "instance_id": 1,
-                "endpoint_id": 10,
-                "workload_action": WorkloadAction.ALLOCATION.value,
-                "workload_change": {"not_a_workload_field": "???"},
-            },
-        )
-        # Workload is permissive (extra fields ignored by pydantic), but test a type error
         # Use a non-dict to force model_validate to fail
-        request2 = SchedulerRequest(
+        request = SchedulerRequest(
             request_type=SchedulerRequestType.UPDATE_WORKLOAD,
             request_id="req-4b",
             data={
@@ -288,7 +279,7 @@ class TestHandleUpdateWorkload:
                 "workload_change": "this_is_not_a_dict",
             },
         )
-        response = await dispatcher.dispatch(request2)
+        response = await dispatcher.dispatch(request)
         assert response.response_type == SchedulerResponseType.ERROR
         assert "Invalid workload_change format" in (response.error or "")
 
@@ -626,7 +617,6 @@ class TestHandleAllocateOnlyEdgeCases:
         assert response.data["endpoint"] is None
 
 
-
 class TestParseOptionalInt:
     def test_none_returns_none(self):
         assert _SchedulerRequestDispatcher._parse_optional_int(None) is None
@@ -646,9 +636,7 @@ class TestParseOptionalInt:
 
 class TestExtractAllocateCandidate:
     def test_valid_fields_returns_tuple(self):
-        result = _SchedulerRequestDispatcher._extract_allocate_candidate(
-            {"instance_id": "1", "endpoint_id": "10"}
-        )
+        result = _SchedulerRequestDispatcher._extract_allocate_candidate({"instance_id": "1", "endpoint_id": "10"})
         assert result == (1, 10)
 
     def test_missing_instance_id_returns_none(self):
@@ -660,17 +648,13 @@ class TestExtractAllocateCandidate:
         assert result is None
 
     def test_non_castable_ids_returns_none(self):
-        result = _SchedulerRequestDispatcher._extract_allocate_candidate(
-            {"instance_id": "bad", "endpoint_id": "val"}
-        )
+        result = _SchedulerRequestDispatcher._extract_allocate_candidate({"instance_id": "bad", "endpoint_id": "val"})
         assert result is None
 
 
 class TestExtractAllocateCandidates:
     def test_not_a_list_returns_empty(self):
-        result = _SchedulerRequestDispatcher._extract_allocate_candidates(
-            {"candidates": "not_a_list"}
-        )
+        result = _SchedulerRequestDispatcher._extract_allocate_candidates({"candidates": "not_a_list"})
         assert result == []
 
     def test_missing_key_returns_empty(self):
@@ -679,21 +663,25 @@ class TestExtractAllocateCandidates:
 
     def test_valid_entries_parsed(self):
         result = _SchedulerRequestDispatcher._extract_allocate_candidates(
-            {"candidates": [
-                {"instance_id": 1, "endpoint_id": 10},
-                {"instance_id": 2, "endpoint_id": 20},
-            ]}
+            {
+                "candidates": [
+                    {"instance_id": 1, "endpoint_id": 10},
+                    {"instance_id": 2, "endpoint_id": 20},
+                ]
+            }
         )
         assert result == [(1, 10), (2, 20)]
 
     def test_invalid_entries_skipped(self):
         result = _SchedulerRequestDispatcher._extract_allocate_candidates(
-            {"candidates": [
-                {"instance_id": 1, "endpoint_id": 10},
-                "not_a_dict",
-                {"instance_id": None, "endpoint_id": 20},
-                {"instance_id": "bad", "endpoint_id": "val"},
-            ]}
+            {
+                "candidates": [
+                    {"instance_id": 1, "endpoint_id": 10},
+                    "not_a_dict",
+                    {"instance_id": None, "endpoint_id": 20},
+                    {"instance_id": "bad", "endpoint_id": "val"},
+                ]
+            }
         )
         assert result == [(1, 10)]
 
@@ -759,7 +747,6 @@ class TestShouldScanGlobalLoadBalance:
         assert dispatcher._should_scan_global_load_balance("unknown_policy_xyz") is False
 
 
-
 class TestSchedulerFrontendTransport:
     @pytest.mark.asyncio
     async def test_recv_returns_none_when_no_socket(self):
@@ -771,9 +758,7 @@ class TestSchedulerFrontendTransport:
     @pytest.mark.asyncio
     async def test_recv_valid_message(self):
         mock_socket = AsyncMock()
-        mock_socket.recv_multipart = AsyncMock(
-            return_value=[b"client-id", b"", b"payload-frame"]
-        )
+        mock_socket.recv_multipart = AsyncMock(return_value=[b"client-id", b"", b"payload-frame"])
         transport = _SchedulerFrontendTransport(MagicMock())
         transport._socket = mock_socket
 
@@ -845,7 +830,6 @@ class TestSchedulerFrontendTransport:
 
         await transport.disconnect()
         assert transport._socket is None
-
 
 
 def _make_server() -> AsyncSchedulerServer:

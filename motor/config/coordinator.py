@@ -233,30 +233,28 @@ class APIKeyConfig:
 @dataclass
 class InferenceWorkersConfig:
     num_workers: int = 4  # Number of inference API worker processes; >1 = multiprocess
-    # Base port for worker metaserver; 0=disabled. When >0 and num_workers>1 and CDP/PD separation,
-    # worker i listens on (host, worker_metaserver_base_port + i).
-    worker_metaserver_base_port: int = 12000
 
 
 @dataclass
 class SchedulerProcessConfig:
     """Scheduler process configuration (default only; not user-configurable in first version)."""
 
-    ipc_dir: str = ""  # Base dir for IPC sockets; empty => system temp dir.
+    ipc_dir: str = ""  # Base dir for IPC sockets; empty => system temp directory.
     timeout: float = 5.0  # Client request timeout (seconds)
     reconnect_interval: float = 5.0  # Client reconnect interval (seconds)
 
+    def _resolved_ipc_base(self) -> str:
+        return (self.ipc_dir or tempfile.gettempdir()).rstrip("/")
+
     @property
     def frontend_address(self) -> str:
-        """IPC address for ROUTER (API Server ? Scheduler). Derived from ipc_dir."""
-        base = (self.ipc_dir or tempfile.gettempdir()).rstrip("/")
-        return f"ipc://{base}/scheduler_frontend"
+        """IPC address for ROUTER (API Server <-> Scheduler). Derived from ipc_dir."""
+        return f"ipc://{self._resolved_ipc_base()}/scheduler_frontend"
 
     @property
     def instance_pub_address(self) -> str:
         """IPC address for instance-change PUB. Derived from ipc_dir."""
-        base = (self.ipc_dir or tempfile.gettempdir()).rstrip("/")
-        return f"ipc://{base}/scheduler_instance_pub"
+        return f"ipc://{self._resolved_ipc_base()}/scheduler_instance_pub"
 
 
 # First version: single default instance used by all scheduler process / client code.
@@ -366,9 +364,7 @@ class CoordinatorConfig:
     config_path: str | None = field(default=None, init=False)
     last_modified: float | None = field(default=None, init=False)
     _errors: list[str] = field(default_factory=list, init=False)
-    # Set by Worker process at runtime (D direct to Worker metaserver)
     worker_index: Optional[int] = field(default=None, repr=False)
-    worker_metaserver_port: Optional[int] = field(default=None, repr=False)
 
     def __post_init__(self):
         """Validate configuration after initialization"""
@@ -541,26 +537,10 @@ class CoordinatorConfig:
         # Validate HTTP configuration
         self._validate_port_range(self.api_config.coordinator_api_infer_port, "coordinator_api_infer_port")
         self._validate_port_range(self.api_config.coordinator_api_mgmt_port, "coordinator_api_mgmt_port")
-        self._validate_port_range(self.api_config.coordinator_obs_port, "coordinator_obs_port")
-        if self.inference_workers_config.worker_metaserver_base_port != 0:
-            self._validate_port_range(
-                self.inference_workers_config.worker_metaserver_base_port,
-                "worker_metaserver_base_port",
-            )
-        # Multiprocess: num_workers >= 1; when Worker metaserver enabled,
-        # base_port + (num_workers-1) must be valid port
         self._validate_positive_number(
             self.inference_workers_config.num_workers,
             "num_workers",
         )
-        iwc = self.inference_workers_config
-        if iwc.num_workers > 1 and iwc.worker_metaserver_base_port > 0:
-            last_port = iwc.worker_metaserver_base_port + iwc.num_workers - 1
-            if last_port > 65535:
-                self._errors.append(
-                    f"worker_metaserver_base_port({iwc.worker_metaserver_base_port}) + "
-                    f"num_workers({iwc.num_workers}) - 1 = {last_port} exceeds max port 65535"
-                )
 
         # Validate scheduler score configuration
         self._validate_positive_number(
@@ -762,9 +742,7 @@ class CoordinatorConfig:
             f"{self.scheduler_config.kv_affinity_load_gate_topn}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
-            f"    ?? Num Workers:               {self.inference_workers_config.num_workers}\n"
-            f"    ?? Worker Metaserver Base:    "
-            f"{self.inference_workers_config.worker_metaserver_base_port or 'disabled'}\n"
+            f"    └─ Num Workers:               {self.inference_workers_config.num_workers}\n"
             "\n"
             "  Security:\n"
             f"    ?? Infer TLS:           {'Enabled' if self.infer_tls_config.enable_tls else 'Disabled'}\n"

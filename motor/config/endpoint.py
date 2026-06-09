@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from motor.common.logger import get_logger
+from motor.common.resources.dispatch import DISPATCH_PROFILE_KEY
 from motor.config.config_utils import _update_engine_server_tls_config
 from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.tls_config import TLSConfig
@@ -126,6 +127,7 @@ class DeployConfig:
     engine_config: EngineConfig
     mgmt_tls_config: TLSConfig | None
     infer_tls_config: TLSConfig | None
+    dispatch_profile: str | None = None
     health_check_config: HealthCheckConfig = field(default_factory=HealthCheckConfig)
 
     @classmethod
@@ -203,6 +205,7 @@ class DeployConfig:
             engine_config=EngineConfig.from_dict(data.get("engine_config", {})),
             mgmt_tls_config=TLSConfig.from_dict(mgmt_tls_config) if mgmt_tls_config else None,
             infer_tls_config=TLSConfig.from_dict(infer_tls_config) if infer_tls_config else None,
+            dispatch_profile=data.get(DISPATCH_PROFILE_KEY),
             health_check_config=HealthCheckConfig.from_dict(data.get("health_check_config", {})),
         )
 
@@ -337,7 +340,7 @@ class EndpointConfig:
         if endpoint is None:
             return
         endpoint_info = endpoint.split(split_str)
-        if endpoint_info.__len__() != 2:
+        if len(endpoint_info) != 2:
             return
         kv_events_config["endpoint"] = endpoint_info[0] + split_str + str(int(endpoint_info[1]) + self.dp_rank)
 
@@ -345,7 +348,7 @@ class EndpointConfig:
         if replay_endpoint is None:
             return
         replay_endpoint_info = replay_endpoint.split(split_str)
-        if replay_endpoint_info.__len__() != 2:
+        if len(replay_endpoint_info) != 2:
             return
         kv_events_config["replay_endpoint"] = (
             replay_endpoint_info[0] + split_str + str(int(replay_endpoint_info[1]) + self.dp_rank)

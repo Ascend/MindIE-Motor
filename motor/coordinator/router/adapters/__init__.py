@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 
-"""Response format adapters (OpenAI Completion ↔ Chat)."""
+"""Response format adapters (OpenAI Completion <-> Chat)."""
 
 __all__ = [
     "adapt_completion_nonstream_to_chat",

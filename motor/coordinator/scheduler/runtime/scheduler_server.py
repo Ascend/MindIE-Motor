@@ -26,7 +26,10 @@ from motor.common.resources.http_msg_spec import EventType
 from motor.common.resources.instance import PDRole, Instance
 from motor.common.logger import get_logger
 from motor.config.coordinator import CoordinatorConfig
-from motor.coordinator.domain import UpdateWorkloadParams
+from motor.coordinator.domain import (
+    UpdateWorkloadParams,
+    build_release_workload_params,
+)
 from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.scheduler.scheduler import Scheduler
@@ -34,12 +37,16 @@ from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.runtime.workload_shm import WorkloadSharedMemoryWriter
 from motor.coordinator.scheduler.runtime.workload_shm.layout import DEFAULT_WORKLOAD_SHM_MAX_ENTRIES
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
-    SchedulerRequest, SchedulerResponse, SchedulerRequestType, SchedulerResponseType,
+    SchedulerRequest,
+    SchedulerResponse,
+    SchedulerRequestType,
+    SchedulerResponseType,
     CANDIDATE_POLICY_LOAD_BALANCE,
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
     KNOWN_CANDIDATE_POLICIES,
     INSTANCE_CHANGE_TOPIC,
-    pack_send_frames, unpack_recv_payload,
+    pack_send_frames,
+    unpack_recv_payload,
 )
 
 logger = get_logger(__name__)
@@ -55,8 +62,7 @@ def _create_workload_shared_memory(shared_memory_mod, shm_name: str, shm_size: i
         return shared_memory_mod.SharedMemory(name=shm_name, create=True, size=shm_size)
     except FileExistsError:
         logger.warning(
-            "Workload SHM %s already exists (likely orphan from a prior run or PID reuse); "
-            "unlinking and recreating",
+            "Workload SHM %s already exists (likely orphan from a prior run or PID reuse); unlinking and recreating",
             shm_name,
         )
         try:
@@ -87,11 +93,16 @@ _KEY_INSTANCE_VERSION = "instance_version"
 _KEY_FAST_PATH = "fast_path"
 _KEY_CANDIDATE_POLICY = "candidate_policy"
 _KEY_CANDIDATES = "candidates"
+_KEY_PREFILL_INSTANCE = "prefill_instance"
+_KEY_PREFILL_ENDPOINT = "prefill_endpoint"
+_KEY_DECODE_INSTANCE = "decode_instance"
+_KEY_DECODE_ENDPOINT = "decode_endpoint"
 
 
 def _should_log_scheduling_sample(sample_key: str) -> bool:
     """Return True for ~1/_SCHEDULING_LOG_SAMPLE_RATE of requests (hot-path info sampling)."""
     return bool(sample_key) and hash(sample_key) % _SCHEDULING_LOG_SAMPLE_RATE == 0
+
 
 # ==================== Serialization (module-level, shared by Server / Broadcaster) ====================
 
@@ -121,6 +132,8 @@ def _serialize_instance_minimal(instance: Instance | None) -> dict:
         "role": instance.role,
         "job_name": instance.job_name,
         "model_name": instance.model_name,
+        "engine_type": instance.engine_type,
+        "dispatch_capabilities": list(instance.dispatch_capabilities or []),
     }
 
 
@@ -137,6 +150,22 @@ def _serialize_endpoint_minimal(endpoint: Endpoint | None) -> dict:
     if hasattr(endpoint, "status") and endpoint.status is not None:
         out["status"] = endpoint.status.value if hasattr(endpoint.status, "value") else str(endpoint.status)
     return out
+
+
+def _find_available_instance_endpoint(
+    instance_manager: InstanceManager,
+    instance_id: int,
+    endpoint_id: int,
+) -> tuple[Instance | None, Endpoint | None]:
+    for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+        instance = instance_manager.get_available_instances(role).get(instance_id)
+        if not instance:
+            continue
+        for pod_eps in (instance.endpoints or {}).values():
+            for endpoint in (pod_eps or {}).values():
+                if endpoint.id == endpoint_id:
+                    return instance, endpoint
+    return None, None
 
 
 # ==================== Request dispatch ====================
@@ -166,9 +195,7 @@ class _SchedulerRequestDispatcher:
             getattr(config.scheduler_config, "endpoint_instance_score_weight", 0.05),
         )
         scheduler_type = getattr(config.scheduler_config, "scheduler_type", "")
-        self._is_load_balance_scheduler = (
-            getattr(scheduler_type, "value", scheduler_type) == "load_balance"
-        )
+        self._is_load_balance_scheduler = getattr(scheduler_type, "value", scheduler_type) == "load_balance"
 
     async def dispatch(self, request: SchedulerRequest) -> SchedulerResponse:
         """Dispatch request to the appropriate handler (async handlers supported)."""
@@ -178,6 +205,7 @@ class _SchedulerRequestDispatcher:
             SchedulerRequestType.GET_AVAILABLE_INSTANCES.value: self._handle_get_available_instances,
             SchedulerRequestType.REFRESH_INSTANCES.value: self._handle_refresh_instances,
             SchedulerRequestType.ALLOCATE_ONLY.value: self._handle_allocate_only,
+            SchedulerRequestType.ALLOCATE_PAIR.value: self._handle_allocate_pair,
         }
         handler = handlers.get(request.request_type)
         if handler:
@@ -232,9 +260,7 @@ class _SchedulerRequestDispatcher:
         async with self._workload_commit_lock:
             success = await self._scheduler.update_workload(params)
             if success and self._workload_writer:
-                await self._workload_writer.write_single_entry(
-                    int(instance_id), int(endpoint_id)
-                )
+                await self._workload_writer.write_single_entry(int(instance_id), int(endpoint_id))
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
@@ -256,7 +282,6 @@ class _SchedulerRequestDispatcher:
             request_id=request.request_id,
             data=data,
         )
-
 
     async def _handle_refresh_instances(self, request: SchedulerRequest) -> SchedulerResponse:
         event_type_str = request.data.get("event_type")
@@ -297,12 +322,8 @@ class _SchedulerRequestDispatcher:
         req_id = request.data.get("req_id", "")
         workload_data = request.data.get("workload")
         role_str = request.data.get("role")
-        worker_workload_sequence = self._parse_optional_int(
-            request.data.get(_KEY_WORKLOAD_SEQUENCE)
-        )
-        worker_instance_version = self._parse_optional_int(
-            request.data.get(_KEY_INSTANCE_VERSION)
-        )
+        worker_workload_sequence = self._parse_optional_int(request.data.get(_KEY_WORKLOAD_SEQUENCE))
+        worker_instance_version = self._parse_optional_int(request.data.get(_KEY_INSTANCE_VERSION))
         candidate_policy = request.data.get(_KEY_CANDIDATE_POLICY)
 
         if instance_id is None or endpoint_id is None:
@@ -330,7 +351,9 @@ class _SchedulerRequestDispatcher:
         if selected_candidate is None:
             logger.warning(
                 "ALLOCATE_ONLY has no valid endpoint req_id=%s instance_id=%s endpoint_id=%s",
-                req_id, instance_id, endpoint_id,
+                req_id,
+                instance_id,
+                endpoint_id,
             )
             return SchedulerResponse(
                 response_type=SchedulerResponseType.SUCCESS,
@@ -339,9 +362,7 @@ class _SchedulerRequestDispatcher:
             )
         # Worker-proposed alternates (affinity-ranked, best-first); the authoritative path may
         # re-pick among them by fresh load. Falls back to the single top-1 for legacy callers.
-        selected_candidates = (
-            self._extract_allocate_candidates(request.data) or [selected_candidate]
-        )
+        selected_candidates = self._extract_allocate_candidates(request.data) or [selected_candidate]
         async with self._workload_commit_lock:
             fast_path = self._can_use_worker_top1_fast_path(
                 worker_workload_sequence,
@@ -362,7 +383,8 @@ class _SchedulerRequestDispatcher:
             if selected is None:
                 logger.warning(
                     "ALLOCATE_ONLY endpoint unavailable req_id=%s candidate=%s",
-                    req_id, selected_candidate,
+                    req_id,
+                    selected_candidate,
                 )
                 return SchedulerResponse(
                     response_type=SchedulerResponseType.SUCCESS,
@@ -393,7 +415,11 @@ class _SchedulerRequestDispatcher:
         if _should_log_scheduling_sample(req_id or request.request_id):
             logger.info(
                 "ALLOCATE_ONLY req_id=%s ins=%s ep=%s score=%.4f fast_path=%s",
-                req_id, instance.id, endpoint.id, selected_score, fast_path,
+                req_id,
+                instance.id,
+                endpoint.id,
+                selected_score,
+                fast_path,
             )
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
@@ -513,10 +539,14 @@ class _SchedulerRequestDispatcher:
             except Exception as e:
                 logger.warning(
                     "Failed to score affinity candidate instance_id=%s endpoint_id=%s: %s",
-                    cand[0], cand[1], e,
+                    cand[0],
+                    cand[1],
+                    e,
                 )
                 continue
-            if best is None or score < best[2]:
+            if best is None:
+                best = (instance, endpoint, score)
+            elif score < best[2]:
                 best = (instance, endpoint, score)
         return best
 
@@ -620,6 +650,108 @@ class _SchedulerRequestDispatcher:
                         return (instance, endpoint)
         return None
 
+    async def _handle_allocate_pair(self, request: SchedulerRequest) -> SchedulerResponse:
+        prefill = request.data.get("prefill") or {}
+        decode = request.data.get("decode") or {}
+        req_id = request.data.get("req_id", "")
+        try:
+            p_iid, p_eid, p_workload = self._parse_pair_leg(prefill)
+            d_iid, d_eid, d_workload = self._parse_pair_leg(decode)
+        except (TypeError, ValueError) as e:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error=f"Invalid allocate_pair request: {e}",
+            )
+
+        if not await self._instance_manager.has_instance_endpoint(p_iid, p_eid):
+            return self._empty_pair_response(request)
+        if not await self._instance_manager.has_instance_endpoint(d_iid, d_eid):
+            return self._empty_pair_response(request)
+
+        p_success = await self._scheduler.update_workload(
+            UpdateWorkloadParams(
+                instance_id=p_iid,
+                endpoint_id=p_eid,
+                role=PDRole.ROLE_P,
+                req_id=req_id,
+                workload_action=WorkloadAction.ALLOCATION,
+                workload_change=p_workload,
+            )
+        )
+        if not p_success:
+            return self._empty_pair_response(request)
+
+        d_success = await self._scheduler.update_workload(
+            UpdateWorkloadParams(
+                instance_id=d_iid,
+                endpoint_id=d_eid,
+                role=PDRole.ROLE_D,
+                req_id=req_id,
+                workload_action=WorkloadAction.ALLOCATION,
+                workload_change=d_workload,
+            )
+        )
+        if not d_success:
+            for params in build_release_workload_params(p_iid, p_eid, PDRole.ROLE_P, req_id, p_workload):
+                await self._scheduler.update_workload(params)
+            if self._workload_writer:
+                await self._workload_writer.write_single_entry(p_iid, p_eid)
+            return self._empty_pair_response(request)
+
+        if self._workload_writer:
+            await self._workload_writer.write_single_entry(p_iid, p_eid)
+            await self._workload_writer.write_single_entry(d_iid, d_eid)
+
+        p_instance, p_endpoint = _find_available_instance_endpoint(self._instance_manager, p_iid, p_eid)
+        d_instance, d_endpoint = _find_available_instance_endpoint(self._instance_manager, d_iid, d_eid)
+        if _should_log_scheduling_sample(req_id or request.request_id):
+            logger.info(
+                "ALLOCATE_PAIR req_id=%s p_ins=%s p_ep=%s d_ins=%s d_ep=%s",
+                req_id,
+                p_iid,
+                p_eid,
+                d_iid,
+                d_eid,
+            )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={
+                _KEY_PREFILL_INSTANCE: _serialize_instance_minimal(p_instance),
+                _KEY_PREFILL_ENDPOINT: _serialize_endpoint_minimal(p_endpoint),
+                _KEY_DECODE_INSTANCE: _serialize_instance_minimal(d_instance),
+                _KEY_DECODE_ENDPOINT: _serialize_endpoint_minimal(d_endpoint),
+            },
+        )
+
+    def _parse_pair_leg(self, leg: dict) -> tuple[int, int, Workload]:
+        instance_id = leg.get("instance_id")
+        endpoint_id = leg.get("endpoint_id")
+        workload_data = leg.get("workload")
+        if instance_id is None or endpoint_id is None:
+            raise ValueError("missing instance_id or endpoint_id")
+        if not workload_data:
+            raise ValueError("missing workload")
+        return (
+            int(instance_id),
+            int(endpoint_id),
+            Workload.model_validate(workload_data),
+        )
+
+    def _empty_pair_response(self, request: SchedulerRequest) -> SchedulerResponse:
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={
+                _KEY_PREFILL_INSTANCE: None,
+                _KEY_PREFILL_ENDPOINT: None,
+                _KEY_DECODE_INSTANCE: None,
+                _KEY_DECODE_ENDPOINT: None,
+            },
+        )
+
+
 # ==================== Transport (ROUTER frontend) ====================
 
 
@@ -699,6 +831,7 @@ class AsyncSchedulerServer:
         # Serializer (instance-level, shared by all tasks for cache reuse)
         # Encode/decode locks separate so encode and decode can run concurrently
         from motor.coordinator.scheduler.runtime.zmq_protocol import ZMQMessageSerializer
+
         self._serializer = ZMQMessageSerializer()
         self._encode_lock = asyncio.Lock()
         self._decode_lock = asyncio.Lock()
@@ -777,6 +910,7 @@ class AsyncSchedulerServer:
         await self._transport.bind(self.frontend_address)
 
         from motor.config.coordinator import DEFAULT_SCHEDULER_PROCESS_CONFIG
+
         instance_pub_address = DEFAULT_SCHEDULER_PROCESS_CONFIG.instance_pub_address
         if instance_pub_address:
             self._pub_socket = self.context.socket(zmq.PUB)
@@ -786,9 +920,7 @@ class AsyncSchedulerServer:
         max_entries = DEFAULT_WORKLOAD_SHM_MAX_ENTRIES
         shm_name = f"mindie_workload_{os.getpid()}"
         shm_size = total_size(max_entries)
-        self._workload_shm = _create_workload_shared_memory(
-            shared_memory, shm_name, shm_size
-        )
+        self._workload_shm = _create_workload_shared_memory(shared_memory, shm_name, shm_size)
         self._workload_writer = WorkloadSharedMemoryWriter(
             self._workload_shm,
             self.instance_manager,
@@ -849,9 +981,7 @@ class AsyncSchedulerServer:
                 client_id, payload_frames = await self._transport.recv()
                 if client_id is None:
                     continue
-                task = asyncio.create_task(
-                    self._handle_request_async(client_id, payload_frames, self._serializer)
-                )
+                task = asyncio.create_task(self._handle_request_async(client_id, payload_frames, self._serializer))
                 # Track tasks to avoid leaks
                 self._active_tasks.add(task)
                 task.add_done_callback(self._active_tasks.discard)
@@ -903,7 +1033,7 @@ class AsyncSchedulerServer:
             logger.debug("Request handling cancelled")
         except asyncio.TimeoutError:
             elapsed_ms = (time.time() - handle_start) * 1000
-            req_data = (getattr(request, "data", None) or {})
+            req_data = getattr(request, "data", None) or {}
             _log_req_id = req_data.get(REQUEST_ID_KEY) or getattr(request, "request_id", DEFAULT_REQUEST_ID)
             logger.warning(
                 "Dispatch request timeout request_type=%s req_id=%s elapsed_ms=%.1f",
@@ -924,7 +1054,7 @@ class AsyncSchedulerServer:
                 logger.error("Error sending timeout response: %s", e2, exc_info=True)
         except Exception as e:
             elapsed_ms = (time.time() - handle_start) * 1000
-            req_data = (getattr(request, "data", None) or {})
+            req_data = getattr(request, "data", None) or {}
             _log_req_id = req_data.get(REQUEST_ID_KEY) or getattr(request, "request_id", DEFAULT_REQUEST_ID)
             logger.error(
                 "Error handling request request_type=%s req_id=%s elapsed_ms=%.1f error=%s",
@@ -938,7 +1068,7 @@ class AsyncSchedulerServer:
                 error_response = SchedulerResponse(
                     response_type=SchedulerResponseType.ERROR,
                     request_id=request.request_id if request else DEFAULT_REQUEST_ID,
-                    error=str(e)
+                    error=str(e),
                 )
                 async with self._encode_lock:
                     error_frames = serializer.serialize_response(error_response)
@@ -949,11 +1079,13 @@ class AsyncSchedulerServer:
 
 # ==================== Entry points ====================
 
+
 async def run_async_scheduler_server(config: CoordinatorConfig):
     """Run Scheduler server asynchronously (asyncio entry)."""
     # Set process title
     try:
         import setproctitle
+
         setproctitle.setproctitle("AsyncSchedulerServer")
     except ImportError:
         pass
@@ -961,6 +1093,7 @@ async def run_async_scheduler_server(config: CoordinatorConfig):
     logger.info("Async scheduler server process starting (PID: %s)", os.getpid())
 
     from motor.config.coordinator import DEFAULT_SCHEDULER_PROCESS_CONFIG
+
     frontend_address = DEFAULT_SCHEDULER_PROCESS_CONFIG.frontend_address
 
     # Create and start async server

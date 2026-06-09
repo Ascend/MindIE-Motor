@@ -38,9 +38,7 @@ def test_bump_req_id_after_recompute_prepare_updates_req_id():
             self.req_id = "012345678901234500suffix"
 
     ri = _RI()
-    recompute_common.bump_req_id_after_recompute_prepare(
-        ri, retry_count=2, logger=logger
-    )
+    recompute_common.bump_req_id_after_recompute_prepare(ri, retry_count=2, logger=logger)
     assert ri.req_id == "012345678901234501suffix"
 
 
@@ -76,7 +74,7 @@ def test_extract_request_info_chat():
     assert info["completion_tokens"] == 0
     assert info["generated_token"] == ""
     assert info["cached_prompt_token_ids"] is None
-    assert info["cached_output_token_ids"] == []
+    assert not info["cached_output_token_ids"]
 
 
 def test_update_token_id_cache_prompt_once_and_extend_output():
@@ -180,9 +178,7 @@ def test_process_stream_chunk_adapts_text_completion_chunk_for_chat_entry_withou
         {
             "object": "text_completion",
             "id": "cmpl-test",
-            "choices": [
-                {"index": 0, "text": "6", "finish_reason": None, "logprobs": None}
-            ],
+            "choices": [{"index": 0, "text": "6", "finish_reason": None, "logprobs": None}],
         }
     ).encode()
     st: dict = {}
@@ -274,18 +270,15 @@ def test_prepare_retry_request_req_len_ignores_internal_keys():
     req_data = {"messages": [{"role": "user", "content": "a"}], "max_tokens": 100, "stream": True}
     ri = recompute_common.extract_request_info(req_data)
     ri["recompute_kv_transfer"] = {"all_token_ids": [1, 2], "prompt_token_ids": [1]}
+
     class _RI:
         req_len = 0
         req_data = None
 
     stub = _RI()
-    recompute_common.prepare_retry_request(
-        req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=stub
-    )
+    recompute_common.prepare_retry_request(req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=stub)
     assert "_origin_max_tokens" in req_data
-    assert stub.req_len == len(
-        json.dumps(recompute_common.copy_req_data_for_engine(req_data)).encode("utf-8")
-    )
+    assert stub.req_len == len(json.dumps(recompute_common.copy_req_data_for_engine(req_data)).encode("utf-8"))
 
 
 def test_process_stream_chunk_recomputed_missing_prompt_token_ids_raises():
@@ -321,9 +314,7 @@ def test_prepare_retry_request_multi_message_becomes_completions_prompt():
     }
     ri = recompute_common.extract_request_info(req_data)
     ri["recompute_kv_transfer"] = {"all_token_ids": [1, 2, 3], "prompt_token_ids": [1]}
-    recompute_common.prepare_retry_request(
-        req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None
-    )
+    recompute_common.prepare_retry_request(req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None)
     assert "messages" not in req_data
     assert req_data["prompt"] == [1, 2, 3]
 
@@ -351,16 +342,12 @@ def test_prepare_retry_request_multi_round_max_tokens_uses_origin_cap():
     req_data = {"messages": [{"role": "user", "content": "a"}], "max_tokens": 100, "stream": True}
     ri1 = recompute_common.extract_request_info(req_data)
     ri1["recompute_kv_transfer"] = {"all_token_ids": list(range(10)), "prompt_token_ids": [0]}
-    recompute_common.prepare_retry_request(
-        req_data, ri1, new_retry_count=1, req_id="r", logger=logger, req_info=None
-    )
+    recompute_common.prepare_retry_request(req_data, ri1, new_retry_count=1, req_id="r", logger=logger, req_info=None)
     assert req_data["max_tokens"] == 100 - 9 + 1
     assert req_data[recompute_common._CUMULATIVE_COMPLETION_TOKENS_KEY] == 9
     ri2 = recompute_common.extract_request_info(req_data)
     ri2["recompute_kv_transfer"] = {"all_token_ids": list(range(15)), "prompt_token_ids": [0]}
-    recompute_common.prepare_retry_request(
-        req_data, ri2, new_retry_count=2, req_id="r", logger=logger, req_info=None
-    )
+    recompute_common.prepare_retry_request(req_data, ri2, new_retry_count=2, req_id="r", logger=logger, req_info=None)
     # Leg2 adds 14 tokens; cumulative 9+14=23 — not 14 alone (would wrongly inflate max_tokens).
     assert req_data[recompute_common._CUMULATIVE_COMPLETION_TOKENS_KEY] == 23
     assert req_data["max_tokens"] == 100 - 23 + 1
@@ -396,6 +383,7 @@ def test_prepare_retry_request_completions_engine_switches_api():
     }
     ri = recompute_common.extract_request_info(req_data)
     ri["recompute_kv_transfer"] = {"all_token_ids": [1, 2, 3], "prompt_token_ids": [1]}
+
     class _RI:
         req_len = 0
         req_data = None
@@ -430,9 +418,7 @@ def test_prepare_retry_request_nonstream_no_output_ids_budget_is_zero():
         "all_token_ids": [10, 11, 12],
         "prompt_token_ids": [10, 11, 12],
     }
-    recompute_common.prepare_retry_request(
-        req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None
-    )
+    recompute_common.prepare_retry_request(req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None)
     assert req_data["max_tokens"] == 100 - 0 + 1
 
 
@@ -447,9 +433,7 @@ def test_prepare_retry_request_clamps_max_tokens_when_budget_non_positive():
         "all_token_ids": list(range(25)),
         "prompt_token_ids": [0],
     }
-    recompute_common.prepare_retry_request(
-        req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None
-    )
+    recompute_common.prepare_retry_request(req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None)
     assert req_data["max_tokens"] == 1
 
 
@@ -525,9 +509,7 @@ def test_prepare_retry_request_tools_not_eligible_raises():
 
 
 def test_is_recomputed_nonstream_response():
-    assert recompute_common.is_recomputed_nonstream_response(
-        {"choices": [{"stop_reason": "recomputed"}]}
-    )
+    assert recompute_common.is_recomputed_nonstream_response({"choices": [{"stop_reason": "recomputed"}]})
     assert not recompute_common.is_recomputed_nonstream_response({"choices": [{}]})
 
 
@@ -676,22 +658,14 @@ def test_process_stream_chunk_preserves_token_ids_when_client_requested():
     assert ri["cached_output_token_ids"] == [9]
 
 
-def test_prepare_retry_request_removes_kv_transfer_params():
-    """Recompute retry should not carry CDP kv_transfer_params (metaserver prefill)."""
+def test_prepare_retry_request_is_engine_agnostic():
+    """Recompute retry only rewrites OpenAI request state; engine fields live in adapters."""
     req_data = {
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 100,
         "stream": True,
-        "kv_transfer_params": {
-            "do_remote_decode": False,
-            "do_remote_prefill": True,
-            "metaserver": "http://host:port/v1/metaserver",
-        },
     }
     ri = recompute_common.extract_request_info(req_data)
     ri["recompute_kv_transfer"] = {"all_token_ids": [1, 2, 3], "prompt_token_ids": [1]}
-    recompute_common.prepare_retry_request(
-        req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None
-    )
-    assert "kv_transfer_params" not in req_data
+    recompute_common.prepare_retry_request(req_data, ri, new_retry_count=1, req_id="r", logger=logger, req_info=None)
     assert req_data["prompt"] == [1, 2, 3]

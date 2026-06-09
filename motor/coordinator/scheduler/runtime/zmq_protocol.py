@@ -30,7 +30,9 @@ class SchedulerRequestType(str, Enum):
     Scheduler request types. Scheduler process uses local InstanceManager for
     read-only queries; no IS_AVAILABLE/GET_ALL_INSTANCES.
     """
+
     ALLOCATE_ONLY = "allocate_only"  # Worker selects locally; Scheduler only allocates workload
+    ALLOCATE_PAIR = "allocate_pair"  # Worker selects P/D locally; Scheduler allocates both with compensation
     UPDATE_WORKLOAD = "update_workload"
     GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker fetches instance list and workload shm name
     REFRESH_INSTANCES = "refresh_instances"
@@ -40,6 +42,7 @@ class SchedulerResponseType(str, Enum):
     """
     Scheduler response types.
     """
+
     SUCCESS = "success"
     ERROR = "error"
 
@@ -48,6 +51,7 @@ class SchedulerRequest(msgspec.Struct):
     """
     Scheduler request message (msgspec.Struct, native msgpack serialization).
     """
+
     request_type: str
     request_id: str
     data: dict[str, Any]
@@ -57,6 +61,7 @@ class SchedulerResponse(msgspec.Struct):
     """
     Scheduler response message (msgspec.Struct, native msgpack serialization).
     """
+
     response_type: str
     request_id: str
     data: dict[str, Any] | None = None
@@ -67,11 +72,13 @@ class SchedulerResponse(msgspec.Struct):
 CANDIDATE_POLICY_LOAD_BALANCE = "load_balance"
 CANDIDATE_POLICY_ROUND_ROBIN = "round_robin"
 CANDIDATE_POLICY_KV_CACHE_AFFINITY = "kv_cache_affinity"
-KNOWN_CANDIDATE_POLICIES = frozenset({
-    CANDIDATE_POLICY_LOAD_BALANCE,
-    CANDIDATE_POLICY_ROUND_ROBIN,
-    CANDIDATE_POLICY_KV_CACHE_AFFINITY,
-})
+KNOWN_CANDIDATE_POLICIES = frozenset(
+    {
+        CANDIDATE_POLICY_LOAD_BALANCE,
+        CANDIDATE_POLICY_ROUND_ROBIN,
+        CANDIDATE_POLICY_KV_CACHE_AFFINITY,
+    }
+)
 
 # Zero-copy: dict/list larger than this (bytes) go in separate frame; main frame stores __ref__ index only
 ZERO_COPY_REF_KEY = "__ref__"
@@ -159,12 +166,8 @@ class ZMQMessageSerializer:
     def serialize_request(self, request: SchedulerRequest) -> bytes | list[bytes]:
         """Serialize request. Returns single bytes or [main_buf, *aux_buffers] for multipart send."""
         aux: list[bytes] = []
-        data = _replace_large_with_refs(
-            request.data, self._zero_copy_threshold, aux, self._encoder
-        )
-        modified = SchedulerRequest(
-            request_type=request.request_type, request_id=request.request_id, data=data
-        )
+        data = _replace_large_with_refs(request.data, self._zero_copy_threshold, aux, self._encoder)
+        modified = SchedulerRequest(request_type=request.request_type, request_id=request.request_id, data=data)
         main_buf = self._encoder.encode(modified)
         if not aux:
             return main_buf
@@ -180,18 +183,14 @@ class ZMQMessageSerializer:
         if not aux:
             return obj
         resolved_data = _resolve_refs(obj.data, aux, self._generic_decoder)
-        return SchedulerRequest(
-            request_type=obj.request_type, request_id=obj.request_id, data=resolved_data
-        )
+        return SchedulerRequest(request_type=obj.request_type, request_id=obj.request_id, data=resolved_data)
 
     def serialize_response(self, response: SchedulerResponse) -> bytes | list[bytes]:
         """Serialize response. Returns single bytes or [main_buf, *aux_buffers]."""
         aux: list[bytes] = []
         data = response.data
         if data is not None:
-            data = _replace_large_with_refs(
-                data, self._zero_copy_threshold, aux, self._encoder
-            )
+            data = _replace_large_with_refs(data, self._zero_copy_threshold, aux, self._encoder)
         modified = SchedulerResponse(
             response_type=response.response_type,
             request_id=response.request_id,
@@ -212,9 +211,7 @@ class ZMQMessageSerializer:
         obj = self._response_decoder.decode(main_buf)
         if not aux:
             return obj
-        resolved_data = (
-            _resolve_refs(obj.data, aux, self._generic_decoder) if obj.data else None
-        )
+        resolved_data = _resolve_refs(obj.data, aux, self._generic_decoder) if obj.data else None
         return SchedulerResponse(
             response_type=obj.response_type,
             request_id=obj.request_id,
