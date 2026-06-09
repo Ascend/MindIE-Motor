@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -10,7 +10,6 @@
 
 import signal
 import time
-import os
 import sys
 
 from motor.common.utils.process_utils import set_process_title
@@ -21,9 +20,11 @@ set_process_title("NodeManager")
 from motor.common.logger import get_logger
 from motor.node_manager.api_server.node_manager_api import NodeManagerAPI
 from motor.config.node_manager import NodeManagerConfig
+from motor.common.utils.port_allocator import apply_node_manager_ports, run_port_setup_or_exit
 from motor.node_manager.core.daemon import Daemon
 from motor.node_manager.core.engine_manager import EngineManager
 from motor.node_manager.core.heartbeat_manager import HeartbeatManager
+from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.utils.env import Env
 
@@ -42,12 +43,7 @@ config_watcher: ConfigWatcher | None = None
 
 def log_config_summary(message_prefix: str | None = None) -> None:
     """Log configuration summary with optional message prefix"""
-    if config:
-        if message_prefix:
-            logger.info(message_prefix)
-        for line in config.get_config_summary().splitlines():
-            if line.strip():  # Skip empty lines
-                logger.info(line)
+    log_configuration_summary(config, message_prefix)
 
 
 def on_config_updated() -> None:
@@ -70,6 +66,7 @@ def init_all_modules(config_path: str | None = None) -> None:
     global config
     if config is None:
         config = NodeManagerConfig.from_json(config_path)
+        run_port_setup_or_exit(apply_node_manager_ports, config)
 
     modules.append(config)
     modules.append(NodeManagerAPI(config=config))
@@ -137,13 +134,7 @@ def main() -> int:
     # Log configuration summary
     log_config_summary()
 
-    # Start configuration file watcher
-    if config.config_path and os.path.exists(config.config_path):
-        config_watcher = ConfigWatcher(
-            config_path=config.config_path, reload_callback=config.reload, config_update_callback=on_config_updated
-        )
-        config_watcher.start()
-        logger.info("Configuration file watcher started")
+    config_watcher = start_config_file_watcher(config, on_config_updated)
 
     logger.info("All modules started, monitoring...")
 

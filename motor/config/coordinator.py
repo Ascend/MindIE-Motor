@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -12,21 +12,27 @@ import os
 import json
 import re
 import ipaddress
+import tempfile
 from typing import Optional, Any
 from enum import Enum
 from dataclasses import dataclass, field, asdict, is_dataclass
-from pathlib import Path
 
 from motor.common.logger import reconfigure_logging, get_logger
 from motor.common.utils.env import Env
 from motor.common.http.key_encryption import set_default_key_encryption_by_name
 from motor.config.etcd import EtcdConfig
 from motor.config.log_config import LoggingConfig
-from motor.config.standby import StandbyConfig, LOCK_SLASH
+from motor.config.standby import StandbyConfig
 from motor.config.tls_config import TLSConfig
 from motor.config.config_utils import (
     ConfigKey,
-    save_config_to_json,
+    apply_config_path_metadata,
+    finalize_json_config_load,
+    init_motor_config,
+    log_json_config_load_error,
+    reload_dataclass_config_from_json,
+    resolve_config_json_path,
+    save_instance_config_to_json,
     _update_tls_config,
     _update_instances_num,
     _update_prefill_kv_event_config,
@@ -35,6 +41,7 @@ from motor.config.config_utils import (
     ETCD_TLS_CONFIG,
 )
 from motor.config.resolver import ConfigResolver
+from motor.config.port_allocator_config import PortAllocatorConfig
 
 FILE_ENCODING = "utf-8"
 
@@ -79,7 +86,16 @@ def _default_skip_paths() -> set[str]:
 
 
 def _default_rate_limit_skip_paths() -> list[str]:
-    return ["/liveness", "/readiness", "/metrics", "/docs", "/redoc", "/openapi.json", "/favicon.ico", "/startup"]
+    return [
+        "/liveness",
+        "/readiness",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/favicon.ico",
+        "/startup",
+    ]
 
 
 class DeployMode(Enum):
@@ -91,12 +107,12 @@ class DeployMode(Enum):
     PD_DISAGGREGATION_SINGLE_CONTAINER = "pd_disaggregation_single_container"
 
     @classmethod
-    def from_string(cls, value: str) -> Optional['DeployMode']:
+    def from_string(cls, value: str) -> Optional["DeployMode"]:
         """Convert string to DeployMode enum."""
         try:
             return cls[value.upper()]
         except (KeyError, AttributeError):
-            logger.warning(f"Invalid deploy mode: {value}")
+            logger.warning("Invalid deploy mode: %s", value)
             return None
 
 
@@ -106,12 +122,12 @@ class SchedulerType(Enum):
     KV_CACHE_AFFINITY = "kv_cache_affinity"
 
     @classmethod
-    def from_string(cls, value: str) -> Optional['SchedulerType']:
+    def from_string(cls, value: str) -> Optional["SchedulerType"]:
         """Convert string to SchedulerType enum."""
         try:
             return cls[value.upper()]
         except (KeyError, AttributeError):
-            logger.warning(f"Invalid scheduler type: {value}")
+            logger.warning("Invalid scheduler type: %s", value)
             return None
 
 
@@ -208,9 +224,9 @@ class APIKeyConfig:
 
         try:
             set_default_key_encryption_by_name(self.encryption_algorithm)
-            logger.info(f"Using encryption algorithm: {self.encryption_algorithm}")
+            logger.info("Using encryption algorithm: %s", self.encryption_algorithm)
         except ValueError as e:
-            logger.error(f"Invalid encryption algorithm: {e}")
+            logger.error("Invalid encryption algorithm: %s", e)
             raise ValueError(f"Invalid encryption algorithm '{self.encryption_algorithm}': {e}") from e
 
 
@@ -226,20 +242,20 @@ class InferenceWorkersConfig:
 class SchedulerProcessConfig:
     """Scheduler process configuration (default only; not user-configurable in first version)."""
 
-    ipc_dir: str = ""  # Base dir for IPC sockets; empty => /tmp. Used to avoid hardcoded /tmp in containers.
+    ipc_dir: str = ""  # Base dir for IPC sockets; empty => system temp dir.
     timeout: float = 5.0  # Client request timeout (seconds)
     reconnect_interval: float = 5.0  # Client reconnect interval (seconds)
 
     @property
     def frontend_address(self) -> str:
-        """IPC address for ROUTER (API Server ↔ Scheduler). Derived from ipc_dir."""
-        base = (self.ipc_dir or "/tmp").rstrip("/")
+        """IPC address for ROUTER (API Server ? Scheduler). Derived from ipc_dir."""
+        base = (self.ipc_dir or tempfile.gettempdir()).rstrip("/")
         return f"ipc://{base}/scheduler_frontend"
 
     @property
     def instance_pub_address(self) -> str:
         """IPC address for instance-change PUB. Derived from ipc_dir."""
-        base = (self.ipc_dir or "/tmp").rstrip("/")
+        base = (self.ipc_dir or tempfile.gettempdir()).rstrip("/")
         return f"ipc://{base}/scheduler_instance_pub"
 
 
@@ -263,17 +279,20 @@ class RateLimitConfig:
 
     olc_config_path: str = ""
 
+
 @dataclass
 class ApiConfig:
     """API configuration class"""
 
     # coordinator API configuration
-    coordinator_api_host: str = field(default_factory=lambda: Env.pod_ip or '127.0.0.1')
-    coordinator_api_dns: str = field(default_factory=lambda: Env.coordinator_service or '127.0.0.1')
-    coordinator_api_infer_dns: str = field(default_factory=lambda:
-        Env.coordinator_infer_service or Env.coordinator_service or '127.0.0.1')
-    coordinator_api_obs_dns: str = field(default_factory=lambda:
-        Env.coordinator_obs_service or Env.coordinator_service or '127.0.0.1')
+    coordinator_api_host: str = field(default_factory=lambda: Env.pod_ip or "127.0.0.1")
+    coordinator_api_dns: str = field(default_factory=lambda: Env.coordinator_service or "127.0.0.1")
+    coordinator_api_infer_dns: str = field(
+        default_factory=lambda: Env.coordinator_infer_service or Env.coordinator_service or "127.0.0.1"
+    )
+    coordinator_api_obs_dns: str = field(
+        default_factory=lambda: Env.coordinator_obs_service or Env.coordinator_service or "127.0.0.1"
+    )
     coordinator_api_infer_port: int = 1025
     coordinator_api_mgmt_port: int = 1026
     coordinator_obs_port: int = 1027
@@ -341,6 +360,7 @@ class CoordinatorConfig:
     deploy_config: DeployConfig = field(default_factory=DeployConfig)
     tracer_config: TracerConfig = field(default_factory=TracerConfig)
     prefill_kv_event_config: PrefillKvEventConfig = field(default_factory=PrefillKvEventConfig)
+    port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
 
     # internal fields
     config_path: str | None = field(default=None, init=False)
@@ -352,25 +372,18 @@ class CoordinatorConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization"""
-        # Refresh master lock key with coordinator prefix
-        if self.standby_config.master_lock_key == "/master_lock":
-            self.standby_config.master_lock_key = LOCK_SLASH + "coordinator" + self.standby_config.master_lock_key
-        self.validate_config()
+        init_motor_config(self, "coordinator")
 
     @classmethod
-    def from_json(cls, json_path: str = None) -> 'CoordinatorConfig':
+    def from_json(cls, json_path: str = None) -> "CoordinatorConfig":
         """Load configuration from JSON file"""
-        if json_path is None:
-            # Read from environment variable
-            json_path = Env.user_config_path
-
-        config_path = Path(json_path) if json_path else None
+        json_path, config_path = resolve_config_json_path(json_path)
 
         cfg = {}
         user_config_data = None
         try:
             if config_path and config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:  # Only parse if file is not empty
                         raw = json.loads(content)
@@ -379,16 +392,16 @@ class CoordinatorConfig:
                             cfg = raw.get("motor_coordinator_config", {})
                         else:
                             cfg = raw
-                        tls_configs = [MGMT_TLS_CONFIG, INFER_TLS_CONFIG, ETCD_TLS_CONFIG]
+                        tls_configs = [
+                            MGMT_TLS_CONFIG,
+                            INFER_TLS_CONFIG,
+                            ETCD_TLS_CONFIG,
+                        ]
                         _update_tls_config(tls_configs, cfg, raw)
                         _update_instances_num(cfg, raw)
                         _update_prefill_kv_event_config(cfg, raw)
-        except json.JSONDecodeError as e:
-            # If JSON parsing fails, use default configuration
-            logger.warning(f"Configuration file {json_path} format error: {e}, using default configuration")
-        except Exception as e:
-            # If any other error occurs, use default configuration
-            logger.warning(f"Unable to read configuration file {json_path}: {e}, using default configuration")
+        except (json.JSONDecodeError, Exception) as e:
+            log_json_config_load_error(json_path, e)
 
         try:
             config = cls()
@@ -415,8 +428,8 @@ class CoordinatorConfig:
                         setattr(obj, key, enum_value)
 
             scheduler_handlers = {
-                'deploy_mode': lambda obj, key, value: set_enum_field(obj, key, value, DeployMode),
-                'scheduler_type': lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
+                "deploy_mode": lambda obj, key, value: set_enum_field(obj, key, value, DeployMode),
+                "scheduler_type": lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
             }
 
             # Enrich AIGW fields from user_config if present
@@ -433,64 +446,53 @@ class CoordinatorConfig:
                     cfg[AIGW].setdefault(SLO_TTFT, 1000)
                     cfg[AIGW].setdefault(SLO_TPOT, 50)
                 except Exception as e:
-                    logger.warning(f"Failed to enrich aigw from user_config: {e}")
+                    logger.warning("Failed to enrich aigw from user_config: %s", e)
 
             # Update configuration sections if they exist in JSON
             config_mappings = [
-                ('logging_config', config.logging_config, None),
-                ('prometheus_metrics_config', config.prometheus_metrics_config, None),
-                ('exception_config', config.exception_config, None),
-                ('scheduler_config', config.scheduler_config, scheduler_handlers),
-                ('inference_workers_config', config.inference_workers_config, None),
-                ('timeout_config', config.timeout_config, None),
-                ('api_key_config', config.api_key_config, None),
-                ('rate_limit_config', config.rate_limit_config, None),
-                ('standby_config', config.standby_config, None),
-                ('etcd_config', config.etcd_config, None),
-                ('infer_tls_config', config.infer_tls_config, None),
-                ('mgmt_tls_config', config.mgmt_tls_config, None),
-                ('etcd_tls_config', config.etcd_tls_config, None),
-                ('api_config', config.api_config, None),
-                ('deploy_config', config.deploy_config, None),
-                ('tracer_config', config.tracer_config, None),
-                ('prefill_kv_event_config', config.prefill_kv_event_config, None),
+                ("logging_config", config.logging_config, None),
+                ("prometheus_metrics_config", config.prometheus_metrics_config, None),
+                ("exception_config", config.exception_config, None),
+                ("scheduler_config", config.scheduler_config, scheduler_handlers),
+                ("inference_workers_config", config.inference_workers_config, None),
+                ("timeout_config", config.timeout_config, None),
+                ("api_key_config", config.api_key_config, None),
+                ("rate_limit_config", config.rate_limit_config, None),
+                ("standby_config", config.standby_config, None),
+                ("etcd_config", config.etcd_config, None),
+                ("infer_tls_config", config.infer_tls_config, None),
+                ("mgmt_tls_config", config.mgmt_tls_config, None),
+                ("etcd_tls_config", config.etcd_tls_config, None),
+                ("api_config", config.api_config, None),
+                ("deploy_config", config.deploy_config, None),
+                ("tracer_config", config.tracer_config, None),
+                ("prefill_kv_event_config", config.prefill_kv_event_config, None),
+                ("port_allocator_config", config.port_allocator_config, None),
             ]
 
             for section_name, config_obj, special_handlers in config_mappings:
                 if section_name in cfg:
                     update_config_from_dict(config_obj, cfg[section_name], special_handlers)
 
-            if 'aigw' in cfg:
-                config.aigw_model = dict(cfg['aigw'])
+            if "aigw" in cfg:
+                config.aigw_model = dict(cfg["aigw"])
 
-            # Set internal fields
-            if config_path:
-                config.config_path = str(config_path)
-                if config_path.exists():
-                    config.last_modified = config_path.stat().st_mtime
-            else:
-                config.config_path = None
+            apply_config_path_metadata(config, config_path)
 
             # Re-validate configuration after applying values from JSON
             config.validate_config()
 
             reconfigure_logging(config.logging_config)
 
-            # Now it's safe to log after logging configuration is set
-            if config_path:
-                logger.info(f"Loading configuration file: {config_path}")
-                if config_path.exists():
-                    logger.info(f"Successfully loaded configuration file: {config_path}")
-                else:
-                    logger.warning(f"Configuration file does not exist, using default configuration: {config_path}")
-            else:
-                logger.info("No configuration file specified, using default configuration")
-            logger.info("Configuration loading completed")
+            finalize_json_config_load(
+                config_path,
+                no_path_message="No configuration file specified, using default configuration",
+            )
 
             return config
 
         except Exception as e:
-            logger.error(f"Failed to create configuration instance: {e}")
+            logger.error("Failed to create configuration instance: %s", e)
             raise
 
     def validate_config(self) -> None:
@@ -498,7 +500,7 @@ class CoordinatorConfig:
         self._errors = []
 
         # Validate logging configuration
-        valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+        valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]
         if self.logging_config.log_level.upper() not in valid_log_levels:
             self._errors.append(f"log_level must be one of: {', '.join(valid_log_levels)}")
 
@@ -515,11 +517,15 @@ class CoordinatorConfig:
         self._validate_positive_number(self.exception_config.max_retry, "max_retry", allow_zero=True)
         if self.exception_config.transport_max_retry is not None:
             self._validate_positive_number(
-                self.exception_config.transport_max_retry, "transport_max_retry", allow_zero=True
+                self.exception_config.transport_max_retry,
+                "transport_max_retry",
+                allow_zero=True,
             )
         if self.exception_config.recompute_max_retry is not None:
             self._validate_positive_number(
-                self.exception_config.recompute_max_retry, "recompute_max_retry", allow_zero=True
+                self.exception_config.recompute_max_retry,
+                "recompute_max_retry",
+                allow_zero=True,
             )
         self._validate_positive_number(self.exception_config.retry_delay, "retry_delay")
         self._validate_positive_number(self.exception_config.first_token_timeout, "first_token_timeout")
@@ -584,8 +590,7 @@ class CoordinatorConfig:
         )
         if self.scheduler_config.kv_affinity_mode not in KV_AFFINITY_MODES:
             self._errors.append(
-                f"kv_affinity_mode must be one of {KV_AFFINITY_MODES}, "
-                f"got {self.scheduler_config.kv_affinity_mode!r}"
+                f"kv_affinity_mode must be one of {KV_AFFINITY_MODES}, got {self.scheduler_config.kv_affinity_mode!r}"
             )
 
         # Validate host address
@@ -600,19 +605,15 @@ class CoordinatorConfig:
 
         if self.rate_limit_config.provider not in ("simple", "olc"):
             self._errors.append(
-                f"rate_limit_config.provider must be 'simple' or 'olc', "
-                f"got '{self.rate_limit_config.provider}'"
+                f"rate_limit_config.provider must be 'simple' or 'olc', got '{self.rate_limit_config.provider}'"
             )
 
         if self.rate_limit_config.enable_rate_limit and self.rate_limit_config.provider == "olc":
             if not self.rate_limit_config.olc_config_path:
-                self._errors.append(
-                    "rate_limit_config.olc_config_path is required when provider is 'olc'"
-                )
+                self._errors.append("rate_limit_config.olc_config_path is required when provider is 'olc'")
             elif not os.path.isdir(self.rate_limit_config.olc_config_path):
                 self._errors.append(
-                    f"rate_limit_config.olc_config_path does not exist: "
-                    f"{self.rate_limit_config.olc_config_path}"
+                    f"rate_limit_config.olc_config_path does not exist: {self.rate_limit_config.olc_config_path}"
                 )
 
         # Validate Prometheus metrics configuration
@@ -620,12 +621,15 @@ class CoordinatorConfig:
 
         # Validate standby configuration
         self._validate_positive_number(
-            self.standby_config.master_standby_check_interval, "master_standby_check_interval"
+            self.standby_config.master_standby_check_interval,
+            "master_standby_check_interval",
         )
         self._validate_positive_number(self.standby_config.master_lock_ttl, "master_lock_ttl")
         self._validate_positive_number(self.standby_config.master_lock_retry_interval, "master_lock_retry_interval")
         self._validate_positive_number(
-            self.standby_config.master_lock_max_failures, "master_lock_max_failures", allow_zero=True
+            self.standby_config.master_lock_max_failures,
+            "master_lock_max_failures",
+            allow_zero=True,
         )
 
         # Validate master lock key path
@@ -659,36 +663,13 @@ class CoordinatorConfig:
 
     def reload(self) -> bool:
         """Reload configuration file"""
-        if not self.config_path or not os.path.exists(self.config_path):
-            logger.warning("Configuration file path does not exist, cannot reload")
-            return False
-
-        try:
-            # Check if file has been modified
-            current_mtime = os.path.getmtime(self.config_path)
-            if self.last_modified and current_mtime <= self.last_modified:
-                logger.debug("Configuration file not modified, skipping reload")
-                return True
-
-            logger.info("Configuration file change detected, reloading...")
-            new_config = self.from_json(self.config_path)
-
-            # Update current configuration (skip runtime-only fields not from config file)
-            _reload_skip = frozenset({"worker_index", "worker_metaserver_port"})
-            for field_name in self.__dataclass_fields__:
-                if not field_name.startswith('_') and field_name not in _reload_skip:
-                    setattr(self, field_name, getattr(new_config, field_name))
-
-            self.last_modified = current_mtime
-
-            reconfigure_logging(self.logging_config)
-
-            logger.info("Configuration reload successful")
-            return True
-
-        except Exception as e:
-            logger.error(f"Configuration reload failed: {e}")
-            return False
+        return reload_dataclass_config_from_json(
+            self,
+            self.from_json,
+            self.logging_config,
+            skip=frozenset({"worker_index", "worker_metaserver_port"}),
+            skip_private=True,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary with grouped structure"""
@@ -697,47 +678,35 @@ class CoordinatorConfig:
         config_dict = asdict(self)
 
         # Remove internal fields that shouldn't be in the output
-        config_dict.pop('config_path', None)
-        config_dict.pop('last_modified', None)
+        config_dict.pop("config_path", None)
+        config_dict.pop("last_modified", None)
 
         # Convert enums to their string values for JSON serialization
-        if 'scheduler_config' in config_dict:
-            scheduler_config = config_dict['scheduler_config']
-            if 'deploy_mode' in scheduler_config and isinstance(scheduler_config['deploy_mode'], DeployMode):
-                scheduler_config['deploy_mode'] = scheduler_config['deploy_mode'].value
-            if 'scheduler_type' in scheduler_config and isinstance(scheduler_config['scheduler_type'], SchedulerType):
-                scheduler_config['scheduler_type'] = scheduler_config['scheduler_type'].value
+        if "scheduler_config" in config_dict:
+            scheduler_config = config_dict["scheduler_config"]
+            if "deploy_mode" in scheduler_config and isinstance(scheduler_config["deploy_mode"], DeployMode):
+                scheduler_config["deploy_mode"] = scheduler_config["deploy_mode"].value
+            if "scheduler_type" in scheduler_config and isinstance(scheduler_config["scheduler_type"], SchedulerType):
+                scheduler_config["scheduler_type"] = scheduler_config["scheduler_type"].value
         # Convert sets to lists for JSON serialization
-        if 'api_key_config' in config_dict:
-            api_key_config = config_dict['api_key_config']
-            if 'valid_keys' in api_key_config and isinstance(api_key_config['valid_keys'], set):
-                api_key_config['valid_keys'] = list(api_key_config['valid_keys'])
-            if 'skip_paths' in api_key_config and isinstance(api_key_config['skip_paths'], set):
-                api_key_config['skip_paths'] = list(api_key_config['skip_paths'])
+        if "api_key_config" in config_dict:
+            api_key_config = config_dict["api_key_config"]
+            if "valid_keys" in api_key_config and isinstance(api_key_config["valid_keys"], set):
+                api_key_config["valid_keys"] = list(api_key_config["valid_keys"])
+            if "skip_paths" in api_key_config and isinstance(api_key_config["skip_paths"], set):
+                api_key_config["skip_paths"] = list(api_key_config["skip_paths"])
 
         return config_dict
 
     def save_to_json(self, json_path: str | None = None) -> bool:
         """Save configuration to JSON file"""
-        save_path = json_path or self.config_path
-        if not save_path:
-            logger.error("Save path not specified")
-            return False
-
-        try:
-            config_dict = self.to_dict()
-            save_config_to_json(
-                save_path,
-                ConfigKey.MOTOR_COORDINATOR,
-                config_dict,
-                file_encoding=FILE_ENCODING,
-                component_name="coordinator",
-            )
-            logger.info(f"Configuration saved to: {save_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save configuration: {e}")
-            return False
+        return save_instance_config_to_json(
+            self,
+            json_path,
+            config_key=ConfigKey.MOTOR_COORDINATOR,
+            file_encoding=FILE_ENCODING,
+            component_name="coordinator",
+        )
 
     def get_config_summary(self) -> str:
         """Get configuration summary information"""
@@ -750,17 +719,17 @@ class CoordinatorConfig:
         master_lock_ttl = self.standby_config.master_lock_ttl
         master_lock_key = self.standby_config.master_lock_key
         deploy_summary = (
-            f"    ├─ p_instances_num:     {self.deploy_config.p_instances_num}\n"
-            f"    └─ d_instances_num:     {self.deploy_config.d_instances_num}\n"
+            f"    ?? p_instances_num:     {self.deploy_config.p_instances_num}\n"
+            f"    ?? d_instances_num:     {self.deploy_config.d_instances_num}\n"
         )
         if self.deploy_config.hybrid_instances_num is not None:
             deploy_summary = (
-                f"    ├─ p_instances_num: {self.deploy_config.p_instances_num}\n"
-                f"    ├─ d_instances_num: {self.deploy_config.d_instances_num}\n"
-                f"    ├─ hybrid_instances_num: {self.deploy_config.hybrid_instances_num}\n"
-                f"    ├─ single_hybrid_instance_pod_num: "
+                f"    ?? p_instances_num: {self.deploy_config.p_instances_num}\n"
+                f"    ?? d_instances_num: {self.deploy_config.d_instances_num}\n"
+                f"    ?? hybrid_instances_num: {self.deploy_config.hybrid_instances_num}\n"
+                f"    ?? single_hybrid_instance_pod_num: "
                 f"{self.deploy_config.single_hybrid_instance_pod_num}\n"
-                f"    └─ hybrid_pod_npu_num: {self.deploy_config.hybrid_pod_npu_num}\n"
+                f"    ?? hybrid_pod_npu_num: {self.deploy_config.hybrid_pod_npu_num}\n"
             )
         return (
             f"{separator}\n"
@@ -769,54 +738,54 @@ class CoordinatorConfig:
             "  Deploy Configuration:\n"
             f"{deploy_summary}"
             "  Logging Configuration:\n"
-            f"    ├─ Log Level:           {self.logging_config.log_level}\n"
-            f"    ├─ Log File:            {self.logging_config.host_log_dir}\n"
-            f"    └─ Log Max Line Length: {self.logging_config.log_max_line_length}\n"
+            f"    ?? Log Level:           {self.logging_config.log_level}\n"
+            f"    ?? Log File:            {self.logging_config.host_log_dir}\n"
+            f"    ?? Log Max Line Length: {self.logging_config.log_max_line_length}\n"
             "\n"
             "  Network Configuration:\n"
-            f"    ├─ HTTP Pod IP:         {self.api_config.coordinator_api_host}\n"
-            f"    ├─ HTTP Pod DNS:         {self.api_config.coordinator_api_dns}\n"
-            f"    ├─ Inference Port:      {self.api_config.coordinator_api_infer_port}\n"
-            f"    ├─ Management Port:     {self.api_config.coordinator_api_mgmt_port}\n"
-            f"    └─ Observability Port:  {self.api_config.coordinator_obs_port}\n"
+            f"    ?? HTTP Pod IP:         {self.api_config.coordinator_api_host}\n"
+            f"    ?? HTTP Pod DNS:         {self.api_config.coordinator_api_dns}\n"
+            f"    ?? Inference Port:      {self.api_config.coordinator_api_infer_port}\n"
+            f"    ?? Management Port:     {self.api_config.coordinator_api_mgmt_port}\n"
+            f"    ?? Observability Port:  {self.api_config.coordinator_obs_port}\n"
             "\n"
             "  Scheduler Configuration:\n"
-            f"    ├─ Deploy Mode:               {self.scheduler_config.deploy_mode.value}\n"
-            f"    ├─ Scheduler Type:            {self.scheduler_config.scheduler_type.value}\n"
-            f"    ├─ Endpoint Instance Weight:  "
+            f"    ?? Deploy Mode:               {self.scheduler_config.deploy_mode.value}\n"
+            f"    ?? Scheduler Type:            {self.scheduler_config.scheduler_type.value}\n"
+            f"    ?? Endpoint Instance Weight:  "
             f"{self.scheduler_config.endpoint_instance_score_weight}\n"
-            f"    ├─ KV Affinity Mode:          "
+            f"    ?? KV Affinity Mode:          "
             f"{self.scheduler_config.kv_affinity_mode}\n"
-            f"    ├─ KV Affinity Load Weight:   "
+            f"    ?? KV Affinity Load Weight:   "
             f"{self.scheduler_config.kv_affinity_load_weight}\n"
-            f"    └─ KV Affinity Load Gate TopN:"
+            f"    ?? KV Affinity Load Gate TopN:"
             f"{self.scheduler_config.kv_affinity_load_gate_topn}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
-            f"    ├─ Num Workers:               {self.inference_workers_config.num_workers}\n"
-            f"    └─ Worker Metaserver Base:    "
+            f"    ?? Num Workers:               {self.inference_workers_config.num_workers}\n"
+            f"    ?? Worker Metaserver Base:    "
             f"{self.inference_workers_config.worker_metaserver_base_port or 'disabled'}\n"
             "\n"
             "  Security:\n"
-            f"    ├─ Infer TLS:           {'Enabled' if self.infer_tls_config.enable_tls else 'Disabled'}\n"
-            f"    ├─ Management TLS:      {'Enabled' if self.mgmt_tls_config.enable_tls else 'Disabled'}\n"
-            f"    ├─ Etcd TLS:            {'Enabled' if self.etcd_tls_config.enable_tls else 'Disabled'}\n"
-            f"    ├─ API Key Auth:        {'Enabled' if self.api_key_config.enable_api_key else 'Disabled'}\n"
-            f"    └─ Rate Limiting:       {'Enabled' if self.rate_limit_config.enable_rate_limit else 'Disabled'}\n"
+            f"    ?? Infer TLS:           {'Enabled' if self.infer_tls_config.enable_tls else 'Disabled'}\n"
+            f"    ?? Management TLS:      {'Enabled' if self.mgmt_tls_config.enable_tls else 'Disabled'}\n"
+            f"    ?? Etcd TLS:            {'Enabled' if self.etcd_tls_config.enable_tls else 'Disabled'}\n"
+            f"    ?? API Key Auth:        {'Enabled' if self.api_key_config.enable_api_key else 'Disabled'}\n"
+            f"    ?? Rate Limiting:       {'Enabled' if self.rate_limit_config.enable_rate_limit else 'Disabled'}\n"
             "\n"
             "  High Availability:\n"
-            f"    ├─ ETCD:\n"
-            f"    │   ├─ Persistence:       {'Enabled' if self.etcd_config.enable_etcd_persistence else 'Disabled'}\n"
-            f"    │   ├─ Host:              {etcd_host}\n"
-            f"    │   ├─ Port:              {etcd_port}\n"
-            f"    │   └─ Timeout:           {etcd_timeout} seconds\n"
-            f"    └─ Master/Standby:      {'Enabled' if self.standby_config.enable_master_standby else 'Disabled'}\n"
-            f"        ├─ Check Interval:   {master_standby_check_interval} seconds\n"
-            f"        ├─ Lock TTL:         {master_lock_ttl} seconds\n"
-            f"        └─ Lock Key:         {master_lock_key}\n"
+            f"    ?? ETCD:\n"
+            f"    ?   ?? Persistence:       {'Enabled' if self.etcd_config.enable_etcd_persistence else 'Disabled'}\n"
+            f"    ?   ?? Host:              {etcd_host}\n"
+            f"    ?   ?? Port:              {etcd_port}\n"
+            f"    ?   ?? Timeout:           {etcd_timeout} seconds\n"
+            f"    ?? Master/Standby:      {'Enabled' if self.standby_config.enable_master_standby else 'Disabled'}\n"
+            f"        ?? Check Interval:   {master_standby_check_interval} seconds\n"
+            f"        ?? Lock TTL:         {master_lock_ttl} seconds\n"
+            f"        ?? Lock Key:         {master_lock_key}\n"
             "\n"
             "  Configuration:\n"
-            f"    └─ Config Path:         {self.config_path or 'Not set'}\n"
+            f"    ?? Config Path:         {self.config_path or 'Not set'}\n"
             f"{separator}"
         )
 
@@ -847,7 +816,8 @@ class CoordinatorConfig:
 
         # If not IP, validate as hostname (basic validation)
         if not re.match(
-            r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$', value
+            r"^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$",
+            value,
         ):
             self._errors.append(f"{field_name} must be a valid IP address or hostname")
 
@@ -855,5 +825,5 @@ class CoordinatorConfig:
         """Validate that an endpoint path starts with '/' and is not empty"""
         if not path or not isinstance(path, str):
             self._errors.append(f"{field_name} cannot be empty")
-        elif not path.startswith('/'):
+        elif not path.startswith("/"):
             self._errors.append(f"{field_name} must start with '/'")

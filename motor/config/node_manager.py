@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -20,14 +20,18 @@ from motor.config.resolver import ConfigResolver
 from motor.config.tls_config import TLSConfig
 from motor.common.utils.env import Env
 from motor.common.utils.patch_check import safe_open
-from motor.common.logger import get_logger, reconfigure_logging
+from motor.common.logger import get_logger
 from motor.config.config_utils import (
     ConfigKey,
-    save_config_to_json,
+    format_config_summary_header,
+    raise_if_config_errors,
+    reload_dataclass_config_from_json,
+    save_instance_config_to_json,
     _update_tls_config,
     MGMT_TLS_CONFIG,
 )
 from motor.config.log_config import LoggingConfig
+from motor.config.port_allocator_config import PortAllocatorConfig
 
 FILE_ENCODING = "utf-8"
 
@@ -76,10 +80,7 @@ class HardwareType(str, Enum):
 
     @classmethod
     def is_a5(cls, hardware_type: str) -> bool:
-        return hardware_type in {
-            member.value for member in cls
-            if member not in (cls.TYPE_800I_A2, cls.TYPE_800I_A3)
-        }
+        return hardware_type in {member.value for member in cls if member not in (cls.TYPE_800I_A2, cls.TYPE_800I_A3)}
 
 
 @dataclass
@@ -174,6 +175,10 @@ class SingleContainerNodemanagerConfig:
         e_base_port_offset = d_base_port_offset + e_dp_size
         e_device_offset = d_device_offset + e_world_size
 
+        kv_port_offset = 0
+        lookup_rpc_port_offset = 0
+        dp_rpc_port_offset = 0
+
         if Env.role == 'prefill':
             config.node_manager_port_offset = index
             config.base_port_offset = index * d_dp_size * 2
@@ -233,6 +238,7 @@ class NodeManagerConfig:
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     single_container_config: SingleContainerNodemanagerConfig = field(default_factory=SingleContainerNodemanagerConfig)
     fault_tolerance_config: NodeManagerFaultToleranceConfig = field(default_factory=NodeManagerFaultToleranceConfig)
+    port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
 
     # Internal fields
     config_path: str | None = field(default=None, init=False)
@@ -378,6 +384,9 @@ class NodeManagerConfig:
 
         if "fault_tolerance_config" in cfg:
             update_config_from_dict(config.fault_tolerance_config, cfg["fault_tolerance_config"])
+
+        if "port_allocator_config" in cfg:
+            update_config_from_dict(config.port_allocator_config, cfg["port_allocator_config"])
 
         if "endpoint_config" in cfg:
             update_config_from_dict(config.endpoint_config, cfg["endpoint_config"])
@@ -530,42 +539,19 @@ class NodeManagerConfig:
         if self.logging_config.log_max_line_length <= 0:
             errors.append("log_max_line_length must be greater than 0")
 
-        if errors:
-            error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        raise_if_config_errors(errors)
 
     def reload(self) -> bool:
         """Reload configuration from files"""
-        if not self.config_path or not os.path.exists(self.config_path):
-            logger.warning("Configuration file path does not exist, cannot reload")
-            return False
-
-        try:
-            # Check if config file has been modified
-            current_mtime = os.path.getmtime(self.config_path)
-            if self.last_modified and current_mtime <= self.last_modified:
-                logger.debug("Configuration file not modified, skipping reload")
-                return True
-
-            logger.info("Configuration file change detected, reloading...")
-            new_config = NodeManagerConfig.from_json(self.config_path)
-
-            # Update current configuration
-            for field_name in self.__dataclass_fields__:
-                if field_name not in ["config_path", "last_modified"]:
-                    setattr(self, field_name, getattr(new_config, field_name))
-
-            self.last_modified = current_mtime
-
-            reconfigure_logging(self.logging_config)
-
-            logger.info("NodeManager configuration reload successful")
-            return True
-
-        except Exception as e:
-            logger.error("Failed to reload NodeManager configuration: %s", e)
-            return False
+        return reload_dataclass_config_from_json(
+            self,
+            NodeManagerConfig.from_json,
+            self.logging_config,
+            skip=frozenset({"config_path", "last_modified"}),
+            skip_private=False,
+            success_message="NodeManager configuration reload successful",
+            error_message="Failed to reload NodeManager configuration: %s",
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary with grouped structure"""
@@ -585,37 +571,20 @@ class NodeManagerConfig:
 
     def save_to_json(self, config_path: str | None = None) -> bool:
         """Save configuration to JSON files"""
-        save_config_path = config_path or self.config_path
-
-        if not save_config_path:
-            logger.error("Save paths not specified")
-            return False
-
-        try:
-            # Save config file
-            config_dict = self.to_dict()
-            save_config_to_json(
-                save_config_path,
-                ConfigKey.MOTOR_NODEMANAGER,
-                config_dict,
-                file_encoding=FILE_ENCODING,
-                component_name="node manager",
-            )
-            logger.info("Configuration saved to: %s", save_config_path)
-            return True
-        except Exception as e:
-            logger.error("Failed to save configuration: %s", e)
-            return False
+        return save_instance_config_to_json(
+            self,
+            config_path,
+            config_key=ConfigKey.MOTOR_NODEMANAGER,
+            file_encoding=FILE_ENCODING,
+            component_name="node manager",
+            missing_path_message="Save paths not specified",
+        )
 
     def get_config_summary(self) -> str:
         """Get configuration summary information"""
-        separator = "=" * 80
         title = " " * 22 + "NodeManager Configuration Summary"
         return (
-            f"{separator}\n"
-            f"{title}\n"
-            f"{separator}\n"
-            "  Logging Configuration:\n"
+            format_config_summary_header(title) + "  Logging Configuration:\n"
             f"    ├─ Log Level:           {self.logging_config.log_level}\n"
             f"    ├─ Log File:            {self.logging_config.host_log_dir}\n"
             f"    └─ Log Max Line Length: {self.logging_config.log_max_line_length}\n"
@@ -641,5 +610,5 @@ class NodeManagerConfig:
             f"    ├─ EP Size:          EP={self.basic_config.parallel_config.ep_size}\n"
             f"    ├─ PCP Size:         PCP={self.basic_config.parallel_config.pcp_size}\n"
             f"    └─ World Size:       World Size={self.basic_config.parallel_config.world_size}\n"
-            f"{separator}"
+            f"{'=' * 80}"
         )

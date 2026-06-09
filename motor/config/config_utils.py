@@ -2,12 +2,17 @@
 # Copyright (c) 2025, HUAWEI CORPORATION.  All rights reserved.
 
 import json
+import os
+from collections.abc import Callable
+from dataclasses import fields
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from motor.common.logger import get_logger
+from motor.common.logger import get_logger, reconfigure_logging
+from motor.common.utils.env import Env
 from motor.config.resolver import ConfigResolver
+from motor.config.standby import LOCK_SLASH
 
 logger = get_logger(__name__)
 
@@ -24,7 +29,6 @@ ENABLE_TLS = "enable_tls"
 CA_FILE = "ca_file"
 CERT_FILE = "cert_file"
 KEY_FILE = "key_file"
-PASSWD_FILE = "passwd_file"
 CRL_FILE = "crl_file"
 ENGINE_CONFIG = "engine_config"
 ENGINE_TYPE = "engine_type"
@@ -188,10 +192,7 @@ def _update_instances_num(
     }
 
 
-def _update_prefill_kv_event_config(
-    updated_config: dict[str, Any],
-    user_config_data: dict[str, Any]
-) -> None:
+def _update_prefill_kv_event_config(updated_config: dict[str, Any], user_config_data: dict[str, Any]) -> None:
     try:
         prefill_engine_config = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG][ENGINE_CONFIG]
         if not isinstance(prefill_engine_config, dict):
@@ -211,149 +212,180 @@ def _update_prefill_kv_event_config(
             REPLAY_ENDPOINT: kv_events_config.get(REPLAY_ENDPOINT, ""),
             BLOCK_SIZE: prefill_engine_config.get("block-size", 128),
             HTTP_SERVER_PORT: user_config_data[KV_CONDUCTOR_CONFIG][HTTP_SERVER_PORT],
-            MODEL_PATH: resolver.get_model_path("")
+            MODEL_PATH: resolver.get_model_path(""),
         }
     except Exception as e:
         logger.warning("Failed to get prefill config: %s", e)
 
 
-def _extract_tls_configs(config_dict: dict) -> dict:
-    """Extract TLS configs from config dict and remove them from original dict"""
-    tls_configs = {}
-    
-    # Extract TLS configs
-    tls_keys = ["mgmt_tls_config", "infer_tls_config", "etcd_tls_config", "grpc_tls_config", "observability_tls_config"]
-    for key in tls_keys:
-        if key in config_dict:
-            tls_configs[key] = config_dict[key]
-            # Remove from original config
-            del config_dict[key]
-    
-    return tls_configs
+def log_json_config_format_error(json_path: str | None, exc: Exception) -> None:
+    logger.warning(
+        "Configuration file %s format error: %s, using default configuration",
+        json_path,
+        exc,
+    )
 
 
-def generate_user_config_sample(output_path: str):
-    """Generate user_config_sample.json from default configurations"""
-
-    from motor.config.controller import ControllerConfig
-    from motor.config.coordinator import CoordinatorConfig
-    from motor.config.node_manager import NodeManagerConfig
-    
-    # Create default config instances
-    # Note: NodeManagerConfig requires proper initialization, but we can create it with defaults
-    # The __post_init__ will set default paths if not provided
-    controller_config = ControllerConfig()
-    coordinator_config = CoordinatorConfig()
-    # NodeManagerConfig can be created without arguments, __post_init__ will handle defaults
-    node_manager_config = NodeManagerConfig()
-    
-    # Convert to dict
-    controller_dict = controller_config.to_dict()
-    coordinator_dict = coordinator_config.to_dict()
-    node_manager_dict = node_manager_config.to_dict()
-    
-    # Extract TLS configs from all configs
-    all_tls_configs = {}
-    
-    # From controller: mgmt_tls_config, etcd_tls_config, grpc_tls_config, observability_tls_config
-    controller_tls = _extract_tls_configs(controller_dict)
-    all_tls_configs.update(controller_tls)
-    
-    # From coordinator: mgmt_tls_config, infer_tls_config, etcd_tls_config
-    coordinator_tls = _extract_tls_configs(coordinator_dict)
-    # Merge coordinator TLS configs (may override controller's mgmt_tls_config and etcd_tls_config)
-    for key, value in coordinator_tls.items():
-        all_tls_configs[key] = value
-    
-    # From node_manager: mgmt_tls_config
-    node_manager_tls = _extract_tls_configs(node_manager_dict)
-    # Merge node_manager TLS configs (may override others' mgmt_tls_config)
-    for key, value in node_manager_tls.items():
-        all_tls_configs[key] = value
-    
-    # Create motor_deploy_config with TLS configs
-    # Use default values from user_config.json as reference
-    motor_deploy_config = {
-        "p_instances_num": coordinator_dict.get(DEPLOY_CONFIG, {}).get("p_instances_num", 1),
-        "d_instances_num": coordinator_dict.get(DEPLOY_CONFIG, {}).get("d_instances_num", 1),
-        "single_p_instance_pod_num": 1,
-        "single_d_instance_pod_num": 1,
-        "p_pod_npu_num": 16,
-        "d_pod_npu_num": 16,
-        "image_name": "",
-        "job_id": "mindie-motor",
-        "hardware_type": "800I_A3",
-        "weight_mount_path": "/mnt/weight/",
-        "tls_config": {
-            "infer_tls_config": all_tls_configs.get("infer_tls_config", {
-                ENABLE_TLS: False,
-                CA_FILE: "",
-                CERT_FILE: "",
-                KEY_FILE: "",
-                PASSWD_FILE: "",
-                CRL_FILE: ""
-            }),
-            "mgmt_tls_config": all_tls_configs.get("mgmt_tls_config", {
-                ENABLE_TLS: False,
-                CA_FILE: "",
-                CERT_FILE: "",
-                KEY_FILE: "",
-                PASSWD_FILE: "",
-                CRL_FILE: ""
-            }),
-            "etcd_tls_config": all_tls_configs.get("etcd_tls_config", {
-                ENABLE_TLS: False,
-                CA_FILE: "",
-                CERT_FILE: "",
-                KEY_FILE: "",
-                PASSWD_FILE: "",
-                CRL_FILE: ""
-            }),
-            "grpc_tls_config": all_tls_configs.get("grpc_tls_config", {
-                ENABLE_TLS: False,
-                CA_FILE: "",
-                CERT_FILE: "",
-                KEY_FILE: "",
-                PASSWD_FILE: "",
-                CRL_FILE: ""
-            }),
-            "observability_tls_config": all_tls_configs.get("observability_tls_config", {
-                ENABLE_TLS: False,
-                CA_FILE: "",
-                CERT_FILE: "",
-                KEY_FILE: "",
-                PASSWD_FILE: "",
-                CRL_FILE: ""
-            }),
-        }
-    }
-    
-    # Remove deploy_config from coordinator_dict if it exists (it's now in motor_deploy_config)
-    if DEPLOY_CONFIG in coordinator_dict:
-        del coordinator_dict[DEPLOY_CONFIG]
-    
-    # Build final user config
-    user_config = {
-        "version": "v2.0",
-        "motor_deploy_config": motor_deploy_config,
-        "motor_controller_config": controller_dict,
-        "motor_coordinator_config": coordinator_dict,
-        "motor_nodemanger_config": node_manager_dict,
-    }
-    
-    # Write to file
-    output_path_obj = Path(output_path)
-    output_path_obj.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(output_path_obj, "w", encoding="utf-8") as f:
-        json.dump(user_config, f, indent=2, ensure_ascii=False)
-    
-    logger.info("Successfully generated user_config_sample.json at: %s", output_path)
+def log_json_config_read_error(json_path: str | None, exc: Exception) -> None:
+    logger.warning(
+        "Unable to read configuration file %s: %s, using default configuration",
+        json_path,
+        exc,
+    )
 
 
-if __name__ == "__main__":
-    # Default output path
-    project_root = Path(__file__).parent.parent.parent
-    output_path = project_root / "examples" / "features" / "config_sample.json"
+def log_json_config_load_error(json_path: str | None, exc: Exception) -> None:
+    if isinstance(exc, json.JSONDecodeError):
+        log_json_config_format_error(json_path, exc)
+    else:
+        log_json_config_read_error(json_path, exc)
 
-    generate_user_config_sample(output_path)
+
+def refresh_master_lock_key(standby_config: Any, component: str) -> None:
+    if standby_config.master_lock_key == "/master_lock":
+        standby_config.master_lock_key = LOCK_SLASH + component + standby_config.master_lock_key
+
+
+def init_motor_config(instance: Any, component: str) -> None:
+    refresh_master_lock_key(instance.standby_config, component)
+    instance.validate_config()
+
+
+def resolve_config_json_path(json_path: str | None) -> tuple[str | None, Path | None]:
+    if json_path is None:
+        json_path = Env.user_config_path
+    return json_path, Path(json_path) if json_path else None
+
+
+def apply_config_path_metadata(config: Any, config_path: Path | None) -> None:
+    if config_path:
+        config.config_path = str(config_path)
+        if config_path.exists():
+            config.last_modified = config_path.stat().st_mtime
+    else:
+        config.config_path = None
+
+
+def log_config_file_loaded(config_path: Path | None) -> None:
+    if config_path:
+        logger.info("Loading configuration file: %s", config_path)
+        if config_path.exists():
+            logger.info("Successfully loaded configuration file: %s", config_path)
+        else:
+            logger.warning(
+                "Configuration file does not exist, using default configuration: %s",
+                config_path,
+            )
+
+
+def finalize_json_config_load(config_path: Path | None, *, no_path_message: str) -> None:
+    log_config_file_loaded(config_path)
+    if not config_path:
+        logger.info(no_path_message)
+    logger.info("Configuration loading completed")
+
+
+def raise_if_config_errors(errors: list[str]) -> None:
+    if errors:
+        error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+
+def sync_dataclass_fields_from(
+    target: Any,
+    source: Any,
+    *,
+    skip: frozenset[str] = frozenset(),
+    skip_private: bool = True,
+) -> None:
+    """Copy dataclass field values from source onto target."""
+    for dc_field in fields(target):
+        name = dc_field.name
+        if skip_private and name.startswith("_"):
+            continue
+        if name in skip:
+            continue
+        setattr(target, name, getattr(source, name))
+
+
+def reload_dataclass_config_from_json(
+    instance: Any,
+    loader: Callable[[str], Any],
+    logging_config: Any,
+    *,
+    skip: frozenset[str] = frozenset(),
+    skip_private: bool = True,
+    success_message: str = "Configuration reload successful",
+    error_message: str = "Configuration reload failed: %s",
+) -> bool:
+    if not instance.config_path or not os.path.exists(instance.config_path):
+        logger.warning("Configuration file path does not exist, cannot reload")
+        return False
+
+    try:
+        current_mtime = os.path.getmtime(instance.config_path)
+        if instance.last_modified and current_mtime <= instance.last_modified:
+            logger.debug("Configuration file not modified, skipping reload")
+            return True
+
+        logger.info("Configuration file change detected, reloading...")
+        new_config = loader(instance.config_path)
+        sync_dataclass_fields_from(instance, new_config, skip=skip, skip_private=skip_private)
+        instance.last_modified = current_mtime
+        reconfigure_logging(logging_config)
+        logger.info(success_message)
+        return True
+    except Exception as exc:
+        logger.error(error_message, exc)
+        return False
+
+
+def persist_config_to_json(
+    save_path: str,
+    config_key: ConfigKey,
+    config_dict: dict[str, Any],
+    *,
+    file_encoding: str,
+    component_name: str,
+) -> bool:
+    try:
+        save_config_to_json(
+            save_path,
+            config_key,
+            config_dict,
+            file_encoding=file_encoding,
+            component_name=component_name,
+        )
+        logger.info("Configuration saved to: %s", save_path)
+        return True
+    except Exception as exc:
+        logger.error("Failed to save configuration: %s", exc)
+        return False
+
+
+def save_instance_config_to_json(
+    instance: Any,
+    json_path: str | None,
+    *,
+    config_key: ConfigKey,
+    file_encoding: str,
+    component_name: str,
+    missing_path_message: str = "Save path not specified",
+) -> bool:
+    save_path = json_path or instance.config_path
+    if not save_path:
+        logger.error(missing_path_message)
+        return False
+    return persist_config_to_json(
+        save_path,
+        config_key,
+        instance.to_dict(),
+        file_encoding=file_encoding,
+        component_name=component_name,
+    )
+
+
+def format_config_summary_header(title: str) -> str:
+    separator = "=" * 80
+    return f"{separator}\n{title}\n{separator}\n"

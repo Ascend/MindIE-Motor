@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -177,10 +177,13 @@ async def test_main_daemon_flow():
     """Test main() creates CoordinatorDaemon and runs it"""
     daemon_run = AsyncMock()
 
-    with patch.dict('os.environ', {'USER_CONFIG_PATH': '/fake/config.json'}), \
-            patch('motor.config.coordinator.CoordinatorConfig.from_json') as mock_from_json, \
-            patch('motor.coordinator.main.CoordinatorDaemon') as mock_daemon_class, \
-            patch('motor.coordinator.main.logger') as mock_logger:
+    with (
+        patch.dict('os.environ', {'USER_CONFIG_PATH': '/fake/config.json'}),
+        patch('motor.config.coordinator.CoordinatorConfig.from_json') as mock_from_json,
+        patch('motor.coordinator.main.run_port_setup_or_exit') as mock_port_setup,
+        patch('motor.coordinator.main.CoordinatorDaemon') as mock_daemon_class,
+        patch('motor.coordinator.main.logger') as mock_logger,
+    ):
         mock_config = MagicMock()
         mock_config.config_path = '/fake/config.json'
         mock_config.get_config_summary.return_value = "Config summary"
@@ -194,6 +197,7 @@ async def test_main_daemon_flow():
 
         await main()
 
+        mock_port_setup.assert_called_once()
         mock_logger.info.assert_any_call("Starting Motor Coordinator Daemon...")
         mock_daemon_class.assert_called_once_with(mock_config)
         daemon_run.assert_called_once()

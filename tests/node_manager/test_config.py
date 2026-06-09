@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -15,6 +15,7 @@ import os
 import sys
 import pytest
 import tempfile
+from dataclasses import MISSING, fields
 from unittest.mock import patch, mock_open, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -23,11 +24,12 @@ from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.instance import ParallelConfig, PDRole
 
 
-@pytest.fixture
-def config_data():
+@pytest.fixture(name="nm_config_data")
+def _nm_config_data_fixture():
     return {
         "api_config": {"controller_api_dns": "localhost", "controller_api_port": 8080, "node_manager_port": 8080},
         "basic_config": {
+            "job_name": "test_job",
             "parallel_config": {"tp_size": 2, "pp_size": 1, "dp_size": 2},
             "role": "both",
             "model_name": "vllm",
@@ -42,10 +44,10 @@ def config_data():
     }
 
 
-def create_config_mock(config_dataa):
+def create_config_mock(config_dict):
     def mock_side_effect(file_path, mode):
         if "user_config.json" in file_path:
-            return mock_open(read_data=json.dumps(config_data)).return_value
+            return mock_open(read_data=json.dumps(config_dict)).return_value
         return mock_open().return_value
 
     return mock_side_effect
@@ -59,12 +61,13 @@ def clear_node_manager_config():
 def create_config_object():
     """Helper to create a config object manually"""
     config = NodeManagerConfig.__new__(NodeManagerConfig)
-    for field_name, field_info in config.__dataclass_fields__.items():
+    for dc_field in fields(NodeManagerConfig):
+        field_name = dc_field.name
         if field_name not in ['config_path', 'last_modified']:
-            if field_info.default_factory is not None:
-                setattr(config, field_name, field_info.default_factory())
+            if dc_field.default_factory is not MISSING and dc_field.default_factory is not None:
+                setattr(config, field_name, dc_field.default_factory())
             else:
-                setattr(config, field_name, field_info.default)
+                setattr(config, field_name, dc_field.default)
         else:
             setattr(config, field_name, None)
     return config
@@ -72,14 +75,14 @@ def create_config_object():
 
 @patch.dict('os.environ', {'ROLE': 'both'})
 @patch('motor.config.node_manager.safe_open')
-def test_init_success(mock_safe_open, config_data):
+def test_init_success(mock_safe_open, nm_config_data):
     clear_node_manager_config()
-    mock_safe_open.side_effect = create_config_mock(config_data)
+    mock_safe_open.side_effect = create_config_mock(nm_config_data)
 
     config = create_config_object()
 
     try:
-        NodeManagerConfig._update_from_config_data(config, config_data)
+        NodeManagerConfig._update_from_config_data(config, nm_config_data)
         # Set device_num for testing (simulating visible devices)
         config.basic_config.device_num = 8  # 8 devices for testing
         NodeManagerConfig._generate_endpoint_ports(config)
@@ -142,7 +145,7 @@ def test_config_validation_errors(invalid_config, expected_error, role_env):
 
 
 @patch.dict('os.environ', {'ROLE': 'both'})
-def test_logging_config_defaults(config_data):
+def test_logging_config_defaults(nm_config_data):
     """Test logging configuration defaults when not specified"""
     config_data_no_logging = {
         "parallel_config": {"tp_size": 2, "pp_size": 1},
@@ -233,8 +236,8 @@ def test_logging_config_validation_errors(invalid_config, expected_error):
 
 
 @patch.dict('os.environ', {'ROLE': 'both'})
-def test_generate_endpoint_ports(config_data):
-    config_data_with_dp = config_data.copy()
+def test_generate_endpoint_ports(nm_config_data):
+    config_data_with_dp = nm_config_data.copy()
     config_data_with_dp["parallel_config"] = {"tp_size": 2, "pp_size": 1, "dp_size": 2}
 
     config = create_config_object()
@@ -254,10 +257,10 @@ def test_generate_endpoint_ports(config_data):
 
 @patch.dict('os.environ', {'ROLE': 'both', 'USER_CONFIG_PATH': 'tests/jsons/user_config.json'.replace('\\', '/')})
 @patch('motor.config.node_manager.safe_open')
-def test_non_singleton_behavior(mock_safe_open, config_data):
+def test_non_singleton_behavior(mock_safe_open, nm_config_data):
     """Test that NodeManagerConfig is no longer a singleton"""
     clear_node_manager_config()
-    mock_safe_open.side_effect = create_config_mock(config_data)
+    mock_safe_open.side_effect = create_config_mock(nm_config_data)
     with patch('os.path.exists', return_value=True):
         config1 = NodeManagerConfig()
         config2 = NodeManagerConfig()
@@ -269,10 +272,10 @@ def test_non_singleton_behavior(mock_safe_open, config_data):
 
 @patch.dict('os.environ', {'ROLE': 'both', 'USER_CONFIG_PATH': 'tests/jsons/user_config.json'.replace('\\', '/')})
 @patch('motor.config.node_manager.safe_open')
-def test_reload_success(mock_safe_open, config_data):
+def test_reload_success(mock_safe_open, nm_config_data):
     """Test successful configuration reload"""
     clear_node_manager_config()
-    mock_safe_open.side_effect = create_config_mock(config_data)
+    mock_safe_open.side_effect = create_config_mock(nm_config_data)
 
     config = NodeManagerConfig()
 
@@ -281,7 +284,7 @@ def test_reload_success(mock_safe_open, config_data):
     config.last_modified = None  # Force reload
 
     # Create modified config data for reload
-    modified_config_data = config_data.copy()
+    modified_config_data = nm_config_data.copy()
     modified_config_data["basic_config"]["model_name"] = "modified_model"
     modified_config_data["api_config"]["node_manager_port"] = 9090
 
@@ -310,10 +313,10 @@ def test_reload_success(mock_safe_open, config_data):
 
 @patch.dict('os.environ', {'ROLE': 'both', 'USER_CONFIG_PATH': '/tmp/test_node_manager_config.json'})
 @patch('motor.config.node_manager.safe_open')
-def test_reload_config_file_not_found(mock_safe_open, config_data):
+def test_reload_config_file_not_found(mock_safe_open, nm_config_data):
     """Test reload when configuration file doesn't exist"""
     clear_node_manager_config()
-    mock_safe_open.side_effect = create_config_mock(config_data)
+    mock_safe_open.side_effect = create_config_mock(nm_config_data)
 
     config = NodeManagerConfig()
 
@@ -330,10 +333,10 @@ def test_reload_config_file_not_found(mock_safe_open, config_data):
 
 @patch.dict('os.environ', {'ROLE': 'both', 'USER_CONFIG_PATH': '/tmp/test_node_manager_config.json'})
 @patch('motor.config.node_manager.safe_open')
-def test_reload_invalid_json(mock_safe_open, config_data):
+def test_reload_invalid_json(mock_safe_open, nm_config_data):
     """Test reload with invalid JSON in config file"""
     clear_node_manager_config()
-    mock_safe_open.side_effect = create_config_mock(config_data)
+    mock_safe_open.side_effect = create_config_mock(nm_config_data)
 
     config = NodeManagerConfig()
 
@@ -417,7 +420,7 @@ def test_save_to_json_success():
         result = config.save_to_json(temp_path)
         assert result is True
 
-        with open(temp_path, 'r') as f:
+        with open(temp_path, 'r', encoding='utf-8') as f:
             saved_config = json.load(f)
         assert saved_config["api_config"][("node_manager_port")] == 1026
     finally:
