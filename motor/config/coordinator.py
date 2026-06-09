@@ -198,6 +198,29 @@ class ExceptionConfig:
 
 
 @dataclass
+class TokenSamplingConfig:
+    """Periodic token-ID and logprob sampling per PD instance group.
+
+    For each PD instance group (keyed by D instance ID or P+D instance ID pair),
+    at most one full request's token_ids and logprobs are sampled within
+    interval_seconds for precision detection reporting.
+    When precision_check_enabled=False, no sampling or request modification
+    occurs — zero performance overhead.
+    """
+
+    interval_seconds: float = 30.0  # Sampling interval per PD instance group (seconds)
+    logprobs_count: int = 1  # Number of top_logprobs (chat) / logprobs (completion) injected during sampling
+    # Also determines the detection types enabled for msprobe:
+    # 1 → repetition; >=3 → +garbled; >=5 → +rare characters (requires multiple keys)
+    precision_check_enabled: bool = False  # Master switch: enables sampling + precision detection/probe/alarm
+    precision_issue_threshold: int = 10  # Consecutive precision anomaly count before triggering probe and alarm
+    probe_max_attempts: int = 3  # Number of probe attempts
+    probe_timeout_seconds: float = (
+        600.0  # Single probe request timeout (seconds); no extra interval between consecutive probes
+    )
+
+
+@dataclass
 class TimeoutConfig:
     request_timeout: int = 30
     connection_timeout: int = 10
@@ -358,6 +381,7 @@ class CoordinatorConfig:
     deploy_config: DeployConfig = field(default_factory=DeployConfig)
     tracer_config: TracerConfig = field(default_factory=TracerConfig)
     prefill_kv_event_config: PrefillKvEventConfig = field(default_factory=PrefillKvEventConfig)
+    token_sampling_config: TokenSamplingConfig = field(default_factory=TokenSamplingConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
 
     # internal fields
@@ -463,6 +487,7 @@ class CoordinatorConfig:
                 ("deploy_config", config.deploy_config, None),
                 ("tracer_config", config.tracer_config, None),
                 ("prefill_kv_event_config", config.prefill_kv_event_config, None),
+                ("token_sampling_config", config.token_sampling_config, None),
                 ("port_allocator_config", config.port_allocator_config, None),
             ]
 
@@ -619,6 +644,23 @@ class CoordinatorConfig:
         self._validate_port_range(self.etcd_config.etcd_port, "etcd_port")
         self._validate_positive_number(self.etcd_config.etcd_timeout, "etcd_timeout")
         self._validate_ip_or_hostname(self.etcd_config.etcd_host, "etcd_host")
+
+        # Validate token_sampling_config (fields always validated for positive values)
+        self._validate_positive_number(
+            self.token_sampling_config.interval_seconds, "token_sampling_config.interval_seconds"
+        )
+        self._validate_positive_number(
+            self.token_sampling_config.logprobs_count, "token_sampling_config.logprobs_count"
+        )
+        self._validate_positive_number(
+            self.token_sampling_config.precision_issue_threshold, "token_sampling_config.precision_issue_threshold"
+        )
+        self._validate_positive_number(
+            self.token_sampling_config.probe_max_attempts, "token_sampling_config.probe_max_attempts"
+        )
+        self._validate_positive_number(
+            self.token_sampling_config.probe_timeout_seconds, "token_sampling_config.probe_timeout_seconds"
+        )
 
         # Note: TLS certificate file validation is handled by the TLS configuration's check_files flag
         # and is performed during TLS handshake, not during configuration validation

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -143,6 +142,8 @@ class ControllerConfig:
     standby_config: StandbyConfig = field(default_factory=StandbyConfig)
     etcd_config: EtcdConfig = field(default_factory=EtcdConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
+    # Token sampling precision alarm: when True, controller terminates decode instance on precision alarm
+    precision_auto_recovery_enabled: bool = field(default=False)
 
     # internal fields
     config_path: str | None = field(default=None, init=False)
@@ -223,8 +224,12 @@ class ControllerConfig:
             if 'port_allocator_config' in cfg:
                 update_config_from_dict(config.port_allocator_config, cfg['port_allocator_config'])
 
+            if 'precision_auto_recovery_enabled' in cfg:
+                config.precision_auto_recovery_enabled = bool(cfg['precision_auto_recovery_enabled'])
+
             apply_config_path_metadata(config, config_path)
             if not config_path:
+                config.last_modified = None
                 config.last_modified = None
 
             reconfigure_logging(config.logging_config)

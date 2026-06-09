@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -69,12 +68,13 @@ class Record(BaseModel):
     service_affected_type: ServiceAffectedType = Field(default=ServiceAffectedType.NO)
     additional_information: str = Field(default="")
     instance_id: str = Field(default="")
+    p_instance_id: str = Field(default="")
 
     def update_time(self):
         """Update the occur_utc and occur_time to current time."""
         self.occur_utc = get_utc_time_in_millisec()
         self.occur_time = get_local_time_in_millisec()
-  
+
     def format(self):
         """Format the record for output, e.g., to a dictionary or JSON."""
         return {
@@ -97,5 +97,6 @@ class Record(BaseModel):
             "reasonId": self.reason_id,
             "serviceAffectedType": self.service_affected_type.value,
             "additionalInformation": f"{self.additional_information}, pod id={self.native_me_dn}",
+            "instanceId": self.instance_id,
+            "pInstanceId": self.p_instance_id,
         }
-    

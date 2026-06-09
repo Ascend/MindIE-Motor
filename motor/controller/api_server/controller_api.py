@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -26,13 +26,14 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger, ApiAccessFilter
 from motor.common.http.http_response import format_success_response, raise_internal_error
 from motor.common.alarm.record import Record
+from motor.common.alarm.precision_issue_alarm import PRECISION_ISSUE_ALARM_ID
 from motor.config.controller import ControllerConfig
-from motor.controller.api_client import NodeManagerApiClient
 from motor.controller.observability.observability import Observability
 from motor.controller.core.instance_assembler import InstanceAssembler
 from motor.controller.core.instance_manager import InstanceManager
 from motor.controller.fault_tolerance.fault_manager import FaultManager
 from motor.controller.fault_tolerance.fault_types import FaultInfo
+from motor.controller.core.recovery_service import terminate_instance_for_recovery
 from motor.controller.observability.inventory.inventory_collector import InventoryCollector
 
 logger = get_logger(__name__)
@@ -83,6 +84,9 @@ class ControllerAPI:
         self.observability_loop = None
         self.observability_app = self._create_observability_app()
         self.observability_api_server_thread = None
+
+        # Independent of coordinator sampling; only gates terminate-on-precision-alarm.
+        self.precision_auto_recovery_enabled = getattr(config, "precision_auto_recovery_enabled", False)
 
         logger.info("ControllerAPI initialized.")
 
@@ -145,6 +149,7 @@ class ControllerAPI:
             # Observability API and fault tolerance configuration update
             self.enable_observability_api = config.observability_config.observability_enable
             self.enable_fault_tolerance = config.fault_tolerance_config.enable_fault_tolerance
+            self.precision_auto_recovery_enabled = config.precision_auto_recovery_enabled
 
             logger.info("ControllerAPI configuration updated (runtime changes may require restart)")
 
@@ -309,14 +314,8 @@ class ControllerAPI:
             logger.error("Failed to parse TerminateInstanceMsg: %s, body: %s", e, body)
             return {"error": "Invalid TerminateInstanceMsg format"}
         logger.warning("Terminate instance, reason: %s", terminate_instance_msg.reason)
-        instance = InstanceManager().get_instance(terminate_instance_msg.instance_id)
-
-        if instance is None:
-            logger.error("Instance %d not found.", terminate_instance_msg.instance_id)
-            return {"error": "Instance not found"}
-
-        for node_mgr in instance.get_node_managers():
-            NodeManagerApiClient.stop(node_mgr)
+        if not terminate_instance_for_recovery(terminate_instance_msg.instance_id, terminate_instance_msg.reason):
+            return {"error": "Instance not found or terminate failed"}
         return {"result": "Terminate instance succeed!"}
 
     async def _readiness(self) -> dict:
@@ -404,9 +403,11 @@ class ControllerAPI:
     async def _add_alarm(self, request: Request) -> dict:
         body = await request.json()
         try:
+            record = Record(**body)
+            # Precision auto-recovery does not require observability (OM) to be enabled.
+            await self._maybe_precision_auto_recover(record)
             if not self.enable_observability_api:
                 return format_success_response(message="OM is not enabled.")
-            record = Record(**body)
             self.observability.add_alarm(record)
             return format_success_response()
         except Exception as e:
@@ -457,6 +458,43 @@ class ControllerAPI:
         except Exception as e:
             logger.error("Failed to report software fault: %s, body: %s", e, body)
             return raise_internal_error(f"Internal server error: {str(e)}")
+
+    async def _maybe_precision_auto_recover(self, record: Record) -> None:
+        """Terminate PD instance group when precision alarm reports and auto-recovery is enabled."""
+        if record.alarm_id != PRECISION_ISSUE_ALARM_ID:
+            return
+        with self.config_lock:
+            allow = self.precision_auto_recovery_enabled
+        if not allow:
+            return
+
+        # Terminate D instance
+        d_id = None
+        try:
+            d_id = int(record.instance_id) if record.instance_id else None
+        except (TypeError, ValueError):
+            logger.error("Precision auto-recover: invalid instance_id %r", record.instance_id)
+        if d_id is not None:
+            logger.warning(
+                "Precision auto-recover: terminating D instance_id=%s",
+                d_id,
+            )
+            if not terminate_instance_for_recovery(d_id, "precision_alarm"):
+                logger.error("Precision auto-recover: failed for D instance_id=%s", d_id)
+
+        # Terminate P instance
+        p_id = None
+        try:
+            p_id = int(record.p_instance_id) if record.p_instance_id else None
+        except (TypeError, ValueError):
+            logger.error("Precision auto-recover: invalid p_instance_id %r", record.p_instance_id)
+        if p_id is not None:
+            logger.warning(
+                "Precision auto-recover: terminating P instance_id=%s",
+                p_id,
+            )
+            if not terminate_instance_for_recovery(p_id, "precision_alarm"):
+                logger.error("Precision auto-recover: failed for P instance_id=%s", p_id)
 
     def _create_observability_app(self) -> FastAPI:
         app = FastAPI(lifespan=self._observability_api_lifespan)
