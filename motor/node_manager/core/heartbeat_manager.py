@@ -10,8 +10,10 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import os
 import threading
 import time
+import socket
 
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.http_msg_spec import StartCmdMsg, HeartbeatMsg
@@ -21,6 +23,8 @@ from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.api_client.engine_server_api_client import EngineServerApiClient
 from motor.node_manager.core.engine_manager import EngineManager
+from motor.node_manager.core.daemon import Daemon
+
 
 logger = get_logger(__name__)
 
@@ -133,9 +137,33 @@ class HeartbeatManager(ThreadSafeSingleton):
         return True
 
     def _refresh_endpoints_status_loop(self) -> None:
+        # Poll each engine server's mgmt port until it responds (max 60s)
+        self._wait_for_engine_servers_ready(timeout=60)
         while not self.stop_event.is_set():
             self._get_engine_server_status()
             time.sleep(1)
+
+    def _wait_for_engine_servers_ready(self, timeout: float = 60) -> None:
+        """Poll each endpoint's mgmt port until it accepts connections or timeout."""
+        with self._endpoint_lock:
+            endpoints = list(self._endpoints)
+
+        deadline = time.time() + timeout
+        daemon = Daemon()
+        for endpoint in endpoints:
+            address = f"{endpoint.ip}:{endpoint.mgmt_port}"
+            logger.info("Waiting for engine server at %s to become ready...", address)
+            while not self.stop_event.is_set() and time.time() < deadline:
+                try:
+                    with socket.create_connection((endpoint.ip, int(endpoint.mgmt_port)), timeout=2):
+                        logger.info("Engine server at %s is ready.", address)
+                        break
+                except (OSError, ConnectionRefusedError, TimeoutError):
+                    # Check if engine process is still alive
+                    if not any(os.path.isdir(f"/proc/{pid}") for pid in daemon.engine_pids):
+                        logger.error("Engine process for %s is no longer running, aborting wait.", address)
+                        break
+                    time.sleep(1)
 
     def _get_engine_server_status(self) -> None:
         with self._endpoint_lock:

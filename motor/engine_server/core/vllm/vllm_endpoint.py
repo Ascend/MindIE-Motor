@@ -76,6 +76,28 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         raise ValueError("VLLM lifespan: engine_client not found.")
     logger.info("InferEndpoint lifespan: Initializing engine_client...")
 
+    # Headless PCP follower: no engine core, only MultiprocExecutor workers.
+    # Check actual worker process liveness instead of returning True unconditionally.
+    headless_follower = engine.is_headless_follower()
+    if headless_follower:
+        logger.info("InferEndpoint lifespan: headless follower mode, skipping API server setup.")
+        app.state.engine_client = engine_client  # MultiprocExecutor, not AsyncLLM
+
+        async def headless_health_checker() -> bool:
+            executor = app.state.engine_client
+            if not hasattr(executor, "workers"):
+                return False
+            return all(worker.proc.is_alive() for worker in executor.workers)
+
+        app.state.health_checker = headless_health_checker
+
+        try:
+            yield
+        finally:
+            engine.shutdown()
+        logger.info("InferEndpoint lifespan: headless follower cleanup completed")
+        return
+
     try:
         await engine_client.reset_mm_cache()
         logger.info("InferEndpoint lifespan: Engine_client initialized successfully")
