@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from motor.coordinator.models.request import ReqState
 from motor.coordinator.router.strategies.base import BaseRouter
-import motor.coordinator.router.recompute as recompute_common
+import motor.coordinator.router.adapters as recompute_common
 from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
 from motor.common.resources.instance import PDRole
 from motor.coordinator.tracer.tracing import TracerManager
@@ -100,13 +100,13 @@ class PDHybridRouter(BaseRouter):
         trace_obj = self.req_info.trace_obj
         async with self._inference_lifecycle(attempt, max_retry) as client:
             async for chunk in self.forward_stream_request(
+                self.req_info.api,
                 req_data,
                 client,
                 self.config.exception_config.first_token_timeout,
             ):
                 yield recompute_common.strip_stream_chunk_bytes_for_client(
-                    chunk,
-                    client_return_token_ids=self.req_info.req_data.get("_client_return_token_ids", False),
+                    chunk, client_return_token_ids=self.req_info.client_expects_token_ids
                 )
 
             self.req_info.update_state(ReqState.DECODE_END)
@@ -165,6 +165,7 @@ class PDHybridRouter(BaseRouter):
                 try:
                     async with self._inference_lifecycle(attempt, max_retries) as client:
                         response = await self.forward_request(
+                            self.req_info.api,
                             req_data,
                             client,
                             self.config.exception_config.infer_timeout,
@@ -175,8 +176,7 @@ class PDHybridRouter(BaseRouter):
                         if "chat" in self.req_info.effective_entry_api() and body.get("object") == "text_completion":
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
                         recompute_common.strip_nonstream_response_body_for_client(
-                            body,
-                            client_return_token_ids=self.req_info.req_data.get("_client_return_token_ids", False),
+                            body, client_return_token_ids=self.req_info.client_expects_token_ids
                         )
                         return JSONResponse(content=body)
 

@@ -328,6 +328,8 @@ async def test_unified_pd_prefers_pair_allocation(monkeypatch):
 
     assert scheduler.pair_calls == 1
     assert p_client.requests[0][MOTOR_DISPATCH_KEY]["attempt_seq"] == 1
+    # P tokens + P KV + D tokens
+    assert scheduler.update_workload.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -453,6 +455,7 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
     assert prefill_result["status"] == "completed"
     assert prefill_result["handoff_mode"] == "handoff"
     assert prefill_result["payload"] == {"opaque": "kv"}
+    assert scheduler.update_workload.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -489,6 +492,7 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
     assert len(d_client.requests) == 1
     assert MOTOR_PREFILL_RESULT_KEY not in d_client.requests[0]
     assert d_client.requests[0][MOTOR_DISPATCH_KEY]["dispatch_mode"] == "pd_pair"
+    assert scheduler.update_workload.await_count == 3
 
 
 @pytest.mark.asyncio

@@ -14,9 +14,15 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
+from motor.common.http import HTTPClientPool
 from motor.common.resources.dispatch import DispatchEndpoint, DispatchEndpoints, MotorDispatch
 from motor.common.resources.instance import PDRole
+from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import ScheduledResource
+
+from motor.common.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class AttemptState(str, Enum):
@@ -52,6 +58,7 @@ class AttemptContext:
     updated_at: float = field(default_factory=time.time)
     prefill_task: asyncio.Task | None = None
     decode_task: asyncio.Task | None = None
+    config: CoordinatorConfig | None = None
 
     def transition(self, state: AttemptState) -> bool:
         if self.state == AttemptState.STOPPED:
@@ -90,6 +97,84 @@ class AttemptContext:
             ),
         )
 
+    def register_prefill_task(self, task: asyncio.Task) -> asyncio.Task:
+        self.prefill_task = task
+        return task
+
+    def register_decode_task(self, task: asyncio.Task) -> asyncio.Task:
+        self.decode_task = task
+        return task
+
+    async def cancel(self):
+        task = []
+        if self.prefill_task and not self.prefill_task.done() and not self.prefill_task.cancelled():
+            logger.info(
+                f"Cancelling prefill task: {self.prefill_resource.endpoint.ip} {self.prefill_resource.instance.job_name}"
+            )
+            self.prefill_task.cancel()
+            task.append(self.prefill_task)
+        if self.decode_task and not self.decode_task.done() and not self.decode_task.cancelled():
+            logger.info(
+                f"Cancelling decode task: {self.decode_resource.endpoint.ip} {self.decode_resource.instance.job_name}"
+            )
+            self.decode_task.cancel()
+            task.append(self.decode_task)
+        if task:
+            await asyncio.gather(*task, return_exceptions=True)
+
+    def register_canceller(self):
+        pool = HTTPClientPool()
+        if self.prefill_resource:
+            p_key = pool._get_pool_key(
+                self.prefill_resource.endpoint.ip,
+                self.prefill_resource.endpoint.business_port,
+                self.config.infer_tls_config,
+            )
+            pool.register_canceller(p_key, self.pair_id, self.cancel)
+        if self.decode_resource:
+            d_key = pool._get_pool_key(
+                self.decode_resource.endpoint.ip,
+                self.decode_resource.endpoint.business_port,
+                self.config.infer_tls_config,
+            )
+            pool.register_canceller(d_key, self.pair_id, self.cancel)
+
+    def unregister_canceller(self):
+        try:
+            pool = HTTPClientPool()
+            p_key, d_key = None, None
+            if self.prefill_resource:
+                p_key = pool._get_pool_key(
+                    self.prefill_resource.endpoint.ip,
+                    self.prefill_resource.endpoint.business_port,
+                    self.config.infer_tls_config,
+                )
+                pool.unregister_canceller(p_key, self.pair_id)
+            if self.decode_resource:
+                d_key = pool._get_pool_key(
+                    self.decode_resource.endpoint.ip,
+                    self.decode_resource.endpoint.business_port,
+                    self.config.infer_tls_config,
+                )
+                pool.unregister_canceller(d_key, self.pair_id)
+        except Exception as e:
+            logger.error(f"Unregister error {e=}")
+            pass
+
+    def unregister_prefill_canceller(self):
+        try:
+            pool = HTTPClientPool()
+            if self.prefill_resource:
+                p_key = pool._get_pool_key(
+                    self.prefill_resource.endpoint.ip,
+                    self.prefill_resource.endpoint.business_port,
+                    self.config.infer_tls_config,
+                )
+                pool.unregister_canceller(p_key, self.pair_id)
+        except Exception as e:
+            logger.error(f"Unregister error {e=}")
+            pass
+
 
 class PDDispatchSession:
     def __init__(self, root_request_id: str) -> None:
@@ -101,6 +186,7 @@ class PDDispatchSession:
         self,
         prefill_resource: ScheduledResource | None,
         decode_resource: ScheduledResource | None,
+        config: CoordinatorConfig,
     ) -> AttemptContext:
         self._attempt_seq += 1
         attempt = AttemptContext(
@@ -109,6 +195,7 @@ class PDDispatchSession:
             pair_id=uuid.uuid4().hex,
             prefill_resource=prefill_resource,
             decode_resource=decode_resource,
+            config=config,
         )
         self.attempts[attempt.attempt_seq] = attempt
         return attempt

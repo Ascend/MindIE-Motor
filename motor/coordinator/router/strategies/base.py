@@ -41,7 +41,6 @@ from motor.coordinator.domain import SchedulingFacade, UpdateWorkloadParams
 from motor.common.resources.instance import Instance
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain.request_manager import RequestManager
-import motor.coordinator.router.recompute as recompute_common
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.scheduling import InstanceReadiness
@@ -363,38 +362,33 @@ class BaseRouter(ABC):
         return success
 
     async def forward_stream_request(
-        self, req_data: dict, client: httpx.AsyncClient, timeout: int
+        self, api: str, req_data: dict, client: httpx.AsyncClient, timeout: int
     ) -> AsyncGenerator[str, None]:
         trace_obj = self.req_info.trace_obj
         headers = {'Content-Type': 'application/json', 'X-Request-Id': self._forward_request_id(req_data)}
-        trace_obj.set_trace_attribute("server.path", self.req_info.api, self.is_meta)
+        trace_obj.set_trace_attribute("server.path", api, self.is_meta)
         headers.update(trace_obj.get_trace_headers_dict(self.is_meta))
 
         self.logger.debug(
             "Forward stream request base_url: %s, api: %s, headers: %s, body: %s, timeout: %s",
             client.base_url,
-            self.req_info.api,
+            api,
             headers,
             req_data,
             timeout,
         )
 
         self.first_chunk_sent = False
-        trace_obj.add_trace_event(
-            f"Begin to stream: {client.base_url}/{self.req_info.api}, {client.timeout}", is_meta=self.is_meta
-        )
+        trace_obj.add_trace_event(f"Begin to stream: {client.base_url}/{api}, {client.timeout}", is_meta=self.is_meta)
         t0_forward = time.perf_counter()
-        engine_req = recompute_common.copy_req_data_for_engine(req_data)
-        async with client.stream(
-            "POST", f"/{self.req_info.api}", json=engine_req, headers=headers, timeout=timeout
-        ) as response:
+        async with client.stream("POST", f"/{api}", json=req_data, headers=headers, timeout=timeout) as response:
             trace_obj.add_trace_event(f"Stream ok: {response.status_code}", is_meta=self.is_meta)
             elapsed_to_connect_ms = (time.perf_counter() - t0_forward) * 1000
             if _should_log_scheduling_sample(self.req_info.req_id):
                 self.logger.info(
                     "Scheduling latency stage=forward_to_engine_connect elapsed_ms=%.2f api=%s",
                     elapsed_to_connect_ms,
-                    self.req_info.api,
+                    api,
                 )
             if not response.is_success:
                 await response.aread()
@@ -437,7 +431,9 @@ class BaseRouter(ABC):
                 yield pending
             trace_obj.set_count_token(count_token)
 
-    async def forward_request(self, req_data: dict, client: httpx.AsyncClient, timeout: int) -> httpx.Response:
+    async def forward_request(
+        self, api: str, req_data: dict, client: httpx.AsyncClient, timeout: int
+    ) -> httpx.Response:
         """Forward non-streaming request to the given resource
 
         Args:
@@ -449,34 +445,31 @@ class BaseRouter(ABC):
         """
         trace_obj = self.req_info.trace_obj
         headers = {'Content-Type': 'application/json', 'X-Request-Id': self._forward_request_id(req_data)}
-        trace_obj.set_trace_attribute("server.path", self.req_info.api, self.is_meta)
+        trace_obj.set_trace_attribute("server.path", api, self.is_meta)
         headers.update(trace_obj.get_trace_headers_dict(self.is_meta))
 
-        engine_req = recompute_common.copy_req_data_for_engine(req_data)
         filtered_headers = filter_sensitive_headers(headers)
-        filtered_body = filter_sensitive_body(engine_req)
+        filtered_body = filter_sensitive_body(req_data)
         self.logger.debug(
             "Forward request base_url: %s, api: %s, headers: %s, body: %s, timeout: %s",
             client.base_url,
-            self.req_info.api,
+            api,
             filtered_headers,
             filtered_body,
             timeout,
         )
 
-        trace_obj.add_trace_event(
-            f"Begin to post: {client.base_url}/{self.req_info.api}, {client.timeout}", is_meta=self.is_meta
-        )
+        trace_obj.add_trace_event(f"Begin to post: {client.base_url}/{api}, {client.timeout}", is_meta=self.is_meta)
         t0_forward = time.perf_counter()
-        url = f"/{self.req_info.api}"
-        response = await client.post(url, json=engine_req, headers=headers, timeout=timeout)
+        url = f"/{api}"
+        response = await client.post(url, json=req_data, headers=headers, timeout=timeout)
         trace_obj.add_trace_event(f"Post ok: {response.status_code}", is_meta=self.is_meta)
         elapsed_forward_ms = (time.perf_counter() - t0_forward) * 1000
         if _should_log_scheduling_sample(self.req_info.req_id):
             self.logger.info(
                 "Scheduling latency stage=forward_to_engine elapsed_ms=%.2f api=%s",
                 elapsed_forward_ms,
-                self.req_info.api,
+                api,
             )
         try:
             response.raise_for_status()
@@ -528,7 +521,9 @@ class BaseRouter(ABC):
                         cancel_scope = CancelScope()
                         self.req_info.set_cancel_scope(cancel_scope, PDRole.ROLE_E)
                         with cancel_scope:
-                            await self.forward_request(req_data, client, self.config.exception_config.infer_timeout)
+                            await self.forward_request(
+                                self.req_info.api, req_data, client, self.config.exception_config.infer_timeout
+                            )
                             break
                 except asyncio.CancelledError:
                     self.logger.info(
@@ -582,46 +577,6 @@ class BaseRouter(ABC):
             return False
 
         return True
-
-    def _check_recompute_limit(self, retry_count: int, rmax: int) -> None:
-        if recompute_common.recompute_limit_reached(retry_count, rmax):
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=("Recompute retry limit exceeded (recompute_retry_exhausted); client may retry with backoff."),
-            )
-
-    def _prepare_recompute_retry(
-        self,
-        req_data: dict,
-        request_info: dict,
-        retry_count: int,
-    ) -> int:
-        """Mutate ``req_data`` / ``req_info`` for the next recompute attempt.
-
-        Does not rotate ``req_info.req_id``; call
-        :meth:`_bump_req_id_after_recompute_workloads_released` after workload
-        release and request context exit so the manager still keys by the old id.
-        """
-        if not self.config.exception_config.recompute_enabled:
-            raise recompute_common.recompute_disabled_http_exception()
-        retry_count += 1
-        recompute_common.prepare_retry_request(
-            req_data,
-            request_info,
-            new_retry_count=retry_count,
-            req_id=self.req_info.req_id,
-            logger=self.logger,
-            req_info=self.req_info,
-        )
-        return retry_count
-
-    def _bump_req_id_after_recompute_workloads_released(self, retry_count: int) -> None:
-        """Rotate retry segment in ``req_info.req_id`` after workloads are released."""
-        recompute_common.bump_req_id_after_recompute_prepare(
-            self.req_info,
-            retry_count=retry_count,
-            logger=self.logger,
-        )
 
     async def _update_workload(self, resource: ScheduledResource, action: WorkloadAction):
         """Update the given resource's workload.

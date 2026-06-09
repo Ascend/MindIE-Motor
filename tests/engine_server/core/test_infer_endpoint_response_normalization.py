@@ -1,11 +1,13 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-
+from unittest.mock import MagicMock
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 
 from motor.common.resources.dispatch import MOTOR_DISPATCH_KEY
+from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
 from motor.engine_server.core.infer_endpoint import InferEndpoint
 
 
@@ -156,28 +158,59 @@ def _install_peer_stop_client(monkeypatch, *, fail=False):
     return calls
 
 
+async def _dispatch_context(endpoint: _Endpoint, body: dict) -> DispatchResponseContext:
+    original_body = body.copy()
+    adapted_body, dispatch = await endpoint.dispatch_adapter.adapt_request_body(body.copy())
+    return DispatchResponseContext(
+        api="v1/completions",
+        raw_path="/v1/completions",
+        request_body=adapted_body,
+        dispatch=dispatch,
+        stream=bool(original_body.get("stream", False)),
+        client_return_token_ids=bool(original_body.get("return_token_ids", False)),
+        client_expects_chat_shape=("messages" in original_body),
+    )
+
+
+async def _call_dispatch_serving(endpoint: _Endpoint, body: dict, serving):
+    context = await _dispatch_context(endpoint, body)
+    raw_request = MagicMock()
+    return await endpoint._call_openai_serving(
+        lambda: serving.handle_request(body, raw_request),
+        context,
+    )
+
+
+def _response_json(response):
+    body = response.body
+    if isinstance(body, memoryview):
+        body = body.tobytes()
+    return json.loads(body.decode() if isinstance(body, (bytes, bytearray)) else body)
+
+
 def test_infer_endpoint_normalizes_dispatch_nonstream_response():
     endpoint = _Endpoint(_Config(role="decode"))
-    client = TestClient(endpoint.app)
-    endpoint.app.state.openai_serving_completion = _Serving(
-        JSONResponse(
-            {
-                "prompt_token_ids": [1, 2],
-                "choices": [{"text": "ok", "token_ids": [3]}],
-            }
+    body = _dispatch_body("decode")
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(
+                JSONResponse(
+                    {
+                        "prompt_token_ids": [1, 2],
+                        "choices": [{"text": "ok", "token_ids": [3]}],
+                    }
+                )
+            ),
         )
     )
 
-    response = client.post(
-        "/v1/completions",
-        json=_dispatch_body("decode"),
-    )
+    payload = response.body.decode() if hasattr(response.body, "decode") else response.body
+    assert "token_ids" not in payload
+    assert "prompt_token_ids" not in payload
 
-    assert response.status_code == 200
-    assert "token_ids" not in response.text
-    assert "prompt_token_ids" not in response.text
-
-    stop = client.post(
+    stop = TestClient(endpoint.app).post(
         "/v1/dispatch/stop",
         json={
             "root_request_id": "req",
@@ -213,33 +246,43 @@ def test_infer_endpoint_normalizes_dispatch_stream_response():
         yield b"data: [DONE]\n\n"
 
     endpoint = _Endpoint(_Config(role="decode"))
-    endpoint.app.state.openai_serving_completion = _Serving(
-        StreamingResponse(_chunks(), media_type="text/event-stream")
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
     )
 
-    response = TestClient(endpoint.app).post(
-        "/v1/completions",
-        json=_dispatch_body("decode") | {"stream": True},
-    )
+    chunks = []
 
-    assert response.status_code == 200
-    assert "token_ids" not in response.text
-    assert "data: [DONE]" in response.text
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_collect())
+    payload = b"".join(chunks).decode("utf-8")
+    assert "token_ids" not in payload
+    assert "data: [DONE]" in payload
 
 
 def test_infer_endpoint_dispatch_engine_error_stops_peer(monkeypatch):
     calls = _install_peer_stop_client(monkeypatch)
     endpoint = _Endpoint(_Config(role="decode"))
-    endpoint.app.state.openai_serving_completion = _RaisingServing("engine boom")
-
-    response = TestClient(endpoint.app).post(
-        "/v1/completions",
-        json=_dispatch_body("decode"),
+    body = _dispatch_body("decode")
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _RaisingServing("engine boom"),
+        )
     )
 
     assert response.status_code == 500
-    assert response.json()["error"]["code"] == "engine_error"
-    assert response.json()["error"]["message"] == "engine boom"
+    payload = _response_json(response)
+    assert payload["error"]["message"] == "engine boom"
+    assert payload["error"]["code"] == "engine_error"
     assert calls[0]["ip"] == "127.0.0.1"
     assert calls[0]["port"] == "8000"
     assert calls[1]["path"] == "/v1/dispatch/stop"
@@ -250,20 +293,22 @@ def test_infer_endpoint_dispatch_engine_error_stops_peer(monkeypatch):
 def test_infer_endpoint_dispatch_error_response_stops_peer(monkeypatch):
     calls = _install_peer_stop_client(monkeypatch)
     endpoint = _Endpoint(_Config(role="decode"))
-    endpoint.app.state.openai_serving_completion = _Serving(
-        JSONResponse(
-            {"error": {"message": "engine rejected"}},
-            status_code=503,
+    body = _dispatch_body("decode")
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(
+                JSONResponse(
+                    {"error": {"message": "engine rejected"}},
+                    status_code=503,
+                )
+            ),
         )
     )
 
-    response = TestClient(endpoint.app).post(
-        "/v1/completions",
-        json=_dispatch_body("decode"),
-    )
-
     assert response.status_code == 503
-    assert response.json()["error"]["message"] == "engine rejected"
+    assert _response_json(response)["error"]["message"] == "engine rejected"
     assert calls[0]["ip"] == "127.0.0.1"
     assert calls[1]["path"] == "/v1/dispatch/stop"
 
@@ -271,15 +316,19 @@ def test_infer_endpoint_dispatch_error_response_stops_peer(monkeypatch):
 def test_infer_endpoint_peer_stop_failure_preserves_engine_error(monkeypatch):
     calls = _install_peer_stop_client(monkeypatch, fail=True)
     endpoint = _Endpoint(_Config(role="decode"))
-    endpoint.app.state.openai_serving_completion = _RaisingServing("engine boom")
-
-    response = TestClient(endpoint.app).post(
-        "/v1/completions",
-        json=_dispatch_body("decode"),
+    body = _dispatch_body("decode")
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _RaisingServing("engine boom"),
+        )
     )
 
     assert response.status_code == 500
-    assert response.json()["error"]["message"] == "engine boom"
+    payload = _response_json(response)
+    assert payload["error"]["message"] == "engine boom"
+    assert payload["error"]["code"] == "engine_error"
     assert calls[1]["path"] == "/v1/dispatch/stop"
 
 

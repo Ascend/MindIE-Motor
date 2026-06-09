@@ -195,7 +195,7 @@ async def __create_request_info(
     api = validate_and_sanitize_path(raw_request.url.path)
 
     req_data = request_json.copy()
-    req_data["_client_return_token_ids"] = bool(request_json.get("return_token_ids", False))
+    client_expects_token_ids = bool(request_json.get("return_token_ids", False))
 
     return RequestInfo(
         req_id=req_id,
@@ -203,5 +203,6 @@ async def __create_request_info(
         api=api,
         req_len=req_len,
         entry_api=api,
+        client_expects_token_ids=client_expects_token_ids,
         client_expects_chat_shape=(OpenAIField.MESSAGES in request_json),
     )

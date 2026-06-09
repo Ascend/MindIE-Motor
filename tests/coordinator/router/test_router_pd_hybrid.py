@@ -68,7 +68,7 @@ def _use_single_node_deploy_for_test_app(monkeypatch):
 def patch_forward_stream_request(monkeypatch):
     """Mock forward_stream_request 并自动设置和清理"""
 
-    async def mock_impl(self, req_data: dict, client, timeout):
+    async def mock_impl(self, api, req_data: dict, client, timeout):
         responses = [
             b'{"choices": [{"text": "chunk 1"}]}',
             b'{"choices": [{"text": "chunk 2"}]}',
@@ -227,7 +227,7 @@ class TestRouterPDHybrid:
         error_message = "PD hybrid request failed"
 
         # Mock the stream request function to fail in PDHybridRouter
-        async def failing_forward_stream_request(self, req_data, client, timeout):
+        async def failing_forward_stream_request(self, api, req_data, client, timeout):
             raise RuntimeError(error_message)
             # Required so this mock remains an async generator for ``async for``.
             yield b""  # pylint: disable=unreachable
@@ -281,7 +281,7 @@ class TestRouterPDHybrid:
             "choices": [{"index": 0, "text": "hello", "finish_reason": "stop"}],
         }
 
-        async def mock_forward(self, req_data, client, timeout):
+        async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(return_value=body)
             return resp
@@ -338,7 +338,7 @@ class TestRouterPDHybrid:
         async def mock_update_workload(self, params):
             return True
 
-        async def mock_forward(self, req_data, client, timeout):
+        async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
                 return_value={
@@ -406,7 +406,7 @@ class TestRouterPDHybrid:
         async def mock_update_workload(self, params):
             return True
 
-        async def mock_forward(self, req_data, client, timeout):
+        async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
                 return_value={
@@ -584,7 +584,7 @@ class TestPDHybridTracer:
 
     @pytest.mark.asyncio
     async def test_stream_sets_ttft_on_success(self, monkeypatch: MonkeyPatch, setup_role_u_hybrid):
-        async def mock_impl(self, req_data: dict, client, timeout):
+        async def mock_impl(self, api, req_data: dict, client, timeout):
             trace_obj = self.req_info.trace_obj
             trace_obj.set_time_first_token()
             yield b'{"choices": [{"text": "chunk 1"}]}'
@@ -623,7 +623,7 @@ class TestPDHybridTracer:
 
     @pytest.mark.asyncio
     async def test_nonstream_creates_inference_span(self, monkeypatch: MonkeyPatch, setup_role_u_hybrid):
-        async def mock_forward(self, req_data, client, timeout):
+        async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
                 return_value={
@@ -675,7 +675,7 @@ class TestPDHybridTracer:
         async def mock_update_workload(self, params):
             return True
 
-        async def mock_forward(self, req_data, client, timeout):
+        async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
                 return_value={

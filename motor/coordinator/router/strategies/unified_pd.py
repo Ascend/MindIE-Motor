@@ -24,8 +24,10 @@ from motor.common.resources.dispatch import (
 )
 from motor.common.resources.endpoint import WorkloadAction
 from motor.common.resources.instance import PDRole
-from motor.coordinator.domain import ScheduledResource, UpdateWorkloadParams
-from motor.coordinator.models.request import ReqState
+from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.domain import ScheduledResource, SchedulingFacade, UpdateWorkloadParams
+from motor.coordinator.domain.request_manager import RequestManager
+from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
     AttemptState,
@@ -34,6 +36,8 @@ from motor.coordinator.router.dispatch_session import (
 from motor.coordinator.router.dispatch_capability import select_dispatch_plan_for_pair
 from motor.coordinator.router.stop_client import DispatchStopClient
 from motor.coordinator.router.strategies.base import BaseRouter
+from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
+from motor.coordinator.router.workload import WorkloadActionHandler
 
 
 class UnifiedPDRouter(BaseRouter):
@@ -44,6 +48,21 @@ class UnifiedPDRouter(BaseRouter):
     """
 
     _DISPATCH_MODE = "pd_pair"
+
+    def __init__(
+        self,
+        req_info: RequestInfo,
+        config: CoordinatorConfig,
+        scheduler: SchedulingFacade,
+        request_manager: RequestManager,
+        workload_action_handler: WorkloadActionHandler | None = None,
+    ):
+        super().__init__(req_info, config, scheduler, request_manager, workload_action_handler)
+        self.rescheduler = Rescheduler(
+            config.exception_config.recompute_enabled,
+            req_info,
+            self.logger,
+        )
 
     async def handle_request(self) -> StreamingResponse | JSONResponse:
         await self.do_encode()
@@ -56,64 +75,108 @@ class UnifiedPDRouter(BaseRouter):
         return await self._generate_response()
 
     async def _generate_stream_response(self) -> AsyncGenerator[str, None]:
-        max_retry = self.config.exception_config.transport_retry_limit
+        max_retry = max(self.config.exception_config.transport_retry_limit, 1)
         session = PDDispatchSession(self.req_info.req_id)
-        last_error: Exception | None = None
 
-        for attempt_index in range(max_retry):
-            attempt = await self._create_attempt(session)
-            try:
-                dispatch_plan = self._select_dispatch_plan(attempt)
-                async with self._manage_request_context():
+        async with self._manage_request_context():
+            last_error: Exception | asyncio.CancelledError | None = None
+            for attempt_index in range(max_retry):
+                attempt: AttemptContext | None = None
+                try:
+                    attempt = await self._create_attempt(session)
+                    attempt.register_canceller()
+                    dispatch_plan = self._select_dispatch_plan(attempt)
+                    if attempt_index > 0:
+                        self.rescheduler.is_rescheduling = True
+                        self.logger.warning(
+                            f"Rescheduling: P=[{attempt.prefill_resource.endpoint.ip} "
+                            f"{attempt.prefill_resource.instance.job_name}] "
+                            f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
+                        )
                     attempt.transition(AttemptState.DISPATCHING)
                     async for chunk in self._run_stream_attempt(attempt, dispatch_plan):
                         attempt.transition(AttemptState.FIRST_VISIBLE)
                         yield chunk
                     attempt.transition(AttemptState.DONE)
                     return
-            except asyncio.CancelledError:
-                await self._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
-                raise
-            except Exception as e:
-                last_error = e
-                await self._stop_attempt(attempt, DispatchStopReason.PEER_FAILED)
-                if attempt.first_visible_sent or attempt_index == max_retry - 1:
-                    self.req_info.update_state(ReqState.EXCEPTION)
-                    yield self._generate_streaming_error_chunk(e)
-                    return
-                await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
-
-        if last_error is not None:
-            yield self._generate_streaming_error_chunk(last_error)
+                except asyncio.CancelledError:
+                    last_error = RuntimeError(f"Cancelled after retry {attempt_index} times")
+                    if attempt:
+                        self.logger.warning(
+                            f"Cancelled: P=[{attempt.prefill_resource.endpoint.ip} "
+                            f"{attempt.prefill_resource.instance.job_name}] "
+                            f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
+                        )
+                        await self._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
+                except Exception as e:
+                    last_error = e
+                    self.logger.warning(
+                        "Unified PD stream attempt %d/%d failed during dispatch: %s",
+                        attempt_index + 1,
+                        max_retry,
+                        e,
+                    )
+                    if attempt:
+                        await self._stop_attempt(attempt, DispatchStopReason.PEER_FAILED)
+                    if attempt_index < max_retry - 1:
+                        await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
+                finally:
+                    if attempt:
+                        attempt.unregister_canceller()
+            if last_error is not None:
+                self.req_info.update_state(ReqState.EXCEPTION)
+                yield self._generate_streaming_error_chunk(last_error)
 
     async def _generate_response(self) -> JSONResponse:
-        max_retry = self.config.exception_config.transport_retry_limit
+        max_retry = max(self.config.exception_config.transport_retry_limit, 1)
         session = PDDispatchSession(self.req_info.req_id)
-        last_error: Exception | None = None
 
-        for attempt_index in range(max_retry):
-            attempt = await self._create_attempt(session)
-            try:
-                dispatch_plan = self._select_dispatch_plan(attempt)
-                async with self._manage_request_context():
+        async with self._manage_request_context():
+            last_error: Exception | asyncio.CancelledError | None = None
+            for attempt_index in range(max_retry):
+                attempt: AttemptContext | None = None
+                try:
+                    attempt = await self._create_attempt(session)
+                    attempt.register_canceller()
+                    dispatch_plan = self._select_dispatch_plan(attempt)
+                    if attempt_index > 0:
+                        self.logger.warning(
+                            f"Rescheduling: P=[{attempt.prefill_resource.endpoint.ip} "
+                            f"{attempt.prefill_resource.instance.job_name}] "
+                            f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
+                        )
                     attempt.transition(AttemptState.DISPATCHING)
                     body = await self._run_nonstream_attempt(attempt, dispatch_plan)
                     attempt.transition(AttemptState.DONE)
                     return JSONResponse(content=body)
-            except asyncio.CancelledError:
-                await self._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
-                raise
-            except Exception as e:
-                last_error = e
-                await self._stop_attempt(attempt, DispatchStopReason.PEER_FAILED)
-                if attempt_index < max_retry - 1:
-                    await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
-                    continue
+                except asyncio.CancelledError as e:
+                    last_error = e
+                    if attempt:
+                        self.logger.warning(
+                            f"Cancelled: P=[{attempt.prefill_resource.endpoint.ip} "
+                            f"{attempt.prefill_resource.instance.job_name}] "
+                            f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
+                        )
+                        await self._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
+                except Exception as e:
+                    last_error = e
+                    self.logger.warning(
+                        "Unified PD stream attempt %d/%d failed during dispatch: %s",
+                        attempt_index + 1,
+                        max_retry,
+                        e,
+                    )
+                    if attempt:
+                        await self._stop_attempt(attempt, DispatchStopReason.PEER_FAILED)
+                    if attempt_index < max_retry - 1:
+                        await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
+                finally:
+                    if attempt:
+                        attempt.unregister_canceller()
+            if last_error is not None:
                 self.req_info.update_state(ReqState.EXCEPTION)
-                raise
+                raise last_error
 
-        if last_error is not None:
-            raise last_error
         raise RuntimeError("Unified PD request ended without response")
 
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
@@ -127,97 +190,204 @@ class UnifiedPDRouter(BaseRouter):
             self.req_info.update_state(ReqState.P_ALLOCATED)
             await self._record_attempt_workload(attempt_seq, PDRole.ROLE_D, pair.decode_workload)
             self.req_info.update_state(ReqState.D_ALLOCATED)
-            return session.new_attempt(pair.prefill, pair.decode)
+            return session.new_attempt(pair.prefill, pair.decode, self.config)
 
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
         try:
             d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt_seq)
-        except Exception:
+        except Exception as e:
+            self.logger.warning(
+                "Unified PD D allocation failed after P allocated req_id=%s attempt=%s: %s",
+                self.req_info.req_id,
+                attempt_seq,
+                e,
+            )
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_TOKENS)
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_KV)
             raise
-        return session.new_attempt(p_resource, d_resource)
+        return session.new_attempt(p_resource, d_resource, self.config)
 
     async def _run_stream_attempt(
         self, attempt: AttemptContext, dispatch_plan: DispatchPlan
     ) -> AsyncGenerator[str, None]:
         if dispatch_plan == DispatchPlan.PREFILL_HANDOFF_DECODE:
-            async for chunk in self._run_handoff_stream_attempt(attempt):
-                yield chunk
-            return
+            run_func = self._run_handoff_stream_attempt
+        else:
+            run_func = self._run_concurrent_stream_attempt
+        async for chunk in run_func(attempt):
+            yield chunk
+        return
 
+    async def _run_concurrent_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
-        p_req = self._request_for_attempt(attempt, PDRole.ROLE_P, stream=False)
-        d_req = self._request_for_attempt(attempt, PDRole.ROLE_D, stream=True)
+        p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
+        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
+        stream_adapter_state = {}
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
         ):
-            p_task = asyncio.create_task(
-                self.forward_request(p_req, p_client, self.config.exception_config.first_token_timeout)
-            )
-            attempt.prefill_task = p_task
+
+            async def prefill_task():
+                await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
+
+            p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
+            async for chunk in self._run_stream_decode_phase(
+                attempt, d_client, d_api, d_req, stream_adapter_state, prefill_task=p_task
+            ):
+                yield chunk
+
+    async def _run_stream_decode_phase(
+        self,
+        attempt: AttemptContext,
+        d_client,
+        d_api: str,
+        d_req: dict[str, Any],
+        stream_adapter_state: dict,
+        *,
+        prefill_task: asyncio.Task | None = None,
+    ) -> AsyncGenerator[str, None]:
+        queue = asyncio.Queue()
+        self._start_stream_decode_task(attempt, queue, d_api, d_req, d_client, stream_adapter_state)
+        async for chunk in self._iter_stream_decode_queue(attempt, queue, prefill_task=prefill_task):
+            yield chunk
+
+    def _start_stream_decode_task(
+        self,
+        attempt: AttemptContext,
+        queue: asyncio.Queue,
+        d_api: str,
+        d_req: dict[str, Any],
+        d_client,
+        stream_adapter_state: dict,
+    ) -> asyncio.Task:
+        async def decode_task() -> None:
             try:
                 async for chunk in self.forward_stream_request(
-                    d_req, d_client, self.config.exception_config.infer_timeout
+                    d_api, d_req, d_client, self.config.exception_config.infer_timeout
                 ):
                     if chunk:
                         attempt.transition(AttemptState.FIRST_VISIBLE)
-                        yield chunk
-                await p_task
-                self.req_info.update_state(ReqState.DECODE_END)
-            finally:
-                await self._cancel_task_quietly(p_task)
-                await self._release_attempt(attempt)
+                        if self.config.exception_config.recompute_enabled:
+                            chunk = self.rescheduler.process_stream_chunk(
+                                chunk, stream_adapter_state=stream_adapter_state
+                            )
+                        queue.put_nowait(("chunk", chunk))
+                queue.put_nowait(("done", None))
+            except asyncio.CancelledError:
+                queue.put_nowait(("cancel", None))
+            except Exception as e:
+                queue.put_nowait(("error", e))
+
+        return attempt.register_decode_task(asyncio.create_task(decode_task()))
+
+    async def _iter_stream_decode_queue(
+        self,
+        attempt: AttemptContext,
+        queue: asyncio.Queue,
+        *,
+        prefill_task: asyncio.Task | None = None,
+    ) -> AsyncGenerator[str, None]:
+        try:
+            while True:
+                key, value = await queue.get()
+                if key == "chunk":
+                    yield value
+                elif key == "done":
+                    if prefill_task is not None:
+                        await prefill_task
+                    self.req_info.update_state(ReqState.DECODE_END)
+                    return
+                elif key == "cancel":
+                    await attempt.cancel()
+                    raise asyncio.CancelledError
+                elif key == "error":
+                    await attempt.cancel()
+                    raise value
+        except (asyncio.CancelledError, Exception) as e:
+            self.logger.warning(
+                "Unified PD decode stream queue failed req_id=%s attempt=%s: %s",
+                self.req_info.req_id,
+                attempt.attempt_seq,
+                e,
+            )
+            raise
+        finally:
+            await self._release_attempt(attempt)
 
     async def _run_nonstream_attempt(self, attempt: AttemptContext, dispatch_plan: DispatchPlan) -> dict[str, Any]:
         if dispatch_plan == DispatchPlan.PREFILL_HANDOFF_DECODE:
             return await self._run_handoff_nonstream_attempt(attempt)
+        else:
+            return await self._run_concurrent_nonstream_attempt(attempt)
 
+    async def _run_concurrent_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
-        p_req = self._request_for_attempt(attempt, PDRole.ROLE_P, stream=False)
-        d_req = self._request_for_attempt(attempt, PDRole.ROLE_D, stream=False)
+        p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
+        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
         ):
-            p_task = asyncio.create_task(
-                self.forward_request(p_req, p_client, self.config.exception_config.first_token_timeout)
-            )
-            attempt.prefill_task = p_task
+
+            async def prefill_task():
+                await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
+
+            p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
+            return await self._await_nonstream_decode(attempt, d_api, d_req, d_client, prefill_task=p_task)
+
+    async def _await_nonstream_decode(
+        self,
+        attempt: AttemptContext,
+        d_api: str,
+        d_req: dict[str, Any],
+        d_client,
+        *,
+        prefill_task: asyncio.Task | None = None,
+    ) -> dict[str, Any]:
+        async def decode_task() -> tuple[Any, Any]:
             try:
-                response = await self.forward_request(d_req, d_client, self.config.exception_config.infer_timeout)
-                await p_task
-                body = response.json()
-                self.req_info.update_state(ReqState.DECODE_END)
-                return body
-            finally:
-                await self._cancel_task_quietly(p_task)
-                await self._release_attempt(attempt)
+                response = await self.forward_request(
+                    d_api, d_req, d_client, self.config.exception_config.infer_timeout
+                )
+                return response.json(), None
+            except (asyncio.CancelledError, Exception) as e:
+                return None, e
+
+        d_task = attempt.register_decode_task(asyncio.create_task(decode_task()))
+        response, error = await d_task
+        if error:
+            await attempt.cancel()
+            await self._release_attempt(attempt)
+            raise error
+        try:
+            if prefill_task is not None:
+                await prefill_task
+            self.req_info.update_state(ReqState.DECODE_END)
+            await self._release_attempt(attempt)
+            return response
+        except (asyncio.CancelledError, Exception) as e:
+            self.logger.warning(
+                "Unified PD non-stream decode failed req_id=%s attempt=%s: %s",
+                self.req_info.req_id,
+                attempt.attempt_seq,
+                e,
+            )
+            await attempt.cancel()
+            await self._release_attempt(attempt)
+            raise
 
     async def _run_handoff_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
+        stream_adapter_state = {}
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
         ):
-            prefill_result = await self._request_prefill_result(attempt, p_client)
-            d_req = self._request_for_attempt(
-                attempt,
-                PDRole.ROLE_D,
-                stream=True,
-                prefill_result=prefill_result,
-            )
-            try:
-                async for chunk in self.forward_stream_request(
-                    d_req, d_client, self.config.exception_config.infer_timeout
-                ):
-                    if chunk:
-                        attempt.transition(AttemptState.FIRST_VISIBLE)
-                        yield chunk
-                self.req_info.update_state(ReqState.DECODE_END)
-            finally:
-                await self._release_attempt(attempt)
+            prefill_result = await self._await_handoff_prefill(attempt, p_client)
+            d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+            async for chunk in self._run_stream_decode_phase(attempt, d_client, d_api, d_req, stream_adapter_state):
+                yield chunk
 
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
@@ -225,42 +395,41 @@ class UnifiedPDRouter(BaseRouter):
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
         ):
-            prefill_result = await self._request_prefill_result(attempt, p_client)
-            d_req = self._request_for_attempt(
-                attempt,
-                PDRole.ROLE_D,
-                stream=False,
-                prefill_result=prefill_result,
-            )
-            try:
-                response = await self.forward_request(d_req, d_client, self.config.exception_config.infer_timeout)
-                body = response.json()
-                self.req_info.update_state(ReqState.DECODE_END)
-                return body
-            finally:
-                await self._release_attempt(attempt)
+            prefill_result = await self._await_handoff_prefill(attempt, p_client)
+            d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+            return await self._await_nonstream_decode(attempt, d_api, d_req, d_client)
+
+    async def _await_handoff_prefill(self, attempt: AttemptContext, p_client) -> PrefillResult:
+        async def prefill_task():
+            result = await self._request_prefill_result(attempt, p_client)
+            attempt.unregister_prefill_canceller()
+            return result
+
+        p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
+        return await p_task
 
     def _request_for_attempt(
-        self,
-        attempt: AttemptContext,
-        role: PDRole,
-        *,
-        stream: bool,
-        prefill_result: PrefillResult | None = None,
-    ) -> dict[str, Any]:
+        self, attempt: AttemptContext, role: PDRole, *, prefill_result: PrefillResult | None = None
+    ) -> (dict[str, Any], str):
+        api = self.req_info.entry_api
         req = self.req_info.req_data.copy()
+        stream = self.req_info.req_data.get('stream', False)
         req["request_id"] = f"{attempt.root_request_id}#a{attempt.attempt_seq}"
-        req["stream"] = stream
         if role == PDRole.ROLE_P:
+            req["stream"] = False
             req = self._apply_prefill_params(req, set_min_tokens=False)
+        if stream and self.config.exception_config.recompute_enabled:
+            req["return_token_ids"] = True
+            if self.rescheduler.is_rescheduling:
+                req, api = self.rescheduler.prepare_retry_request(req)
         req[MOTOR_DISPATCH_KEY] = attempt.dispatch_for(role, self._DISPATCH_MODE).model_dump(mode="json")
         if prefill_result is not None:
             req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")
-        return req
+        return (req, api)
 
     async def _request_prefill_result(self, attempt: AttemptContext, p_client) -> PrefillResult:
-        p_req = self._request_for_attempt(attempt, PDRole.ROLE_P, stream=False)
-        response = await self.forward_request(p_req, p_client, self.config.exception_config.first_token_timeout)
+        p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
+        response = await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
         prefill_result = PrefillResult.model_validate(response.json())
         self._validate_prefill_result(attempt, prefill_result, expected_status=PrefillResultStatus.COMPLETED)
         return prefill_result
@@ -349,7 +518,9 @@ class UnifiedPDRouter(BaseRouter):
             self._mark_released(attempt, resource, action)
         return ok
 
-    async def _stop_attempt(self, attempt: AttemptContext, reason: DispatchStopReason) -> None:
+    async def _stop_attempt(self, attempt: AttemptContext | None, reason: DispatchStopReason) -> None:
+        if attempt is None:
+            return
         attempt.stop()
         client = DispatchStopClient(self.config)
         tasks = []
@@ -366,13 +537,6 @@ class UnifiedPDRouter(BaseRouter):
         if resource is None:
             raise RuntimeError("Scheduled resource is missing")
         return self._manage_client_context(resource)
-
-    @staticmethod
-    async def _cancel_task_quietly(task: asyncio.Task | None) -> None:
-        if task is None or task.done():
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
 
     @staticmethod
     def _release_already_marked(attempt: AttemptContext, resource: ScheduledResource, action: WorkloadAction) -> bool:
