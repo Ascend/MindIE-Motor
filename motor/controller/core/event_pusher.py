@@ -63,15 +63,9 @@ class EventPusher(Observer):
             self.stop_event.clear()
 
         # Create event pusher threads
-        self.event_consumer_thread = threading.Thread(
-            target=self._event_consumer,
-            daemon=True,
-            name="EventConsumer"
-        )
+        self.event_consumer_thread = threading.Thread(target=self._event_consumer, daemon=True, name="EventConsumer")
         self.heartbeat_detector_thread = threading.Thread(
-            target=self._coordinator_heartbeat_detector,
-            daemon=True,
-            name="HeartbeatDetector"
+            target=self._coordinator_heartbeat_detector, daemon=True, name="HeartbeatDetector"
         )
 
         self.event_consumer_thread.start()
@@ -84,15 +78,15 @@ class EventPusher(Observer):
             self.work_condition.notify_all()
         # Only join threads that have been started
         if (
-                hasattr(self, 'event_consumer_thread')
-                and self.event_consumer_thread is not None
-                and self.event_consumer_thread.is_alive()
+            hasattr(self, 'event_consumer_thread')
+            and self.event_consumer_thread is not None
+            and self.event_consumer_thread.is_alive()
         ):
             self.event_consumer_thread.join()
         if (
-                hasattr(self, 'heartbeat_detector_thread')
-                and self.heartbeat_detector_thread is not None
-                and self.heartbeat_detector_thread.is_alive()
+            hasattr(self, 'heartbeat_detector_thread')
+            and self.heartbeat_detector_thread is not None
+            and self.heartbeat_detector_thread.is_alive()
         ):
             self.heartbeat_detector_thread.join()
         if hasattr(self, 'heart_client'):
@@ -102,8 +96,10 @@ class EventPusher(Observer):
     def is_alive(self) -> bool:
         """Check if the event_pusher threads are alive"""
         return (
-            self.event_consumer_thread is not None and self.event_consumer_thread.is_alive()
-            and self.heartbeat_detector_thread is not None and self.heartbeat_detector_thread.is_alive()
+            self.event_consumer_thread is not None
+            and self.event_consumer_thread.is_alive()
+            and self.heartbeat_detector_thread is not None
+            and self.heartbeat_detector_thread.is_alive()
         )
 
     def update_config(self, config: ControllerConfig) -> None:
@@ -130,6 +126,19 @@ class EventPusher(Observer):
             # Deep copy the instance to ensure data consistency during async HTTP sending
             event = Event(EventType.DEL, instance.to_instance())
             logger.info("Instance removed: %s", instance.job_name)
+        elif event == ObserverEvent.INSTANCE_PAUSED:
+            with self.lock:
+                if instance.job_name in self.instances:
+                    del self.instances[instance.job_name]
+                else:
+                    return
+            event = Event(EventType.PAUSE, instance.to_instance())
+            logger.info("Instance paused: %s", instance.job_name)
+        elif event == ObserverEvent.INSTANCE_RESUMED:
+            with self.lock:
+                self.instances[instance.job_name] = instance
+            event = Event(EventType.RESUME, instance.to_instance())
+            logger.info("Instance resumed: %s", instance.job_name)
         else:
             # Other event we don't handle, just return
             return
@@ -155,6 +164,10 @@ class EventPusher(Observer):
                     event_msg = InsEventMsg(event=event_type, instances=[event.instance])
                 elif event_type == EventType.DEL:
                     event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                elif event_type == EventType.PAUSE:
+                    event_msg = InsEventMsg(event=event_type, instances=[event.instance])
+                elif event_type == EventType.RESUME:
+                    event_msg = InsEventMsg(event=event_type, instances=[event.instance])
                 elif event_type == EventType.SET:
                     with self.lock:
                         instances = list(self.instances.values())
@@ -163,13 +176,14 @@ class EventPusher(Observer):
 
                         if has_prefill:
                             event_msg = InsEventMsg(
-                                event=event_type,
-                                instances=[instance.to_instance() for instance in instances]
+                                event=event_type, instances=[instance.to_instance() for instance in instances]
                             )
                         else:
-                            logger.debug("SET event skipped: requires at least one prefill "
-                                         "instance, current instances: prefill=%s",
-                                         has_prefill)
+                            logger.debug(
+                                "SET event skipped: requires at least one prefill "
+                                "instance, current instances: prefill=%s",
+                                has_prefill,
+                            )
                             event_msg = None
                 else:
                     logger.error("Unknown event type: %s", event_type)

@@ -31,6 +31,7 @@ class InsStatus(str, Enum):
     INITIAL = "initial"
     INACTIVE = "inactive"
     ACTIVE = "active"
+    PAUSED = "paused"
     DELETED = "deleted"
 
     def __repr__(self) -> str:
@@ -60,6 +61,8 @@ class InsConditionEvent(str, Enum):
     INSTANCE_HEARTBEAT_TIMEOUT = "instance_heartbeat_timeout"
     INSTANCE_NORMAL = "instance_normal"
     INSTANCE_ABNORMAL = "instance_abnormal"
+    INSTANCE_PAUSED = "instance_paused"
+    INSTANCE_RESUMED = "instance_resumed"
 
     def __repr__(self) -> str:
         return str.__repr__(self.value)
@@ -170,9 +173,9 @@ class Instance(BaseModel):
         with self._lock:
             if node_mgr_info not in self.node_managers:
                 self.node_managers.append(node_mgr_info)
-                logger.info(f"Add node manager {pod_ip}:{port} to instance:{self.job_name}")
+                logger.info("Add node manager %s:%s to instance:%s", pod_ip, port, self.job_name)
             else:
-                logger.info(f"Node manager {pod_ip}:{port} already in instance:{self.job_name}")
+                logger.info("Node manager %s:%s already in instance:%s", pod_ip, port, self.job_name)
 
     def del_node_mgr(self, pod_ip: str, port: str) -> None:
         if pod_ip is None or port is None:
@@ -183,9 +186,9 @@ class Instance(BaseModel):
         with self._lock:
             if node_mgr_info in self.node_managers:
                 self.node_managers.remove(node_mgr_info)
-                logger.info(f"Del node manager {pod_ip}:{port} from instance:{self.job_name}")
+                logger.info("Del node manager %s:%s from instance:%s", pod_ip, port, self.job_name)
             else:
-                logger.info(f"Node manager {pod_ip}:{port} not in instance:{self.job_name}")
+                logger.info("Node manager %s:%s not in instance:%s", pod_ip, port, self.job_name)
 
     def has_node_mgr(self, pod_ip: str) -> bool:
         if pod_ip is None:
@@ -231,7 +234,7 @@ class Instance(BaseModel):
                 self._endpoints_version += 1
             else:
                 del_endpoint_num = 0
-                logger.warning(f"Pod_ip:{pod_ip} not found in instance:{self.job_name}")
+                logger.warning("Pod_ip:%s not found in instance:%s", pod_ip, self.job_name)
 
         expected_count = self._get_expected_endpoint_count()
         remaining_endpoints = current_endpoint_num - del_endpoint_num
@@ -357,6 +360,16 @@ class Instance(BaseModel):
                 return True
             return False
 
+    def is_all_endpoints_paused(self) -> bool:
+        with self._lock:
+            if not self.endpoints:
+                return False
+            for pod_endpoints in self.endpoints.values():
+                for endpoint in pod_endpoints.values():
+                    if endpoint.status != EndpointStatus.PAUSED:
+                        return False
+            return True
+
     def is_ip_in_endpoints(self, ip: str) -> bool:
         with self._lock:
             return ip in self.endpoints
@@ -366,24 +379,26 @@ class Instance(BaseModel):
             if ip in self.endpoints:
                 if len(self.endpoints[ip]) != len(status):
                     logger.error(
-                        f"Heartbeat status size {len(status)} is not equal to "
-                        f"endpoints size {len(self.endpoints[ip])} for pod_ip {ip} "
-                        f"in instance {self.job_name}"
+                        "Heartbeat status size %s is not equal to endpoints size %s for pod_ip %s in instance %s",
+                        len(status),
+                        len(self.endpoints[ip]),
+                        ip,
+                        self.job_name,
                     )
                     return False
                 for endpoint in self.endpoints[ip].values():
                     endpoint.hb_timestamp = timestamp
                     endpoint.status = status[endpoint.id]
-                logger.debug(f"Updated heartbeat for pod_ip {ip} in instance {self.job_name}")
+                logger.debug("Updated heartbeat for pod_ip %s in instance %s", ip, self.job_name)
                 return True
             else:
-                logger.error(f"Instance {self.id} not found endpoints for pod_ip {ip}")
+                logger.error("Instance %s not found endpoints for pod_ip %s", self.id, ip)
                 return False
 
     def get_endpoints_num(self) -> int:
         with self._lock:
             if self.endpoints is not None:
-                return sum([len(pod_endpoints) for pod_endpoints in self.endpoints.values()])
+                return sum(len(pod_endpoints) for pod_endpoints in self.endpoints.values())
             return 0
 
     def get_endpoints(self, ip: str) -> MappingProxyType[int, Endpoint]:
@@ -439,7 +454,7 @@ class Instance(BaseModel):
     def update_instance_status(self, status: InsStatus) -> None:
         with self._lock:
             self.status = status
-        logger.info(f"Instance {self.job_name}(id:{self.id}) status updated to {status}")
+        logger.info("Instance %s(id:%s) status updated to %s", self.job_name, self.id, status)
 
     def _get_expected_endpoint_count(self) -> int:
         """Get expected endpoint count based on enable_multi_endpoints flag.

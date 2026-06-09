@@ -19,10 +19,11 @@ class ObserverEvent(Enum):
     INSTANCE_READY = 1
     INSTANCE_SEPERATED = 2
     INSTANCE_REMOVED = 3
+    INSTANCE_PAUSED = 4
+    INSTANCE_RESUMED = 5
 
 
 class Observer(ABC):
-
     def __init__(self) -> None:
         pass
 

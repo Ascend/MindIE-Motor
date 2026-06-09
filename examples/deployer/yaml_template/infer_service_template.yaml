@@ -323,7 +323,7 @@ spec:
             nodeSelector:
               accelerator: huawei-Ascend910
               accelerator-type: module-910b-8
-            terminationGracePeriodSeconds: 10
+            terminationGracePeriodSeconds: 30
             automountServiceAccountToken: false
             securityContext:
               fsGroup: 1001
@@ -348,6 +348,10 @@ spec:
                 value: /mnt/configmap
               - name: CONFIG_PATH
                 value: /usr/local/Ascend/pyMotor/conf
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["bash", "-c", "$CONFIGMAP_PATH/prestop.sh"]
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
               resources:
                 requests:
@@ -438,7 +442,7 @@ spec:
             nodeSelector:
               accelerator: huawei-Ascend910
               accelerator-type: module-910b-8
-            terminationGracePeriodSeconds: 10
+            terminationGracePeriodSeconds: 30
             automountServiceAccountToken: false
             securityContext:
               fsGroup: 1001
@@ -463,6 +467,10 @@ spec:
                 value: /mnt/configmap
               - name: CONFIG_PATH
                 value: /usr/local/Ascend/pyMotor/conf
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["bash", "-c", "$CONFIGMAP_PATH/prestop.sh"]
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
               resources:
                 requests:
@@ -553,7 +561,7 @@ spec:
             nodeSelector:
               accelerator: huawei-Ascend910
               accelerator-type: module-910b-8
-            terminationGracePeriodSeconds: 10
+            terminationGracePeriodSeconds: 30
             automountServiceAccountToken: false
             securityContext:
               fsGroup: 1001
@@ -578,6 +586,10 @@ spec:
                 value: /mnt/configmap
               - name: CONFIG_PATH
                 value: /usr/local/Ascend/pyMotor/conf
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["bash", "-c", "$CONFIGMAP_PATH/prestop.sh"]
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
               resources:
                 requests:

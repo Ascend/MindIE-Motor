@@ -90,13 +90,12 @@ class InstanceManager(ThreadSafeSingleton):
         with self.config_lock:
             self.etcd_client = EtcdClient(etcd_config=self.etcd_config, tls_config=self.etcd_tls_config)
 
-        """
-        self.states: dict[InsStatus, Callable]: State handle function mapping
-        """
+        # self.states: dict[InsStatus, Callable]: State handle function mapping
         self.states: dict[InsStatus, Callable] = {
             InsStatus.INITIAL: self._handle_initial,
             InsStatus.ACTIVE: self._handle_active,
             InsStatus.INACTIVE: self._handle_inactive,
+            InsStatus.PAUSED: self._handle_paused,
             InsStatus.DELETED: self._handle_deleted,
         }
 
@@ -115,6 +114,12 @@ class InstanceManager(ThreadSafeSingleton):
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_NORMAL): InsStatus.ACTIVE,
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_INIT): InsStatus.INITIAL,
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT): InsStatus.DELETED,
+            (InsStatus.ACTIVE, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_RESUMED): InsStatus.ACTIVE,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_NORMAL): InsStatus.ACTIVE,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT): InsStatus.DELETED,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_ABNORMAL): InsStatus.INACTIVE,
         }
 
         self.instances_management_thread = None
@@ -218,9 +223,7 @@ class InstanceManager(ThreadSafeSingleton):
             # Release ins_lock before ETCD I/O to avoid blocking heartbeat lookups
             success = self.etcd_client.persist_data("/controller/instance_manager", dict_data)
             if success:
-                logger.info(
-                    "Successfully persisted %d instances with version %d", len(instances_data), next_version
-                )
+                logger.info("Successfully persisted %d instances with version %d", len(instances_data), next_version)
             return success
 
         except Exception as e:
@@ -576,9 +579,7 @@ class InstanceManager(ThreadSafeSingleton):
             logger.error("Failed to handle state transition for instance %d.", ins_id)
             raise HTTPException(HEARTBEAT_HANDLER_ERROR)
 
-    """
-    State transition callback function
-    """
+    # State transition callback function
 
     def _instances_management_loop(self) -> None:
         """Instance management loop"""
@@ -613,9 +614,12 @@ class InstanceManager(ThreadSafeSingleton):
     def _handle_active(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.ACTIVE:
             return
-        if condition_event == InsConditionEvent.INSTANCE_NORMAL:
+        if condition_event in (InsConditionEvent.INSTANCE_NORMAL, InsConditionEvent.INSTANCE_RESUMED):
             instance.update_instance_status(InsStatus.ACTIVE)
-            self.notify(instance, ObserverEvent.INSTANCE_READY)
+            if condition_event == InsConditionEvent.INSTANCE_RESUMED:
+                self.notify(instance, ObserverEvent.INSTANCE_RESUMED)
+            else:
+                self.notify(instance, ObserverEvent.INSTANCE_READY)
             self._report_inst_alarm(instance, True)
             self._report_coordinator_alarm(instance, True)
         return
@@ -653,6 +657,13 @@ class InstanceManager(ThreadSafeSingleton):
                     for endpoint in endpoints.values():
                         endpoint.hb_timestamp = time.time()
         return
+
+    def _handle_paused(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
+        if condition_event == InsConditionEvent.INSTANCE_PAUSED:
+            if from_state != InsStatus.PAUSED:
+                instance.update_instance_status(InsStatus.PAUSED)
+                self.notify(instance, ObserverEvent.INSTANCE_PAUSED)
+                self._report_inst_alarm(instance)
 
     def _report_inst_alarm(self, instance: Instance, is_cleared: bool = False) -> None:
         from motor.controller.observability.observability import Observability
@@ -739,9 +750,9 @@ class InstanceManager(ThreadSafeSingleton):
     def _handle_deleted(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.DELETED:
             return
-        if (
-            condition_event == InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT
-            or condition_event == InsConditionEvent.INSTANCE_ABNORMAL
+        if condition_event in (
+            InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT,
+            InsConditionEvent.INSTANCE_ABNORMAL,
         ):
             instance.update_instance_status(InsStatus.DELETED)
             self.notify(instance, ObserverEvent.INSTANCE_REMOVED)
@@ -762,6 +773,9 @@ class InstanceManager(ThreadSafeSingleton):
         # Use override event if provided, otherwise detect event based on instance status
         if event_override is not None:
             event = event_override
+            to_state = self.transitions.get((from_state, event), None)
+        elif instance.is_all_endpoints_paused():
+            event = InsConditionEvent.INSTANCE_PAUSED
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_all_endpoints_ready():
             event = InsConditionEvent.INSTANCE_NORMAL

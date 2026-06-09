@@ -17,6 +17,7 @@ from fastapi.responses import Response
 import uvicorn
 
 from motor.common.http.cert_util import CertUtil
+
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.core.heartbeat_manager import HeartbeatManager
 from motor.common.logger import get_logger
@@ -35,7 +36,6 @@ _api_ready_event = threading.Event()
 async def lifespan(application: FastAPI):
     """Lifespan context manager for FastAPI app"""
     # Startup: signal that the server is ready
-    global _api_ready_event
     _api_ready_event.set()
     logger.info("NodeManagerAPI server is ready")
     yield
@@ -118,6 +118,48 @@ async def stop_instance(request: Request):
         ) from err
 
 
+@app.post("/node-manager/pause")
+async def pause_instance(request: Request):
+    """
+    PreStop hook: set all endpoints to PAUSED status.
+    Pod readiness probe returns false; liveness probe remains true.
+    Controller will receive PAUSED status via heartbeat and trigger
+    the pause flow to Coordinator.
+    """
+    try:
+        await asyncio.to_thread(HeartbeatManager().pause_all_endpoints)
+        hm = HeartbeatManager()
+        engine_mgmt_addrs = hm.get_engine_mgmt_addrs()
+        content = {
+            "status": "ok",
+            "message": "Endpoints set to PAUSED",
+            "engine_mgmt_addrs": engine_mgmt_addrs,
+        }
+        return Response(status_code=status.HTTP_200_OK, content=json.dumps(content))
+    except Exception as err:
+        logger.error("Failed to set endpoints to PAUSED: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to set endpoints to PAUSED"
+        ) from err
+
+
+@app.post("/node-manager/resume")
+async def resume_instance(request: Request):
+    """
+    Resume instance from PAUSED back to NORMAL status.
+    Used when PreStop is cancelled (e.g. rollout rollback).
+    """
+    try:
+        await asyncio.to_thread(HeartbeatManager().resume_all_endpoints)
+        content = {"status": "ok", "message": "Endpoints resumed to NORMAL"}
+        return Response(status_code=status.HTTP_200_OK, content=json.dumps(content))
+    except Exception as err:
+        logger.error("Failed to resume endpoints: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to resume endpoints"
+        ) from err
+
+
 @app.get("/node-manager/status")
 async def get_instance_status():
     """
@@ -152,7 +194,6 @@ class NodeManagerAPI:
         self._thread = None
 
         # Reset the ready event before starting
-        global _api_ready_event
         _api_ready_event.clear()
 
         self._thread = threading.Thread(target=self._serve_in_thread, daemon=True, name="nm_api_server")
@@ -169,7 +210,6 @@ class NodeManagerAPI:
         Returns:
             True if the server is ready, False if timeout occurred.
         """
-        global _api_ready_event
         return _api_ready_event.wait(timeout=timeout)
 
     async def stop(self):
@@ -194,9 +234,9 @@ class NodeManagerAPI:
                 raise RuntimeError("Failed to create SSL context")
             config.ssl = context
 
-            logger.info(f"Node Manager server started: https://{self.host}:{self.port}")
+            logger.info("Node Manager server started: https://%s:%s", self.host, self.port)
         else:
-            logger.info(f"Node Manager server stated: http://{self.host}:{self.port}")
+            logger.info("Node Manager server stated: http://%s:%s", self.host, self.port)
 
         self.server = uvicorn.Server(config)
         try:

@@ -30,9 +30,15 @@ for yaml_file in "$YAML_DIR"/*.yaml; do
     fi
 done
 
-# keep the same with yaml_template/engine_template.yaml terminationGracePeriodSeconds: 10
-for ((i=10; i>=1; i--)); do
-    printf "\r\033[KWaiting for pods to terminate gracefully... %2ds remaining" "$i"
+# Poll pod termination — exit as soon as all pods are fully gone
+MAX_WAIT=10
+for ((elapsed=MAX_WAIT; elapsed>=1; elapsed--)); do
+    remaining=$(kubectl get pods -n "$NAMESPACE" -o name --no-headers 2>/dev/null | wc -l)
+    if [ "$remaining" -le 0 ]; then
+        printf "\r\033[KAll pods terminated after %ds\n" "$((MAX_WAIT - elapsed))"
+        break
+    fi
+    printf "\r\033[KWaiting for %d pod(s) to terminate... %ds elapsed" "$remaining" "$elapsed"
     sleep 1
 done
 echo ""

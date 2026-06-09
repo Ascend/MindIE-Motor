@@ -124,6 +124,8 @@ class EventType(str, Enum):
     ADD = "add"
     DEL = "del"
     SET = "set"
+    PAUSE = "pause"
+    RESUME = "resume"
 
     def __repr__(self) -> str:
         return str.__repr__(self.value)  # return the value of the enum

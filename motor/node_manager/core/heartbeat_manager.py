@@ -136,6 +136,36 @@ class HeartbeatManager(ThreadSafeSingleton):
         logger.debug("All endpoints are in normal status")
         return True
 
+    def pause_all_endpoints(self) -> None:
+        """Set all managed endpoints to PAUSED status for PreStop graceful shutdown.
+
+        After this call:
+        - check_all_endpoints_normal() returns False → readiness probe fails
+        - Heartbeat reports PAUSED status to Controller
+        - Controller triggers instance PAUSE flow
+        """
+        with self._endpoint_lock:
+            for endpoint in self._endpoints:
+                endpoint.status = EndpointStatus.PAUSED
+        logger.info("All endpoints set to PAUSED for graceful shutdown")
+
+    def get_engine_mgmt_addrs(self) -> list[str]:
+        """Return engine management addresses for local metrics polling."""
+        with self._endpoint_lock:
+            return [f"{ep.ip}:{ep.mgmt_port}" for ep in self._endpoints]
+
+    def resume_all_endpoints(self) -> None:
+        """Resume all endpoints from PAUSED back to NORMAL status.
+
+        Used when PreStop is cancelled. The next heartbeat will report
+        NORMAL status, and Controller will trigger instance RESUME flow.
+        """
+        with self._endpoint_lock:
+            for endpoint in self._endpoints:
+                if endpoint.status == EndpointStatus.PAUSED:
+                    endpoint.status = EndpointStatus.NORMAL
+        logger.info("All endpoints resumed to NORMAL")
+
     def _refresh_endpoints_status_loop(self) -> None:
         # Poll each engine server's mgmt port until it responds (max 60s)
         self._wait_for_engine_servers_ready(timeout=60)
@@ -187,13 +217,6 @@ class HeartbeatManager(ThreadSafeSingleton):
                     status_value = response.get("status")
                     try:
                         detected_status = EndpointStatus(status_value)
-                        if detected_status != original_status:
-                            logger.info(
-                                "Engine Server rank %d, status change from %s to %s ",
-                                item.id,
-                                original_status,
-                                detected_status,
-                            )
                     except ValueError:
                         logger.error(
                             "Invalid status value '%s' from Engine Server %d: %s",
@@ -229,8 +252,19 @@ class HeartbeatManager(ThreadSafeSingleton):
                     original_status,
                 )
                 item.status = original_status
+            # Preserve manually-set PAUSED status (PreStop) — do not overwrite with engine-reported status
+            elif original_status == EndpointStatus.PAUSED:
+                item.status = original_status
             else:
                 item.status = detected_status
+
+            if item.status != original_status:
+                logger.info(
+                    "Engine Server rank %d, status change from %s to %s ",
+                    item.id,
+                    original_status,
+                    item.status,
+                )
 
             updated_endpoints.append(item)
 
