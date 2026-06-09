@@ -509,7 +509,41 @@
 
 ---
 
-## 6. env.json 补充说明（PD 混部）
+## 6. motor_engine_prefill_config / motor_engine_decode_config（P/D 引擎）
+
+P/D 分离部署时，`motor_engine_prefill_config` 与 `motor_engine_decode_config` 分别配置 Prefill 与 Decode 引擎。两者结构相同，均需指定 `engine_type` 与 `engine_config`；可选配置 `health_check_config` 用于虚推（虚拟推理）健康探测。
+
+**配置示例**：
+
+```json
+"motor_engine_prefill_config": {
+  "engine_type": "sglang",
+  "engine_config": { ... },
+  "health_check_config": {
+    "enable_virtual_inference": true,
+    "npu_usage_threshold": 3,
+    "max_failure_count": 6,
+    "health_collector_timeout": 2
+  }
+}
+```
+
+PD 模式下 P 与 D **各自独立配置** `health_check_config`；未配置时使用代码默认值。引擎 `engine_config` 字段说明见 [PD 分离服务部署](./pd_disaggregation_deployment.md#motor_engine_prefill_config--motor_engine_decode_configpd-引擎)。
+
+### 6.1 health_check_config（虚推健康探测）
+
+虚推由 Engine Server 周期性向推理面发送轻量请求，结合 NPU AICore 使用率判断引擎是否健康。机制说明见 [Engine Server 组件文档](../components/engine_server.md#虚推虚拟推理健康探测)。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| enable_virtual_inference | bool | `false` | 虚推总开关。为 `true` 时，在推理面 `/health` 正常后启动周期性虚推 |
+| npu_usage_threshold | int | `3` | AICore 使用率阈值（%）。虚推仅在 `0 < npu_usage_threshold <= 100` 时启动；低于该阈值且虚推失败时累计失败次数 |
+| max_failure_count | int | `6` | 连续虚推失败次数上限（在累计条件满足后），达到后 Engine Server `/status` 返回 abnormal |
+| health_collector_timeout | int | `2` | 推理面 `GET /health` 探测超时（秒）；虚推启动的前置条件 |
+
+---
+
+## 7. env.json 补充说明（PD 混部）
 
 PD 混部场景下，union Engine Server 的环境变量配置在 `env.json` 的 `motor_engine_union_env` 中。示例可参考 `examples/infer_engines/vllm/pd_hybrid/env.json`。
 

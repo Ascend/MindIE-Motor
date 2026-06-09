@@ -285,6 +285,12 @@ examples/
       "kv_rank": 0,
       "kv_connector_extra_config": {}
     }
+  },
+  "health_check_config": {
+    "enable_virtual_inference": false,
+    "npu_usage_threshold": 3,
+    "max_failure_count": 6,
+    "health_collector_timeout": 2
   }
 },
 "motor_engine_decode_config": {
@@ -300,6 +306,12 @@ examples/
     "data_parallel_rpc_port": 9000,
     "max_model_len": 2048,
     "kv_transfer_config": { ... }
+  },
+  "health_check_config": {
+    "enable_virtual_inference": false,
+    "npu_usage_threshold": 3,
+    "max_failure_count": 6,
+    "health_collector_timeout": 2
   }
 }
 ```
@@ -312,6 +324,18 @@ examples/
 |--------|------|------|
 | engine_type | string | 引擎类型，如 `vllm` |
 | engine_config | object | 引擎相关配置，含模型信息、并行策略、KV 传输与引擎原生参数 |
+| health_check_config | object | 可选；虚推（虚拟推理）健康探测配置，见下表及 [配置参考](./config_reference.md#61-health_check_config虚推健康探测) |
+
+#### health_check_config 配置项（虚推健康探测）
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| enable_virtual_inference | bool | `false` | 虚推总开关，设为 `true` 启用周期性健康探测 |
+| npu_usage_threshold | int | `3` | AICore 使用率阈值（%），用于异常判定与间隔恢复 |
+| max_failure_count | int | `6` | 连续虚推失败次数上限，达到后 `/status` 返回 abnormal |
+| health_collector_timeout | int | `2` | 推理面 `/health` 探测超时（秒） |
+
+**启用虚推**：将 P/D 配置中的 `enable_virtual_inference` 设为 `true`。`npu_usage_threshold` 建议按业务负载调整（默认 3% 表示仅在 NPU 近乎空闲时判定虚推失败）；`max_failure_count` 控制触发 abnormal 的容忍度。机制细节见 [Engine Server 组件文档](../components/engine_server.md#虚推虚拟推理健康探测)。
 
 #### engine_config 配置项（模型与并行策略）
 
@@ -365,7 +389,7 @@ prefill / decode 子字段：
 | tp_size | int | 张量并行大小 |
 
 > **说明**
-> 
+>
 >- `kv_connector_extra_config` 中 prefill/decode 的 dp_size、tp_size 一般无需手动填写，Motor 在拉起服务时会根据 `data_parallel_size` / `tensor_parallel_size` 自动刷新。
 >- 若需使用 KV 池化等能力，请改用 MultiConnector，并参考 [KV 池化部署指南](../KV_pool_deployment_guide.md) 修改 `user_config.json`，并与 `deploy.py` 配合使用。
 

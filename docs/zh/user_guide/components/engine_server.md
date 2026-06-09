@@ -18,6 +18,32 @@ Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参�
 - **健康检查**：`motor/node_manager/api_client/engine_server_api_client.py` 使用 `SafeHTTPSClient` 对 `{ip}:{mgmt_port}` 发起 **`GET /status`**，TLS 选项来自 `NodeManagerConfig.from_json().mgmt_tls_config`。
 - **停止**：`POST /node-manager/stop` 调用 `Daemon.stop`，对记录的 PID `SIGKILL`。
 
+### 虚推（虚拟推理）健康探测
+
+虚推用于在业务低负载时主动探测推理引擎是否可用，配置项位于 `user_config` 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 **`health_check_config`**，参数说明见 [配置参考第 6 节](../service_deployment/config_reference.md#6-motor_engine_prefill_config--motor_engine_decode_configpd-引擎)。
+
+**启用条件**（须同时满足）：
+
+1. `health_check_config.enable_virtual_inference` 为 `true`
+2. `0 < health_check_config.npu_usage_threshold <= 100`
+3. 推理面 `GET /health` 返回正常（由 `HealthCollector` 探测，`health_collector_timeout` 控制超时）
+
+满足条件后，`mgmt_endpoint.py` 在首次 `/status` 请求时调用 `run_virtual_inference()` 启动虚推循环。
+
+**虚推请求**：向推理面 `POST /v1/completions`，请求体为 `prompt: "1"`、`max_tokens: 1`。Decode 角色额外携带 `kv_transfer_params.do_virtual: true` 及 PD 分离相关字段。
+
+**动态探测间隔**：
+
+| AICore 峰值（约 3 秒采样窗口） | 下一轮间隔 |
+|-------------------------------|------------|
+| ≥ 80% | 20 秒 |
+| < `npu_usage_threshold` | 5 秒（默认） |
+| `[npu_usage_threshold, 80%)` | 保持当前间隔不变 |
+
+**异常判定**：当 AICore 峰值低于 `npu_usage_threshold` 且虚推请求失败时，累计连续失败次数；达到 `max_failure_count` 后，`GET /status` 返回 `abnormal`。Node Manager 的 `HeartbeatManager` 连续 5 次收到 abnormal 后触发自杀重调度。
+
+**vLLM 0.18.0 指标过滤**：启用虚推时，Engine Server 会 patch vLLM `PrometheusStatLogger`，将虚推请求（2 prompt tokens + 1 generation token）排除在 Prometheus 指标统计之外。
+
 ## 配置说明
 
 引擎与端点相关字段分布在 `user_config` 的引擎配置与 **`motor_nodemanger_config`** 等中；与 vLLM/SGLang 引擎子字段的对照见 [配置参考](../service_deployment/config_reference.md) 及其中 **`motor_engine_prefill_config` / `motor_engine_decode_config`** 等章节。TLS 等与 `EndpointConfig` 交叉的项以 `motor/config/endpoint.py` 及 `config_reference` 为准。
