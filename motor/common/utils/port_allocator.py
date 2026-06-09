@@ -196,34 +196,6 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
     )
     rows.append(_row("Coordinator", host, api.coordinator_obs_port, "auto", "observability API"))
 
-    iwc = config.inference_workers_config
-    if iwc.worker_metaserver_base_port > 0:
-        iwc.worker_metaserver_base_port = PortAllocator.allocate_auto(
-            host,
-            iwc.worker_metaserver_base_port,
-            "worker_metaserver_base_port",
-            scan_range=scan_range,
-            timeout=probe_timeout,
-        )
-        rows.append(
-            _row(
-                "Coordinator",
-                host,
-                iwc.worker_metaserver_base_port,
-                "auto",
-                "worker metaserver base",
-            )
-        )
-        for idx in range(iwc.num_workers):
-            worker_port = PortAllocator.allocate_auto(
-                host,
-                iwc.worker_metaserver_base_port + idx,
-                f"worker_metaserver_{idx}",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
-            rows.append(_row("Coordinator", host, worker_port, "auto", f"worker metaserver #{idx}"))
-
     kv_cfg = config.prefill_kv_event_config
     if kv_cfg.conductor_service:
         cond_host, cond_port = _parse_host_port(kv_cfg.conductor_service, kv_cfg.http_server_port)

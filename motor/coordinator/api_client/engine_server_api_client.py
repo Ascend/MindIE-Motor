@@ -28,11 +28,6 @@ class EngineServerApiClient:
             client = SafeHTTPSClient(timeout=2, **client_args)
             response = client.do_get("/metrics")
             if response.status_code == 200:
-                _rl.record_success(f"coordinator.engine_server.query_metrics.{address}")
-                _rl.emit_info_periodic(
-                    f"coordinator.engine_server.query_metrics.{address}",
-                    "Coordinator->EngineServer query_metrics periodic summary: succeeded {count} times in last 60s",
-                )
                 data = response.text
                 return data
             else:
@@ -62,4 +57,3 @@ class EngineServerApiClient:
             "tls_config": cls.tls_config,
         }
         return client_ars
-

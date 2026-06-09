@@ -132,7 +132,7 @@ class SafeHTTPSClient:
             )
             return response
         except requests.exceptions.SSLError as e:
-            logger.error(
+            logger.debug(
                 "SSL verify failed. url=%s, error=%s. "
                 "Possible causes: 1) CA/cert mismatch 2) expired cert "
                 "3) hostname mismatch. "
@@ -143,7 +143,7 @@ class SafeHTTPSClient:
             raise RuntimeError(f"SSL verify failed: {e}") from e
         except requests.exceptions.HTTPError as e:
             status = getattr(e.response, "status_code", "unknown")
-            logger.error(
+            logger.debug(
                 "HTTP error response. url=%s, status_code=%s, body=%s. "
                 "Possible causes: 1) peer rejected request "
                 "2) peer service down 3) auth failure.",
@@ -153,7 +153,7 @@ class SafeHTTPSClient:
             )
             raise RuntimeError(f"http response error {e.response.status_code}, {e.response.text}") from e
         except Exception as e:
-            logger.error(
+            logger.debug(
                 "HTTP request send failed. url=%s, error=%s. "
                 "Possible causes: 1) connection refused (peer down) "
                 "2) network unreachable 3) DNS failure. "
@@ -367,7 +367,7 @@ class HTTPClientPool(ThreadSafeSingleton):
             address = f"{ip}:{port}"
             client = AsyncSafeHTTPSClient.create_client(address=address, tls_config=tls_config, **client_kwargs)
             self._client_pool[pool_key] = client
-            logger.info(
+            logger.debug(
                 "HTTPClientPool warmup created new client. pool_key=%s, address=%s",
                 pool_key,
                 address,
