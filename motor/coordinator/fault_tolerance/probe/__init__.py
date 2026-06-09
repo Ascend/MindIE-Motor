@@ -9,13 +9,18 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Fault-tolerance alarm actions and contexts."""
+"""Fault-tolerance probe implementations."""
 
-from motor.coordinator.fault_tolerance.alarm.base import AlarmAction, AlarmContext
-from motor.coordinator.fault_tolerance.alarm.precision_alarm import PrecisionAlarm
+from motor.coordinator.fault_tolerance.probe.chat_probe import (
+    ChatProbe,
+    FixedQAChatProbe,
+    ProbeOutcome,
+)
+from motor.coordinator.fault_tolerance.probe.router_probe import InternalRouterProbe
 
 __all__ = [
-    "AlarmAction",
-    "AlarmContext",
-    "PrecisionAlarm",
+    "ChatProbe",
+    "FixedQAChatProbe",
+    "InternalRouterProbe",
+    "ProbeOutcome",
 ]
