@@ -24,36 +24,40 @@ from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.models.request import RequestInfo
 
+# Protocol stub bodies use ellipsis; pylint false positive (W2301).
+# pylint: disable=unnecessary-ellipsis
+
 
 class InstanceReadiness(str, Enum):
     """
     Instance readiness state for deploy mode (e.g. PD separate).
     Callers can distinguish "both P and D", "only P", "only D", "none" for routing/readiness.
     """
-    REQUIRED_MET_EPD = "required_met_epd"    # PD: both E, P and D
-    ENCODE_PREFILL = "encode_prefill"        # PD: only encode and prefill instances
-    REQUIRED_MET = "required_met"            # PD: both P and D; SINGLE_NODE: has hybrid
-    ONLY_PREFILL = "only_prefill"            # PD mode: only prefill instances
-    ONLY_DECODE = "only_decode"              # PD mode: only decode instances
-    ONLY_ENCODE = "only_encode"              # EPD mode: only encode instances
-    NONE = "none"                            # No required instances
-    UNKNOWN = "unknown"                      # Unknown deploy mode
+
+    REQUIRED_MET_EPD = "required_met_epd"  # PD: both E, P and D
+    ENCODE_PREFILL = "encode_prefill"  # PD: only encode and prefill instances
+    REQUIRED_MET = "required_met"  # PD: both P and D; SINGLE_NODE: has hybrid
+    ONLY_PREFILL = "only_prefill"  # PD mode: only prefill instances
+    ONLY_DECODE = "only_decode"  # PD mode: only decode instances
+    ONLY_ENCODE = "only_encode"  # EPD mode: only encode instances
+    NONE = "none"  # No required instances
+    UNKNOWN = "unknown"  # Unknown deploy mode
 
     def is_ready(self) -> bool:
         """True if required instances are present for the deploy mode."""
-        return self == InstanceReadiness.REQUIRED_MET or self == InstanceReadiness.REQUIRED_MET_EPD
-    
+        return self in (InstanceReadiness.REQUIRED_MET, InstanceReadiness.REQUIRED_MET_EPD)
+
     def is_run(self) -> bool:
         """True indicates that it can run normally."""
-        return (self.is_ready()
-                or self == InstanceReadiness.ONLY_PREFILL 
-                or self == InstanceReadiness.ENCODE_PREFILL)
+        return self.is_ready() or self == InstanceReadiness.ONLY_PREFILL or self == InstanceReadiness.ENCODE_PREFILL
+
 
 class ScheduledResource(BaseModel):
     """
     Represents a scheduled resource with an instance and endpoint.
     Output type of scheduling allocation.
     """
+
     instance: Instance | None = None
     endpoint: Endpoint | None = None
 
@@ -63,6 +67,7 @@ class UpdateWorkloadParams:
     """
     Parameters for update_workload (G.FNM.03: encapsulate many related args).
     """
+
     instance_id: int
     endpoint_id: int
     role: PDRole | str
@@ -81,7 +86,7 @@ class SchedulingFacade(Protocol):
     async def select_and_allocate(
         self,
         role: PDRole,
-        req_info: RequestInfo
+        req_info: RequestInfo,
     ) -> Tuple[Instance, Endpoint, Workload] | None:
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
@@ -98,4 +103,8 @@ class SchedulingFacade(Protocol):
         Check by deploy mode; returns detailed state (REQUIRED_MET, ONLY_PREFILL, ONLY_DECODE, NONE, UNKNOWN).
         Use .is_ready() for boolean, or compare to enum for routing/readiness.
         """
+        ...
+
+    async def get_available_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
+        """Return available instances for role; role=None means all roles."""
         ...

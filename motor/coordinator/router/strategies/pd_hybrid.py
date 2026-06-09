@@ -26,13 +26,28 @@ from motor.coordinator.tracer.tracing import TracerManager
 class PDHybridRouter(BaseRouter):
     """Handle request with a single PD hybrid instance"""
 
-    @staticmethod
-    def _candidate_roles() -> tuple[PDRole, ...]:
-        """
-        Prefer ROLE_U for true hybrid deployments, but keep ROLE_P fallback
-        for PD-separate degradation-to-single-node scenarios.
-        """
-        return (PDRole.ROLE_U, PDRole.ROLE_P)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._resolved_roles: tuple[PDRole, ...] | None = None
+
+    async def _resolve_candidate_roles(self) -> tuple[PDRole, ...]:
+        """Pick a single scheduling role by checking instance pools first."""
+        if self._resolved_roles is not None:
+            return self._resolved_roles
+
+        u_pool = await self._scheduler.get_available_instances(PDRole.ROLE_U)
+        if u_pool:
+            self._resolved_roles = (PDRole.ROLE_U,)
+            return self._resolved_roles
+
+        p_pool = await self._scheduler.get_available_instances(PDRole.ROLE_P)
+        if p_pool:
+            self.logger.info("No union instances available, using prefill instances for single-node scheduling")
+            self._resolved_roles = (PDRole.ROLE_P,)
+            return self._resolved_roles
+
+        self._resolved_roles = ()
+        return self._resolved_roles
 
     @contextlib.contextmanager
     def _inference_span(self) -> Iterator[Any]:
@@ -47,27 +62,14 @@ class PDHybridRouter(BaseRouter):
 
     @contextlib.asynccontextmanager
     async def _manage_hybrid_resource_context(self, attempt: int, max_retry: int):
-        """Fallback to ROLE_P only when scheduling has no ROLE_U resource."""
-        last_error = None
-        for role in self._candidate_roles():
-            try:
-                async with self._manage_resource_context(role, self.release_all) as resource:
-                    yield resource
-                    return
-            except HTTPException as role_error:
-                last_error = role_error
-                self.logger.warning(
-                    "Hybrid scheduling with role %s failed on attempt %d/%d: %s",
-                    role,
-                    attempt + 1,
-                    max_retry,
-                    role_error,
-                )
-                continue
+        """Schedule using the role resolved from instance pool pre-check."""
+        candidate_roles = await self._resolve_candidate_roles()
+        if not candidate_roles:
+            raise HTTPException(status_code=503, detail="No available instance for hybrid scheduling")
 
-        if last_error is not None:
-            raise last_error
-        raise HTTPException(status_code=503, detail="No available instance for hybrid scheduling")
+        role = candidate_roles[0]
+        async with self._manage_resource_context(role, self.release_all) as resource:
+            yield resource
 
     @contextlib.asynccontextmanager
     async def _inference_lifecycle(  # pylint: disable=contextmanager-generator-missing-cleanup

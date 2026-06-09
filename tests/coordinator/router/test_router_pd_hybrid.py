@@ -118,7 +118,7 @@ class TestRouterPDHybrid:
         def mock_has_required_instances(self, deploy_mode=None):
             return True
 
-        def mock_get_available_instances(self, role=None):
+        async def mock_get_available_instances(self, role=None):
             if role == PDRole.ROLE_U:  # PD hybrid uses ROLE_U
                 return {mock_instance.id: mock_instance}
             return {}
@@ -133,7 +133,7 @@ class TestRouterPDHybrid:
 
         monkeypatch.setattr(InstanceManager, "get_required_instances_status", mock_get_required_instances_status)
         monkeypatch.setattr(InstanceManager, "has_required_instances", mock_has_required_instances)
-        monkeypatch.setattr(InstanceManager, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
@@ -315,12 +315,19 @@ class TestRouterPDHybrid:
         assert payload["choices"][0]["message"]["content"] == "hello"
 
     @pytest.mark.asyncio
-    async def test_pd_hybrid_fallback_to_prefill_when_hybrid_pool_empty(self, monkeypatch: MonkeyPatch):
-        """Keep legacy single-node degradation: ROLE_U preferred, ROLE_P fallback."""
+    async def test_pd_hybrid_fallback_to_prefill_when_hybrid_pool_empty(self, monkeypatch: MonkeyPatch, caplog):
+        """PD degradation: pre-check empty U pool, schedule ROLE_P directly without U attempt."""
         mock_instance = self.create_mock_instance(0, PDRole.ROLE_P)
         mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
         called_roles = []
+
+        async def mock_get_available_instances(self, role=None):
+            if role == PDRole.ROLE_U:
+                return {}
+            if role == PDRole.ROLE_P:
+                return {mock_instance.id: mock_instance}
+            return {}
 
         async def mock_select_and_allocate(self, role, req_info):
             called_roles.append(role)
@@ -341,6 +348,7 @@ class TestRouterPDHybrid:
             )
             return resp
 
+        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -367,14 +375,80 @@ class TestRouterPDHybrid:
             request_manager=RequestManager(_config),
         )
 
-        response = await hybrid_router.handle_request()
+        with caplog.at_level("WARNING"):
+            response = await hybrid_router.handle_request()
         payload = json.loads(response.body.decode())
 
         assert response.status_code == status.HTTP_200_OK
         assert payload["choices"][0]["message"]["content"] == "ok"
-        assert called_roles
-        assert called_roles[0] == PDRole.ROLE_U
-        assert PDRole.ROLE_P in called_roles
+        assert called_roles == [PDRole.ROLE_P]
+        assert "Hybrid scheduling with role" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_pd_hybrid_schedules_union_when_hybrid_pool_available(self, monkeypatch: MonkeyPatch):
+        """True hybrid: pre-check finds U pool, schedule ROLE_U only."""
+        mock_instance = self.create_mock_instance(0, PDRole.ROLE_U)
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
+        called_roles = []
+
+        async def mock_get_available_instances(self, role=None):
+            if role == PDRole.ROLE_U:
+                return {mock_instance.id: mock_instance}
+            return {}
+
+        async def mock_select_and_allocate(self, role, req_info):
+            called_roles.append(role)
+            if role == PDRole.ROLE_U:
+                return mock_instance, mock_endpoint, Workload()
+            return None
+
+        async def mock_update_workload(self, params):
+            return True
+
+        async def mock_forward(self, req_data, client, timeout):
+            resp = MagicMock()
+            resp.json = MagicMock(
+                return_value={
+                    "object": "chat.completion",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "union-ok"}}],
+                }
+            )
+            return resp
+
+        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
+        monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+
+        req_info = RequestInfo(
+            req_id="rid-union-only",
+            req_data={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": False,
+            },
+            req_len=99,
+            api="v1/chat/completions",
+            entry_api="v1/chat/completions",
+        )
+
+        hybrid_router = PDHybridRouter(
+            req_info,
+            CoordinatorConfig(),
+            scheduler=Scheduler(
+                instance_provider=InstanceManager(CoordinatorConfig()),
+                config=CoordinatorConfig(),
+            ),
+            request_manager=RequestManager(_config),
+        )
+
+        response = await hybrid_router.handle_request()
+        payload = json.loads(response.body.decode())
+
+        assert response.status_code == status.HTTP_200_OK
+        assert payload["choices"][0]["message"]["content"] == "union-ok"
+        assert called_roles == [PDRole.ROLE_U]
 
 
 def _make_tracer_coordinator_config(monkeypatch: MonkeyPatch) -> MagicMock:
@@ -432,6 +506,11 @@ class TestPDHybridTracer:
         mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
+        async def mock_get_available_instances(self, role=None):
+            if role == PDRole.ROLE_U:
+                return {mock_instance.id: mock_instance}
+            return {}
+
         async def mock_select_and_allocate(self, role, req_info):
             if role == PDRole.ROLE_U:
                 return mock_instance, mock_endpoint, Workload()
@@ -440,6 +519,7 @@ class TestPDHybridTracer:
         async def mock_update_workload(self, params):
             return True
 
+        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
@@ -580,6 +660,13 @@ class TestPDHybridTracer:
         mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
+        async def mock_get_available_instances(self, role=None):
+            if role == PDRole.ROLE_U:
+                return {}
+            if role == PDRole.ROLE_P:
+                return {mock_instance.id: mock_instance}
+            return {}
+
         async def mock_select_and_allocate(self, role, req_info):
             if role == PDRole.ROLE_P:
                 return mock_instance, mock_endpoint, Workload()
@@ -598,6 +685,7 @@ class TestPDHybridTracer:
             )
             return resp
 
+        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -625,5 +713,5 @@ class TestPDHybridTracer:
 
         await hybrid_router.handle_request()
 
-        assert event_names.count("Begin Scheduled Resource") >= 2
-        assert event_names.count("Scheduled Resource ok") >= 1
+        assert event_names.count("Begin Scheduled Resource") == 1
+        assert event_names.count("Scheduled Resource ok") == 1
