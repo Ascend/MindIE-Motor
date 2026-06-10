@@ -35,6 +35,9 @@ from motor.coordinator.metrics.metric_computer import MotorMetricComputer, get_i
 
 logger = get_logger(__name__)
 
+_METRICS_FORMAT_PROMETHEUS = "prometheus"
+_METRICS_FORMAT_OPENTELEMETRY = "opentelemetry"
+
 # Mooncake Master -> a few kv_pool_* families with labels (cpu/ssd/all, usage/total/rate).
 _BYTES_PER_GB = 1024**3
 _KVPOOL_METRIC_ALLOWLIST = frozenset(
@@ -55,6 +58,8 @@ _KVPOOL_FAMILY_HELP: dict[str, str] = {
     "kv_pool_eviction": "KV pool eviction counters (stat=success|attempts)",
 }
 _SAMPLE_VALUE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{.*\})?\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
+_PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?\s+(\S+)$")
+_PROM_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
 
 
 def _emit_labeled(
@@ -232,14 +237,27 @@ class MetricsCollector(ThreadSafeSingleton):
         self,
         metrics_type: str = "full",
         role: str | None = None,
-    ) -> str:
+        metrics_format: str = _METRICS_FORMAT_PROMETHEUS,
+    ) -> str | dict[str, Any]:
         """
-        Unified metrics retrieval with type selection.  All types return Prometheus text.
+        Unified metrics retrieval with type and format selection.
 
         :param metrics_type: "full" (default), "instance", "role", "dp", or "node"
         :param role: when metrics_type is "role", filter to a specific role (e.g. "prefill", "decode")
-        :returns: Prometheus text
+        :param metrics_format: "prometheus" (default) or "opentelemetry"
+        :returns: Prometheus text or OpenTelemetry JSON-compatible dict
         """
+        normalized_format = self._normalize_metrics_format(metrics_format)
+        metrics = self._get_prometheus_metrics(metrics_type, role)
+        if normalized_format == _METRICS_FORMAT_OPENTELEMETRY:
+            return self._format_opentelemetry(metrics)
+        return metrics
+
+    def _get_prometheus_metrics(
+        self,
+        metrics_type: str = "full",
+        role: str | None = None,
+    ) -> str:
         with self._lock:
             version = self._collects_version
             collects = self._last_collects
@@ -274,6 +292,100 @@ class MetricsCollector(ThreadSafeSingleton):
                 metrics += "\n"
             metrics += pool_text
         return metrics
+
+    @staticmethod
+    def _normalize_metrics_format(metrics_format: str | None) -> str:
+        fmt = (metrics_format or _METRICS_FORMAT_PROMETHEUS).strip().lower()
+        if fmt in ("", "prom", _METRICS_FORMAT_PROMETHEUS):
+            return _METRICS_FORMAT_PROMETHEUS
+        if fmt in ("otel", _METRICS_FORMAT_OPENTELEMETRY):
+            return _METRICS_FORMAT_OPENTELEMETRY
+        raise ValueError(f"Unsupported metrics format: {metrics_format}")
+
+    @staticmethod
+    def _parse_prometheus_labels(label_text: str | None) -> list[dict[str, dict[str, str]]]:
+        if not label_text:
+            return []
+        return [{"key": key, "value": {"stringValue": value}} for key, value in _PROM_LABEL_RE.findall(label_text)]
+
+    @classmethod
+    def _format_opentelemetry(cls, prometheus_text: str) -> dict[str, Any]:
+        metrics: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        current_metric = ""
+        for raw_line in prometheus_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("# HELP "):
+                parts = line.split(maxsplit=3)
+                if len(parts) < 4:
+                    continue
+                current_metric = parts[2]
+                if current_metric not in metrics:
+                    metrics[current_metric] = {
+                        "name": current_metric,
+                        "description": parts[3],
+                        "unit": "",
+                        "type": "",
+                        "dataPoints": [],
+                    }
+                    order.append(current_metric)
+                else:
+                    metrics[current_metric]["description"] = metrics[current_metric].get("description") or parts[3]
+                continue
+            if line.startswith("# TYPE "):
+                parts = line.split(maxsplit=3)
+                if len(parts) != 4:
+                    continue
+                current_metric = parts[2]
+                if current_metric not in metrics:
+                    metrics[current_metric] = {
+                        "name": current_metric,
+                        "description": "",
+                        "unit": "",
+                        "type": parts[3],
+                        "dataPoints": [],
+                    }
+                    order.append(current_metric)
+                else:
+                    metrics[current_metric]["type"] = parts[3]
+                continue
+            sample = _PROM_SAMPLE_RE.match(line)
+            if not sample:
+                continue
+            sample_name, label_text, value = sample.groups()
+            metric_name = current_metric if current_metric else sample_name
+            if metric_name not in metrics:
+                metrics[metric_name] = {
+                    "name": metric_name,
+                    "description": "",
+                    "unit": "",
+                    "type": "",
+                    "dataPoints": [],
+                }
+                order.append(metric_name)
+            metrics[metric_name]["dataPoints"].append(
+                {
+                    "sampleName": sample_name,
+                    "attributes": cls._parse_prometheus_labels(label_text),
+                    "asDouble": value,
+                }
+            )
+
+        return {
+            "resourceMetrics": [
+                {
+                    "resource": {"attributes": []},
+                    "scopeMetrics": [
+                        {
+                            "scope": {"name": "motor.coordinator.metrics"},
+                            "metrics": [metrics[name] for name in order],
+                        }
+                    ],
+                }
+            ]
+        }
 
     @classmethod
     def _inject_labels(

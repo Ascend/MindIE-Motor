@@ -179,6 +179,8 @@ class BaseRouter(ABC):
             trace_obj.trace_headers = TracerManager().inject_trace_context()
             trace_obj.set_trace_attribute("requestId", self.req_info.req_id)
             trace_obj.set_trace_attribute("stream", is_stream)
+            if trace_obj.error_message:
+                trace_obj.set_trace_error_message(trace_obj.error_message)
             yield span
 
     @abstractmethod
@@ -327,6 +329,8 @@ class BaseRouter(ABC):
         error_detail = f"Scheduling failed after {self.config.exception_config.max_retry} attempts, role: {role}"
         if last_exception:
             error_detail += f", last error: {str(last_exception)}"
+        trace_obj = self.req_info.trace_obj
+        trace_obj.set_trace_error_message(error_detail, is_meta=self.is_meta)
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=error_detail)
 
@@ -395,6 +399,8 @@ class BaseRouter(ABC):
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
+                error_message = f"Stream request failed: {e.response.text}"
+                trace_obj.set_trace_error_message(error_message, is_meta=self.is_meta)
                 raise httpx.HTTPStatusError(message=e.response.text, request=e.request, response=e.response)
             count_token = 0
             pending = b""
@@ -474,6 +480,8 @@ class BaseRouter(ABC):
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
+            error_message = f"Post request failed: {e.response.text}"
+            trace_obj.set_trace_error_message(error_message, is_meta=self.is_meta)
             raise httpx.HTTPStatusError(message=e.response.text, request=e.request, response=e.response)
         await response.aclose()
         return response
@@ -537,6 +545,7 @@ class BaseRouter(ABC):
                 except Exception as e:
                     self.logger.error(f"Post Decode error: {e}")
                     self.req_info.cancel_scope()
+                    trace_obj.set_trace_error_message(f"Post Decode error: {e}", is_meta=self.is_meta)
                     trace_obj.set_trace_exception(e)
 
                     if attempt < max_retry - 1:

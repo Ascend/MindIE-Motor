@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 #
 # MindIE is licensed under both the Mulan PSL v2 and the Apache License, Version 2.0.
@@ -146,6 +145,9 @@ async def handle_request(
         DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
     ) and readiness in {InstanceReadiness.ONLY_PREFILL, InstanceReadiness.ENCODE_PREFILL}:
         deploy_mode = DeployMode.SINGLE_NODE  # fallback only when has P but no D
+        error_message = f"PD separate service fallback to hybrid mode: config_mode={config_mode}, readiness={readiness}"
+        req_info.trace_obj.set_trace_error_message(error_message)
+        logger.warning(error_message)
     else:
         deploy_mode = config_mode
 
@@ -161,6 +163,7 @@ async def handle_request(
     try:
         return await router_impl.handle_request()
     except Exception as e:
+        req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.error(
             f"Error occurred in proxy server endpoint: {req_info.api}, error: {str(e)}",
             exc_info=True,

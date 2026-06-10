@@ -20,8 +20,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from motor.common.logger import get_logger
 from motor.config.coordinator import CoordinatorConfig
@@ -107,10 +107,18 @@ class ObservabilityServer(BaseCoordinatorServer):
         async def get_metrics(request: Request):
             metrics_type = request.query_params.get("type", "full")
             role = request.query_params.get("role", None)
-            result = MetricsCollector().get_metrics(metrics_type=metrics_type, role=role)
+            metrics_format = request.query_params.get("format", "prometheus")
+            try:
+                result = MetricsCollector().get_metrics(
+                    metrics_type=metrics_type,
+                    role=role,
+                    metrics_format=metrics_format,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
             if isinstance(result, str):
                 return PlainTextResponse(content=result)
-            return result
+            return JSONResponse(content=result)
 
         @self.observability_app.get("/instance/metrics")
         async def get_instance_metrics():

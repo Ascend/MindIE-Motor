@@ -42,7 +42,9 @@ class PDHybridRouter(BaseRouter):
 
         p_pool = await self._scheduler.get_available_instances(PDRole.ROLE_P)
         if p_pool:
-            self.logger.info("No union instances available, using prefill instances for single-node scheduling")
+            error_message = "No union instances available, using prefill instances for single-node scheduling"
+            self.logger.info(error_message)
+            self.req_info.trace_obj.set_trace_error_message(error_message, is_meta=True)
             self._resolved_roles = (PDRole.ROLE_P,)
             return self._resolved_roles
 
@@ -58,6 +60,8 @@ class PDHybridRouter(BaseRouter):
             trace_obj.meta_span = span
             trace_obj.meta_trace_headers = TracerManager().inject_trace_context()
             trace_obj.set_trace_attribute("requestId", self.req_info.req_id, is_meta=True)
+            if trace_obj.meta_error_message:
+                trace_obj.set_trace_error_message(trace_obj.meta_error_message, is_meta=True)
             yield span
 
     @contextlib.asynccontextmanager
@@ -65,7 +69,9 @@ class PDHybridRouter(BaseRouter):
         """Schedule using the role resolved from instance pool pre-check."""
         candidate_roles = await self._resolve_candidate_roles()
         if not candidate_roles:
-            raise HTTPException(status_code=503, detail="No available instance for hybrid scheduling")
+            error_message = "No available instance for hybrid scheduling"
+            self.req_info.trace_obj.set_trace_error_message(error_message, is_meta=True)
+            raise HTTPException(status_code=503, detail=error_message)
 
         role = candidate_roles[0]
         async with self._manage_resource_context(role, self.release_all) as resource:
@@ -140,6 +146,8 @@ class PDHybridRouter(BaseRouter):
                     # If chunk was already sent, cannot retry the HTTP stream.
                     # Send error chunk and terminate.
                     if self.first_chunk_sent or attempt == max_retry - 1:
+                        trace_obj.set_trace_error_message(f"Streaming request failed: {e}")
+                        trace_obj.set_trace_error_message(f"Streaming request failed: {e}", is_meta=True)
                         trace_obj.set_trace_status(e)
                         trace_obj.set_trace_exception(e, is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
@@ -193,6 +201,8 @@ class PDHybridRouter(BaseRouter):
 
                     trace_obj.set_trace_exception(e)
                     trace_obj.set_trace_exception(e, is_meta=True)
+                    trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}")
+                    trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}", is_meta=True)
                     if attempt < max_retries - 1:
                         wait_time = self.config.exception_config.retry_delay * (2**attempt)
                         self.logger.info("Retrying non-streaming request in %.2f seconds...", wait_time)
