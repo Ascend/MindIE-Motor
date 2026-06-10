@@ -1,4 +1,4 @@
-# MindIE-Motor 
+# MindIE-Motor
 
 > [English](./OVERVIEW.md) | 中文
 
@@ -28,58 +28,37 @@
 官方预构建镜像 Tag 遵循以下格式：
 
 ```text
-<Motor版本>-vllm-ascend-<vllm-ascend版本>-<产品系列>-<python版本>-<操作系统>-lts
+<MindIE版本>-<产品系列>-<python版本>-<操作系统>-lts-<架构>
 ```
 
 | 字段 | 示例值 | 说明 |
 |---|---|---|
-| `Motor版本` | `3.0.0` | Motor 版本号 |
-| `vllm-ascend版本` | `v0.18.0` | 基础推理引擎 vllm-ascend 版本 |
-| `产品系列` | `800I-A2`、`800I-A3`、`300I-Duo` | 目标昇腾产品系列 |
+| `MindIE版本` | `3.0.0`、 `3.0.0b1`、 `3.0.0b2`| MindIE-Motor 版本号 |
+| `产品系列` | `800I-A2`、`800I-A3` | 目标昇腾产品系列 |
 | `python版本` | `py3.11` | Python 版本 |
-| `操作系统` | `Ubuntu24.04-lts` | 基础操作系统及发行版标识 |
+| `操作系统` | `Ubuntu24.04-lts`、`openEuler24.03-lts` | 基础操作系统及发行版标识 |
+| `架构` | `aarch64`、`x86_64` | CPU 架构 |
 
-### 镜像仓库地址
+### 3.0.0 版本 Dockerfile 目录
 
-MindIE-Motor 官方镜像托管在 Quay 仓库：
-
-```text
-quay.io/ascend/mindie-motor
-```
-
-**拉取示例：**
-
-```bash
-# Atlas 800I A2（昇腾 910B）
-docker pull quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A2-py3.11-Ubuntu24.04-lts
-
-# Atlas 800I A3（昇腾 A3）
-docker pull quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A3-py3.11-Ubuntu24.04-lts
-```
-
-> 为提高下载速度，可将 `quay.io` 替换为 `quay.nju.edu.cn`。
-
-**本地构建镜像 Tag 示例（`build_image.sh` 默认参数）：**
+每个版本/硬件/系统/架构组合均有独立 Dockerfile
 
 ```text
-mindie-pymotor:0.1.0-800I-A2-py3.11-Ubuntu24.04-x86_64
+docker/mindie-motor-vllm/<tag>/Dockerfile
 ```
 
-> 注：本地通过 `build_image.sh` 构建的镜像命名规则与官方预构建镜像不同；操作系统字段取自 `SYSTEM` 环境变量（默认 `Ubuntu24.04`），并附带架构后缀。
+| Tag | Dockerfile |
+|---|---|
+| `3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-aarch64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-aarch64/Dockerfile) |
+| `3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-x86_64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-x86_64/Dockerfile) |
+| `3.0.0-800I-A2-py3.11-openEuler24.03-lts-aarch64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A2-py3.11-openEuler24.03-lts-aarch64/Dockerfile) |
+| `3.0.0-800I-A2-py3.11-openEuler24.03-lts-x86_64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A2-py3.11-openEuler24.03-lts-x86_64/Dockerfile) |
+| `3.0.0-800I-A3-py3.11-Ubuntu24.04-lts-aarch64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A3-py3.11-Ubuntu24.04-lts-aarch64/Dockerfile) |
+| `3.0.0-800I-A3-py3.11-Ubuntu24.04-lts-x86_64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A3-py3.11-Ubuntu24.04-lts-x86_64/Dockerfile) |
+| `3.0.0-800I-A3-py3.11-openEuler24.03-lts-aarch64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A3-py3.11-openEuler24.03-lts-aarch64/Dockerfile) |
+| `3.0.0-800I-A3-py3.11-openEuler24.03-lts-x86_64` | [Dockerfile](./mindie-motor-vllm/3.0.0-800I-A3-py3.11-openEuler24.03-lts-x86_64/Dockerfile) |
 
-### 构建参数
-
-构建脚本通过环境变量读取以下参数，全部为可选项（均带有默认值），按需在命令行
-覆盖即可。
-
-| 变量 | 说明 | 是否必填 | 默认值 | 示例值 |
-|------|------|----------|--------|--------|
-| SYSTEM | 服务器操作系统及版本 | 否 | `Ubuntu24.04` | Ubuntu24.04 / openEuler24.03 |
-| DEVICE | 昇腾设备型号 | 否 | `910b` | 310p / 910b / 910c |
-| ARCH | 系统架构 | 否 | `$(uname -m)` | x86_64 / aarch64 |
-| PYMOTOR_VERSION | MindIE-PyMotor 版本号 | 否 | `0.1.0` | 0.1.0 |
-| VLLM_ASCEND_VERSION | vllm-ascend 基础镜像版本/分支 | 否 | `main` | v0.18.0 / v0.13.0 / main |
-| IMAGE_VERSION | 最终构建镜像的版本标识 | 否 | `${PYMOTOR_VERSION}` | v1.0.0 |
+每个 Dockerfile 均已内置对应的基础镜像（vllm-ascend v0.18.0 系列）、目标平台、镜像 Tag、入口脚本与使用协议，无需额外脚本、外部 docker 文件或环境变量选择。
 
 ---
 
@@ -90,111 +69,39 @@ mindie-pymotor:0.1.0-800I-A2-py3.11-Ubuntu24.04-x86_64
 #### 安装驱动
 
 - 宿主机上已经安装好固件与驱动，具体可参考[安装驱动和固件](https://www.hiascend.com/document/detail/zh/mindie/100/envdeployment/instg/mindie_instg_0006.html)。
-- 宿主机上已经安装好Docker。
+- 宿主机上已经安装好 Docker。
 
 ---
 
-### 拉取 MindIE-Motor 镜像
-
-从官方仓库拉取预构建镜像（按目标硬件与 vllm-ascend 版本选择对应 Tag）：
-
-```bash
-# Atlas 800I A2（昇腾 910B，build_image.sh 默认 DEVICE=910b）
-docker pull quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A2-py3.11-Ubuntu24.04-lts
-
-# Atlas 800I A3（昇腾 A3）
-docker pull quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A3-py3.11-Ubuntu24.04-lts
-```
-
 ### 构建 MindIE-Motor 镜像
 
-镜像直接基于本地仓库源码构建：`docker/Dockerfile` 会负责安装 Python 依赖、调用
-`build.sh` 编译 wheel 包，并把它安装到基础镜像中。
-
-仓库已经提供好封装脚本 `docker/build_image.sh`，在 **仓库根目录** 直接执行即可：
+每个 Dockerfile 会在构建时自动 clone 指定分支与 commit 的源码，**无需本地源码或构建上下文**。将 `<tag>` 替换为目标组合后执行：
 
 ```bash
-# 默认参数：Ubuntu24.04 / 910b / vllm-ascend tag "main"
-bash docker/build_image.sh
+TAG="3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-aarch64"
 
-# 通过环境变量覆盖默认值
-SYSTEM=openEuler24.03 DEVICE=910c VLLM_ASCEND_VERSION=v0.13.0 \
-    bash docker/build_image.sh
-```
-
-脚本内容如下，供参考：
-
-```sh
-#!/bin/bash
-# 基于本地源码构建 MindIE-PyMotor 镜像。
-# 在仓库根目录执行：
-#   bash docker/build_image.sh
-# 通过环境变量覆盖默认值，例如：
-#   SYSTEM=openEuler24.03 DEVICE=910c VLLM_ASCEND_VERSION=v0.13.0 \
-#       bash docker/build_image.sh
-set -euo pipefail
-
-SYSTEM=${SYSTEM:-Ubuntu24.04}                       # Ubuntu24.04 / openEuler24.03
-DEVICE=${DEVICE:-910b}                              # 310p / 910b / 910c
-ARCH=${ARCH:-$(uname -m)}                           # x86_64 / aarch64
-PYMOTOR_VERSION=${PYMOTOR_VERSION:-0.1.0}           # MindIE-PyMotor 版本号
-VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION:-main}    # vllm-ascend 基础镜像 tag 前缀
-IMAGE_VERSION=${IMAGE_VERSION:-${PYMOTOR_VERSION}}  # 产物镜像的版本标识
-
-case "${DEVICE}" in
-    310p) PRODUCT=300I-Duo ;;
-    910b) PRODUCT=800I-A2 ;;
-    910c) PRODUCT=800I-A3 ;;
-    *) echo "不支持的 DEVICE: ${DEVICE}" >&2; exit 1 ;;
-esac
-
-case "${SYSTEM}_${DEVICE}" in
-    Ubuntu24.04_310p)    BASE_IMAGE_TAG=${VLLM_ASCEND_VERSION}-310p ;;
-    openEuler24.03_310p) BASE_IMAGE_TAG=${VLLM_ASCEND_VERSION}-310p-openeuler ;;
-    Ubuntu24.04_910b)    BASE_IMAGE_TAG=${VLLM_ASCEND_VERSION} ;;
-    openEuler24.03_910b) BASE_IMAGE_TAG=${VLLM_ASCEND_VERSION}-openeuler ;;
-    Ubuntu24.04_910c)    BASE_IMAGE_TAG=${VLLM_ASCEND_VERSION}-a3 ;;
-    openEuler24.03_910c) BASE_IMAGE_TAG=${VLLM_ASCEND_VERSION}-a3-openeuler ;;
-    *) echo "不支持的 SYSTEM/DEVICE 组合: ${SYSTEM}/${DEVICE}" >&2; exit 1 ;;
-esac
-
-IMAGE_TAG="mindie-pymotor:${IMAGE_VERSION}-${PRODUCT}-py3.11-${SYSTEM}-${ARCH}"
-
-PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-cd "${PROJECT_ROOT}"
-
-echo "正在基于 quay.nju.edu.cn/ascend/vllm-ascend:${BASE_IMAGE_TAG} 构建 ${IMAGE_TAG} ..."
-docker build \
-    --network=host \
-    --build-arg "BASE_IMAGE_TAG=${BASE_IMAGE_TAG}" \
-    -t "${IMAGE_TAG}" \
-    -f docker/Dockerfile \
+docker build --network=host \
+    --platform=linux/arm64 \
+    -t "mindie-motor-vllm:${TAG}" \
+    -f "docker/mindie-motor-vllm/${TAG}/Dockerfile" \
     .
-
-echo "构建完成，镜像 tag: ${IMAGE_TAG}"
 ```
+
+各 Dockerfile 头部注释中已写明对应的 `--platform`、源码仓库信息与完整 `docker build` 命令，可直接复制使用。
+
+3.0.0 版本源码映射：
+
+| 镜像版本 | 仓库 | 分支 | Commit |
+|---|---|---|---|
+| `3.0.0` | `https://gitcode.com/Ascend/MindIE-PyMotor.git` | `v3.0.0` | `383d1787ed3fc27aaad2db9cc5506d40c258c279` |
 
 构建过程依次完成：
 
-1. 拉取基础镜像 `quay.nju.edu.cn/ascend/vllm-ascend:${BASE_IMAGE_TAG}`。
-2. 把当前源码复制到镜像内的 `/opt/MindIE-PyMotor`。
-3. 在镜像中执行：
-
-    ```bash
-    pip install -r requirements.txt
-    bash build.sh
-    cd dist && pip install motor*.whl --force-reinstall
-    ```
-
-4. 接着编译并安装 `examples/features/observability/` 下的 `ccae_reporter` 组件，
-   使镜像具备对接 CCAE 集群自智引擎的能力：
-
-    ```bash
-    cd examples/features/observability
-    pip install -r requirements.txt
-    bash build.sh
-    pip install --force-reinstall dist/ccae_reporter-*.whl
-    ```
+1. 拉取对应 vllm-ascend 基础镜像。
+2. Clone 指定分支与 commit 的 MindIE-PyMotor 源码到 `/opt/MindIE-PyMotor`。
+3. 安装依赖、编译并安装 `motor` wheel 包。
+4. 编译并安装 `ccae_reporter` 可观测组件。
+5. 在 Dockerfile 内联生成容器入口脚本与使用协议。
 
 ### 运行 MindIE-Motor 容器
 
@@ -202,10 +109,8 @@ echo "构建完成，镜像 tag: ${IMAGE_TAG}"
 
 #### 最小验证命令
 
-以下命令可验证镜像能否正常启动并访问 NPU（将 `IMAGE_NAME` 替换为实际镜像 tag）：
-
 ```bash
-IMAGE_NAME="quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A2-py3.11-Ubuntu24.04-lts"
+IMAGE_NAME="mindie-motor-vllm:3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-aarch64"
 
 docker run --rm -it \
   --device=/dev/davinci_manager \
@@ -225,8 +130,8 @@ docker run --rm -it \
 实际部署需提前准备 `boot.sh`、`user_config.json` 等配置文件，并挂载到容器内。完整端到端流程见 [docker-only 单容器部署指南](../docs/zh/developer_guide/docker_only/single_container_docker_only.md)。
 
 ```bash
-CONFIGMAP_PATH="/path/to/configmap"   # 绝对路径，目录内需含 boot.sh、user_config.json 等
-IMAGE_NAME="quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A2-py3.11-Ubuntu24.04-lts"
+CONFIGMAP_PATH="/path/to/configmap"
+IMAGE_NAME="mindie-motor-vllm:3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-aarch64"
 
 docker run -u root --rm --name mindie-motor \
   -e ASCEND_RUNTIME_OPTIONS=NODRV \
@@ -268,13 +173,10 @@ docker run -u root --rm --name mindie-motor \
 ### 如何二次开发
 
 ```bash
-# 以 MindIE-PyMotor 镜像为基础镜像，叠加用户软件
-FROM quay.io/ascend/mindie-motor:3.0.0-vllm-ascend-v0.18.0-800I-A2-py3.11-Ubuntu24.04-lts
+FROM mindie-motor-vllm:3.0.0-800I-A2-py3.11-Ubuntu24.04-lts-aarch64
 
 RUN apt update -y && \
     apt install gcc ...
-
-...
 ```
 
 ---
@@ -285,7 +187,6 @@ RUN apt update -y && \
 |---|---|---|
 | 昇腾 910B | Atlas 800T A2、Atlas 900 A2 PoD | ARM64 / x86_64 |
 | 昇腾 A3 | Atlas 800T A3 | ARM64 / x86_64 |
-| 昇腾 310P | Atlas 300I Pro、Atlas 300V Pro | ARM64 / x86_64 |
 
 ---
 
@@ -293,16 +194,7 @@ RUN apt update -y && \
 
 | 镜像版本 | 说明 | 备注 |
 | - | - | - |
-| 3.0.0 | MindIE 3.0.0 Release版本 | 2026/5/6：首次发布 |
-| 3.0.0b2 | MindIE 3.0.0 Beta2版本 |  2026/4/21：首次发布，MindIE Atlas 300IDUO硬件支持动态加载、卸载Lora，支持逐Tensor加载，支持Qwen3-VL 8B/30B-A3B模型 |
-| 2.3.1 | MindIE 2.3.1 补丁版本 | 2026/4/16：首次发布，解决DSv3.1 w8a8c8测试BFCL-multiturn精度劣化、请求嵌套层限制10层等问题|
-| 2.3.0 | MindIE 2.3.0 商用版本 | 2026/1/18：首次发布|
-| 2.2.RC1 | MindIE 2.2 候选版本 | 2025/12/31：ras-restart脚本优化；2025/11/21：首次发布|
-| 2.2.T32 | DeepSeek-V3.2性能优化 | 2025/12/05：性能优化，仅供DSv3.2尝鲜，不建议运行其他模型。指导文档 https://www.hiascend.com/forum/thread-0278200283718182227-1-1.html|
-| 2.1.RC2 | MindIE 2.1 补丁版本 | 2025/9/21：首次发布|
-| 2.1.RC1 | MindIE 2.1 候选版本 | 2025/8/15：transformers版本默认升级至4.51.0 |
-| 2.0.RC2 | MindIE 2.0 候选版本 |  |
-| 1.0.0 | MindIE 1.0 正式版本 | |
+| 3.0.0 | MindIE 3.0.0 Release 版本 | 2026/5/6：首次发布 |
 
 ## 许可证
 
