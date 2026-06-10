@@ -13,6 +13,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 
 from motor.common.logger import get_logger
+from motor.common.alarm.scale_p2d_event import ScaleP2DEvent, ScaleP2DReason
 from motor.controller.fault_tolerance.strategy import StrategyBase
 from motor.controller.core.instance_manager import InstanceManager
 from motor.common.resources import Instance, PDRole, InsStatus
@@ -143,11 +144,36 @@ class ScaleP2DStrategy(StrategyBase):
                     elapsed_time,
                     self.context.last_error or "none",
                 )
+                if self.context.current_state == RecoveryState.SUCCESS:
+                    self._report_scale_p2d_event()
             else:
                 logger.info(
                     "ScaleP2D strategy finished before context init. instance_id=%d",
                     instance_id,
                 )
+
+    def _report_scale_p2d_event(self) -> None:
+        """Report one ScaleP2D event after the Decode instance recovery succeeds."""
+        try:
+            from motor.controller.observability.observability import Observability
+
+            event = ScaleP2DEvent(
+                reason_id=ScaleP2DReason.D_INSTANCE_RECOVERED_BY_SCALE_P2D,
+                d_instance_id=self.context.d_instance_id,
+                d_instance_job_name=self.context.d_instance_job_name,
+                killed_p_instance_ids=[inst.id for inst in self.context.selected_p_instances],
+            )
+            Observability().add_alarm(event)
+            logger.info(
+                "Reported ScaleP2D recovery event. instance_id=%d, job_name=%s",
+                self.context.d_instance_id,
+                self.context.d_instance_job_name,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to report ScaleP2D recovery event. instance_id=%d",
+                self.context.d_instance_id if self.context else -1,
+            )
 
     def _execute_recovery_flow(self) -> bool:
         """
