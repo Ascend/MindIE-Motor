@@ -18,10 +18,16 @@ from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
 from lib.update_config_whitelist import validate_update_config_whitelist
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
-    get_baseline_config_from_configmap, exec_all_kubectl_multi, exec_all_kubectl_singer,
-    create_motor_config_configmap, init_service_domain_name, get_deploy_mode_from_config,
-    update_kv_pool_enabled_flag, update_kv_conductor_enabled_flag, update_engine_type_flag,
-    set_user_config_path
+    get_baseline_config_from_configmap,
+    exec_all_kubectl_multi,
+    exec_all_kubectl_singer,
+    create_motor_config_configmap,
+    init_service_domain_name,
+    get_deploy_mode_from_config,
+    update_kv_pool_enabled_flag,
+    update_kv_conductor_enabled_flag,
+    update_engine_type_flag,
+    set_user_config_path,
 )
 from lib.generator.controller import generate_yaml_controller
 from lib.generator.coordinator import generate_yaml_coordinator
@@ -30,12 +36,17 @@ from lib.generator.kv_pool import generate_yaml_kv_pool, normalize_kv_cache_pool
 from lib.generator.kv_conductor import generate_yaml_kv_conductor, normalize_kv_conductor_config
 from lib.generator.single_container import generate_yaml_single_container
 from lib.generator.infer_service import (
-    generate_yaml_infer_service_set, init_infer_service_domain_name, update_infer_service_replicas_only
+    generate_yaml_infer_service_set,
+    init_infer_service_domain_name,
+    update_infer_service_replicas_only,
 )
 from lib.generator.mf_store import generate_yaml_mf_store
 from lib.config_validator import (
-    validate_deploy_mode_consistency, validate_deploy_mode_value,
-    validate_only_instance_changed, resolve_config_paths, validate_pd_hybrid_config,
+    validate_deploy_mode_consistency,
+    validate_deploy_mode_value,
+    validate_only_instance_changed,
+    resolve_config_paths,
+    validate_pd_hybrid_config,
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
 )
@@ -46,8 +57,10 @@ def handle_update_config(user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
-        raise FileNotFoundError("ConfigMap motor-config not found or has no user_config in cluster. "
-                                "Please deploy once before updating configmap.")
+        raise FileNotFoundError(
+            "ConfigMap motor-config not found or has no user_config in cluster. "
+            "Please deploy once before updating configmap."
+        )
 
     baseline_deploy = baseline_config[C.MOTOR_DEPLOY_CONFIG]
     if deploy_config.get(C.HYBRID_INSTANCES_NUM) != baseline_deploy.get(C.HYBRID_INSTANCES_NUM):
@@ -55,8 +68,9 @@ def handle_update_config(user_config):
             f"{C.HYBRID_INSTANCES_NUM} in user_config differs from the deployed baseline. "
             "Use --update_instance_num to scale instances instead of --update_config."
         )
-    if (deploy_config.get(C.P_INSTANCES_NUM) != baseline_deploy.get(C.P_INSTANCES_NUM)
-            or deploy_config.get(C.D_INSTANCES_NUM) != baseline_deploy.get(C.D_INSTANCES_NUM)):
+    if deploy_config.get(C.P_INSTANCES_NUM) != baseline_deploy.get(C.P_INSTANCES_NUM) or deploy_config.get(
+        C.D_INSTANCES_NUM
+    ) != baseline_deploy.get(C.D_INSTANCES_NUM):
         raise ValueError(
             "P/D instance count in user_config differs from the deployed baseline. "
             "Use --update_instance_num to scale instances instead of --update_config."
@@ -78,8 +92,7 @@ def handle_update_instance_num(user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
-        raise FileNotFoundError("ConfigMap motor-config not found. "
-                                "Please deploy once before scaling.")
+        raise FileNotFoundError("ConfigMap motor-config not found. Please deploy once before scaling.")
     validate_only_instance_changed(user_config, baseline_config)
 
     baseline_deploy = baseline_config.get(C.MOTOR_DEPLOY_CONFIG, {})
@@ -113,41 +126,28 @@ def handle_update_instance_num(user_config):
     else:
         generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
 
-    exec_all_kubectl_multi(
-        deploy_config, baseline_config, deploy_mode_arg, user_config=user_config
-    )
+    exec_all_kubectl_multi(deploy_config, baseline_config, deploy_mode_arg, user_config=user_config)
     logger.info("instance num update end.")
 
 
 def deploy_services_multi_yaml(paths, user_config, dry_run=False):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     init_service_domain_name(paths, deploy_config)
-    generate_yaml_controller(
-        paths["controller_input_yaml"], paths["controller_output_yaml"], user_config
-    )
-    generate_yaml_coordinator(
-        paths["coordinator_input_yaml"], paths["coordinator_output_yaml"], user_config
-    )
+    generate_yaml_controller(paths["controller_input_yaml"], paths["controller_output_yaml"], user_config)
+    generate_yaml_coordinator(paths["coordinator_input_yaml"], paths["coordinator_output_yaml"], user_config)
     generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
     if k8s_utils.g_kv_pool_enabled:
         kv_pool_config = normalize_kv_cache_pool_config(user_config)
-        generate_yaml_kv_pool(
-            paths["kv_pool_input_yaml"], paths["kv_pool_output_yaml"], user_config, kv_pool_config
-        )
+        generate_yaml_kv_pool(paths["kv_pool_input_yaml"], paths["kv_pool_output_yaml"], user_config, kv_pool_config)
     if k8s_utils.g_kv_conductor_enabled:
         kv_conductor_config = normalize_kv_conductor_config(user_config)
         generate_yaml_kv_conductor(
-            paths["kv_conductor_input_yaml"], paths["kv_conductor_output_yaml"],
-            user_config, kv_conductor_config
+            paths["kv_conductor_input_yaml"], paths["kv_conductor_output_yaml"], user_config, kv_conductor_config
         )
     if k8s_utils.g_mf_store_enabled:
-        generate_yaml_mf_store(
-            paths["mf_store_input_yaml"], paths["mf_store_output_yaml"], user_config
-        )
+        generate_yaml_mf_store(paths["mf_store_input_yaml"], paths["mf_store_output_yaml"], user_config)
     if not dry_run:
-        exec_all_kubectl_multi(
-            deploy_config, None, C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, user_config=user_config
-        )
+        exec_all_kubectl_multi(deploy_config, None, C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, user_config=user_config)
 
 
 def deploy_services_infer_service_set(paths, user_config, dry_run=False):
@@ -160,14 +160,10 @@ def deploy_services_infer_service_set(paths, user_config, dry_run=False):
             "Please ensure infer_service_template.yaml exists in yaml_template folder."
         )
     init_infer_service_domain_name(infer_input, deploy_config)
-    generate_yaml_infer_service_set(
-        infer_input, paths["infer_service_output_yaml"], user_config
-    )
+    generate_yaml_infer_service_set(infer_input, paths["infer_service_output_yaml"], user_config)
     if not dry_run:
         deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
-        exec_all_kubectl_multi(
-            deploy_config, None, deploy_mode_arg, user_config=user_config
-        )
+        exec_all_kubectl_multi(deploy_config, None, deploy_mode_arg, user_config=user_config)
 
 
 def deploy_services_single_container(paths, user_config, dry_run=False):
@@ -181,7 +177,7 @@ def deploy_services_single_container(paths, user_config, dry_run=False):
 
 
 def update_shell_add_kv_patch():
-    """ patch for vllm 0.18.0 """
+    """patch for vllm 0.18.0"""
 
     start_str = "# patch_begin"
     end_str = "# patch_end"
@@ -191,23 +187,22 @@ def update_shell_add_kv_patch():
         tempfile.gettempdir(), "motor", "examples", "deployer", "patch", "kv_vllm_multi_connector.patch"
     )
 
-    with open(C.BOOT_SHELL_PATH, 'r') as f:
+    with open(C.BOOT_SHELL_PATH, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     if lines:
         if lines[0].startswith(start_str):
             return
 
     new_patch_lines = [
-        f"{start_str}\n"
-        f"md5sum {multi_connector_path}\n",
+        f"{start_str}\nmd5sum {multi_connector_path}\n",
         f"patch -p0 {multi_connector_path}  < {patch_path}\n",
         f"md5sum {multi_connector_path}\n",
-        f"{end_str}\n"
+        f"{end_str}\n",
     ]
 
     new_lines = new_patch_lines + lines
 
-    with open(C.BOOT_SHELL_PATH, 'w') as f:
+    with open(C.BOOT_SHELL_PATH, 'w', encoding='utf-8') as f:
         f.writelines(new_lines)
 
 
@@ -268,7 +263,7 @@ def _start_log_collection(deploy_config):
     config = configparser.ConfigParser()
     config.read(ini_path)
     config.set("LogSetting", "name_space", job_id)
-    with open(ini_path, "w") as f:
+    with open(ini_path, "w", encoding='utf-8') as f:
         config.write(f)
     logger.info("Updated log_config.ini: name_space = %s", job_id)
 
@@ -297,29 +292,24 @@ def parse_arguments():
         "--dir",
         type=str,
         help="Directory containing user_config.json and env.json, "
-        "select from examples/infer_engines/ based on your engine and model requirements"
+        "select from examples/infer_engines/ based on your engine and model requirements",
     )
     parser.add_argument(
         "--user_config_path",
         "--config",
         type=str,
-        help="Path of user config, takes precedence over config_dir if specified"
+        help="Path of user config, takes precedence over config_dir if specified",
     )
     parser.add_argument(
-        "--env_config_path",
-        "--env",
-        type=str,
-        help="Path of env config, takes precedence over config_dir if specified"
+        "--env_config_path", "--env", type=str, help="Path of env config, takes precedence over config_dir if specified"
     )
     parser.add_argument(
-        "--update_config",
-        action="store_true",
-        help="Only refresh configmap without applying deployments"
+        "--update_config", action="store_true", help="Only refresh configmap without applying deployments"
     )
     parser.add_argument(
         "--update_instance_num",
         action="store_true",
-        help="Scale instances by comparing ConfigMap baseline with current user_config"
+        help="Scale instances by comparing ConfigMap baseline with current user_config",
     )
     parser.add_argument(
         "--dry-run",
@@ -340,8 +330,15 @@ def parse_arguments():
 
 
 def calculate_pod_count(deploy_config):
-    p_pod_cnt = deploy_config[C.P_INSTANCES_NUM] * deploy_config[C.SINGER_P_INSTANCES_NUM]
-    d_pod_cnt = deploy_config[C.D_INSTANCES_NUM] * deploy_config[C.SINGER_D_INSTANCES_NUM]
+    if C.P_INSTANCES_NUM in deploy_config and C.SINGER_P_INSTANCES_NUM in deploy_config:
+        p_pod_cnt = deploy_config[C.P_INSTANCES_NUM] * deploy_config[C.SINGER_P_INSTANCES_NUM]
+    else:
+        p_pod_cnt = 0
+
+    if C.D_INSTANCES_NUM in deploy_config and C.SINGER_D_INSTANCES_NUM in deploy_config:
+        d_pod_cnt = deploy_config[C.D_INSTANCES_NUM] * deploy_config[C.SINGER_D_INSTANCES_NUM]
+    else:
+        d_pod_cnt = 0
 
     if C.E_INSTANCES_NUM in deploy_config and C.SINGER_E_INSTANCES_NUM in deploy_config:
         e_pod_cnt = deploy_config[C.E_INSTANCES_NUM] * deploy_config[C.SINGER_E_INSTANCES_NUM]
@@ -375,9 +372,7 @@ def main():
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
         validate_pd_hybrid_config(user_config)
         paths = get_deploy_paths()
-        validate_pd_hybrid_infer_service_template(
-            user_config, paths["infer_service_input_yaml"]
-        )
+        validate_pd_hybrid_infer_service_template(user_config, paths["infer_service_input_yaml"])
     validate_instance_nums(user_config)
 
     if args.update_config:

@@ -218,7 +218,7 @@ class VLLMProgressMonitor:
         print("━" * SEPARATOR_WIDTH)
 
 
-def shell_get_pod(name_space: str) -> list[str] | None:
+def shell_get_pod(name_space: str):
     """
     Get list of running vLLM pods in a namespace.
 
