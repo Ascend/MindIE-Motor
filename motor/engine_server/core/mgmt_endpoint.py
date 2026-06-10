@@ -25,6 +25,7 @@ from motor.common.logger import get_logger
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.endpoint import Endpoint
 from motor.engine_server.core.health_collector import HealthCollector
+from motor.engine_server.core.snapshot_monitor import SnapshotMonitor
 from motor.engine_server.core.sim_inference import SimInference
 from motor.engine_server.constants import constants
 from motor.engine_server.constants.constants import (
@@ -35,6 +36,7 @@ from motor.engine_server.constants.constants import (
     NORMAL_STATUS,
     ABNORMAL_STATUS,
 )
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot
 
 
 logger = get_logger(__name__)
@@ -66,6 +68,7 @@ def attach_metrics_router(app: FastAPI):
 class MgmtEndpoint(Endpoint):
     def __init__(self, config: IConfig):
         endpoint_config = config.get_endpoint_config()
+        self.snapshot_enabled = endpoint_config.snapshot_metadata is not None
         self.host = endpoint_config.host
         self.mgmt_port = endpoint_config.mgmt_port
         self.mgmt_tls_config = endpoint_config.deploy_config.mgmt_tls_config
@@ -123,6 +126,14 @@ class MgmtEndpoint(Endpoint):
             try:
                 is_healthy = await self.health_collector.is_healthy()
                 if is_healthy:
+                    if self.snapshot_enabled:
+                        if not is_restored_from_host_side_snapshot() and not SnapshotMonitor().is_suspend_done:
+                            return {STATUS_KEY: INIT_STATUS}
+                        elif is_restored_from_host_side_snapshot() and not SnapshotMonitor().is_resume_done:
+                            return {STATUS_KEY: INIT_STATUS}
+                        elif not is_restored_from_host_side_snapshot() and SnapshotMonitor().is_suspend_done:
+                            return {STATUS_KEY: NORMAL_STATUS}
+
                     async with self._lock:
                         if not self._virtual_inference_started:
                             self.run_virtual_inference()

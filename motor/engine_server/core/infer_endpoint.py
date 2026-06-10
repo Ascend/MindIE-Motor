@@ -59,6 +59,8 @@ class InferEndpoint(Endpoint):
         self.init_request_handlers()
         self._register_routes()
 
+        self._register_snapshot_routes()
+
     @abstractmethod
     def get_lifespan(self) -> Callable[[FastAPI], AsyncGenerator[None, None]]:
         """Return lifespan async generator; state (openai_serving_chat etc.) must be set in lifespan."""
@@ -75,11 +77,11 @@ class InferEndpoint(Endpoint):
             self._run_server()
         elif self._server_process and not self._server_process.is_alive():
             self._server_process.start()
-            logger.info(f"InferEndpoint started in process: http://{self.host}:{self.port}")
+            logger.info("InferEndpoint started in process: http://%s:%s", self.host, self.port)
 
     def join(self) -> None:
         self._server_process.join()
-        logger.error(f"infer_endpoint process exited with code {self._server_process.exitcode}")
+        logger.error("infer_endpoint process exited with code %s", self._server_process.exitcode)
 
     def wait(self) -> None:
         """Block until infer server exits. No-op when HTTP runs in-process (run() already blocks)."""
@@ -399,6 +401,48 @@ class InferEndpoint(Endpoint):
 
         self._register_profile_routes_if_enabled()
 
+    def _register_snapshot_routes(self):
+        @self.app.post("/suspend")
+        async def suspend_engine(raw_request: Request):
+            model_save_path = raw_request.query_params.get("model_save_path")
+            if model_save_path is None:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST.value,
+                    detail="Missing required parameter: model_save_path",
+                )
+            if not all(
+                callable(getattr(self.app.state.engine_client, method_name, None))
+                for method_name in ["suspend", "resume"]
+            ):
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+                    detail="Snapshot suspend/resume is not supported for this engine.",
+                )
+            await self.app.state.engine_client.suspend(model_save_path=model_save_path)
+            return Response(status_code=200)
+
+        @self.app.post("/resume")
+        async def resume_engine(raw_request: Request):
+            data_parallel_master_ip = raw_request.query_params.get("data_parallel_master_ip")
+            model_path = raw_request.query_params.get("model_path")
+            if data_parallel_master_ip is None or model_path is None:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST.value,
+                    detail="Missing required parameter: data_parallel_master_ip and model_path",
+                )
+            if not all(
+                callable(getattr(self.app.state.engine_client, method_name, None))
+                for method_name in ["suspend", "resume"]
+            ):
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+                    detail="Snapshot suspend/resume is not supported for this engine.",
+                )
+            await self.app.state.engine_client.resume(
+                data_parallel_master_ip=data_parallel_master_ip, model_path=model_path
+            )
+            return Response(status_code=200)
+
     def _run_server(self):
         config_kwargs = {
             "app": self.app,
@@ -418,9 +462,9 @@ class InferEndpoint(Endpoint):
                 config.ssl = ssl_context
             else:
                 raise RuntimeError("Failed to create ssl context")
-            logger.info(f"InferEndpoint started: https://{self.host}:{self.port}")
+            logger.info("InferEndpoint started: https://%s:%s", self.host, self.port)
         else:
-            logger.info(f"InferEndpoint started: http://{self.host}:{self.port}")
+            logger.info("InferEndpoint started: http://%s:%s", self.host, self.port)
 
         self._server = uvicorn.Server(config)
         if not self._stop_event.is_set():

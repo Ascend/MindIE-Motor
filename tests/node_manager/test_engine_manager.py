@@ -10,10 +10,9 @@
 
 import os
 import sys
-import json
 import pytest
 import signal
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
 # Set environment variable for config path
 os.environ["USER_CONFIG_PATH"] = "tests/jsons/useruser_config.json".replace("\\", "/")
@@ -22,36 +21,17 @@ os.environ["ROLE"] = "both"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from motor.node_manager.core.engine_manager import EngineManager
+from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.http_msg_spec import StartCmdMsg, RegisterMsg, ReregisterMsg
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import ParallelConfig, PDRole
 
-
-@pytest.fixture
-def config_data():
-    return {
-        "parallel_config": {"tp_size": 2, "pp_size": 1},
-        "role": "both",
-        "controller_api_dns": "localhost",
-        "controller_api_port": 8080,
-        "node_manager_port": 8080,
-        "model_name": "vllm",
-    }
+from tests.node_manager.conftest import apply_node_manager_test_config, create_config_mock
 
 
-def create_config_mock(config_data):
-    def mock_side_effect(file_path, mode):
-        file_path_str = str(file_path)
-        if "user_config.json" in file_path_str:
-            return mock_open(read_data=json.dumps(config_data)).return_value
-        return mock_open().return_value
-
-    return mock_side_effect
-
-
-@pytest.fixture
-def engine_manager(config_data):
+@pytest.fixture(name="engine_manager")
+def _engine_manager_fixture(config_data):
     """Create EngineManager instance with mocked config"""
     with (
         patch("motor.config.node_manager.safe_open") as mock_safe_open,
@@ -68,20 +48,14 @@ def engine_manager(config_data):
                 del EngineManager._instances[EngineManager]
 
         config = NodeManagerConfig()
-        # Manually set the configuration data
-        config.basic_config.parallel_config = ParallelConfig(
-            tp_size=config_data["parallel_config"]["tp_size"], pp_size=config_data["parallel_config"]["pp_size"]
-        )
-        config.basic_config.job_name = config_data.get("model_name", "test_job")
-        config.basic_config.role = PDRole(config_data.get("role", "both"))
-        config.api_config.node_manager_port = config_data.get("node_manager_port", 8080)
+        apply_node_manager_test_config(config, config_data)
 
         manager = EngineManager(config)
         yield manager
 
 
-@pytest.fixture
-def sample_endpoints():
+@pytest.fixture(name="sample_endpoints")
+def _sample_endpoints_fixture():
     """Create sample endpoints"""
     return [
         Endpoint(id=0, ip="192.168.1.100", business_port="8080", mgmt_port="9090"),
@@ -89,8 +63,8 @@ def sample_endpoints():
     ]
 
 
-@pytest.fixture
-def sample_start_cmd_msg(sample_endpoints):
+@pytest.fixture(name="sample_start_cmd_msg")
+def _sample_start_cmd_msg_fixture(sample_endpoints):
     """Create sample StartCmdMsg"""
     return StartCmdMsg(
         job_name="test_job",
@@ -131,7 +105,7 @@ class TestEngineManager:
     def test_singleton_pattern(self, mock_thread_class, mock_safe_open, config_data):
         """Test singleton pattern"""
         mock_safe_open.side_effect = create_config_mock(config_data)
-        mock_thread = MagicMock()
+        mock_thread_class.return_value = MagicMock()
 
         # Clear singleton instance
         if hasattr(EngineManager, "_instances") and EngineManager in EngineManager._instances:
@@ -485,3 +459,94 @@ class TestD2DWeightTransfer:
         new_config = NodeManagerConfig()
         engine_manager.update_config(new_config)
         engine_manager._fault_reporter.update_config.assert_called_once_with(new_config, engine_manager.endpoints)
+
+
+class TestSnapshotSupport:
+    """Tests for snapshot restore helpers added in EngineManager."""
+
+    def test_get_snapshot_metadata_path_uses_custom_path(self, engine_manager):
+        engine_manager._config.snapshot_config.snapshot_metadata_path = "/custom/snapshot_metadata.json"
+        assert engine_manager.get_snapshot_metadata_path() == "/custom/snapshot_metadata.json"
+
+    def test_get_snapshot_metadata_path_returns_default(self, engine_manager):
+        from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
+
+        engine_manager._config.snapshot_config.snapshot_metadata_path = ""
+        with patch("motor.node_manager.core.engine_manager.os.path.exists", return_value=False):
+            assert engine_manager.get_snapshot_metadata_path() == MOTOR_SNAPSHOT_METADATA_PATH
+
+    @patch("motor.node_manager.core.engine_manager.update_snapshot_metadata")
+    @patch("motor.node_manager.core.engine_manager.load_snapshot_metadata")
+    @patch("motor.node_manager.core.engine_manager.os.makedirs")
+    def test_engine_suspend_prepare_initializes_metadata(
+        self, mock_makedirs, mock_load, mock_update, engine_manager, tmp_path
+    ):
+        from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_WEIGHT_DIR
+
+        metadata_path = str(tmp_path / "snapshot_metadata.json")
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        engine_manager._config.snapshot_config.snapshot_metadata_path = ""
+        mock_load.side_effect = ValueError("missing field")
+
+        with patch.object(engine_manager, "get_snapshot_metadata_path", return_value=metadata_path):
+            engine_manager.engine_suspend_prepare()
+
+        mock_makedirs.assert_called()
+        mock_update.assert_called_once_with(metadata_path, "model_save_path", MOTOR_SNAPSHOT_WEIGHT_DIR)
+        assert os.path.exists(metadata_path)
+
+    def test_engine_suspend_prepare_skipped_when_snapshot_disabled(self, engine_manager):
+        engine_manager._config.snapshot_config.enable_snapshot = False
+        with patch("motor.node_manager.core.engine_manager.os.makedirs") as mock_makedirs:
+            engine_manager.engine_suspend_prepare()
+            mock_makedirs.assert_not_called()
+
+    @patch("motor.node_manager.core.engine_manager.get_pod_ip", return_value="10.1.2.3")
+    @patch("motor.node_manager.core.engine_manager.load_snapshot_metadata")
+    @patch("motor.node_manager.core.engine_manager.os.path.exists", return_value=True)
+    def test_register_prepare_after_restore_refreshes_config(
+        self, _mock_exists, mock_load, mock_get_pod_ip, engine_manager
+    ):
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        engine_manager._config.snapshot_config.snapshot_metadata_path = "/snapshot/snapshot_metadata.json"
+        engine_manager._config.basic_config.job_name = "old-job"
+        engine_manager._config.api_config.pod_ip = "10.0.0.1"
+
+        mock_controller_config = MagicMock()
+        mock_controller_config.api_config.controller_api_dns = "controller.old-ns.svc.cluster.local"
+        ControllerApiClient.controller_config = mock_controller_config
+
+        mock_load.side_effect = lambda _path, field: {
+            "job_name": "restored-job",
+            "namespace": "new-ns",
+        }[field]
+
+        engine_manager.register_prepare_after_restore()
+
+        assert engine_manager._config.basic_config.job_name == "restored-job"
+        assert engine_manager._config.api_config.pod_ip == "10.1.2.3"
+        assert (
+            ControllerApiClient.controller_config.api_config.controller_api_dns == "controller.new-ns.svc.cluster.local"
+        )
+
+    @patch("motor.node_manager.core.engine_manager.update_snapshot_metadata")
+    @patch("motor.node_manager.core.engine_manager.load_snapshot_metadata")
+    def test_engine_resume_prepare_updates_missing_fields(
+        self, mock_load, mock_update, engine_manager, sample_start_cmd_msg, tmp_path
+    ):
+        from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_WEIGHT_DIR
+
+        metadata_path = str(tmp_path / "snapshot_metadata.json")
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        engine_manager._config.snapshot_config.snapshot_metadata_path = ""
+        mock_load.side_effect = ValueError("missing field")
+
+        with patch.object(engine_manager, "get_snapshot_metadata_path", return_value=metadata_path):
+            engine_manager.engine_resume_prepare(sample_start_cmd_msg)
+
+        mock_update.assert_any_call(metadata_path, "model_load_path", MOTOR_SNAPSHOT_WEIGHT_DIR)
+        mock_update.assert_any_call(
+            metadata_path,
+            "data_parallel_master_ip",
+            sample_start_cmd_msg.master_dp_ip,
+        )

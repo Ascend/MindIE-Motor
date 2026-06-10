@@ -246,6 +246,8 @@ class EndpointConfig:
     d2d_peer_ips: str | None = None
     deploy_config: DeployConfig = None
 
+    snapshot_metadata: str | None = None
+
     @classmethod
     def parse_cli_args(cls) -> argparse.Namespace:
         parser = argparse.ArgumentParser(description="EngineServer - Universal Inference Engine Service")
@@ -267,6 +269,11 @@ class EndpointConfig:
             default=None,
             help="Comma-separated IPs of peer instances for D2D weight transfer",
         )
+        parser.add_argument(
+            "--snapshot-metadata",
+            default=None,
+            help="Snapshot metadata file (JSON format), enable snapshot function",
+        )
         return parser.parse_args()
 
     @classmethod
@@ -286,6 +293,7 @@ class EndpointConfig:
             dp_rank=cli_args.dp_rank,
             d2d_peer_ips=cli_args.d2d_peer_ips,
             node_rank=cli_args.node_rank,
+            snapshot_metadata=cli_args.snapshot_metadata,
         )
         endpoint_config.validate()
         endpoint_config.load_deploy_config()
@@ -305,6 +313,11 @@ class EndpointConfig:
             raise ValueError(f"config file {self.config_path} does not exist")
         if not FileValidator(self.config_path).check_not_soft_link().check_file_size().check().is_valid():
             raise ValueError(f"{self.config_path} is not a valid file path.")
+        if self.snapshot_metadata is not None:
+            if not os.path.exists(self.snapshot_metadata):
+                raise ValueError(f"snapshot metadata file {self.snapshot_metadata} does not exist")
+            if not FileValidator(self.snapshot_metadata).check_not_soft_link().check_file_size().check().is_valid():
+                raise ValueError(f"{self.snapshot_metadata} is not a valid file path")
 
     def load_deploy_config(self):
         self.deploy_config = DeployConfig.load(self.config_path, role=self.role)

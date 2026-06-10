@@ -134,7 +134,12 @@ def main() -> int:
     # Log configuration summary
     log_config_summary()
 
-    config_watcher = start_config_file_watcher(config, on_config_updated)
+    # Start configuration file watcher
+    # Disabled when container snapshot is enabled, container snapshot does not support inotify ops
+    if config.snapshot_config.enable_snapshot:
+        logger.info("[snapshot] Snapshot enabled, configuration file watcher disabled")
+    else:
+        config_watcher = start_config_file_watcher(config, on_config_updated)
 
     logger.info("All modules started, monitoring...")
 

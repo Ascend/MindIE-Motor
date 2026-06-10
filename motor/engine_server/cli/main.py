@@ -54,6 +54,17 @@ def main():
     config = config_factory.parse()
     logger.info("successfully parsed %s engine configuration", endpoint_config.engine_type)
 
+    snapshot_sentinel = None
+    if endpoint_config.snapshot_metadata is not None:
+        from motor.engine_server.core.snapshot_sentinel import SnapshotSentinel
+
+        snapshot_sentinel = SnapshotSentinel(endpoint_config)
+        snapshot_sentinel.start()
+        logger.info(
+            "[snapshot] Snapshot metadata given, launching snapshot sentinel thread "
+            "to save the device-side snapshot once the inference service is ready."
+        )
+
     mgmt_endpoint: MgmtEndpoint = MgmtEndpoint(config)
     infer_endpoint: InferEndpoint = EndpointFactory().get_infer_endpoint(config)
 
@@ -64,6 +75,11 @@ def main():
     logger.info("shutting down endpoints and child processes...")
     mgmt_endpoint.shutdown()
     infer_endpoint.shutdown()
+    if snapshot_sentinel is not None:
+        snapshot_sentinel.stop()
+        snapshot_sentinel.join(timeout=5)
+        if snapshot_sentinel.is_alive():
+            logger.warning("[snapshot] snapshot sentinel thread did not exit within timeout")
     logger.info("endpoints and child processes shut down")
 
 

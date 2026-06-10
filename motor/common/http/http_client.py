@@ -103,8 +103,13 @@ class SafeHTTPSClient:
     def post(self, endpoint: str, data: dict | None = None) -> dict[str, Any]:
         return self.request('POST', endpoint, data=data)
 
-    def do_post(self, endpoint: str, data: dict | None = None) -> Response:
-        return self._request('POST', endpoint, data=data)
+    def do_post(
+        self,
+        endpoint: str,
+        data: dict | None = None,
+        query_params: dict | None = None,
+    ) -> Response:
+        return self._request('POST', endpoint, data=data, params=query_params)
 
     def close(self) -> None:
         logger.debug("SafeHTTPSClient closing. address=%s", self.base_url)

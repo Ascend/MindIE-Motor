@@ -183,12 +183,16 @@ def apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type):
     if node_type in label_value_map:
         pod_spec[C.NODE_SELECTOR][label_key] = label_value_map[node_type]
         logger.info(
-            f"Applied PD heterogeneous node selector: node_type={node_type}, {label_key}={label_value_map[node_type]}"
+            "Applied PD heterogeneous node selector: node_type=%s, %s=%s",
+            node_type,
+            label_key,
+            label_value_map[node_type],
         )
     else:
         logger.warning(
-            f"PD heterogeneous enabled but unexpected node_type={node_type}, "
-            f"expected one of {list(label_value_map.keys())}, node selector not applied"
+            "PD heterogeneous enabled but unexpected node_type=%s, expected one of %s, node selector not applied",
+            node_type,
+            list(label_value_map.keys()),
         )
 
 
@@ -271,7 +275,7 @@ def validate_instance_nums(user_config):
 
 
 def generate_yaml_engine(input_yaml, output_file, user_config):
-    logger.info(f"Generating YAML from {input_yaml} to {output_file}")
+    logger.info("Generating YAML from %s to %s", input_yaml, output_file)
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     # generate yaml engine E
     e_total = obtain_engine_e_instance_total(deploy_config)

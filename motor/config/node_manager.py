@@ -40,18 +40,21 @@ from motor.config.config_utils import (
 from motor.config.log_config import LoggingConfig
 from motor.config.port_allocator_config import PortAllocatorConfig
 
+
 FILE_ENCODING = "utf-8"
 
 PP = "pp_size"
 TP = "tp_size"
 DP = "dp_size"
 BASIC_CONFIG_KEY = "basic_config"
+SNAPSHOT_CONFIG_KEY = "snapshot_config"
 PARALLEL_CONFIG_KEY = "parallel_config"
 MOTOR_NODE_MANAGER_CONFIG_KEY = "motor_nodemanger_config"
 MOTOR_ENGINE_ENCODE_CONFIG_KEY = "motor_engine_encode_config"
 MOTOR_ENGINE_PREFILL_CONFIG_KEY = "motor_engine_prefill_config"
 MOTOR_ENGINE_DECODE_CONFIG_KEY = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG_KEY = "motor_engine_union_config"
+MOTOR_CONTAINER_SNAPSHOT_CONFIG_KEY = "motor_container_snapshot_config"
 ENGINE_CONFIG_KEY = "engine_config"
 KV_TRANSFER_CONFIG_KEY = "kv_transfer_config"
 KV_CONNECTOR_KEY = "kv_connector"
@@ -71,6 +74,8 @@ ENABLE_MULTI_ENDPOINTS_KEY = "enable_multi_endpoints"
 ENGINE_TYPE_VLLM = "vllm"
 ENGINE_TYPE_SGLANG = "sglang"
 
+ENABLE_SNAPSHOT_KEY = "enable_snapshot"
+SNAPSHOT_METADATA_PATH_KEY = "snapshot_metadata_path"
 
 logger = get_logger(__name__)
 
@@ -118,6 +123,14 @@ class BasicConfig:
     enable_multi_endpoints: bool = True
     # Cross-node PCP configuration
     nnodes: int = 1
+
+
+@dataclass
+class SnapshotConfig:
+    """Snapshot configuration class"""
+
+    enable_snapshot: bool = False
+    snapshot_metadata_path: str = ""
 
 
 @dataclass
@@ -249,6 +262,7 @@ class NodeManagerConfig:
     mgmt_tls_config: TLSConfig = field(default_factory=TLSConfig)
     endpoint_config: EndpointConfig = field(default_factory=EndpointConfig)
     basic_config: BasicConfig = field(default_factory=BasicConfig)
+    snapshot_config: SnapshotConfig = field(default_factory=SnapshotConfig)
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     single_container_config: SingleContainerNodemanagerConfig = field(default_factory=SingleContainerNodemanagerConfig)
     fault_tolerance_config: NodeManagerFaultToleranceConfig = field(default_factory=NodeManagerFaultToleranceConfig)
@@ -380,6 +394,12 @@ class NodeManagerConfig:
 
         _update_tls_config([MGMT_TLS_CONFIG], config_data, user_cfg)
 
+        snapshot_cfg = user_cfg.get(MOTOR_CONTAINER_SNAPSHOT_CONFIG_KEY, {})
+        config_data[SNAPSHOT_CONFIG_KEY] = {
+            ENABLE_SNAPSHOT_KEY: snapshot_cfg.get(ENABLE_SNAPSHOT_KEY, False),
+            SNAPSHOT_METADATA_PATH_KEY: snapshot_cfg.get(SNAPSHOT_METADATA_PATH_KEY, ""),
+        }
+
         return config_data
 
     @classmethod
@@ -435,6 +455,9 @@ class NodeManagerConfig:
 
         if "endpoint_config" in cfg:
             update_config_from_dict(config.endpoint_config, cfg["endpoint_config"])
+
+        if SNAPSHOT_CONFIG_KEY in cfg:
+            update_config_from_dict(config.snapshot_config, cfg[SNAPSHOT_CONFIG_KEY])
 
         if BASIC_CONFIG_KEY in cfg:
             basic_cfg = cfg[BASIC_CONFIG_KEY]
@@ -647,6 +670,11 @@ class NodeManagerConfig:
             f"    ├─ Multi Endpoints:     {self.basic_config.enable_multi_endpoints}\n"
             f"    ├─ Endpoint Count:      {self.endpoint_config.endpoint_num}\n"
             f"    └─ Hardware Type:       {self.basic_config.hardware_type}\n"
+            "\n"
+            "  Snapshot Configuration:\n"
+            f"    ├─ Snapshot Enable:     "
+            f"{'Enabled' if self.snapshot_config.enable_snapshot else 'Disabled'}\n"
+            f"    └─ Metadata Path:     {self.snapshot_config.snapshot_metadata_path or '(default)'}\n"
             "\n"
             "  Parallel Configuration:\n"
             f"    ├─ TP Size:          TP={self.basic_config.parallel_config.tp_size}\n"

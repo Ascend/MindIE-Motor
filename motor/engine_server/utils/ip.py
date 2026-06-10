@@ -31,9 +31,19 @@ def port_valid_check(port: int) -> None:
         raise ValueError(f"{port} port must be between 1024 and 65535")
 
 
-def is_valid_ipv6_address(address: str) -> bool:
+def is_valid_ipv6_address(address: str | None) -> bool:
+    if not address or not isinstance(address, str):
+        return False
     try:
         ipaddress.IPv6Address(address)
         return True
-    except ValueError:
+    except (ValueError, TypeError):
         return False
+
+
+def build_endpoint(ip: str | None, port: int) -> str:
+    if not ip:
+        raise ValueError("ip must not be empty")
+    if is_valid_ipv6_address(ip):
+        return f"[{ip}]:{port}"
+    return f"{ip}:{port}"

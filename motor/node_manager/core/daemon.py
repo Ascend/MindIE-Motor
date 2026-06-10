@@ -20,6 +20,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
 from motor.config.node_manager import NodeManagerConfig
+from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
 
 
 logger = get_logger(__name__)
@@ -41,6 +42,12 @@ class Daemon(ThreadSafeSingleton):
         self.device_num = config.basic_config.device_num
         self.single_container_flag = config.single_container_config.single_container_flag
         self.enable_multi_endpoints = config.basic_config.enable_multi_endpoints
+        self.enable_snapshot = config.snapshot_config.enable_snapshot
+        self.snapshot_metadata_path = (
+            config.snapshot_config.snapshot_metadata_path
+            if config.snapshot_config.snapshot_metadata_path != ""
+            else MOTOR_SNAPSHOT_METADATA_PATH
+        )
         if self.single_container_flag:
             self.device_offset = config.single_container_config.device_offset
             self.kv_port = config.single_container_config.kv_port
@@ -55,18 +62,18 @@ class Daemon(ThreadSafeSingleton):
         try:
             port = int(params.business_port)
             if not (MIN_PORT <= port <= MAX_PORT):
-                logger.error(f"Port {port} is out of valid range")
+                logger.error("Port %s is out of valid range", port)
                 return False
         except ValueError:
-            logger.error(f"Invalid port value: {params.business_port}")
+            logger.error("Invalid port value: %s", params.business_port)
             return False
         try:
             ipaddress.ip_address(params.ip)
         except ValueError:
-            logger.error(f"Invalid IP address: {params.ip}")
+            logger.error("Invalid IP address: %s", params.ip)
             return False
         except Exception as e:
-            logger.error(f"Error validating IP address {params.ip}: {e}")
+            logger.error("Error validating IP address %s: %s", params.ip, e)
             return False
 
         return True
@@ -108,7 +115,7 @@ class Daemon(ThreadSafeSingleton):
 
                 if self.enable_multi_endpoints:
                     device_ids_str = self._calc_visible_device_ids(i, device_size)
-                    logger.info(f"Device IDs: {device_ids_str}")
+                    logger.info("Device IDs: %s", device_ids_str)
                     env["ASCEND_RT_VISIBLE_DEVICES"] = device_ids_str
 
                 cmd = [
@@ -132,6 +139,8 @@ class Daemon(ThreadSafeSingleton):
                     "--config-path",
                     str(Env.user_config_path),
                 ]
+                if self.enable_snapshot:
+                    cmd.extend(["--snapshot-metadata", self.snapshot_metadata_path])
                 if self.single_container_flag:
                     cmd.extend(["--kv-port", str(self.kv_port)])
                     cmd.extend(["--dp-rpc-port", str(self.dp_rpc_port)])
@@ -141,13 +150,13 @@ class Daemon(ThreadSafeSingleton):
                     cmd.extend(["--d2d-peer-ips", ",".join(d2d_peer_ips)])
                     logger.info("D2D peer IPs: %s", d2d_peer_ips)
                 logger.info(" ".join(cmd))
-                process = subprocess.Popen(cmd, shell=False, env=env)
+                process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
                 if process.poll() is not None:
-                    raise RuntimeError(f"Engine process exited immediately with code {process.returncode}")
+                    raise RuntimeError("Engine process exited immediately with code %s" % process.returncode)
                 with self._pids_lock:
                     self.engine_pids.append(process.pid)
         except Exception as e:
-            raise RuntimeError(f"Failed to pull engine: {e}") from e
+            raise RuntimeError("Failed to pull engine: %s" % e) from e
 
     def stop(self):
         with self._pids_lock:
@@ -156,14 +165,13 @@ class Daemon(ThreadSafeSingleton):
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGKILL)
-                logger.info(f"Killed engine process with PID: {pid}")
+                logger.info("Killed engine process with PID: %s", pid)
             except ProcessLookupError:
-                logger.info(f"Process {pid} already terminated")
+                logger.info("Process %s already terminated", pid)
             except PermissionError:
-                logger.error(f"No permission to kill process {pid}")
+                logger.error("No permission to kill process %s", pid)
             except Exception as e:
-                logger.error(f"Failed to kill process {pid}: {e}")
-        return
+                logger.error("Failed to kill process %s: %s", pid, e)
 
     def _calc_visible_device_ids(self, index: int, device_size: int) -> str:
         """Calculate visible device IDs string for ASCEND_RT_VISIBLE_DEVICES.

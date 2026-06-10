@@ -99,7 +99,7 @@ ENGINE_TYPE_SGLANG = "sglang"
 SERVER_BASE_NAME_MAP = {
     ENGINE_TYPE_VLLM: ENGINE_TYPE_VLLM,
     ENGINE_TYPE_MINDIE_LLM: ENGINE_TYPE_MINDIE_SERVER,
-    ENGINE_TYPE_SGLANG: ENGINE_TYPE_SGLANG
+    ENGINE_TYPE_SGLANG: ENGINE_TYPE_SGLANG,
 }
 LOG_PATH = "plog-path"
 DEPLOY_YAML_ROOT_PATH = "./yaml_template"
@@ -119,7 +119,15 @@ PRIVILEGED = "privileged"
 
 HARDWARE_TYPE_800I_A2 = "800I_A2"
 HARDWARE_TYPE_800I_A3 = "800I_A3"
-HARDWARE_TYPE_950I_A5 = ["350-Atlas-8", "350-Atlas-16", "350-Atlas-4p-8", "350-Atlas-4p-16", "850-Atlas-8p-8", "850-SuperPod-Atlas-8", "950-SuperPod-Atlas-8"]
+HARDWARE_TYPE_950I_A5 = [
+    "350-Atlas-8",
+    "350-Atlas-16",
+    "350-Atlas-4p-8",
+    "350-Atlas-4p-16",
+    "850-Atlas-8p-8",
+    "850-SuperPod-Atlas-8",
+    "950-SuperPod-Atlas-8",
+]
 ACCELERATOR_A5 = "huawei-npu"
 ACCELERATOR_910 = "huawei-Ascend910"
 ACCELERATOR_TYPE = "accelerator-type"
@@ -197,4 +205,3 @@ JOB_NAME = "job-name"
 ROLES = "roles"
 SERVICES = "services"
 KIND_KEY = "kind"
-

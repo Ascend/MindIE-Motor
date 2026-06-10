@@ -12,7 +12,7 @@
 
 import pytest
 
-from motor.engine_server.utils.ip import ip_valid_check, port_valid_check, is_valid_ipv6_address
+from motor.engine_server.utils.ip import ip_valid_check, port_valid_check, is_valid_ipv6_address, build_endpoint
 
 
 class TestIpUtils:
@@ -26,7 +26,7 @@ class TestIpUtils:
             "192.168.1.1",  # Private IP
             "8.8.8.8",  # Public IP
             "10.0.0.1",  # Private IP
-            "172.16.0.1"  # Private IP
+            "172.16.0.1",  # Private IP
         ]
 
         for ip in valid_ips:
@@ -39,7 +39,7 @@ class TestIpUtils:
             "::1",  # Loopback
             "2001:0db8:85a3:0000:0000:8a2e:0370:7334",  # Public IP
             "fe80::1",  # Link-local
-            "fd00::1"  # Unique local
+            "fd00::1",  # Unique local
         ]
 
         for ipv6 in valid_ipv6s:
@@ -54,7 +54,7 @@ class TestIpUtils:
             "192.168.1",  # Missing octet
             "192.168.1.1.1",  # Extra octet
             "::g::",  # Invalid IPv6 character
-            "2001:::3"  # Invalid IPv6 format
+            "2001:::3",  # Invalid IPv6 format
         ]
 
         for ip in invalid_ips:
@@ -67,7 +67,7 @@ class TestIpUtils:
         all_zeros_ips = [
             "0.0.0.0",  # IPv4 all zeros
             "::",  # IPv6 all zeros
-            "0000:0000:0000:0000:0000:0000:0000:0000"  # IPv6 all zeros (expanded)
+            "0000:0000:0000:0000:0000:0000:0000:0000",  # IPv6 all zeros (expanded)
         ]
 
         for ip in all_zeros_ips:
@@ -81,7 +81,7 @@ class TestIpUtils:
             "224.0.0.1",  # IPv4 multicast (local network)
             "239.255.255.255",  # IPv4 multicast (administrative scope)
             "ff02::1",  # IPv6 link-local multicast
-            "ff05::1:3"  # IPv6 site-local multicast
+            "ff05::1:3",  # IPv6 site-local multicast
         ]
 
         for ip in multicast_ips:
@@ -95,7 +95,7 @@ class TestIpUtils:
             1024,  # Minimum valid port
             8080,  # Common HTTP alternative
             9001,  # Example from test_vllm_config.py
-            65535  # Maximum valid port
+            65535,  # Maximum valid port
         ]
 
         for port in valid_ports:
@@ -108,7 +108,7 @@ class TestIpUtils:
             1,  # System port
             80,  # HTTP
             443,  # HTTPS
-            1023  # Maximum system port
+            1023,  # Maximum system port
         ]
 
         for port in invalid_ports:
@@ -121,7 +121,7 @@ class TestIpUtils:
         invalid_ports = [
             65536,  # One above maximum
             100000,  # Much higher than maximum
-            2 ** 16  # 65536
+            2**16,  # 65536
         ]
 
         for port in invalid_ports:
@@ -139,7 +139,7 @@ class TestIpUtils:
             "fd00::1",  # Unique local
             "0000:0000:0000:0000:0000:0000:0000:0001",  # Full loopback
             "2001:0db8::1",  # Double colon at end
-            "::2001:0db8"  # Double colon at start
+            "::2001:0db8",  # Double colon at start
         ]
 
         for ipv6 in valid_ipv6s:
@@ -155,7 +155,7 @@ class TestIpUtils:
             "2001:0db8:85a3:0000:0000:8a2e:0370",  # Too few groups
             "256.0.0.1",  # Invalid IPv4 (should still return False for IPv6 check)
             "192.168.1.1",  # IPv4 (should return False)
-            ""
+            "",
         ]
 
         for ipv6 in invalid_ipv6s:
@@ -167,8 +167,23 @@ class TestIpUtils:
             "127.0.0.1",  # Loopback
             "192.168.1.1",  # Private
             "8.8.8.8",  # Public
-            "0.0.0.0"  # All zeros
+            "0.0.0.0",  # All zeros
         ]
 
         for ipv4 in ipv4_addresses:
             assert is_valid_ipv6_address(ipv4) is False
+
+    def test_is_valid_ipv6_address_none(self):
+        assert is_valid_ipv6_address(None) is False
+
+    def test_build_endpoint_ipv4(self):
+        assert build_endpoint("127.0.0.1", 8080) == "127.0.0.1:8080"
+
+    def test_build_endpoint_ipv6(self):
+        assert build_endpoint("::1", 8080) == "[::1]:8080"
+
+    def test_build_endpoint_rejects_empty_ip(self):
+        with pytest.raises(ValueError, match="ip must not be empty"):
+            build_endpoint(None, 8080)
+        with pytest.raises(ValueError, match="ip must not be empty"):
+            build_endpoint("", 8080)

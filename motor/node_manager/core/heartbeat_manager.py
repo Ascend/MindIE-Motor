@@ -19,6 +19,7 @@ from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.http_msg_spec import StartCmdMsg, HeartbeatMsg
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, RETRY_LOG_FREQUENCY
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.api_client.engine_server_api_client import EngineServerApiClient
@@ -65,6 +66,13 @@ class HeartbeatManager(ThreadSafeSingleton):
         self._abnormal_count_lock = threading.Lock()
         self._should_suicide = False
         self._suicide_lock = threading.Lock()
+        # for snapshot
+        self._register_after_restore_retry_count = 0
+        self._is_registered_after_restore = False
+        self._is_started_after_restore = False
+        self._started_after_restore_lock = threading.Lock()
+        self._endpoints_generation = 0
+
         self._initialized = True
         logger.info("HeartBeatManager module start.")
 
@@ -92,6 +100,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             self._endpoints.clear()
             for item in node_manager_info.endpoints:
                 self._endpoints.append(item)
+            self._endpoints_generation += 1
         # Reset abnormal count when endpoints are updated
         with self._abnormal_count_lock:
             self._consecutive_abnormal_count = 0
@@ -120,9 +129,12 @@ class HeartbeatManager(ThreadSafeSingleton):
         Check if all endpoints are in normal status.
 
         Returns:
-            bool: True if all endpoints are normal, False if any endpoint is abnormal
+            bool: True if all endpoints are normal, False if no endpoints or any endpoint is abnormal
         """
         with self._endpoint_lock:
+            if not self._endpoints:
+                logger.debug("[snapshot] No endpoints were pulled up yet")
+                return False
             for endpoint in self._endpoints:
                 if endpoint.status != EndpointStatus.NORMAL:
                     logger.warning(
@@ -166,6 +178,14 @@ class HeartbeatManager(ThreadSafeSingleton):
                     endpoint.status = EndpointStatus.NORMAL
         logger.info("All endpoints resumed to NORMAL")
 
+    def is_started_after_restore(self) -> bool:
+        with self._started_after_restore_lock:
+            return self._is_started_after_restore
+
+    def set_started_after_restore(self, is_started: bool) -> None:
+        with self._started_after_restore_lock:
+            self._is_started_after_restore = is_started
+
     def _refresh_endpoints_status_loop(self) -> None:
         # Poll each engine server's mgmt port until it responds (max 60s)
         self._wait_for_engine_servers_ready(timeout=60)
@@ -198,6 +218,10 @@ class HeartbeatManager(ThreadSafeSingleton):
     def _get_engine_server_status(self) -> None:
         with self._endpoint_lock:
             endpoints_snapshot = list(self._endpoints)
+            generation_at_start = self._endpoints_generation
+
+        if not endpoints_snapshot:
+            return
 
         # Check if within one minute after startup
         if self._is_within_grace_period and self._engine_status_thread_start_time is not None:
@@ -244,8 +268,16 @@ class HeartbeatManager(ThreadSafeSingleton):
                     except Exception as e:
                         logger.error("Failed to close client: %s", e)
 
-            # If within grace period and abnormal status detected, do not update status
-            if self._is_within_grace_period and detected_status == EndpointStatus.ABNORMAL:
+            if is_restored_from_host_side_snapshot() and not self.is_started_after_restore():
+                # If restored from host side snapshot and not started after restore, keep original status
+                logger.debug(
+                    "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
+                    "keeping stale status: %s",
+                    original_status,
+                )
+                item.status = original_status
+            elif self._is_within_grace_period and detected_status == EndpointStatus.ABNORMAL:
+                # If within grace period and abnormal status detected, do not update status
                 logger.debug(
                     "Engine server %s status is abnormal within grace period, keeping original status: %s",
                     engine_server_base_url,
@@ -269,11 +301,19 @@ class HeartbeatManager(ThreadSafeSingleton):
             updated_endpoints.append(item)
 
         with self._endpoint_lock:
+            if generation_at_start != self._endpoints_generation:
+                return
             self._endpoints = updated_endpoints
 
     def _report_heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
+                if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
+                    logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
+                    self._register_after_restore()
+                    time.sleep(self.heartbeat_interval_seconds)
+                    continue
+
                 with self._endpoint_lock:
                     # Check if any endpoint has abnormal status (only after grace period)
                     # Check actual endpoint status, not the reported status
@@ -307,15 +347,36 @@ class HeartbeatManager(ThreadSafeSingleton):
                         self._consecutive_abnormal_count = 0
 
             except Exception as e:
-                if "503" in str(e):
-                    logger.warning("Received 503, maybe controller has been restarted, reregistering...")
-                    self._reregister()
+                # Exception triggered by host side snapshot restore, nodeManager re-send register message
+                if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
+                    logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
+                    self._register_after_restore()
+                elif "503" in str(e):
+                    if not is_restored_from_host_side_snapshot() or self.is_started_after_restore():
+                        logger.warning("Received 503, maybe controller has been restarted, reregistering...")
+                        self._reregister()
                 else:
                     with self.config_lock:
                         logger.error("Exception occurred while reporting endpoint status to controller: %s", e)
 
             with self.config_lock:
                 time.sleep(self.heartbeat_interval_seconds)
+
+    def _register_after_restore(self) -> None:
+        # refresh config: job_name from snapshot metadata and new pod ip
+        try:
+            EngineManager().register_prepare_after_restore()
+        except Exception as e:
+            if self._register_after_restore_retry_count % RETRY_LOG_FREQUENCY == 0:
+                logger.error("[snapshot] Failed to register prepare after restore: %s", e)
+            self._register_after_restore_retry_count += 1
+            return
+
+        # Register for post-snapshot brandnew job name
+        # Do not consider retry
+        # If current register failed, next register will be triggered by next heartbeat report exception
+        ret = EngineManager().post_register_msg()
+        self._is_registered_after_restore = ret is True
 
     def _reregister(self) -> None:
         ret = EngineManager().post_reregister_msg()

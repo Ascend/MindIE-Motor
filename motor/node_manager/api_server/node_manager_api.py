@@ -24,23 +24,22 @@ from motor.common.logger import get_logger
 from motor.common.resources.http_msg_spec import StartCmdMsg
 from motor.node_manager.core.engine_manager import EngineManager
 from motor.node_manager.core.daemon import Daemon
+from motor.node_manager.core.api_ready_event import clear_api_ready, mark_api_ready, wait_until_api_ready
 from motor.common.resources.instance import PDRole
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot
 
 logger = get_logger(__name__)
-
-# Global event to signal when NodeManagerAPI server is ready
-_api_ready_event = threading.Event()
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Lifespan context manager for FastAPI app"""
     # Startup: signal that the server is ready
-    _api_ready_event.set()
+    mark_api_ready()
     logger.info("NodeManagerAPI server is ready")
     yield
     # Shutdown: clear the ready event
-    _api_ready_event.clear()
+    clear_api_ready()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -70,6 +69,18 @@ async def start_instance(request: Request):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Start command validation failed"
             )
+
+        # If restore from snapshot
+        # Use start_msg.master_dp_ip to update snapshot metadata for engine resume
+        # Update endpoint and set started after restore flag
+        if is_restored_from_host_side_snapshot():
+            await asyncio.to_thread(EngineManager().engine_resume_prepare, start_msg)
+            HeartbeatManager().update_endpoint(start_msg)
+            HeartbeatManager().set_started_after_restore(True)
+            return {}
+
+        # If snapshot mode is not disabled, prepare snapshot runtime directories and metadata file for engine suspend
+        await asyncio.to_thread(EngineManager().engine_suspend_prepare)
 
         try:
             await asyncio.to_thread(
@@ -160,6 +171,13 @@ async def resume_instance(request: Request):
         ) from err
 
 
+async def _check_node_manager_ready() -> bool:
+    is_normal = await asyncio.to_thread(HeartbeatManager().check_all_endpoints_normal)
+    if is_restored_from_host_side_snapshot():
+        is_normal = is_normal and HeartbeatManager().is_started_after_restore()
+    return is_normal
+
+
 @app.get("/node-manager/status")
 async def get_instance_status():
     """
@@ -167,13 +185,42 @@ async def get_instance_status():
     Returns True if all endpoints are normal, False if any endpoint is abnormal.
     """
     try:
-        is_normal = await asyncio.to_thread(HeartbeatManager().check_all_endpoints_normal)
+        is_normal = await _check_node_manager_ready()
         return {"status": is_normal}
     except Exception as err:
         logger.error("Failed to check endpoints status: %s", err)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to check endpoints status"
         ) from err
+
+
+@app.get("/readiness")
+async def readiness():
+    """
+    Readiness probe - returns 200 when all endpoints are healthy.
+    Otherwise, returns 503.
+    """
+    try:
+        is_ready = await _check_node_manager_ready()
+    except Exception as err:
+        logger.error("Failed to check node manager readiness: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to check node manager readiness"
+        ) from err
+
+    msg = "message"
+    reason = "reason"
+    if not is_ready:
+        if is_restored_from_host_side_snapshot() and not HeartbeatManager().is_started_after_restore():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={msg: "Node manager is not ready", reason: "Not started after container snapshot restore"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={msg: "Node manager is not ready", reason: "Endpoints not healthy"},
+        )
+    return {msg: "Node manager is ready"}
 
 
 class NodeManagerAPI:
@@ -194,7 +241,7 @@ class NodeManagerAPI:
         self._thread = None
 
         # Reset the ready event before starting
-        _api_ready_event.clear()
+        clear_api_ready()
 
         self._thread = threading.Thread(target=self._serve_in_thread, daemon=True, name="nm_api_server")
         self._thread.start()
@@ -210,7 +257,7 @@ class NodeManagerAPI:
         Returns:
             True if the server is ready, False if timeout occurred.
         """
-        return _api_ready_event.wait(timeout=timeout)
+        return wait_until_api_ready(timeout=timeout)
 
     async def stop(self):
         self.stop_sync()

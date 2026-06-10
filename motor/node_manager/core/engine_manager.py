@@ -13,6 +13,7 @@ import os
 import signal
 import threading
 import time
+import shutil
 
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.http_msg_spec import Ranktable, RegisterMsg, StartCmdMsg, ReregisterMsg
@@ -22,6 +23,16 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.node_manager import HardwareType, NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.core.fault_reporter import FaultReporter
+from motor.node_manager.core.api_ready_event import wait_until_api_ready
+from motor.common.utils.snapshot_utils import (
+    load_snapshot_metadata,
+    update_snapshot_metadata,
+    get_pod_ip,
+    MOTOR_SNAPSHOT_WORKSPACE_DIR,
+    MOTOR_SNAPSHOT_METADATA_PATH,
+    MOTOR_SNAPSHOT_WEIGHT_DIR,
+    MOTOR_SNAPSHOT_CONFIGMAP_DIR,
+)
 
 logger = get_logger(__name__)
 
@@ -67,6 +78,102 @@ class EngineManager(ThreadSafeSingleton):
 
         self._fault_reporter.update_config(config, self.endpoints)
         logger.info("EngineManager configuration updated.")
+
+    def get_snapshot_metadata_path(self) -> str:
+        # if snapshot_metadata_path is set, return it, otherwise using configmap mounted snapshot_metadata.json and return default MOTOR_SNAPSHOT_METADATA_PATH
+        if self._config.snapshot_config.snapshot_metadata_path != "":
+            return self._config.snapshot_config.snapshot_metadata_path
+
+        # Configmap mounted snapshot_metadata.json is read-only
+        # Copy new snapshot_metadada.json from /snapshot/configmap/data/ to /snapshot
+        mounted_snapshot_metadata = os.path.join(MOTOR_SNAPSHOT_CONFIGMAP_DIR, "snapshot_metadata.json")
+        if os.path.exists(mounted_snapshot_metadata):
+            shutil.copy(mounted_snapshot_metadata, MOTOR_SNAPSHOT_METADATA_PATH)
+
+        return MOTOR_SNAPSHOT_METADATA_PATH
+
+    def engine_suspend_prepare(self) -> None:
+        if not self._config.snapshot_config.enable_snapshot:
+            return
+        snapshot_dirs = [MOTOR_SNAPSHOT_WORKSPACE_DIR, MOTOR_SNAPSHOT_WEIGHT_DIR]
+        for path in snapshot_dirs:
+            os.makedirs(path, exist_ok=True)
+
+        snapshot_metadata_path = self.get_snapshot_metadata_path()
+
+        if not os.path.exists(snapshot_metadata_path):
+            with open(snapshot_metadata_path, "w", encoding="utf-8") as f:
+                json.dump({}, f)
+
+        try:
+            model_save_path = load_snapshot_metadata(snapshot_metadata_path, "model_save_path")
+            logger.info("[snapshot] Keep existing model_save_path from snapshot metadata: %s", model_save_path)
+        except Exception:
+            if self._config.snapshot_config.snapshot_metadata_path != "":
+                return
+            update_snapshot_metadata(snapshot_metadata_path, "model_save_path", MOTOR_SNAPSHOT_WEIGHT_DIR)
+
+    def register_prepare_after_restore(self) -> None:
+        """Update configuration for the engine manager after restore from host side snapshot"""
+        if not self._config.snapshot_config.enable_snapshot:
+            return
+
+        snapshot_metadata_path = self.get_snapshot_metadata_path()
+        if not os.path.exists(snapshot_metadata_path):
+            logger.error("[snapshot] Snapshot metadata file do not exist when restore from host side snapshot")
+            return
+
+        restored_job_name = load_snapshot_metadata(snapshot_metadata_path, "job_name")
+        restored_namespace = None
+        try:
+            restored_namespace = load_snapshot_metadata(snapshot_metadata_path, "namespace")
+        except Exception:
+            controller_host = (
+                ControllerApiClient.controller_config.api_config.controller_api_dns or Env.controller_service or ""
+            )
+            if controller_host.endswith(".svc.cluster.local"):
+                raise
+
+        with self.config_lock:
+            # Refresh job_name
+            self._config.basic_config.job_name = restored_job_name
+            logger.info("[snapshot] Refreshed job_name after restore: %s", restored_job_name)
+            # Refresh pod_ip
+            self._config.api_config.pod_ip = get_pod_ip()
+            logger.info("[snapshot] Refreshed pod_ip after restore: %s", self._config.api_config.pod_ip)
+            # Refresh controller_api_dns
+            if restored_namespace is not None:
+                dns = ControllerApiClient.controller_config.api_config.controller_api_dns or Env.controller_service
+                if dns:
+                    host = dns.split(".", 1)[0]
+                    ControllerApiClient.controller_config.api_config.controller_api_dns = (
+                        f"{host}.{restored_namespace}.svc.cluster.local"
+                    )
+                    logger.info(
+                        "[snapshot] Refreshed controller_api_dns after restore: %s",
+                        ControllerApiClient.controller_config.api_config.controller_api_dns,
+                    )
+
+    def engine_resume_prepare(self, start_msg: StartCmdMsg) -> None:
+        """Append data_parallel_master_ip to snapshot metadata for engine resume after restore from host side snapshot"""
+        if not self._config.snapshot_config.enable_snapshot:
+            return
+
+        snapshot_metadata_path = self.get_snapshot_metadata_path()
+
+        try:
+            model_load_path = load_snapshot_metadata(snapshot_metadata_path, "model_load_path")
+            logger.info("[snapshot] Keep existing model_load_path from snapshot metadata: %s", model_load_path)
+        except Exception:
+            if self._config.snapshot_config.snapshot_metadata_path != "":
+                return
+            update_snapshot_metadata(snapshot_metadata_path, "model_load_path", MOTOR_SNAPSHOT_WEIGHT_DIR)
+
+        try:
+            master_ip = load_snapshot_metadata(snapshot_metadata_path, "data_parallel_master_ip")
+            logger.info("[snapshot] Keep existing data_parallel_master_ip from snapshot metadata: %s", master_ip)
+        except Exception:
+            update_snapshot_metadata(snapshot_metadata_path, "data_parallel_master_ip", start_msg.master_dp_ip)
 
     def post_register_msg(self) -> bool | None:
         register_msg = self._gen_register_msg()
@@ -148,10 +255,9 @@ class EngineManager(ThreadSafeSingleton):
     def _register(self) -> None:
         # Wait for NodeManagerAPI to be ready before registering
         # Import here to avoid circular import
-        from motor.node_manager.api_server.node_manager_api import NodeManagerAPI
 
         logger.info("Waiting for NodeManagerAPI to be ready before registering...")
-        if not NodeManagerAPI.wait_until_ready(timeout=30.0):
+        if not wait_until_api_ready(timeout=30.0):
             logger.error("NodeManagerAPI did not become ready within timeout, registration may fail")
         else:
             logger.info("NodeManagerAPI is ready, proceeding with registration")
@@ -205,8 +311,8 @@ class EngineManager(ThreadSafeSingleton):
             if self._config.single_container_config.single_container_flag:
                 device_offset = self._config.single_container_config.device_offset
                 device_num = self._config.single_container_config.device_num
-                server_list_key = "server_list"
-                device_key = "device"
+                server_list_key = 'server_list'
+                device_key = 'device'
                 if (
                     server_list_key in data
                     and len(data[server_list_key]) > 0

@@ -19,6 +19,8 @@ from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.engine_server.utils.aicore import get_aicore_usage
 from motor.engine_server.constants import constants
+from motor.engine_server.utils.ip import build_endpoint
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
 
 logger = get_logger(__name__)
 
@@ -45,9 +47,9 @@ class SimInference:
         self.health_check_config = health_check_config or None
         # Get npu_usage_threshold with default value
         if self.health_check_config:
-            self.npu_usage_threshold = getattr(self.health_check_config, 'npu_usage_threshold', 3)
-            self.enable_virtual_inference = getattr(self.health_check_config, 'enable_virtual_inference', False)
-            self._max_failure_count = getattr(self.health_check_config, 'max_failure_count', 6)
+            self.npu_usage_threshold = getattr(self.health_check_config, "npu_usage_threshold", 3)
+            self.enable_virtual_inference = getattr(self.health_check_config, "enable_virtual_inference", False)
+            self._max_failure_count = getattr(self.health_check_config, "max_failure_count", 6)
         else:
             self.npu_usage_threshold = 3
             self.enable_virtual_inference = False
@@ -145,6 +147,10 @@ class SimInference:
         if not self.enable_virtual_inference:
             logger.info("Health check is disabled")
             return
+
+        # refresh host when restored from host-side snapshot
+        if is_restored_from_host_side_snapshot():
+            self._client_address = build_endpoint(get_pod_ip(), self.args.port)
 
         # Patch vLLM metrics if needed
         self.patch_vllm_metrics()
