@@ -123,7 +123,7 @@ class TestRouterPDHybrid:
                 return {mock_instance.id: mock_instance}
             return {}
 
-        async def mock_select_and_allocate(self, role, req_info):
+        async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             if role == PDRole.ROLE_U:
                 return mock_instance, mock_endpoint, Workload()
             return None
@@ -329,7 +329,7 @@ class TestRouterPDHybrid:
                 return {mock_instance.id: mock_instance}
             return {}
 
-        async def mock_select_and_allocate(self, role, req_info):
+        async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             called_roles.append(role)
             if role == PDRole.ROLE_P:
                 return mock_instance, mock_endpoint, Workload()
@@ -397,7 +397,7 @@ class TestRouterPDHybrid:
                 return {mock_instance.id: mock_instance}
             return {}
 
-        async def mock_select_and_allocate(self, role, req_info):
+        async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             called_roles.append(role)
             if role == PDRole.ROLE_U:
                 return mock_instance, mock_endpoint, Workload()
@@ -511,7 +511,7 @@ class TestPDHybridTracer:
                 return {mock_instance.id: mock_instance}
             return {}
 
-        async def mock_select_and_allocate(self, role, req_info):
+        async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             if role == PDRole.ROLE_U:
                 return mock_instance, mock_endpoint, Workload()
             return None
@@ -667,7 +667,7 @@ class TestPDHybridTracer:
                 return {mock_instance.id: mock_instance}
             return {}
 
-        async def mock_select_and_allocate(self, role, req_info):
+        async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             if role == PDRole.ROLE_P:
                 return mock_instance, mock_endpoint, Workload()
             return None

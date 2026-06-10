@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import time
 from typing import Any, AsyncGenerator
 
 import anyio
@@ -38,6 +39,13 @@ from motor.coordinator.router.stop_client import DispatchStopClient
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 from motor.coordinator.router.workload import WorkloadActionHandler
+from motor.coordinator.router.precision_sample.request import inject_logprobs
+from motor.coordinator.router.precision_sample import response as sampling_resp
+from motor.coordinator.router.adapters.stream import (
+    parse_stream_chunk_json,
+    encode_stream_chunk_bytes,
+    update_token_id_cache,
+)
 
 
 class UnifiedPDRouter(BaseRouter):
@@ -56,8 +64,11 @@ class UnifiedPDRouter(BaseRouter):
         scheduler: SchedulingFacade,
         request_manager: RequestManager,
         workload_action_handler: WorkloadActionHandler | None = None,
+        sampling_manager=None,
     ):
-        super().__init__(req_info, config, scheduler, request_manager, workload_action_handler)
+        super().__init__(
+            req_info, config, scheduler, request_manager, workload_action_handler, sampling_manager=sampling_manager
+        )
         self.rescheduler = Rescheduler(
             config.exception_config.recompute_enabled,
             req_info,
@@ -194,16 +205,17 @@ class UnifiedPDRouter(BaseRouter):
 
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
-        pair = None
-        select_pair = getattr(self._scheduler, "select_pair_and_allocate", None)
-        if select_pair is not None:
-            pair = await select_pair(self.req_info)
-        if pair is not None:
-            await self._record_attempt_workload(attempt_seq, PDRole.ROLE_P, pair.prefill_workload)
-            self.req_info.update_state(ReqState.P_ALLOCATED)
-            await self._record_attempt_workload(attempt_seq, PDRole.ROLE_D, pair.decode_workload)
-            self.req_info.update_state(ReqState.D_ALLOCATED)
-            return session.new_attempt(pair.prefill, pair.decode, self.config)
+        constraint = self.req_info.scheduling_constraint
+        if constraint is None:
+            select_pair = getattr(self._scheduler, "select_pair_and_allocate", None)
+            if select_pair is not None:
+                pair = await select_pair(self.req_info)
+                if pair is not None:
+                    await self._record_attempt_workload(attempt_seq, PDRole.ROLE_P, pair.prefill_workload)
+                    self.req_info.update_state(ReqState.P_ALLOCATED)
+                    await self._record_attempt_workload(attempt_seq, PDRole.ROLE_D, pair.decode_workload)
+                    self.req_info.update_state(ReqState.D_ALLOCATED)
+                    return session.new_attempt(pair.prefill, pair.decode, self.config)
 
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
         try:
@@ -236,6 +248,7 @@ class UnifiedPDRouter(BaseRouter):
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
         d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
         stream_adapter_state = {}
+        sampling_state = self._init_sampling_state()
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
@@ -246,7 +259,13 @@ class UnifiedPDRouter(BaseRouter):
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
             async for chunk in self._run_stream_decode_phase(
-                attempt, d_client, d_api, d_req, stream_adapter_state, prefill_task=p_task
+                attempt,
+                d_client,
+                d_api,
+                d_req,
+                stream_adapter_state,
+                sampling_state=sampling_state,
+                prefill_task=p_task,
             ):
                 yield chunk
 
@@ -258,11 +277,16 @@ class UnifiedPDRouter(BaseRouter):
         d_req: dict[str, Any],
         stream_adapter_state: dict,
         *,
+        sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
     ) -> AsyncGenerator[str, None]:
         queue = asyncio.Queue()
-        self._start_stream_decode_task(attempt, queue, d_api, d_req, d_client, stream_adapter_state)
-        async for chunk in self._iter_stream_decode_queue(attempt, queue, prefill_task=prefill_task):
+        self._start_stream_decode_task(
+            attempt, queue, d_api, d_req, d_client, stream_adapter_state, sampling_state=sampling_state
+        )
+        async for chunk in self._iter_stream_decode_queue(
+            attempt, queue, sampling_state=sampling_state, prefill_task=prefill_task
+        ):
             yield chunk
 
     def _start_stream_decode_task(
@@ -273,6 +297,8 @@ class UnifiedPDRouter(BaseRouter):
         d_req: dict[str, Any],
         d_client,
         stream_adapter_state: dict,
+        *,
+        sampling_state: dict | None = None,
     ) -> asyncio.Task:
         async def decode_task() -> None:
             try:
@@ -281,6 +307,8 @@ class UnifiedPDRouter(BaseRouter):
                 ):
                     if chunk:
                         attempt.transition(AttemptState.FIRST_VISIBLE)
+                        if sampling_state is not None:
+                            chunk = self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
                         if self.config.exception_config.recompute_enabled:
                             chunk = self.rescheduler.process_stream_chunk(
                                 chunk, stream_adapter_state=stream_adapter_state
@@ -299,6 +327,7 @@ class UnifiedPDRouter(BaseRouter):
         attempt: AttemptContext,
         queue: asyncio.Queue,
         *,
+        sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
     ) -> AsyncGenerator[str, None]:
         try:
@@ -310,6 +339,8 @@ class UnifiedPDRouter(BaseRouter):
                     if prefill_task is not None:
                         await prefill_task
                     self.req_info.update_state(ReqState.DECODE_END)
+                    if sampling_state is not None:
+                        await self._maybe_submit_sample(attempt, sampling_state)
                     return
                 elif key == "cancel":
                     await attempt.cancel()
@@ -338,6 +369,7 @@ class UnifiedPDRouter(BaseRouter):
         attempt.transition(AttemptState.ACTIVE)
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
         d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
+        sampling_state = self._init_sampling_state()
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
@@ -347,7 +379,9 @@ class UnifiedPDRouter(BaseRouter):
                 await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
-            return await self._await_nonstream_decode(attempt, d_api, d_req, d_client, prefill_task=p_task)
+            return await self._await_nonstream_decode(
+                attempt, d_api, d_req, d_client, sampling_state=sampling_state, prefill_task=p_task
+            )
 
     async def _await_nonstream_decode(
         self,
@@ -356,6 +390,7 @@ class UnifiedPDRouter(BaseRouter):
         d_req: dict[str, Any],
         d_client,
         *,
+        sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
     ) -> dict[str, Any]:
         async def decode_task() -> tuple[Any, Any]:
@@ -377,6 +412,10 @@ class UnifiedPDRouter(BaseRouter):
             if prefill_task is not None:
                 await prefill_task
             self.req_info.update_state(ReqState.DECODE_END)
+            if sampling_state is not None:
+                response = self._collect_logprobs_from_nonstream_body(response, sampling_state)
+                await self._maybe_submit_sample(attempt, sampling_state)
+                self._strip_logprobs_for_client(response, sampling_state)
             await self._release_attempt(attempt)
             return response
         except (asyncio.CancelledError, Exception) as e:
@@ -393,24 +432,28 @@ class UnifiedPDRouter(BaseRouter):
     async def _run_handoff_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
         stream_adapter_state = {}
+        sampling_state = self._init_sampling_state()
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
         ):
             prefill_result = await self._await_handoff_prefill(attempt, p_client)
             d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
-            async for chunk in self._run_stream_decode_phase(attempt, d_client, d_api, d_req, stream_adapter_state):
+            async for chunk in self._run_stream_decode_phase(
+                attempt, d_client, d_api, d_req, stream_adapter_state, sampling_state=sampling_state
+            ):
                 yield chunk
 
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
+        sampling_state = self._init_sampling_state()
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
         ):
             prefill_result = await self._await_handoff_prefill(attempt, p_client)
             d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
-            return await self._await_nonstream_decode(attempt, d_api, d_req, d_client)
+            return await self._await_nonstream_decode(attempt, d_api, d_req, d_client, sampling_state=sampling_state)
 
     async def _await_handoff_prefill(self, attempt: AttemptContext, p_client) -> PrefillResult:
         async def prefill_task():
@@ -435,6 +478,12 @@ class UnifiedPDRouter(BaseRouter):
             req["return_token_ids"] = True
             if self.rescheduler.is_rescheduling:
                 req, api = self.rescheduler.prepare_retry_request(req)
+        if (
+            role == PDRole.ROLE_D
+            and self.config.token_sampling_config.precision_check_enabled
+            and self._sampling_manager is not None
+        ):
+            inject_logprobs(req, self.config.token_sampling_config, req_id=self.req_info.req_id)
         req[MOTOR_DISPATCH_KEY] = attempt.dispatch_for(role, self._DISPATCH_MODE).model_dump(mode="json")
         if prefill_result is not None:
             req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")
@@ -472,7 +521,15 @@ class UnifiedPDRouter(BaseRouter):
 
     async def _prepare_attempt_resource(self, role: PDRole, attempt_seq: int) -> ScheduledResource:
         self.req_info.update_state(ReqState.P_SCHEDULING if role == PDRole.ROLE_P else ReqState.D_SCHEDULING)
-        result = await self._scheduler.select_and_allocate(role, self.req_info)
+        target_instance_id = None
+        constraint = self.req_info.scheduling_constraint
+        if constraint is not None:
+            target_instance_id = constraint.target_for_role(role)
+        result = await self._scheduler.select_and_allocate(
+            role,
+            self.req_info,
+            target_instance_id=target_instance_id,
+        )
         if result is None:
             error_message = f"No instance available for role {role}"
             self.req_info.trace_obj.set_trace_error_message(error_message)
@@ -579,3 +636,123 @@ class UnifiedPDRouter(BaseRouter):
             flags.decode_tokens = True
         elif role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_KV:
             flags.decode_kv = True
+
+    # ------------------------------------------------------------------
+    # Precision sampling helpers
+    # ------------------------------------------------------------------
+
+    def _init_sampling_state(self) -> dict:
+        return {
+            "enabled": self.config.token_sampling_config.precision_check_enabled,
+            "client_logprobs": bool(self.req_info.req_data.get("logprobs")),
+            "lp_count": self.config.token_sampling_config.logprobs_count,
+            "info": {},
+        }
+
+    def _collect_logprobs_from_stream_chunk(self, chunk: bytes, sampling_state: dict) -> bytes:
+        if not sampling_state["enabled"] or not chunk:
+            return chunk
+        chunk_json = parse_stream_chunk_json(chunk, self.logger)
+        if chunk_json is None:
+            return chunk
+        update_token_id_cache(sampling_state["info"], chunk_json)
+        sampling_resp.update_logprob_cache(
+            sampling_state["info"],
+            chunk_json,
+            logprobs_count=sampling_state["lp_count"],
+        )
+        sampling_resp.strip_logprobs_for_client(
+            chunk_json,
+            client_requested_logprobs=sampling_state["client_logprobs"],
+        )
+        return encode_stream_chunk_bytes(chunk, chunk_json)
+
+    def _collect_logprobs_from_nonstream_body(self, body: dict, sampling_state: dict) -> dict:
+        if not sampling_state["enabled"]:
+            return body
+        info = sampling_state["info"]
+        update_token_id_cache(info, body)
+        sampling_resp.update_logprob_cache(info, body, logprobs_count=sampling_state["lp_count"])
+        return body
+
+    def _strip_logprobs_for_client(self, body: dict, sampling_state: dict) -> None:
+        if not sampling_state["enabled"]:
+            return
+        sampling_resp.strip_logprobs_for_client(
+            body,
+            client_requested_logprobs=sampling_state["client_logprobs"],
+        )
+
+    async def _maybe_submit_sample(self, attempt: AttemptContext, sampling_state: dict) -> None:
+        self.logger.info(
+            "_maybe_submit_sample entry: enabled=%s mgr_ok=%s",
+            sampling_state["enabled"],
+            self._sampling_manager is not None,
+        )
+        if not sampling_state["enabled"] or self._sampling_manager is None:
+            return
+        if not attempt.prefill_resource or not attempt.decode_resource:
+            return
+        info = sampling_state["info"]
+        info.setdefault("cached_output_token_ids", [])
+        info.setdefault("cached_prompt_token_ids", self.req_info.token_ids)
+        p_id = attempt.prefill_resource.instance.id
+        d_id = attempt.decode_resource.instance.id
+        if await self._sampling_manager.confirm_sample((p_id, d_id), time.time()):
+            await self._submit_token_sample(p_id, d_id, info, attempt.decode_resource)
+
+    # ------------------------------------------------------------------
+    # Metaserver forward entry point (CDP mode: D-side prefill → P instance)
+    # ------------------------------------------------------------------
+
+    async def handle_metaserver_request(self) -> dict[str, Any]:
+        self.is_meta = True
+        schedule_resource: ScheduledResource = None
+        try:
+            schedule_resource = await self.prepare_resource(PDRole.ROLE_P)
+            req_data = self.req_info.req_data.copy()
+            req_data["stream"] = False
+            async with self._client_for(schedule_resource) as client:
+                response = await self.forward_request(
+                    self.req_info.api,
+                    req_data,
+                    client,
+                    self.config.exception_config.first_token_timeout,
+                )
+            resp_json = response.json()
+            self.logger.debug("Prefill response received")
+            usage = resp_json.get("usage", {})
+            if usage and "prompt_tokens_details" in usage:
+                details = usage["prompt_tokens_details"]
+                if details is None:
+                    details = {"cached_tokens": 0}
+                self.req_info.update_prompt_tokens_details(details)
+            self.req_info.update_state(ReqState.PREFILL_END)
+            if hasattr(self.req_info, "p_instance_id"):
+                self.req_info.p_instance_id = schedule_resource.instance.id
+            return resp_json
+        except asyncio.CancelledError:
+            self.logger.info("Metaserver request was cancelled")
+            self.req_info.cancel_scope()
+            raise
+        except Exception:
+            self.req_info.cancel_scope()
+            self.req_info.update_state(ReqState.EXCEPTION)
+            raise
+        finally:
+            if schedule_resource and self.req_info.state != ReqState.PREFILL_END:
+                if not await self.release_all(schedule_resource):
+                    self.logger.debug(
+                        "release_all(prefill) returned False instance_id=%s",
+                        schedule_resource.instance.id,
+                    )
+
+    @staticmethod
+    async def _cancel_task_quietly(task: asyncio.Task | None) -> None:
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

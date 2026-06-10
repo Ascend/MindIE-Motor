@@ -158,9 +158,12 @@ class SchedulingFacade(Protocol):
         self,
         role: PDRole,
         req_info: RequestInfo,
+        *,
+        target_instance_id: int | None = None,
     ) -> Tuple[Instance, Endpoint, Workload] | None:
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
+        When target_instance_id is set, pin to that instance (skip policy selection).
         Returns (instance, endpoint, allocation_workload). Caller records allocation_workload for release.
         """
         ...

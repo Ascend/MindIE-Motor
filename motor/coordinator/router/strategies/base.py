@@ -38,6 +38,10 @@ from motor.coordinator.models.response import ErrorResponse
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.domain import SchedulingFacade, UpdateWorkloadParams
+from motor.coordinator.router.precision_sample.sample_builder import (
+    build_decode_sample,
+    _log_sample_submission,
+)
 from motor.common.resources.instance import Instance
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain.request_manager import RequestManager
@@ -97,6 +101,7 @@ class BaseRouter(ABC):
         scheduler: SchedulingFacade,
         request_manager: RequestManager,
         workload_action_handler: WorkloadActionHandler | None = None,
+        sampling_manager=None,
     ):
         self.config = config
         self.req_info = req_info
@@ -110,6 +115,7 @@ class BaseRouter(ABC):
             if workload_action_handler is not None
             else WorkloadActionHandler(self._request_manager)
         )
+        self._sampling_manager = sampling_manager
 
     @staticmethod
     def build_error_response(e: Exception) -> ErrorResponse:
@@ -250,12 +256,21 @@ class BaseRouter(ABC):
         """Select instance + allocate workload (one RPC), record in RequestManager, retry on failure."""
         self.req_info.update_state(_scheduling_state_for_role(role))
 
+        target_instance_id = None
+        constraint = self.req_info.scheduling_constraint
+        if constraint is not None:
+            target_instance_id = constraint.target_for_role(role)
+
         last_exception = None
         t0_prepare = time.perf_counter()
         for attempt in range(self.config.exception_config.max_retry):
             try:
                 t0_select = time.perf_counter()
-                result = await self._scheduler.select_and_allocate(role, self.req_info)
+                result = await self._scheduler.select_and_allocate(
+                    role,
+                    self.req_info,
+                    target_instance_id=target_instance_id,
+                )
                 elapsed_select_ms = (time.perf_counter() - t0_select) * 1000
                 if _should_log_scheduling_sample(self.req_info.req_id):
                     self.logger.info(
@@ -486,6 +501,11 @@ class BaseRouter(ABC):
         await response.aclose()
         return response
 
+    def _infer_base_url_for_resource(self, resource: ScheduledResource) -> str:
+        scheme = "https" if self.config.infer_tls_config.enable_tls else "http"
+        ep = resource.endpoint
+        return f"{scheme}://{ep.ip}:{ep.business_port}"
+
     async def release_all(self, resource: ScheduledResource):
         """Release tokens and KV cache; returns True only if both succeed."""
         tokens_result = await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)
@@ -610,6 +630,32 @@ class BaseRouter(ABC):
         # Release RPC must finish even if the request/stream task is cancelled (e.g. client disconnect).
         with CancelScope(shield=True):
             return await self._scheduler.update_workload(params)
+
+    async def _submit_token_sample(
+        self,
+        p_instance_id: int | None,
+        d_instance_id: int,
+        request_info: dict,
+        decode_resource: ScheduledResource | None = None,
+    ) -> None:
+        if self._sampling_manager is None:
+            return
+        try:
+            d_url = ""
+            if decode_resource is not None:
+                d_url = self._infer_base_url_for_resource(decode_resource)
+            sample = build_decode_sample(
+                p_instance_id,
+                d_instance_id,
+                request_info,
+                self.req_info.req_id,
+                model=self.req_info.req_data.get("model", "") or "",
+                d_infer_base_url=d_url,
+            )
+            _log_sample_submission(sample)
+            await self._sampling_manager.submit_sample(sample)
+        except Exception as e:
+            self.logger.warning("_submit_token_sample failed: %s", e)
 
     def _log_request_details(self):
         current_time = time.time()

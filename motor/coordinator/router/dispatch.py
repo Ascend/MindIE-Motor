@@ -158,7 +158,14 @@ async def handle_request(
             detail=f"Unknown deploy mode: {deploy_mode}",
         )
 
-    router_impl = router_impl_class(req_info, config, scheduler=scheduler, request_manager=request_manager)
+    sampling_manager = getattr(raw_request.app.state, "sampling_manager", None)
+    router_impl = router_impl_class(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+        sampling_manager=sampling_manager,
+    )
 
     try:
         return await router_impl.handle_request()

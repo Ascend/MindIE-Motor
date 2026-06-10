@@ -36,6 +36,9 @@ class SchedulerRequestType(str, Enum):
     UPDATE_WORKLOAD = "update_workload"
     GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker fetches instance list and workload shm name
     REFRESH_INSTANCES = "refresh_instances"
+    CONFIRM_SAMPLE = "confirm_sample"  # cross-worker precision sampling exit gate
+    RECORD_PRECISION_RESULT = "record_precision_result"  # global consecutive + probing
+    FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm
 
 
 class SchedulerResponseType(str, Enum):

@@ -10,6 +10,7 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import uuid
 
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import WorkloadAction, Workload
@@ -25,6 +26,10 @@ from motor.common.resources.http_msg_spec import EventType
 from motor.common.logger import get_logger
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
 from motor.coordinator.scheduler.policy.factory import SchedulingPolicyFactory
+from motor.coordinator.domain.scheduling_pin import (
+    resolve_pinned_instance,
+    select_endpoint_for_instance,
+)
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
 from motor.config.coordinator import CoordinatorConfig, DeployMode, SchedulerType
 from motor.coordinator.domain import InstanceProvider
@@ -71,6 +76,12 @@ class Scheduler:
             self._scheduling_policy.set_endpoint_instance_score_weight(
                 self._config.scheduler_config.endpoint_instance_score_weight
             )
+        # Global per-PD-group precision state (shared across inference workers).
+        self._sample_exit_last_time: dict[tuple[int | None, int], float] = {}
+        self._precision_streak_counts: dict[tuple[int | None, int], int] = {}
+        self._precision_probing: dict[tuple[int | None, int], bool] = {}
+        self._precision_action_tokens: dict[tuple[int | None, int], str] = {}
+        self._sample_exit_locks: dict[tuple[int | None, int], asyncio.Lock] = {}
         logger.info("Scheduler started.")
 
     def get_scheduling_policy(self) -> BaseSchedulingPolicy:
@@ -96,7 +107,13 @@ class Scheduler:
         r = self._scheduling_policy.select_instance_and_endpoint(role)
         return (await r) if asyncio.iscoroutine(r) else r
 
-    async def select_and_allocate(self, role: PDRole, req_info: RequestInfo):
+    async def select_and_allocate(
+        self,
+        role: PDRole,
+        req_info: RequestInfo,
+        *,
+        target_instance_id: int | None = None,
+    ):
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
         Allocation workload is decided here: zero for policies without update_workload (e.g. RR), demand for LB.
@@ -105,11 +122,33 @@ class Scheduler:
             (Instance, Endpoint, Workload) tuple or None (no instance or update_workload failed).
             The returned Workload is what was allocated; caller records it for release.
         """
-        r = self._scheduling_policy.select_instance_and_endpoint(role)
-        result = (await r) if asyncio.iscoroutine(r) else r
-        if result is None:
-            return None
-        instance, endpoint = result
+        if target_instance_id is not None:
+            pool = self._instance_provider.get_available_instances(role)
+            instance = resolve_pinned_instance(pool, target_instance_id)
+            if instance is None:
+                logger.warning(
+                    "Pinned instance_id=%s not in available pool for role=%s req_id=%s",
+                    target_instance_id,
+                    role,
+                    req_info.req_id,
+                )
+                return None
+            policy_type = self._policy_type.value if hasattr(self._policy_type, "value") else str(self._policy_type)
+            endpoint = select_endpoint_for_instance(instance, scheduler_type=policy_type)
+            if endpoint is None:
+                logger.warning(
+                    "No endpoint on pinned instance_id=%s role=%s req_id=%s",
+                    target_instance_id,
+                    role,
+                    req_info.req_id,
+                )
+                return None
+        else:
+            r = self._scheduling_policy.select_instance_and_endpoint(role)
+            result = (await r) if asyncio.iscoroutine(r) else r
+            if result is None:
+                return None
+            instance, endpoint = result
         workload = (
             Workload()
             if not hasattr(self._scheduling_policy, "update_workload")
@@ -157,7 +196,7 @@ class Scheduler:
         Update workload information for load-aware scheduling strategies (by id only).
         Same interface as Router/AsyncSchedulerClient; role only for signature compat (in-process policy does not use).
         """
-        if hasattr(self._scheduling_policy, 'update_workload'):
+        if hasattr(self._scheduling_policy, "update_workload"):
             return await self._scheduling_policy.update_workload(
                 params.instance_id,
                 params.endpoint_id,
@@ -186,10 +225,122 @@ class Scheduler:
             return readiness
         return await asyncio.to_thread(self._instance_provider.get_required_instances_status, deploy_mode)
 
-    async def get_all_instances(self) -> tuple[dict[int, Instance], dict[int, Instance]]:
+    async def get_all_instances(
+        self,
+    ) -> tuple[dict[int, Instance], dict[int, Instance]]:
         """Return (available, unavailable) instance dicts from in-process InstanceManager."""
         return await self._instance_provider.get_all_instances()
 
     async def refresh_instances(self, event_type: EventType, instances: list[Instance]) -> bool:
         """Refresh instance list (delegate to in-process InstanceManager). Returns True if pools changed."""
         return await self._instance_provider.refresh_instances(event_type, instances)
+
+    def _sample_exit_lock(self, key: tuple[int | None, int]) -> asyncio.Lock:
+        if key not in self._sample_exit_locks:
+            self._sample_exit_locks[key] = asyncio.Lock()
+        return self._sample_exit_locks[key]
+
+    async def confirm_sample_exit(
+        self,
+        *,
+        p_instance_id: int | None,
+        d_instance_id: int,
+        now: float,
+        interval_seconds: float,
+    ) -> bool:
+        """Atomically check/update per-PD-group sampling exit interval (scheduler-global)."""
+        key = (p_instance_id, d_instance_id)
+        lock = self._sample_exit_lock(key)
+        async with lock:
+            last_exit = self._sample_exit_last_time.get(key, 0.0)
+            if now - last_exit >= interval_seconds:
+                self._sample_exit_last_time[key] = now
+                logger.debug(
+                    "Scheduler: confirm_sample_exit ok pd_group=(%s,%s) interval=%.1fs",
+                    key[0],
+                    key[1],
+                    interval_seconds,
+                )
+                return True
+        return False
+
+    async def record_precision_result(
+        self,
+        *,
+        p_instance_id: int | None,
+        d_instance_id: int,
+        has_issue: bool,
+        threshold: int,
+    ) -> dict[str, int | bool | str | None]:
+        """Atomically update global consecutive count and probing for one PD group."""
+        key = (p_instance_id, d_instance_id)
+        lock = self._sample_exit_lock(key)
+        async with lock:
+            if self._precision_probing.get(key):
+                return {
+                    "skip": True,
+                    "threshold_hit": False,
+                    "consecutive": self._precision_streak_counts.get(key, 0),
+                    "action_token": None,  # nosec B105
+                }
+            if has_issue:
+                count = self._precision_streak_counts.get(key, 0) + 1
+                self._precision_streak_counts[key] = count
+                if count >= threshold:
+                    token = str(uuid.uuid4())
+                    self._precision_probing[key] = True
+                    self._precision_action_tokens[key] = token
+                    logger.debug(
+                        "Scheduler: precision threshold pd_group=(%s,%s) count=%s",
+                        key[0],
+                        key[1],
+                        count,
+                    )
+                    return {
+                        "skip": False,
+                        "threshold_hit": True,
+                        "consecutive": count,
+                        "action_token": token,
+                    }
+                return {
+                    "skip": False,
+                    "threshold_hit": False,
+                    "consecutive": count,
+                    "action_token": None,  # nosec B105
+                }
+            self._precision_streak_counts[key] = 0
+            return {
+                "skip": False,
+                "threshold_hit": False,
+                "consecutive": 0,
+                "action_token": None,  # nosec B105
+            }
+
+    async def finish_precision_action(
+        self,
+        *,
+        p_instance_id: int | None,
+        d_instance_id: int,
+        action_token: str,
+    ) -> bool:
+        """Clear probing and streak after probe/alarm; rejects stale action_token."""
+        key = (p_instance_id, d_instance_id)
+        lock = self._sample_exit_lock(key)
+        async with lock:
+            expected = self._precision_action_tokens.get(key)
+            if not expected or expected != action_token:
+                logger.warning(
+                    "Scheduler: finish_precision_action token mismatch pd_group=(%s,%s)",
+                    key[0],
+                    key[1],
+                )
+                return False
+            self._precision_probing[key] = False
+            self._precision_streak_counts[key] = 0
+            self._precision_action_tokens.pop(key, None)
+            logger.debug(
+                "Scheduler: finish_precision_action ok pd_group=(%s,%s)",
+                key[0],
+                key[1],
+            )
+            return True

@@ -46,10 +46,15 @@ from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
 )
+from motor.coordinator.fault_tolerance.precision.streak_result import PrecisionStreakResult
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
+from motor.coordinator.domain.scheduling_pin import (
+    resolve_pinned_instance,
+    select_endpoint_for_instance,
+)
 from motor.coordinator.models.request import RequestInfo
 
 logger = get_logger(__name__)
@@ -640,7 +645,11 @@ class AsyncSchedulerClient:
         return candidates, candidate_policy
 
     async def select_and_allocate(
-        self, role: "PDRole", req_info: RequestInfo
+        self,
+        role: "PDRole",
+        req_info: RequestInfo,
+        *,
+        target_instance_id: int | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
         """Select instance locally + ALLOCATE_ONLY RPC. Allocation workload is decided here (RR=zero, LB=demand)."""
         role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
@@ -679,24 +688,51 @@ class AsyncSchedulerClient:
                 else:
                     self._last_instance_version = current_version
 
-        # KVA-eligible roles propose several ranked candidates so the scheduler can re-pick among
-        # them by its fresh ledger (burst spreading); other roles/policies stay at top-1.
-        request_top_k = (
-            _AFFINITY_CANDIDATE_TOPK
-            if (role in _KVA_SELECT_ROLES and (self._scheduler_type or "") == "kv_cache_affinity")
-            else 1
-        )
-        candidates, candidate_policy = await self._select_endpoint_candidates_with_policy(
-            req_info, role, top_k=request_top_k
-        )
-        if not candidates:
-            return None
-        instance, endpoint, _ = candidates[0]
-        # Ranked alternates (best-first) the scheduler may re-pick among on a stale-view burst.
-        candidate_endpoints = [
-            {"instance_id": cand_instance.id, "endpoint_id": cand_endpoint.id}
-            for cand_instance, cand_endpoint, _score in candidates
-        ]
+        if target_instance_id is not None:
+            instances = await self.get_available_instances(role)
+            instance = resolve_pinned_instance(instances, target_instance_id)
+            if instance is None:
+                logger.warning(
+                    "Pinned instance_id=%s not available for role=%s req_id=%s",
+                    target_instance_id,
+                    role_str,
+                    req_info.req_id,
+                )
+                return None
+            endpoint = select_endpoint_for_instance(
+                instance,
+                scheduler_type=self._scheduler_type or "round_robin",
+                endpoint_rr_counters=self._endpoint_rr_counters,
+            )
+            if endpoint is None:
+                logger.warning(
+                    "No endpoint on pinned instance_id=%s role=%s req_id=%s",
+                    target_instance_id,
+                    role_str,
+                    req_info.req_id,
+                )
+                return None
+            candidate_policy = self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
+            candidate_endpoints = [{"instance_id": instance.id, "endpoint_id": endpoint.id}]
+        else:
+            # KVA-eligible roles propose several ranked candidates so the scheduler can re-pick among
+            # them by its fresh ledger (burst spreading); other roles/policies stay at top-1.
+            request_top_k = (
+                _AFFINITY_CANDIDATE_TOPK
+                if (role in _KVA_SELECT_ROLES and (self._scheduler_type or "") == "kv_cache_affinity")
+                else 1
+            )
+            candidates, candidate_policy = await self._select_endpoint_candidates_with_policy(
+                req_info, role, top_k=request_top_k
+            )
+            if not candidates:
+                return None
+            instance, endpoint, _ = candidates[0]
+            # Ranked alternates (best-first) the scheduler may re-pick among on a stale-view burst.
+            candidate_endpoints = [
+                {"instance_id": cand_instance.id, "endpoint_id": cand_endpoint.id}
+                for cand_instance, cand_endpoint, _score in candidates
+            ]
 
         # Allocation workload: RR does not use load, so use zero; LB uses demand for accounting.
         workload = (
@@ -808,6 +844,97 @@ class AsyncSchedulerClient:
         if (self._scheduler_type or "round_robin") == "round_robin":
             return Workload()
         return calculate_demand_workload(role, req_info)
+
+    async def confirm_sample(
+        self,
+        key: tuple[int | None, int],
+        now: float,
+        interval_seconds: float,
+    ) -> bool:
+        if not self._transport.connected:
+            logger.warning("confirm_sample: scheduler transport not connected")
+            return False
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.CONFIRM_SAMPLE,
+            request_id=request_id,
+            data={
+                "p_instance_id": key[0],
+                "d_instance_id": key[1],
+                "now": now,
+                "interval_seconds": interval_seconds,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            return bool((response.data or {}).get("confirmed", False))
+        if response:
+            logger.warning("confirm_sample failed pd_group=%s error=%s", key, response.error)
+        else:
+            logger.warning("confirm_sample: no response (timeout) pd_group=%s", key)
+        return False
+
+    async def record_precision_result(
+        self,
+        key: tuple[int | None, int],
+        has_issue: bool,
+        threshold: int,
+    ) -> PrecisionStreakResult | None:
+        if not self._transport.connected:
+            logger.warning("record_precision_result: scheduler transport not connected")
+            return None
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.RECORD_PRECISION_RESULT,
+            request_id=request_id,
+            data={
+                "p_instance_id": key[0],
+                "d_instance_id": key[1],
+                "has_issue": has_issue,
+                "threshold": threshold,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            data = response.data or {}
+            return PrecisionStreakResult(
+                skip=bool(data.get("skip", False)),
+                threshold_hit=bool(data.get("threshold_hit", False)),
+                consecutive=int(data.get("consecutive", 0)),
+                action_token=data.get("action_token"),
+            )
+        if response:
+            logger.warning("record_precision_result failed pd_group=%s error=%s", key, response.error)
+        else:
+            logger.warning("record_precision_result: no response pd_group=%s", key)
+        return None
+
+    async def finish_precision_action(
+        self,
+        key: tuple[int | None, int],
+        action_token: str,
+    ) -> bool:
+        if not self._transport.connected:
+            logger.warning("finish_precision_action: scheduler transport not connected")
+            return False
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.FINISH_PRECISION_ACTION,
+            request_id=request_id,
+            data={
+                "p_instance_id": key[0],
+                "d_instance_id": key[1],
+                "action_token": action_token,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            return bool((response.data or {}).get("finished", False))
+        if response:
+            logger.warning("finish_precision_action failed pd_group=%s error=%s", key, response.error)
+        else:
+            logger.warning("finish_precision_action: no response pd_group=%s", key)
+        return False
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         role_str = params.role.value if hasattr(params.role, "value") else str(params.role)

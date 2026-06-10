@@ -99,6 +99,30 @@ def encode_stream_chunk_bytes(original_chunk: bytes, chunk_json: dict) -> bytes:
     return line_b + suffix
 
 
+def update_token_id_cache(request_info: dict, chunk_json: dict) -> None:
+    """Accumulate ``return_token_ids`` response fields into ``request_info`` (mutates in place).
+
+    - Root ``prompt_token_ids``: set ``cached_prompt_token_ids`` once (first non-null list).
+    - ``choices[0].prompt_token_ids`` (Completion stream): promoted when root is absent.
+    - ``choices[0].token_ids``: extend ``cached_output_token_ids`` when a list.
+    """
+    pti = chunk_json.get(OpenAIField.PROMPT_TOKEN_IDS)
+    if pti is None:
+        choices = chunk_json.get(OpenAIField.CHOICES) or []
+        if choices and isinstance(choices[0], dict):
+            pti = choices[0].get(OpenAIField.PROMPT_TOKEN_IDS)
+    if isinstance(pti, (list, tuple)) and request_info.get("cached_prompt_token_ids") is None:
+        request_info["cached_prompt_token_ids"] = list(pti)
+
+    choices = chunk_json.get(OpenAIField.CHOICES) or []
+    if not choices:
+        return
+    c0 = choices[0]
+    token_ids = c0.get(OpenAIField.TOKEN_IDS)
+    if isinstance(token_ids, list):
+        request_info.setdefault("cached_output_token_ids", []).extend(token_ids)
+
+
 def strip_stream_chunk_bytes_for_client(
     chunk: bytes,
     *,

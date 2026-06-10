@@ -57,7 +57,7 @@ def test_dispatch_uses_unified_router_by_default(monkeypatch):
     calls = []
 
     class _FakeUnifiedRouter:
-        def __init__(self, req_info, config, scheduler=None, request_manager=None):
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
             calls.append(req_info.req_data)
 
         async def handle_request(self):
@@ -77,7 +77,7 @@ def test_dispatch_uses_single_node_fallback_when_only_prefill(monkeypatch):
     calls = []
 
     class _FakeHybridRouter:
-        def __init__(self, req_info, config, scheduler=None, request_manager=None):
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
             calls.append(req_info.req_data)
 
         async def handle_request(self):

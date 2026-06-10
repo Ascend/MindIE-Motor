@@ -75,7 +75,7 @@ class _Scheduler:
         self.pair_calls = 0
         self.update_workload = AsyncMock(return_value=True)
 
-    async def select_and_allocate(self, role, req_info):
+    async def select_and_allocate(self, role, req_info, **_kwargs):
         instance = self.p if role == PDRole.ROLE_P else self.d
         endpoint = next(iter(next(iter(instance.endpoints.values())).values()))
         return instance, endpoint, Workload(active_kv_cache=1, active_tokens=1)

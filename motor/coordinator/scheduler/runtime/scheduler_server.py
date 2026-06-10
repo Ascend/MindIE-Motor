@@ -206,6 +206,9 @@ class _SchedulerRequestDispatcher:
             SchedulerRequestType.REFRESH_INSTANCES.value: self._handle_refresh_instances,
             SchedulerRequestType.ALLOCATE_ONLY.value: self._handle_allocate_only,
             SchedulerRequestType.ALLOCATE_PAIR.value: self._handle_allocate_pair,
+            SchedulerRequestType.CONFIRM_SAMPLE.value: self._handle_confirm_sample,
+            SchedulerRequestType.RECORD_PRECISION_RESULT.value: self._handle_record_precision_result,
+            SchedulerRequestType.FINISH_PRECISION_ACTION.value: self._handle_finish_precision_action,
         }
         handler = handlers.get(request.request_type)
         if handler:
@@ -311,6 +314,141 @@ class _SchedulerRequestDispatcher:
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
             data={"message": f"Refreshed {len(instances)} instances", "changed": changed},
+        )
+
+    async def _handle_confirm_sample(self, request: SchedulerRequest) -> SchedulerResponse:
+        """Cross-worker precision sampling exit gate (per PD group, interval in request data)."""
+        data = request.data or {}
+        d_instance_id = data.get("d_instance_id")
+        now = data.get("now")
+        interval_seconds = data.get("interval_seconds")
+        if d_instance_id is None or now is None or interval_seconds is None:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error="Missing d_instance_id, now, or interval_seconds in request data",
+            )
+        try:
+            now_f = float(now)
+            interval_f = float(interval_seconds)
+            d_id = int(d_instance_id)
+        except (TypeError, ValueError) as e:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error=f"Invalid confirm_sample fields: {e}",
+            )
+        p_raw = data.get("p_instance_id")
+        p_id: int | None
+        if p_raw is None:
+            p_id = None
+        else:
+            try:
+                p_id = int(p_raw)
+            except (TypeError, ValueError):
+                return SchedulerResponse(
+                    response_type=SchedulerResponseType.ERROR,
+                    request_id=request.request_id,
+                    error="Invalid p_instance_id",
+                )
+        confirmed = await self._scheduler.confirm_sample_exit(
+            p_instance_id=p_id,
+            d_instance_id=d_id,
+            now=now_f,
+            interval_seconds=interval_f,
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"confirmed": confirmed},
+        )
+
+    async def _handle_record_precision_result(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        d_instance_id = data.get("d_instance_id")
+        has_issue = data.get("has_issue")
+        threshold = data.get("threshold")
+        if d_instance_id is None or has_issue is None or threshold is None:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error="Missing d_instance_id, has_issue, or threshold in request data",
+            )
+        try:
+            d_id = int(d_instance_id)
+            threshold_i = int(threshold)
+            has_issue_b = bool(has_issue)
+        except (TypeError, ValueError) as e:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error=f"Invalid record_precision_result fields: {e}",
+            )
+        p_raw = data.get("p_instance_id")
+        p_id: int | None
+        if p_raw is None:
+            p_id = None
+        else:
+            try:
+                p_id = int(p_raw)
+            except (TypeError, ValueError):
+                return SchedulerResponse(
+                    response_type=SchedulerResponseType.ERROR,
+                    request_id=request.request_id,
+                    error="Invalid p_instance_id",
+                )
+        result = await self._scheduler.record_precision_result(
+            p_instance_id=p_id,
+            d_instance_id=d_id,
+            has_issue=has_issue_b,
+            threshold=threshold_i,
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data=result,
+        )
+
+    async def _handle_finish_precision_action(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        d_instance_id = data.get("d_instance_id")
+        action_token = data.get("action_token")
+        if d_instance_id is None or not action_token:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error="Missing d_instance_id or action_token in request data",
+            )
+        try:
+            d_id = int(d_instance_id)
+        except (TypeError, ValueError) as e:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error=f"Invalid finish_precision_action fields: {e}",
+            )
+        p_raw = data.get("p_instance_id")
+        p_id: int | None
+        if p_raw is None:
+            p_id = None
+        else:
+            try:
+                p_id = int(p_raw)
+            except (TypeError, ValueError):
+                return SchedulerResponse(
+                    response_type=SchedulerResponseType.ERROR,
+                    request_id=request.request_id,
+                    error="Invalid p_instance_id",
+                )
+        ok = await self._scheduler.finish_precision_action(
+            p_instance_id=p_id,
+            d_instance_id=d_id,
+            action_token=str(action_token),
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"finished": ok},
         )
 
     async def _handle_allocate_only(self, request: SchedulerRequest) -> SchedulerResponse:

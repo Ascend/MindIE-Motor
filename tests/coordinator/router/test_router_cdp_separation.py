@@ -372,6 +372,23 @@ class MockAsyncClientFirstStreamRecompute(MockAsyncClient):
 
 
 class TestRouterCDPSeparation:
+    @pytest.mark.asyncio
+    async def test_separate_cdp_router_accepts_sampling_manager(self, setup_cdp_separation):
+        """dispatch passes sampling_manager keyword; router must accept it."""
+        req_info = await create_mock_request_info()
+        mock_sm = MagicMock()
+        cdp_router = SeparateCDPRouter(
+            req_info,
+            CoordinatorConfig(),
+            scheduler=Scheduler(
+                instance_provider=InstanceManager(CoordinatorConfig()),
+                config=CoordinatorConfig(),
+            ),
+            request_manager=_request_manager,
+            sampling_manager=mock_sm,
+        )
+        assert cdp_router._sampling_manager is mock_sm
+
     @pytest.fixture
     def client(self):
         return TestClient(app)
