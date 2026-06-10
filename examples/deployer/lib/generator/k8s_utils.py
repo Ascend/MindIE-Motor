@@ -377,7 +377,7 @@ def exec_all_kubectl_singer(deploy_config, yaml_file):
 
 def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, node_type):
     """Scale engine instances by type (p, d or u)."""
-    from lib.generator.engine import obtain_engine_instance_total
+    from lib.utils import obtain_engine_instance_total
 
     job_id = deploy_config[C.CONFIG_JOB_ID]
     totals = obtain_engine_instance_total(deploy_config)
@@ -404,7 +404,7 @@ def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_
 
 def scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path):
     """Scale engine instances by type (p, d or u)."""
-    from lib.generator.engine import obtain_engine_e_instance_total
+    from lib.utils import obtain_engine_e_instance_total
 
     job_id = deploy_config[C.CONFIG_JOB_ID]
     total = obtain_engine_e_instance_total(deploy_config)
@@ -425,6 +425,9 @@ def scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yam
 
 def elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out_deploy_yaml_path):
     """Elastic distributed engine deployment - scale in/out engine instances."""
+    if C.E_INSTANCES_NUM in deploy_config:
+        scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path)
+
     if C.HYBRID_INSTANCES_NUM in deploy_config:
         scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, C.NODE_TYPE_U)
         logger.info("Engine scale done.")
@@ -432,8 +435,6 @@ def elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out
 
     scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, C.NODE_TYPE_P)
     scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, C.NODE_TYPE_D)
-    if C.E_INSTANCES_NUM in deploy_config:
-        scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path)
     logger.info("Engine scale done.")
 
 

@@ -113,7 +113,7 @@ venv.bak/
 **/*_pb2_grpc.py
 
 # deployer
-deployer/output/*
+examples/deployer/output_yamls/*
 
 # observability stack local build artifacts
 examples/features/observability/stack/loki/.build/

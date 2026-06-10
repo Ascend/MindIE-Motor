@@ -10,8 +10,13 @@
 
 import lib.constant as C
 from lib.utils import (
-    generate_unique_id, load_yaml, write_yaml, safe_exec_cmd, logger,
-    modify_log_mount, obtain_engine_instance_total, obtain_engine_e_instance_total
+    generate_unique_id,
+    load_yaml,
+    write_yaml,
+    logger,
+    modify_log_mount,
+    obtain_engine_instance_total,
+    obtain_engine_e_instance_total,
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num
@@ -32,7 +37,9 @@ def _apply_a5_schedule_policy_annotation(template_metadata, hardware_type):
     template_metadata.setdefault(C.ANNOTATIONS, {})[C.HUAWEI_SCHEDULE_POLICY_ANNOTATION] = policy
     logger.info(
         "Applied A5 annotation %s=%s for hardware_type=%s",
-        C.HUAWEI_SCHEDULE_POLICY_ANNOTATION, policy, hardware_type,
+        C.HUAWEI_SCHEDULE_POLICY_ANNOTATION,
+        policy,
+        hardware_type,
     )
 
 
@@ -70,7 +77,7 @@ def build_engine_env_items(role, deploy_config, job_name, include_kv_pool=False)
         {C.NAME: C.ENV_CONTROLLER_SERVICE, C.VALUE: k8s_utils.g_controller_service},
         {C.NAME: C.ENV_COORDINATOR_SERVICE, C.VALUE: k8s_utils.g_coordinator_service},
         {C.NAME: C.ENV_COORDINATOR_INFER_SERVICE, C.VALUE: k8s_utils.g_coordinator_infer_service},
-        {C.NAME: C.ENV_COORDINATOR_OBS_SERVICE, C.VALUE: k8s_utils.g_coordinator_obs_service}
+        {C.NAME: C.ENV_COORDINATOR_OBS_SERVICE, C.VALUE: k8s_utils.g_coordinator_obs_service},
     ]
     if include_kv_pool and k8s_utils.g_kv_pool_enabled:
         env_items.append({C.NAME: C.ENV_KVP_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_pool_service})
@@ -78,19 +85,14 @@ def build_engine_env_items(role, deploy_config, job_name, include_kv_pool=False)
         ascend_mf_store_url = f"tcp://{k8s_utils.g_mf_store_service}:{C.DEFAULT_MF_STORE_PORT}"
         hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
         ascend_mf_transfer_protocol = "device_rdma" if hardware_type == C.HARDWARE_TYPE_800I_A2 else "sdma"
-        env_items.extend([
-            {C.NAME: C.ENV_ASCEND_MF_STORE_URL, C.VALUE: ascend_mf_store_url},
-            {C.NAME: C.ENV_ASCEND_MF_TRANSFER_PROTOCOL, C.VALUE: ascend_mf_transfer_protocol}
-        ])
+        env_items.extend(
+            [
+                {C.NAME: C.ENV_ASCEND_MF_STORE_URL, C.VALUE: ascend_mf_store_url},
+                {C.NAME: C.ENV_ASCEND_MF_TRANSFER_PROTOCOL, C.VALUE: ascend_mf_transfer_protocol},
+            ]
+        )
     if k8s_utils.g_engine_type == C.ENGINE_TYPE_SGLANG:
-        env_items.append({
-            C.NAME: C.ENV_SGLANG_HOST_IP,
-            "valueFrom": {
-                "fieldRef": {
-                    "fieldPath": "status.podIP"
-                }
-            }
-        })
+        env_items.append({C.NAME: C.ENV_SGLANG_HOST_IP, "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}}})
     return env_items
 
 
@@ -108,11 +110,7 @@ def set_engine_env(container, deploy_config, node_type, job_name):
     if node_type == C.NODE_TYPE_U:
         role = C.ROLE_UNION
     else:
-        role_map = {
-            C.NODE_TYPE_E: C.ROLE_ENCODE,
-            C.NODE_TYPE_P: C.ROLE_PREFILL,
-            C.NODE_TYPE_D: C.ROLE_DECODE
-        }
+        role_map = {C.NODE_TYPE_E: C.ROLE_ENCODE, C.NODE_TYPE_P: C.ROLE_PREFILL, C.NODE_TYPE_D: C.ROLE_DECODE}
         role = role_map.get(node_type)
     if C.ENV not in container:
         container[C.ENV] = []
@@ -122,6 +120,8 @@ def set_engine_env(container, deploy_config, node_type, job_name):
 def set_engine_replicas(deployment_data, deploy_config, node_type):
     if node_type == C.NODE_TYPE_U:
         instance_pod_num_key = C.SINGLE_HYBRID_INSTANCE_POD_NUM
+    elif node_type == C.NODE_TYPE_E:
+        instance_pod_num_key = C.SINGER_E_INSTANCES_NUM
     else:
         instance_pod_num_key = C.SINGER_P_INSTANCES_NUM if node_type == C.NODE_TYPE_P else C.SINGER_D_INSTANCES_NUM
     if instance_pod_num_key in deploy_config:
@@ -171,9 +171,7 @@ def apply_node_selector_by_hardware(pod_spec, hardware_type):
 def apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type):
     if deploy_config.get(C.ENABLE_PD_HETEROGENEOUS) is not True:
         return
-    label_key = deploy_config.get(
-        C.PD_HETEROGENEOUS_LABEL_KEY, C.DEFAULT_PD_HETEROGENEOUS_LABEL_KEY
-    )
+    label_key = deploy_config.get(C.PD_HETEROGENEOUS_LABEL_KEY, C.DEFAULT_PD_HETEROGENEOUS_LABEL_KEY)
     label_value_map = {
         C.NODE_TYPE_P: deploy_config.get(
             C.PD_HETEROGENEOUS_PREFILL_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_PREFILL_VALUE
@@ -185,8 +183,7 @@ def apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type):
     if node_type in label_value_map:
         pod_spec[C.NODE_SELECTOR][label_key] = label_value_map[node_type]
         logger.info(
-            f"Applied PD heterogeneous node selector: "
-            f"node_type={node_type}, {label_key}={label_value_map[node_type]}"
+            f"Applied PD heterogeneous node selector: node_type={node_type}, {label_key}={label_value_map[node_type]}"
         )
     else:
         logger.warning(
@@ -212,10 +209,7 @@ def set_weight_mount(pod_spec, container, weight_mount_path):
             volume_found = True
             break
     if not volume_found:
-        pod_spec.setdefault(C.VOLUMES, []).append({
-            C.NAME: C.WEIGHT_MOUNT,
-            C.HOST_PATH: {C.PATH: weight_mount_path}
-        })
+        pod_spec.setdefault(C.VOLUMES, []).append({C.NAME: C.WEIGHT_MOUNT, C.HOST_PATH: {C.PATH: weight_mount_path}})
     volume_mount_found = False
     for volume_mount in container.get(C.VOLUME_MOUNTS, []):
         if volume_mount[C.NAME] == C.WEIGHT_MOUNT:
@@ -223,10 +217,7 @@ def set_weight_mount(pod_spec, container, weight_mount_path):
             volume_mount_found = True
             break
     if not volume_mount_found:
-        container.setdefault(C.VOLUME_MOUNTS, []).append({
-            C.NAME: C.WEIGHT_MOUNT,
-            C.MOUNT_PATH: weight_mount_path
-        })
+        container.setdefault(C.VOLUME_MOUNTS, []).append({C.NAME: C.WEIGHT_MOUNT, C.MOUNT_PATH: weight_mount_path})
 
 
 def set_engine_weight_mount(deployment_data, container, deploy_config):
@@ -290,7 +281,7 @@ def generate_yaml_engine(input_yaml, output_file, user_config):
         output_file_e = output_file + f"_{C.NODE_TYPE_E}{e_index}.yaml"
         write_yaml(data, output_file_e, True)
         k8s_utils.g_generate_yaml_list.append(output_file_e)
-  
+
     # generate yaml engine P/D
     p_total, d_total = obtain_engine_instance_total(deploy_config)
     if is_hybrid_deploy(deploy_config):
@@ -314,4 +305,3 @@ def generate_yaml_engine(input_yaml, output_file, user_config):
         output_file_d = output_file + f"_{C.NODE_TYPE_D}{d_index}.yaml"
         write_yaml(data, output_file_d, True)
         k8s_utils.g_generate_yaml_list.append(output_file_d)
-
