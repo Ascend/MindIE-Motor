@@ -9,13 +9,18 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Fault-tolerance alarm actions and contexts."""
+"""Result of scheduler-global precision streak update."""
 
-from motor.coordinator.fault_tolerance.alarm.base import AlarmAction, AlarmContext
-from motor.coordinator.fault_tolerance.alarm.precision_alarm import PrecisionAlarm
+from __future__ import annotations
 
-__all__ = [
-    "AlarmAction",
-    "AlarmContext",
-    "PrecisionAlarm",
-]
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PrecisionStreakResult:
+    """Response from Scheduler.record_precision_result (via ZMQ)."""
+
+    skip: bool = False
+    threshold_hit: bool = False
+    consecutive: int = 0
+    action_token: str | None = None
