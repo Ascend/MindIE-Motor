@@ -335,6 +335,7 @@
 | coordinator_api_dns        | string | 域名                                                         |
 | coordinator_api_infer_port | int | 推理面端口。默认：`1025`                                            |
 | coordinator_api_mgmt_port  | int | 管控面端口。默认：`1026`                                            |
+| coordinator_obs_port       | int | Observability 端口，承载 `/metrics` 等可观测性接口。默认：`1027`      |
 
 ### 3.12 request_limit（user_config 常用）
 

@@ -113,12 +113,12 @@ curl -X GET "http://{CoordinatorIP}:{管理端口}/readiness"
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{CoordinatorIP}:{管理端口}/metrics?type={指标类型}&role={角色名称}`
+URL：`http(s)://{CoordinatorIP}:{Observability端口}/metrics?type={指标类型}&role={角色名称}`
 
   >[!NOTE]说明
   >
   > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{管理端口}`：配置项 `api_config.coordinator_api_mgmt_port`（默认 `1026`）。
+  > - `{Observability端口}`：配置项 `api_config.coordinator_obs_port`（默认 `1027`）。Kubernetes 部署时通过 NodePort 对外暴露，可直接被 Prometheus 抓取。
 
 **请求参数**
 
@@ -144,20 +144,20 @@ Coordinator 在 `/metrics` 端点内部完成所有数据加工（实例级标�
 
 ```bash
 # 全量聚合指标（默认，行为与不带参数时完全一致）
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics"
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics?type=full"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=full"
 
 # 实例级指标（注入 instance_id 和 role 标签）
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics?type=instance"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=instance"
 
 # 所有角色的聚合指标（返回 dict，key 为角色名，value 为 Prometheus 文本）
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics?type=role"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=role"
 
 # 仅 Prefill 角色的聚合指标
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics?type=role&role=prefill"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=role&role=prefill"
 
 # 仅 Decode 角色的聚合指标
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics?type=role&role=decode"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=role&role=decode"
 ```
 
 **响应示例（`type=full`，默认）**
@@ -241,7 +241,7 @@ vllm:kv_cache_usage_perc{role="decode",model_name="Qwen2.5-7B-Instruct"} 0.635
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{CoordinatorIP}:{管理端口}/instance/metrics`
+URL：`http(s)://{CoordinatorIP}:{Observability端口}/instance/metrics`
 
 **响应示例**
 
@@ -368,23 +368,14 @@ curl -X GET "http://{CoordinatorIP}:{管理端口}/"
 
 ```JSON
 {
-  "service": "Motor Coordinator Server",
+  "service": "Motor Coordinator Management Server",
   "version": "1.0.0",
-  "description": "coordinator server, management and inference APIs",
-  "docs": {
-    "management": [
-      "/startup",
-      "/liveness",
-      "/readiness",
-      "/metrics",
-      "/instances/refresh"
-    ],
-    "inference": [
-      "/v1/models",
-      "/v1/chat/completions",
-      "/v1/completions",
-      "/v1/metaserver"
-    ]
+  "description": "Management plane: liveness, startup, readiness, instance refresh",
+  "endpoints": {
+    "GET /liveness": "liveness check",
+    "GET /startup": "startup probe",
+    "GET /readiness": "readiness check",
+    "POST /instances/refresh": "refresh instances"
   },
   "timestamp": "2026-01-29T12:00:00+00:00"
 }
@@ -397,7 +388,8 @@ curl -X GET "http://{CoordinatorIP}:{管理端口}/"
 | `service` | string | 服务名称。 |
 | `version` | string | 服务版本号。 |
 | `description` | string | 服务描述。 |
-| `docs` | object | 接口索引信息。 |
-| `docs.management` | array | 管理与监控接口列表。 |
-| `docs.inference` | array | 推理接口列表。 |
+| `endpoints` | object | 接口索引信息，以 `HTTP方法 路径` 为键，说明为值。 |
 | `timestamp` | string | 服务时间戳。 |
+
+>[!NOTE]说明
+>Metrics 可观测性端点（`/metrics`、`/instance/metrics`、`/health`）由 Observability 端口（默认 1027）独立提供服务，不在管理端口返回。详见 [Observability 接口](observability_interface.md)。

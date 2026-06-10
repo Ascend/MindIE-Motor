@@ -531,7 +531,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/metaserver`
   >[!NOTE]说明
   >
   > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{推理端口}`：配置项 `api_config.coordinator_api_mgmt_port`（默认 `1026`）。
+  > - `{推理端口}`：内部端口取值来自于配置项 `api_config.coordinator_api_infer_port`（默认 `1025`），对外绑定端口由部署配置 `deployer/deployment/coordinator_init.yaml` 的 `spec.ports[].nodePort` 指定（默认 `31015`）。
 
 请求头：
 
@@ -557,7 +557,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/metaserver`
 **使用样例**
 
 - CDP分离场景，D节点触发P节点Prefill：
-  
+
   ```json
   curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/metaserver" \
   -H "Content-Type: application/json" \

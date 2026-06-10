@@ -215,7 +215,8 @@
       "coordinator_api_host": "127.0.0.1",
       "coordinator_api_dns": "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
       "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026
+      "coordinator_api_mgmt_port": 1026,
+      "coordinator_obs_port": 1027
     },
     "tracer_config": {
       "endpoint": "",

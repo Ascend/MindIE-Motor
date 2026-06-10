@@ -32,7 +32,8 @@ pyMotor修改user_config.json配置文件后，通过deploy.py脚本即可完成
     ...
     "api_config": {
       "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026
+      "coordinator_api_mgmt_port": 1026,
+      "coordinator_obs_port": 1027
     },
     "scheduler_config": {
       "deploy_mode": "pd_disaggregation_single_container"

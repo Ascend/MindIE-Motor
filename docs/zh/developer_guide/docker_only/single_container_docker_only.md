@@ -14,6 +14,7 @@
 
 - **motor_coordinator_config.api_config.coordinator_api_infer_port**：coordinator推理端口（默认1025）。
 - **motor_coordinator_config.api_config.coordinator_api_mgmt_port**：coordinator管理端口（默认1026）。
+- **motor_coordinator_config.api_config.coordinator_obs_port**：coordinator observability端口（默认1027）。
 - **motor_controller_config.api_config.controller_api_port**：controller管理端口（默认1026）。
 - **motor_nodemanger_config.api_config.node_manager_port**：nodemanger管理端口（默认1026）。
 - **motor_deploy_config.deploy_mode**：取值**single_container**表示单容器场景，其他值表示多容器。
@@ -37,7 +38,8 @@
     ...
     "api_config": {
       "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026
+      "coordinator_api_mgmt_port": 1026,
+      "coordinator_obs_port": 1027
     },
     "scheduler_config": {
       "deploy_mode": "pd_disaggregation_single_container"

@@ -372,19 +372,19 @@ vLLM 引擎通过 `/metrics` 端点暴露 Prometheus 兼容指标，使用 `vllm
 ```text
                      ┌──────────────────────────────┐
                      │        Prometheus            │
-                     │    scrape /metrics:1027       │
+                     │    scrape /metrics:1027      │
                      └──────────────┬───────────────┘
                                     │
                      ┌──────────────▼───────────────┐
                      │   ObservabilityServer        │
-                     │   GET /metrics?type=full|...  │
+                     │   GET /metrics?type=full|... │
                      └──────────────┬───────────────┘
                                     │
                      ┌──────────────▼───────────────┐
-                     │     MetricsCollector          │
+                     │     MetricsCollector         │
                      │  ┌─────────────────────────┐ │
-                     │  │  _update_metrics_thread  │ │
-                     │  │  (daemon, 每 reuse_time) │ │
+                     │  │  _update_metrics_thread │ │
+                     │  │  (daemon, 每 reuse_time)│ │
                      │  └───────────┬─────────────┘ │
                      │              │               │
                      │  _collect_metrics()          │
