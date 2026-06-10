@@ -152,8 +152,52 @@ class InferenceServer(BaseCoordinatorServer):
     async def _lifespan(self, app: FastAPI):
         logger.info("Inference server is starting...")
         app.state.request_manager = self._request_manager
+        # Precision check: inject logprobs + token-id sampling only when precision_check_enabled
+        from motor.coordinator.fault_tolerance.precision.sample_controller import (
+            SampleController,
+        )
+        from motor.coordinator.fault_tolerance.precision import (
+            build_precision_reporter,
+        )
+
+        sampling_cfg = self.coordinator_config.token_sampling_config
         TracerManager(self.coordinator_config)
         await self._scheduler_connection.connect()
+        if sampling_cfg.precision_check_enabled:
+            scheduler_client = self._scheduler_connection.get_client()
+            if scheduler_client is None:
+                logger.warning(
+                    "Precision check enabled but scheduler client unavailable; "
+                    "disabling precision sampling until scheduler connects"
+                )
+                app.state.sampling_manager = None
+            else:
+                precision = build_precision_reporter(
+                    sampling_cfg,
+                    self.coordinator_config.infer_tls_config,
+                    config=self.coordinator_config,
+                    scheduler=scheduler_client,
+                    request_manager=self._request_manager,
+                    scheduler_client=scheduler_client,
+                )
+                sampling_manager = SampleController(
+                    sampling_cfg,
+                    precision,
+                    scheduler_client=scheduler_client,
+                )
+                logger.info(
+                    "Precision check (token sampling): interval=%.1fs logprobs_count=%d "
+                    "threshold=%d probe_attempts=%d probe_timeout=%.1fs "
+                    "exit_gate=scheduler_zmq streak=scheduler_zmq probe=internal_router",
+                    sampling_cfg.interval_seconds,
+                    sampling_cfg.logprobs_count,
+                    sampling_cfg.precision_issue_threshold,
+                    sampling_cfg.probe_max_attempts,
+                    sampling_cfg.probe_timeout_seconds,
+                )
+                app.state.sampling_manager = sampling_manager
+        else:
+            app.state.sampling_manager = None
         try:
             yield
         except asyncio.CancelledError:

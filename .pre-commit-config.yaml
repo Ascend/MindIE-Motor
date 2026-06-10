@@ -90,7 +90,7 @@ repos:
     hooks:
       - id: log-quality-basic
         name: log quality basic check
-        entry: python pre-commit/check_log_quality.py --incremental
+        entry: python3 pre-commit/check_log_quality.py --incremental
         language: system
         types: [python]
         files: ^motor/

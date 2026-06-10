@@ -164,6 +164,8 @@ stap = "stap"
 ot = "ot"
 
 [type.sh.extend-words]
+# -passin is a valid OpenSSL option for providing private key password
+passin = "passin"
 
 [type.vimscript]
 extend-glob = []

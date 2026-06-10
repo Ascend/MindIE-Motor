@@ -41,8 +41,10 @@ class BaseReporter(ABC):
         if not 0 <= monitor_http_port <= 65535:
             raise RuntimeError(f"Invalid CCAE Port: {monitor_http_port}, should between 0 and 65535")
 
-        self.logger.info(f"Detect monitor config successfully! monitor_ip = {self.monitor_ip}, "
-                         f"monitor_http_port = {monitor_http_port}")
+        self.logger.info(
+            f"Detect monitor config successfully! monitor_ip = {self.monitor_ip}, "
+            f"monitor_http_port = {monitor_http_port}"
+        )
         self.url_prefix = f"{self.monitor_ip}:{monitor_http_port}"
 
         self.tls_config = ConfigUtil.get_config("motor_deploy_config.tls_config.north_tls_config")
@@ -51,8 +53,9 @@ class BaseReporter(ABC):
         else:
             self.logger.info("Sending requests without ssl!")
 
-        self.http_client = SafeHTTPSClient(address=self.url_prefix, protocol="https://",
-                                           tls_config=TLSConfig.from_dict(self.tls_config))
+        self.http_client = SafeHTTPSClient(
+            address=self.url_prefix, protocol="https://", tls_config=TLSConfig.from_dict(self.tls_config)
+        )
 
         self.heart_beat_ready = threading.Event()
         self.log_topic = None
@@ -60,7 +63,7 @@ class BaseReporter(ABC):
         self.remote_info = None
         self.producer = None
         self.identity = identity
-        self.alarm_to_send = list()
+        self.alarm_to_send = []
         self.running = True
 
     def init_producer(self):
@@ -73,7 +76,7 @@ class BaseReporter(ABC):
             "queue.buffering.max.messages": 100000,
             "queue.buffering.max.ms": 500,
             "batch.num.messages": 10000,
-            "security.protocol": "PLAINTEXT"
+            "security.protocol": "PLAINTEXT",
         }
 
         if not self.tls_config or not self.tls_config.get("enable_tls"):
@@ -83,13 +86,15 @@ class BaseReporter(ABC):
 
         self.logger.info("Sending Kafka requests with ssl!")
         password = AdapterCertUtil.validate_cert_and_decrypt_password(self.tls_config)
-        kafka_config.update({
-            "security.protocol": "ssl",
-            "ssl.ca.location": self.tls_config["ca_file"],
-            "ssl.certificate.location": self.tls_config["cert_file"],
-            "ssl.key.location": self.tls_config["key_file"],
-            "ssl.key.password": password
-        })
+        kafka_config.update(
+            {
+                "security.protocol": "ssl",
+                "ssl.ca.location": self.tls_config["ca_file"],
+                "ssl.certificate.location": self.tls_config["cert_file"],
+                "ssl.key.location": self.tls_config["key_file"],
+                "ssl.key.password": password,
+            }
+        )
         if self.tls_config["crl_file"]:
             kafka_config["ssl.crl.location"] = self.tls_config["crl_file"]
         self.producer = KafkaProducer(kafka_config)
@@ -114,16 +119,31 @@ class BaseReporter(ABC):
             self.logger.info("Inventory and Alarm shouldn't be reported when identity is `Coordinator`.")
             return
 
+        precision_thread = threading.Thread(target=self.run_precision_control_worker)
+        precision_thread.start()
+        self.logger.info("Precision control thread starts successfully!")
+
         alarm_thread = threading.Thread(target=self.fetch_alarm_info_and_upload)
         alarm_thread.start()
         self.logger.info("Alarm thread starts successfully!")
-        
+
         inventory_thread = threading.Thread(target=self.fetch_inventory_info_and_upload)
         inventory_thread.start()
         self.logger.info("Inventory thread starts successfully!")
 
     def stop(self):
         self.running = False
+
+    def precision_control_periodic(self) -> None:
+        """Optional northbound precision control poll; overridden by CCAEReporter."""
+
+    def run_precision_control_worker(self) -> None:
+        while self.running:
+            time.sleep(1)
+            try:
+                self.precision_control_periodic()
+            except Exception as e:
+                self.logger.error(e)
 
     @abstractmethod
     def send_heart_beat(self):
