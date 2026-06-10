@@ -1,0 +1,12 @@
+--- default_loader.py.ori	2026-05-08 01:25:36.000000000 +0000
++++ default_loader.py	2026-06-08 07:11:17.000000000 +0000
+@@ -248,6 +248,9 @@
+                         self.load_config.use_tqdm_on_load,
+                         self.load_config.safetensors_load_strategy,
+                         local_expert_ids=self.local_expert_ids,
++                        shuffle_safetensors_files=(
++                            self.load_config.shuffle_safetensors_files
++                        ),
+                     )
+         else:
+             if extra_config.get("enable_multithread_load"):

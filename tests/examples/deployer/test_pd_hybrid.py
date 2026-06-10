@@ -170,10 +170,12 @@ def test_boot_script_routes_union_role_to_engine(tmp_path):
     boot_path = tmp_path / "boot.sh"
     common_path = tmp_path / "common.sh"
     engine_path = tmp_path / "engine.sh"
+    patch_path = tmp_path / "patch_apply_shuffle_safetensors.py"
 
     boot_path.write_text((startup_root / "boot.sh").read_text(encoding="utf-8"), encoding="utf-8")
     common_path.write_text("set_common_env() { :; }\n", encoding="utf-8")
     engine_path.write_text('echo "engine-entry:$ROLE"\n', encoding="utf-8")
+    patch_path.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n", encoding="utf-8")
 
     run_env = os.environ.copy()
     run_env["ROLE"] = "union"
