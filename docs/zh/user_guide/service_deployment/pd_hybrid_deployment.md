@@ -115,7 +115,7 @@ PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/user_config.json
 
 PD 混部场景下，Coordinator 需使用 `single_node` 调度模式。
 
-**配置示例**：
+**配置示例（默认负载均衡）**：
 
 ```json
 "motor_coordinator_config": {
@@ -125,9 +125,30 @@ PD 混部场景下，Coordinator 需使用 `single_node` 调度模式。
 }
 ```
 
+**配置示例（KV Cache 亲和调度，可选）**：
+
+```json
+"motor_coordinator_config": {
+  "scheduler_config": {
+    "deploy_mode": "single_node",
+    "scheduler_type": "kv_cache_affinity",
+    "kv_affinity_mode": "unified",
+    "kv_affinity_load_weight": 1.0
+  }
+}
+```
+
+启用 KV Cache 亲和时，在 `examples/infer_engines/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../KV_cache_affinity_deployment.md)。
+
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
 | scheduler_config.deploy_mode | string | PD 混部配置为 `single_node`，表示按单节点完整推理能力调度 union 实例 |
+| scheduler_config.scheduler_type | string | 调度类型。默认 `load_balance`；启用 KV 亲和时配置为 `kv_cache_affinity` |
+| scheduler_config.kv_affinity_mode | string | KV 亲和子策略：`unified`（默认）或 `load_gated` |
+| scheduler_config.kv_affinity_load_weight | float | unified 模式下负载权重，默认 `1.0` |
+| scheduler_config.kv_affinity_overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数，默认 `1.0` |
+| scheduler_config.kv_affinity_prefill_load_scale | float | unified 模式下 prefill 成本权重，默认 `1.0` |
+| scheduler_config.kv_affinity_load_gate_topn | int | load_gated 模式下保留的最小负载 endpoint 数量；`0` 时回退为 `2` |
 
 ### motor_engine_union_config（混部引擎）
 
@@ -168,7 +189,11 @@ PD 混部场景下，Coordinator 需使用 `single_node` 调度模式。
 | engine_config.enable_expert_parallel | bool | 是否启用 EP |
 | engine_config.data_parallel_rpc_port | int | DP 侧 RPC 端口 |
 | engine_config.max_model_len | int | 最大模型上下文长度 |
+| engine_config.kv-events-config | object | 启用 KV Cache 亲和时配置 KV 事件发布（见 [KV Cache 亲和部署](../KV_cache_affinity_deployment.md)） |
+| engine_config.enable-prefix-caching | bool | 启用 KV Cache 亲和时建议开启前缀缓存 |
 | 其它键 | - | 引擎原生参数，按所选引擎文档直接填写 |
+
+启用 KV Cache 亲和时，Coordinator 会从 `motor_engine_union_config.engine_config.kv-events-config` **自动合并** `prefill_kv_event_config`（无需再配置 `motor_engine_prefill_config`）。同时需在 `user_config.json` 根节点配置 `kv_conductor_config`（至少包含 `http_server_port`）。
 
 ## 配置 `env.json`
 

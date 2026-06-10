@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 MINDIE_MOTOR_CONFIG_FILENAME = "config_sample.json"
 MOTOR_DEPLOY_CONFIG = "motor_deploy_config"
 MOTOR_ENGINE_PREFILL_CONFIG = "motor_engine_prefill_config"
+MOTOR_ENGINE_UNION_CONFIG = "motor_engine_union_config"
+DEFAULT_KV_CONDUCTOR_HTTP_PORT = 13333
 TLS_CONFIG = "tls_config"
 MGMT_TLS_CONFIG = "mgmt_tls_config"
 INFER_TLS_CONFIG = "infer_tls_config"
@@ -192,30 +194,63 @@ def _update_instances_num(
     }
 
 
+def _resolve_kv_conductor_http_port(user_config_data: dict[str, Any]) -> int:
+    kv_conductor_config = user_config_data.get(KV_CONDUCTOR_CONFIG)
+    if isinstance(kv_conductor_config, dict):
+        port = kv_conductor_config.get(HTTP_SERVER_PORT)
+        if port is not None:
+            return int(port)
+    return DEFAULT_KV_CONDUCTOR_HTTP_PORT
+
+
+def _build_prefill_kv_event_from_engine_section(
+    engine_section: dict[str, Any],
+    user_config_data: dict[str, Any],
+) -> dict[str, Any] | None:
+    engine_config = engine_section.get(ENGINE_CONFIG)
+    if not isinstance(engine_config, dict):
+        logger.warning("engine_config is not dict")
+        return None
+
+    kv_events_config = engine_config.get(KV_EVENTS_CONFIG)
+    if not isinstance(kv_events_config, dict):
+        return None
+
+    resolver = ConfigResolver(engine_section)
+    return {
+        ENDPOINT: kv_events_config.get(ENDPOINT, ""),
+        REPLAY_ENDPOINT: kv_events_config.get(REPLAY_ENDPOINT, ""),
+        BLOCK_SIZE: engine_config.get("block-size", 128),
+        HTTP_SERVER_PORT: _resolve_kv_conductor_http_port(user_config_data),
+        MODEL_PATH: resolver.get_model_path(""),
+    }
+
+
+def _select_kv_event_engine_section(user_config_data: dict[str, Any]) -> dict[str, Any] | None:
+    if MOTOR_ENGINE_PREFILL_CONFIG in user_config_data:
+        prefill_section = user_config_data.get(MOTOR_ENGINE_PREFILL_CONFIG)
+        if isinstance(prefill_section, dict):
+            return prefill_section
+    if MOTOR_ENGINE_UNION_CONFIG in user_config_data:
+        union_section = user_config_data.get(MOTOR_ENGINE_UNION_CONFIG)
+        if isinstance(union_section, dict):
+            return union_section
+    return None
+
+
 def _update_prefill_kv_event_config(updated_config: dict[str, Any], user_config_data: dict[str, Any]) -> None:
     try:
-        prefill_engine_config = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG][ENGINE_CONFIG]
-        if not isinstance(prefill_engine_config, dict):
-            logger.warning("prefill_engine_config is not dict")
+        engine_section = _select_kv_event_engine_section(user_config_data)
+        if engine_section is None:
             return
 
-        kv_events_config = prefill_engine_config.get(KV_EVENTS_CONFIG, None)
-        if not isinstance(kv_events_config, dict):
-            logger.warning("kv_events_config is None")
+        prefill_kv_event = _build_prefill_kv_event_from_engine_section(engine_section, user_config_data)
+        if prefill_kv_event is None:
             return
 
-        prefill_section = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG]
-        resolver = ConfigResolver(prefill_section)
-
-        updated_config[PREFILL_KV_EVENT_CONFIG] = {
-            ENDPOINT: kv_events_config.get(ENDPOINT, ""),
-            REPLAY_ENDPOINT: kv_events_config.get(REPLAY_ENDPOINT, ""),
-            BLOCK_SIZE: prefill_engine_config.get("block-size", 128),
-            HTTP_SERVER_PORT: user_config_data[KV_CONDUCTOR_CONFIG][HTTP_SERVER_PORT],
-            MODEL_PATH: resolver.get_model_path(""),
-        }
+        updated_config[PREFILL_KV_EVENT_CONFIG] = prefill_kv_event
     except Exception as e:
-        logger.warning("Failed to get prefill config: %s", e)
+        logger.warning("Failed to get kv event engine config: %s", e)
 
 
 def log_json_config_format_error(json_path: str | None, exc: Exception) -> None:

@@ -9,10 +9,12 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import os
 import json
-import pytest
+import os
 import tempfile
+import time
+
+import pytest
 
 from motor.config.coordinator import CoordinatorConfig
 
@@ -492,8 +494,6 @@ def test_reload_config(_temp_json_file):
         json.dump(updated_config, f)
 
     # Force update file modification time
-    import time
-
     current_time = time.time()
     os.utime(_temp_json_file, (current_time, current_time))
 
@@ -522,3 +522,128 @@ def test_reload_config_file_not_found():
     config.config_path = "/non/existent/file.json"
     success = config.reload()
     assert success is False
+
+
+def test_from_json_maps_union_kv_events_to_prefill_kv_event_config(_temp_json_file):
+    """PD hybrid: auto-merge prefill_kv_event_config from motor_engine_union_config."""
+    user_config = {
+        "motor_deploy_config": {"hybrid_instances_num": 1},
+        "motor_coordinator_config": {
+            "scheduler_config": {
+                "deploy_mode": "single_node",
+                "scheduler_type": "kv_cache_affinity",
+            }
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/mnt/weight/qwen3_8B",
+                "block-size": 64,
+                "kv-events-config": {
+                    "endpoint": "tcp://*:5557",
+                    "replay_endpoint": "tcp://*:6667",
+                },
+            },
+        },
+        "kv_conductor_config": {"http_server_port": 14444},
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    pk = config.prefill_kv_event_config
+
+    assert config.scheduler_config.deploy_mode.value == "single_node"
+    assert config.scheduler_config.scheduler_type.value == "kv_cache_affinity"
+    assert pk.endpoint == "tcp://*:5557"
+    assert pk.replay_endpoint == "tcp://*:6667"
+    assert pk.model_path == "/mnt/weight/qwen3_8B"
+    assert pk.http_server_port == 14444
+    assert pk.block_size == 64
+
+
+def test_from_json_prefill_kv_event_prefers_prefill_over_union(_temp_json_file):
+    """When both prefill and union exist, prefill engine section wins."""
+    user_config = {
+        "motor_coordinator_config": {},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/prefill/model",
+                "kv-events-config": {
+                    "endpoint": "tcp://*:1111",
+                    "replay_endpoint": "tcp://*:2222",
+                },
+            },
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/union/model",
+                "kv-events-config": {
+                    "endpoint": "tcp://*:5557",
+                    "replay_endpoint": "tcp://*:6667",
+                },
+            },
+        },
+        "kv_conductor_config": {"http_server_port": 13333},
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    pk = config.prefill_kv_event_config
+
+    assert pk.endpoint == "tcp://*:1111"
+    assert pk.replay_endpoint == "tcp://*:2222"
+    assert pk.model_path == "/prefill/model"
+
+
+def test_from_json_union_without_kv_events_skips_auto_merge(_temp_json_file):
+    """Union without kv-events-config does not populate prefill_kv_event_config."""
+    user_config = {
+        "motor_coordinator_config": {},
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/mnt/weight/qwen3_8B",
+                "max_model_len": 2048,
+            },
+        },
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.prefill_kv_event_config.endpoint == ""
+    assert config.prefill_kv_event_config.model_path == ""
+
+
+def test_from_json_maps_prefill_kv_events_regression(_temp_json_file):
+    """PD separate: auto-merge prefill_kv_event_config from motor_engine_prefill_config."""
+    user_config = {
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/mnt/weight/qwen3_8B",
+                "block-size": 32,
+                "kv-events-config": {
+                    "endpoint": "tcp://*:5557",
+                    "replay_endpoint": "tcp://*:6667",
+                },
+            },
+        },
+        "kv_conductor_config": {"http_server_port": 15555},
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    pk = config.prefill_kv_event_config
+
+    assert pk.endpoint == "tcp://*:5557"
+    assert pk.replay_endpoint == "tcp://*:6667"
+    assert pk.model_path == "/mnt/weight/qwen3_8B"
+    assert pk.http_server_port == 15555
+    assert pk.block_size == 32

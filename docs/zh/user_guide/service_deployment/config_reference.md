@@ -244,7 +244,21 @@
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | deploy_mode | string | 部署模式。<ul><li>pd_separate：PD分离部署方式；</li><li>single_node：PD 混部或单节点完整推理方式；</li><li>cdp_separate：CDP部署方式；</li><li>cpcd_separate：CPCD部署方式。</li></ul>默认：pd_separate |
-| scheduler_type | string | 调度类型。<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询。</li></ul>默认：load_balance |
+| scheduler_type | string | 调度类型。<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul>默认：load_balance |
+| endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认：`0.05` |
+| kv_affinity_mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
+| kv_affinity_load_weight | float | unified 模式下 endpoint 实时负载权重。默认：`1.0` |
+| kv_affinity_overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数。默认：`1.0` |
+| kv_affinity_prefill_load_scale | float | unified 模式下（经亲和折扣后的）prefill 成本权重。默认：`1.0` |
+| kv_affinity_load_gate_topn | int | load_gated 模式下先保留负载最低的 N 个 endpoint 再做亲和择优；`0` 时回退为 `2`。默认：`0` |
+
+**prefill_kv_event_config 自动推导**（加载 `user_config.json` 时由 Coordinator 合并，一般无需手写）：
+
+| 来源 | 说明 |
+|------|------|
+| PD 分离 | 从 `motor_engine_prefill_config.engine_config.kv-events-config` 推导 |
+| PD 混部 | 从 `motor_engine_union_config.engine_config.kv-events-config` 推导 |
+| kv_conductor_config | `http_server_port` 写入 `prefill_kv_event_config.http_server_port`；未配置时默认 `13333` |
 
 ### 3.5 infer_tls_config / mgmt_tls_config / etcd_tls_config
 

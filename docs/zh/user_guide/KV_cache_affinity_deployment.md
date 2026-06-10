@@ -29,7 +29,7 @@ PyMotor KV Cache亲和性调度能力依赖Mooncake社区的Mooncake conductor�
       echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 
       ```
-   
+
    * golang环境变量设置。
 
       ```bash
@@ -67,7 +67,7 @@ PyMotor KV Cache亲和性调度能力依赖Mooncake社区的Mooncake conductor�
    mv mooncake_conductor /usr/local/bin/
 
    ```
-   
+
 5. 使用以下命令保存镜像。
 
    ```bash
@@ -227,17 +227,103 @@ PyMotor开启KV Cache亲和性调度能力只需修改user_config.json配置文�
 * 在`motor_engine_prefill_config`配置中，`engine_config`下增加`kv-events-config`配置，表示P实例开启KV Cache事件发布能力。
 * `kv_conductor_config` 中的 `http_server_port` 字段（例如 `13333`）用于配置 KV conductor的服务端口；若未配置，`deploy.py` 会按默认值 `13333` 进行补充和适配。
 
+### PD 混部场景
+
+以 `examples/infer_engines/vllm/pd_hybrid/user_config.json` 为参考基线，在同一配置文件中适配 KV Cache 亲和性调度能力。PD 混部不使用 `motor_engine_prefill_config`，应将 `kv-events-config` 与 `enable-prefix-caching` 配置在 `motor_engine_union_config.engine_config` 中；Coordinator 启动时会从 union 引擎段自动合并 `prefill_kv_event_config`（`endpoint`、`replay_endpoint`、`model_path` 等），无需手写 prefill 段配置。
+
+配置文件示例如下：
+
+```json
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 2,
+    "image_name": "",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "/mnt/weight/"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "deploy_mode": "single_node",
+      "scheduler_type": "kv_cache_affinity"
+    }
+  },
+  "motor_engine_union_config": {
+    "engine_type": "vllm",
+    "enable_multi_endpoints": true,
+    "engine_config": {
+      "served_model_name": "qwen3",
+      "model": "/mnt/weight/Qwen3-0.6B/",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": false,
+      "max_model_len": 10000,
+      "max-num-batched-tokens": 9000,
+      "max-num-seqs": 4,
+      "seed": 1024,
+      "async-scheduling": true,
+      "trust-remote-code": true,
+      "kv-events-config": {
+        "publisher": "zmq",
+        "enable_kv_cache_events": true,
+        "endpoint": "tcp://*:5557",
+        "topic": "kv-events",
+        "replay_endpoint": "tcp://*:6667"
+      },
+      "kv-transfer-config": {
+        "kv_connector": "AscendStoreConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+          "register_buffer": true,
+          "use_layerwise": false,
+          "mooncake_rpc_port": "0"
+        }
+      }
+    }
+  },
+  "kv_cache_pool_config": {
+    "metadata_server": "P2PHANDSHAKE",
+    "protocol": "ascend",
+    "device_name": "",
+    "global_segment_size": "10GB",
+    "eviction_high_watermark_ratio": 0.9,
+    "eviction_ratio": 0.1
+  },
+  "kv_conductor_config": {
+    "kvevent_instance": {
+      "mooncake_master": {
+        "type": "Mooncake"
+      }
+    },
+    "http_server_port": 13333
+  }
+}
+```
+
+部署说明见 [PD 混部服务部署](./service_deployment/pd_hybrid_deployment.md)。
+
 ### 部署服务
 
 在 `examples/deployer` 目录下通过 deploy.py 脚本部署服务。支持指定配置目录或单独指定配置文件：
 
 ```bash
 cd examples/deployer
-# 方式一：指定配置目录（推荐）
+# PD 分离：指定配置目录（推荐）
 python deploy.py --config_dir ../infer_engines/vllm
 
-# 方式二：单独指定配置文件
+# PD 分离：单独指定配置文件
 python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
+
+# PD 混部：在同一 user_config.json 中完成 KV 亲和适配后部署
+python deploy.py --config_dir ../infer_engines/vllm/pd_hybrid
 ```
 
 执行后看到如下内容，说明执行成功：

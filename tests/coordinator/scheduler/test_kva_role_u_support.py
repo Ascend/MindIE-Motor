@@ -4,7 +4,10 @@
 from unittest.mock import Mock, patch
 
 from motor.common.resources.instance import PDRole
-from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
+from motor.coordinator.api_client.conductor_api_client import (
+    ConductorApiClient,
+    conductor_instance_id,
+)
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
@@ -26,6 +29,45 @@ def _build_kv_client() -> AsyncSchedulerClient:
             scheduler_type="kv_cache_affinity",
         )
     )
+
+
+def test_conductor_instance_id_role_u() -> None:
+    instance = _build_instance(PDRole.ROLE_U)
+    instance.id = 7
+    assert conductor_instance_id(instance) == "vllm-union-7"
+
+
+def test_conductor_instance_id_role_p() -> None:
+    instance = _build_instance(PDRole.ROLE_P)
+    instance.id = 3
+    assert conductor_instance_id(instance) == "vllm-prefill-3"
+
+
+def test_register_post_uses_union_conductor_id_for_role_u() -> None:
+    instance = _build_instance(PDRole.ROLE_U)
+    instance.id = 2
+    instance.model_name = "qwen3-8B"
+    endpoint = Mock()
+    endpoint.id = 0
+    endpoint.ip = "10.0.0.1"
+
+    mock_config = Mock()
+    mock_config.prefill_kv_event_config.endpoint = "tcp://*:5557"
+    mock_config.prefill_kv_event_config.replay_endpoint = ""
+    mock_config.prefill_kv_event_config.engine_type = "vLLM"
+    mock_config.prefill_kv_event_config.block_size = 128
+    mock_config.prefill_kv_event_config.conductor_service = "kv-conductor"
+    mock_config.prefill_kv_event_config.http_server_port = 13333
+
+    with (
+        patch.object(ConductorApiClient, "coordinator_config", mock_config),
+        patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient") as mock_http_client,
+    ):
+        mock_http_client.return_value.__enter__.return_value.post.return_value = None
+        ConductorApiClient.register_post(instance, endpoint)
+
+    register_payload = mock_http_client.return_value.__enter__.return_value.post.call_args[0][1]
+    assert register_payload["instance_id"] == "vllm-union-2"
 
 
 def test_register_kv_instance_supports_role_u() -> None:
@@ -63,14 +105,17 @@ def test_kv_cache_affinity_uses_kva_for_role_u() -> None:
     req_info = Mock()
     ranked = [(instance, endpoint, 0.0)]
 
-    with patch(
-        "motor.coordinator.scheduler.runtime.scheduler_client."
-        "KvCacheAffinityPolicy.select_endpoint_candidates_from_list",
-        return_value=ranked,
-    ) as mock_kva, patch.object(
-        client,
-        "_select_endpoint_candidates_by_load_balance",
-    ) as mock_load_balance:
+    with (
+        patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client."
+            "KvCacheAffinityPolicy.select_endpoint_candidates_from_list",
+            return_value=ranked,
+        ) as mock_kva,
+        patch.object(
+            client,
+            "_select_endpoint_candidates_by_load_balance",
+        ) as mock_load_balance,
+    ):
         candidates, candidate_policy = client._select_endpoint_candidates_from_list_with_policy(
             [instance], PDRole.ROLE_U, req_info, top_k=1
         )
@@ -89,15 +134,18 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
     lb_instance = Mock()
     lb_candidates = [(lb_instance, endpoint, 0.42)]
 
-    with patch(
-        "motor.coordinator.scheduler.runtime.scheduler_client."
-        "KvCacheAffinityPolicy.select_endpoint_candidates_from_list",
-        return_value=[],
-    ) as mock_kva, patch.object(
-        client,
-        "_select_endpoint_candidates_by_load_balance",
-        return_value=lb_candidates,
-    ) as mock_load_balance:
+    with (
+        patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client."
+            "KvCacheAffinityPolicy.select_endpoint_candidates_from_list",
+            return_value=[],
+        ) as mock_kva,
+        patch.object(
+            client,
+            "_select_endpoint_candidates_by_load_balance",
+            return_value=lb_candidates,
+        ) as mock_load_balance,
+    ):
         candidates, candidate_policy = client._select_endpoint_candidates_from_list_with_policy(
             [instance], PDRole.ROLE_U, req_info, top_k=1
         )
@@ -108,6 +156,24 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
     mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_U, 1)
 
 
+async def test_select_and_allocate_role_u_uses_affinity_top_k() -> None:
+    client = _build_kv_client()
+    req_info = Mock()
+    req_info.req_id = "req-1"
+    req_info.req_data = {}
+    req_info.req_len = 0
+
+    with patch.object(
+        client,
+        "_select_endpoint_candidates_with_policy",
+        return_value=([], "kv_cache_affinity"),
+    ) as mock_select:
+        await client.select_and_allocate(PDRole.ROLE_U, req_info)
+
+    mock_select.assert_awaited_once()
+    assert mock_select.await_args.kwargs["top_k"] == 3
+
+
 def test_kv_cache_affinity_skips_kva_for_non_kva_roles() -> None:
     client = _build_kv_client()
     instance = Mock()
@@ -116,14 +182,17 @@ def test_kv_cache_affinity_skips_kva_for_non_kva_roles() -> None:
     lb_instance = Mock()
     lb_candidates = [(lb_instance, endpoint, 0.24)]
 
-    with patch(
-        "motor.coordinator.scheduler.runtime.scheduler_client."
-        "KvCacheAffinityPolicy.select_endpoint_candidates_from_list"
-    ) as mock_kva, patch.object(
-        client,
-        "_select_endpoint_candidates_by_load_balance",
-        return_value=lb_candidates,
-    ) as mock_load_balance:
+    with (
+        patch(
+            "motor.coordinator.scheduler.runtime.scheduler_client."
+            "KvCacheAffinityPolicy.select_endpoint_candidates_from_list"
+        ) as mock_kva,
+        patch.object(
+            client,
+            "_select_endpoint_candidates_by_load_balance",
+            return_value=lb_candidates,
+        ) as mock_load_balance,
+    ):
         candidates, candidate_policy = client._select_endpoint_candidates_from_list_with_policy(
             [instance], PDRole.ROLE_D, req_info, top_k=1
         )

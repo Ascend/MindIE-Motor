@@ -24,13 +24,18 @@ logger = get_logger(__name__)
 _KVA_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
 
 
-class ConductorApiClient():
+def conductor_instance_id(instance: Instance) -> str:
+    """Return the Conductor tenant key for a KVA-eligible instance."""
+    if instance.role == PDRole.ROLE_U:
+        return f"vllm-union-{instance.id}"
+    return f"vllm-prefill-{instance.id}"
+
+
+class ConductorApiClient:
     coordinator_config = CoordinatorConfig.from_json()
 
     @staticmethod
-    def register_kv_instance(
-        instances: list[Instance]
-    ) -> None:
+    def register_kv_instance(instances: list[Instance]) -> None:
         """
         register_kv_instance.
 
@@ -45,9 +50,7 @@ class ConductorApiClient():
                 ConductorApiClient().register_post(instance, ep)
 
     @staticmethod
-    def unregister_kv_instance(
-        instances: list[Instance]
-    ) -> None:
+    def unregister_kv_instance(instances: list[Instance]) -> None:
         """
         unregister_kv_instance.
 
@@ -62,9 +65,7 @@ class ConductorApiClient():
                 ConductorApiClient().unregister_post(instance, ep)
 
     @classmethod
-    def register_post(
-        cls, instance: Instance, endpoint: Endpoint
-    ) -> None:
+    def register_post(cls, instance: Instance, endpoint: Endpoint) -> None:
         """
         unregister_kv_instance.
 
@@ -72,13 +73,13 @@ class ConductorApiClient():
         """
         prefill_kv_event_config = cls.coordinator_config.prefill_kv_event_config
         kv_endpoints = prefill_kv_event_config.endpoint.split("*:")
-        if kv_endpoints.__len__() != 2:
+        if len(kv_endpoints) != 2:
             logger.debug(f"kv_endpoints size not 2  :  {prefill_kv_event_config.endpoint}")
             return
 
-        instance_id = f"vllm-prefill-{instance.id}"
+        instance_id = conductor_instance_id(instance)
         register_data: dict = {
-            "endpoint": f"{kv_endpoints[0]}{endpoint.ip}:{str(int(kv_endpoints[1]) + endpoint.id)}", 
+            "endpoint": f"{kv_endpoints[0]}{endpoint.ip}:{str(int(kv_endpoints[1]) + endpoint.id)}",
             "type": prefill_kv_event_config.engine_type,
             "modelname": instance.model_name,
             "block_size": prefill_kv_event_config.block_size,
@@ -88,10 +89,9 @@ class ConductorApiClient():
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
 
-
         if prefill_kv_event_config.replay_endpoint != "":
             replay_endpoints = prefill_kv_event_config.replay_endpoint.split("*:")
-            if replay_endpoints.__len__() == 2:
+            if len(replay_endpoints) == 2:
                 replay_endpoint = f"{replay_endpoints[0]}{endpoint.ip}:{str(int(replay_endpoints[1]) + endpoint.id)}"
                 register_data["replay_endpoint"] = replay_endpoint
 
@@ -101,27 +101,27 @@ class ConductorApiClient():
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/register", register_data)
-                logger.info(f"Register success! {instance_id}")
+                logger.info(
+                    "Register success! role=%s conductor_id=%s",
+                    instance.role,
+                    instance_id,
+                )
 
         except Exception as e:
             logger.error(
-                "Exception occurred while register to controller at %s: %s",
-                client_args.get('address', 'unknown'), e
+                "Exception occurred while register to controller at %s: %s", client_args.get('address', 'unknown'), e
             )
         logger.info(f"register_data : {register_data}")
-        return
 
     @classmethod
-    def unregister_post(
-        cls, instance: Instance, endpoint: Endpoint
-    ) -> None:
+    def unregister_post(cls, instance: Instance, endpoint: Endpoint) -> None:
         """
         unregister_kv_instance.
 
         :returns:
         """
         prefill_kv_event_config = cls.coordinator_config.prefill_kv_event_config
-        instance_id = f"vllm-prefill-{instance.id}"
+        instance_id = conductor_instance_id(instance)
         register_data: dict = {
             "type": prefill_kv_event_config.engine_type,
             "modelname": instance.model_name,
@@ -138,20 +138,20 @@ class ConductorApiClient():
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/unregister", register_data)
-                logger.info(f"UnRegister success! {instance_id}")
+                logger.info(
+                    "UnRegister success! role=%s conductor_id=%s",
+                    instance.role,
+                    instance_id,
+                )
 
         except Exception as e:
             logger.error(
-                "Exception occurred while register to controller at %s: %s",
-                client_args.get('address', 'unknown'), e
+                "Exception occurred while register to controller at %s: %s", client_args.get('address', 'unknown'), e
             )
         logger.info(f"unregister_data : {register_data}")
-        return
 
     @classmethod
-    def query_conductor(
-        cls, instances: list[Instance], encoded_ids: list[int]
-    ) -> dict[str, Any]:
+    def query_conductor(cls, instances: list[Instance], encoded_ids: list[int]) -> dict[str, Any]:
         """
         unregister_kv_instance.
 
@@ -178,7 +178,6 @@ class ConductorApiClient():
                 return response
         except Exception as e:
             logger.error(
-                "Exception occurred while register to controller at %s: %s",
-                client_args.get('address', 'unknown'), e
+                "Exception occurred while register to controller at %s: %s", client_args.get('address', 'unknown'), e
             )
         return {}

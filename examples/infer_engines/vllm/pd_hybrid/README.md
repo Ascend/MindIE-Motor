@@ -2,12 +2,12 @@
 
 ## 目录说明
 
-本目录提供 vLLM PD 混部部署最小示例配置：
+本目录提供 vLLM PD 混部部署示例配置：
 
 - `user_config.json`：PD 混部 `user_config` 示例（使用 `motor_engine_union_config` 与 `hybrid_*` 字段）
 - `env.json`：部署环境变量示例（包含 `motor_engine_union_env`）
 
-完整部署流程、配置项说明和故障排查请参考 [PD 混部服务部署](../../../../docs/zh/user_guide/service_deployment/pd_hybrid_deployment.md)。
+完整部署流程、配置项说明和故障排查请参考 [PD 混部服务部署](../../../../docs/zh/user_guide/service_deployment/pd_hybrid_deployment.md)。如需启用 KV Cache 亲和调度，在同一 `user_config.json` 中按 [KV Cache 亲和部署](../../../../docs/zh/user_guide/KV_cache_affinity_deployment.md) 的 PD 混部说明修改配置即可。
 
 ## 使用方式
 

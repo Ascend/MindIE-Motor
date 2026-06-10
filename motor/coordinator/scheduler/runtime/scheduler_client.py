@@ -679,11 +679,11 @@ class AsyncSchedulerClient:
                 else:
                     self._last_instance_version = current_version
 
-        # Prefill affinity proposes several ranked candidates so the scheduler can re-pick among
+        # KVA-eligible roles propose several ranked candidates so the scheduler can re-pick among
         # them by its fresh ledger (burst spreading); other roles/policies stay at top-1.
         request_top_k = (
             _AFFINITY_CANDIDATE_TOPK
-            if (role is PDRole.ROLE_P and (self._scheduler_type or "") == "kv_cache_affinity")
+            if (role in _KVA_SELECT_ROLES and (self._scheduler_type or "") == "kv_cache_affinity")
             else 1
         )
         candidates, candidate_policy = await self._select_endpoint_candidates_with_policy(

@@ -22,7 +22,11 @@ from motor.config.coordinator import (
 from motor.common.logger import get_logger
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.api_client.conductor_api_client import ConductorApiClient, TENANT_ID
+from motor.coordinator.api_client.conductor_api_client import (
+    ConductorApiClient,
+    TENANT_ID,
+    conductor_instance_id,
+)
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.coordinator.scheduler.policy.utils import preprocess_input
 
@@ -103,24 +107,38 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             # report a zero match. Skip the blocking HTTP round-trip and rank against an all-zero
             # match map -- identical to what the conductor would return for this prompt, but
             # without the network cost.
-            tenant = {f"vllm-prefill-{inst.id}": {"DP": {}} for inst in instances}
+            tenant = {conductor_instance_id(inst): {"DP": {}} for inst in instances}
         else:
             rsp = ConductorApiClient.query_conductor(instances, encoded_ids)
             tenant = rsp.get(TENANT_ID, None)
             if tenant is None:
-                logger.warning(f"tenant is none")
+                logger.warning(
+                    "kv_cache_affinity: conductor query returned no tenant data (tenant_id=%s, instances=%d)",
+                    TENANT_ID,
+                    len(instances),
+                )
                 return None
 
         if mode == KV_AFFINITY_MODE_LOAD_GATED:
             topn = load_gate_topn if (load_gate_topn and load_gate_topn > 0) else _DEFAULT_LOAD_GATE_TOPN
             return KvCacheAffinityPolicy._select_load_gated(
-                instances, tenant, len(encoded_ids), overlap_credit, topn, top_k,
+                instances,
+                tenant,
+                len(encoded_ids),
+                overlap_credit,
+                topn,
+                top_k,
             )
 
         # "unified" (default); unknown modes fall through here too.
         return KvCacheAffinityPolicy._select_with_load(
-            instances, tenant, len(encoded_ids),
-            overlap_credit, prefill_load_scale, load_weight, top_k,
+            instances,
+            tenant,
+            len(encoded_ids),
+            overlap_credit,
+            prefill_load_scale,
+            load_weight,
+            top_k,
         )
 
     @staticmethod
@@ -140,9 +158,14 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         the scheduler should be allowed to re-pick among the top candidates by fresh load.
         """
         ranked = KvCacheAffinityPolicy.select_endpoint_candidates_from_list(
-            instances, req_info, mode=mode, overlap_credit=overlap_credit,
-            prefill_load_scale=prefill_load_scale, load_weight=load_weight,
-            load_gate_topn=load_gate_topn, top_k=1,
+            instances,
+            req_info,
+            mode=mode,
+            overlap_credit=overlap_credit,
+            prefill_load_scale=prefill_load_scale,
+            load_weight=load_weight,
+            load_gate_topn=load_gate_topn,
+            top_k=1,
         )
         if not ranked:
             return None
@@ -221,7 +244,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         candidates: list[tuple[float, int, float, Instance, Endpoint]] = []
         any_instance = False
         for instance in instances:
-            instance_data = tenant.get(f"vllm-prefill-{instance.id}", None)
+            instance_data = tenant.get(conductor_instance_id(instance), None)
             if instance_data is None:
                 continue
             any_instance = True
@@ -256,9 +279,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         herding onto a single hot-prefix endpoint. With ``load_weight == 0`` the score is
         affinity-only (longest prefix wins).
         """
-        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
-            instances, tenant, isl, overlap_credit
-        )
+        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(instances, tenant, isl, overlap_credit)
         if not any_instance:
             logger.warning("kv_cache_affinity(load-aware): no instance data")
             return None
@@ -268,15 +289,20 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
 
         # Each candidate: (score, instance, endpoint, matched_tokens); lower score is better.
         candidates = [
-            (prefill_load_scale * prefill_cost + load_weight * load_cost,
-             instance, ep, matched_tokens)
+            (prefill_load_scale * prefill_cost + load_weight * load_cost, instance, ep, matched_tokens)
             for (load_cost, matched_tokens, prefill_cost, instance, ep) in raw
         ]
-        ranked = sorted(candidates, key=lambda c: c[0])[:max(1, top_k)]
+        ranked = sorted(candidates, key=lambda c: c[0])[: max(1, top_k)]
         top_score, top_inst, top_ep, top_matched = ranked[0]
         logger.info(
-            "select_endpoint(load-aware): %s-%s matched:%s score:%.2f (top%d of %d)",
-            top_inst.id, top_ep.id, top_matched, top_score, len(ranked), len(candidates),
+            "select_endpoint(load-aware): role=%s %s-%s matched:%s score:%.2f (top%d of %d)",
+            top_inst.role,
+            top_inst.id,
+            top_ep.id,
+            top_matched,
+            top_score,
+            len(ranked),
+            len(candidates),
         )
         return [(inst, ep, score) for (score, inst, ep, _matched) in ranked]
 
@@ -297,9 +323,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         This gives a *hard* load bound (the choice can never escape the least-loaded set) while
         still exploiting KV-cache affinity as the tie-break inside that set.
         """
-        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
-            instances, tenant, isl, overlap_credit
-        )
+        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(instances, tenant, isl, overlap_credit)
         if not any_instance:
             logger.warning("kv_cache_affinity(load-gated): no instance data")
             return None
@@ -312,11 +336,18 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         topn = max(1, load_gate_topn)
         gated = sorted(raw, key=lambda c: c[0])[:topn]
         # Stage 2: rank the least-loaded by longest cached prefix; tie -> lighter load.
-        ranked = sorted(gated, key=lambda c: (-c[1], c[0]))[:max(1, top_k)]
+        ranked = sorted(gated, key=lambda c: (-c[1], c[0]))[: max(1, top_k)]
         top_load, top_matched, _prefill, top_inst, top_ep = ranked[0]
         logger.info(
-            "select_endpoint(load-gated): %s-%s matched:%s load:%.2f (top%d of %d gated, %d total)",
-            top_inst.id, top_ep.id, top_matched, top_load, len(ranked), topn, len(raw),
+            "select_endpoint(load-gated): role=%s %s-%s matched:%s load:%.2f (top%d of %d gated, %d total)",
+            top_inst.role,
+            top_inst.id,
+            top_ep.id,
+            top_matched,
+            top_load,
+            len(ranked),
+            topn,
+            len(raw),
         )
         return [(inst, ep, load_cost) for (load_cost, _m, _p, inst, ep) in ranked]
 
@@ -332,8 +363,14 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         """
         return None
 
-    async def update_workload(self, instance_id: int, endpoint_id: int, req_id: str,
-                              workload_action: WorkloadAction, workload_change: Workload) -> bool:
+    async def update_workload(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        req_id: str,
+        workload_action: WorkloadAction,
+        workload_change: Workload,
+    ) -> bool:
         """
         Update workload after KV-affinity selection.
 
@@ -341,13 +378,9 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         needed by decode/fallback load-balance paths and by worker SHM synchronization.
         """
         if hasattr(self._instance_provider, "update_instance_workload"):
-            await self._instance_provider.update_instance_workload(
-                instance_id, endpoint_id, workload_change
-            )
+            await self._instance_provider.update_instance_workload(instance_id, endpoint_id, workload_change)
         else:
-            raise RuntimeError(
-                "InstanceProvider must support update_instance_workload for KvCacheAffinityPolicy"
-            )
+            raise RuntimeError("InstanceProvider must support update_instance_workload for KvCacheAffinityPolicy")
 
         if req_id:
             logger.debug(
@@ -392,6 +425,7 @@ class TokenizerManager(ThreadSafeSingleton):
         if model_path:
             os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
             from transformers import AutoTokenizer
+
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
         logger.info(f"TokenizerManager init.(model_path:{model_path})")
@@ -415,8 +449,7 @@ class TokenizerManager(ThreadSafeSingleton):
             return self._apply_chat_template_standard(messages, tools)
         except Exception as e:
             logger.warning(
-                "kv_affinity primary tokenize path failed: %s; "
-                "trying tools-aware fallback (msgs=%d, tools=%d)",
+                "kv_affinity primary tokenize path failed: %s; trying tools-aware fallback (msgs=%d, tools=%d)",
                 e,
                 len(messages or []),
                 len(tools or []),
@@ -425,7 +458,7 @@ class TokenizerManager(ThreadSafeSingleton):
 
     def encode(self, prompt: str) -> list[int]:
         """
-        When the inference API /v1/completions is called, 
+        When the inference API /v1/completions is called,
         this method is used for encoding.
         """
         if self.tokenizer is None:
@@ -433,9 +466,7 @@ class TokenizerManager(ThreadSafeSingleton):
         result = self.tokenizer.encode(prompt)
         return result
 
-    def _apply_chat_template_standard(
-        self, messages: list, tools: list | None = None
-    ) -> list[int]:
+    def _apply_chat_template_standard(self, messages: list, tools: list | None = None) -> list[int]:
         """Standard OpenAI-compatible model path.
 
         Calls the model tokenizer's jinja chat-template directly with ``tools``,
@@ -450,9 +481,7 @@ class TokenizerManager(ThreadSafeSingleton):
             return_dict=False,
         )
 
-    def _apply_chat_template_with_preprocess(
-        self, messages: list, tools: list | None = None
-    ) -> list[int]:
+    def _apply_chat_template_with_preprocess(self, messages: list, tools: list | None = None) -> list[int]:
         """Non-standard model path: normalise messages/tools then encode the
         rendered prompt string. Kept for models whose chat-template cannot be
         directly invoked with ``tokenize=True`` (e.g. require argument coercion
@@ -467,9 +496,7 @@ class TokenizerManager(ThreadSafeSingleton):
         )
         return self.tokenizer.encode(prompt)
 
-    def _safe_fallback_encode(
-        self, messages: list, tools: list | None = None
-    ) -> list[int]:
+    def _safe_fallback_encode(self, messages: list, tools: list | None = None) -> list[int]:
         """Last-resort tokenize that NEVER drops ``tools``.
 
         Tries the tools-aware standard call once more; if that also fails,
