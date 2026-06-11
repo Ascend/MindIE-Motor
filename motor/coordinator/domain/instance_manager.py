@@ -413,6 +413,17 @@ class InstanceManager:
                 )
                 continue
 
+            if instance.id in self._paused_pool:
+                del self._paused_pool[instance.id]
+                modified = True
+                logger.info(
+                    "Deleted instance ID %d (role: %s, job_name: %s) from paused pool successfully",
+                    instance.id,
+                    instance.role,
+                    instance.job_name,
+                )
+                continue
+
             if self._delete_instance_from_available_pool(instance.id):
                 modified = True
             else:

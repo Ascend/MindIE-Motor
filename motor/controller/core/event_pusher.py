@@ -139,6 +139,9 @@ class EventPusher(Observer):
                 self.instances[instance.job_name] = instance
             event = Event(EventType.RESUME, instance.to_instance())
             logger.info("Instance resumed: %s", instance.job_name)
+        elif event == ObserverEvent.INSTANCE_REMOVED:
+            event = Event(EventType.DEL, instance.to_instance())
+            logger.info("Instance removed: %s", instance.job_name)
         else:
             # Other event we don't handle, just return
             return

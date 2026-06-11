@@ -46,9 +46,10 @@ def mock_http_client():
         mock_send_method.return_value = True
         yield mock_send_method
 
+
 def test_init(event_pusher):
     """init test case"""
-    assert event_pusher.is_coordinator_reset == False
+    assert not event_pusher.is_coordinator_reset
     assert isinstance(event_pusher.event_queue, queue.Queue)
     assert event_pusher.instances == {}
 
@@ -84,6 +85,7 @@ def test_start():
         mock_thread.start.assert_called()
         assert mock_thread.start.call_count == 2
 
+
 def test_event_consumer_add_event(event_pusher, mock_http_client):
     """test event consumer add event"""
     # add instances
@@ -91,10 +93,7 @@ def test_event_consumer_add_event(event_pusher, mock_http_client):
     readonly_instance = ReadOnlyInstance(test_instance)
     event_pusher.instances["test_job"] = readonly_instance
 
-    test_event = Event(
-        event_type=EventType.ADD,
-        instance=readonly_instance.to_instance()
-    )
+    test_event = Event(event_type=EventType.ADD, instance=readonly_instance.to_instance())
     event_pusher.event_queue.put(test_event)
     # Put sentinel None to signal end of real events
     event_pusher.event_queue.put(None)
@@ -117,6 +116,7 @@ def test_event_consumer_add_event(event_pusher, mock_http_client):
         # check send_instance_refresh is called
         mock_http_client.assert_called_once()
 
+
 def test_event_consumer_del_event(event_pusher, mock_http_client):
     """test event consumer del event"""
     # add instances
@@ -124,10 +124,7 @@ def test_event_consumer_del_event(event_pusher, mock_http_client):
     readonly_instance = ReadOnlyInstance(test_instance)
     event_pusher.instances["test_job"] = readonly_instance
 
-    test_event = Event(
-        event_type=EventType.DEL,
-        instance=readonly_instance.to_instance()
-    )
+    test_event = Event(event_type=EventType.DEL, instance=readonly_instance.to_instance())
     event_pusher.event_queue.put(test_event)
     # Put sentinel None to signal end of real events
     event_pusher.event_queue.put(None)
@@ -149,6 +146,7 @@ def test_event_consumer_del_event(event_pusher, mock_http_client):
         # check send_instance_refresh is called
         mock_http_client.assert_called_once()
 
+
 def test_event_consumer_set_event(event_pusher, mock_http_client):
     """test event consumer set event"""
     # add multi instance - ensure we have both prefill and decode instances
@@ -161,14 +159,11 @@ def test_event_consumer_set_event(event_pusher, mock_http_client):
 
         # Add decode instance
         job_name = "test_decode_job" + str(i)
-        test_instance = Instance(job_name=job_name, model_name="test_model", id=i+10, role="decode")
+        test_instance = Instance(job_name=job_name, model_name="test_model", id=i + 10, role="decode")
         readonly_instance = ReadOnlyInstance(test_instance)
         event_pusher.instances[job_name] = readonly_instance
 
-    test_event = Event(
-        event_type=EventType.SET,
-        instance=None
-    )
+    test_event = Event(event_type=EventType.SET, instance=None)
 
     event_pusher.event_queue.put(test_event)
     event_pusher.event_queue.put(None)
@@ -190,6 +185,7 @@ def test_event_consumer_set_event(event_pusher, mock_http_client):
         # check send_instance_refresh is called
         mock_http_client.assert_called_once()
 
+
 def test_event_consumer_set_event_skip_missing_prefill(event_pusher, mock_http_client):
     """test event consumer set event is skipped when missing prefill instance"""
     # add only decode instances
@@ -199,10 +195,7 @@ def test_event_consumer_set_event_skip_missing_prefill(event_pusher, mock_http_c
         readonly_instance = ReadOnlyInstance(test_instance)
         event_pusher.instances[job_name] = readonly_instance
 
-    test_event = Event(
-        event_type=EventType.SET,
-        instance=None
-    )
+    test_event = Event(event_type=EventType.SET, instance=None)
 
     event_pusher.event_queue.put(test_event)
     event_pusher.event_queue.put(None)
@@ -226,8 +219,9 @@ def test_event_consumer_set_event_skip_missing_prefill(event_pusher, mock_http_c
             mock_http_client.assert_not_called()
             # check debug log is called with correct message
             mock_logger.debug.assert_called_once_with(
-                "SET event skipped: requires at least one prefill instance, "
-                "current instances: prefill=%s", False)
+                "SET event skipped: requires at least one prefill instance, current instances: prefill=%s", False
+            )
+
 
 def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client):
     """test event consumer set event is skipped when missing decode instance"""
@@ -238,10 +232,7 @@ def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client)
         readonly_instance = ReadOnlyInstance(test_instance)
         event_pusher.instances[job_name] = readonly_instance
 
-    test_event = Event(
-        event_type=EventType.SET,
-        instance=None
-    )
+    test_event = Event(event_type=EventType.SET, instance=None)
 
     event_pusher.event_queue.put(test_event)
     event_pusher.event_queue.put(None)
@@ -254,15 +245,15 @@ def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client)
         except queue.Empty:
             raise StopIteration
 
-    with patch('motor.controller.core.event_pusher.logger') as mock_logger:
-        with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
-            try:
-                event_pusher._event_consumer()
-            except StopIteration:
-                pass
+    with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
+        try:
+            event_pusher._event_consumer()
+        except StopIteration:
+            pass
 
-            # check send_instance_refresh is called even missing decode instance
-            mock_http_client.assert_called()
+        # check send_instance_refresh is called even missing decode instance
+        mock_http_client.assert_called()
+
 
 def test_event_consumer_exception_handling(event_pusher, mock_http_client):
     """test event consumer exception handling"""
@@ -274,10 +265,7 @@ def test_event_consumer_exception_handling(event_pusher, mock_http_client):
     readonly_instance = ReadOnlyInstance(test_instance)
     event_pusher.instances["test_job"] = readonly_instance
 
-    test_event = Event(
-        event_type=EventType.ADD,
-        instance=readonly_instance.to_instance()
-    )
+    test_event = Event(event_type=EventType.ADD, instance=readonly_instance.to_instance())
 
     event_pusher.event_queue.put(test_event)
     event_pusher.event_queue.put(None)
@@ -299,6 +287,7 @@ def test_event_consumer_exception_handling(event_pusher, mock_http_client):
         # check send_instance_refresh is called
         mock_http_client.assert_called_once()
 
+
 def test_heartbeat_detector_normal(event_pusher):
     """test heartbeat detector"""
     # Mock CoordinatorApiClient.query_status to return successful response
@@ -318,24 +307,25 @@ def test_heartbeat_detector_normal(event_pusher):
                 raise StopIteration
 
         with patch.object(event_pusher.work_condition, 'wait', side_effect=mock_wait):
-
             try:
                 event_pusher._coordinator_heartbeat_detector()
             except StopIteration:
                 pass
 
             # check reset flag
-            assert event_pusher.is_coordinator_reset == False
+            assert not event_pusher.is_coordinator_reset
             # 当检测到重置时，应推送一次 SET 事件
             assert not event_pusher.event_queue.empty()
             evt = event_pusher.event_queue.get()
             assert evt.event_type == EventType.SET
             assert evt.instance is None
 
+
 def test_heartbeat_detector_failure(event_pusher):
     """test heartbeat detector failure"""
     # Mock CoordinatorApiClient.query_status to raise exception after first success
     call_count = 0
+
     def mock_query_status(params: dict = None):
         nonlocal call_count
         call_count += 1
@@ -345,10 +335,11 @@ def test_heartbeat_detector_failure(event_pusher):
             return {"ready": True}
         else:
             # Subsequent calls fail
-            raise Exception("Connection failed")
+            raise RuntimeError("Connection failed")
 
     with patch('motor.controller.core.event_pusher.CoordinatorApiClient.query_status', side_effect=mock_query_status):
         sleep_count = 0
+
         def mock_wait(timeout=None):
             nonlocal sleep_count
             sleep_count += 1
@@ -365,9 +356,13 @@ def test_heartbeat_detector_failure(event_pusher):
                 # Check that coordinator reset detection was triggered at least once
                 assert mock_logger.warning.call_count >= 1
                 # Check that the warning message indicates restart detection
-                warning_calls = [call for call in mock_logger.warning.call_args_list
-                               if "Coordinator heartbeat lost. Possible restart detected" in str(call)]
+                warning_calls = [
+                    call
+                    for call in mock_logger.warning.call_args_list
+                    if "Coordinator heartbeat lost. Possible restart detected" in str(call)
+                ]
                 assert len(warning_calls) >= 1
+
 
 def test_update_add_instance(event_pusher):
     """test update add instance"""
@@ -385,6 +380,7 @@ def test_update_add_instance(event_pusher):
     assert event.event_type == EventType.ADD
     assert event.instance.job_name == readonly_instance.job_name
 
+
 def test_update_remove_instance(event_pusher):
     """test update remove instance"""
     test_instance = Instance(job_name="test_job", model_name="test_model", id=1, role="prefill")
@@ -393,8 +389,12 @@ def test_update_remove_instance(event_pusher):
 
     event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_REMOVED)
 
-    # INSTANCE_REMOVED 分支不再推送事件
-    assert event_pusher.event_queue.empty()
+    # INSTANCE_REMOVED 应作为 DEL 事件通知 Coordinator 清理 paused_pool
+    assert not event_pusher.event_queue.empty()
+    event = event_pusher.event_queue.get()
+    assert event.event_type == EventType.DEL
+    assert event.instance.job_name == readonly_instance.job_name
+
 
 def test_update_seperated_instance(event_pusher):
     """test update seperated instance"""
@@ -410,6 +410,7 @@ def test_update_seperated_instance(event_pusher):
     # INSTANCE_SEPERATED 应作为 DEL 事件通知
     assert event.event_type == EventType.DEL
     assert event.instance.job_name == readonly_instance.job_name
+
 
 def test_update_seperated_instance_recovery(event_pusher):
     """test update seperated instance recovery"""
@@ -438,20 +439,12 @@ def test_update_deep_copy_instance(event_pusher):
     # Create a test instance with some data
     original_job_name = "original_job"
     original_model_name = "original_model"
-    test_instance = Instance(
-        job_name=original_job_name,
-        model_name=original_model_name,
-        id=1,
-        role="prefill"
-    )
+    test_instance = Instance(job_name=original_job_name, model_name=original_model_name, id=1, role="prefill")
 
     # Add some test data
     from motor.common.resources.instance import NodeManagerInfo
-    test_instance.node_managers.append(NodeManagerInfo(
-        pod_ip="192.168.1.1",
-        host_ip="10.0.0.1",
-        port="8080"
-    ))
+
+    test_instance.node_managers.append(NodeManagerInfo(pod_ip="192.168.1.1", host_ip="10.0.0.1", port="8080"))
 
     # Wrap in ReadOnlyInstance
     readonly_instance = ReadOnlyInstance(test_instance)
@@ -493,12 +486,7 @@ def test_update_deep_copy_seperated_instance(event_pusher):
 
     # Create and add a test instance
     original_job_name = "seperated_job"
-    test_instance = Instance(
-        job_name=original_job_name,
-        model_name="test_model",
-        id=1,
-        role="prefill"
-    )
+    test_instance = Instance(job_name=original_job_name, model_name="test_model", id=1, role="prefill")
     readonly_instance = ReadOnlyInstance(test_instance)
     event_pusher.instances[readonly_instance.job_name] = readonly_instance
 
@@ -523,19 +511,14 @@ def test_update_deep_copy_seperated_instance(event_pusher):
 
 def test_update_seperated_instance_initial_stage_abnormal(event_pusher):
     """test update seperated instance when instance abnormal in initial stage"""
-    test_instance = Instance(
-        job_name="test_job_initial_abnormal",
-        model_name="test_model",
-        id=1,
-        role="prefill"
-    )
+    test_instance = Instance(job_name="test_job_initial_abnormal", model_name="test_model", id=1, role="prefill")
     readonly_instance = ReadOnlyInstance(test_instance)
-    # Intentionally do not add the instance to event_pusher.instances 
+    # Intentionally do not add the instance to event_pusher.instances
     # dict to simulate abnormal instance in initial stage
 
     event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPERATED)
 
-    # When instance abnormal in initial stage, the event should be 
+    # When instance abnormal in initial stage, the event should be
     # ignored and no event should be pushed to the queue
     assert event_pusher.event_queue.empty()
     # Verify that the instance was not added to the dictionary
