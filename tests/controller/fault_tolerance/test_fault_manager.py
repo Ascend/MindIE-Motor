@@ -1295,7 +1295,8 @@ def test_swap_basic_decode_receives_prefill_node(fault_manager):
 def test_swap_clears_software_fault_infos(fault_manager):
     """Software faults belong to the old instance's engine, not the physical node.
     After swap, both foreign and orphaned nodes must have software_fault_infos cleared
-    to prevent the new instance from incorrectly inheriting the old instance's faults."""
+    to prevent the new instance from incorrectly inheriting the old instance's faults.
+    """
     sw_fault = {
         0x1000001: FaultInfo(
             fault_category=FaultCategory.SOFTWARE,
@@ -1393,7 +1394,9 @@ def test_swap_more_orphans_than_foreign(fault_manager):
     assert fault_manager.nodes["node_d"].instance_job_names[3] == "decode-1"
 
     # At least one orphan swapped to old prefill inst
-    swapped = [m for m in fault_manager.nodes.values() if 2 in m.instance_ids and m.instance_job_names.get(2) == "prefill-1"]
+    swapped = [
+        m for m in fault_manager.nodes.values() if 2 in m.instance_ids and m.instance_job_names.get(2) == "prefill-1"
+    ]
     assert len(swapped) == 1
     # Remaining orphans keep old values, waiting for claim
     waiting = [m for m in fault_manager.nodes.values() if 3 not in m.instance_ids and 2 not in m.instance_ids]
@@ -1425,7 +1428,8 @@ def test_swap_empty_job_name_skipped(fault_manager):
 def test_multi_instance_same_node_tracking(fault_manager):
     """Multiple instances (e.g., Prefill + Decode) on the same physical node
     are both tracked via instance_ids/instance_pod_ips/instance_job_names.
-    Since decode is ACTIVE, prefill is added without triggering a swap."""
+    Since decode is ACTIVE, prefill is added without triggering a swap.
+    """
     # Decode is already registered on node_a (active)
     fault_manager.instances[1] = InstanceMetadata(instance_id=1)
     fault_manager.nodes = {
@@ -1451,7 +1455,8 @@ def test_multi_instance_same_node_tracking(fault_manager):
 
 def test_multi_instance_no_swap_when_active_instance_present(fault_manager):
     """When a node has an ACTIVE instance with a different job_name, the new
-    instance is added to the node's sets WITHOUT triggering a swap."""
+    instance is added to the node's sets WITHOUT triggering a swap.
+    """
     # Decode (active) on node_a
     fault_manager.instances[1] = InstanceMetadata(instance_id=1)
     fault_manager.nodes = {
@@ -1475,7 +1480,8 @@ def test_multi_instance_no_swap_when_active_instance_present(fault_manager):
 
 def test_node_status_update_refreshes_all_instances(fault_manager):
     """When a node goes NOT_READY, ALL instances on that node get their
-    fault level refreshed."""
+    fault level refreshed.
+    """
     fault_manager.nodes = {
         "node_a": NodeMetadata(
             node_name="node_a",

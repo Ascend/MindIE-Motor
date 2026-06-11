@@ -27,6 +27,7 @@ from motor.config.tls_config import TLSConfig
 from motor.config.config_utils import (
     ConfigKey,
     apply_config_path_metadata,
+    apply_standby_persistence_rule,
     finalize_json_config_load,
     init_motor_config,
     log_json_config_load_error,
@@ -499,6 +500,9 @@ class CoordinatorConfig:
                 config.aigw_model = dict(cfg["aigw"])
 
             apply_config_path_metadata(config, config_path)
+
+            # Auto-enable etcd persistence when master/standby is enabled
+            apply_standby_persistence_rule(config)
 
             # Re-validate configuration after applying values from JSON
             config.validate_config()

@@ -12,6 +12,7 @@ import threading
 from typing import Any
 from collections.abc import Callable
 from kubernetes import client, config, watch
+from kubernetes.client.rest import ApiException
 
 from motor.common.logger import get_logger
 from motor.controller.fault_tolerance.fault_types import NodeStatus, FaultInfo
@@ -33,6 +34,14 @@ class ResourceMonitor:
     This monitor combines Node and ConfigMap changes monitoring into a single interface,
     providing processed fault information and server status updates to fault manager.
     """
+
+    # Exponential backoff parameters for watch reconnections.
+    # On each consecutive failure the delay doubles until it hits _BACKOFF_MAX.
+    # A successful event delivery resets the counter to zero.
+    _BACKOFF_INITIAL: float = 1.0  # seconds — first retry
+    _BACKOFF_MAX: float = 60.0  # seconds — ceiling (2 × default retry_interval)
+    _BACKOFF_MULTIPLIER: float = 2.0
+    _BACKOFF_410: float = 2.0  # seconds — 410 just needs a fresh LIST, short wait
 
     def __init__(
         self,
@@ -163,13 +172,39 @@ class ResourceMonitor:
     def _monitor_node(self) -> None:
         """Monitor Node status changes for this node"""
         node_name = self.node_name
+        resource_version = None
+        consecutive_failures = 0
 
         while not self.stop_event.is_set():
             try:
+                # If we lost the resource_version (410 or first connect), get it from a fresh LIST
+                if resource_version is None:
+                    try:
+                        nodes = self.v1.list_node(field_selector=f"metadata.name={node_name}")
+                        if nodes.items:
+                            resource_version = nodes.metadata.resource_version
+                            logger.debug("Starting Node watch from resource_version: %s", resource_version)
+                            # Process current state immediately: the watch only delivers
+                            # events AFTER this resource_version, so we'd miss the
+                            # initial status without an explicit initial handling.
+                            self._handle_node_change("ADDED", nodes.items[0])
+                    except ApiException as e:
+                        logger.error("Error listing Node %s: %s", node_name, str(e).replace('\r\n', ' '))
+                        if not self.stop_event.is_set():
+                            delay = self._compute_backoff(consecutive_failures)
+                            logger.info("Retrying Node monitoring in %.0f seconds...", delay)
+                            time.sleep(delay)
+                            consecutive_failures += 1
+                        continue
+
                 w = watch.Watch()
 
                 # Monitor Node changes
-                for event in w.stream(self.v1.list_node, field_selector=f"metadata.name={node_name}"):
+                stream_kwargs = {"field_selector": f"metadata.name={node_name}"}
+                if resource_version:
+                    stream_kwargs["resource_version"] = resource_version
+
+                for event in w.stream(self.v1.list_node, **stream_kwargs):
                     if self.stop_event.is_set():
                         w.stop()
                         break
@@ -177,26 +212,83 @@ class ResourceMonitor:
                     event_type = event["type"]
                     node = event["object"]
 
+                    # Update resource_version from each event
+                    if node.metadata and node.metadata.resource_version:
+                        resource_version = node.metadata.resource_version
+
+                    # Reset backoff on successful event delivery
+                    if consecutive_failures > 0:
+                        logger.debug("Node watch recovered after %d failures", consecutive_failures)
+                        consecutive_failures = 0
+
                     self._handle_node_change(event_type, node)
 
-            except Exception as e:
-                logger.error("Error monitoring Node %s: %s", node_name, e)
+            except ApiException as e:
+                error_msg = str(e).replace('\r\n', ' ')
+                logger.error("Error monitoring Node %s: %s", node_name, error_msg)
+                if e.status == 410:
+                    logger.info("Resource version expired for Node, will re-list")
+                    resource_version = None
                 if not self.stop_event.is_set():
-                    logger.info("Retrying Node monitoring in %s seconds...", self.retry_interval)
-                    time.sleep(self.retry_interval)
+                    delay = self._compute_backoff(consecutive_failures, is_410=(e.status == 410))
+                    logger.info("Retrying Node monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
+
+            except Exception as e:
+                logger.error("Error monitoring Node %s: %s", node_name, str(e).replace('\r\n', ' '))
+                if not self.stop_event.is_set():
+                    delay = self._compute_backoff(consecutive_failures)
+                    logger.info("Retrying Node monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
 
     def _monitor_configmap(self, configmap_name: str) -> None:
         """Monitor ConfigMap changes for this host"""
+        resource_version = None
+        consecutive_failures = 0
+
         while not self.stop_event.is_set():
             try:
+                # If we lost the resource_version (410 or first connect), get it from a fresh LIST
+                if resource_version is None:
+                    try:
+                        cm_list = self.v1.list_namespaced_config_map(
+                            namespace=self.namespace,
+                            field_selector=f"metadata.name={configmap_name}",
+                        )
+                        if cm_list.items:
+                            resource_version = cm_list.metadata.resource_version
+                            logger.debug("Starting ConfigMap watch from resource_version: %s", resource_version)
+                            # Process current state immediately: the watch only delivers
+                            # events AFTER this resource_version, so we'd miss the
+                            # initial state without an explicit initial handling.
+                            self._handle_configmap_change("ADDED", cm_list.items[0], configmap_name)
+                    except ApiException as e:
+                        logger.error(
+                            "Error listing ConfigMap %s/%s: %s",
+                            self.namespace,
+                            configmap_name,
+                            str(e).replace('\r\n', ' '),
+                        )
+                        if not self.stop_event.is_set():
+                            delay = self._compute_backoff(consecutive_failures)
+                            logger.info("Retrying ConfigMap monitoring in %.0f seconds...", delay)
+                            time.sleep(delay)
+                            consecutive_failures += 1
+                        continue
+
                 w = watch.Watch()
 
                 # Monitor ConfigMap changes
-                for event in w.stream(
-                    self.v1.list_namespaced_config_map,
-                    namespace=self.namespace,
-                    field_selector=f"metadata.name={configmap_name}",
-                ):
+                stream_kwargs: dict[str, Any] = {
+                    "namespace": self.namespace,
+                    "field_selector": f"metadata.name={configmap_name}",
+                }
+                if resource_version:
+                    stream_kwargs["resource_version"] = resource_version
+
+                for event in w.stream(self.v1.list_namespaced_config_map, **stream_kwargs):
                     if self.stop_event.is_set():
                         w.stop()
                         break
@@ -204,13 +296,54 @@ class ResourceMonitor:
                     event_type = event["type"]
                     configmap = event["object"]
 
+                    # Update resource_version from each event
+                    if configmap.metadata and configmap.metadata.resource_version:
+                        resource_version = configmap.metadata.resource_version
+
+                    # Reset backoff on successful event delivery
+                    if consecutive_failures > 0:
+                        logger.debug("ConfigMap watch recovered after %d failures", consecutive_failures)
+                        consecutive_failures = 0
+
                     self._handle_configmap_change(event_type, configmap, configmap_name)
 
-            except Exception as e:
-                logger.error("Error monitoring ConfigMap %s/%s: %s", self.namespace, configmap_name, e)
+            except ApiException as e:
+                error_msg = str(e).replace('\r\n', ' ')
+                logger.error("Error monitoring ConfigMap %s/%s: %s", self.namespace, configmap_name, error_msg)
+                if e.status == 410:
+                    logger.info("Resource version expired for ConfigMap, will re-list to get latest version")
+                    resource_version = None
                 if not self.stop_event.is_set():
-                    logger.info("Retrying ConfigMap monitoring in %s seconds...", self.retry_interval)
-                    time.sleep(self.retry_interval)
+                    delay = self._compute_backoff(consecutive_failures, is_410=(e.status == 410))
+                    logger.info("Retrying ConfigMap monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
+
+            except Exception as e:
+                logger.error(
+                    "Error monitoring ConfigMap %s/%s: %s",
+                    self.namespace,
+                    configmap_name,
+                    str(e).replace('\r\n', ' '),
+                )
+                if not self.stop_event.is_set():
+                    delay = self._compute_backoff(consecutive_failures)
+                    logger.info("Retrying ConfigMap monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
+
+    def _compute_backoff(self, consecutive_failures: int, is_410: bool = False) -> float:
+        """Compute exponential backoff delay for watch reconnection.
+
+        - 410 (resource version expired): uses a short fixed delay since all we
+          need is a fresh LIST call; the counter is still passed so repeated 410s
+          escalate, but with a lower ceiling.
+        - Other errors: exponential backoff starting from ``_BACKOFF_INITIAL``,
+          doubling each consecutive failure up to ``_BACKOFF_MAX``.
+        """
+        if is_410:
+            return min(self._BACKOFF_410 * (self._BACKOFF_MULTIPLIER**consecutive_failures), self._BACKOFF_MAX / 2)
+        return min(self._BACKOFF_INITIAL * (self._BACKOFF_MULTIPLIER**consecutive_failures), self._BACKOFF_MAX)
 
     def _handle_node_change(self, event_type: str, node) -> None:
         """Handle Node change events and call the node change handler
@@ -289,23 +422,32 @@ class ResourceMonitor:
     def _has_fault_info_changed(self, new_fault_infos: list[FaultInfo]) -> bool:
         """
         Check if the fault information has actually changed compared to the last processed data.
-        Will return True if fault information has changed or this is the first time processing.
+
+        Comparison is done on the deduplicated dict (keyed by fault_code), matching the
+        storage model used by FaultManager.  This prevents spurious "changed" triggers when
+        only the set of affected NPU names shifts but the unique fault codes stay the same.
         """
         if self.last_fault_infos is None:
             return True  # First time processing
 
-        # Compare fault info lists (FaultInfo is a dataclass, so we can compare directly)
-        if len(new_fault_infos) != len(self.last_fault_infos):
-            return True  # Different number of faults
+        def _build_dedup_dict(infos: list[FaultInfo]) -> dict[int, FaultInfo]:
+            return {int(f.fault_code): f for f in infos}
 
-        # Sort both lists by fault attributes for consistent comparison
-        def sort_key(fault: FaultInfo) -> tuple:
-            return (fault.fault_type, fault.npu_name, fault.fault_code, fault.fault_level)
+        new_dict = _build_dedup_dict(new_fault_infos)
+        last_dict = _build_dedup_dict(self.last_fault_infos)
 
-        sorted_new = sorted(new_fault_infos, key=sort_key)
-        sorted_last = sorted(self.last_fault_infos, key=sort_key)
+        # Different sets of fault codes → changed
+        if new_dict.keys() != last_dict.keys():
+            return True
 
-        return sorted_new != sorted_last
+        # Same fault codes: compare level and type (the fields that affect behavior)
+        for code in new_dict:
+            new_f = new_dict[code]
+            old_f = last_dict[code]
+            if new_f.fault_level != old_f.fault_level or new_f.fault_type != old_f.fault_type:
+                return True
+
+        return False
 
     def _process_configmap_data(self, config_data: dict[str, Any]) -> list[FaultInfo]:
         """Process ConfigMap configuration data and extract fault information"""

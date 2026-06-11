@@ -16,7 +16,8 @@ logger = get_logger(__name__)
 
 
 class K8sClient:
-    """ Kubernetes client wrapper for common operations """
+    """Kubernetes client wrapper for common operations"""
+
     def __init__(self):
         self.v1 = None
         try:
@@ -52,5 +53,5 @@ class K8sClient:
             return None
 
     def is_available(self) -> bool:
-        """ Check if Kubernetes client is available and initialized """
+        """Check if Kubernetes client is available and initialized"""
         return self.v1 is not None

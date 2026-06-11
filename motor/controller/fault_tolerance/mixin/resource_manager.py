@@ -385,27 +385,61 @@ class _ResourceManagerMixin:
             logger.warning("Node with node_name %s not found, cannot process fault info update", node_name)
             return
 
-        for idx, info in enumerate(fault_infos, start=1):
-            npu_segment = f", NPU: {info.npu_name}" if info.npu_name else ""
+        # Group faults by fault_code, collecting all affected NPU names
+        grouped: dict[int, list[FaultInfo]] = {}
+        for info in fault_infos:
+            code = int(info.fault_code)
+            grouped.setdefault(code, []).append(info)
+
+        # Log unique fault codes with aggregated NPU names
+        for idx, (code, infos) in enumerate(grouped.items(), start=1):
+            representative = infos[0]
+            npu_names = [i.npu_name for i in infos if i.npu_name]
+            if npu_names:
+                if len(npu_names) == 1:
+                    npu_segment = f", NPU: {npu_names[0]}"
+                elif len(npu_names) <= 4:
+                    npu_segment = f", NPU: {', '.join(npu_names)}"
+                else:
+                    npu_segment = f", NPU: {', '.join(npu_names[:3])}, ... ({len(npu_names)} total)"
+            else:
+                npu_segment = ""
             logger.info(
                 "Fault[%d/%d] detected - Type: %s%s, Code: 0x%x, Level: %s(%s)",
                 idx,
-                len(fault_infos),
-                info.fault_type.value if info.fault_type else "N/A",
+                len(grouped),
+                representative.fault_type.value if representative.fault_type else "N/A",
                 npu_segment,
-                info.fault_code,
-                info.fault_level.name,
-                info.origin_fault_level.value if info.origin_fault_level else "N/A",
+                code,
+                representative.fault_level.name,
+                representative.origin_fault_level.value if representative.origin_fault_level else "N/A",
             )
+        if len(fault_infos) > len(grouped):
+            logger.debug(
+                "Deduplicated: %d raw fault entries → %d unique fault codes for node %s",
+                len(fault_infos),
+                len(grouped),
+                node_name,
+            )
+
         node_reboot_key = int(SpecialFaultCode.NODE_REBOOT)
 
         with self.lock:
             node_reboot_fault = node_metadata.hardware_fault_infos.get(node_reboot_key)
 
             node_metadata.hardware_fault_infos.clear()
-            for info in fault_infos:
+            for code, infos in grouped.items():
+                info = infos[0]
                 info.fault_category = FaultCategory.HARDWARE
-                node_metadata.hardware_fault_infos[int(info.fault_code)] = info
+                # Preserve NPU info in stored entry: note count when multiple NPUs
+                # share the same fault code so downstream consumers can see the scope.
+                npu_names = [i.npu_name for i in infos if i.npu_name]
+                if len(npu_names) > 1:
+                    if len(npu_names) <= 4:
+                        info.npu_name = ", ".join(npu_names)
+                    else:
+                        info.npu_name = f"{', '.join(npu_names[:3])}, ... ({len(npu_names)} total)"
+                node_metadata.hardware_fault_infos[code] = info
 
             if node_reboot_fault:
                 node_metadata.hardware_fault_infos[node_reboot_key] = node_reboot_fault
@@ -413,12 +447,19 @@ class _ResourceManagerMixin:
         logger.info(
             "Updated node %s with %d hardware fault infos (preserved node_reboot: %s)",
             node_name,
-            len(fault_infos),
+            len(grouped),
             node_reboot_fault is not None,
         )
 
-        # Refresh fault levels for ALL instances on this node
-        affected_ids = list(node_metadata.instance_ids)
+        # Refresh fault levels for ALL LIVE instances on this node (skip stale/removed ones)
+        affected_ids = [iid for iid in node_metadata.instance_ids if iid in self.instances]
+        stale_count = len(node_metadata.instance_ids) - len(affected_ids)
+        if stale_count > 0:
+            logger.debug(
+                "Skipping %d stale instance(s) on node %s that no longer exist in fault manager",
+                stale_count,
+                node_name,
+            )
         for instance_id in affected_ids:
             self._refresh_instance_fault_level(instance_id)
 

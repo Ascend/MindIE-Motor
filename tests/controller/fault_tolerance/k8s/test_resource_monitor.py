@@ -440,23 +440,32 @@ def test_handle_configmap_change_added_modified():
 
 
 def test_handle_configmap_change_deduplication_with_actual_change():
-    """Test that handler is called when fault information actually changes"""
+    """Test that handler is called when fault information actually changes.
+
+    "Actual change" means a change visible at the storage level (unique fault_code
+    or associated fault_level/type changes).  Mere NPU name rotation with the same
+    code+level is NOT an actual change, because the storage model uses a dict keyed
+    by fault_code.
+
+    NOTE: fault_level in ConfigMap JSON uses OriginFaultLevel string values
+    (e.g. "RestartNPU", "SeparateNPU"), NOT "L5"/"L6" shorthand.
+    """
     monitor = create_test_monitor()
 
-    # Mock ConfigMap with initial data
+    # Mock ConfigMap with initial data (RestartNPU → FaultLevel.L5)
     mock_configmap1 = Mock()
     mock_configmap1.metadata.name = "fault-config-test-node"
     mock_configmap1.metadata.namespace = "default"
     mock_configmap1.data = {
-        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"RestartNPU","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'
     }
 
-    # Mock ConfigMap with different fault data
+    # Mock ConfigMap with a different fault_level (RestartNPU→SeparateNPU, L5→L6), IS an actual change
     mock_configmap2 = Mock()
     mock_configmap2.metadata.name = "fault-config-test-node"
     mock_configmap2.metadata.namespace = "default"
     mock_configmap2.data = {
-        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu1","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123457},"SuperPodID":1,"ServerIndex":1}'
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"SeparateNPU","fault_code":"0x1001"}]},"UpdateTime":123457},"SuperPodID":1,"ServerIndex":1}'
     }
 
     # Mock configmap change handler
@@ -471,9 +480,9 @@ def test_handle_configmap_change_deduplication_with_actual_change():
     monitor._handle_configmap_change("ADDED", mock_configmap1, mock_configmap1.metadata.name)
     assert len(handler_calls) == 1
 
-    # Test second change with different fault info (different npu_name)
+    # Test second change with actually different fault level (L5→L6 via RestartNPU→SeparateNPU)
     monitor._handle_configmap_change("MODIFIED", mock_configmap2, mock_configmap2.metadata.name)
-    assert len(handler_calls) == 2  # Handler should be called again for different data
+    assert len(handler_calls) == 2  # Handler should be called again for genuinely different fault_level
 
 
 def test_handle_configmap_change_no_npu_name():

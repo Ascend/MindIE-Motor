@@ -21,6 +21,7 @@ from motor.config.tls_config import TLSConfig
 from motor.config.config_utils import (
     ConfigKey,
     apply_config_path_metadata,
+    apply_standby_persistence_rule,
     finalize_json_config_load,
     init_motor_config,
     log_json_config_load_error,
@@ -231,6 +232,8 @@ class ControllerConfig:
             if not config_path:
                 config.last_modified = None
                 config.last_modified = None
+
+            apply_standby_persistence_rule(config)
 
             reconfigure_logging(config.logging_config)
 

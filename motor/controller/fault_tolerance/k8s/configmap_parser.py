@@ -10,6 +10,7 @@
 """ConfigMap Parser - parses ConfigMap configuration data"""
 
 import json
+from typing import Any
 
 from motor.common.logger import get_logger
 from motor.controller.fault_tolerance.fault_types import (
@@ -106,6 +107,22 @@ def _process_single_device_fault(fault_device: dict) -> FaultInfo | None:
         return None
 
 
+def _normalize_device_list_value(value: Any) -> list:
+    """Normalize a DeviceList field value to a list.
+
+    Some ConfigMap producers serialize fault arrays as a JSON string inside the
+    JSON value (e.g. ``"[{...},{...}]"``), while others emit a native JSON array.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        parsed = _parse_json_string(value)
+        if isinstance(parsed, list):
+            return parsed
+        logger.debug("DeviceList field is a string but not a JSON array, skipping: %s...", value[:100])
+    return []
+
+
 def process_device_info(device_info_json: str) -> list[FaultInfo]:
     """Process info from DeviceInfoCfg JSON string and return device fault info list."""
     device_fault_infos = []
@@ -123,14 +140,24 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
 
         logger.debug("Processing DeviceInfo - UpdateTime: %s", update_time)
 
-        # Process fault devices - L3 level (highest priority)
-        fault_devices = device_list.get("huawei.com/Ascend910-Fault", [])
-        if fault_devices and isinstance(fault_devices, list):
+        # Process fault devices
+        fault_devices = _normalize_device_list_value(device_list.get("huawei.com/Ascend910-Fault", []))
+        if fault_devices:
             logger.debug("Found %s detailed fault devices", len(fault_devices))
             for fault_device in fault_devices:
                 fault_info = _process_single_device_fault(fault_device)
                 if fault_info:
                     device_fault_infos.append(fault_info)
+
+        # Also process network-unhealthy devices (same serialization variants)
+        network_unhealthy = _normalize_device_list_value(device_list.get("huawei.com/Ascend910-NetworkUnhealthy", []))
+        if network_unhealthy:
+            logger.debug("Found %s network-unhealthy devices", len(network_unhealthy))
+            for fault_device in network_unhealthy:
+                fault_info = _process_single_device_fault(fault_device)
+                if fault_info:
+                    device_fault_infos.append(fault_info)
+
         logger.debug("Processed %d device fault infos", len(device_fault_infos))
 
     except Exception as e:

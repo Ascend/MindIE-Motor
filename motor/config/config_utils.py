@@ -281,8 +281,23 @@ def refresh_master_lock_key(standby_config: Any, component: str) -> None:
         standby_config.master_lock_key = LOCK_SLASH + component + standby_config.master_lock_key
 
 
+def apply_standby_persistence_rule(instance: Any) -> None:
+    """If master/standby is enabled, automatically enable ETCD persistence.
+
+    When enable_master_standby is True, the system must persist Coordinator state
+    in ETCD so the standby can resume on failover. Without persistence the standby
+    cannot restore runtime state, which defeats the purpose of master/standby.
+    """
+    standby = instance.standby_config
+    etcd = instance.etcd_config
+    if standby.enable_master_standby and not etcd.enable_etcd_persistence:
+        etcd.enable_etcd_persistence = True
+        logger.info("Auto-enabled etcd persistence because master/standby mode is enabled")
+
+
 def init_motor_config(instance: Any, component: str) -> None:
     refresh_master_lock_key(instance.standby_config, component)
+    apply_standby_persistence_rule(instance)
     instance.validate_config()
 
 
