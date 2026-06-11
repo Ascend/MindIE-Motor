@@ -21,8 +21,9 @@ import pytest
 
 from motor.common.resources.dispatch import MOTOR_DISPATCH_KEY
 from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload, WorkloadAction
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import PDRole, Instance, InsStatus, ParallelConfig
-from motor.config.coordinator import DeployMode, CoordinatorConfig, ExceptionConfig, SchedulerType
+from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain import InstanceReadiness, ScheduledResource
 from motor.coordinator.models.request import ReqState, RequestInfo
@@ -372,23 +373,6 @@ class MockAsyncClientFirstStreamRecompute(MockAsyncClient):
 
 
 class TestRouterCDPSeparation:
-    @pytest.mark.asyncio
-    async def test_separate_cdp_router_accepts_sampling_manager(self, setup_cdp_separation):
-        """dispatch passes sampling_manager keyword; router must accept it."""
-        req_info = await create_mock_request_info()
-        mock_sm = MagicMock()
-        cdp_router = SeparateCDPRouter(
-            req_info,
-            CoordinatorConfig(),
-            scheduler=Scheduler(
-                instance_provider=InstanceManager(CoordinatorConfig()),
-                config=CoordinatorConfig(),
-            ),
-            request_manager=_request_manager,
-            sampling_manager=mock_sm,
-        )
-        assert cdp_router._sampling_manager is mock_sm
-
     @pytest.fixture
     def client(self):
         return TestClient(app)
@@ -400,6 +384,7 @@ class TestRouterCDPSeparation:
             job_name=f"test-job-{instance_id}",
             model_name=f"test-model-{instance_id}",
             engine_type="vllm",
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
             id=instance_id,
             role=role,
             status=InsStatus.ACTIVE,
@@ -431,19 +416,18 @@ class TestRouterCDPSeparation:
         mock_instance_d.endpoints = {host: {1: mock_endpoint_d}}
 
         # Mock functions (Scheduler uses get_required_instances_status for readiness)
-        def mock_get_required_instances_status(self, deploy_mode=None):
+        def mock_get_required_instances_status(self):
             return InstanceReadiness.REQUIRED_MET
 
-        def mock_has_required_instances(self, deploy_mode=None):
+        def mock_has_required_instances(self):
             return True
 
-        def mock_get_available_instances(*args, **kwargs):
-            # Accept (self, role) when patched on InstanceManager; role is 2nd positional or in kwargs
-            role = kwargs.get("role")
-            if role is None and len(args) >= 2:
-                role = args[1]
-            elif role is None and len(args) == 1:
-                role = args[0]  # staticmethod-style call
+        def mock_get_available_instances(self, role=None):
+            if role is None:
+                return {
+                    mock_instance_p.id: mock_instance_p,
+                    mock_instance_d.id: mock_instance_d,
+                }
             if role == PDRole.ROLE_U:  # PD hybrid role
                 return {}  # No PD hybrid instances, will use separate P/D
             if role == PDRole.ROLE_P:
@@ -476,9 +460,7 @@ class TestRouterCDPSeparation:
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
-        # Mock CoordinatorConfig to return CDP_SEPARATE deploy mode
         mock_scheduler_config = MagicMock()
-        mock_scheduler_config.deploy_mode = DeployMode.CDP_SEPARATE
         mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
         # Real ExceptionConfig so transport_retry_limit / recompute_retry_limit properties work;
         # MagicMock lacks @property implementation and breaks decode transport loops (range / last-attempt check).
@@ -498,7 +480,6 @@ class TestRouterCDPSeparation:
         mock_config.worker_metaserver_port = 12000
 
         monkeypatch.setattr(CoordinatorConfig, "__new__", lambda cls: mock_config)
-        _config.scheduler_config.deploy_mode = DeployMode.CDP_SEPARATE
         _config.exception_config = mock_exception_config
 
     @pytest.fixture
@@ -835,24 +816,26 @@ class TestRouterCDPSeparation:
         mock_endpoint_p = Endpoint(id=0, ip=host, business_port="8000", mgmt_port="8000")
         mock_instance_p.endpoints = {host: {0: mock_endpoint_p}}
 
-        def mock_get_available_instances(self, role):
+        def mock_get_available_instances(self, role=None):
+            if role is None:
+                return {mock_instance_p.id: mock_instance_p}
             if role == PDRole.ROLE_U:  # PD hybrid role
-                return []  # No PD hybrid instances, will use separate P/D
+                return {}
             elif role == PDRole.ROLE_P:
-                return [mock_instance_p]
+                return {mock_instance_p.id: mock_instance_p}
             elif role == PDRole.ROLE_D:
-                return []
-            return []
+                return {}
+            return {}
 
         monkeypatch.setattr(InstanceManager, "get_available_instances", mock_get_available_instances)
 
         # So router chooses SINGLE_NODE (PDHybridRouter) before creating the router
-        def mock_get_required_instances_status(self, deploy_mode=None):
+        def mock_get_required_instances_status(self):
             return InstanceReadiness.ONLY_PREFILL  # not ready -> fallback to SINGLE_NODE
 
         monkeypatch.setattr(InstanceManager, "get_required_instances_status", mock_get_required_instances_status)
 
-        def mock_has_required_instances(self, deploy_mode=None):
+        def mock_has_required_instances(self):
             return False
 
         monkeypatch.setattr(InstanceManager, "has_required_instances", mock_has_required_instances)

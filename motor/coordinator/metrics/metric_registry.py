@@ -20,7 +20,7 @@ Unknown metrics fall back to type-based defaults (gauge→sum, counter→sum, hi
 from dataclasses import dataclass
 from enum import Enum
 
-from motor.config.coordinator import DeployMode
+from motor.common.resources.dispatch import DispatchPlan
 
 
 # ---------------------------------------------------------------------------
@@ -254,20 +254,26 @@ class MetricRegistry:
         return _VLLM_METRIC_REGISTRY.get(metric_name)
 
     @classmethod
-    def get_effective_role_scope(cls, metric_name: str, deploy_mode: DeployMode | None = None) -> str | None:
-        """Get the effective role scope for a metric, considering deploy mode.
+    def get_effective_role_scope(
+        cls,
+        metric_name: str,
+        dispatch_capabilities: set[str] | None = None,
+    ) -> str | None:
+        """Get the effective role scope for a metric, considering connector capabilities.
 
-        In CPCD mode, TTFT needs both P and D instances (no filtering).
-        In other modes, D's TTFT is authoritative.
+        Handoff connectors expose meaningful TTFT on both P and D instances.
+        Concurrent connectors use D's TTFT as the authoritative service value.
         """
         config = cls.get_semantic(metric_name)
         if config is None or config.role_scope is None:
             return None
 
-        # TTFT in CPCD mode: include both P and D instances
-        if metric_name == "vllm:time_to_first_token_seconds" and deploy_mode is not None:
-            if deploy_mode == DeployMode.CPCD_SEPARATE:
-                return None  # No role filtering — aggregate from both
+        if (
+            metric_name == "vllm:time_to_first_token_seconds"
+            and dispatch_capabilities
+            and DispatchPlan.PREFILL_HANDOFF_DECODE.value in dispatch_capabilities
+        ):
+            return None
 
         return config.role_scope
 

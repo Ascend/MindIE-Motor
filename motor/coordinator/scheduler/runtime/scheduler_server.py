@@ -21,6 +21,7 @@ from typing import Awaitable, Callable
 
 import zmq.asyncio
 
+from motor.common.resources.dispatch import shared_dispatch_plans
 from motor.common.resources.endpoint import Endpoint, WorkloadAction, Workload
 from motor.common.resources.http_msg_spec import EventType
 from motor.common.resources.instance import PDRole, Instance
@@ -802,9 +803,13 @@ class _SchedulerRequestDispatcher:
                 error=f"Invalid allocate_pair request: {e}",
             )
 
-        if not await self._instance_manager.has_instance_endpoint(p_iid, p_eid):
-            return self._empty_pair_response(request)
-        if not await self._instance_manager.has_instance_endpoint(d_iid, d_eid):
+        p_instance, p_endpoint = _find_available_instance_endpoint(self._instance_manager, p_iid, p_eid)
+        d_instance, d_endpoint = _find_available_instance_endpoint(self._instance_manager, d_iid, d_eid)
+        p_role = getattr(getattr(p_instance, "role", None), "value", getattr(p_instance, "role", None))
+        d_role = getattr(getattr(d_instance, "role", None), "value", getattr(d_instance, "role", None))
+        missing_pair = p_instance is None or p_endpoint is None or d_instance is None or d_endpoint is None
+        invalid_roles = p_role != PDRole.ROLE_P.value or d_role != PDRole.ROLE_D.value
+        if missing_pair or invalid_roles or not shared_dispatch_plans(p_instance, d_instance):
             return self._empty_pair_response(request)
 
         p_success = await self._scheduler.update_workload(
@@ -841,8 +846,6 @@ class _SchedulerRequestDispatcher:
             await self._workload_writer.write_single_entry(p_iid, p_eid)
             await self._workload_writer.write_single_entry(d_iid, d_eid)
 
-        p_instance, p_endpoint = _find_available_instance_endpoint(self._instance_manager, p_iid, p_eid)
-        d_instance, d_endpoint = _find_available_instance_endpoint(self._instance_manager, d_iid, d_eid)
         if _should_log_scheduling_sample(req_id or request.request_id):
             logger.info(
                 "ALLOCATE_PAIR req_id=%s p_ins=%s p_ep=%s d_ins=%s d_ep=%s",

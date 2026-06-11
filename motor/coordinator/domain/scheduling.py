@@ -20,6 +20,7 @@ from typing import Iterable, Protocol, Tuple
 
 from pydantic import BaseModel
 
+from motor.common.resources.dispatch import has_compatible_dispatch_pair
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.models.request import RequestInfo
@@ -53,37 +54,38 @@ class InstanceReadiness(str, Enum):
 
 
 def readiness_from_instances(instances: Iterable[Instance]) -> InstanceReadiness:
-    """Infer readiness from currently available instance roles."""
-    has_e = False
-    has_p = False
-    has_d = False
-    has_u = False
+    """Infer readiness from available roles and compatible P/D dispatch capabilities."""
+    encode_instances = []
+    prefill_instances = []
+    decode_instances = []
+    union_instances = []
     for instance in instances:
         role = getattr(instance, "role", None)
         role_value = role.value if hasattr(role, "value") else str(role)
         if role_value == PDRole.ROLE_E.value:
-            has_e = True
+            encode_instances.append(instance)
         elif role_value == PDRole.ROLE_P.value:
-            has_p = True
+            prefill_instances.append(instance)
         elif role_value == PDRole.ROLE_D.value:
-            has_d = True
+            decode_instances.append(instance)
         elif role_value in (PDRole.ROLE_U.value, "both", "hybrid"):
-            has_u = True
+            union_instances.append(instance)
 
-    if has_e and has_p and has_d:
-        return InstanceReadiness.REQUIRED_MET_EPD
-    if has_p and has_d:
+    has_compatible_pd = has_compatible_dispatch_pair(prefill_instances, decode_instances)
+    if has_compatible_pd:
+        return InstanceReadiness.REQUIRED_MET_EPD if encode_instances else InstanceReadiness.REQUIRED_MET
+    if union_instances:
         return InstanceReadiness.REQUIRED_MET
-    if has_e and has_p:
+    if prefill_instances and decode_instances:
+        return InstanceReadiness.UNKNOWN
+    if encode_instances and prefill_instances:
         return InstanceReadiness.ENCODE_PREFILL
-    if has_p:
+    if prefill_instances:
         return InstanceReadiness.ONLY_PREFILL
-    if has_d:
+    if decode_instances:
         return InstanceReadiness.ONLY_DECODE
-    if has_e:
+    if encode_instances:
         return InstanceReadiness.ONLY_ENCODE
-    if has_u:
-        return InstanceReadiness.REQUIRED_MET
     return InstanceReadiness.NONE
 
 
@@ -188,4 +190,12 @@ class SchedulingFacade(Protocol):
 
     async def get_available_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
         """Return available instances for role; role=None means all roles."""
+        ...
+
+    async def get_available_instance_roles(self) -> set[PDRole]:
+        """Return roles currently present in the scheduler's local instance view."""
+        ...
+
+    async def has_compatible_pd_pair(self) -> bool:
+        """Return whether the local scheduler view contains a compatible P/D pair."""
         ...

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
 from motor.coordinator.domain.scheduling import InstanceReadiness
@@ -57,17 +58,29 @@ class TestCollectActiveEndpointsFromCache:
     async def test_returns_only_normal_endpoints(self):
         """Endpoints with status=normal are included; others are excluded."""
         cache = _SchedulerInstanceCache()
-        inst0 = _make_instance(0, PDRole.ROLE_E, [
-            ("10.0.0.5", "8005", EndpointStatus.NORMAL),
-        ])
-        inst1 = _make_instance(1, PDRole.ROLE_P, [
-            ("10.0.0.1", "8001", EndpointStatus.NORMAL),
-            ("10.0.0.2", "8002", EndpointStatus.ABNORMAL),
-        ])
-        inst2 = _make_instance(2, PDRole.ROLE_D, [
-            ("10.0.0.3", "8003", EndpointStatus.NORMAL),
-            ("10.0.0.4", "8004", EndpointStatus.PAUSED),
-        ])
+        inst0 = _make_instance(
+            0,
+            PDRole.ROLE_E,
+            [
+                ("10.0.0.5", "8005", EndpointStatus.NORMAL),
+            ],
+        )
+        inst1 = _make_instance(
+            1,
+            PDRole.ROLE_P,
+            [
+                ("10.0.0.1", "8001", EndpointStatus.NORMAL),
+                ("10.0.0.2", "8002", EndpointStatus.ABNORMAL),
+            ],
+        )
+        inst2 = _make_instance(
+            2,
+            PDRole.ROLE_D,
+            [
+                ("10.0.0.3", "8003", EndpointStatus.NORMAL),
+                ("10.0.0.4", "8004", EndpointStatus.PAUSED),
+            ],
+        )
         await cache.replace_all(PDRole.ROLE_E, [inst0])
         await cache.replace_all(PDRole.ROLE_P, [inst1])
         await cache.replace_all(PDRole.ROLE_D, [inst2])
@@ -80,10 +93,14 @@ class TestCollectActiveEndpointsFromCache:
     async def test_returns_empty_when_no_normal_endpoints(self):
         """When all endpoints are non-normal, returns empty list."""
         cache = _SchedulerInstanceCache()
-        inst = _make_instance(1, PDRole.ROLE_P, [
-            ("10.0.0.1", "8001", EndpointStatus.ABNORMAL),
-            ("10.0.0.2", "8002", EndpointStatus.PAUSED),
-        ])
+        inst = _make_instance(
+            1,
+            PDRole.ROLE_P,
+            [
+                ("10.0.0.1", "8001", EndpointStatus.ABNORMAL),
+                ("10.0.0.2", "8002", EndpointStatus.PAUSED),
+            ],
+        )
         await cache.replace_all(PDRole.ROLE_P, [inst])
 
         result = _collect_active_endpoints_from_cache(cache)
@@ -106,14 +123,22 @@ class TestSchedulerClientEndpointTopK:
             endpoint_instance_score_weight=0.0,
         )
         client = AsyncSchedulerClient(config)
-        inst1 = _make_instance(1, PDRole.ROLE_P, [
-            ("10.0.0.1", "8001", EndpointStatus.NORMAL),
-            ("10.0.0.2", "8002", EndpointStatus.NORMAL),
-        ])
-        inst2 = _make_instance(2, PDRole.ROLE_P, [
-            ("10.0.0.3", "8003", EndpointStatus.NORMAL),
-            ("10.0.0.4", "8004", EndpointStatus.NORMAL),
-        ])
+        inst1 = _make_instance(
+            1,
+            PDRole.ROLE_P,
+            [
+                ("10.0.0.1", "8001", EndpointStatus.NORMAL),
+                ("10.0.0.2", "8002", EndpointStatus.NORMAL),
+            ],
+        )
+        inst2 = _make_instance(
+            2,
+            PDRole.ROLE_P,
+            [
+                ("10.0.0.3", "8003", EndpointStatus.NORMAL),
+                ("10.0.0.4", "8004", EndpointStatus.NORMAL),
+            ],
+        )
         workloads = {
             10: Workload(active_tokens=10),
             11: Workload(active_tokens=12),
@@ -131,9 +156,7 @@ class TestSchedulerClientEndpointTopK:
             api="/test/api",
         )
 
-        candidates = client._select_endpoint_candidates_from_list(
-            [inst1, inst2], PDRole.ROLE_P, req_info, top_k=2
-        )
+        candidates = client._select_endpoint_candidates_from_list([inst1, inst2], PDRole.ROLE_P, req_info, top_k=2)
 
         assert [(inst.id, ep.id) for inst, ep, _ in candidates] == [(2, 20), (1, 10)]
 
@@ -147,15 +170,29 @@ async def test_has_required_instances_uses_cache_after_warmup():
     client = AsyncSchedulerClient(config)
 
     async def mock_get_available_instances(role=None):
-        e_inst = _make_instance(1, PDRole.ROLE_E, [
-            ("10.0.0.1", "8001", EndpointStatus.NORMAL),
-        ])
-        p_inst = _make_instance(2, PDRole.ROLE_P, [
-            ("10.0.0.2", "8002", EndpointStatus.NORMAL),
-        ])
-        d_inst = _make_instance(3, PDRole.ROLE_D, [
-            ("10.0.0.3", "8003", EndpointStatus.NORMAL),
-        ])
+        e_inst = _make_instance(
+            1,
+            PDRole.ROLE_E,
+            [
+                ("10.0.0.1", "8001", EndpointStatus.NORMAL),
+            ],
+        )
+        p_inst = _make_instance(
+            2,
+            PDRole.ROLE_P,
+            [
+                ("10.0.0.2", "8002", EndpointStatus.NORMAL),
+            ],
+        )
+        d_inst = _make_instance(
+            3,
+            PDRole.ROLE_D,
+            [
+                ("10.0.0.3", "8003", EndpointStatus.NORMAL),
+            ],
+        )
+        p_inst.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+        d_inst.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
         await client._cache.replace_all(PDRole.ROLE_E, [e_inst])
         await client._cache.replace_all(PDRole.ROLE_P, [p_inst])
         await client._cache.replace_all(PDRole.ROLE_D, [d_inst])
@@ -189,9 +226,13 @@ async def test_on_instance_refreshed_callback_invoked_on_version_change():
     client._last_instance_version = 1
 
     async def mock_get_available_instances(role=None):
-        inst = _make_instance(1, PDRole.ROLE_P, [
-            ("10.0.0.1", "8001", EndpointStatus.NORMAL),
-        ])
+        inst = _make_instance(
+            1,
+            PDRole.ROLE_P,
+            [
+                ("10.0.0.1", "8001", EndpointStatus.NORMAL),
+            ],
+        )
         await client._cache.replace_all(PDRole.ROLE_P, [inst])
         return {1: inst}
 
@@ -199,23 +240,15 @@ async def test_on_instance_refreshed_callback_invoked_on_version_change():
     alloc_response.response_type = SchedulerResponseType.SUCCESS
     alloc_response.data = {
         "instance": {"id": 1, "job_name": "j", "model_name": "m", "role": "prefill"},
-        "endpoint": {"id": 11, "ip": "10.0.0.1", "business_port": "8001",
-                     "mgmt_port": "9001", "status": "normal"},
+        "endpoint": {"id": 11, "ip": "10.0.0.1", "business_port": "8001", "mgmt_port": "9001", "status": "normal"},
     }
 
     with patch.object(client, "get_available_instances", side_effect=mock_get_available_instances):
         with patch.object(client, "_transport") as mock_transport:
             mock_transport.connected = True
             mock_transport.send_request = AsyncMock(return_value=alloc_response)
-            req_info = RequestInfo(
-                req_id="",
-                req_data={"test": "data"},
-                req_len=100,
-                api="/test/api"
-            )
-            result = await client.select_and_allocate(
-                PDRole.ROLE_P, req_info
-            )
+            req_info = RequestInfo(req_id="", req_data={"test": "data"}, req_len=100, api="/test/api")
+            result = await client.select_and_allocate(PDRole.ROLE_P, req_info)
 
     assert result is not None
     ins, ep, workload = result
@@ -242,15 +275,8 @@ async def test_on_instance_refreshed_not_called_when_no_callback():
         with patch.object(client, "_transport") as mock_transport:
             mock_transport.connected = True
             mock_transport.send_request = AsyncMock(return_value=None)
-            req_info = RequestInfo(
-                req_id="",
-                req_data={"test": "data"},
-                req_len=100,
-                api="/test/api"
-            )
-            await client.select_and_allocate(
-                PDRole.ROLE_P, req_info
-            )
+            req_info = RequestInfo(req_id="", req_data={"test": "data"}, req_len=100, api="/test/api")
+            await client.select_and_allocate(PDRole.ROLE_P, req_info)
 
     assert client._on_instance_refreshed is None
 

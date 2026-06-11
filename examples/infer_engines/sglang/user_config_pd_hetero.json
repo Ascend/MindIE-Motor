@@ -42,7 +42,6 @@
       "max_requests": 10000
     },
     "scheduler_config": {
-      "deploy_mode": "pd_dual_dispatch",
       "scheduler_type": "load_balance"
     }
   },

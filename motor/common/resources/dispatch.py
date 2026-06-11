@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -36,7 +36,6 @@ KV_TRANSFER_CONFIG_KEY = "kv_transfer_config"
 KV_CONNECTOR_KEY = "kv_connector"
 KV_CONNECTOR_EXTRA_CONFIG_KEY = "kv_connector_extra_config"
 KV_CONNECTORS_KEY = "connectors"
-KV_CONNECTOR_MODULE_PATH_KEY = "kv_connector_module_path"
 
 
 class DispatchProfile(str, Enum):
@@ -48,20 +47,14 @@ class DispatchProfile(str, Enum):
     UNKNOWN = "unknown"
 
 
-_VLLM_HANDOFF_CONNECTORS = frozenset({"mooncakeconnectorv1"})
-_VLLM_HANDOFF_MODULE_PATHS = frozenset(
+_VLLM_HANDOFF_CONNECTORS = frozenset(
     {
-        "vllm_ascend.distributed.mooncake_connector",
-        "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector",
+        "mooncakeconnectorv1",
+        "mooncakehybridconnector",
+        "nixlconnector",
     }
 )
 _VLLM_TRIGGER_CONNECTORS = frozenset({"mooncakelayerwiseconnector"})
-_VLLM_TRIGGER_MODULE_PATHS = frozenset(
-    {
-        "vllm_ascend.distributed.mooncake_layerwise_connector",
-        "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_layerwise_connector",
-    }
-)
 
 
 def classify_vllm_dispatch_profile(
@@ -85,6 +78,77 @@ def dispatch_capabilities_for_profile(profile: DispatchProfile) -> list[str]:
     return []
 
 
+def dispatch_plans_from_capabilities(values: Iterable[object] | None) -> set[DispatchPlan]:
+    """Normalize advertised capability values into supported dispatch plans."""
+    plans: set[DispatchPlan] = set()
+    if values is None:
+        return plans
+    if isinstance(values, (str, bytes)):
+        values = (values,)
+    try:
+        iterator = iter(values)
+    except TypeError:
+        return plans
+    for value in iterator:
+        try:
+            plans.add(DispatchPlan(str(value)))
+        except ValueError:
+            continue
+    return plans
+
+
+def shared_dispatch_plans(prefill: Any, decode: Any) -> set[DispatchPlan]:
+    """Return dispatch plans advertised by both instances."""
+    prefill_plans = dispatch_plans_from_capabilities(getattr(prefill, "dispatch_capabilities", None))
+    decode_plans = dispatch_plans_from_capabilities(getattr(decode, "dispatch_capabilities", None))
+    return prefill_plans & decode_plans
+
+
+def dispatch_plan_union(instances: Iterable[Any]) -> set[DispatchPlan]:
+    """Union of dispatch plans advertised across instances; parses each instance once."""
+    union: set[DispatchPlan] = set()
+    for instance in instances:
+        union |= dispatch_plans_from_capabilities(getattr(instance, "dispatch_capabilities", None))
+    return union
+
+
+def compatible_prefill_instances(prefill_instances: Iterable[Any], decode_instances: Iterable[Any]) -> list[Any]:
+    """Prefill instances sharing a dispatch plan with at least one decode instance.
+
+    Each prefill is compared against the decode plan union, so every instance's
+    capabilities are parsed exactly once (O(P+D)) instead of the pairwise O(P*D) scan.
+    """
+    decode_union = dispatch_plan_union(decode_instances)
+    if not decode_union:
+        return []
+    return [
+        prefill
+        for prefill in prefill_instances
+        if dispatch_plans_from_capabilities(getattr(prefill, "dispatch_capabilities", None)) & decode_union
+    ]
+
+
+def compatible_decode_instances(prefill: Any, decode_instances: Iterable[Any]) -> list[Any]:
+    """Decode instances sharing a dispatch plan with the given prefill instance (O(D))."""
+    prefill_plans = dispatch_plans_from_capabilities(getattr(prefill, "dispatch_capabilities", None))
+    if not prefill_plans:
+        return []
+    return [
+        decode
+        for decode in decode_instances
+        if dispatch_plans_from_capabilities(getattr(decode, "dispatch_capabilities", None)) & prefill_plans
+    ]
+
+
+def has_compatible_dispatch_pair(prefill_instances: Iterable[Any], decode_instances: Iterable[Any]) -> bool:
+    """Whether at least one P/D instance pair advertises a shared dispatch plan.
+
+    A shared plan exists iff the prefill and decode plan unions intersect, so this
+    runs in O(P+D) without enumerating instance pairs.
+    """
+    return bool(dispatch_plan_union(prefill_instances) & dispatch_plan_union(decode_instances))
+
+
 def _classify_vllm_kv_transfer_config(kv_transfer_config: Any) -> DispatchProfile:
     if not isinstance(kv_transfer_config, dict):
         return DispatchProfile.UNKNOWN
@@ -93,10 +157,9 @@ def _classify_vllm_kv_transfer_config(kv_transfer_config: Any) -> DispatchProfil
     if connector == "multiconnector":
         return _classify_vllm_multi_connector(kv_transfer_config)
 
-    module_path = _normalized_path(kv_transfer_config.get(KV_CONNECTOR_MODULE_PATH_KEY))
-    if connector in _VLLM_HANDOFF_CONNECTORS or module_path in _VLLM_HANDOFF_MODULE_PATHS:
+    if connector in _VLLM_HANDOFF_CONNECTORS:
         return DispatchProfile.HANDOFF
-    if connector in _VLLM_TRIGGER_CONNECTORS or module_path in _VLLM_TRIGGER_MODULE_PATHS:
+    if connector in _VLLM_TRIGGER_CONNECTORS:
         return DispatchProfile.TRIGGER
     return DispatchProfile.UNKNOWN
 
@@ -106,17 +169,13 @@ def _classify_vllm_multi_connector(kv_transfer_config: dict[str, Any]) -> Dispat
     if not isinstance(extra_config, dict):
         return DispatchProfile.UNKNOWN
     connectors = extra_config.get(KV_CONNECTORS_KEY, [])
-    if not isinstance(connectors, list):
+    if not isinstance(connectors, list) or len(connectors) < 2:
         return DispatchProfile.UNKNOWN
 
-    known_profiles = {
-        profile
-        for connector_config in connectors
-        if (profile := _classify_vllm_kv_transfer_config(connector_config)) != DispatchProfile.UNKNOWN
-    }
-    if len(known_profiles) == 1:
-        return next(iter(known_profiles))
-    return DispatchProfile.UNKNOWN
+    transport_connector = connectors[0]
+    if not isinstance(transport_connector, dict):
+        return DispatchProfile.UNKNOWN
+    return _classify_vllm_kv_transfer_config(transport_connector)
 
 
 def _parse_explicit_profile(value: Any) -> DispatchProfile | None:
@@ -152,10 +211,6 @@ def _config_get(config: Any, key: str, default: Any = None) -> Any:
 
 def _normalized(value: Any) -> str:
     return str(value or "").strip().lower()
-
-
-def _normalized_path(value: Any) -> str:
-    return _normalized(value).replace("/", ".")
 
 
 class DispatchEndpoint(BaseModel):

@@ -18,6 +18,7 @@ from typing import Any
 from urllib import request as urllib_request
 from urllib.error import URLError
 
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
@@ -173,7 +174,6 @@ class MetricsCollector(ThreadSafeSingleton):
             config = CoordinatorConfig()
         self._prometheus_metrics_config = config.prometheus_metrics_config
         self._deploy_config = config.deploy_config
-        self._deploy_mode = config.scheduler_config.deploy_mode
 
         # Initial metrics state
         self._inactive_instance_metrics_aggregate: dict[str, list[Metric]] = {}
@@ -230,7 +230,6 @@ class MetricsCollector(ThreadSafeSingleton):
         with self._config_lock:
             self._prometheus_metrics_config = config.prometheus_metrics_config
             self._deploy_config = config.deploy_config
-            self._deploy_mode = config.scheduler_config.deploy_mode
         logger.info("MetricsCollector configuration updated")
 
     def get_metrics(
@@ -687,6 +686,7 @@ class MetricsCollector(ThreadSafeSingleton):
             if collect:
                 collect["role"] = ins_info.role
                 collect["job_name"] = ins_info.job_name
+                collect["dispatch_capabilities"] = list(ins_info.dispatch_capabilities or [])
                 collects[ins_info.id] = collect
 
         return collects
@@ -723,6 +723,7 @@ class MetricsCollector(ThreadSafeSingleton):
         self,
         collects: dict[int, dict[str, Any]],
         instance_roles: dict[int, str],
+        instance_dispatch_capabilities: dict[int, set[str]],
     ) -> list[Metric]:
         """Aggreagte metrics of all instances."""
 
@@ -749,7 +750,7 @@ class MetricsCollector(ThreadSafeSingleton):
             scope=AggregationScope.SERVICE,
             ins_ids=ins_ids,
             instance_roles=instance_roles,
-            deploy_mode=self._deploy_mode,
+            instance_dispatch_capabilities=instance_dispatch_capabilities,
         )
         return self._aggregate_metrics(aggr_input, ctx=ctx)
 
@@ -783,15 +784,39 @@ class MetricsCollector(ThreadSafeSingleton):
         result: list[Metric] = []
         for name, entries in aggr_input.items():
             if ctx is not None and ctx.scope == AggregationScope.SERVICE and ctx.instance_roles is not None:
-                role_scope = MetricRegistry.get_effective_role_scope(name, ctx.deploy_mode)
-                if role_scope:
+                if name == "vllm:time_to_first_token_seconds" and ctx.instance_dispatch_capabilities is not None:
+                    handoff = DispatchPlan.PREFILL_HANDOFF_DECODE.value
                     entries = [
                         (ins_id, m)
                         for ins_id, m in entries
-                        if ins_id == -1 or ctx.instance_roles.get(ins_id) == role_scope
+                        if (
+                            ins_id == -1
+                            or ctx.instance_roles.get(ins_id) in {"decode", "union", "both", "hybrid"}
+                            or (
+                                ctx.instance_roles.get(ins_id) == "prefill"
+                                and handoff in ctx.instance_dispatch_capabilities.get(ins_id, set())
+                            )
+                        )
                     ]
                     if not entries:
                         continue
+                else:
+                    role_scope = MetricRegistry.get_effective_role_scope(name)
+                    if role_scope:
+                        entries = [
+                            (ins_id, m)
+                            for ins_id, m in entries
+                            if (
+                                ins_id == -1
+                                or ctx.instance_roles.get(ins_id) == role_scope
+                                or (
+                                    role_scope == "decode"
+                                    and ctx.instance_roles.get(ins_id) in {"union", "both", "hybrid"}
+                                )
+                            )
+                        ]
+                        if not entries:
+                            continue
             metric_list = [m for _, m in entries]
             result.append(self._aggregate_single_metric(metric_list))
         return result
@@ -809,8 +834,13 @@ class MetricsCollector(ThreadSafeSingleton):
         for ins_id, metrics_list in instance_metrics.items():
             self._instance_metrics_cached[ins_id] = {self.METRICS_KEY: metrics_list}
         instance_roles = {ins_id: data.get("role", "") for ins_id, data in collects.items() if isinstance(data, dict)}
+        instance_dispatch_capabilities = {
+            ins_id: set(data.get("dispatch_capabilities", []))
+            for ins_id, data in collects.items()
+            if isinstance(data, dict)
+        }
         aggregate = self._aggregation_engine.post_process(
-            self._aggregate_metrics_all_instance(collects, instance_roles)
+            self._aggregate_metrics_all_instance(collects, instance_roles, instance_dispatch_capabilities)
         )
         with self._config_lock:
             deploy_config = self._deploy_config

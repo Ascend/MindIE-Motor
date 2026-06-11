@@ -99,24 +99,6 @@ def _default_rate_limit_skip_paths() -> list[str]:
     ]
 
 
-class DeployMode(Enum):
-    SINGLE_NODE = "single_node"
-    PD_SEPARATE = "pd_separate"
-    CDP_SEPARATE = "cdp_separate"
-    CPCD_SEPARATE = "cpcd_separate"
-    PD_DUAL_DISPATCH = "pd_dual_dispatch"
-    PD_DISAGGREGATION_SINGLE_CONTAINER = "pd_disaggregation_single_container"
-
-    @classmethod
-    def from_string(cls, value: str) -> Optional["DeployMode"]:
-        """Convert string to DeployMode enum."""
-        try:
-            return cls[value.upper()]
-        except (KeyError, AttributeError):
-            logger.warning("Invalid deploy mode: %s", value)
-            return None
-
-
 class SchedulerType(Enum):
     LOAD_BALANCE = "load_balance"
     ROUND_ROBIN = "round_robin"
@@ -142,7 +124,6 @@ KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
 
 @dataclass
 class SchedulerConfig:
-    deploy_mode: DeployMode = field(default=DeployMode.PD_SEPARATE)
     scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
@@ -449,8 +430,7 @@ class CoordinatorConfig:
                         setattr(obj, key, enum_value)
 
             scheduler_handlers = {
-                "deploy_mode": lambda obj, key, value: set_enum_field(obj, key, value, DeployMode),
-                "scheduler_type": lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
+                'scheduler_type': lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
             }
 
             # Enrich AIGW fields from user_config if present
@@ -708,12 +688,10 @@ class CoordinatorConfig:
         config_dict.pop("last_modified", None)
 
         # Convert enums to their string values for JSON serialization
-        if "scheduler_config" in config_dict:
-            scheduler_config = config_dict["scheduler_config"]
-            if "deploy_mode" in scheduler_config and isinstance(scheduler_config["deploy_mode"], DeployMode):
-                scheduler_config["deploy_mode"] = scheduler_config["deploy_mode"].value
-            if "scheduler_type" in scheduler_config and isinstance(scheduler_config["scheduler_type"], SchedulerType):
-                scheduler_config["scheduler_type"] = scheduler_config["scheduler_type"].value
+        if 'scheduler_config' in config_dict:
+            scheduler_config = config_dict['scheduler_config']
+            if 'scheduler_type' in scheduler_config and isinstance(scheduler_config['scheduler_type'], SchedulerType):
+                scheduler_config['scheduler_type'] = scheduler_config['scheduler_type'].value
         # Convert sets to lists for JSON serialization
         if "api_key_config" in config_dict:
             api_key_config = config_dict["api_key_config"]
@@ -776,9 +754,8 @@ class CoordinatorConfig:
             f"    ?? Observability Port:  {self.api_config.coordinator_obs_port}\n"
             "\n"
             "  Scheduler Configuration:\n"
-            f"    ?? Deploy Mode:               {self.scheduler_config.deploy_mode.value}\n"
-            f"    ?? Scheduler Type:            {self.scheduler_config.scheduler_type.value}\n"
-            f"    ?? Endpoint Instance Weight:  "
+            f"    ├─ Scheduler Type:            {self.scheduler_config.scheduler_type.value}\n"
+            f"    ├─ Endpoint Instance Weight:  "
             f"{self.scheduler_config.endpoint_instance_score_weight}\n"
             f"    ?? KV Affinity Mode:          "
             f"{self.scheduler_config.kv_affinity_mode}\n"

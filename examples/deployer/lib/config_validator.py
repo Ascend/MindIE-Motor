@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 import json
 import os
+import shutil
 import subprocess
 
 import lib.constant as C
@@ -92,9 +93,11 @@ def strip_instance_nums(config_dict):
 
 def validate_only_instance_changed(current_config, baseline_config):
     if strip_instance_nums(current_config) != strip_instance_nums(baseline_config):
-        raise ValueError("user_config changes detected beyond instance numbers. "
-                         "Only e_instances_num/p_instances_num/d_instances_num/hybrid_instances_num "
-                         "can be modified for scaling.")
+        raise ValueError(
+            "user_config changes detected beyond instance numbers. "
+            "Only e_instances_num/p_instances_num/d_instances_num/hybrid_instances_num "
+            "can be modified for scaling."
+        )
 
 
 def validate_deploy_mode_consistency(deploy_config, baseline_config):
@@ -138,10 +141,6 @@ def validate_pd_hybrid_config(user_config):
     if C.MOTOR_ENGINE_PREFILL_CONFIG in user_config or "motor_engine_decode_config" in user_config:
         raise ValueError("PD hybrid config cannot include prefill/decode engine config sections.")
 
-    scheduler_config = user_config.get(C.MOTOR_COORDINATOR_CONFIG, {}).get("scheduler_config", {})
-    if scheduler_config.get("deploy_mode") != "single_node":
-        raise ValueError("PD hybrid config requires motor_coordinator_config.scheduler_config.deploy_mode=single_node.")
-
 
 def validate_pd_hybrid_infer_service_template(user_config, infer_service_template_path):
     """Require union role in InferServiceSet template when PD hybrid uses CRD deploy mode."""
@@ -151,33 +150,23 @@ def validate_pd_hybrid_infer_service_template(user_config, infer_service_templat
         return
     if not os.path.exists(infer_service_template_path):
         raise FileNotFoundError(
-            f"InferServiceSet template yaml not found for PD hybrid CRD validation: "
-            f"{infer_service_template_path}"
+            f"InferServiceSet template yaml not found for PD hybrid CRD validation: {infer_service_template_path}"
         )
     all_docs = load_yaml(infer_service_template_path, False)
     if not isinstance(all_docs, list):
         all_docs = [all_docs]
     infer_doc = _find_infer_service_set_doc(all_docs)
     if not get_infer_role(infer_doc, C.ROLE_UNION):
-        raise ValueError(
-            "PD hybrid with infer_service_set requires a 'union' role in "
-            "infer_service_template.yaml."
-        )
+        raise ValueError("PD hybrid with infer_service_set requires a 'union' role in infer_service_template.yaml.")
 
 
 def _get_pd_heterogeneous_config(deploy_config):
     """Extract PD heterogeneous config from deploy_config, returns None if disabled."""
     if deploy_config.get(C.ENABLE_PD_HETEROGENEOUS) is not True:
         return None
-    label_key = deploy_config.get(
-        C.PD_HETEROGENEOUS_LABEL_KEY, C.DEFAULT_PD_HETEROGENEOUS_LABEL_KEY
-    )
-    prefill_value = deploy_config.get(
-        C.PD_HETEROGENEOUS_PREFILL_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_PREFILL_VALUE
-    )
-    decode_value = deploy_config.get(
-        C.PD_HETEROGENEOUS_DECODE_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_DECODE_VALUE
-    )
+    label_key = deploy_config.get(C.PD_HETEROGENEOUS_LABEL_KEY, C.DEFAULT_PD_HETEROGENEOUS_LABEL_KEY)
+    prefill_value = deploy_config.get(C.PD_HETEROGENEOUS_PREFILL_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_PREFILL_VALUE)
+    decode_value = deploy_config.get(C.PD_HETEROGENEOUS_DECODE_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_DECODE_VALUE)
     return {
         "label_key": label_key,
         "prefill_value": prefill_value,
@@ -197,10 +186,7 @@ def _get_hardware_node_labels(hardware_type):
     if hardware_type in C.HARDWARE_TYPE_950I_A5:
         return {C.ACCELERATOR: C.ACCELERATOR_A5, C.ACCELERATOR_TYPE: hardware_type}
     known = [C.HARDWARE_TYPE_800I_A2, C.HARDWARE_TYPE_800I_A3, *C.HARDWARE_TYPE_950I_A5]
-    raise ValueError(
-        f"Unknown hardware_type '{hardware_type}'. "
-        f"Supported values: {known}"
-    )
+    raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
 
 
 def _validate_node_labels_exist(labels, node_desc):
@@ -213,20 +199,22 @@ def _validate_node_labels_exist(labels, node_desc):
     if not labels:
         return
     label_selector = ",".join(f"{k}={v}" for k, v in labels.items())
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        raise RuntimeError("kubectl not found in PATH")
     try:
         result = subprocess.run(
-            ["kubectl", "get", "nodes", "-l", label_selector, "-o", "name"],
-            capture_output=True, text=True
+            [kubectl, "get", "nodes", "-l", label_selector, "-o", "name"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except Exception as e:
-        raise RuntimeError(
-            f"Failed to query cluster nodes for {node_desc} with labels {labels}: {e}"
-        )
+        raise RuntimeError(f"Failed to query cluster nodes for {node_desc} with labels {labels}: {e}")
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"kubectl get nodes failed for {node_desc} with labels {labels}. "
-            f"stderr: {result.stderr.strip()}"
+            f"kubectl get nodes failed for {node_desc} with labels {labels}. stderr: {result.stderr.strip()}"
         )
 
     nodes = [line for line in result.stdout.strip().split("\n") if line]
@@ -236,9 +224,7 @@ def _validate_node_labels_exist(labels, node_desc):
             f"Please ensure suitable nodes are labeled correctly."
         )
 
-    logger.info(
-        f"Node selector validated for {node_desc}: {labels} -> {len(nodes)} node(s) found"
-    )
+    logger.info(f"Node selector validated for {node_desc}: {labels} -> {len(nodes)} node(s) found")
 
 
 def validate_node_selectors(deploy_config):
@@ -260,8 +246,7 @@ def validate_node_selectors(deploy_config):
         _validate_node_labels_exist(prefill_labels, "prefill(P)")
         _validate_node_labels_exist(decode_labels, "decode(D)")
         logger.info(
-            f"PD heterogeneous node selectors validated: "
-            f"prefill -> {prefill_labels}, decode -> {decode_labels}"
+            f"PD heterogeneous node selectors validated: prefill -> {prefill_labels}, decode -> {decode_labels}"
         )
     else:
         _validate_node_labels_exist(base_labels, "engine")

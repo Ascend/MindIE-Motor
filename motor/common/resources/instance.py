@@ -523,12 +523,17 @@ class ReadOnlyInstance:
 
     def __deepcopy__(self, memo):
         """Support deep copying by creating a new instance with copied data."""
-        # Create a new Instance with the same data, excluding the lock
+        # Create a new Instance with the same data, excluding the lock.
+        # engine_type / dispatch_capabilities / enable_multi_endpoints must be carried over
+        # (readiness and P/D pairing gate on dispatch_capabilities).
         copied_instance = Instance(
             job_name=self._instance.job_name,
             model_name=self._instance.model_name,
+            engine_type=self._instance.engine_type,
+            dispatch_capabilities=list(self._instance.dispatch_capabilities or []),
             id=self._instance.id,
             role=self._instance.role,
+            enable_multi_endpoints=self._instance.enable_multi_endpoints,
         )
         # Copy status and other attributes
         copied_instance.status = self._instance.status
@@ -561,12 +566,18 @@ class ReadOnlyInstance:
         wrapped instance, ensuring that modifications to the returned Instance
         do not affect the original data.
         """
-        # Create a new Instance with the same data, excluding the lock
+        # Create a new Instance with the same data, excluding the lock.
+        # engine_type / dispatch_capabilities / enable_multi_endpoints must be carried over:
+        # the controller pushes this copy to the coordinator, and readiness/pairing gate on
+        # dispatch_capabilities — dropping it leaves the coordinator with empty capabilities.
         copied_instance = Instance(
             job_name=self._instance.job_name,
             model_name=self._instance.model_name,
+            engine_type=self._instance.engine_type,
+            dispatch_capabilities=list(self._instance.dispatch_capabilities or []),
             id=self._instance.id,
             role=self._instance.role,
+            enable_multi_endpoints=self._instance.enable_multi_endpoints,
         )
         # Copy status and other attributes
         copied_instance.status = self._instance.status

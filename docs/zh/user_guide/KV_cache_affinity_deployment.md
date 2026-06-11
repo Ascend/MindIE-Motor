@@ -226,6 +226,7 @@ PyMotor开启KV Cache亲和性调度能力只需修改user_config.json配置文�
 * 在`motor_coordinator_config`配置中，`scheduler_config`下的`scheduler_type`配置为`kv_cache_affinity`表示采用KV Cache亲和性调度算法进行调度。
 * 在`motor_engine_prefill_config`配置中，`engine_config`下增加`kv-events-config`配置，表示P实例开启KV Cache事件发布能力。
 * `kv_conductor_config` 中的 `http_server_port` 字段（例如 `13333`）用于配置 KV conductor的服务端口；若未配置，`deploy.py` 会按默认值 `13333` 进行补充和适配。
+* 关于 Connector：本例 `kv_connector` 使用 `MultiConnector`，其中 `connectors[0]`（`MooncakeLayerwiseConnector`，传输层）决定 P/D 协同 capability，`connectors[1]`（`AscendStoreConnector`，KV 池后端）不参与判定、无需在识别白名单中。识别白名单与 `dispatch_profile` 逃生口见 [PD 分离特性说明](../features/PD_disaggregation.md#connector-驱动执行计划)。
 
 ### PD 混部场景
 

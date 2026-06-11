@@ -14,7 +14,7 @@ Policy layer depends on this interface, not InstanceManager, for tests and swapp
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol
+from typing import Mapping, Protocol
 
 from motor.common.resources.instance import Instance, PDRole
 
@@ -34,10 +34,10 @@ class InstanceProvider(Protocol):
         """Return read-only mapping of available instances for role (id -> Instance)."""
         ...
 
-    def get_required_instances_status(self, deploy_mode: Any) -> InstanceReadiness:
-        """Return detailed instance readiness (REQUIRED_MET, ONLY_PREFILL, ONLY_DECODE, NONE, UNKNOWN)."""
+    def get_required_instances_status(self) -> InstanceReadiness:
+        """Return detailed readiness inferred from available instance roles."""
         ...
 
-    def has_required_instances(self, deploy_mode: Any) -> bool:
-        """True if required instances exist for deploy mode; see get_required_instances_status().is_ready()."""
+    def has_required_instances(self) -> bool:
+        """True if the current instance topology can serve requests."""
         ...

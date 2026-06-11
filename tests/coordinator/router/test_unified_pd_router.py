@@ -11,14 +11,11 @@ from motor.common.resources.dispatch import (
 )
 from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
 from motor.common.resources.instance import Instance, InsStatus, ParallelConfig, PDRole
-from motor.config.coordinator import CoordinatorConfig, DeployMode, ExceptionConfig, SchedulerType
+from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.router.dispatch_capability import (
-    resolve_engine_family,
-    select_dispatch_plan_for_pair,
-)
+from motor.coordinator.router.dispatch_capability import DispatchPlanNotSupported, select_dispatch_plan_for_pair
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 
 
@@ -59,6 +56,10 @@ class _Scheduler:
         prefill_capabilities: list[str] | None = None,
         decode_capabilities: list[str] | None = None,
     ):
+        if prefill_capabilities is None:
+            prefill_capabilities = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+        if decode_capabilities is None:
+            decode_capabilities = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
         self.p = _instance(
             1,
             PDRole.ROLE_P,
@@ -190,9 +191,8 @@ class _StreamClient(_Client):
         )
 
 
-def _config(deploy_mode: DeployMode = DeployMode.CDP_SEPARATE) -> CoordinatorConfig:
+def _config() -> CoordinatorConfig:
     config = CoordinatorConfig()
-    config.scheduler_config.deploy_mode = deploy_mode
     config.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
     config.exception_config = ExceptionConfig(max_retry=1, retry_delay=0)
     return config
@@ -209,7 +209,6 @@ def test_dispatch_plan_prefers_explicit_capability_over_engine_fallback():
     d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
 
     plan = select_dispatch_plan_for_pair(
-        deploy_mode="cdp_separate",
         prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
         decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
     )
@@ -217,34 +216,31 @@ def test_dispatch_plan_prefers_explicit_capability_over_engine_fallback():
     assert plan == DispatchPlan.CONCURRENT_ENGINE_SYNC
 
 
-def test_dispatch_plan_compat_default_vllm_cdp_uses_concurrent_sync():
-    scheduler = _Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm")
+def test_dispatch_plan_requires_connector_capability():
+    scheduler = _Scheduler(prefill_capabilities=[], decode_capabilities=[])
     p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
     d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
 
-    plan = select_dispatch_plan_for_pair(
-        deploy_mode="cdp_separate",
-        prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
-        decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
+    with pytest.raises(DispatchPlanNotSupported, match="do not advertise"):
+        select_dispatch_plan_for_pair(
+            prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
+            decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
+        )
+
+
+def test_dispatch_plan_requires_capability_from_both_instances():
+    scheduler = _Scheduler(
+        prefill_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        decode_capabilities=[],
     )
+    p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
+    d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
 
-    assert plan == DispatchPlan.CONCURRENT_ENGINE_SYNC
-
-
-def test_dispatch_plan_engine_family_requires_exact_alias():
-    instance = _instance(
-        1,
-        PDRole.ROLE_P,
-        engine_type="my-sglang-finetune",
-    )
-    endpoint = next(iter(next(iter(instance.endpoints.values())).values()))
-
-    family = resolve_engine_family(
-        ScheduledResource(instance=instance, endpoint=endpoint),
-        default_engine_type="custom-vllm",
-    )
-
-    assert family is None
+    with pytest.raises(DispatchPlanNotSupported, match="do not advertise"):
+        select_dispatch_plan_for_pair(
+            prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
+            decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
+        )
 
 
 @pytest.mark.asyncio
@@ -390,9 +386,9 @@ async def test_unified_pd_dual_dispatch_uses_dispatch_context_not_bootstrap_fiel
     scheduler = _Scheduler()
     router = UnifiedPDRouter(
         req_info,
-        _config(DeployMode.PD_DUAL_DISPATCH),
+        _config(),
         scheduler=scheduler,
-        request_manager=RequestManager(_config(DeployMode.PD_DUAL_DISPATCH)),
+        request_manager=RequestManager(_config()),
     )
     p_client = _Client("prefill")
     d_client = _Client("decode")
@@ -424,12 +420,13 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
         entry_api="v1/completions",
         req_len=10,
     )
-    scheduler = _Scheduler()
+    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
     router = UnifiedPDRouter(
         req_info,
-        _config(DeployMode.CPCD_SEPARATE),
+        _config(),
         scheduler=scheduler,
-        request_manager=RequestManager(_config(DeployMode.CPCD_SEPARATE)),
+        request_manager=RequestManager(_config()),
     )
     p_client = _PrefillResultClient("prefill")
     d_client = _Client("decode")
@@ -467,12 +464,18 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
         entry_api="v1/completions",
         req_len=10,
     )
-    scheduler = _Scheduler(prefill_engine_type="sglang", decode_engine_type="sglang")
+    concurrent = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+    scheduler = _Scheduler(
+        prefill_engine_type="sglang",
+        decode_engine_type="sglang",
+        prefill_capabilities=concurrent,
+        decode_capabilities=concurrent,
+    )
     router = UnifiedPDRouter(
         req_info,
-        _config(DeployMode.CPCD_SEPARATE),
+        _config(),
         scheduler=scheduler,
-        request_manager=RequestManager(_config(DeployMode.CPCD_SEPARATE)),
+        request_manager=RequestManager(_config()),
     )
     p_client = _Client("prefill")
     d_client = _Client("decode")
@@ -496,7 +499,7 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_rejects_mixed_engine_pair(monkeypatch):
+async def test_unified_pd_rejects_pair_without_shared_connector_capability(monkeypatch):
     req_info = RequestInfo(
         req_id="root-mixed",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -504,12 +507,15 @@ async def test_unified_pd_rejects_mixed_engine_pair(monkeypatch):
         entry_api="v1/completions",
         req_len=10,
     )
-    scheduler = _Scheduler(prefill_engine_type="vllm", decode_engine_type="sglang")
+    scheduler = _Scheduler(
+        prefill_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        decode_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+    )
     router = UnifiedPDRouter(
         req_info,
-        _config(DeployMode.CPCD_SEPARATE),
+        _config(),
         scheduler=scheduler,
-        request_manager=RequestManager(_config(DeployMode.CPCD_SEPARATE)),
+        request_manager=RequestManager(_config()),
     )
     stop_calls = []
 
@@ -522,7 +528,7 @@ async def test_unified_pd_rejects_mixed_engine_pair(monkeypatch):
         _stop,
     )
 
-    with pytest.raises(RuntimeError, match="engine family mismatch"):
+    with pytest.raises(RuntimeError, match="no shared dispatch capability"):
         await router.handle_request()
 
     assert {call[0] for call in stop_calls} == {PDRole.ROLE_P, PDRole.ROLE_D}

@@ -19,8 +19,8 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
 from motor.common.logger import get_logger
-from motor.config.coordinator import CoordinatorConfig, DeployMode
-from motor.coordinator.domain import InstanceReadiness, SchedulingFacade
+from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.domain import SchedulingFacade
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.scheduling_constraint import SchedulingConstraint
 from motor.coordinator.fault_tolerance.probe.chat_probe import (
@@ -31,25 +31,8 @@ from motor.coordinator.fault_tolerance.probe.chat_probe import (
     _extract_completion_text,
 )
 from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.router.dispatch import _ROUTER_MAP
 
 logger = get_logger(__name__)
-
-
-def _resolve_deploy_mode(config: CoordinatorConfig, readiness: InstanceReadiness) -> DeployMode:
-    config_mode = config.scheduler_config.deploy_mode
-    if (
-        config_mode
-        in (
-            DeployMode.PD_SEPARATE,
-            DeployMode.CDP_SEPARATE,
-            DeployMode.CPCD_SEPARATE,
-            DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
-        )
-        and readiness == InstanceReadiness.ONLY_PREFILL
-    ):
-        return DeployMode.SINGLE_NODE
-    return config_mode
 
 
 class InternalRouterProbe(ChatProbe):
@@ -81,14 +64,17 @@ class InternalRouterProbe(ChatProbe):
 
         failures = 0
         details: list[str] = []
-        readiness = await self._scheduler.has_required_instances()
-        deploy_mode = _resolve_deploy_mode(self._config, readiness)
-        router_cls = _ROUTER_MAP.get(deploy_mode)
-        if router_cls is None:
-            logger.warning("InternalRouterProbe: unknown deploy_mode=%s", deploy_mode)
+        # Imported lazily: dispatch imports BaseRouter, whose precision-sample chain pulls in this
+        # probe module — a module-level import here would close that cycle before dispatch finishes.
+        from motor.coordinator.router.dispatch import select_router_class
+
+        try:
+            router_cls = await select_router_class(self._scheduler)
+        except HTTPException as e:
+            logger.warning("InternalRouterProbe: no routable topology: %s", e.detail)
             return ProbeOutcome(
                 failures=max_attempts,
-                details=[f"unknown deploy_mode: {deploy_mode}"],
+                details=[f"no routable topology: {e.detail}"],
             )
 
         req_data = {

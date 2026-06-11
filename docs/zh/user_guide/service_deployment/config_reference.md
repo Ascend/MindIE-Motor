@@ -197,7 +197,6 @@
     "infer_timeout": 3600
   },
   "scheduler_config": {
-    "deploy_mode": "pd_separate",
     "scheduler_type": "load_balance"
   },
   "infer_tls_config": { ... },
@@ -243,7 +242,6 @@
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
-| deploy_mode | string | 部署模式。<ul><li>pd_separate：PD分离部署方式；</li><li>single_node：PD 混部或单节点完整推理方式；</li><li>cdp_separate：CDP部署方式；</li><li>cpcd_separate：CPCD部署方式。</li></ul>默认：pd_separate |
 | scheduler_type | string | 调度类型。<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul>默认：load_balance |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认：`0.05` |
 | kv_affinity_mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
@@ -259,6 +257,8 @@
 | PD 分离 | 从 `motor_engine_prefill_config.engine_config.kv-events-config` 推导 |
 | PD 混部 | 从 `motor_engine_union_config.engine_config.kv-events-config` 推导 |
 | kv_conductor_config | `http_server_port` 写入 `prefill_kv_event_config.http_server_port`；未配置时默认 `13333` |
+
+Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据引擎 Connector 推导、由 NodeManager 内部上报的 `dispatch_capabilities` 选择并发或 handoff 行为。该字段不支持用户显式配置；自定义 Connector 可在 `motor_engine_prefill_config` / `motor_engine_decode_config` 顶层使用 `dispatch_profile` 声明语义（见 [§6.1 dispatch_profile](./config_reference.md#61-dispatch_profilepd-协同语义)）。Connector 识别白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未识别连接器导致路由 503（fail-closed）的处理，详见 [PD 分离特性说明](../../features/PD_disaggregation.md#vllm-connector-识别白名单) 与 [PD 分离服务部署](./pd_disaggregation_deployment.md#kv_connector-识别白名单与-dispatch_profile)。
 
 ### 3.5 infer_tls_config / mgmt_tls_config / etcd_tls_config
 
@@ -526,7 +526,7 @@
 
 ## 6. motor_engine_prefill_config / motor_engine_decode_config（P/D 引擎）
 
-P/D 分离部署时，`motor_engine_prefill_config` 与 `motor_engine_decode_config` 分别配置 Prefill 与 Decode 引擎。两者结构相同，均需指定 `engine_type` 与 `engine_config`；可选配置 `health_check_config` 用于虚推（虚拟推理）健康探测。
+P/D 分离部署时，`motor_engine_prefill_config` 与 `motor_engine_decode_config` 分别配置 Prefill 与 Decode 引擎。两者结构相同，均需指定 `engine_type` 与 `engine_config`；可选配置 `dispatch_profile`（P/D 协同语义）与 `health_check_config`（虚推健康探测）。
 
 **配置示例**：
 
@@ -545,7 +545,53 @@ P/D 分离部署时，`motor_engine_prefill_config` 与 `motor_engine_decode_con
 
 PD 模式下 P 与 D **各自独立配置** `health_check_config`；未配置时使用代码默认值。引擎 `engine_config` 字段说明见 [PD 分离服务部署](./pd_disaggregation_deployment.md#motor_engine_prefill_config--motor_engine_decode_configpd-引擎)。
 
-### 6.1 health_check_config（虚推健康探测）
+### 6.1 dispatch_profile（P/D 协同语义）
+
+当 `engine_config.kv_transfer_config.kv_connector` 不在内置识别白名单内时，可在 `motor_engine_prefill_config` / `motor_engine_decode_config` **顶层**显式声明 P/D 协同语义。NodeManager 据此推导并向 Coordinator 上报 `dispatch_capabilities`。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| dispatch_profile | string | 未配置（由 `kv_connector` 白名单推断） | P/D 协同语义。可选：`handoff`（Prefill 完成后交给 Decode）、`trigger`（P/D 并发，引擎同步 KV）。Prefill 与 Decode **两端须配置相同取值** |
+
+| `dispatch_profile` | 推导出的 capability |
+|--------------------|---------------------|
+| `handoff` | `prefill_handoff_decode` |
+| `trigger` | `concurrent_engine_sync` |
+
+vLLM 内置识别的 `kv_connector` 白名单见 [PD 分离特性说明](../../features/PD_disaggregation.md#vllm-connector-识别白名单)。白名单内 connector 一般**无需**手动配置 `dispatch_profile`。
+
+**注意**：
+
+- `dispatch_profile` 写在 `motor_engine_*_config` 顶层，**不是** `engine_config` 内部。
+- 不支持用户直接填写 `dispatch_capabilities`，配置后会被 NodeManager 丢弃。
+- 取值须与 connector 实际协同语义一致；P/D 不一致或无共同 capability 时，Coordinator 路由返回 503。
+
+**配置示例**（自定义 connector）：
+
+```json
+"motor_engine_prefill_config": {
+  "engine_type": "vllm",
+  "dispatch_profile": "handoff",
+  "engine_config": {
+    "kv_transfer_config": {
+      "kv_connector": "YourCustomConnector",
+      "kv_role": "kv_producer"
+    }
+  }
+},
+"motor_engine_decode_config": {
+  "engine_type": "vllm",
+  "dispatch_profile": "handoff",
+  "engine_config": {
+    "kv_transfer_config": {
+      "kv_connector": "YourCustomConnector",
+      "kv_role": "kv_consumer"
+    }
+  }
+}
+```
+
+### 6.2 health_check_config（虚推健康探测）
 
 虚推由 Engine Server 周期性向推理面发送轻量请求，结合 NPU AICore 使用率判断引擎是否健康。机制说明见 [Engine Server 组件文档](../components/engine_server.md#虚推虚拟推理健康探测)。
 

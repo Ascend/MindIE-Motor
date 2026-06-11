@@ -514,7 +514,6 @@ class UnifiedPDRouter(BaseRouter):
 
     def _select_dispatch_plan(self, attempt: AttemptContext) -> DispatchPlan:
         return select_dispatch_plan_for_pair(
-            deploy_mode=self.config.scheduler_config.deploy_mode.value,
             prefill=attempt.prefill_resource,
             decode=attempt.decode_resource,
         )

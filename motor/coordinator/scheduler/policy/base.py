@@ -72,3 +72,17 @@ class BaseSchedulingPolicy(ABC):
         if endpoint is None:
             return None
         return (instance, endpoint)
+
+    def select_instance_and_endpoint_from_list(
+        self,
+        instances: list[Instance],
+        role: PDRole | None = None,
+        req_info=None,
+    ):
+        """Select from an already filtered instance subset."""
+        del role, req_info
+        for instance in instances:
+            endpoint = self._select_endpoint(instance)
+            if endpoint is not None:
+                return (instance, endpoint)
+        return None

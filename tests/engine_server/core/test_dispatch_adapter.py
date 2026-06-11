@@ -83,10 +83,41 @@ def _handoff_config():
     }
 
 
+def _hybrid_handoff_config():
+    return {
+        "kv_transfer_config": {
+            "kv_connector": "MooncakeHybridConnector",
+        }
+    }
+
+
+def _nixl_handoff_config():
+    return {
+        "kv_transfer_config": {
+            "kv_connector": "NixlConnector",
+        }
+    }
+
+
+def _multi_hybrid_handoff_config():
+    return {
+        "kv_transfer_config": {
+            "kv_connector": "MultiConnector",
+            "kv_connector_extra_config": {
+                "connectors": [
+                    {"kv_connector": "MooncakeHybridConnector"},
+                    {"kv_connector": "AscendStoreConnector"},
+                ]
+            },
+        }
+    }
+
+
 def _unknown_connector_v1_config():
     return {
         "kv_transfer_config": {
             "kv_connector": "LMCacheConnectorV1",
+            "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
         }
     }
 
@@ -354,7 +385,47 @@ async def test_vllm_handoff_profile_ignores_legacy_dispatch_mode_for_prefill_res
 
 
 @pytest.mark.asyncio
+async def test_vllm_hybrid_connector_uses_handoff_profile():
+    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_hybrid_handoff_config()))
+    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
+    response = JSONResponse({"kv": "opaque"})
+
+    normalized = await adapter.normalize_response(response, _context(dispatch))
+    body = normalized.body.decode("utf-8")
+
+    assert '"object":"motor.prefill_result"' in body
+    assert '"handoff_mode":"handoff"' in body
+
+
+@pytest.mark.asyncio
+async def test_vllm_nixl_connector_uses_handoff_profile():
+    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_nixl_handoff_config()))
+    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
+    response = JSONResponse({"kv": "opaque"})
+
+    normalized = await adapter.normalize_response(response, _context(dispatch))
+    body = normalized.body.decode("utf-8")
+
+    assert '"object":"motor.prefill_result"' in body
+    assert '"handoff_mode":"handoff"' in body
+
+
+@pytest.mark.asyncio
+async def test_vllm_multi_connector_uses_transport_connector_handoff_profile():
+    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_multi_hybrid_handoff_config()))
+    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
+    response = JSONResponse({"kv": "opaque"})
+
+    normalized = await adapter.normalize_response(response, _context(dispatch))
+    body = normalized.body.decode("utf-8")
+
+    assert '"object":"motor.prefill_result"' in body
+    assert '"handoff_mode":"handoff"' in body
+
+
+@pytest.mark.asyncio
 async def test_vllm_unknown_connector_v1_is_not_inferred_as_handoff():
+    """Connector name is authoritative even when module_path resembles Mooncake."""
     adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_unknown_connector_v1_config()))
     _, dispatch = await adapter.adapt_request_body(_body("prefill"))
     response = JSONResponse({"choices": [{"text": "ok"}]})

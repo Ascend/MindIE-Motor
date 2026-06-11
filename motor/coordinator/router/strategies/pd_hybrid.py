@@ -31,17 +31,16 @@ class PDHybridRouter(BaseRouter):
         self._resolved_roles: tuple[PDRole, ...] | None = None
 
     async def _resolve_candidate_roles(self) -> tuple[PDRole, ...]:
-        """Pick a single scheduling role by checking instance pools first."""
+        """Pick a single scheduling role from the scheduler's local topology view."""
         if self._resolved_roles is not None:
             return self._resolved_roles
 
-        u_pool = await self._scheduler.get_available_instances(PDRole.ROLE_U)
-        if u_pool:
+        roles = await self._scheduler.get_available_instance_roles()
+        if PDRole.ROLE_U in roles:
             self._resolved_roles = (PDRole.ROLE_U,)
             return self._resolved_roles
 
-        p_pool = await self._scheduler.get_available_instances(PDRole.ROLE_P)
-        if p_pool:
+        if PDRole.ROLE_P in roles:
             error_message = "No union instances available, using prefill instances for single-node scheduling"
             self.logger.info(error_message)
             self.req_info.trace_obj.set_trace_error_message(error_message, is_meta=True)

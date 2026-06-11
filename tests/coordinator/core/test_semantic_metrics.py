@@ -16,6 +16,7 @@ Unit tests for semantic metrics modules:
 import math
 from unittest.mock import patch, MagicMock
 
+from motor.common.resources.dispatch import DispatchPlan
 from motor.coordinator.metrics.metric_types import (
     AggregationContext,
     AggregationScope,
@@ -170,6 +171,7 @@ class TestMetricRegistry:
 
 
 class TestAggregationStrategies:
+    # pylint: disable=attribute-defined-outside-init
     def setup_method(self):
         self.engine = SemanticAggregationEngine()
 
@@ -328,6 +330,7 @@ class TestAggregationStrategies:
 
 
 class TestPostProcessing:
+    # pylint: disable=attribute-defined-outside-init
     def setup_method(self):
         self.engine = SemanticAggregationEngine()
 
@@ -548,7 +551,7 @@ class TestMetricsCollectorIntegration:
         collector._inactive_instance_metrics_aggregate = {}
 
         # Call _aggregate_metrics_all_instance with empty collects (uses cache)
-        result = collector._aggregate_metrics_all_instance({}, {})
+        result = collector._aggregate_metrics_all_instance({}, {}, {})
         assert any(m.name == "vllm:request_success_total" for m in result)
         assert any(m.name == "vllm:request_success_created" for m in result)
 
@@ -579,15 +582,33 @@ def _apply_scope_filter(
 ) -> list[tuple[int, Metric]]:
     """Mirror MetricsCollector._aggregate_metrics SERVICE-scope filtering."""
     if ctx is not None and ctx.scope == AggregationScope.SERVICE and ctx.instance_roles is not None:
-        role_scope = MetricRegistry.get_effective_role_scope(name, ctx.deploy_mode)
-        if role_scope:
+        if name == "vllm:time_to_first_token_seconds" and ctx.instance_dispatch_capabilities is not None:
+            handoff = DispatchPlan.PREFILL_HANDOFF_DECODE.value
             entries = [
-                (ins_id, m) for ins_id, m in entries if ins_id == -1 or ctx.instance_roles.get(ins_id) == role_scope
+                (ins_id, metric)
+                for ins_id, metric in entries
+                if (
+                    ins_id == -1
+                    or ctx.instance_roles.get(ins_id) in {"decode", "union", "both", "hybrid"}
+                    or (
+                        ctx.instance_roles.get(ins_id) == "prefill"
+                        and handoff in ctx.instance_dispatch_capabilities.get(ins_id, set())
+                    )
+                )
             ]
+        else:
+            role_scope = MetricRegistry.get_effective_role_scope(name)
+            if role_scope:
+                entries = [
+                    (ins_id, metric)
+                    for ins_id, metric in entries
+                    if ins_id == -1 or ctx.instance_roles.get(ins_id) == role_scope
+                ]
     return entries
 
 
 class TestAggregationScope:
+    # pylint: disable=attribute-defined-outside-init
     def setup_method(self):
         self.engine = SemanticAggregationEngine()
 
@@ -598,11 +619,34 @@ class TestAggregationScope:
         ctx = AggregationContext(
             scope=AggregationScope.SERVICE,
             instance_roles={1: "prefill", 2: "decode"},
+            instance_dispatch_capabilities={},
         )
         entries = _apply_scope_filter("vllm:time_to_first_token_seconds", [(1, p_hist), (2, d_hist)], ctx)
         assert len(entries) == 1
         ttft = self.engine.aggregate("vllm:time_to_first_token_seconds", [m for _, m in entries])
         assert ttft.value[-1] == 8.0
+
+    def test_service_scope_includes_only_handoff_prefill_ttft(self):
+        p_concurrent = _make_ttft_histogram(10.0, 5.0)
+        p_handoff = _make_ttft_histogram(20.0, 15.0)
+        d_hist = _make_ttft_histogram(30.0, 9.0)
+        ctx = AggregationContext(
+            scope=AggregationScope.SERVICE,
+            instance_roles={1: "prefill", 2: "prefill", 3: "decode"},
+            instance_dispatch_capabilities={
+                1: {DispatchPlan.CONCURRENT_ENGINE_SYNC.value},
+                2: {DispatchPlan.PREFILL_HANDOFF_DECODE.value},
+                3: {DispatchPlan.PREFILL_HANDOFF_DECODE.value},
+            },
+        )
+
+        entries = _apply_scope_filter(
+            "vllm:time_to_first_token_seconds",
+            [(1, p_concurrent), (2, p_handoff), (3, d_hist)],
+            ctx,
+        )
+
+        assert [ins_id for ins_id, _ in entries] == [2, 3]
 
     def test_role_scope_keeps_prefill_ttft(self):
         p1 = _make_ttft_histogram(10.0, 5.0)
@@ -618,7 +662,6 @@ class TestAggregationScope:
         ctx = AggregationContext(
             scope=AggregationScope.INSTANCE,
             instance_roles={1: "prefill"},
-            deploy_mode="pd_separate",
         )
         entries = _apply_scope_filter("vllm:time_to_first_token_seconds", [(1, p_hist)], ctx)
         assert len(entries) == 1
@@ -649,23 +692,18 @@ class TestRoleScope:
         assert config.role_scope is None
 
     def test_ttft_effective_role_scope_default(self):
-        from motor.config.coordinator import DeployMode
-
-        # Default (PD_SEPARATE) — D instance only
-        scope = MetricRegistry.get_effective_role_scope("vllm:time_to_first_token_seconds", DeployMode.PD_SEPARATE)
+        scope = MetricRegistry.get_effective_role_scope("vllm:time_to_first_token_seconds")
         assert scope == "decode"
 
-    def test_ttft_effective_role_scope_cpcd(self):
-        from motor.config.coordinator import DeployMode
-
-        # CPCD mode — include both P and D
-        scope = MetricRegistry.get_effective_role_scope("vllm:time_to_first_token_seconds", DeployMode.CPCD_SEPARATE)
+    def test_ttft_effective_role_scope_handoff_connector(self):
+        scope = MetricRegistry.get_effective_role_scope(
+            "vllm:time_to_first_token_seconds",
+            {DispatchPlan.PREFILL_HANDOFF_DECODE.value},
+        )
         assert scope is None  # No filtering
 
     def test_effective_role_scope_unknown_metric(self):
-        from motor.config.coordinator import DeployMode
-
-        scope = MetricRegistry.get_effective_role_scope("some_unknown_metric", DeployMode.PD_SEPARATE)
+        scope = MetricRegistry.get_effective_role_scope("some_unknown_metric")
         assert scope is None
 
 
@@ -675,6 +713,7 @@ class TestRoleScope:
 
 
 class TestHistogramMean:
+    # pylint: disable=attribute-defined-outside-init
     def setup_method(self):
         self.engine = SemanticAggregationEngine()
 

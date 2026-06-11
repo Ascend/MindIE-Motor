@@ -13,10 +13,11 @@ from types import MappingProxyType
 from typing import Mapping
 
 from motor.common.logger import get_logger
+from motor.common.resources.dispatch import has_compatible_dispatch_pair
 from motor.common.resources.instance import Instance, PDRole, Workload, Endpoint
 from motor.common.resources.http_msg_spec import EventType
-from motor.config.coordinator import CoordinatorConfig, DeployMode
-from motor.coordinator.domain.scheduling import InstanceReadiness
+from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.domain.scheduling import InstanceReadiness, readiness_from_instances
 from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
 
 
@@ -71,51 +72,19 @@ class InstanceManager:
         self._endpoint_id_cache: dict[int, dict[int, Endpoint]] = {}
         logger.info("InstanceManager started.")
 
-    def get_required_instances_status(self, deploy_mode: DeployMode) -> InstanceReadiness:
-        """
-        Return detailed instance readiness for deploy mode (PD: both/only P/only D/none; SINGLE_NODE: met/none).
+    def get_required_instances_status(self) -> InstanceReadiness:
+        """Return readiness inferred from roles and compatible dispatch capabilities."""
+        instances = (
+            *self._encode_pool.values(),
+            *self._prefill_pool.values(),
+            *self._decode_pool.values(),
+            *self._hybrid_pool.values(),
+        )
+        return readiness_from_instances(instances)
 
-        Args:
-            deploy_mode: Deploy mode (required)
-
-        Returns:
-            InstanceReadiness enum; use .is_ready() for boolean.
-        """
-        if deploy_mode is None:
-            logger.error("deploy_mode is required for get_required_instances_status()")
-            return InstanceReadiness.UNKNOWN
-        has_e = len(self._encode_pool) > 0
-        has_p = len(self._prefill_pool) > 0
-        has_d = len(self._decode_pool) > 0
-        has_u = len(self._hybrid_pool) > 0
-        if deploy_mode in (
-            DeployMode.CDP_SEPARATE,
-            DeployMode.CPCD_SEPARATE,
-            DeployMode.PD_SEPARATE,
-            DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
-            DeployMode.PD_DUAL_DISPATCH,
-        ):
-            if has_e and has_p and has_d:
-                return InstanceReadiness.REQUIRED_MET_EPD
-            if has_p and has_d:
-                return InstanceReadiness.REQUIRED_MET
-            if has_p and has_e:
-                return InstanceReadiness.ENCODE_PREFILL
-            if has_p:
-                return InstanceReadiness.ONLY_PREFILL
-            if has_d:
-                return InstanceReadiness.ONLY_DECODE
-            if has_e:
-                return InstanceReadiness.ONLY_ENCODE
-            return InstanceReadiness.NONE
-        if deploy_mode == DeployMode.SINGLE_NODE:
-            return InstanceReadiness.REQUIRED_MET if has_u else InstanceReadiness.NONE
-        logger.error("Unknown deploy mode: %s, while checking required instances", deploy_mode)
-        return InstanceReadiness.UNKNOWN
-
-    def has_required_instances(self, deploy_mode: DeployMode) -> bool:
-        """True if required instances exist for deploy mode; delegates to get_required_instances_status."""
-        return self.get_required_instances_status(deploy_mode).is_ready()
+    def has_required_instances(self) -> bool:
+        """True when the current instance topology can serve requests."""
+        return self.get_required_instances_status().is_run()
 
     async def stop(self) -> None:
         """
@@ -326,7 +295,45 @@ class InstanceManager:
                 len(self._decode_pool),
                 len(self._hybrid_pool),
             )
+            self._log_dispatch_capabilities()
             return result
+
+    def _log_dispatch_capabilities(self) -> None:
+        """Log per-instance dispatch_capabilities and flag an incompatible P/D pool.
+
+        Readiness gates on a shared P/D dispatch capability; when P and D are both present
+        but advertise no common capability the service stays not-ready with a vague
+        instances_status=unknown. This makes the actual capabilities (empty vs mismatched) visible.
+        """
+
+        def _role(inst: Instance) -> str:
+            role = getattr(inst, "role", None)
+            return role.value if hasattr(role, "value") else str(role)
+
+        summary = ", ".join(
+            f"{inst.id}({_role(inst)})={list(getattr(inst, 'dispatch_capabilities', []) or [])}"
+            for pool in (self._prefill_pool, self._decode_pool, self._encode_pool, self._hybrid_pool)
+            for inst in pool.values()
+        )
+        logger.info("Instance dispatch_capabilities: %s", summary or "(none)")
+
+        if self._prefill_pool and self._decode_pool:
+            if not has_compatible_dispatch_pair(self._prefill_pool.values(), self._decode_pool.values()):
+                if self._hybrid_pool:
+                    logger.warning(
+                        "P/D instances are online but advertise no shared dispatch capability; "
+                        "requests will fall back to PDHybridRouter via union instances. "
+                        "Check the engine kv_connector is recognized or set dispatch_profile explicitly. "
+                        "capabilities: %s",
+                        summary or "(none)",
+                    )
+                else:
+                    logger.warning(
+                        "P/D instances are online but advertise no shared dispatch capability "
+                        "(readiness will report instances_status=unknown). Check the engine kv_connector "
+                        "is recognized or set dispatch_profile explicitly. capabilities: %s",
+                        summary or "(none)",
+                    )
 
     def _find_available_pool(self, instance_id: int) -> dict[int, Instance] | None:
         # This is a private method that should only be called within locked contexts

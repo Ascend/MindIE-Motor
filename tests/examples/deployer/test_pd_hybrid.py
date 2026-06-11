@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,11 +41,7 @@ def make_pd_hybrid_user_config():
             C.SINGLE_HYBRID_INSTANCE_POD_NUM: 1,
             C.HYBRID_POD_NPU_NUM: 4,
         },
-        "motor_coordinator_config": {
-            "scheduler_config": {
-                "deploy_mode": "single_node",
-            }
-        },
+        "motor_coordinator_config": {},
         C.MOTOR_ENGINE_UNION_CONFIG: {
             C.ENGINE_TYPE: C.ENGINE_TYPE_VLLM,
             "model_config": {
@@ -166,6 +163,10 @@ def test_deploy_services_dry_run_uses_multi_deployment_when_explicit(tmp_path, m
 
 
 def test_boot_script_routes_union_role_to_engine(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+
     startup_root = DEPLOYER_ROOT / "startup"
     boot_path = tmp_path / "boot.sh"
     common_path = tmp_path / "common.sh"
@@ -180,7 +181,7 @@ def test_boot_script_routes_union_role_to_engine(tmp_path):
     run_env = os.environ.copy()
     run_env["ROLE"] = "union"
     result = subprocess.run(
-        ["bash", str(boot_path)],
+        [bash, str(boot_path)],
         env=run_env,
         cwd=str(tmp_path),
         capture_output=True,
@@ -349,8 +350,8 @@ def test_handle_update_instance_num_scales_hybrid_instances(tmp_path, monkeypatc
 
     assert any(path.endswith("_u2.yaml") for path in k8s_utils.g_generate_yaml_list)
     assert commands == [
-        f"kubectl apply -f {tmp_path}/vllm_u1.yaml -n pd-hybrid",
-        f"kubectl apply -f {tmp_path}/vllm_u2.yaml -n pd-hybrid",
+        f"kubectl apply -f {tmp_path / 'vllm_u1.yaml'} -n pd-hybrid",
+        f"kubectl apply -f {tmp_path / 'vllm_u2.yaml'} -n pd-hybrid",
     ]
 
 
@@ -366,8 +367,8 @@ def test_elastic_distributed_engine_deploy_scales_out_hybrid_instances(tmp_path,
     k8s_utils.elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, str(tmp_path))
 
     assert commands == [
-        f"kubectl apply -f {tmp_path}/mindie_server_u1.yaml -n pd-hybrid",
-        f"kubectl apply -f {tmp_path}/mindie_server_u2.yaml -n pd-hybrid",
+        f"kubectl apply -f {tmp_path / 'mindie_server_u1.yaml'} -n pd-hybrid",
+        f"kubectl apply -f {tmp_path / 'mindie_server_u2.yaml'} -n pd-hybrid",
     ]
 
 
@@ -385,8 +386,8 @@ def test_elastic_distributed_engine_deploy_scales_in_hybrid_instances(tmp_path, 
     k8s_utils.elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, str(tmp_path))
 
     assert commands == [
-        f"kubectl delete -f {tmp_path}/mindie_server_u2.yaml -n pd-hybrid",
-        f"kubectl delete -f {tmp_path}/mindie_server_u1.yaml -n pd-hybrid",
+        f"kubectl delete -f {tmp_path / 'mindie_server_u2.yaml'} -n pd-hybrid",
+        f"kubectl delete -f {tmp_path / 'mindie_server_u1.yaml'} -n pd-hybrid",
     ]
     assert not yaml_to_remove.exists()
 

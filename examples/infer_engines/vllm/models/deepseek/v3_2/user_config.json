@@ -15,11 +15,7 @@
     "deploy_mode": "multi_deployment"
   },
   "motor_controller_config": {},
-  "motor_coordinator_config": {
-    "scheduler_config": {
-      "deploy_mode": "cpcd_separate"
-    }
-  },
+  "motor_coordinator_config": {},
   "motor_engine_prefill_config": {
     "engine_type": "vllm",
     "motor_nodemanger_config": {},

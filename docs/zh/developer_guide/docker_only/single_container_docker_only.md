@@ -18,7 +18,6 @@
 - **motor_controller_config.api_config.controller_api_port**：controller管理端口（默认1026）。
 - **motor_nodemanger_config.api_config.node_manager_port**：nodemanger管理端口（默认1026）。
 - **motor_deploy_config.deploy_mode**：取值**single_container**表示单容器场景，其他值表示多容器。
-- **motor_coordinator_config.scheduler_config.deploy_mode**：取值**pd_disaggregation_single_container**表示单容器调度方式，其他值表示多容器部署。
 
 样例如下：
 
@@ -40,9 +39,6 @@
       "coordinator_api_infer_port": 1025,
       "coordinator_api_mgmt_port": 1026,
       "coordinator_obs_port": 1027
-    },
-    "scheduler_config": {
-      "deploy_mode": "pd_disaggregation_single_container"
     }
   },
   "motor_engine_prefill_config": {

@@ -324,7 +324,8 @@ examples/
 |--------|------|------|
 | engine_type | string | 引擎类型，如 `vllm` |
 | engine_config | object | 引擎相关配置，含模型信息、并行策略、KV 传输与引擎原生参数 |
-| health_check_config | object | 可选；虚推（虚拟推理）健康探测配置，见下表及 [配置参考](./config_reference.md#61-health_check_config虚推健康探测) |
+| dispatch_profile | string | 可选；P/D 协同语义（`handoff` / `trigger`）。`kv_connector` 不在白名单时必填，见 [kv_connector 识别白名单与 dispatch_profile](#kv_connector-识别白名单与-dispatch_profile) |
+| health_check_config | object | 可选；虚推（虚拟推理）健康探测配置，见下表及 [配置参考](./config_reference.md#62-health_check_config虚推健康探测) |
 
 #### health_check_config 配置项（虚推健康探测）
 
@@ -392,6 +393,57 @@ prefill / decode 子字段：
 >
 >- `kv_connector_extra_config` 中 prefill/decode 的 dp_size、tp_size 一般无需手动填写，Motor 在拉起服务时会根据 `data_parallel_size` / `tensor_parallel_size` 自动刷新。
 >- 若需使用 KV 池化等能力，请改用 MultiConnector，并参考 [KV 池化部署指南](../KV_pool_deployment_guide.md) 修改 `user_config.json`，并与 `deploy.py` 配合使用。
+
+#### kv_connector 识别白名单与 dispatch_profile
+
+NodeManager 根据 `engine_config.kv_transfer_config.kv_connector`（大小写不敏感）自动推导 P/D 协同 capability。vLLM 当前内置识别：
+
+| `kv_connector` | 推导出的 capability | 协同行为 |
+|----------------|---------------------|----------|
+| `MooncakeConnectorV1` | `prefill_handoff_decode` | Prefill 完成后将结果交给 Decode |
+| `MooncakeHybridConnector` | `prefill_handoff_decode` | 同上 |
+| `NixlConnector` | `prefill_handoff_decode` | 同上 |
+| `MooncakeLayerwiseConnector` | `concurrent_engine_sync` | P/D 并发执行，由引擎同步 KV |
+| `MultiConnector` | 取 `kv_connector_extra_config.connectors[0]` 递归判定 | 取决于传输层 connector |
+
+- **`MultiConnector` 只看 `connectors[0]`（传输层）**。KV 池/存储类 connector（如 `AscendStoreConnector`）作为 `connectors[1]` 不参与 capability 判定，**无需**出现在白名单中。
+- 不在上表内、且 `connectors[0]` 也无法识别的 connector 会被判为 `unknown`，**不产生 capability**；Coordinator 不会强行配对，路由返回 503（fail-closed）。
+
+完整说明见 [PD 分离特性说明](../../features/PD_disaggregation.md#vllm-connector-识别白名单)。
+
+**不在白名单时**：在 `motor_engine_prefill_config` / `motor_engine_decode_config` **顶层**（与 `engine_type` 同级）显式声明 `dispatch_profile`；**不可**直接填写 `dispatch_capabilities`（会被忽略）。P/D 两端取值须一致：
+
+| `dispatch_profile` | 推导出的 capability |
+|--------------------|---------------------|
+| `handoff` | `prefill_handoff_decode` |
+| `trigger` | `concurrent_engine_sync` |
+
+**配置示例**：
+
+```json
+"motor_engine_prefill_config": {
+  "engine_type": "vllm",
+  "dispatch_profile": "handoff",
+  "engine_config": {
+    "kv_transfer_config": {
+      "kv_connector": "YourCustomConnector",
+      "kv_role": "kv_producer"
+    }
+  }
+},
+"motor_engine_decode_config": {
+  "engine_type": "vllm",
+  "dispatch_profile": "handoff",
+  "engine_config": {
+    "kv_transfer_config": {
+      "kv_connector": "YourCustomConnector",
+      "kv_role": "kv_consumer"
+    }
+  }
+}
+```
+
+字段说明见 [user_config 全量参数说明](./config_reference.md#61-dispatch_profilepd-协同语义)。
 
 ### kv_cache_pool_config（可选）
 

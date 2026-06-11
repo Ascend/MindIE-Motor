@@ -12,6 +12,11 @@
 import asyncio
 import uuid
 
+from motor.common.resources.dispatch import (
+    compatible_decode_instances,
+    compatible_prefill_instances,
+    has_compatible_dispatch_pair,
+)
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import WorkloadAction, Workload
 from motor.coordinator.domain import (
@@ -31,7 +36,7 @@ from motor.coordinator.domain.scheduling_pin import (
     select_endpoint_for_instance,
 )
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
-from motor.config.coordinator import CoordinatorConfig, DeployMode, SchedulerType
+from motor.config.coordinator import CoordinatorConfig, SchedulerType
 from motor.coordinator.domain import InstanceProvider
 from motor.coordinator.models.request import RequestInfo
 
@@ -149,6 +154,16 @@ class Scheduler:
             if result is None:
                 return None
             instance, endpoint = result
+        return await self._allocate_selected(instance, endpoint, role, req_info)
+
+    async def _allocate_selected(
+        self,
+        instance: Instance,
+        endpoint,
+        role: PDRole,
+        req_info: RequestInfo,
+    ):
+        """Allocate workload for an already selected instance endpoint."""
         workload = (
             Workload()
             if not hasattr(self._scheduling_policy, "update_workload")
@@ -168,11 +183,45 @@ class Scheduler:
         return (instance, endpoint, workload)
 
     async def select_pair_and_allocate(self, req_info: RequestInfo) -> ScheduledPair | None:
-        p_result = await self.select_and_allocate(PDRole.ROLE_P, req_info)
+        prefill_instances = list(self._instance_provider.get_available_instances(PDRole.ROLE_P).values())
+        decode_instances = list(self._instance_provider.get_available_instances(PDRole.ROLE_D).values())
+        compatible_prefill = compatible_prefill_instances(prefill_instances, decode_instances)
+        if not compatible_prefill:
+            return None
+
+        p_selected = self._select_from_instances(
+            compatible_prefill,
+            PDRole.ROLE_P,
+            req_info,
+        )
+        if p_selected is None:
+            return None
+        p_instance, p_endpoint = p_selected
+        compatible_decode = compatible_decode_instances(p_instance, decode_instances)
+        d_selected = self._select_from_instances(
+            compatible_decode,
+            PDRole.ROLE_D,
+            req_info,
+        )
+        if d_selected is None:
+            return None
+        d_instance, d_endpoint = d_selected
+
+        p_result = await self._allocate_selected(
+            p_instance,
+            p_endpoint,
+            PDRole.ROLE_P,
+            req_info,
+        )
         if p_result is None:
             return None
         p_instance, p_endpoint, p_workload = p_result
-        d_result = await self.select_and_allocate(PDRole.ROLE_D, req_info)
+        d_result = await self._allocate_selected(
+            d_instance,
+            d_endpoint,
+            PDRole.ROLE_D,
+            req_info,
+        )
         if d_result is None:
             for params in build_release_workload_params(
                 p_instance.id,
@@ -190,6 +239,22 @@ class Scheduler:
             prefill_workload=p_workload,
             decode_workload=d_workload,
         )
+
+    def _select_from_instances(
+        self,
+        instances: list[Instance],
+        role: PDRole,
+        req_info: RequestInfo,
+    ):
+        """Select from a filtered subset, including compatibility with test/custom policies."""
+        selector = getattr(self._scheduling_policy, "select_instance_and_endpoint_from_list", None)
+        if selector is not None:
+            return selector(instances, role, req_info)
+        for instance in instances:
+            endpoints = instance.get_all_endpoints()
+            if endpoints:
+                return (instance, endpoints[0])
+        return None
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         """
@@ -213,17 +278,36 @@ class Scheduler:
         """
         return dict(self._instance_provider.get_available_instances(role))
 
+    async def get_available_instance_roles(self) -> set[PDRole]:
+        """Return roles from the in-process instance provider without scheduler IPC."""
+        roles: set[PDRole] = set()
+        aliases = {"both": PDRole.ROLE_U, "hybrid": PDRole.ROLE_U}
+        for instance in (await self.get_available_instances(None)).values():
+            role = instance.role
+            if isinstance(role, PDRole):
+                roles.add(role)
+                continue
+            normalized = str(role).strip().lower()
+            try:
+                roles.add(PDRole(normalized))
+            except ValueError:
+                if normalized in aliases:
+                    roles.add(aliases[normalized])
+        return roles
+
+    async def has_compatible_pd_pair(self) -> bool:
+        """Return whether the in-process instance view has a compatible P/D pair."""
+        prefill = self._instance_provider.get_available_instances(PDRole.ROLE_P).values()
+        decode = self._instance_provider.get_available_instances(PDRole.ROLE_D).values()
+        return has_compatible_dispatch_pair(prefill, decode)
+
     async def has_required_instances(self) -> InstanceReadiness:
-        """
-        Check by deploy mode; returns InstanceReadiness (REQUIRED_MET, ONLY_PREFILL, ONLY_DECODE, NONE, UNKNOWN).
-        deploy_mode from init config; default DeployMode.PD_SEPARATE when no config.
-        """
-        deploy_mode = self._config.scheduler_config.deploy_mode if self._config else DeployMode.PD_SEPARATE
+        """Return readiness inferred from currently available instance roles."""
         instances = await self.get_available_instances(None)
         readiness = readiness_from_instances(instances.values())
         if readiness != InstanceReadiness.NONE:
             return readiness
-        return await asyncio.to_thread(self._instance_provider.get_required_instances_status, deploy_mode)
+        return await asyncio.to_thread(self._instance_provider.get_required_instances_status)
 
     async def get_all_instances(
         self,

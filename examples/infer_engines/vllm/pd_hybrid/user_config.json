@@ -11,11 +11,7 @@
     "weight_mount_path": "/mnt/weight/"
   },
   "motor_controller_config": {},
-  "motor_coordinator_config": {
-    "scheduler_config": {
-      "deploy_mode": "single_node"
-    }
-  },
+  "motor_coordinator_config": {},
   "motor_engine_union_config": {
     "engine_type": "vllm",
     "engine_config": {

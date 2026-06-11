@@ -135,6 +135,8 @@ pyMotor开启KV池化能力只需修改user_config.json配置文件后，通过d
 - `port`：（可选）用于配置 KV Pool 的服务端口；若未配置，`deploy.py` 会按默认值 `50088` 进行补充和适配。
 - `default_kv_lease_ttl`：（可选）控制 KV 对象的默认租约 TTL（毫秒）；配置值需大于`env.json`中vllm实例的环境变量`ASCEND_CONNECT_TIMEOUT`和`ASCEND_TRANSFER_TIMEOUT`。默认值11000。
 
+> 关于 Connector：本例 `kv_connector` 使用 `MultiConnector`，其中 `connectors[0]`（`MooncakeLayerwiseConnector`，传输层）决定 P/D 协同 capability，`connectors[1]`（`AscendStoreConnector`，KV 池后端）不参与判定、无需在识别白名单中。识别白名单与 `dispatch_profile` 逃生口见 [PD 分离特性说明](../features/PD_disaggregation.md#connector-驱动执行计划)。
+
 ### 部署服务
 
 在 `examples/deployer` 目录下通过 deploy.py 脚本部署服务。支持指定配置目录或单独指定配置文件：

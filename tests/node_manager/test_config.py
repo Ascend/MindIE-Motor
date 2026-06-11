@@ -21,6 +21,7 @@ from unittest.mock import patch, mock_open, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from motor.config.node_manager import NodeManagerConfig
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import ParallelConfig, PDRole
 
 
@@ -395,6 +396,7 @@ def test_to_dict():
     """Test conversion to dictionary"""
     config = create_config_object()
     config.basic_config.model_name = "test_model"
+    config.basic_config.dispatch_capabilities = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
 
     config_dict = config.to_dict()
 
@@ -404,6 +406,7 @@ def test_to_dict():
     assert "logging_config" in config_dict
 
     assert config_dict["basic_config"]["model_name"] == "test_model"
+    assert "dispatch_capabilities" not in config_dict["basic_config"]
 
     assert "config_path" not in config_dict
 
@@ -539,6 +542,188 @@ def test_from_json_loads_union_config_for_hybrid():
     assert config.basic_config.parallel_config.pp_size == 1
     assert config.basic_config.device_num == 4
     assert config.endpoint_config.endpoint_num == 2
+
+
+def test_vllm_handoff_connector_infers_handoff_capability():
+    capabilities = NodeManagerConfig._infer_dispatch_capabilities(
+        {
+            "engine_type": "vllm",
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "MooncakeConnectorV1",
+                }
+            },
+        }
+    )
+
+    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+
+
+def test_vllm_hybrid_connector_infers_handoff_capability():
+    capabilities = NodeManagerConfig._infer_dispatch_capabilities(
+        {
+            "engine_type": "vllm",
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "MooncakeHybridConnector",
+                }
+            },
+        }
+    )
+
+    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+
+
+def test_vllm_nixl_connector_infers_handoff_capability():
+    capabilities = NodeManagerConfig._infer_dispatch_capabilities(
+        {
+            "engine_type": "vllm",
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "NixlConnector",
+                }
+            },
+        }
+    )
+
+    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+
+
+def test_vllm_multi_connector_infers_transport_connector_capability():
+    def _multi_connector(transport_connector: str) -> dict:
+        return {
+            "engine_type": "vllm",
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "MultiConnector",
+                    "kv_connector_extra_config": {
+                        "connectors": [
+                            {"kv_connector": transport_connector},
+                            {"kv_connector": "AscendStoreConnector"},
+                        ]
+                    },
+                }
+            },
+        }
+
+    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeHybridConnector")) == [
+        DispatchPlan.PREFILL_HANDOFF_DECODE.value
+    ]
+    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("NixlConnector")) == [
+        DispatchPlan.PREFILL_HANDOFF_DECODE.value
+    ]
+    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeLayerwiseConnector")) == [
+        DispatchPlan.CONCURRENT_ENGINE_SYNC.value
+    ]
+
+
+def test_vllm_multi_connector_ignores_non_transport_connector_profiles():
+    engine_config = {
+        "engine_type": "vllm",
+        "engine_config": {
+            "kv_transfer_config": {
+                "kv_connector": "MultiConnector",
+                "kv_connector_extra_config": {
+                    "connectors": [
+                        {"kv_connector": "MooncakeLayerwiseConnector"},
+                        {"kv_connector": "AscendStoreConnector"},
+                        {"kv_connector": "MooncakeHybridConnector"},
+                    ]
+                },
+            }
+        },
+    }
+
+    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+
+
+def test_vllm_multi_connector_requires_transport_and_store_connectors():
+    engine_config = {
+        "engine_type": "vllm",
+        "engine_config": {
+            "kv_transfer_config": {
+                "kv_connector": "MultiConnector",
+                "kv_connector_extra_config": {"connectors": [{"kv_connector": "MooncakeHybridConnector"}]},
+            }
+        },
+    }
+
+    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == []
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_user_dispatch_capabilities_cannot_override_connector_semantics():
+    user_config = {
+        "motor_deploy_config": {"hardware_type": "800I-A3"},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "dispatch_capabilities": [DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+            "motor_nodemanger_config": {
+                "basic_config": {
+                    "dispatch_capabilities": [DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+                }
+            },
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "MooncakeHybridConnector",
+                }
+            },
+        },
+    }
+
+    NodeManagerConfig._discard_user_dispatch_capabilities(user_config)
+    config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
+
+    assert config_data["basic_config"]["dispatch_capabilities"] == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    assert "dispatch_capabilities" not in user_config["motor_engine_prefill_config"]
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_user_dispatch_capabilities_cannot_enable_unknown_connector():
+    user_config = {
+        "motor_deploy_config": {"hardware_type": "800I-A3"},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "dispatch_capabilities": [DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "UnknownConnector",
+                    "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
+                }
+            },
+        },
+    }
+
+    NodeManagerConfig._discard_user_dispatch_capabilities(user_config)
+    config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
+
+    assert config_data["basic_config"]["dispatch_capabilities"] == []
+
+
+def test_vllm_layerwise_connector_infers_concurrent_capability():
+    capabilities = NodeManagerConfig._infer_dispatch_capabilities(
+        {
+            "engine_type": "vllm",
+            "engine_config": {
+                "kv_transfer_config": {
+                    "kv_connector": "MooncakeLayerwiseConnector",
+                }
+            },
+        }
+    )
+
+    assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+
+
+def test_sglang_infers_concurrent_capability():
+    capabilities = NodeManagerConfig._infer_dispatch_capabilities(
+        {
+            "engine_type": "sglang",
+            "engine_config": {},
+        }
+    )
+
+    assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
 
 
 # ===== Cross-Node PCP Tests =====

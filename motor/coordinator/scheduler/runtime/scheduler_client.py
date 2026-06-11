@@ -19,6 +19,11 @@ from typing import Any, Awaitable, Callable
 
 import zmq
 
+from motor.common.resources.dispatch import (
+    compatible_decode_instances,
+    compatible_prefill_instances,
+    has_compatible_dispatch_pair,
+)
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain import (
@@ -26,6 +31,7 @@ from motor.coordinator.domain import (
     ScheduledPair,
     ScheduledResource,
     UpdateWorkloadParams,
+    readiness_from_instances,
 )
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     SchedulerRequest,
@@ -42,7 +48,6 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 )
 from motor.common.logger import get_logger
 from motor.config.coordinator import (
-    DeployMode,
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
 )
@@ -502,7 +507,6 @@ class SchedulerClientConfig:
     # match among them. 0 disables it (uses the unified-score / legacy path instead).
     kv_affinity_load_gate_topn: int = 0
     tls_config: Any | None = None
-    deploy_mode: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
 
 
@@ -532,7 +536,6 @@ class AsyncSchedulerClient:
         self._kv_affinity_overlap_credit = max(0.0, config.kv_affinity_overlap_credit)
         self._kv_affinity_prefill_load_scale = max(0.0, config.kv_affinity_prefill_load_scale)
         self._kv_affinity_load_gate_topn = max(0, int(config.kv_affinity_load_gate_topn))
-        self._deploy_mode = config.deploy_mode
 
         self._serializer = ZMQMessageSerializer()
         self._transport = _SchedulerTransport(config.scheduler_address, config.timeout, self._serializer)
@@ -644,6 +647,40 @@ class AsyncSchedulerClient:
             )
         return candidates, candidate_policy
 
+    async def _refresh_cache_from_workload_reader(self) -> None:
+        """Patch live workload into the local cache and pull a fresh instance list on
+        heartbeat-stale or instance-version change.
+
+        Shared by single-role (select_and_allocate) and P/D pair (select_pair_and_allocate)
+        selection so both make load-aware decisions on fresh workload and instance membership.
+        """
+        if not self._workload_reader:
+            return
+        current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(self._cache)
+        if heartbeat_stale:
+            await self._pull_instances_and_notify(current_version, "stale heartbeat")
+        elif current_version is not None:
+            if self._last_instance_version is not None and current_version != self._last_instance_version:
+                await self._pull_instances_and_notify(current_version, "version change")
+            else:
+                self._last_instance_version = current_version
+
+    async def _pull_instances_and_notify(self, current_version, reason: str) -> None:
+        """Pull a fresh instance list; on success update the version and fire the refresh callback."""
+        try:
+            await self.get_available_instances(None)
+        except Exception as e:
+            logger.warning("Failed to refresh instances on %s: %s", reason, e)
+            return
+        self._last_instance_version = current_version
+        if self._on_instance_refreshed:
+            active_endpoints = _collect_active_endpoints_from_cache(self._cache)
+            if active_endpoints:
+                try:
+                    await self._on_instance_refreshed(active_endpoints)
+                except Exception as e:
+                    logger.warning("on_instance_refreshed callback failed: %s", e)
+
     async def select_and_allocate(
         self,
         role: "PDRole",
@@ -654,39 +691,7 @@ class AsyncSchedulerClient:
         """Select instance locally + ALLOCATE_ONLY RPC. Allocation workload is decided here (RR=zero, LB=demand)."""
         role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
 
-        if self._workload_reader:
-            current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(self._cache)
-            if heartbeat_stale:
-                try:
-                    await self.get_available_instances(None)
-                except Exception as e:
-                    logger.warning("Failed to refresh instances on stale heartbeat: %s", e)
-                else:
-                    self._last_instance_version = current_version
-                    if self._on_instance_refreshed:
-                        active_endpoints = _collect_active_endpoints_from_cache(self._cache)
-                        if active_endpoints:
-                            try:
-                                await self._on_instance_refreshed(active_endpoints)
-                            except Exception as e:
-                                logger.warning("on_instance_refreshed callback failed: %s", e)
-            elif current_version is not None:
-                if self._last_instance_version is not None and current_version != self._last_instance_version:
-                    try:
-                        await self.get_available_instances(None)
-                    except Exception as e:
-                        logger.warning("Failed to refresh instances on version change: %s", e)
-                    else:
-                        self._last_instance_version = current_version
-                        if self._on_instance_refreshed:
-                            active_endpoints = _collect_active_endpoints_from_cache(self._cache)
-                            if active_endpoints:
-                                try:
-                                    await self._on_instance_refreshed(active_endpoints)
-                                except Exception as e:
-                                    logger.warning("on_instance_refreshed callback failed: %s", e)
-                else:
-                    self._last_instance_version = current_version
+        await self._refresh_cache_from_workload_reader()
 
         if target_instance_id is not None:
             instances = await self.get_available_instances(role)
@@ -786,14 +791,32 @@ class AsyncSchedulerClient:
         return None
 
     async def select_pair_and_allocate(self, req_info: RequestInfo) -> ScheduledPair | None:
-        p_selected = await self.select_instance_and_endpoint(req_info, PDRole.ROLE_P)
-        if p_selected is None:
+        await self._refresh_cache_from_workload_reader()
+        prefill_instances = await self._cached_or_fetch_instances(PDRole.ROLE_P)
+        decode_instances = await self._cached_or_fetch_instances(PDRole.ROLE_D)
+        compatible_prefill = compatible_prefill_instances(prefill_instances, decode_instances)
+        if not compatible_prefill:
             return None
-        d_selected = await self.select_instance_and_endpoint(req_info, PDRole.ROLE_D)
-        if d_selected is None:
+
+        p_candidates, _ = self._select_endpoint_candidates_from_list_with_policy(
+            compatible_prefill,
+            PDRole.ROLE_P,
+            req_info,
+            top_k=1,
+        )
+        if not p_candidates:
             return None
-        p_instance, p_endpoint = p_selected
-        d_instance, d_endpoint = d_selected
+        p_instance, p_endpoint, _ = p_candidates[0]
+        compatible_decode = compatible_decode_instances(p_instance, decode_instances)
+        d_candidates, _ = self._select_endpoint_candidates_from_list_with_policy(
+            compatible_decode,
+            PDRole.ROLE_D,
+            req_info,
+            top_k=1,
+        )
+        if not d_candidates:
+            return None
+        d_instance, d_endpoint, _ = d_candidates[0]
         p_workload = self._allocation_workload(PDRole.ROLE_P, req_info)
         d_workload = self._allocation_workload(PDRole.ROLE_D, req_info)
 
@@ -839,6 +862,13 @@ class AsyncSchedulerClient:
             prefill_workload=p_workload,
             decode_workload=d_workload,
         )
+
+    async def _cached_or_fetch_instances(self, role: PDRole) -> list[Instance]:
+        cached = self._cache.get_instances(role)
+        if cached:
+            return cached
+        instances = await self.get_available_instances(role)
+        return sorted(instances.values(), key=lambda instance: instance.id)
 
     def _allocation_workload(self, role: PDRole, req_info: RequestInfo) -> Workload:
         if (self._scheduler_type or "round_robin") == "round_robin":
@@ -1024,34 +1054,34 @@ class AsyncSchedulerClient:
                     else:
                         self._last_instance_version = None
 
-            if instances:
-                # Store sorted by instance.id so round-robin order is stable without sorting on each select
-                if role is not None:
-                    await self._cache.replace_all(role, sorted(instances.values(), key=lambda i: i.id))
-                else:
-                    role_to_list: dict[PDRole, list] = {
-                        PDRole.ROLE_E: [],
-                        PDRole.ROLE_P: [],
-                        PDRole.ROLE_D: [],
-                        PDRole.ROLE_U: [],
-                    }
-                    _role_map = {
-                        "encode": PDRole.ROLE_E,
-                        "prefill": PDRole.ROLE_P,
-                        "decode": PDRole.ROLE_D,
-                        "union": PDRole.ROLE_U,
-                        "both": PDRole.ROLE_U,
-                        "hybrid": PDRole.ROLE_U,
-                    }
-                    for inst in instances.values():
-                        r = getattr(inst, "role", None)
-                        if r is None:
-                            continue
-                        role_enum = _role_map.get(r) if isinstance(r, str) else (r if r in role_to_list else None)
-                        if role_enum is not None:
-                            role_to_list[role_enum].append(inst)
-                    for r, lst in role_to_list.items():
-                        await self._cache.replace_all(r, sorted(lst, key=lambda i: i.id))
+            # Store sorted by instance.id so round-robin order is stable without sorting on each select.
+            # Empty successful responses must also clear stale cache entries.
+            if role is not None:
+                await self._cache.replace_all(role, sorted(instances.values(), key=lambda i: i.id))
+            else:
+                role_to_list: dict[PDRole, list] = {
+                    PDRole.ROLE_E: [],
+                    PDRole.ROLE_P: [],
+                    PDRole.ROLE_D: [],
+                    PDRole.ROLE_U: [],
+                }
+                _role_map = {
+                    "encode": PDRole.ROLE_E,
+                    "prefill": PDRole.ROLE_P,
+                    "decode": PDRole.ROLE_D,
+                    "union": PDRole.ROLE_U,
+                    "both": PDRole.ROLE_U,
+                    "hybrid": PDRole.ROLE_U,
+                }
+                for inst in instances.values():
+                    r = getattr(inst, "role", None)
+                    if r is None:
+                        continue
+                    role_enum = _role_map.get(r) if isinstance(r, str) else (r if r in role_to_list else None)
+                    if role_enum is not None:
+                        role_to_list[role_enum].append(inst)
+                for r, lst in role_to_list.items():
+                    await self._cache.replace_all(r, sorted(lst, key=lambda i: i.id))
 
             return instances
 
@@ -1059,39 +1089,47 @@ class AsyncSchedulerClient:
             logger.error(f"Failed to get available instances: {response.error}")
         return {}
 
+    def _roles_from_cache(self) -> set[PDRole]:
+        return {
+            role
+            for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U)
+            if self._cache.get_instances(role)
+        }
+
+    async def get_available_instance_roles(self) -> set[PDRole]:
+        """Return topology roles from the client cache; warm-up fetch once if the cache is cold.
+
+        Router selection (dispatch.handle_request) reads roles before any select_*; without this
+        warm-up a cold cache (process start / right after a refresh) would 503 instead of pulling.
+        """
+        roles = self._roles_from_cache()
+        if not roles:
+            try:
+                await self.get_available_instances(None)
+            except Exception as e:
+                logger.debug("get_available_instance_roles: warm-up fetch failed: %s", e)
+            roles = self._roles_from_cache()
+        return roles
+
+    async def has_compatible_pd_pair(self) -> bool:
+        """Return whether cached P/D pools contain a compatible pair.
+
+        Assumes the cache was warmed by a preceding get_available_instance_roles in the same
+        routing decision; falls back to a warm-up fetch if both pools look empty.
+        """
+        prefill = self._cache.get_instances(PDRole.ROLE_P)
+        decode = self._cache.get_instances(PDRole.ROLE_D)
+        if not prefill and not decode:
+            try:
+                await self.get_available_instances(None)
+            except Exception as e:
+                logger.debug("has_compatible_pd_pair: warm-up fetch failed: %s", e)
+            prefill = self._cache.get_instances(PDRole.ROLE_P)
+            decode = self._cache.get_instances(PDRole.ROLE_D)
+        return has_compatible_dispatch_pair(prefill, decode)
+
     async def has_required_instances(self) -> InstanceReadiness:
         """Return InstanceReadiness from cache; warm-up fetch if needed."""
-        mode = self._deploy_mode
-        if mode is None:
-            mode = DeployMode.PD_SEPARATE
-        elif isinstance(mode, str):
-            mode = DeployMode.from_string(mode) or DeployMode.PD_SEPARATE
-
-        def _status(e_list: list, p_list: list, d_list: list, u_list: list) -> InstanceReadiness:
-            if mode in (
-                DeployMode.CDP_SEPARATE,
-                DeployMode.CPCD_SEPARATE,
-                DeployMode.PD_SEPARATE,
-                DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
-                DeployMode.PD_DUAL_DISPATCH,
-            ):
-                has_e, has_p, has_d = len(e_list) > 0, len(p_list) > 0, len(d_list) > 0
-                if has_e and has_p and has_d:
-                    return InstanceReadiness.REQUIRED_MET_EPD
-                if has_p and has_d:
-                    return InstanceReadiness.REQUIRED_MET
-                if has_p and has_e:
-                    return InstanceReadiness.ENCODE_PREFILL
-                if has_p:
-                    return InstanceReadiness.ONLY_PREFILL
-                if has_d:
-                    return InstanceReadiness.ONLY_DECODE
-                if has_e:
-                    return InstanceReadiness.ONLY_ENCODE
-                return InstanceReadiness.NONE
-            if mode == DeployMode.SINGLE_NODE:
-                return InstanceReadiness.REQUIRED_MET if len(u_list) > 0 else InstanceReadiness.NONE
-            return InstanceReadiness.UNKNOWN
 
         def _cached_lists() -> tuple[list, list, list, list]:
             return (
@@ -1101,16 +1139,18 @@ class AsyncSchedulerClient:
                 self._cache.get_instances(PDRole.ROLE_U),
             )
 
+        def _status(cached: tuple[list, list, list, list]) -> InstanceReadiness:
+            return readiness_from_instances(instance for role_instances in cached for instance in role_instances)
+
         e_list, p_list, d_list, u_list = _cached_lists()
-        status = _status(e_list, p_list, d_list, u_list)
-        if status.is_ready():
+        status = _status((e_list, p_list, d_list, u_list))
+        if status != InstanceReadiness.NONE:
             return status
         try:
             await self.get_available_instances(None)
         except Exception as e:
             logger.debug("has_required_instances: warm-up get_available_instances failed: %s", e)
-        e_list, p_list, d_list, u_list = _cached_lists()
-        return _status(e_list, p_list, d_list, u_list)
+        return _status(_cached_lists())
 
     async def get_all_instances(self) -> tuple[dict[int, Instance], dict[int, Instance]]:
         """Interface compat; returns empty (Mgmt process uses local InstanceManager)."""

@@ -12,15 +12,13 @@
 | `POST` | `/v1/chat/completions` | 同上 |
 | `GET` | `/v1/models` | 基于 `CoordinatorConfig.get_aigw_models()` 与调度器中的 P/D 可用实例数组装列表；未配置 AIGW 模型时返回 503 |
 
-`handle_request` 根据 `CoordinatorConfig.scheduler_config.deploy_mode` 与调度器返回的实例就绪状态选择 Router（详见 [PD 分离](../../features/PD_disaggregation.md) 特性页中的 `_ROUTER_MAP` 与回退逻辑）。
+`handle_request` 根据当前可用实例角色自动选择 Router：P+D 使用统一分离 Router，union 或仅 P 场景使用混部 Router。P/D 协同行为由实例上报的 Connector capability 决定，详见 [PD 分离](../../features/PD_disaggregation.md)。
 
 ## Metaserver（独立端口上的 `POST /v1/metaserver`）
 
 在 `motor/coordinator/process/inference_manager.py` 中，当配置存在 `worker_metaserver_port` 时，会为该 Worker 额外挂载一个仅包含 **`POST /v1/metaserver`** 的 FastAPI 应用；该端点调用 `InferenceServer.handle_metaserver_request`，最终进入 `motor.coordinator.router.dispatch.handle_metaserver_request`。
 
-`handle_metaserver_request` 的文档字符串说明：用于 **Decode 侧将 prefill 相关请求转发到 Prefill 实例**。源码中仅当 `deploy_mode` 为 `CDP_SEPARATE`、`PD_SEPARATE` 或 `PD_DISAGGREGATION_SINGLE_CONTAINER` 时继续处理，否则抛出 HTTP 500。处理逻辑委托 `SeparateCDPRouter.handle_metaserver_request`。
-
-Decode 侧构造 Worker metaserver URL 的逻辑见 `motor/coordinator/router/strategies/cdp_separate.py` 中 `_worker_metaserver_url`（形如 `http://{host}:{worker_port}/v1/metaserver`，且依赖 `inference_workers_config` 中 `worker_metaserver_base_port` 等配置，与类内注释一致）。
+P/D 协同已统一通过请求中的 `_motor_dispatch` 上下文以及引擎 Connector adapter 处理，不再根据 Coordinator 的部署模式字段选择 metaserver 行为。
 
 ## 与「面向服务」的关系
 

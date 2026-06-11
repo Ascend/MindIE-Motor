@@ -167,10 +167,8 @@ class SingleContainerNodemanagerConfig:
     @classmethod
     def from_json(cls, user_config_data: dict[str, Any]) -> "SingleContainerNodemanagerConfig":
         config = cls()
-        deploy_mode = (
-            user_config_data.get("motor_coordinator_config", {}).get("scheduler_config", {}).get("deploy_mode", "")
-        )
-        if not deploy_mode == "pd_disaggregation_single_container" or not Env.role or Env.index is None:
+        deploy_mode = user_config_data.get("motor_deploy_config", {}).get("deploy_mode", "")
+        if deploy_mode != "single_container" or not Env.role or Env.index is None:
             return config
 
         config.single_container_flag = True
@@ -310,6 +308,7 @@ class NodeManagerConfig:
             config.single_container_config = SingleContainerNodemanagerConfig.from_json(raw)
 
             if isinstance(raw, dict):
+                cls._discard_user_dispatch_capabilities(raw)
                 config_data = cls._load_node_manager_config_data(raw)
             else:
                 config_data = raw
@@ -327,6 +326,39 @@ class NodeManagerConfig:
 
         logger.info("Configuration loading completed")
         return config
+
+    @classmethod
+    def _discard_user_dispatch_capabilities(cls, user_cfg: dict[str, Any]) -> None:
+        """Remove user overrides; capabilities are derived from engine semantics."""
+        removed = False
+
+        root_basic = user_cfg.get(BASIC_CONFIG_KEY)
+        if isinstance(root_basic, dict):
+            removed = root_basic.pop(DISPATCH_CAPABILITIES_KEY, None) is not None or removed
+
+        engine_keys = (
+            MOTOR_ENGINE_ENCODE_CONFIG_KEY,
+            MOTOR_ENGINE_PREFILL_CONFIG_KEY,
+            MOTOR_ENGINE_DECODE_CONFIG_KEY,
+            MOTOR_ENGINE_UNION_CONFIG_KEY,
+        )
+        for engine_key in engine_keys:
+            engine_config = user_cfg.get(engine_key)
+            if not isinstance(engine_config, dict):
+                continue
+            removed = engine_config.pop(DISPATCH_CAPABILITIES_KEY, None) is not None or removed
+            node_manager_config = engine_config.get(MOTOR_NODE_MANAGER_CONFIG_KEY)
+            if not isinstance(node_manager_config, dict):
+                continue
+            basic_config = node_manager_config.get(BASIC_CONFIG_KEY)
+            if isinstance(basic_config, dict):
+                removed = basic_config.pop(DISPATCH_CAPABILITIES_KEY, None) is not None or removed
+
+        if removed:
+            logger.warning(
+                "User-configured dispatch_capabilities is no longer supported and was ignored. "
+                "Configure kv_transfer_config or dispatch_profile instead."
+            )
 
     @classmethod
     def _load_node_manager_config_data(cls, user_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -356,12 +388,7 @@ class NodeManagerConfig:
         resolver = ConfigResolver(engine_config)
         config_data[BASIC_CONFIG_KEY][MODEL_NAME_KEY] = resolver.get_model_name("")
         config_data[BASIC_CONFIG_KEY][ENGINE_TYPE_KEY] = engine_config.get(ENGINE_TYPE_KEY)
-        if DISPATCH_CAPABILITIES_KEY in engine_config:
-            config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = engine_config[DISPATCH_CAPABILITIES_KEY]
-        else:
-            dispatch_capabilities = cls._infer_dispatch_capabilities(engine_config)
-            if dispatch_capabilities:
-                config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = dispatch_capabilities
+        config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = cls._infer_dispatch_capabilities(engine_config)
         config_data[BASIC_CONFIG_KEY][HARDWARE_TYPE_KEY] = user_cfg["motor_deploy_config"][HARDWARE_TYPE_KEY]
 
         # Read nnodes from engine_config for cross-node PCP support
@@ -421,7 +448,7 @@ class NodeManagerConfig:
             if not capabilities and profile == DispatchProfile.UNKNOWN:
                 logger.warning(
                     "Unable to infer vLLM dispatch capability from kv_transfer_config. "
-                    "Set dispatch_profile or dispatch_capabilities explicitly."
+                    "Configure a supported connector or set dispatch_profile explicitly."
                 )
             return capabilities
         return []
@@ -634,6 +661,7 @@ class NodeManagerConfig:
         # Remove internal fields that shouldn't be in the output
         config_dict.pop("config_path", None)
         config_dict.pop("last_modified", None)
+        config_dict["basic_config"].pop(DISPATCH_CAPABILITIES_KEY, None)
 
         return config_dict
 

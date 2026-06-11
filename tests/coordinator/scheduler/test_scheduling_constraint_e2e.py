@@ -11,7 +11,7 @@ import pytest
 
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.common.resources.instance import Instance, InsStatus, ParallelConfig, PDRole
-from motor.config.coordinator import DeployMode, SchedulerType
+from motor.config.coordinator import SchedulerType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.scheduling_constraint import SchedulingConstraint
 from motor.coordinator.models.request import RequestInfo
@@ -34,9 +34,8 @@ def _make_instance(instance_id: int, role: PDRole) -> Instance:
     return inst
 
 
-def _make_config(deploy_mode: DeployMode) -> MagicMock:
+def _make_config() -> MagicMock:
     cfg = MagicMock()
-    cfg.scheduler_config.deploy_mode = deploy_mode
     cfg.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
     cfg.scheduler_config.endpoint_instance_score_weight = 1.0
     cfg.scheduler_config.kv_affinity_load_weight = 0.5
@@ -72,7 +71,7 @@ class TestConstraintToTargetInstanceId:
         """PDHybridRouter (SINGLE_NODE): prepare_resource passes target_instance_id per role."""
         constraint = SchedulingConstraint.for_precision_probe(p_instance_id=1, d_instance_id=5)
         req_info = _make_req_info(constraint)
-        config = _make_config(DeployMode.SINGLE_NODE)
+        config = _make_config()
 
         inst_p = _make_instance(1, PDRole.ROLE_P)
         ep_p = list(inst_p.endpoints["127.0.0.1"].values())[0]
@@ -108,7 +107,7 @@ class TestConstraintToTargetInstanceId:
         """UnifiedPDRouter._prepare_attempt_resource extracts target_instance_id from constraint."""
         constraint = SchedulingConstraint.for_precision_probe(p_instance_id=10, d_instance_id=20)
         req_info = _make_req_info(constraint)
-        config = _make_config(DeployMode.PD_SEPARATE)
+        config = _make_config()
 
         inst_p = _make_instance(10, PDRole.ROLE_P)
         inst_d = _make_instance(20, PDRole.ROLE_D)
@@ -151,7 +150,7 @@ class TestConstraintToTargetInstanceId:
     async def test_no_constraint_passes_none_target(self) -> None:
         """When scheduling_constraint is None, target_instance_id must be None."""
         req_info = _make_req_info(constraint=None)
-        config = _make_config(DeployMode.PD_SEPARATE)
+        config = _make_config()
 
         inst = _make_instance(1, PDRole.ROLE_P)
         ep = list(inst.endpoints["127.0.0.1"].values())[0]

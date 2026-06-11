@@ -37,9 +37,7 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
         logger.info("RoundRobinPolicy started.")
 
     @staticmethod
-    def select_instance_from_list(
-        instances: list[Instance], counter: int
-    ) -> tuple[Instance | None, int]:
+    def select_instance_from_list(instances: list[Instance], counter: int) -> tuple[Instance | None, int]:
         """
         Round-robin select one instance from a list and return the next counter value.
 
@@ -97,9 +95,7 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
             self._instance_rr_counters[role] = 0
         with self._instance_lock:
             counter = self._instance_rr_counters[role]
-            selected_instance, next_counter = RoundRobinPolicy.select_instance_from_list(
-                active_instances, counter
-            )
+            selected_instance, next_counter = RoundRobinPolicy.select_instance_from_list(active_instances, counter)
             self._instance_rr_counters[role] = next_counter % len(active_instances)
         return selected_instance
 
@@ -123,6 +119,24 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
             return None
 
         with self._endpoint_lock:
-            return RoundRobinPolicy.select_endpoint_from_instance(
-                instance, self._endpoint_rr_counters
-            )
+            return RoundRobinPolicy.select_endpoint_from_instance(instance, self._endpoint_rr_counters)
+
+    def select_instance_and_endpoint_from_list(
+        self,
+        instances: list[Instance],
+        role: PDRole | None = None,
+        req_info=None,
+    ):
+        """Round-robin within a capability-compatible subset."""
+        del req_info
+        if not instances:
+            return None
+        with self._instance_lock:
+            counter = self._instance_rr_counters.get(role, 0)
+            instance, next_counter = RoundRobinPolicy.select_instance_from_list(instances, counter)
+            self._instance_rr_counters[role] = next_counter % len(instances)
+        if instance is None:
+            return None
+        with self._endpoint_lock:
+            endpoint = RoundRobinPolicy.select_endpoint_from_instance(instance, self._endpoint_rr_counters)
+        return (instance, endpoint) if endpoint is not None else None

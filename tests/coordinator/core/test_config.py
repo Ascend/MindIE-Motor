@@ -112,7 +112,7 @@ def test_default_config_initialization():
     assert config.prometheus_metrics_config.reuse_time == 3
     assert config.exception_config.max_retry == 5
     assert config.exception_config.first_token_timeout == 600
-    assert config.scheduler_config.deploy_mode.value == "pd_separate"
+    assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.scheduler_config.scheduler_type.value == "load_balance"
     assert config.timeout_config.request_timeout == 30
     assert config.api_key_config.enable_api_key is False
@@ -148,7 +148,7 @@ def test_from_json_success(_temp_json_file):
     assert config.logging_config.log_level == "DEBUG"
     assert config.logging_config.log_max_line_length == 4096
     assert config.exception_config.max_retry == 10
-    assert config.scheduler_config.deploy_mode.value == "single_node"
+    assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.api_key_config.enable_api_key is True
     assert config.rate_limit_config.enable_rate_limit is True
     assert config.config_path == _temp_json_file
@@ -183,7 +183,7 @@ def test_from_json_maps_hybrid_instances(_temp_json_file):
 
     config = CoordinatorConfig.from_json(_temp_json_file)
 
-    assert config.scheduler_config.deploy_mode.value == "single_node"
+    assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.deploy_config.hybrid_instances_num == 3
     assert config.deploy_config.single_hybrid_instance_pod_num == 1
     assert config.deploy_config.hybrid_pod_npu_num == 4
@@ -382,7 +382,7 @@ def test_to_dict():
     assert 'last_modified' not in config_dict
 
     # Check enum serialization
-    assert config_dict['scheduler_config']['deploy_mode'] == 'pd_separate'
+    assert 'deploy_mode' not in config_dict['scheduler_config']
     assert config_dict['scheduler_config']['scheduler_type'] == 'load_balance'
 
 
@@ -401,7 +401,7 @@ def test_save_to_json(_temp_json_file):
 
     assert saved_data['logging_config']['log_level'] == 'DEBUG'
     assert saved_data['exception_config']['max_retry'] == 10
-    assert saved_data['scheduler_config']['deploy_mode'] == 'pd_separate'
+    assert 'deploy_mode' not in saved_data['scheduler_config']
 
 
 def test_save_to_json_invalid_path():
@@ -423,7 +423,7 @@ def test_config_summary():
     assert "HTTP Pod DNS" in summary
     assert "Inference Port" in summary
     assert "Management Port" in summary
-    assert "Deploy Mode" in summary
+    assert "Deploy Mode" not in summary
     assert "Scheduler Type" in summary
     assert "API Key Auth" in summary
     assert "Rate Limiting" in summary
@@ -530,7 +530,6 @@ def test_from_json_maps_union_kv_events_to_prefill_kv_event_config(_temp_json_fi
         "motor_deploy_config": {"hybrid_instances_num": 1},
         "motor_coordinator_config": {
             "scheduler_config": {
-                "deploy_mode": "single_node",
                 "scheduler_type": "kv_cache_affinity",
             }
         },
@@ -553,7 +552,6 @@ def test_from_json_maps_union_kv_events_to_prefill_kv_event_config(_temp_json_fi
     config = CoordinatorConfig.from_json(_temp_json_file)
     pk = config.prefill_kv_event_config
 
-    assert config.scheduler_config.deploy_mode.value == "single_node"
     assert config.scheduler_config.scheduler_type.value == "kv_cache_affinity"
     assert pk.endpoint == "tcp://*:5557"
     assert pk.replay_endpoint == "tcp://*:6667"

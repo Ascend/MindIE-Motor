@@ -113,16 +113,12 @@ PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/user_config.json
 
 ### motor_coordinator_config
 
-PD 混部场景下，Coordinator 需使用 `single_node` 调度模式。
+PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根据运行中的 `union` 实例自动选择 `PDHybridRouter`。
 
 **配置示例（默认负载均衡）**：
 
 ```json
-"motor_coordinator_config": {
-  "scheduler_config": {
-    "deploy_mode": "single_node"
-  }
-}
+"motor_coordinator_config": {}
 ```
 
 **配置示例（KV Cache 亲和调度，可选）**：
@@ -130,7 +126,6 @@ PD 混部场景下，Coordinator 需使用 `single_node` 调度模式。
 ```json
 "motor_coordinator_config": {
   "scheduler_config": {
-    "deploy_mode": "single_node",
     "scheduler_type": "kv_cache_affinity",
     "kv_affinity_mode": "unified",
     "kv_affinity_load_weight": 1.0
@@ -142,7 +137,6 @@ PD 混部场景下，Coordinator 需使用 `single_node` 调度模式。
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
-| scheduler_config.deploy_mode | string | PD 混部配置为 `single_node`，表示按单节点完整推理能力调度 union 实例 |
 | scheduler_config.scheduler_type | string | 调度类型。默认 `load_balance`；启用 KV 亲和时配置为 `kv_cache_affinity` |
 | scheduler_config.kv_affinity_mode | string | KV 亲和子策略：`unified`（默认）或 `load_gated` |
 | scheduler_config.kv_affinity_load_weight | float | unified 模式下负载权重，默认 `1.0` |
@@ -377,6 +371,6 @@ bash delete.sh mindie-motor
 - **服务未就绪**：若推理接口返回 `{"detail":"Service is not available"}`，多为 union 实例或 Coordinator 尚未完全就绪，可等待一段时间后重试，并查看 Pod 日志确认无启动错误。
 - **镜像与权重**：确保 `image_name` 在集群内可正常拉取；`weight_mount_path` 在宿主机上存在，且 `engine_config.model` 指向容器内正确路径。
 - **实例数配置错误**：`hybrid_instances_num` 必须大于 0 且不超过 16；扩缩容时仅允许修改该字段。
-- **调度模式错误**：PD 混部需将 `motor_coordinator_config.scheduler_config.deploy_mode` 配置为 `single_node`。
+- **实例角色错误**：PD 混部需确保部署产生 `union` 角色实例；Coordinator 会自动识别，无需额外调度模式配置。
 - **部署失败**：若部署失败，可先卸载集群，排查并修改配置后重新部署。
 - **Prefix Cache 特性对性能测试的影响**：Prefix Cache 默认开启，若期望获取推理服务的基线性能数据，可在 vLLM 的 `engine_config` 中增加 `"no-enable-prefix-caching": true`。

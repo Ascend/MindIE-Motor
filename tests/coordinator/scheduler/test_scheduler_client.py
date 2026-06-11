@@ -12,18 +12,17 @@
 """Tests for AsyncSchedulerClient and _SchedulerInstanceCache."""
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction, EndpointStatus
 from motor.coordinator.domain import InstanceReadiness, UpdateWorkloadParams
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
-    SchedulerRequest,
     SchedulerResponse,
-    SchedulerRequestType,
     SchedulerResponseType,
 )
 from motor.coordinator.scheduler.runtime.scheduler_client import (
@@ -32,12 +31,12 @@ from motor.coordinator.scheduler.runtime.scheduler_client import (
     _SchedulerInstanceCache,
     _collect_active_endpoints_from_cache,
 )
-from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 
 
 # ========================================================================
 # Helper factories  (real pydantic objects, aligned with conftest.py)
 # ========================================================================
+
 
 def _make_endpoint(
     endpoint_id: int = 1,
@@ -63,6 +62,7 @@ def _make_instance(
     instance_id: int = 1,
     role: str = "prefill",
     endpoints: dict | None = None,
+    dispatch_capabilities: list[str] | None = None,
 ) -> Instance:
     """Create a real Instance (used by _SchedulerInstanceCache tests)."""
     if endpoints is None:
@@ -74,6 +74,7 @@ def _make_instance(
         id=instance_id,
         role=role,
         endpoints=endpoints,
+        dispatch_capabilities=dispatch_capabilities or [],
     )
 
 
@@ -107,6 +108,7 @@ def _build_mock_scheduler_response(
 # Module-level function test
 # ========================================================================
 
+
 class TestCollectActiveEndpoints:
     """Tests for _collect_active_endpoints_from_cache."""
 
@@ -137,7 +139,9 @@ class TestCollectActiveEndpoints:
 
         ep_normal = _make_endpoint(endpoint_id=1, ip="10.0.0.1", business_port="8001")
         ep_initial = _make_endpoint(
-            endpoint_id=2, ip="10.0.0.2", business_port="8002",
+            endpoint_id=2,
+            ip="10.0.0.2",
+            business_port="8002",
             status=EndpointStatus.INITIAL,
         )
         inst = _make_instance(
@@ -176,9 +180,11 @@ class TestCollectActiveEndpoints:
 # Tests for _SchedulerInstanceCache
 # ========================================================================
 
+
 class TestSchedulerInstanceCache:
     """Tests for _SchedulerInstanceCache (real Instance/Endpoint objects)."""
 
+    # pylint: disable=attribute-defined-outside-init
     @pytest.fixture(autouse=True)
     def setup(self):
         self.cache = _SchedulerInstanceCache()
@@ -283,9 +289,11 @@ class TestSchedulerInstanceCache:
 # Tests for AsyncSchedulerClient
 # ========================================================================
 
+
 class TestAsyncSchedulerClient:
     """Tests for AsyncSchedulerClient with mocked transport and cache."""
 
+    # pylint: disable=attribute-defined-outside-init
     @pytest.fixture(autouse=True)
     def setup(self):
         # Patch _SchedulerTransport to avoid any ZMQ dependency
@@ -342,9 +350,11 @@ class TestAsyncSchedulerClient:
     @pytest.mark.asyncio
     async def test_connect_success(self):
         """connect returns True and connected is True on transport success."""
+
         async def _connect_and_set():
             self.mock_transport.connected = True
             return True
+
         self.mock_transport.connect = _connect_and_set
         # connect() calls _init_cache which calls get_available_instances -> send_request
         self._mock_send_request(
@@ -371,18 +381,22 @@ class TestAsyncSchedulerClient:
     @pytest.mark.asyncio
     async def test_disconnect(self):
         """disconnect sets connected to False."""
+
         async def _connect_and_set():
             self.mock_transport.connected = True
             return True
+
         self.mock_transport.connect = _connect_and_set
         self._mock_send_request(
-            SchedulerResponseType.SUCCESS, {"instances": []},
+            SchedulerResponseType.SUCCESS,
+            {"instances": []},
         )
         await self.client.connect()
         assert self.client.connected is True
 
         async def _disconnect_and_clear():
             self.mock_transport.connected = False
+
         self.mock_transport.disconnect = _disconnect_and_clear
         await self.client.disconnect()
         assert self.client.connected is False
@@ -400,7 +414,8 @@ class TestAsyncSchedulerClient:
         mock_req_info.req_len = 50
 
         result = await self.client.select_instance_and_endpoint(
-            mock_req_info, PDRole.ROLE_P,
+            mock_req_info,
+            PDRole.ROLE_P,
         )
         assert result is None
 
@@ -427,7 +442,8 @@ class TestAsyncSchedulerClient:
         mock_req_info.req_len = 200
 
         result = await self.client.select_and_allocate(
-            PDRole.ROLE_P, mock_req_info,
+            PDRole.ROLE_P,
+            mock_req_info,
         )
 
         # select_and_allocate internally calls select_instance_and_endpoint first;
@@ -446,7 +462,8 @@ class TestAsyncSchedulerClient:
         mock_req_info.req_len = 100
 
         result = await self.client.select_and_allocate(
-            PDRole.ROLE_P, mock_req_info,
+            PDRole.ROLE_P,
+            mock_req_info,
         )
         assert result is None
 
@@ -476,7 +493,8 @@ class TestAsyncSchedulerClient:
                 mock_req_info.req_len = 100
 
                 result = await self.client.select_and_allocate(
-                    PDRole.ROLE_P, mock_req_info,
+                    PDRole.ROLE_P,
+                    mock_req_info,
                 )
                 assert result is None
 
@@ -582,7 +600,7 @@ class TestAsyncSchedulerClient:
 
     @pytest.mark.asyncio
     async def test_get_available_instances_empty(self):
-        """get_available_instances returns {} when no instances."""
+        """get_available_instances returns {} and clears the requested role."""
         self._mock_send_request(
             SchedulerResponseType.SUCCESS,
             {"instances": []},
@@ -590,6 +608,25 @@ class TestAsyncSchedulerClient:
 
         result = await self.client.get_available_instances(PDRole.ROLE_P)
         assert result == {}
+        self.mock_cache.replace_all.assert_awaited_once_with(PDRole.ROLE_P, [])
+
+    @pytest.mark.asyncio
+    async def test_get_available_instances_empty_all_roles_clears_topology_cache(self):
+        """An empty full refresh removes every stale topology role."""
+        self._mock_send_request(
+            SchedulerResponseType.SUCCESS,
+            {"instances": []},
+        )
+
+        result = await self.client.get_available_instances(None)
+
+        assert result == {}
+        assert self.mock_cache.replace_all.await_args_list == [
+            call(PDRole.ROLE_E, []),
+            call(PDRole.ROLE_P, []),
+            call(PDRole.ROLE_D, []),
+            call(PDRole.ROLE_U, []),
+        ]
 
     @pytest.mark.asyncio
     async def test_get_available_instances_transport_failure(self):
@@ -610,13 +647,31 @@ class TestAsyncSchedulerClient:
         result = await self.client.get_available_instances(PDRole.ROLE_P)
         assert result == {}
 
+    @pytest.mark.asyncio
+    async def test_get_available_instance_roles_uses_cache_without_transport(self):
+        """Topology role reads stay local and do not issue GET_AVAILABLE_INSTANCES."""
+        mock_p = Mock(spec=Instance)
+        mock_d = Mock(spec=Instance)
+
+        def _get_instances_side_effect(role):
+            mapping = {PDRole.ROLE_P: [mock_p], PDRole.ROLE_D: [mock_d]}
+            return mapping.get(role, [])
+
+        self.mock_cache.get_instances.side_effect = _get_instances_side_effect
+
+        result = await self.client.get_available_instance_roles()
+
+        assert result == {PDRole.ROLE_P, PDRole.ROLE_D}
+        self.mock_transport.send_request.assert_not_awaited()
+
     # -- test_has_required_instances ----------------------------------------
 
     @pytest.mark.asyncio
     async def test_has_required_instances_met(self):
         """has_required_instances returns REQUIRED_MET when P and D present."""
-        mock_p = Mock(spec=Instance)
-        mock_d = Mock(spec=Instance)
+        capability = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+        mock_p = _make_instance(1, PDRole.ROLE_P, dispatch_capabilities=capability)
+        mock_d = _make_instance(2, PDRole.ROLE_D, dispatch_capabilities=capability)
 
         def _get_instances_side_effect(role):
             mapping = {PDRole.ROLE_P: [mock_p], PDRole.ROLE_D: [mock_d]}
@@ -631,7 +686,7 @@ class TestAsyncSchedulerClient:
     @pytest.mark.asyncio
     async def test_has_required_instances_only_prefill(self):
         """has_required_instances returns ONLY_PREFILL when only P present."""
-        mock_p = Mock(spec=Instance)
+        mock_p = _make_instance(1, PDRole.ROLE_P)
 
         def _get_instances_side_effect(role):
             mapping = {PDRole.ROLE_P: [mock_p], PDRole.ROLE_D: []}
@@ -642,6 +697,48 @@ class TestAsyncSchedulerClient:
         result = await self.client.has_required_instances()
         assert result == InstanceReadiness.ONLY_PREFILL
         assert result.is_ready() is False
+        self.mock_transport.send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_has_required_instances_rejects_incompatible_pd_pair(self):
+        prefill = _make_instance(
+            1,
+            PDRole.ROLE_P,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        )
+        decode = _make_instance(
+            2,
+            PDRole.ROLE_D,
+            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+        )
+
+        def _get_instances_side_effect(role):
+            mapping = {PDRole.ROLE_P: [prefill], PDRole.ROLE_D: [decode]}
+            return mapping.get(role, [])
+
+        self.mock_cache.get_instances.side_effect = _get_instances_side_effect
+
+        result = await self.client.has_required_instances()
+
+        assert result == InstanceReadiness.UNKNOWN
+        assert result.is_run() is False
+        self.mock_transport.send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_has_required_instances_union_wins_over_partial_roles(self):
+        decode = _make_instance(1, PDRole.ROLE_D)
+        union = _make_instance(2, PDRole.ROLE_U)
+
+        def _get_instances_side_effect(role):
+            mapping = {PDRole.ROLE_D: [decode], PDRole.ROLE_U: [union]}
+            return mapping.get(role, [])
+
+        self.mock_cache.get_instances.side_effect = _get_instances_side_effect
+
+        result = await self.client.has_required_instances()
+
+        assert result == InstanceReadiness.REQUIRED_MET
+        assert result.is_run() is True
 
     @pytest.mark.asyncio
     async def test_has_required_instances_none(self):
@@ -735,36 +832,28 @@ class TestAsyncSchedulerClient:
 
         on_refreshed.assert_awaited_once()
 
-    # -- test_select_instance_and_endpoint_by_load_balance --------------------
+    # -- test_select_endpoint_candidates_by_load_balance --------------------
 
-    def test_select_instance_and_endpoint_by_load_balance(self):
-        """_select_instance_and_endpoint_by_load_balance returns lowest-workload instance."""
+    def test_select_endpoint_candidates_by_load_balance(self):
+        """_select_endpoint_candidates_by_load_balance returns lowest-workload endpoint."""
         client = self.client
-        client._scheduler_type = "load_balance"
         client._client_index = 0
         client._client_count = 1
 
-        if not hasattr(client, "_select_instance_and_endpoint_by_load_balance"):
-            pytest.skip("_select_instance_and_endpoint_by_load_balance not available in this version")
+        ep1 = _make_endpoint(endpoint_id=1, active_tokens=10.0)
+        ep2 = _make_endpoint(endpoint_id=2, active_tokens=5.0)
+        inst1 = _make_instance(instance_id=1, role="prefill", endpoints={"pod1": {1: ep1}})
+        inst2 = _make_instance(instance_id=2, role="prefill", endpoints={"pod2": {2: ep2}})
 
-        mock_inst1 = Mock(spec=Instance)
-        mock_inst1.id = 1
-        mock_inst1.role = PDRole.ROLE_P
-        mock_inst1.gathered_workload = Mock()
-        mock_inst1.gathered_workload.calculate_workload_score = Mock(return_value=10.0)
-
-        mock_inst2 = Mock(spec=Instance)
-        mock_inst2.id = 2
-        mock_inst2.role = PDRole.ROLE_P
-        mock_inst2.gathered_workload = Mock()
-        mock_inst2.gathered_workload.calculate_workload_score = Mock(return_value=5.0)
-
-        instances = [mock_inst1, mock_inst2]
-        result = client._select_instance_and_endpoint_by_load_balance(
-            instances, PDRole.ROLE_P,
+        result = client._select_endpoint_candidates_by_load_balance(
+            [inst1, inst2],
+            PDRole.ROLE_P,
+            top_k=1,
         )
-        # The load balancer should pick the instance with lower workload score
-        assert result is not None
+        assert len(result) == 1
+        selected_instance, selected_endpoint, _score = result[0]
+        assert selected_instance.id == 2
+        assert selected_endpoint.id == 2
 
     # -- test_transport_timeout ---------------------------------------------
 

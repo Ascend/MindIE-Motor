@@ -144,7 +144,6 @@
       "infer_timeout": 3600
     },
     "scheduler_config": {
-      "deploy_mode": "pd_separate",
       "scheduler_type": "load_balance"
     },
     "inference_workers_config": {

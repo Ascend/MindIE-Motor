@@ -404,18 +404,10 @@ vllm:num_requests_running{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruc
         role_key = PDRole.ROLE_P  # self.p_ins role is "prefill"
         assert role_key in metric_collector._inactive_instance_metrics_aggregate
         inactive_metrics = metric_collector._inactive_instance_metrics_aggregate[role_key]
-        assert self.check_metric_value_equel(
-            inactive_metrics[0].value, [0.0] * len(metric_gauge.value)
-        )
-        assert self.check_metric_value_equel(
-            inactive_metrics[1].value, metric_counter.value
-        )
-        assert self.check_metric_value_equel(
-            inactive_metrics[2].value, metric_histogram.value
-        )
-        assert self.check_metric_value_equel(
-            inactive_metrics[3].value, metric_summary.value
-        )
+        assert self.check_metric_value_equel(inactive_metrics[0].value, [0.0] * len(metric_gauge.value))
+        assert self.check_metric_value_equel(inactive_metrics[1].value, metric_counter.value)
+        assert self.check_metric_value_equel(inactive_metrics[2].value, metric_histogram.value)
+        assert self.check_metric_value_equel(inactive_metrics[3].value, metric_summary.value)
 
     @_test_without_background_thread
     def test_aggregate_collects_by_instance(self):
@@ -500,7 +492,7 @@ vllm:num_requests_running{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruc
 
         # check function: empty collects
         collects = {}
-        aggregate = metric_collector._aggregate_metrics_all_instance(collects, {})
+        aggregate = metric_collector._aggregate_metrics_all_instance(collects, {}, {})
         # Just check that we get some result (skip detailed value comparison due to threading issues)
         assert isinstance(aggregate, list)
         assert len(aggregate) == 4
@@ -509,7 +501,7 @@ vllm:num_requests_running{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruc
         collects = {
             1: {"metrics": [metric_gauge, metric_counter, metric_histogram, metric_summary]},
         }
-        aggregate = metric_collector._aggregate_metrics_all_instance(collects, {})
+        aggregate = metric_collector._aggregate_metrics_all_instance(collects, {}, {})
         # Just check basic structure (skip detailed comparisons due to threading state issues)
         assert isinstance(aggregate, list)
         assert len(aggregate) == 4
@@ -1721,15 +1713,23 @@ def test_effective_counter_inherited_after_restart():
 
     # First collection: raw=10000
     computer._compute_effective_and_rate(
-        job_name="job-1", dp_rank=0, src_name="vllm:generation_tokens_total",
-        raw_counter=10000.0, ins_id=5, now=t0,
+        job_name="job-1",
+        dp_rank=0,
+        src_name="vllm:generation_tokens_total",
+        raw_counter=10000.0,
+        ins_id=5,
+        now=t0,
     )
     assert computer._dp_state[("job-1", 0, "vllm:generation_tokens_total")]["last_effective"] == 10000.0
 
     # Restart: new ins_id=12, raw=50
     computer._compute_effective_and_rate(
-        job_name="job-1", dp_rank=0, src_name="vllm:generation_tokens_total",
-        raw_counter=50.0, ins_id=12, now=t0 + dt,
+        job_name="job-1",
+        dp_rank=0,
+        src_name="vllm:generation_tokens_total",
+        raw_counter=50.0,
+        ins_id=12,
+        now=t0 + dt,
     )
     state = computer._dp_state[("job-1", 0, "vllm:generation_tokens_total")]
     # baseline = 10000 (inherited), effective = 50 + 10000 = 10050
@@ -1743,14 +1743,18 @@ def test_raw_counter_corrected_after_restart():
     computer = MotorMetricComputer()
 
     gen_metric = Metric(
-        name="vllm:generation_tokens_total", help="test",
-        type=MetricType.COUNTER, label=["vllm:generation_tokens_total"], value=[10000.0],
+        name="vllm:generation_tokens_total",
+        help="test",
+        type=MetricType.COUNTER,
+        label=["vllm:generation_tokens_total"],
+        value=[10000.0],
     )
 
     # First collection: no baseline, raw counter unchanged
     collects = {
         5: {
-            "role": "decode", "job_name": "decode-0",
+            "role": "decode",
+            "job_name": "decode-0",
             "endpoints": {0: {"metrics": [gen_metric], "pod_ip": "10.0.0.1"}},
         },
     }
@@ -1759,12 +1763,16 @@ def test_raw_counter_corrected_after_restart():
 
     # Second collection (same instance): counter grows to 11000
     gen_metric2 = Metric(
-        name="vllm:generation_tokens_total", help="test",
-        type=MetricType.COUNTER, label=["vllm:generation_tokens_total"], value=[11000.0],
+        name="vllm:generation_tokens_total",
+        help="test",
+        type=MetricType.COUNTER,
+        label=["vllm:generation_tokens_total"],
+        value=[11000.0],
     )
     collects2 = {
         5: {
-            "role": "decode", "job_name": "decode-0",
+            "role": "decode",
+            "job_name": "decode-0",
             "endpoints": {0: {"metrics": [gen_metric2], "pod_ip": "10.0.0.1"}},
         },
     }
@@ -1772,12 +1780,16 @@ def test_raw_counter_corrected_after_restart():
 
     # Restart: new instance_id=12, raw counter resets to 50
     gen_metric3 = Metric(
-        name="vllm:generation_tokens_total", help="test",
-        type=MetricType.COUNTER, label=["vllm:generation_tokens_total"], value=[50.0],
+        name="vllm:generation_tokens_total",
+        help="test",
+        type=MetricType.COUNTER,
+        label=["vllm:generation_tokens_total"],
+        value=[50.0],
     )
     collects3 = {
         12: {
-            "role": "decode", "job_name": "decode-0",
+            "role": "decode",
+            "job_name": "decode-0",
             "endpoints": {0: {"metrics": [gen_metric3], "pod_ip": "10.0.0.1"}},
         },
     }

@@ -28,7 +28,7 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.http.security_utils import sanitize_error_message, log_audit_event
-from motor.config.coordinator import CoordinatorConfig, DeployMode
+from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.models.response import RequestResponse
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
@@ -94,15 +94,9 @@ class ManagementServer(BaseCoordinatorServer):
         self._instance_manager = (
             instance_manager if instance_manager is not None else InstanceManager(self.coordinator_config, TYPE_MGMT)
         )
-        deploy_mode = (
-            self.coordinator_config.scheduler_config.deploy_mode
-            if (self.coordinator_config and self.coordinator_config.scheduler_config)
-            else DeployMode.PD_SEPARATE
-        )
         self._readiness_probe = ReadinessProbe(
             self._daemon_liveness,
             self._instance_manager,
-            deploy_mode=deploy_mode,
             enable_master_standby=self.coordinator_config.standby_config.enable_master_standby,
         )
         self._app_builder = AppBuilder(self.coordinator_config)

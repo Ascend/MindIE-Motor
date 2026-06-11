@@ -363,6 +363,21 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         """
         return None
 
+    def select_instance_and_endpoint_from_list(
+        self,
+        instances: list[Instance],
+        role: PDRole | None = None,
+        req_info: RequestInfo | None = None,
+    ):
+        """Select within a compatible subset, using affinity for prefill and load for other roles."""
+        if role == PDRole.ROLE_P and req_info is not None:
+            selected = KvCacheAffinityPolicy.select_endpoint_from_list(instances, req_info)
+            if selected is not None:
+                return selected
+        from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
+
+        return LoadBalancePolicy.select_endpoint_from_list(instances, role)
+
     async def update_workload(
         self,
         instance_id: int,

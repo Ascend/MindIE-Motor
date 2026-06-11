@@ -20,9 +20,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from motor.config.coordinator import (
-    DeployMode,
     CoordinatorConfig,
-    SchedulerConfig,
     SchedulerType,
     ExceptionConfig,
     TracerConfig,
@@ -52,16 +50,6 @@ _request_manager = RequestManager(_config)
 @app.post("/v1/chat/completions")
 async def handle_completions(request: Request):
     return await router.handle_request(request, _config, scheduler=_scheduler, request_manager=_request_manager)
-
-
-@pytest.fixture(autouse=True)
-def _use_single_node_deploy_for_test_app(monkeypatch):
-    """Default CoordinatorConfig is PD_SEPARATE, which maps to CDP router in _ROUTER_MAP."""
-    monkeypatch.setattr(
-        _config,
-        "scheduler_config",
-        SchedulerConfig(deploy_mode=DeployMode.SINGLE_NODE),
-    )
 
 
 @pytest.fixture(name="forward_stream_patch")
@@ -112,16 +100,14 @@ class TestRouterPDHybrid:
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
         # Mock functions (Scheduler uses get_required_instances_status for readiness)
-        def mock_get_required_instances_status(self, deploy_mode=None):
+        def mock_get_required_instances_status(self):
             return InstanceReadiness.REQUIRED_MET
 
-        def mock_has_required_instances(self, deploy_mode=None):
+        def mock_has_required_instances(self):
             return True
 
-        async def mock_get_available_instances(self, role=None):
-            if role == PDRole.ROLE_U:  # PD hybrid uses ROLE_U
-                return {mock_instance.id: mock_instance}
-            return {}
+        async def mock_get_available_instance_roles(self):
+            return {PDRole.ROLE_U}
 
         async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             if role == PDRole.ROLE_U:
@@ -133,13 +119,11 @@ class TestRouterPDHybrid:
 
         monkeypatch.setattr(InstanceManager, "get_required_instances_status", mock_get_required_instances_status)
         monkeypatch.setattr(InstanceManager, "has_required_instances", mock_has_required_instances)
-        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
-        # Mock CoordinatorConfig to return SINGLE_NODE deploy mode
         mock_scheduler_config = MagicMock()
-        mock_scheduler_config.deploy_mode = DeployMode.SINGLE_NODE
         mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
         mock_exception_config = ExceptionConfig(max_retry=5, retry_delay=0.0001)
         mock_api_config = MagicMock()
@@ -322,12 +306,8 @@ class TestRouterPDHybrid:
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
         called_roles = []
 
-        async def mock_get_available_instances(self, role=None):
-            if role == PDRole.ROLE_U:
-                return {}
-            if role == PDRole.ROLE_P:
-                return {mock_instance.id: mock_instance}
-            return {}
+        async def mock_get_available_instance_roles(self):
+            return {PDRole.ROLE_P}
 
         async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             called_roles.append(role)
@@ -348,7 +328,7 @@ class TestRouterPDHybrid:
             )
             return resp
 
-        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -392,10 +372,8 @@ class TestRouterPDHybrid:
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
         called_roles = []
 
-        async def mock_get_available_instances(self, role=None):
-            if role == PDRole.ROLE_U:
-                return {mock_instance.id: mock_instance}
-            return {}
+        async def mock_get_available_instance_roles(self):
+            return {PDRole.ROLE_U}
 
         async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             called_roles.append(role)
@@ -416,7 +394,7 @@ class TestRouterPDHybrid:
             )
             return resp
 
-        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -453,7 +431,6 @@ class TestRouterPDHybrid:
 
 def _make_tracer_coordinator_config(monkeypatch: MonkeyPatch) -> MagicMock:
     mock_scheduler_config = MagicMock()
-    mock_scheduler_config.deploy_mode = DeployMode.SINGLE_NODE
     mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
     mock_exception_config = ExceptionConfig(max_retry=5, retry_delay=0.0001, transport_max_retry=1)
     mock_api_config = MagicMock()
@@ -506,10 +483,8 @@ class TestPDHybridTracer:
         mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
-        async def mock_get_available_instances(self, role=None):
-            if role == PDRole.ROLE_U:
-                return {mock_instance.id: mock_instance}
-            return {}
+        async def mock_get_available_instance_roles(self):
+            return {PDRole.ROLE_U}
 
         async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             if role == PDRole.ROLE_U:
@@ -519,7 +494,7 @@ class TestPDHybridTracer:
         async def mock_update_workload(self, params):
             return True
 
-        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
@@ -660,12 +635,8 @@ class TestPDHybridTracer:
         mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
-        async def mock_get_available_instances(self, role=None):
-            if role == PDRole.ROLE_U:
-                return {}
-            if role == PDRole.ROLE_P:
-                return {mock_instance.id: mock_instance}
-            return {}
+        async def mock_get_available_instance_roles(self):
+            return {PDRole.ROLE_P}
 
         async def mock_select_and_allocate(self, role, req_info, **_kwargs):
             if role == PDRole.ROLE_P:
@@ -685,7 +656,7 @@ class TestPDHybridTracer:
             )
             return resp
 
-        monkeypatch.setattr(Scheduler, "get_available_instances", mock_get_available_instances)
+        monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)

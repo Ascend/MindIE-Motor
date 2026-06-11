@@ -27,6 +27,7 @@ DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT = 0.05
 @dataclass(frozen=True)
 class EndpointCandidate:
     """Endpoint candidate plus its load-balance score."""
+
     instance: Instance
     endpoint: Endpoint
     score: float
@@ -38,6 +39,7 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
     Selects instances and endpoints based on their current workload.
     Implements select_and_endpoint and update_workload required by SchedulingFacade (forwarded via Scheduler).
     """
+
     def __init__(self, instance_provider: InstanceProvider):
         super().__init__(instance_provider=instance_provider)
         self._instance_provider = instance_provider
@@ -92,10 +94,7 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             return []
 
         n = len(instances)
-        rotated_instances = [
-            instances[(start_index + i) % n]
-            for i in range(n)
-        ]
+        rotated_instances = [instances[(start_index + i) % n] for i in range(n)]
         scored: list[tuple[float, int, EndpointCandidate]] = []
         tie_order = 0
         for instance in rotated_instances:
@@ -226,8 +225,14 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
                 continue
         return selected_endpoint
 
-    async def update_workload(self, instance_id: int, endpoint_id: int, req_id: str,
-                              workload_action: WorkloadAction, workload_change: Workload) -> bool:
+    async def update_workload(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        req_id: str,
+        workload_action: WorkloadAction,
+        workload_change: Workload,
+    ) -> bool:
         """
         Update workload information for load-aware scheduling (by id only).
 
@@ -242,13 +247,9 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             True if workload was updated successfully, False otherwise
         """
         if hasattr(self._instance_provider, "update_instance_workload"):
-            await self._instance_provider.update_instance_workload(
-                instance_id, endpoint_id, workload_change
-            )
+            await self._instance_provider.update_instance_workload(instance_id, endpoint_id, workload_change)
         else:
-            raise RuntimeError(
-                "InstanceProvider must support update_instance_workload for LoadBalancePolicy"
-            )
+            raise RuntimeError("InstanceProvider must support update_instance_workload for LoadBalancePolicy")
 
         if req_id:
             logger.debug(
@@ -275,6 +276,20 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             return None
         return LoadBalancePolicy.select_endpoint_from_list(
             active_instances.values(),
+            role,
+            instance_score_weight=self._endpoint_instance_score_weight,
+        )
+
+    def select_instance_and_endpoint_from_list(
+        self,
+        instances: list[Instance],
+        role: PDRole | None = None,
+        req_info=None,
+    ):
+        """Load-balance within a capability-compatible subset."""
+        del req_info
+        return LoadBalancePolicy.select_endpoint_from_list(
+            instances,
             role,
             instance_score_weight=self._endpoint_instance_score_weight,
         )
