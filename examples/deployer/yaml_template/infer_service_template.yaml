@@ -301,6 +301,125 @@ spec:
               hostPath:
                 path: /mnt
 
+    - name: encode
+      replicas: 4
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet
+      spec:
+        replicas: 2
+        selector:
+          matchLabels:
+            app: mindie-server
+        template:
+          metadata:
+            labels:
+              fault-scheduling: grace
+              fault-retry-times: "10000"
+              app: mindie-server
+              ring-controller.atlas: ascend-910b
+          spec:
+            schedulerName: volcano
+            nodeSelector:
+              accelerator: huawei-Ascend910
+              accelerator-type: module-910b-8
+            terminationGracePeriodSeconds: 30
+            automountServiceAccountToken: false
+            securityContext:
+              fsGroup: 1001
+            containers:
+            - image: mindie:1.0.0-aarch64-800I-A2
+              imagePullPolicy: IfNotPresent
+              name: mindie-server
+              securityContext:
+                allowPrivilegeEscalation: false
+                seccompProfile:
+                  type: Unconfined
+              env:
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              - name: HOST_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.hostIP
+              - name: CONFIGMAP_PATH
+                value: /mnt/configmap
+              - name: CONFIG_PATH
+                value: /usr/local/Ascend/pyMotor/conf
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["bash", "-c", "$CONFIGMAP_PATH/prestop.sh"]
+              command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
+              resources:
+                requests:
+                  memory: "64Gi"
+                  cpu: "16"
+                  huawei.com/Ascend910: 1
+                limits:
+                  memory: "256Gi"
+                  cpu: "64"
+                  huawei.com/Ascend910: 1
+              volumeMounts:
+              - name: data
+                mountPath: /data
+                readOnly: true
+              - name: motor-config
+                mountPath: /mnt/configmap
+              - name: queue-schedule
+                mountPath: /var/queue_schedule
+              - name: dshm
+                mountPath: /dev/shm
+              - name: coredump
+                mountPath: /var/coredump
+              - name: mnt
+                mountPath: /mnt
+              - name: hccn-tool
+                mountPath: /usr/local/Ascend/driver/tools/hccn_tool
+              - name: hccn-conf
+                mountPath: /etc/hccn.conf
+              - name: weight-mount
+                mountPath: /mnt/weight
+              - name: plog-path
+                mountPath: /root/ascend/log
+            volumes:
+            - name: data
+              hostPath:
+                path: /data
+            - name: motor-config
+              configMap:
+                name: motor-config
+                defaultMode: 360
+            - name: queue-schedule
+              hostPath:
+                path: /var/queue_schedule
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 4Gi
+            - name: coredump
+              hostPath:
+                path: /var/coredump
+                type: DirectoryOrCreate
+            - name: mnt
+              hostPath:
+                path: /mnt
+            - name: hccn-tool
+              hostPath:
+                path: /usr/local/Ascend/driver/tools/hccn_tool
+            - name: hccn-conf
+              hostPath:
+                path: /etc/hccn.conf
+            - name: weight-mount
+              hostPath:
+                path: /mnt/weight
+            - name: plog-path
+              hostPath:
+                path: /root/ascend/log
+                type: DirectoryOrCreate
+
     - name: prefill
       replicas: 4
       workload:

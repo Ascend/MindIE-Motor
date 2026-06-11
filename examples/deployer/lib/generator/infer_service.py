@@ -10,7 +10,14 @@
 import os
 
 import lib.constant as C
-from lib.utils import generate_unique_id, load_yaml, logger, write_yaml, obtain_engine_instance_total
+from lib.utils import (
+    generate_unique_id,
+    load_yaml,
+    logger,
+    write_yaml,
+    obtain_engine_instance_total,
+    obtain_engine_e_instance_total,
+)
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
     set_controller_service,
@@ -30,7 +37,7 @@ from lib.generator.engine import (
     set_weight_mount,
     is_hybrid_deploy,
     apply_pd_heterogeneous_node_selector,
-    apply_a5_workload
+    apply_a5_workload,
 )
 from lib.generator.kv_pool import normalize_kv_cache_pool_config, gen_kv_pool_env
 from lib.generator.kv_conductor import normalize_kv_conductor_config
@@ -150,7 +157,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
         npu_key = C.HYBRID_POD_NPU_NUM
         env_role = C.ROLE_UNION
     else:
-        prefix_map = {C.ROLE_PREFILL: "p", C.ROLE_DECODE: "d"}
+        prefix_map = {C.ROLE_PREFILL: "p", C.ROLE_DECODE: "d", C.ROLE_ENCODE: "e"}
         prefix = prefix_map.get(role_name)
         if not prefix:
             return
@@ -266,6 +273,7 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     infer_doc[C.METADATA][C.NAMESPACE] = namespace
     _configure_controller_role(infer_doc, user_config)
     _configure_coordinator_role(infer_doc, user_config)
+    _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_ENCODE)
     if is_hybrid_deploy(deploy_config):
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_UNION)
         _zero_engine_role_replicas(infer_doc, C.ROLE_PREFILL)
@@ -351,6 +359,11 @@ def update_infer_service_replicas_only(infer_service_yaml_path, deploy_config):
     if not isinstance(all_docs, list):
         all_docs = [all_docs]
     infer_doc = _find_infer_service_set_doc(all_docs)
+
+    e_total = obtain_engine_e_instance_total(deploy_config)
+    encode_role = get_infer_role(infer_doc, C.ROLE_ENCODE)
+    if encode_role:
+        encode_role[C.REPLICAS] = e_total
 
     if is_hybrid_deploy(deploy_config):
         union_role = get_infer_role(infer_doc, C.ROLE_UNION)

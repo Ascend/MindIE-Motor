@@ -32,7 +32,7 @@
 └──────────────┘                         └──────────────┘                         └──────────────┘
 ```
 
-PyMotor部署EPD分离特性当前仅支持`multi_deployment`模式下部署，
+PyMotor部署EPD分离特性支持`infer_service_set`和`multi_deployment`模式下部署，
 支持`CPCD`和`CDP`调度模式，在两种调度模式下都是先调度E实例，然后再按照之前逻辑进行调度。
 通过修改user_config.json配置文件后即可通过deploy.py脚本完成服务部署。
 
@@ -53,7 +53,7 @@ PyMotor部署EPD分离只需修改user_config.json配置文件后，通过deploy
 {
   "version": "v2.0",
   "motor_deploy_config": {
-    "e_instances_num": 1,
+    "e_instances_num": 2,
     "p_instances_num": 1,
     "d_instances_num": 1,
     "single_e_instance_pod_num": 1,
@@ -80,7 +80,7 @@ PyMotor部署EPD分离只需修改user_config.json配置文件后，通过deploy
       "model": "/mnt/weight/Qwen3-VL-30B-A3B-Instruct",
       "gpu_memory_utilization": 0.9,
       "data_parallel_size": 1,
-      "tensor_parallel_size": 2,
+      "tensor_parallel_size": 1,
       "pipeline_parallel_size": 1,
       "enable_expert_parallel": false,
       "data_parallel_rpc_port": 9000,
