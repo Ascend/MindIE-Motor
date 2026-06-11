@@ -14,6 +14,7 @@ if [ "$ROLE" != "kv_pool" ]; then
     exit 1
 fi
 
+set_cann_env
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
 
 set_kv_pool_env
