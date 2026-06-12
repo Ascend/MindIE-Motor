@@ -14,6 +14,7 @@ if [ "$ROLE" != "SINGLE_CONTAINER" ]; then
     exit 1
 fi
 
+apply_shuffle_safetensors_patch
 setup_jemalloc
 
 export CONTROLLER_SERVICE="$POD_IP"

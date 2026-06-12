@@ -13,12 +13,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 case "$ROLE" in
-  "SINGLE_CONTAINER"|"encode"|"prefill"|"decode"|"union")
-    python3 "$SCRIPT_DIR/patch_apply_shuffle_safetensors.py" || exit 1
-    ;;
-esac
-
-case "$ROLE" in
     "SINGLE_CONTAINER")
         source "$SCRIPT_DIR/all_combine_in_single_container.sh"
         ;;

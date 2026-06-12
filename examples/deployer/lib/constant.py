@@ -64,6 +64,7 @@ ANNOTATIONS = "annotations"
 SP_BLOCK = "sp-block"
 DATA = "data"
 STARTUP_ROOT_PATH = "./startup"
+PATCH_ROOT_PATH = "./patch"
 BOOT_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "boot.sh")
 COMMON_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "common.sh")
 CONTROLLER_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "roles/controller.sh")

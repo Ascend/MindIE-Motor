@@ -14,6 +14,7 @@ if [ "$ROLE" != "encode" ] && [ "$ROLE" != "prefill" ] && [ "$ROLE" != "decode" 
     exit 1
 fi
 
+apply_shuffle_safetensors_patch
 setup_jemalloc
 
 gen_ranktable_config

@@ -73,7 +73,7 @@ setup_tls_certificates() {
         echo "Please copy openssl_gen_cert.sh to the specified path or set GEN_CERT_SCRIPT environment variable"
         return 1
     fi
-    
+
     if [ ! -f "$CA_PATH/ca.pem" ] || [ ! -f "$CA_PATH/ca.key.pem" ]; then
         echo "Error: CA certificate not found at $CA_PATH"
         echo "Please generate CA certificate first:"
@@ -81,7 +81,7 @@ setup_tls_certificates() {
         echo "Or set CA_PATH environment variable to the correct CA certificate path"
         return 1
     fi
-    
+
     echo "TLS is enabled, generating certificates..."
     echo "CA_PATH: $CA_PATH"
     echo "BASE_CERT_PATH: $BASE_CERT_PATH"
@@ -122,6 +122,15 @@ setup_ascend_cache_path() {
         fi
         export ASCEND_CACHE_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
     fi
+}
+
+apply_shuffle_safetensors_patch() {
+    local patch_script="${CONFIGMAP_PATH}/patch_apply_shuffle_safetensors.py"
+    if [ ! -f "$patch_script" ]; then
+        echo "Warning: shuffle safetensors patch script not found: $patch_script"
+        return 0
+    fi
+    python3 "$patch_script"
 }
 
 setup_jemalloc() {
