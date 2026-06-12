@@ -273,7 +273,10 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     infer_doc[C.METADATA][C.NAMESPACE] = namespace
     _configure_controller_role(infer_doc, user_config)
     _configure_coordinator_role(infer_doc, user_config)
-    _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_ENCODE)
+    if C.E_INSTANCES_NUM in deploy_config:
+        _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_ENCODE)
+    else:
+        _zero_engine_role_replicas(infer_doc, C.ROLE_ENCODE)
     if is_hybrid_deploy(deploy_config):
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_UNION)
         _zero_engine_role_replicas(infer_doc, C.ROLE_PREFILL)
