@@ -313,8 +313,8 @@ def test_prepare_retry_request_missing_kv_noops():
     resch = Rescheduler(True, req, logger=logger)
     assert resch.retry_count == 0
     retry_req, retry_api = resch.prepare_retry_request(req_data)
-    # prepare_retry_request increments retry_count before the missing-KV early return.
-    assert resch.retry_count == 1
+    # Missing KV is an early return: request body unchanged and retry_count not bumped.
+    assert resch.retry_count == 0
     assert "messages" in retry_req
     assert retry_req["messages"] == [{"role": "user", "content": "hello"}]
     assert "prompt" not in retry_req

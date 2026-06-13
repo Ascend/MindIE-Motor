@@ -59,6 +59,7 @@ class AttemptContext:
     prefill_task: asyncio.Task | None = None
     decode_task: asyncio.Task | None = None
     config: CoordinatorConfig | None = None
+    fail_reason: str | None = None
 
     def transition(self, state: AttemptState) -> bool:
         if self.state == AttemptState.STOPPED:
@@ -105,19 +106,22 @@ class AttemptContext:
         self.decode_task = task
         return task
 
-    async def cancel(self):
+    async def cancel(self, reason: str = ""):
+        self.fail_reason = reason
         task = []
         if self.prefill_task and not self.prefill_task.done() and not self.prefill_task.cancelled():
             logger.info(
                 f"Cancelling prefill task: {self.prefill_resource.endpoint.ip} {self.prefill_resource.instance.job_name}"
+                f" because {reason}"
             )
-            self.prefill_task.cancel()
+            self.prefill_task.cancel(msg=reason)
             task.append(self.prefill_task)
         if self.decode_task and not self.decode_task.done() and not self.decode_task.cancelled():
             logger.info(
                 f"Cancelling decode task: {self.decode_resource.endpoint.ip} {self.decode_resource.instance.job_name}"
+                f" because {reason}"
             )
-            self.decode_task.cancel()
+            self.decode_task.cancel(msg=reason)
             task.append(self.decode_task)
         if task:
             await asyncio.gather(*task, return_exceptions=True)
@@ -142,7 +146,6 @@ class AttemptContext:
     def unregister_canceller(self):
         try:
             pool = HTTPClientPool()
-            p_key, d_key = None, None
             if self.prefill_resource:
                 p_key = pool._get_pool_key(
                     self.prefill_resource.endpoint.ip,

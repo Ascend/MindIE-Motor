@@ -51,6 +51,9 @@ def _engine_manager_fixture(config_data):
         apply_node_manager_test_config(config, config_data)
 
         manager = EngineManager(config)
+        # __init__ starts a register thread; prevent background _register during tests.
+        manager._register_thread = MagicMock()
+        manager._register_thread.is_alive.return_value = False
         yield manager
 
 
@@ -333,14 +336,15 @@ class TestEngineManager:
         # Should call join on the thread object with timeout=2.0 (actual implementation)
         mock_thread.join.assert_called_once_with(timeout=2.0)
 
-    @patch("motor.node_manager.api_server.node_manager_api.NodeManagerAPI.wait_until_ready")
+    @patch("motor.node_manager.core.engine_manager.wait_until_api_ready", return_value=True)
     @patch("motor.node_manager.core.engine_manager.time.sleep")
     @patch("motor.node_manager.core.engine_manager.EngineManager.post_register_msg")
     @patch("motor.node_manager.core.engine_manager.os.kill")
-    def test_register_retry_mechanism(self, mock_kill, mock_post_register, mock_sleep, mock_wait_ready, engine_manager):
+    def test_register_retry_mechanism(
+        self, mock_kill, mock_post_register, mock_sleep, _mock_wait_api_ready, engine_manager
+    ):
         """Test registration retry mechanism"""
         mock_sleep.return_value = None
-        mock_wait_ready.return_value = True
 
         # Make all attempts fail
         mock_post_register.return_value = False
@@ -353,13 +357,13 @@ class TestEngineManager:
         # Should have sent SIGTERM after max retries
         mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
 
-    @patch("motor.node_manager.api_server.node_manager_api.NodeManagerAPI.wait_until_ready")
+    @patch("motor.node_manager.core.engine_manager.wait_until_api_ready", return_value=True)
     @patch("motor.node_manager.core.engine_manager.EngineManager.post_register_msg")
     @patch("motor.node_manager.core.engine_manager.time.sleep")
-    def test_register_success_on_first_attempt(self, mock_sleep, mock_post_register, mock_wait_ready, engine_manager):
+    def test_register_success_on_first_attempt(
+        self, mock_sleep, mock_post_register, _mock_wait_api_ready, engine_manager
+    ):
         """Test registration succeeds on first attempt"""
-        mock_wait_ready.return_value = True
-
         mock_post_register.return_value = True
 
         engine_manager._register()
@@ -369,13 +373,11 @@ class TestEngineManager:
         # Should not sleep
         mock_sleep.assert_not_called()
 
-    @patch("motor.node_manager.api_server.node_manager_api.NodeManagerAPI.wait_until_ready")
+    @patch("motor.node_manager.core.engine_manager.wait_until_api_ready", return_value=True)
     @patch("motor.node_manager.core.engine_manager.EngineManager.post_register_msg")
     @patch("motor.node_manager.core.engine_manager.time.sleep")
-    def test_register_success_on_retry(self, mock_sleep, mock_post_register, mock_wait_ready, engine_manager):
+    def test_register_success_on_retry(self, mock_sleep, mock_post_register, _mock_wait_api_ready, engine_manager):
         """Test registration succeeds on retry"""
-        mock_wait_ready.return_value = True
-
         # First attempt fails, second succeeds
         mock_post_register.side_effect = [False, True]
 

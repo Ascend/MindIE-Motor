@@ -36,7 +36,7 @@ from motor.coordinator.router.dispatch_session import (
 )
 from motor.coordinator.router.dispatch_capability import select_dispatch_plan_for_pair
 from motor.coordinator.router.stop_client import DispatchStopClient
-from motor.coordinator.router.strategies.base import BaseRouter
+from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.precision_sample.request import inject_logprobs
@@ -92,7 +92,6 @@ class UnifiedPDRouter(BaseRouter):
             session = PDDispatchSession(self.req_info.req_id)
 
             async with self._manage_request_context():
-                last_error: Exception | asyncio.CancelledError | None = None
                 for attempt_index in range(max_retry):
                     attempt: AttemptContext | None = None
                     try:
@@ -101,8 +100,9 @@ class UnifiedPDRouter(BaseRouter):
                         dispatch_plan = self._select_dispatch_plan(attempt)
                         if attempt_index > 0:
                             self.rescheduler.is_rescheduling = True
+                            self.rescheduler.retry_count = attempt_index
                             self.logger.warning(
-                                f"Rescheduling: P=[{attempt.prefill_resource.endpoint.ip} "
+                                f"Rescheduling[{attempt_index}/{max_retry}]: P=[{attempt.prefill_resource.endpoint.ip} "
                                 f"{attempt.prefill_resource.instance.job_name}] "
                                 f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
                             )
@@ -110,39 +110,15 @@ class UnifiedPDRouter(BaseRouter):
                         async for chunk in self._run_stream_attempt(attempt, dispatch_plan):
                             attempt.transition(AttemptState.FIRST_VISIBLE)
                             yield chunk
+                        attempt.unregister_canceller()
                         attempt.transition(AttemptState.DONE)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
                         return
-                    except asyncio.CancelledError:
-                        last_error = RuntimeError(f"Cancelled after retry {attempt_index} times")
-                        trace_obj.set_trace_error_message(str(last_error))
-                        if attempt:
-                            self.logger.warning(
-                                f"Cancelled: P=[{attempt.prefill_resource.endpoint.ip} "
-                                f"{attempt.prefill_resource.instance.job_name}] "
-                                f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
-                            )
-                            await self._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
-                    except Exception as e:
-                        last_error = e
-                        trace_obj.set_trace_error_message(f"Unified PD stream attempt failed: {e}")
-                        trace_obj.set_trace_exception(e)
-                        self.logger.warning(
-                            "Unified PD stream attempt %d/%d failed during dispatch: %s",
-                            attempt_index + 1,
-                            max_retry,
-                            e,
-                        )
-                        if attempt:
-                            await self._stop_attempt(attempt, DispatchStopReason.PEER_FAILED)
-                        if attempt_index < max_retry - 1:
-                            await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
-                    finally:
-                        if attempt:
-                            attempt.unregister_canceller()
-                if last_error is not None:
-                    self.req_info.update_state(ReqState.EXCEPTION)
-                    yield self._generate_streaming_error_chunk(last_error)
+                    except (asyncio.CancelledError, Exception) as e:
+                        error, retry = await self._process_response_error(attempt, attempt_index, e)
+                        if not retry:
+                            yield self._generate_streaming_error_chunk(error)
+                            return
 
     async def _generate_response(self) -> JSONResponse:
         trace_obj = self.req_info.trace_obj
@@ -151,7 +127,6 @@ class UnifiedPDRouter(BaseRouter):
             session = PDDispatchSession(self.req_info.req_id)
 
             async with self._manage_request_context():
-                last_error: Exception | asyncio.CancelledError | None = None
                 for attempt_index in range(max_retry):
                     attempt: AttemptContext | None = None
                     try:
@@ -159,49 +134,69 @@ class UnifiedPDRouter(BaseRouter):
                         attempt.register_canceller()
                         dispatch_plan = self._select_dispatch_plan(attempt)
                         if attempt_index > 0:
+                            self.rescheduler.retry_count = attempt_index
                             self.logger.warning(
-                                f"Rescheduling: P=[{attempt.prefill_resource.endpoint.ip} "
+                                f"Rescheduling[{attempt_index}/{max_retry}]: P=[{attempt.prefill_resource.endpoint.ip} "
                                 f"{attempt.prefill_resource.instance.job_name}] "
                                 f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
                             )
                         attempt.transition(AttemptState.DISPATCHING)
                         body = await self._run_nonstream_attempt(attempt, dispatch_plan)
+                        attempt.unregister_canceller()
                         attempt.transition(AttemptState.DONE)
                         return JSONResponse(content=body)
-                    except asyncio.CancelledError as e:
-                        last_error = e
-                        trace_obj.set_trace_error_message(f"Unified PD non-streaming request cancelled: {e}")
-                        if attempt:
-                            self.logger.warning(
-                                f"Cancelled: P=[{attempt.prefill_resource.endpoint.ip} "
-                                f"{attempt.prefill_resource.instance.job_name}] "
-                                f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
-                            )
-                            await self._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
-                    except Exception as e:
-                        last_error = e
-                        trace_obj.set_trace_error_message(f"Unified PD non-streaming attempt failed: {e}")
-                        trace_obj.set_trace_exception(e)
-                        self.logger.warning(
-                            "Unified PD non-streaming attempt %d/%d failed during dispatch: %s",
-                            attempt_index + 1,
-                            max_retry,
-                            e,
-                        )
-                        if attempt:
-                            await self._stop_attempt(attempt, DispatchStopReason.PEER_FAILED)
-                        if attempt_index < max_retry - 1:
-                            await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
-                    finally:
-                        if attempt:
-                            attempt.unregister_canceller()
-                if last_error is not None:
-                    self.req_info.update_state(ReqState.EXCEPTION)
-                    raise last_error
+                    except (asyncio.CancelledError, Exception) as e:
+                        error, retry = await self._process_response_error(attempt, attempt_index, e)
+                        if not retry:
+                            raise error
 
-            error_message = "Unified PD request ended without response"
-            trace_obj.set_trace_error_message(error_message)
-            raise RuntimeError(error_message)
+        error_message = "Unified PD request ended without response"
+        trace_obj.set_trace_error_message(error_message)
+        raise RuntimeError(error_message)
+
+    async def _process_response_error(
+        self,
+        attempt: AttemptContext | None,
+        attempt_index: int,
+        error: Exception | asyncio.CancelledError,
+    ) -> (Exception, bool):
+        trace_obj = self.req_info.trace_obj
+        trace_obj.set_trace_exception(error)
+        max_retry = max(self.config.exception_config.transport_retry_limit, 1)
+
+        if isinstance(error, asyncio.CancelledError):
+            reason = DispatchStopReason.CLIENT_DISCONNECT
+            reason_str, retry = check_cancel_error(error)
+            retry = retry and (attempt_index < max_retry - 1)
+            error = RuntimeError(f"Unified PD cancelled because of {reason}")
+            label = f"Unified PD cancelled {attempt_index}/{max_retry}"
+        else:
+            reason = DispatchStopReason.PEER_FAILED
+            reason_str = str(error)
+            retry = attempt_index < max_retry - 1
+            label = f"Unified PD exception {attempt_index}/{max_retry}"
+
+        if attempt:
+            error_msg = str(
+                f"{label}: P=[{attempt.prefill_resource.endpoint.ip} "
+                f"{attempt.prefill_resource.instance.job_name}] "
+                f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}] "
+                f"because of {reason_str}, {retry=}"
+            )
+            trace_obj.set_trace_error_message(error_msg)
+            self.logger.warning("%s", error_msg)
+            attempt.unregister_canceller()
+            await self._stop_attempt(attempt, reason)
+        else:
+            error_msg = str(f"{label}, because of {reason_str}, {retry=}")
+            trace_obj.set_trace_error_message(error_msg)
+            self.logger.warning("%s", error_msg)
+
+        if retry:
+            await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
+        else:
+            self.req_info.update_state(ReqState.EXCEPTION)
+        return error, retry
 
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
@@ -315,8 +310,8 @@ class UnifiedPDRouter(BaseRouter):
                             )
                         queue.put_nowait(("chunk", chunk))
                 queue.put_nowait(("done", None))
-            except asyncio.CancelledError:
-                queue.put_nowait(("cancel", None))
+            except asyncio.CancelledError as e:
+                queue.put_nowait(("cancel", e))
             except Exception as e:
                 queue.put_nowait(("error", e))
 
@@ -342,20 +337,9 @@ class UnifiedPDRouter(BaseRouter):
                     if sampling_state is not None:
                         await self._maybe_submit_sample(attempt, sampling_state)
                     return
-                elif key == "cancel":
-                    await attempt.cancel()
-                    raise asyncio.CancelledError
-                elif key == "error":
-                    await attempt.cancel()
+                elif key in {"cancel", "error"}:
+                    await attempt.cancel(repr(value))
                     raise value
-        except (asyncio.CancelledError, Exception) as e:
-            self.logger.warning(
-                "Unified PD decode stream queue failed req_id=%s attempt=%s: %s",
-                self.req_info.req_id,
-                attempt.attempt_seq,
-                e,
-            )
-            raise
         finally:
             await self._release_attempt(attempt)
 
@@ -405,7 +389,7 @@ class UnifiedPDRouter(BaseRouter):
         d_task = attempt.register_decode_task(asyncio.create_task(decode_task()))
         response, error = await d_task
         if error:
-            await attempt.cancel()
+            await attempt.cancel(repr(error))
             await self._release_attempt(attempt)
             raise error
         try:
@@ -425,7 +409,7 @@ class UnifiedPDRouter(BaseRouter):
                 attempt.attempt_seq,
                 e,
             )
-            await attempt.cancel()
+            await attempt.cancel(repr(e))
             await self._release_attempt(attempt)
             raise
 

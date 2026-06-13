@@ -121,7 +121,6 @@ class Rescheduler:
         ``max_tokens`` is derived from the client's original budget minus cumulative
         output token ids from prior legs, with a +1 adjustment when output tokens exist.
         """
-        self.retry_count += 1
         if len(self.req.prompt_token_ids) == 0 or len(self.req.cached_token_ids) == 0:
             return (req_data, self.req.api)
 

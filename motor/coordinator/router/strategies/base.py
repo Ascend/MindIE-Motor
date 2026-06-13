@@ -27,6 +27,7 @@ from motor.common.resources.instance import PDRole
 from motor.common.http.http_client import HTTPClientPool
 from motor.common.logger import get_logger
 from motor.common.http.security_utils import filter_sensitive_headers, filter_sensitive_body
+import motor.common.utils.error as cancel_error
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.models.constants import (
     DEFAULT_REQUEST_ID,
@@ -72,6 +73,20 @@ def _allocated_state_for_role(role: PDRole) -> ReqState:
     if role == PDRole.ROLE_P:
         return ReqState.P_ALLOCATED
     return ReqState.D_ALLOCATED
+
+
+def check_cancel_error(error: asyncio.CancelledError) -> (str, bool):
+    """Return cancelled reason and if need retry"""
+    reason = "Exception"
+    if error.args:
+        reason = error.args[0]
+        if reason in {cancel_error.CLIENT_DISCONNECT, cancel_error.DISPATCH_ABORT}:
+            return reason, False
+        elif reason.startswith(cancel_error.SCOPE_ABORT):
+            return cancel_error.SCOPE_ABORT, False
+        elif reason.startswith(cancel_error.NODE_FAULT):
+            return reason, True
+    return reason, True
 
 
 class RequestLoggerAdapter(logging.LoggerAdapter):

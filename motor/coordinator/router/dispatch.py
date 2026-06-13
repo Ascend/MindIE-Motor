@@ -41,6 +41,7 @@ from motor.common.http.security_utils import (
     validate_and_sanitize_path,
 )
 from motor.common.logger import get_logger
+import motor.common.utils.error as cancel_error
 
 logger = get_logger(__name__)
 
@@ -53,11 +54,11 @@ async def listen_for_disconnect(request: Request) -> None:
             break
 
 
-async def _cancel_tasks_and_wait(*tasks: asyncio.Task) -> None:
+async def _cancel_tasks_and_wait(*tasks: asyncio.Task, reason: str = "") -> None:
     """Cancel given tasks and await them to avoid pending-task warnings."""
     for t in tasks:
         if not t.done():
-            t.cancel()
+            t.cancel(msg=reason)
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -82,13 +83,14 @@ def with_cancellation(handler_func):
                 [handler_task, disconnect_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            await _cancel_tasks_and_wait(*pending)
-
             if handler_task in done:
+                await _cancel_tasks_and_wait(*pending)
                 return handler_task.result()
-            return None
+            else:
+                await _cancel_tasks_and_wait(*pending, reason=cancel_error.CLIENT_DISCONNECT)
+                return None
         except (Exception, asyncio.CancelledError):
-            await _cancel_tasks_and_wait(handler_task, disconnect_task)
+            await _cancel_tasks_and_wait(handler_task, disconnect_task, reason=cancel_error.DISPATCH_ABORT)
             raise
 
     return wrapper

@@ -25,10 +25,11 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.tls_config import TLSConfig
+import motor.common.utils.error as cancel_error
 
 logger = get_logger(__name__)
 
-Canceller = Callable[[], None]
+Canceller = Callable[[str], None]
 
 
 class ConnectionMode(Enum):
@@ -182,9 +183,10 @@ class HttpClientContext(httpx.AsyncClient):
             del self._cancellers[canceller_id]
 
     async def cancel_all(self):
+        reason = f"{cancel_error.NODE_FAULT}: {super().base_url}"
         for canceller in self._cancellers.values():
             if canceller:
-                await canceller()
+                await canceller(reason)
 
 
 class AsyncSafeHTTPSClient:
