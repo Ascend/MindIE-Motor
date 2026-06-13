@@ -373,6 +373,22 @@ class MockAsyncClientFirstStreamRecompute(MockAsyncClient):
 
 
 class TestRouterCDPSeparation:
+    @pytest.fixture(autouse=True)
+    def fast_retry(self, monkeypatch: MonkeyPatch):
+        """Skip real backoff and dispatch-stop HTTP in transport retry tests."""
+
+        async def _instant_sleep(*_args, **_kwargs):
+            return None
+
+        async def _noop_dispatch_stop(self, resource, attempt, reason, timeout=1.0):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+        monkeypatch.setattr(
+            "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+            _noop_dispatch_stop,
+        )
+
     @pytest.fixture
     def client(self):
         return TestClient(app)

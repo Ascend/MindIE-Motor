@@ -247,10 +247,7 @@ async def test_health_check_loop_normal(mock_sleep, mock_send_request, mock_thre
     # Set status to normal
     sim_inference.set_status(constants.NORMAL_STATUS)
 
-    # Mock thread creation and join
-    mock_thread_instance = mock.MagicMock()
-    mock_thread.return_value = mock_thread_instance
-    mock_thread_instance.is_alive.return_value = False
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     # Mock successful request sending
     mock_send_request.return_value = None
@@ -280,10 +277,7 @@ async def test_health_check_loop_abnormal(mock_sleep, mock_send_request, mock_th
 
     sim_inference._count_failure_flag = True
 
-    # Mock thread creation and join
-    mock_thread_instance = mock.MagicMock()
-    mock_thread.return_value = mock_thread_instance
-    mock_thread_instance.is_alive.return_value = False
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     # Mock failed request sending
     mock_send_request.side_effect = Exception("Request failed")
@@ -314,10 +308,7 @@ async def test_health_check_loop_reset_abnormal(mock_sleep, mock_send_request, m
     # First set to abnormal status
     sim_inference.set_abnormal_status()
 
-    # Mock thread creation and join
-    mock_thread_instance = mock.MagicMock()
-    mock_thread.return_value = mock_thread_instance
-    mock_thread_instance.is_alive.return_value = False
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     # Mock successful request sending
     mock_send_request.return_value = None
@@ -337,10 +328,17 @@ async def test_health_check_loop_reset_abnormal(mock_sleep, mock_send_request, m
     assert not sim_inference.is_abnormal()
 
 
-def _mock_health_check_loop_thread(mock_thread):
+def _mock_health_check_loop_thread(mock_thread, sim_inference=None):
     mock_thread_instance = mock.MagicMock()
     mock_thread.return_value = mock_thread_instance
     mock_thread_instance.is_alive.return_value = False
+    if sim_inference is not None:
+
+        def _fast_aicore_wait(timeout=None):
+            with sim_inference._aicore_check_condition:
+                sim_inference._aicore_check_active = False
+
+        sim_inference._aicore_check_condition.wait = _fast_aicore_wait
 
 
 @pytest.mark.asyncio
@@ -349,7 +347,7 @@ def _mock_health_check_loop_thread(mock_thread):
 async def test_health_check_loop_high_aicore_extends_sleep(mock_sleep, mock_thread, sim_inference):
     """AICore >= 80% should extend virtual inference sleep to 20 seconds."""
     sim_inference.set_status(constants.NORMAL_STATUS)
-    _mock_health_check_loop_thread(mock_thread)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     async def set_high_aicore_usage(timeout):
         with sim_inference._shared_data_lock:
@@ -369,7 +367,7 @@ async def test_health_check_loop_high_aicore_extends_sleep(mock_sleep, mock_thre
 async def test_health_check_loop_low_aicore_keeps_default_sleep(mock_sleep, mock_thread, sim_inference):
     """AICore < 80% should keep virtual inference sleep at 5 seconds."""
     sim_inference.set_status(constants.NORMAL_STATUS)
-    _mock_health_check_loop_thread(mock_thread)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     async def set_low_aicore_usage(timeout):
         with sim_inference._shared_data_lock:
@@ -391,7 +389,7 @@ async def test_health_check_loop_aicore_sleep_keeps_extended_after_moderate_load
 ):
     """After high AICore, sleep stays at 20s when usage is between threshold and 80%."""
     sim_inference.set_status(constants.NORMAL_STATUS)
-    _mock_health_check_loop_thread(mock_thread)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     iteration = 0
 
@@ -415,7 +413,7 @@ async def test_health_check_loop_aicore_sleep_keeps_extended_after_moderate_load
 async def test_health_check_loop_aicore_sleep_reverts_below_threshold(mock_sleep, mock_thread, sim_inference):
     """After high AICore, sleep reverts to 5s when usage drops below npu_usage_threshold."""
     sim_inference.set_status(constants.NORMAL_STATUS)
-    _mock_health_check_loop_thread(mock_thread)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     iteration = 0
 

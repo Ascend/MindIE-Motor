@@ -15,6 +15,8 @@ Basic functionality tests for Coordinator server
 Using FastAPI TestClient for testing
 """
 
+# pylint: disable=attribute-defined-outside-init,reimported
+
 import json
 import pytest
 from fastapi.testclient import TestClient
@@ -526,7 +528,7 @@ class TestCoordinatorServer:
         assert response.status_code == 200, f"Streaming completion request failed: {response.status_code}"
 
         data = response.json()
-        assert data["data"]["is_stream"] == True, "Stream flag not set correctly"
+        assert data["data"]["is_stream"], "Stream flag not set correctly"
 
         # Test chat completion streaming request
         chat_stream_data = {
@@ -546,7 +548,7 @@ class TestCoordinatorServer:
         assert response.status_code == 200, f"Streaming chat completion request failed: {response.status_code}"
 
         data = response.json()
-        assert data["data"]["is_stream"] == True, "Stream flag not set correctly"
+        assert data["data"]["is_stream"], "Stream flag not set correctly"
 
     def test_error_handling(self):
         """Test error handling"""
@@ -590,8 +592,6 @@ class TestCoordinatorServer:
     def test_rate_limiting(self):
         """Test rate limiting functionality"""
         # Send many requests to test rate limiting
-        rate_limited = False
-
         for i in range(30):  # Send multiple requests to verify endpoint stability under load
             test_data = {
                 "model": "gpt-3.5-turbo",
@@ -606,7 +606,6 @@ class TestCoordinatorServer:
             )
 
             if response.status_code == 429:
-                rate_limited = True
                 break
 
         # Note: Rate limiting may or may not trigger depending on configuration
@@ -708,6 +707,14 @@ class TestFastAPIMiddleware:
         self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
+        self._report_alarms_patcher = patch(
+            "motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms",
+            return_value=True,
+        )
+        self._report_alarms_patcher.start()
+
+    def teardown_method(self):
+        self._report_alarms_patcher.stop()
 
     def test_simple_rate_limit_config(self):
         """Test SimpleRateLimitConfig dataclass"""
@@ -738,7 +745,7 @@ class TestFastAPIMiddleware:
                 del os.environ["RATE_LIMIT_WINDOW_SIZE"]
 
             config = self.load_rate_limit_config()
-            assert config.enabled == True, "Should use default enabled=True"
+            assert config.enabled, "Should use default enabled=True"
             assert config.max_requests == 100, "Should use default max_requests=100"
             assert config.window_size == 60, "Should use default window_size=60"
         finally:
@@ -770,7 +777,7 @@ class TestFastAPIMiddleware:
             os.environ["RATE_LIMIT_SKIP_PATHS"] = "/liveness,/health"
 
             config = self.load_rate_limit_config()
-            assert config.enabled == False, "Should load enabled from env"
+            assert not config.enabled, "Should load enabled from env"
             assert config.max_requests == 200, "Should load max_requests from env"
             assert config.window_size == 30, "Should load window_size from env"
             assert config.scope == "global", "Should load scope from env"
@@ -821,7 +828,7 @@ class TestFastAPIMiddleware:
 
         try:
             config = self.load_rate_limit_config(config_file=config_file)
-            assert config.enabled == False, "Should load enabled from file"
+            assert not config.enabled, "Should load enabled from file"
             assert config.max_requests == 300, "Should load max_requests from file"
             assert config.window_size == 45, "Should load window_size from file"
             assert config.error_message == "Custom error message", "Should load error_message from file"
@@ -1297,16 +1304,16 @@ class TestCoordinatorServerAdvanced:
     def test_openai_is_stream(self):
         """Test _openai_is_stream method"""
         # Test with stream=True
-        assert self.coordinator_server._openai_is_stream({"stream": True}) == True
+        assert self.coordinator_server._openai_is_stream({"stream": True})
 
         # Test with stream=False
-        assert self.coordinator_server._openai_is_stream({"stream": False}) == False
+        assert not self.coordinator_server._openai_is_stream({"stream": False})
 
         # Test without stream field
-        assert self.coordinator_server._openai_is_stream({}) == False
+        assert not self.coordinator_server._openai_is_stream({})
 
         # Test with stream as string
-        assert self.coordinator_server._openai_is_stream({"stream": "true"}) == True  # Truthy value
+        assert self.coordinator_server._openai_is_stream({"stream": "true"})  # Truthy value
 
     def test_refresh_instances_with_complex_endpoints(self):
         """Test refresh_instances with complex endpoint structures"""
@@ -1397,7 +1404,7 @@ class TestCoordinatorServerAdvanced:
     def test_verify_api_key_skip_paths(self):
         """Test verify_api_key with skip paths"""
         # Test that skip paths don't require API key
-        inference_client = TestClient(self.coordinator_server.inference_app)
+        TestClient(self.coordinator_server.inference_app)
 
         # These paths should not require API key (tested indirectly through skip_paths)
         # The actual skip paths are configured in api_key_config
@@ -1410,9 +1417,8 @@ class TestCoordinatorServerAdvanced:
         app = FastAPI(lifespan=self.coordinator_server.lifespan)
         client = TestClient(app)
 
-        # The lifespan should work correctly
-        response = client.get("/")
-        # Should not raise errors
+        # The lifespan should work correctly (any HTTP status means the app responded)
+        client.get("/")
         assert True, "Lifespan context manager works correctly"
 
     def test_setup_rate_limiting_with_disabled_config(self):
@@ -1524,6 +1530,14 @@ class TestFastAPIMiddlewareAdvanced:
         self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
+        self._report_alarms_patcher = patch(
+            "motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms",
+            return_value=True,
+        )
+        self._report_alarms_patcher.start()
+
+    def teardown_method(self):
+        self._report_alarms_patcher.stop()
 
     def test_rate_limit_middleware_extract_request_data(self):
         """Test _extract_request_data method"""
@@ -1616,7 +1630,7 @@ class TestFastAPIMiddlewareAdvanced:
         """Test load_rate_limit_config with non-existent file"""
         config = self.load_rate_limit_config(config_file="/nonexistent/config.json")
         assert config is not None, "Should return default config when file not found"
-        assert config.enabled == True, "Should use default enabled value"
+        assert config.enabled, "Should use default enabled value"
 
     def test_load_rate_limit_config_invalid_json(self):
         """Test load_rate_limit_config with invalid JSON file"""
@@ -1880,15 +1894,15 @@ class TestAnthropicEndpoints:
             except Exception:
                 body_json = {}
 
-            input_data = ""
             if "messages" in body_json:
-                input_data = json.dumps(body_json["messages"], ensure_ascii=False)
+                json.dumps(body_json["messages"], ensure_ascii=False)
 
             is_stream = body_json.get("stream", False)
             if isinstance(is_stream, str):
                 is_stream = is_stream.lower() in ("true", "1", "yes")
 
             import hashlib
+
             request_id = f"req-{hashlib.md5(str(body_json).encode()).hexdigest()[:8]}"
 
             response_data = {
