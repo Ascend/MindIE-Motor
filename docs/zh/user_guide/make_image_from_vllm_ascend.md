@@ -34,14 +34,10 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
     ```
 
 4. 执行以下命令制作镜像。
-    
+
     ```bash
     apt-get update && apt-get install pciutils -y
 
-    cd /mnt/MindIE-PyMotor
-    ```
-
-    ```bash
     docker exec -it docker-vllm-ascend bash
 
     cd /mnt/MindIE-PyMotor
@@ -51,6 +47,10 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
     bash build.sh
 
     pip install --force-reinstall ./dist/motor-0.1.0-py3-none-any.whl
+
+    mkdir -p /tmp/motor/
+
+    cp -r ./examples/ /tmp/motor/
 
     exit
     ```
