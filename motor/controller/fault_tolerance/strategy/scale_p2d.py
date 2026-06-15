@@ -307,8 +307,11 @@ class ScaleP2DStrategy(StrategyBase):
         """
         Wait until the Decode instance is isolated and safe for ScaleP2D preemption.
 
-        Returns False if the instance stays ACTIVE/INITIAL (recovery not needed),
-        is deleted, times out, or the strategy is stopped.
+        The instance is looked up by job_name because redundant-node recovery may assign
+        a new instance id while preserving the job_name.
+
+        Returns False if the current D instance is INITIAL/ACTIVE (recovered, ScaleP2D
+        not needed), missing, times out while still operational, or the strategy stops.
         """
         self.context.current_state = RecoveryState.CHECKING
         logger.info(
@@ -332,19 +335,25 @@ class ScaleP2DStrategy(StrategyBase):
                     )
                     return False
 
-                d_instance = InstanceManager().get_instance(self.context.d_instance_id)
+                d_instance = InstanceManager().get_instance_by_job_name(self.context.d_instance_job_name)
                 if d_instance is None:
-                    self.context.last_error = f"D instance {self.context.d_instance_id} not found during status check"
+                    self.context.last_error = (
+                        f"D instance not found for job_name {self.context.d_instance_job_name} during status check"
+                    )
                     logger.error(
-                        "D instance disappeared during status check. instance_id=%d, reason=instance_not_found",
+                        "D instance disappeared during status check. instance_id=%d, job_name=%s, "
+                        "reason=instance_not_found",
                         self.context.d_instance_id,
+                        self.context.d_instance_job_name,
                     )
                     return False
 
                 if d_instance.status in (InsStatus.INITIAL, InsStatus.ACTIVE):
                     logger.info(
-                        "D instance still active, ScaleP2D not needed. instance_id=%d, job_name=%s, status=%s",
+                        "D instance recovered, ScaleP2D not needed. trigger_instance_id=%d, "
+                        "current_instance_id=%d, job_name=%s, status=%s",
                         self.context.d_instance_id,
+                        d_instance.id,
                         self.context.d_instance_job_name,
                         d_instance.status.value,
                     )
@@ -354,9 +363,10 @@ class ScaleP2DStrategy(StrategyBase):
                 # Throttle debug logs: first poll and every 5th poll.
                 if poll_count == 1 or poll_count % 5 == 0:
                     logger.debug(
-                        "Waiting for D instance to leave active state. instance_id=%d, "
+                        "Waiting for D instance isolation. trigger_instance_id=%d, current_instance_id=%d, "
                         "job_name=%s, status=%s, poll_count=%d, elapsed_s=%.1f",
                         self.context.d_instance_id,
+                        d_instance.id,
                         self.context.d_instance_job_name,
                         d_instance.status.value,
                         poll_count,
@@ -364,19 +374,24 @@ class ScaleP2DStrategy(StrategyBase):
                     )
                 time.sleep(self.CHECK_D_INSTANCE_STATUS_INTERVAL)
 
-            d_instance = InstanceManager().get_instance(self.context.d_instance_id)
+            d_instance = InstanceManager().get_instance_by_job_name(self.context.d_instance_job_name)
             if d_instance is None:
-                self.context.last_error = f"D instance {self.context.d_instance_id} not found after wait"
+                self.context.last_error = (
+                    f"D instance not found for job_name {self.context.d_instance_job_name} after wait"
+                )
                 logger.error(
-                    "D instance not found after status wait. instance_id=%d",
+                    "D instance not found after status wait. instance_id=%d, job_name=%s",
                     self.context.d_instance_id,
+                    self.context.d_instance_job_name,
                 )
                 return False
 
             if d_instance.status not in (InsStatus.INITIAL, InsStatus.ACTIVE):
                 logger.info(
-                    "D instance ready for ScaleP2D. instance_id=%d, job_name=%s, status=%s, waited_s=%.1f",
+                    "D instance ready for ScaleP2D. trigger_instance_id=%d, current_instance_id=%d, "
+                    "job_name=%s, status=%s, waited_s=%.1f",
                     self.context.d_instance_id,
+                    d_instance.id,
                     self.context.d_instance_job_name,
                     d_instance.status.value,
                     time.time() - start_time,
@@ -389,11 +404,12 @@ class ScaleP2DStrategy(StrategyBase):
             )
             logger.error(
                 "D instance status check timed out. instance_id=%d, job_name=%s, "
-                "status=%s, timeout_s=%d, "
+                "current_instance_id=%d, status=%s, timeout_s=%d, "
                 "check: 1. fault isolation has set D instance to INACTIVE "
                 "2. InstanceManager status sync is not delayed",
                 self.context.d_instance_id,
                 self.context.d_instance_job_name,
+                d_instance.id,
                 d_instance.status.value,
                 self.CHECK_D_INSTANCE_STATUS_TIMEOUT,
             )
@@ -424,26 +440,45 @@ class ScaleP2DStrategy(StrategyBase):
 
         try:
             all_p_instances = InstanceManager().get_instances_by_role(PDRole.ROLE_P)
-            if not all_p_instances:
-                self.context.last_error = "No Prefill instances available"
+            # only INITIAL/ACTIVE instances are still operational and reachable via stop API.
+            operational_p_instances = [
+                inst for inst in all_p_instances if inst.status in (InsStatus.INITIAL, InsStatus.ACTIVE)
+            ]
+            if not operational_p_instances:
+                self.context.last_error = "No operational Prefill instances (INITIAL/ACTIVE) available"
                 logger.error(
-                    "No Prefill instances available. instance_id=%d, "
-                    "reason=no_p_instances, "
-                    "check: ROLE_P instances exist in the cluster",
+                    "No operational Prefill instances available. instance_id=%d, "
+                    "total_p_count=%d, reason=no_operational_p_instances, "
+                    "check: ROLE_P instances in INITIAL or ACTIVE status exist in the cluster",
                     self.context.d_instance_id,
+                    len(all_p_instances),
                 )
                 return False
 
-            self.context.num_node_per_instance_P = len(all_p_instances[0].get_node_managers())
+            if len(operational_p_instances) < len(all_p_instances):
+                stale_inactive_ids = [
+                    inst.id for inst in all_p_instances if inst.status not in (InsStatus.INITIAL, InsStatus.ACTIVE)
+                ]
+                logger.info(
+                    "Skipped INACTIVE P instances pending InstanceManager purge. instance_id=%d, "
+                    "total_p_count=%d, operational_count=%d, stale_inactive_ids=%s",
+                    self.context.d_instance_id,
+                    len(all_p_instances),
+                    len(operational_p_instances),
+                    stale_inactive_ids,
+                )
+
+            self.context.num_node_per_instance_P = len(operational_p_instances[0].get_node_managers())
 
             # num_required_node was set in _get_d_instance() via _get_faulty_node_count().
             # Reserve one Prefill instance; the rest contribute available nodes.
-            num_available_node = self.context.num_node_per_instance_P * (len(all_p_instances) - 1)
+            num_available_node = self.context.num_node_per_instance_P * (len(operational_p_instances) - 1)
             logger.info(
                 "P instance pool evaluated. instance_id=%d, p_instance_count=%d, "
-                "nodes_per_p=%d, required_nodes=%d, available_nodes=%d",
+                "operational_p_count=%d, nodes_per_p=%d, required_nodes=%d, available_nodes=%d",
                 self.context.d_instance_id,
                 len(all_p_instances),
+                len(operational_p_instances),
                 self.context.num_node_per_instance_P,
                 self.context.num_required_node,
                 num_available_node,
@@ -457,11 +492,11 @@ class ScaleP2DStrategy(StrategyBase):
                     self.context.d_instance_id,
                     self.context.num_required_node,
                     num_available_node,
-                    len(all_p_instances),
+                    len(operational_p_instances),
                 )
                 return False
 
-            selected_instances = self._select_instances_algorithm(all_p_instances)
+            selected_instances = self._select_instances_algorithm(operational_p_instances)
 
             if not selected_instances:
                 self.context.last_error = "Failed to select suitable P instances"
@@ -515,8 +550,12 @@ class ScaleP2DStrategy(StrategyBase):
         if self.context.num_required_node % self.context.num_node_per_instance_P != 0:
             required_num_instance_P += 1
 
-        # Placeholder: sort by ID; production code should sort by cost score.
-        sorted_instances = sorted(available_instances, key=lambda x: x.id)
+        # Prefer INITIAL over ACTIVE, then sort by ID; production code should sort by cost score.
+        def _selection_key(inst: Instance) -> tuple[int, int]:
+            status_priority = 0 if inst.status == InsStatus.INITIAL else 1
+            return (status_priority, inst.id)
+
+        sorted_instances = sorted(available_instances, key=_selection_key)
 
         return sorted_instances[:required_num_instance_P]
 

@@ -51,10 +51,15 @@ def _decode_instance(
     return inst
 
 
-def _prefill_instance(instance_id: int, node_count: int = 1) -> Mock:
+def _prefill_instance(
+    instance_id: int,
+    node_count: int = 1,
+    status: InsStatus = InsStatus.ACTIVE,
+) -> Mock:
     inst = Mock(spec=Instance)
     inst.id = instance_id
     inst.job_name = f"prefill-{instance_id}"
+    inst.status = status
     inst.get_node_managers.return_value = [
         NodeManagerInfo(pod_ip=f"10.0.0.{instance_id}", port="8080") for _ in range(node_count)
     ]
@@ -219,7 +224,7 @@ def test_get_faulty_node_count_fallback_on_exception(bind_context):
 def test_check_d_instance_status_rejects_active(bind_context):
     d_inst = _decode_instance(status=InsStatus.ACTIVE)
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
-        mock_im_cls.return_value.get_instance.return_value = d_inst
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
         assert bind_context._check_d_instance_status() is False
 
     assert bind_context.context.current_state == RecoveryState.CHECKING
@@ -228,14 +233,24 @@ def test_check_d_instance_status_rejects_active(bind_context):
 def test_check_d_instance_status_accepts_inactive(bind_context):
     d_inst = _decode_instance(status=InsStatus.INACTIVE)
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
-        mock_im_cls.return_value.get_instance.return_value = d_inst
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
         with patch.object(ScaleP2DStrategy, "CHECK_D_INSTANCE_STATUS_TIMEOUT", 0):
             assert bind_context._check_d_instance_status() is True
 
 
-def test_check_d_instance_status_rejects_deleted(bind_context):
+def test_check_d_instance_status_rejects_when_no_instance_by_job_name(bind_context):
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
-        mock_im_cls.return_value.get_instance.return_value = None
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = None
+        with patch.object(ScaleP2DStrategy, "CHECK_D_INSTANCE_STATUS_TIMEOUT", 0):
+            assert bind_context._check_d_instance_status() is False
+
+    assert "not found for job_name" in bind_context.context.last_error
+
+
+def test_check_d_instance_status_rejects_recovered_instance_with_new_id(bind_context):
+    recovered_inst = _decode_instance(instance_id=5, status=InsStatus.ACTIVE)
+    with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = recovered_inst
         assert bind_context._check_d_instance_status() is False
 
 
@@ -243,14 +258,14 @@ def test_check_d_instance_status_interrupted_by_stop(bind_context):
     d_inst = _decode_instance(status=InsStatus.INACTIVE)
     bind_context.event.set()
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
-        mock_im_cls.return_value.get_instance.return_value = d_inst
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
         assert bind_context._check_d_instance_status() is False
 
 
 def test_check_d_instance_status_times_out_while_active(bind_context):
     d_inst = _decode_instance(status=InsStatus.ACTIVE)
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
-        mock_im_cls.return_value.get_instance.return_value = d_inst
+        mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
         with patch.object(ScaleP2DStrategy, "CHECK_D_INSTANCE_STATUS_TIMEOUT", 0):
             assert bind_context._check_d_instance_status() is False
 
@@ -267,6 +282,19 @@ def test_select_p_instances_fails_when_no_prefill(bind_context):
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
         mock_im_cls.return_value.get_instances_by_role.return_value = []
         assert bind_context._select_p_instances_to_kill() is False
+
+
+def test_select_p_instances_fails_when_only_inactive_prefill(bind_context):
+    bind_context.context.num_required_node = 1
+    p_instances = [
+        _prefill_instance(2, status=InsStatus.INACTIVE),
+        _prefill_instance(3, status=InsStatus.INACTIVE),
+    ]
+    with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
+        mock_im_cls.return_value.get_instances_by_role.return_value = p_instances
+        assert bind_context._select_p_instances_to_kill() is False
+
+    assert "No operational Prefill instances" in bind_context.context.last_error
 
 
 def test_select_p_instances_fails_when_insufficient_nodes(bind_context):
@@ -292,10 +320,51 @@ def test_select_p_instances_success(bind_context):
     assert bind_context.context.selected_p_instances == [p_instances[0]]
 
 
+def test_select_p_instances_skips_inactive(bind_context):
+    bind_context.context.num_required_node = 1
+    inactive = _prefill_instance(2, status=InsStatus.INACTIVE)
+    active = _prefill_instance(3, status=InsStatus.ACTIVE)
+    initial = _prefill_instance(4, status=InsStatus.INITIAL)
+    p_instances = [inactive, active, initial]
+    with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
+        mock_im_cls.return_value.get_instances_by_role.return_value = p_instances
+        assert bind_context._select_p_instances_to_kill() is True
+
+    assert bind_context.context.selected_p_instances == [initial]
+
+
 def test_select_instances_algorithm_picks_minimum_instances(bind_context):
     bind_context.context.num_required_node = 3
     bind_context.context.num_node_per_instance_P = 2
     instances = [_prefill_instance(5), _prefill_instance(2), _prefill_instance(8)]
+
+    selected = bind_context._select_instances_algorithm(instances)
+
+    assert [inst.id for inst in selected] == [2, 5]
+
+
+def test_select_instances_algorithm_prefers_initial_over_active(bind_context):
+    bind_context.context.num_required_node = 1
+    bind_context.context.num_node_per_instance_P = 1
+    instances = [
+        _prefill_instance(2, status=InsStatus.ACTIVE),
+        _prefill_instance(3, status=InsStatus.INITIAL),
+        _prefill_instance(4, status=InsStatus.ACTIVE),
+    ]
+
+    selected = bind_context._select_instances_algorithm(instances)
+
+    assert [inst.id for inst in selected] == [3]
+
+
+def test_select_instances_algorithm_prefers_lower_id_among_initial(bind_context):
+    bind_context.context.num_required_node = 2
+    bind_context.context.num_node_per_instance_P = 1
+    instances = [
+        _prefill_instance(5, status=InsStatus.INITIAL),
+        _prefill_instance(2, status=InsStatus.INITIAL),
+        _prefill_instance(8, status=InsStatus.ACTIVE),
+    ]
 
     selected = bind_context._select_instances_algorithm(instances)
 

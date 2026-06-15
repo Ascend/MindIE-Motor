@@ -529,6 +529,19 @@ class InstanceManager(ThreadSafeSingleton):
                     return instance
         return None
 
+    def get_instance_by_job_name(self, job_name: str) -> Instance | None:
+        """Return the current instance for the given job_name.
+
+        A job_name maps to one logical instance. During recovery the instance id may
+        change while stale entries linger; the entry with the highest id is current.
+        """
+        current: Instance | None = None
+        with self.ins_lock:
+            for instance in self.instances.values():
+                if instance.job_name == job_name:
+                    current = instance
+        return current
+
     def has_instance_by_job_name(self, job_name: str) -> bool:
         """Check if instance exists by job name"""
         with self.ins_lock:
