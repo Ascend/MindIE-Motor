@@ -33,6 +33,16 @@ _TOPLEVEL_COMPONENTS = frozenset({"engine_server", "node_manager", "config"})
 # Top-level packages that use only the second level (e.g. "fault_tolerance", "domain", "http").
 _SECONDLEVEL_COMPONENTS = frozenset({"controller", "coordinator", "common"})
 
+# Third-party loggers that bypass the root WARNING safety net (own handler / own level).
+# Suppressed only when motor log_level == INFO; DEBUG reopens them (follow vLLM design).
+_NOISY_THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "urllib3", "uvicorn.error")
+
+# Process-wide shared handler singletons. These are attached to every motor bucket logger
+# (not to root) so that third-party libraries' INFO messages are not picked up.
+_shared_handlers: list[logging.Handler] = []
+# Names of motor bucket loggers that have already been wired with shared handlers.
+_motor_buckets: set[str] = set()
+
 
 class ProcessContextFilter(logging.Filter):
     """Inject process name into LogRecord for format placeholders."""
@@ -128,6 +138,124 @@ def _build_formatter(config: LoggingConfig, *, color: bool) -> MaxLengthFormatte
     return MaxLengthFormatter(inner, config.log_max_line_length)
 
 
+def _ensure_shared_handlers(config: LoggingConfig, log_dir: str | None) -> list[logging.Handler]:
+    """Lazily build the process-wide shared handler set (console + optional file).
+
+    Handlers are NOT attached to root; they are attached to each motor bucket logger
+    by ``_attach_shared_handlers``. This keeps third-party logger INFO messages out
+    of the motor output stream.
+    """
+    global _shared_handlers
+    if _shared_handlers:
+        return _shared_handlers
+
+    level = getattr(logging, config.log_level.upper(), logging.INFO)
+    process_filter = ProcessContextFilter()
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.addFilter(process_filter)
+    console_handler.setFormatter(_build_formatter(config, color=_use_color()))
+
+    handlers: list[logging.Handler] = [console_handler]
+
+    if log_dir:
+        # Bootstrap log: we may not yet have a motor bucket attached; write directly
+        # to the console handler we just created to avoid losing the message.
+        console_handler.emit(
+            logging.LogRecord(
+                name=_MODULE_LOGGER_NAME,
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=0,
+                msg="Internal logs of pod will be saved to %s, will mounted to host %s",
+                args=(log_dir, config.host_log_dir),
+                exc_info=None,
+            )
+        )
+
+        # Get log_dir from pod name prefix, remove random suffix
+        parts = hostname.split('-')
+        if len(parts) <= 2:
+            module_log_dir = os.path.join(log_dir, hostname)
+        else:
+            module_log_dir = os.path.join(log_dir, '-'.join(parts[:-2]))
+
+        if not os.path.exists(module_log_dir):
+            try:
+                Path(module_log_dir).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                console_handler.emit(
+                    logging.LogRecord(
+                        name=_MODULE_LOGGER_NAME,
+                        level=logging.ERROR,
+                        pathname=__file__,
+                        lineno=0,
+                        msg="Failed to create log directory: %s",
+                        args=(module_log_dir,),
+                        exc_info=None,
+                    )
+                )
+        if os.path.exists(module_log_dir):
+            try:
+                log_file = os.path.join(module_log_dir, f"{hostname}_{os.getpid()}.log")
+
+                rotate_handler = CompressedRotatingFileHandler(
+                    filename=log_file,
+                    maxBytes=config.log_rotation_size * 1024 * 1024,
+                    backupCount=config.log_rotation_count,
+                    compress=config.log_compress,
+                    compress_level=config.log_compress_level,
+                    max_total_size=config.log_max_total_size * 1024 * 1024,
+                    cleanup_interval=config.log_cleanup_interval,
+                )
+                rotate_handler.addFilter(process_filter)
+                rotate_handler.setFormatter(_build_formatter(config, color=False))
+                handlers.append(rotate_handler)
+            except Exception:
+                console_handler.emit(
+                    logging.LogRecord(
+                        name=_MODULE_LOGGER_NAME,
+                        level=logging.ERROR,
+                        pathname=__file__,
+                        lineno=0,
+                        msg="Failed to configure log handler",
+                        args=(),
+                        exc_info=None,
+                    )
+                )
+
+    _shared_handlers = handlers
+    return handlers
+
+
+def _attach_shared_handlers(bucket: logging.Logger) -> None:
+    """Attach the shared handler set to a motor bucket logger.
+
+    Handlers live on the bucket logger, not on root.  Propagation is disabled
+    in production to prevent double emission when root accidentally picks up a
+    handler (e.g. from ``logging.basicConfig()`` in a third-party lib, an
+    example script, or a side effect during import).
+
+    In pytest the propagation guard is skipped so that ``caplog`` (which hooks
+    into root) can still capture motor bucket log records.
+
+    Third-party loggers (httpx, urllib3, …) use their own names and never flow
+    through a motor bucket, so disabling motor-bucket propagation does NOT
+    silence them — they still propagate up to root on their own.
+    """
+    if bucket.name in _motor_buckets:
+        return
+    # Keep propagation in pytest so caplog works.  Use sys.modules instead of
+    # PYTEST_CURRENT_TEST because module-level get_logger(__name__) calls
+    # happen during test collection, before the env var is set.
+    if 'pytest' not in sys.modules:
+        bucket.propagate = False
+    for handler in _shared_handlers:
+        bucket.addHandler(handler)
+    _motor_buckets.add(bucket.name)
+
+
 def get_logger(name: str = __name__, level: int | None = None):
     """
     Get or create a logger with enhanced capabilities.
@@ -150,126 +278,69 @@ def get_logger(name: str = __name__, level: int | None = None):
         level = getattr(logging, config.log_level.upper(), logging.INFO)
 
     log_name = _resolve_logger_name(name)
-    root_logger = logging.getLogger()
     logger = logging.getLogger(log_name)
 
-    # Only configure root when it has no handlers (e.g. first use in process).
-    # If root already has handlers, it was likely set by reconfigure_logging() (e.g. DEBUG);
-    # calling _ensure_root_logger_configured with default LoggingConfig() would overwrite
-    # level back to INFO and hide DEBUG logs in API server workers.
-    if not root_logger.handlers:
-        _ensure_root_logger_configured(config, env_log_dir)
+    # Lazily build shared handlers (console + optional file) before attaching.
+    _ensure_shared_handlers(config, env_log_dir)
+    _attach_shared_handlers(logger)
+
+    # If level is overridden by the caller, honor it; otherwise keep logger at NOTSET
+    # so that records pass through and the per-bucket level (set by reconfigure_logging
+    # or by the implicit default below) decides what gets emitted.
+    if level is not None:
         logger.setLevel(level)
-    else:
-        # Leave root and its handlers unchanged; set this logger to DEBUG so it does not
-        # filter messages—root/handlers will apply the actual level from reconfigure_logging.
-        logger.setLevel(logging.DEBUG)
 
     return logger
 
 
-def _ensure_root_logger_configured(config: LoggingConfig, log_dir: str | None) -> None:
-    """Ensure root logger has the proper handlers configured."""
-    root_logger = logging.getLogger()
-    level = getattr(logging, config.log_level.upper(), logging.INFO)
+def _suppress_noisy_third_party_loggers(log_level: str) -> None:
+    """Point-kill third-party loggers that bypass Python's default root WARNING.
 
-    # If root logger already has handlers, update their level and return
-    # Fix: update level of existing handlers as well
-    if root_logger.handlers:
-        root_logger.setLevel(level)
-        for handler in root_logger.handlers:
-            handler.setLevel(level)
+    Mirrors vLLM's approach: when motor is at INFO, force these specific loggers
+    to WARNING so their verbose output stays out of the motor log stream. DEBUG
+    mode reopens them so users can inspect what those libraries are doing.
+    """
+    if log_level.upper() != "INFO":
         return
-
-    # Configure root logger with handlers
-    root_logger.setLevel(level)
-
-    process_filter = ProcessContextFilter()
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
-    console_handler.addFilter(process_filter)
-    console_handler.setFormatter(_build_formatter(config, color=_use_color()))
-    root_logger.addHandler(console_handler)
-
-    file_formatter = _build_formatter(config, color=False)
-
-    # File handler (optional)
-    if log_dir:
-        _module_logger().info(
-            "Internal logs of pod will be saved to %s, will mounted to host %s",
-            log_dir,
-            config.host_log_dir,
-        )
-
-        # Get log_dir from pod name prefix, remove random suffix
-        parts = hostname.split('-')
-        if len(parts) <= 2:
-            module_log_dir = os.path.join(log_dir, hostname)
-        else:
-            module_log_dir = os.path.join(log_dir, '-'.join(parts[:-2]))
-
-        if not os.path.exists(module_log_dir):
-            try:
-                Path(module_log_dir).mkdir(parents=True, exist_ok=True)
-            except Exception:
-                _module_logger().error("Failed to create log directory: %s", module_log_dir)
-        if os.path.exists(module_log_dir):
-            try:
-                log_file = os.path.join(module_log_dir, f"{hostname}_{os.getpid()}.log")
-
-                rotate_handler = CompressedRotatingFileHandler(
-                    filename=log_file,
-                    maxBytes=config.log_rotation_size * 1024 * 1024,
-                    backupCount=config.log_rotation_count,
-                    compress=config.log_compress,
-                    compress_level=config.log_compress_level,
-                    max_total_size=config.log_max_total_size * 1024 * 1024,
-                    cleanup_interval=config.log_cleanup_interval,
-                )
-                rotate_handler.addFilter(process_filter)
-                rotate_handler.setFormatter(file_formatter)
-                root_logger.addHandler(rotate_handler)
-            except Exception:
-                _module_logger().error("Failed to configure log handler")
+    for name in _NOISY_THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def reconfigure_logging(log_config: LoggingConfig) -> None:
     """
-    Reconfigure all loggers with new logging configuration.
-    This function is used by config classes to update logging after config reload.
+    Reconfigure logging using a new LoggingConfig.
 
-    Args:
-        log_config: LoggingConfig object with new configuration
+    Behaviour follows the vLLM pattern:
+
+    - Shared motor handlers are (re)created and attached to every previously seen
+      motor bucket logger. Root logger is left untouched at Python's WARNING default.
+    - The level of every motor bucket logger is updated to the new level.
+    - Third-party loggers that bypass root WARNING are point-killed when motor
+      is at INFO.
     """
-
-    # Get new logging level
-    new_level = getattr(logging, log_config.log_level.upper(), logging.INFO)
-
     # Check if we're running in pytest (to avoid breaking caplog)
     is_pytest = os.environ.get('PYTEST_CURRENT_TEST') is not None
-
     if is_pytest:
-        # In test environment, skip logging reconfiguration to avoid breaking pytest caplog
         return
 
-    # Ensure root logger is properly configured with new settings
-    root_logger = logging.getLogger()
+    global _shared_handlers
+    new_level = getattr(logging, log_config.log_level.upper(), logging.INFO)
 
-    # Remove existing handlers and reconfigure
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+    # Rebuild shared handlers from the new config. Existing handlers (from a
+    # previous get_logger call with default config) are detached first so we do
+    # not double-emit when the formatter/level changes.
+    for handler in _shared_handlers:
+        for bucket_name in list(_motor_buckets):
+            logging.getLogger(bucket_name).removeHandler(handler)
+    _shared_handlers = []
+    new_handlers = _ensure_shared_handlers(log_config, env_log_dir)
 
-    # Reconfigure root logger with new settings
-    _ensure_root_logger_configured(log_config, env_log_dir)
+    for bucket_name in list(_motor_buckets):
+        bucket = logging.getLogger(bucket_name)
+        for handler in new_handlers:
+            bucket.addHandler(handler)
+        bucket.setLevel(new_level)
 
-    # Update level of all handlers (ensure handler level matches config)
-    for handler in root_logger.handlers:
-        handler.setLevel(new_level)
-
-    # Update all existing logger levels (they propagate to root logger for formatting)
-    for name in logging.root.manager.loggerDict:  # pylint: disable=no-member
-        logger_obj = logging.getLogger(name)
-        logger_obj.setLevel(new_level)
+    _suppress_noisy_third_party_loggers(log_config.log_level)
 
     _module_logger().info("Logging reconfigured with level: %s", log_config.log_level)
