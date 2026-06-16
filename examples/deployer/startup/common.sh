@@ -9,6 +9,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+MOTOR_PATCH_ROOT="/tmp/motor/examples/deployer/patch"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Current node role: ROLE=$ROLE"
@@ -125,7 +127,7 @@ setup_ascend_cache_path() {
 }
 
 apply_shuffle_safetensors_patch() {
-    local patch_script="${CONFIGMAP_PATH}/patch_apply_shuffle_safetensors.py"
+    local patch_script="${MOTOR_PATCH_ROOT}/patch_apply_shuffle_safetensors.py"
     if [ ! -f "$patch_script" ]; then
         echo "Warning: shuffle safetensors patch script not found: $patch_script"
         return 0
