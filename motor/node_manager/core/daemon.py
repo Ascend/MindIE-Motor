@@ -146,9 +146,16 @@ class Daemon(ThreadSafeSingleton):
                     cmd.extend(["--dp-rpc-port", str(self.dp_rpc_port)])
                     if self.lookup_rpc_port is not None:
                         cmd.extend(["--lookup-rpc-port", str(self.lookup_rpc_port)])
-                if d2d_peer_ips is not None:
-                    cmd.extend(["--d2d-peer-ips", ",".join(d2d_peer_ips)])
-                    logger.info("D2D peer IPs: %s", d2d_peer_ips)
+                if d2d_peer_ips:
+                    ep_id = str(endpoint.id)
+                    peer_ips = []
+                    for entry in d2d_peer_ips:
+                        encoded_ep_id, ip = entry.split(":", 1)
+                        if encoded_ep_id == ep_id:
+                            peer_ips.append(ip)
+                    if peer_ips:
+                        cmd.extend(["--d2d-peer-ips", ",".join(peer_ips)])
+                    logger.info("D2D peer IPs for ep_id %s: %s", endpoint.id, peer_ips)
                 logger.info(" ".join(cmd))
                 process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
                 if process.poll() is not None:

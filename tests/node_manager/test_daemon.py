@@ -175,7 +175,7 @@ class TestDaemon:
         mock_popen.return_value = mock_process
 
         endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
-        d2d_peer_ips = ["192.168.1.10", "192.168.1.11"]
+        d2d_peer_ips = ["0:192.168.1.10", "0:192.168.1.11"]
 
         daemon.pull_engine(
             PDRole.ROLE_P,
@@ -213,8 +213,8 @@ class TestDaemon:
 
     @patch('subprocess.Popen')
     def test_pull_engine_with_empty_d2d_peer_ips(self, mock_popen, daemon):
-        """pull_engine adds --d2d-peer-ips even when d2d_peer_ips is empty list
-        (first instance needs ElasticServer running to serve subsequent peers).
+        """pull_engine does NOT add --d2d-peer-ips when d2d_peer_ips is empty list
+        (no peers means no D2D transfer needed; upstream returns None, not []).
         """
         mock_process = MagicMock(pid=12345)
         mock_process.poll.return_value = None
@@ -232,7 +232,56 @@ class TestDaemon:
 
         mock_popen.assert_called_once()
         cmd = mock_popen.call_args.args[0]
-        assert '--d2d-peer-ips' in cmd
+        assert '--d2d-peer-ips' not in cmd
+
+    @patch('subprocess.Popen')
+    def test_pull_engine_with_d2d_peer_ips_rank_encoded(self, mock_popen, daemon):
+        """pull_engine routes rank-encoded d2d_peer_ips to matching endpoint.id engines."""
+        mock_process = MagicMock(pid=12345)
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+
+        endpoints = [
+            Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090"),
+            Endpoint(id=1, ip="10.0.0.1", business_port="9001", mgmt_port="9091"),
+        ]
+        d2d_peer_ips = ["0:192.168.1.10", "1:192.168.1.11"]
+
+        daemon.pull_engine(
+            PDRole.ROLE_P,
+            endpoints,
+            instance_id=1,
+            master_dp_ip="192.168.1.100",
+            d2d_peer_ips=d2d_peer_ips,
+        )
+
+        assert mock_popen.call_count == 2
+        first_cmd = mock_popen.call_args_list[0].args[0]
+        second_cmd = mock_popen.call_args_list[1].args[0]
+        assert first_cmd[first_cmd.index('--d2d-peer-ips') + 1] == "192.168.1.10"
+        assert second_cmd[second_cmd.index('--d2d-peer-ips') + 1] == "192.168.1.11"
+
+    @patch('subprocess.Popen')
+    def test_pull_engine_d2d_peer_ips_no_match_for_endpoint(self, mock_popen, daemon):
+        """pull_engine does NOT add --d2d-peer-ips when d2d_peer_ips has no entries for this endpoint.id."""
+        mock_process = MagicMock(pid=12345)
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+
+        endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        d2d_peer_ips = ["0:192.168.1.10"]
+
+        daemon.pull_engine(
+            PDRole.ROLE_P,
+            [endpoint],
+            instance_id=1,
+            master_dp_ip="192.168.1.100",
+            d2d_peer_ips=d2d_peer_ips,
+        )
+
+        mock_popen.assert_called_once()
+        cmd = mock_popen.call_args.args[0]
+        assert '--d2d-peer-ips' not in cmd
 
     @patch('subprocess.Popen')
     def test_pull_engine_includes_node_rank(self, mock_popen, daemon):

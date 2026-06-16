@@ -286,6 +286,35 @@ def test_get_all_endpoints_single_pod_all_headless() -> None:
     assert len(endpoints) == 0
 
 
+def test_get_all_endpoints_include_headless() -> None:
+    """include_headless=True returns ALL endpoints including headless ones."""
+    instance = Instance(
+        job_name="test_include_headless",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=2, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+    instance.add_endpoints(
+        "10.0.0.1",
+        {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")},
+    )
+    instance.add_endpoints(
+        "10.0.0.2",
+        {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000", headless=True)},
+    )
+
+    # Default: headless excluded
+    assert len(instance.get_all_endpoints()) == 1
+    assert instance.get_all_endpoints()[0].id == 0
+
+    # include_headless=True: both endpoints returned
+    eps = instance.get_all_endpoints(include_headless=True)
+    assert len(eps) == 2
+    assert {ep.id for ep in eps} == {0, 1}
+
+
 def test_endpoint_headless_defaults_to_false() -> None:
     """Endpoint.headless defaults to False for backward compatibility."""
     endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")
@@ -295,7 +324,8 @@ def test_endpoint_headless_defaults_to_false() -> None:
 def test_is_endpoints_enough_counts_all_endpoints() -> None:
     """is_endpoints_enough counts all endpoints regardless of headless flag.
     This is safe because headless is only set when nnodes>1, and in that
-    case _assemble_instance bypasses is_endpoints_enough entirely."""
+    case _assemble_instance bypasses is_endpoints_enough entirely.
+    """
     instance = Instance(
         job_name="test_eps_enough_all",
         model_name="test_model",

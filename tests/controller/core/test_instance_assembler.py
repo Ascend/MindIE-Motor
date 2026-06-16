@@ -204,8 +204,8 @@ def create_assembled_instance(assembler: InstanceAssembler, job_name: str, confi
 
 def test_initialization(mock_config):
     """Test InstanceAssembler initialization"""
-    with patch('threading.Thread') as mock_thread_class:
-        with patch('motor.controller.core.instance_assembler.EtcdClient') as mock_etcd_class:
+    with patch('threading.Thread'):
+        with patch('motor.controller.core.instance_assembler.EtcdClient'):
             assembler = InstanceAssembler(mock_config)
 
             assert assembler.etcd_config is mock_config.etcd_config
@@ -597,7 +597,7 @@ def test_start_command_sender_success(instance_assembler, test_config):
     job_name = "test_sender_success"
 
     # Create assembled instance
-    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock successful send
     def stop_sleep(*args, **kwargs):
@@ -625,7 +625,7 @@ def test_start_command_sender_retry(instance_assembler, test_config):
     job_name = "test_sender_retry"
 
     # Create assembled instance
-    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock failed send
     def stop_sleep(*args, **kwargs):
@@ -657,7 +657,7 @@ def test_start_command_sender_max_retries(instance_assembler, test_config):
     instance_assembler.send_cmd_retry_times = 2
 
     # Create assembled instance
-    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock failed sends
     def stop_sleep(*args, **kwargs):
@@ -719,7 +719,7 @@ def test_persist_data_enabled(instance_assembler, test_config):
     # Reset mock to clear previous calls
     instance_assembler.etcd_client.persist_data.reset_mock()
 
-    result = instance_assembler.persist_data()
+    instance_assembler.persist_data()
 
     # Verify persist was called on etcd_client
     instance_assembler.etcd_client.persist_data.assert_called_once()
@@ -835,7 +835,7 @@ def test_restore_data_invalid_checksum(instance_assembler):
     with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
         result = instance_assembler.restore_data()
 
-        assert result == False  # Should fail because checksum validation fails
+        assert not result  # Should fail because checksum validation fails
         assert instance_assembler.ins_id_cnt == 1  # Should not restore invalid data
 
 
@@ -882,7 +882,7 @@ def test_restore_data_reconstruction_exception(instance_assembler):
         with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
             result = instance_assembler.restore_data()
 
-            assert result == True  # Should succeed but skip problematic instance
+            assert result  # Should succeed but skip problematic instance
             assert len(instance_assembler.instances) == 0  # Should not restore invalid instance
 
 
@@ -934,7 +934,7 @@ def test_persistent_state_is_valid_method():
 
     # Create invalid state with wrong checksum
     invalid_state = PersistentState(data={"test": "data"}, version=1, timestamp=time.time(), checksum="wrong_checksum")
-    assert invalid_state.is_valid() == False
+    assert not invalid_state.is_valid()
 
 
 def test_restore_data_with_type_conversion():
@@ -988,7 +988,7 @@ def test_restore_data_with_type_conversion():
         assert metadata.instance.id == 208  # string "208" converted to int 208
         assert metadata.register_status == RegisterStatus.ASSEMBLED  # string "ASSEMBLED" converted to enum
         assert metadata.start_command_send_times == 0  # string "0" converted to int 0
-        assert metadata.is_reregister == False  # string "False" converted to bool False
+        assert not metadata.is_reregister  # string "False" converted to bool False
 
 
 def test_restore_data_with_invalid_enum_value():
@@ -1215,7 +1215,7 @@ def test_persist_and_restore_data_success(instance_assembler, test_config):
 def test_persist_data_with_checksum_validation(instance_assembler, test_config):
     """Test that persisted data includes correct checksums"""
     # Create test instance
-    metadata = create_assembled_instance(instance_assembler, "test_checksum", test_config)
+    create_assembled_instance(instance_assembler, "test_checksum", test_config)
 
     # Enable persistence
     instance_assembler.etcd_config.enable_etcd_persistence = True
@@ -1575,7 +1575,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         enable_multi_endpoints=False,
     )
     instance1.add_node_mgr("127.0.0.1", "8080", device_num=8)  # 1 node with 8 devices
-    assert instance1.is_endpoints_enough() == False  # Need 2 nodes (16/8=2)
+    assert not instance1.is_endpoints_enough()  # Need 2 nodes (16/8=2)
 
     # Test case 2: Enough node managers
     instance2 = Instance(
@@ -1588,7 +1588,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
     )
     instance2.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance2.add_node_mgr("127.0.0.2", "8081", device_num=8)  # 2 nodes with 8 devices each
-    assert instance2.is_endpoints_enough() == True  # Have 2 nodes (16/8=2)
+    assert instance2.is_endpoints_enough()  # Have 2 nodes (16/8=2)
 
     # Test case 3: World size not divisible by device_num (should use ceiling)
     instance3 = Instance(
@@ -1602,7 +1602,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
     instance3.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance3.add_node_mgr("127.0.0.2", "8081", device_num=8)
     instance3.add_node_mgr("127.0.0.3", "8082", device_num=8)  # 3 nodes with 8 devices each
-    assert instance3.is_endpoints_enough() == True  # Need 3 nodes (ceil(20/8)=3)
+    assert instance3.is_endpoints_enough()  # Need 3 nodes (ceil(20/8)=3)
 
     # Test case 4: Multi-endpoint enabled (should check dp_size)
     instance4 = Instance(
@@ -1619,7 +1619,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         1: Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="9001"),
     }
     instance4.add_endpoints("127.0.0.1", endpoints)
-    assert instance4.is_endpoints_enough() == False  # Need 4 endpoints
+    assert not instance4.is_endpoints_enough()  # Need 4 endpoints
 
     # Add more endpoints to reach dp_size
     endpoints2 = {
@@ -1627,7 +1627,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         3: Endpoint(id=3, ip="127.0.0.2", business_port="8003", mgmt_port="9003"),
     }
     instance4.add_endpoints("127.0.0.2", endpoints2)
-    assert instance4.is_endpoints_enough() == True  # Have 4 endpoints
+    assert instance4.is_endpoints_enough()  # Have 4 endpoints
 
 
 def test_get_all_endpoints_multi_endpoint_disabled():
@@ -1667,7 +1667,7 @@ def test_get_all_endpoints_multi_endpoint_disabled():
     instance2.add_endpoints("127.0.0.1", endpoints)
     all_eps2 = instance2.get_all_endpoints()
     assert len(all_eps2) == 3  # All 3 endpoints
-    assert set([ep.id for ep in all_eps2]) == {0, 1, 2}
+    assert {ep.id for ep in all_eps2} == {0, 1, 2}
 
     # Test case 3: Multiple pods with multi-endpoint disabled
     instance3 = Instance(
@@ -1769,7 +1769,14 @@ def test_assemble_instance_multi_endpoint_disabled_not_enough_nodes(instance_ass
 # ===== D2D Weight Transfer Tests =====
 
 
-def _make_mock_readonly_instance(job_name: str, role: str, ips: list[str]):
+def _make_mock_readonly_instance(
+    job_name: str,
+    role: str,
+    ips: list[str],
+    *,
+    endpoint_id: int = 0,
+    endpoint_ids: list[int] | None = None,
+):
     """Create a ReadOnlyInstance wrapping a real Instance (required by upstream merge)."""
     inst = Instance(
         job_name=job_name,
@@ -1779,9 +1786,27 @@ def _make_mock_readonly_instance(job_name: str, role: str, ips: list[str]):
         parallel_config=ParallelConfig(),
     )
     for idx, ip in enumerate(ips):
+        ep_id = endpoint_ids[idx] if endpoint_ids is not None else endpoint_id
         inst.add_endpoints(
             f"pod-{job_name}-{idx}",
-            {0: Endpoint(id=0, ip=ip, business_port="8000", mgmt_port="9000")},
+            {0: Endpoint(id=ep_id, ip=ip, business_port="8000", mgmt_port="9000")},
+        )
+    return ReadOnlyInstance(inst)
+
+
+def _make_mock_peer_instance_cross_node(job_name: str, role: str, ip_by_rank: dict[int, str]):
+    """Peer instance with one pod per DP rank (cross-node DP topology)."""
+    inst = Instance(
+        job_name=job_name,
+        model_name="test",
+        id=abs(hash(job_name)) % 1_000_000,
+        role=role,
+        parallel_config=ParallelConfig(),
+    )
+    for dp_rank, ip in ip_by_rank.items():
+        inst.add_endpoints(
+            f"pod-{job_name}-{dp_rank}",
+            {0: Endpoint(id=dp_rank, ip=ip, business_port="8000", mgmt_port="9000")},
         )
     return ReadOnlyInstance(inst)
 
@@ -1798,8 +1823,36 @@ def test_collect_d2d_peer_ips_queries_active_only(instance_assembler, test_confi
     metadata = AssembleInstanceMetadata(instance=instance)
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[]) as mock_get:
-        instance_assembler._collect_d2d_peer_ips(metadata)
+        instance_assembler._collect_d2d_peer_ips(
+            metadata, [Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")]
+        )
         mock_get.assert_called_once_with({InsStatus.ACTIVE})
+
+
+def test_collect_d2d_peer_ips_matches_dp_rank(instance_assembler, test_config):
+    """_collect_d2d_peer_ips collects only peer endpoints with matching id."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_peer = _make_mock_peer_instance_cross_node(
+        "peer_job",
+        test_config['role'],
+        {0: "10.0.0.1", 1: "10.0.0.2", 2: "10.0.0.3", 3: "10.0.0.4"},
+    )
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep2 = Endpoint(id=2, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep5 = Endpoint(id=5, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]):
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep0]) == ["0:10.0.0.1"]
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep2]) == ["2:10.0.0.3"]
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep5]) is None
 
 
 def test_collect_d2d_peer_ips_active_same_role(instance_assembler, test_config):
@@ -1814,10 +1867,11 @@ def test_collect_d2d_peer_ips_active_same_role(instance_assembler, test_config):
     metadata = AssembleInstanceMetadata(instance=instance)
 
     mock_peer = _make_mock_readonly_instance("peer_job", test_config['role'], ["10.0.0.1", "10.0.0.2"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]):
-        result = instance_assembler._collect_d2d_peer_ips(metadata)
-        assert set(result) == {"10.0.0.1", "10.0.0.2"}
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert set(result) == {"0:10.0.0.1", "0:10.0.0.2"}
 
 
 def test_collect_d2d_peer_ips_excludes_own_job_name(instance_assembler, test_config):
@@ -1833,10 +1887,11 @@ def test_collect_d2d_peer_ips_excludes_own_job_name(instance_assembler, test_con
 
     mock_self = _make_mock_readonly_instance("my_job", test_config['role'], ["10.0.0.1"])
     mock_peer = _make_mock_readonly_instance("other_job", test_config['role'], ["10.0.0.2"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_self, mock_peer]):
-        result = instance_assembler._collect_d2d_peer_ips(metadata)
-        assert result == ["10.0.0.2"]
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert result == ["0:10.0.0.2"]
 
 
 def test_collect_d2d_peer_ips_excludes_different_role(instance_assembler, test_config):
@@ -1852,14 +1907,15 @@ def test_collect_d2d_peer_ips_excludes_different_role(instance_assembler, test_c
 
     mock_same = _make_mock_readonly_instance("peer_prefill", "prefill", ["10.0.0.1"])
     mock_diff = _make_mock_readonly_instance("peer_decode", "decode", ["10.0.0.2"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_same, mock_diff]):
-        result = instance_assembler._collect_d2d_peer_ips(metadata)
-        assert result == ["10.0.0.1"]
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert result == ["0:10.0.0.1"]
 
 
 def test_collect_d2d_peer_ips_deduplicates(instance_assembler, test_config):
-    """_collect_d2d_peer_ips deduplicates IPs across multiple instances."""
+    """_collect_d2d_peer_ips deduplicates IPs across multiple peer instances."""
     instance = Instance(
         job_name="current_job",
         model_name="test",
@@ -1871,14 +1927,15 @@ def test_collect_d2d_peer_ips_deduplicates(instance_assembler, test_config):
 
     mock_peer1 = _make_mock_readonly_instance("peer1", test_config['role'], ["10.0.0.1", "10.0.0.2"])
     mock_peer2 = _make_mock_readonly_instance("peer2", test_config['role'], ["10.0.0.2", "10.0.0.3"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer1, mock_peer2]):
-        result = instance_assembler._collect_d2d_peer_ips(metadata)
-        assert set(result) == {"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert set(result) == {"0:10.0.0.1", "0:10.0.0.2", "0:10.0.0.3"}
 
 
 def test_collect_d2d_peer_ips_no_peers(instance_assembler, test_config):
-    """_collect_d2d_peer_ips returns empty list when no peer instances exist."""
+    """_collect_d2d_peer_ips returns None when no peer instances exist."""
     instance = Instance(
         job_name="current_job",
         model_name="test",
@@ -1887,14 +1944,15 @@ def test_collect_d2d_peer_ips_no_peers(instance_assembler, test_config):
         parallel_config=test_config['parallel_config'],
     )
     metadata = AssembleInstanceMetadata(instance=instance)
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[]):
-        result = instance_assembler._collect_d2d_peer_ips(metadata)
-        assert result == []
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert result is None
 
 
 def test_send_start_command_with_d2d_enabled(instance_assembler, test_config):
-    """_send_start_command includes d2d_peer_ips when D2D is enabled (SOURCE: auto)."""
+    """_send_start_command includes rank-aligned d2d_peer_ips when D2D is enabled."""
     instance = Instance(
         job_name="d2d_job",
         model_name="test",
@@ -1913,7 +1971,11 @@ def test_send_start_command_with_d2d_enabled(instance_assembler, test_config):
 
     metadata = AssembleInstanceMetadata(instance=instance)
 
-    mock_peer = _make_mock_readonly_instance("peer_job", test_config['role'], ["10.0.0.1", "10.0.0.2"])
+    mock_peer = _make_mock_peer_instance_cross_node(
+        "peer_job",
+        test_config['role'],
+        {0: "10.0.0.1", 1: "10.0.0.2"},
+    )
 
     with (
         patch.object(instance_assembler, '_is_d2d_enabled_for_role', return_value=True),
@@ -1927,9 +1989,11 @@ def test_send_start_command_with_d2d_enabled(instance_assembler, test_config):
         result = instance_assembler._send_start_command(metadata)
 
         assert result is True
-        called_msg = mock_send.call_args[0][1]
-        assert called_msg.d2d_peer_ips is not None
-        assert set(called_msg.d2d_peer_ips) == {"10.0.0.1", "10.0.0.2"}
+        assert mock_send.call_count == 2
+        first_msg = mock_send.call_args_list[0][0][1]
+        second_msg = mock_send.call_args_list[1][0][1]
+        assert first_msg.d2d_peer_ips == ["0:10.0.0.1"]
+        assert second_msg.d2d_peer_ips == ["1:10.0.0.2"]
 
 
 def test_send_start_command_with_d2d_disabled(instance_assembler, test_config):
@@ -1966,7 +2030,7 @@ def test_send_start_command_with_d2d_disabled(instance_assembler, test_config):
 
 
 def test_send_start_command_with_d2d_enabled_no_peers(instance_assembler, test_config):
-    """_send_start_command converts empty peer list to None when D2D is enabled but no peers found."""
+    """_send_start_command omits d2d_peer_ips when D2D is enabled but no peers found."""
     instance = Instance(
         job_name="d2d_job",
         model_name="test",
@@ -1996,7 +2060,45 @@ def test_send_start_command_with_d2d_enabled_no_peers(instance_assembler, test_c
         assert called_msg.d2d_peer_ips is None
 
 
-# ===== Cross-Node PCP Tests =====
+def test_collect_d2d_peer_ips_includes_headless(instance_assembler, test_config):
+    """_collect_d2d_peer_ips includes headless peer endpoints for CP cross-node."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+        enable_multi_endpoints=True,
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    # Peer with both master (id=0) and slave (id=1, headless) endpoints
+    mock_peer = Instance(
+        job_name="peer_job",
+        model_name="test",
+        id=88,
+        role=test_config['role'],
+        parallel_config=ParallelConfig(),
+        enable_multi_endpoints=True,
+    )
+    mock_peer.add_endpoints(
+        "10.0.0.1",
+        {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")},
+    )
+    mock_peer.add_endpoints(
+        "10.0.0.2",
+        {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000", headless=True)},
+    )
+    ro_peer = ReadOnlyInstance(mock_peer)
+
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep1 = Endpoint(id=1, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[ro_peer]):
+        # Master endpoint (id=0) matches peer's non-headless endpoint
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep0]) == ["0:10.0.0.1"]
+        # Slave endpoint (id=1) matches peer's headless endpoint
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep1]) == ["1:10.0.0.2"]
 
 
 def test_cross_node_pcp_assembly_waits_for_all_nodes(instance_assembler):

@@ -416,27 +416,32 @@ class Instance(BaseModel):
         with self._lock:
             self._endpoints_version += 1
 
-    def get_all_endpoints(self) -> tuple[Endpoint, ...]:
+    def get_all_endpoints(self, include_headless: bool = False) -> tuple[Endpoint, ...]:
         """Return a tuple of all endpoints, with versioned caching.
 
         When enable_multi_endpoints is True:
-            Return all endpoints (excluding headless).
+            Return all endpoints.
         When enable_multi_endpoints is False:
-            Return only endpoints with id=0 (one endpoint per pod, excluding headless).
+            Return only endpoints with id=0 (one endpoint per pod).
+
+        Headless endpoints are excluded by default. Set include_headless=True to
+        include them (cache is skipped in this case).
 
         Cache is invalidated when endpoints structure changes (add/del) or when
         invalidate_endpoints_cache() is called (e.g. headless flag change).
         """
         with self._lock:
-            # O(1) version check
-            if self._cached_endpoints_tuple is not None and self._cached_endpoints_version == self._endpoints_version:
-                return self._cached_endpoints_tuple
+            if not include_headless:
+                if (
+                    self._cached_endpoints_tuple is not None
+                    and self._cached_endpoints_version == self._endpoints_version
+                ):
+                    return self._cached_endpoints_tuple
 
-            # Rebuild tuple only when version changed
             eps = []
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
-                    if endpoint.headless:
+                    if not include_headless and endpoint.headless:
                         continue
                     if self.enable_multi_endpoints:
                         eps.append(endpoint)
@@ -444,9 +449,10 @@ class Instance(BaseModel):
                         if endpoint.id == 0:
                             eps.append(endpoint)
 
-            self._cached_endpoints_tuple = tuple(eps)
-            self._cached_endpoints_version = self._endpoints_version
-            return self._cached_endpoints_tuple
+            if not include_headless:
+                self._cached_endpoints_tuple = tuple(eps)
+                self._cached_endpoints_version = self._endpoints_version
+            return tuple(eps)
 
     def get_node_managers_num(self) -> int:
         with self._lock:
