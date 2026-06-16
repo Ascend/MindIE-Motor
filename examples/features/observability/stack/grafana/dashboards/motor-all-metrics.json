@@ -196,7 +196,7 @@
       },
       "targets": [
         {
-          "expr": "sum(motor_active_prefill_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "expr": "sum(motor:active_prefill_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
           "refId": "A"
         }
       ],
@@ -243,7 +243,7 @@
       },
       "targets": [
         {
-          "expr": "sum(motor_active_decode_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "expr": "sum(motor:active_decode_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
           "refId": "A"
         }
       ],
@@ -520,13 +520,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (pd_role) (motor_active_prefill_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "expr": "sum by (pd_role) (motor:active_prefill_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
           "legendFormat": "prefill {{pd_role}}",
           "refId": "A",
           "instant": true
         },
         {
-          "expr": "sum by (pd_role) (motor_active_decode_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "expr": "sum by (pd_role) (motor:active_decode_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
           "legendFormat": "decode {{pd_role}}",
           "refId": "B",
           "instant": true

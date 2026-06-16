@@ -68,6 +68,15 @@ class PortForwardSpec:
 
 
 @dataclass
+class CoordinatorPodMatch:
+    pod_ip: str
+    pod_name: str
+    is_primary: bool
+    ready_count: int
+    total_count: int
+
+
+@dataclass
 class DiscoveryResult:
     namespace: str
     node_ip: str
@@ -75,6 +84,8 @@ class DiscoveryResult:
     mode: str
     runtime: str
     coordinator_target: str
+    coordinator_pod_name: str
+    coordinator_is_primary: bool
     engine_targets: List[Dict[str, Any]]
     port_forwards: List[PortForwardSpec]
     warnings: List[str]
@@ -174,20 +185,65 @@ def _infer_engine_identity_from_pod(name: str, counters: Dict[str, int]) -> Tupl
     return _infer_engine_identity(name, counters)
 
 
+def _pod_ready_counts(pod: Dict[str, Any]) -> Tuple[int, int]:
+    """Return (ready, total) container counts, matching kubectl READY column."""
+    statuses = pod.get("status", {}).get("containerStatuses") or []
+    if not statuses:
+        return 0, 0
+    total = len(statuses)
+    ready = sum(1 for item in statuses if item.get("ready"))
+    return ready, total
+
+
+def _is_running_coordinator_pod(pod: Dict[str, Any]) -> bool:
+    phase = str(pod.get("status", {}).get("phase", ""))
+    pod_ip = str(pod.get("status", {}).get("podIP", ""))
+    return phase == "Running" and bool(pod_ip)
+
+
+def _is_primary_coordinator_pod(pod: Dict[str, Any]) -> bool:
+    """Primary coordinator in HA: kubectl READY shows N/N with N > 0 (e.g. 1/1)."""
+    if not _is_running_coordinator_pod(pod):
+        return False
+    ready, total = _pod_ready_counts(pod)
+    return total > 0 and ready == total
+
+
+def _list_coordinator_pods(namespace: str) -> List[Dict[str, Any]]:
+    pod_json = _run_kubectl_json(["get", "pods", "-n", namespace])
+    pods: List[Dict[str, Any]] = []
+    for pod in pod_json.get("items", []):
+        pod_name = str(pod.get("metadata", {}).get("name", ""))
+        if _has_keyword(pod_name, COORDINATOR_POD_KEYWORDS):
+            pods.append(pod)
+    return pods
+
+
 def _discover_coordinator_pod(
     namespace: str,
     port: int = DEFAULT_COORDINATOR_PORT,
-) -> Optional[Tuple[str, str]]:
-    pod_json = _run_kubectl_json(["get", "pods", "-n", namespace])
-    for pod in pod_json.get("items", []):
-        pod_name = str(pod.get("metadata", {}).get("name", ""))
-        if not _has_keyword(pod_name, COORDINATOR_POD_KEYWORDS):
-            continue
-        phase = str(pod.get("status", {}).get("phase", ""))
-        pod_ip = str(pod.get("status", {}).get("podIP", ""))
-        if phase == "Running" and pod_ip:
-            return pod_ip, pod_name
-    return None
+) -> Optional[CoordinatorPodMatch]:
+    primary_pods: List[Dict[str, Any]] = []
+    fallback_pods: List[Dict[str, Any]] = []
+    for pod in _list_coordinator_pods(namespace):
+        if _is_primary_coordinator_pod(pod):
+            primary_pods.append(pod)
+        elif _is_running_coordinator_pod(pod):
+            fallback_pods.append(pod)
+
+    selected_pool = primary_pods or fallback_pods
+    if not selected_pool:
+        return None
+
+    pod = sorted(selected_pool, key=lambda item: str(item.get("metadata", {}).get("name", "")))[0]
+    ready, total = _pod_ready_counts(pod)
+    return CoordinatorPodMatch(
+        pod_ip=str(pod["status"]["podIP"]),
+        pod_name=str(pod["metadata"]["name"]),
+        is_primary=bool(primary_pods),
+        ready_count=ready,
+        total_count=total,
+    )
 
 
 def _find_namespace_from_services() -> Optional[str]:
@@ -250,16 +306,26 @@ def _resolve_node_ip(namespace: str, args: argparse.Namespace, warnings: List[st
         warnings.append("kubectl not ready, fallback to 127.0.0.1 as node IP.")
         return "127.0.0.1"
 
-    # 1) Coordinator pod hostIP.
+    # 1) Primary coordinator pod hostIP (READY N/N in HA master/standby).
     try:
-        pod_json = _run_kubectl_json(["get", "pods", "-n", namespace])
-        for pod in pod_json.get("items", []):
-            pod_name = str(pod.get("metadata", {}).get("name", ""))
-            if not _has_keyword(pod_name, ("coordinator", "mindie-motor-coordinator")):
-                continue
+        primary_host_ip = ""
+        fallback_host_ip = ""
+        for pod in sorted(
+            _list_coordinator_pods(namespace), key=lambda item: str(item.get("metadata", {}).get("name", ""))
+        ):
             host_ip = str(pod.get("status", {}).get("hostIP", ""))
-            if host_ip:
-                return host_ip
+            if not host_ip:
+                continue
+            if _is_primary_coordinator_pod(pod):
+                primary_host_ip = host_ip
+                break
+            if not fallback_host_ip:
+                fallback_host_ip = host_ip
+        if primary_host_ip:
+            return primary_host_ip
+        if fallback_host_ip:
+            warnings.append("primary coordinator pod not found, using coordinator hostIP fallback.")
+            return fallback_host_ip
     except subprocess.CalledProcessError:
         pass
 
@@ -458,7 +524,7 @@ def _apply_docker_gateway(result: DiscoveryResult, base_port: int) -> None:
             result,
             host=coord_host,
             remote_port=coord_port,
-            pod_name="mindie-motor-coordinator",
+            pod_name=result.coordinator_pod_name or "mindie-motor-coordinator",
             next_port=next_port,
         )
 
@@ -496,6 +562,8 @@ def _discover(namespace: str, node_ip: str, args: argparse.Namespace) -> Discove
     mode = "fallback"
     coordinator_host = node_ip
     coordinator_port = DEFAULT_COORDINATOR_PORT
+    coordinator_pod_name = ""
+    coordinator_is_primary = False
     engine_targets: List[Dict[str, Any]] = []
     port_forwards: List[PortForwardSpec] = []
 
@@ -511,19 +579,38 @@ def _discover(namespace: str, node_ip: str, args: argparse.Namespace) -> Discove
                 service_keywords=("coordinator", "mindie-motor-coordinator"),
                 port_keywords=("metrics", "observ", "obs"),
             )
-            if coord_match:
-                _, coordinator_port = coord_match
-            else:
-                coord_pod = _discover_coordinator_pod(namespace)
-                if coord_pod:
-                    coordinator_host, coordinator_port = coord_pod[0], DEFAULT_COORDINATOR_PORT
+            coord_pod = _discover_coordinator_pod(namespace)
+            if coord_pod:
+                coordinator_host = coord_pod.pod_ip
+                coordinator_port = DEFAULT_COORDINATOR_PORT
+                coordinator_pod_name = coord_pod.pod_name
+                coordinator_is_primary = coord_pod.is_primary
+                if coordinator_is_primary:
                     warnings.append(
-                        f"coordinator NodePort not found, using PodIP {coordinator_host}:{coordinator_port}."
+                        f"using primary coordinator pod {coordinator_pod_name} "
+                        f"(READY {coord_pod.ready_count}/{coord_pod.total_count}) "
+                        f"at {coordinator_host}:{coordinator_port}."
                     )
+                    if coord_match:
+                        _, node_port = coord_match
+                        warnings.append(
+                            f"coordinator NodePort {node_ip}:{node_port} skipped; "
+                            "HA master/standby requires scraping the primary pod directly."
+                        )
                 else:
                     warnings.append(
-                        f"coordinator NodePort not found, fallback to default {node_ip}:{DEFAULT_COORDINATOR_PORT}."
+                        f"no primary coordinator pod (READY N/N) found; "
+                        f"using {coordinator_pod_name} "
+                        f"(READY {coord_pod.ready_count}/{coord_pod.total_count}) "
+                        f"at {coordinator_host}:{coordinator_port}."
                     )
+            elif coord_match:
+                _, coordinator_port = coord_match
+                warnings.append(f"coordinator pod not found, using NodePort {node_ip}:{coordinator_port}.")
+            else:
+                warnings.append(
+                    f"coordinator NodePort not found, fallback to default {node_ip}:{DEFAULT_COORDINATOR_PORT}."
+                )
 
             if runtime == "docker":
                 engine_targets = _discover_engine_targets_from_pods(
@@ -610,6 +697,8 @@ def _discover(namespace: str, node_ip: str, args: argparse.Namespace) -> Discove
         mode=mode,
         runtime=runtime,
         coordinator_target=coordinator_target,
+        coordinator_pod_name=coordinator_pod_name,
+        coordinator_is_primary=coordinator_is_primary,
         engine_targets=engine_targets,
         port_forwards=port_forwards,
         warnings=warnings,
@@ -650,6 +739,9 @@ def _build_prometheus_config(result: DiscoveryResult) -> str:
         "cluster": namespace,
         "source": "real" if result.mode == "kubernetes" else "local",
     }
+    if result.coordinator_pod_name:
+        coordinator_labels["coordinator_pod"] = result.coordinator_pod_name
+        coordinator_labels["coordinator_role"] = "primary" if result.coordinator_is_primary else "standby"
     coordinator_targets = [{"target": result.coordinator_target, "labels": coordinator_labels}]
 
     lines = [
@@ -806,6 +898,8 @@ def _build_summary(result: DiscoveryResult) -> str:
         f"Cluster label: {result.namespace}",
         f"Node IP: {result.node_ip}",
         f"Coordinator: {result.coordinator_target}",
+        f"Coordinator pod: {result.coordinator_pod_name or 'n/a'}",
+        f"Coordinator primary: {result.coordinator_is_primary}",
         f"Engine prefill targets: {result.prefill_count}",
         f"Engine decode targets: {result.decode_count}",
         f"Port forwards: {len(result.port_forwards)}",
