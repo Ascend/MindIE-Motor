@@ -1,43 +1,50 @@
 nav:
   - 首页: index.md
   - 架构: architecture.md
+  - 版本说明: release_note.md
   - 用户指南:
-      - 环境准备: user_guide/environment_preparation.md
       - 快速开始: user_guide/quick_start.md
-      - 部署模式指南: user_guide/deploy_mode_guide.md
-      - 服务部署:
-          - PD 分离部署: user_guide/service_deployment/pd_disaggregation_deployment.md
-          - PD 混部部署: user_guide/service_deployment/pd_hybrid_deployment.md
-          - 配置参考: user_guide/service_deployment/config_reference.md
-          - 更新配置白名单: user_guide/service_deployment/update_config_whitelist.md
-      - Standby 部署: user_guide/standby_deployment.md
-      - 链路追踪部署: user_guide/tracing_deployment.md
-      - KV Pool 部署: user_guide/KV_pool_deployment_guide.md
-      - KV Cache 亲和部署: user_guide/KV_cache_affinity_deployment.md
-      - 手动扩缩容指南: user_guide/manual_scaling_guide.md
-      - 组件:
-          - Controller: user_guide/components/controller.md
-          - Coordinator: user_guide/components/coordinator.md
-          - Engine Server: user_guide/components/engine_server.md
-          - Node Manager: user_guide/components/node_manager.md
-      - 面向服务接口:
-          - 说明: user_guide/service_oriented_interface/description.md
-      - 面向服务优化工具: user_guide/service_oriented_optimization_tool.md
-      - 日志配置: user_guide/log_config_guide.md
-      - 从 vLLM Ascend 制作镜像: user_guide/make_image_from_vllm_ascend.md
-      - 常见问题与解决: user_guide/solutions_to_common_problems.md
-  - 特性:
-      - PD 分离: features/PD_disaggregation.md
+      - 环境准备: user_guide/environment_preparation.md
+      - 部署:
+          - K8s 部署:
+              - 部署模式说明: user_guide/deployment/k8s/deploy_mode_guide.md
+              - PD 分离部署: user_guide/deployment/k8s/pd_disaggregation_deployment.md
+              - PD 聚合部署: user_guide/deployment/k8s/pd_aggregation_deployment.md
+              - 配置参考: user_guide/deployment/k8s/config_reference.md
+              - 更新配置白名单: user_guide/deployment/k8s/update_config_whitelist.md
+          - Docker 部署:
+              - 单容器部署: user_guide/deployment/docker/single_container.md
+              - 多容器部署: user_guide/deployment/docker/multi_container.md
+      - 特性指南:
+          - EPD 分离: user_guide/features/EPD_disaggregation.md
+          - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
+          - KV Pool: user_guide/features/KV_pool.md
+          - 手动扩缩容: user_guide/features/manual_instance_scaling.md
+          - 主备倒换: user_guide/features/standby.md
+          - 链路追踪: user_guide/features/tracing.md
+      - 运维工具:
+          - 日志配置: user_guide/operations/log_config_guide.md
+          - 命令行转换工具: user_guide/operations/cli_to_engine_config_guide.md
+      - 故障排查: user_guide/troubleshooting/solutions_to_common_problems.md
+  - 设计文档:
+      - PD 分离: design/pd_disaggregation.md
+      - 可靠性:
+          - 能力总览: design/fault_tolerance/overview.md
+          - ScaleP2D 故障恢复: design/fault_tolerance/scale_p2d.md
+          - FaultManager 设计: design/fault_tolerance/fault_manager.md
+      - 手动扩缩容: design/manual_scaling.md
+      - CRD 部署设计: design/crd_deployment.md
+      - Metrics 可观测性: design/metrics.md
   - 开发者指南:
-      - Docker 单机: developer_guide/docker_only/single_container_docker_only.md
-      - Docker 多机: developer_guide/docker_only/multi_container_docker_only.md
-      - CRD 部署设计: developer_guide/crd_deployment/crd_deployment_design.md
-      - 实例级手动扩缩容设计: developer_guide/instance_manual_scaling/manual_scaling_design.md
-      - 故障管理设计: developer_guide/fault_tolerance/fault_manager_design.md
-      - EndPoint 断链取消设计: developer_guide/engine_disconnect_cancellation_design.md
-      - Metrics 可观测性设计: developer_guide/metrics/metrics_design.md
-      - 本地构建文档: developer_guide/build_docs/build_docs.md
+      - 本地构建文档: developer_guide/build_docs.md
+      - 镜像制作: developer_guide/make_image.md
+      - 组件设计:
+          - Controller: developer_guide/components/controller.md
+          - Coordinator: developer_guide/components/coordinator.md
+          - Engine Server: developer_guide/components/engine_server.md
+          - Node Manager: developer_guide/components/node_manager.md
   - API 参考:
       - 接口说明: api_reference/interface_description.md
       - 服务接口: api_reference/service_interface.md
       - 管理与监控接口: api_reference/management_and_monitoring_interfaces.md
+      - Observability 接口: api_reference/observability_interface.md

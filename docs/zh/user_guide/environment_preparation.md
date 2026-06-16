@@ -4,7 +4,7 @@
 
 本章节只适用于基于K8s的集群服务部署，不包含其他场景，其部署示意图如[图1 K8s集群整体部署视图](#fig698114995216)所示。
 
-**图 1**  K8s集群整体部署视图<a name="fig698114995216"></a>  
+**图 1**  K8s集群整体部署视图<a name="fig698114995216"></a>
 
 ![](../imgs/overall_deployment_view_of_k8s.png)
 
@@ -12,8 +12,8 @@
 
 |部署形态|含义|
 |--|--|
-|PD分离服务|多个Server在一个或多个计算节点上联合部署，分为P实例（Prefill计算实例）和D实例（Decode计算实例），P实例与D实例分离部署，协同推理，整体作为一个Group对外提供推理服务，部署详情请参见[PD分离服务部署](./service_deployment/pd_disaggregation_deployment.md)。|
-|PD混部服务|多个Server以 union 实例形态部署，每个实例同时承载 Prefill 与 Decode 能力，整体作为一个Group对外提供推理服务，部署详情请参见[PD混部服务部署](./service_deployment/pd_hybrid_deployment.md)。|
+|PD分离服务|多个Server在一个或多个计算节点上联合部署，分为P实例（Prefill计算实例）和D实例（Decode计算实例），P实例与D实例分离部署，协同推理，整体作为一个Group对外提供推理服务，部署详情请参见[PD分离服务部署](./deployment/k8s/pd_disaggregation_deployment.md)。|
+|PD混部服务|多个Server以 union 实例形态部署，每个实例同时承载 Prefill 与 Decode 能力，整体作为一个Group对外提供推理服务，部署详情请参见[PD混部服务部署](./deployment/k8s/pd_aggregation_deployment.md)。|
 
 ## 组件介绍
 
@@ -106,7 +106,7 @@
     >#访问镜像同步网站，选择对应版本的K8s组件进行下载
     >https://docker.aityp.com/s/registry.k8s.io
     >```
-    
+
 3. 执行以下命令清空系统网络代理环境变量。Kubernetes核心组件（kubeadm/kubelet）需直接访问API Server等服务，网络代理会拦截或篡改这类请求，可能导致Kubernetes服务不可用。
 
     ```bash
@@ -140,7 +140,7 @@
     ```
 
     **图 4** 查看状态<a name="fig669924115221"></a>
-    
+
     ![](../imgs/check_status.png)
 
 6. （可选）如出现coredns开头的服务出现非running状态，需要在k8s集群中加入网络协议框架服务，推荐使用calico框架（如果pod状态无问题可忽略本步骤）。
@@ -176,11 +176,11 @@
         >virbr0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
         >         inet 141.61.21.1  netmask 255.255.252.0  broadcast 141.61.23.255
         >```
-        
-        **图 5** 修改内容展示<a name="fig17764145015239"></a>  
+
+        **图 5** 修改内容展示<a name="fig17764145015239"></a>
 
         ![](../imgs/edit_calico.png)
-    
+
     4. 启动calico
 
         ```bash
@@ -194,7 +194,7 @@
 **初始化成功后不需要执行该步骤，需要重新配置Kubernetes时可执行以下重置步骤。**
 
 执行以下命令可以重置Kubernetes设置，回显如[图5 重置成功](#fig3621632193415)所示则表示重置成功。
-    
+
 ```bash
 kubeadm reset
 ```
@@ -267,8 +267,8 @@ kubeadm reset
 
 4. 在管理节点上使用以下命令kubectl get nodes -A查看节点信息，如[图7 新增节点](#fig1471911375514)所示，localhost.localdomain即为新增节点。
 
-    **图 6**  新增节点<a name="fig1471911375514"></a>  
-    
+    **图 6**  新增节点<a name="fig1471911375514"></a>
+
     ![](../imgs/new_node.png)
 
 5. 在管理节点上使用以下命令根据实际的NPU设备类型为新增节点打上accelerator=huawei-Ascend910或者accelerator=huawei-Ascend310x标签。
@@ -298,7 +298,7 @@ kubeadm reset
     >[!NOTE]说明
     >当Ascend Device Plugin启动时，_xxx_.yaml配置文件中useAscendDocker参数配置为true且用户已安装Ascend Docker Runtime并生效，会自动挂载在“/usr/local/Ascend”下驱动相关目录。
 4. 请参考《MindCluster  集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/05_volcano.md)章节安装Volcano。
-     
+
     >[!NOTE]说明
     >在单机场景下，参考《MindCluster  集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/05_volcano.md)章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的volcano-v1.7.0目录下的volcano-v1.7.0.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
     >![](../imgs/volcano.png)
