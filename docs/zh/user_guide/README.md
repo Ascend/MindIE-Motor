@@ -1,12 +1,11 @@
-# 用户指南
+# 简介
 
-面向 **MindIE PyMotor 使用者**，涵盖部署、配置、运维与故障排查。
+Motor提供一键式 PD 分离与 PD 混部部署，基于云原生插件化架构灵活适配多种推理引擎（[vLLM](https://github.com/vllm-project/vllm-ascend)、[SGLang](https://github.com/sgl-project/sglang)），结合高性能调度与负载均衡能力，构建高可用、可扩展的大规模推理服务。
 
-## 内容侧重
+# 快速开始
 
-- 怎么部署（K8s / Docker）
-- 怎么开启和配置各项特性（EPD、KV Cache、KV Pool、扩缩容、主备、链路追踪）
-- 怎么运维（日志、命令行工具）
-- 怎么排查常见问题
+**环境准备**：安装前的相关软硬件环境准备，以及安装步骤，请参见[环境准备](./environment_preparation.md)。
 
-如果你需要理解某个特性的设计原理，请查看 [设计文档](../design/README.md)。
+**快速部署**：快速体验启动服务、接口调用、精度&性能测试和停止服务全流程，请参见[快速部署](./quick_start.md)。
+
+**最佳实践**：PD 分离部署请参见[PD 分离服务部署详细指导](./deployment/k8s/pd_disaggregation_deployment.md)，PD 混部部署请参见[PD 混部服务部署详细指导](./deployment/k8s/pd_aggregation_deployment.md)。
