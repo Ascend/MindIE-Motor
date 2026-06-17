@@ -9,12 +9,13 @@
 # See the Mulan PSL v2 for more details.
 
 """
-Inference plane: Worker subprocess only; provides /v1/completions, /v1/chat/completions, /v1/models, etc.
+Inference plane: Worker subprocess only; provides /v1/completions, /v1/chat/completions,
+/v1/messages, /v1/messages/count_tokens, /v1/models, etc.
 """
 
 import asyncio
 import json
-import time
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -34,9 +35,8 @@ from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.common.http.http_client import HTTPClientPool
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
-from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.router.dispatch import handle_request, handle_metaserver_request
+from motor.coordinator.router.dispatch import handle_request
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
@@ -45,6 +45,33 @@ logger = get_logger(__name__)
 def get_request_manager(request: Request) -> RequestManager:
     """FastAPI dependency: inject RequestManager from app.state."""
     return request.app.state.request_manager
+
+
+def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens: bool = True) -> None:
+    """Validate Anthropic-style request body. Raises HTTPException on invalid."""
+    if not body_json.get("model"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required field: model",
+        )
+    messages = body_json.get("messages")
+    if not messages or not isinstance(messages, list) or len(messages) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required field: messages (must be a non-empty array)",
+        )
+    if require_max_tokens:
+        max_tokens = body_json.get("max_tokens")
+        if max_tokens is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing required field: max_tokens",
+            )
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="max_tokens must be a positive integer",
+            )
 
 
 def _validate_openai_request(body_json: dict[str, Any], request_type: RequestType) -> None:
@@ -77,10 +104,7 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
         if OpenAIField.ROLE not in message or OpenAIField.CONTENT not in message:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Invalid message at index {i}: missing "
-                    f"{OpenAIField.ROLE} or {OpenAIField.CONTENT}"
-                ),
+                detail=(f"Invalid message at index {i}: missing {OpenAIField.ROLE} or {OpenAIField.CONTENT}"),
             )
         if message[OpenAIField.ROLE] not in ["system", "user", "assistant", "tool"]:
             raise HTTPException(
@@ -128,8 +152,52 @@ class InferenceServer(BaseCoordinatorServer):
     async def _lifespan(self, app: FastAPI):
         logger.info("Inference server is starting...")
         app.state.request_manager = self._request_manager
+        # Precision check: inject logprobs + token-id sampling only when precision_check_enabled
+        from motor.coordinator.fault_tolerance.precision.sample_controller import (
+            SampleController,
+        )
+        from motor.coordinator.fault_tolerance.precision import (
+            build_precision_reporter,
+        )
+
+        sampling_cfg = self.coordinator_config.token_sampling_config
         TracerManager(self.coordinator_config)
         await self._scheduler_connection.connect()
+        if sampling_cfg.precision_check_enabled:
+            scheduler_client = self._scheduler_connection.get_client()
+            if scheduler_client is None:
+                logger.warning(
+                    "Precision check enabled but scheduler client unavailable; "
+                    "disabling precision sampling until scheduler connects"
+                )
+                app.state.sampling_manager = None
+            else:
+                precision = build_precision_reporter(
+                    sampling_cfg,
+                    self.coordinator_config.infer_tls_config,
+                    config=self.coordinator_config,
+                    scheduler=scheduler_client,
+                    request_manager=self._request_manager,
+                    scheduler_client=scheduler_client,
+                )
+                sampling_manager = SampleController(
+                    sampling_cfg,
+                    precision,
+                    scheduler_client=scheduler_client,
+                )
+                logger.info(
+                    "Precision check (token sampling): interval=%.1fs logprobs_count=%d "
+                    "threshold=%d probe_attempts=%d probe_timeout=%.1fs "
+                    "exit_gate=scheduler_zmq streak=scheduler_zmq probe=internal_router",
+                    sampling_cfg.interval_seconds,
+                    sampling_cfg.logprobs_count,
+                    sampling_cfg.precision_issue_threshold,
+                    sampling_cfg.probe_max_attempts,
+                    sampling_cfg.probe_timeout_seconds,
+                )
+                app.state.sampling_manager = sampling_manager
+        else:
+            app.state.sampling_manager = None
         try:
             yield
         except asyncio.CancelledError:
@@ -144,38 +212,6 @@ class InferenceServer(BaseCoordinatorServer):
             except Exception as e:
                 logger.warning("TracerManager shutdown during lifespan: %s", e)
             await self._scheduler_connection.disconnect()
-
-    async def handle_metaserver_request(self, request: Request):
-        t0 = time.perf_counter()
-        try:
-            if not await self._is_available():
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Service is not available",
-                )
-            result = await handle_metaserver_request(
-                request,
-                self.coordinator_config,
-                scheduler=self._get_scheduler_client(),
-                request_manager=request.app.state.request_manager,
-            )
-            logger.info(
-                "Metaserver latency stage=metaserver_request_total elapsed_ms=%.2f",
-                (time.perf_counter() - t0) * 1000,
-            )
-            return result
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.info(
-                "Metaserver latency stage=metaserver_request_total elapsed_ms=%.2f error=%s",
-                (time.perf_counter() - t0) * 1000,
-                e,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            ) from e
 
     def verify_api_key(self, request: Request) -> None:
         if not self._api_key_config.enable_api_key:
@@ -192,7 +228,7 @@ class InferenceServer(BaseCoordinatorServer):
             )
         api_key = authorization
         if self._api_key_config.key_prefix and authorization.startswith(self._api_key_config.key_prefix):
-            api_key = authorization[len(self._api_key_config.key_prefix):]
+            api_key = authorization[len(self._api_key_config.key_prefix) :]
         if api_key in self._api_key_config.valid_keys:
             return
         if verify_api_key_against_valid_keys(api_key, self._api_key_config.valid_keys):
@@ -206,6 +242,23 @@ class InferenceServer(BaseCoordinatorServer):
         if not rate_limit_config.enable_rate_limit:
             logger.info("Rate limiting is disabled")
             return
+
+        if rate_limit_config.provider == "olc":
+            try:
+                path = rate_limit_config.olc_config_path
+                os.environ['OLC_CONFIG_PATH'] = path
+                from olc.adapters.fastapi import OlcFastAPIAdapter, OlcAdapterConfig
+
+                adapter_config = OlcAdapterConfig(tag_extractor=self._extract_tags_from_request)
+                self._inference_app.add_middleware(OlcFastAPIAdapter, adapter_config)
+                logger.info("Olc limit setup succeeded, config path: %s", path)
+            except Exception as e:
+                logger.error("Using simple rate limit, Failed to create olc limit middleware: %s", e, exc_info=True)
+                self.build_simple_rate_limit(rate_limit_config)
+        else:
+            self.build_simple_rate_limit(rate_limit_config)
+
+    def build_simple_rate_limit(self, rate_limit_config: RateLimitConfig | None = None) -> None:
         try:
             middleware = create_simple_rate_limit_middleware(
                 app=self._inference_app,
@@ -221,13 +274,22 @@ class InferenceServer(BaseCoordinatorServer):
                 error_status_code=rate_limit_config.error_status_code,
             )
             logger.info(
-                "Rate limiting enabled: max_requests=%s/%ss",
+                "Create simple limit: max_requests=%s/%ss",
                 rate_limit_config.max_requests,
                 rate_limit_config.window_size,
             )
         except Exception as e:
-            logger.error("Failed to setup rate limiting: %s", e, exc_info=True)
+            logger.error("Failed to create simple rate limit: %s", e, exc_info=True)
             raise
+
+    @staticmethod
+    def _extract_tags_from_request(request: Request) -> dict:
+        # "Extract tags from the request; the tag names are defined in olc.bean.dimension."
+        dimension_dict = {}
+        dimension_dict["URL"] = request.url.path
+        dimension_dict["Method"] = request.method
+        dimension_dict["IP"] = request.client.host if request.client else "unknown"
+        return dimension_dict
 
     def _make_on_instance_refreshed(self):
         """Create on_instance_refreshed callback: cleanup and warmup HTTP pool on instance change."""
@@ -235,14 +297,13 @@ class InferenceServer(BaseCoordinatorServer):
         pool = HTTPClientPool()
 
         async def _callback(active_endpoints: list[tuple[str, str]]) -> None:
-            active_keys = pool.get_pool_keys_for_endpoints(
-                active_endpoints, tls_config=tls_config
-            )
+            active_keys = pool.get_pool_keys_for_endpoints(active_endpoints, tls_config=tls_config)
             closed_count = await pool.cleanup_unused_clients(active_keys)
             if closed_count > 0:
                 logger.info(
                     "HTTP pool cleanup on instance change: closed %d unused client(s), active=%d",
-                    closed_count, len(active_keys),
+                    closed_count,
+                    len(active_keys),
                 )
             if active_endpoints:
                 results = await pool.warmup_clients(
@@ -264,12 +325,13 @@ class InferenceServer(BaseCoordinatorServer):
         self._infer_ssl_config = new_config.infer_tls_config
         rlc = new_config.rate_limit_config
         if self._rate_limit_middleware is not None:
-            self._rate_limit_middleware.update_config(
-                skip_paths=rlc.skip_paths,
-                error_message=rlc.error_message,
-                error_status_code=rlc.error_status_code,
-                enabled=rlc.enable_rate_limit,
-            )
+            if isinstance(self._rate_limit_middleware, SimpleRateLimitMiddleware):
+                self._rate_limit_middleware.update_config(
+                    skip_paths=rlc.skip_paths,
+                    error_message=rlc.error_message,
+                    error_status_code=rlc.error_status_code,
+                    enabled=rlc.enable_rate_limit,
+                )
 
     def _get_scheduler_client(self):
         """Return SchedulerClient used for scheduling (select_and_allocate, get_available_instances, etc.)."""
@@ -280,12 +342,13 @@ class InferenceServer(BaseCoordinatorServer):
 
     async def _is_available(self) -> bool:
         """Whether instances are available (Worker reads SchedulerClient cache).
-        PD mode: available if has P or P+D."""
+        PD mode: available if has P or P+D.
+        """
         client = self._scheduler_connection.get_client()
         if client is None:
             return False
         readiness = await client.has_required_instances()
-        return readiness.is_ready() or readiness == InstanceReadiness.ONLY_PREFILL
+        return readiness.is_run()
 
     def _register_routes(self) -> None:
         @self._inference_app.post("/v1/completions")
@@ -305,6 +368,34 @@ class InferenceServer(BaseCoordinatorServer):
         ):
             self.verify_api_key(request)
             return await self._handle_openai_request(request, RequestType.OPENAI, request_manager)
+
+        @self._inference_app.post("/v1/messages")
+        @self.timeout_handler()
+        async def anthropic_messages(
+            request: Request,
+            request_manager: RequestManager = Depends(get_request_manager),
+        ):
+            self.verify_api_key(request)
+            return await self._handle_anthropic_request(
+                request,
+                RequestType.ANTHROPIC,
+                request_manager,
+                require_max_tokens=True,
+            )
+
+        @self._inference_app.post("/v1/messages/count_tokens")
+        @self.timeout_handler()
+        async def anthropic_count_tokens(
+            request: Request,
+            request_manager: RequestManager = Depends(get_request_manager),
+        ):
+            self.verify_api_key(request)
+            return await self._handle_anthropic_request(
+                request,
+                RequestType.ANTHROPIC,
+                request_manager,
+                require_max_tokens=False,
+            )
 
         @self._inference_app.get("/v1/models")
         async def list_models():
@@ -331,6 +422,38 @@ class InferenceServer(BaseCoordinatorServer):
             "created": self._service_start_timestamp,
         }
         return [enriched]
+
+    async def _handle_anthropic_request(
+        self,
+        request: Request,
+        request_type: RequestType,
+        request_manager: RequestManager,
+        *,
+        require_max_tokens: bool = True,
+    ):
+        try:
+            body = await request.body()
+            body_json = json.loads(body.decode("utf-8"))
+            _validate_anthropic_request(body_json, require_max_tokens=require_max_tokens)
+            if not await self._is_available():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Service is not available",
+                )
+            return await handle_request(
+                request,
+                self.coordinator_config,
+                scheduler=self._get_scheduler_client(),
+                request_manager=request_manager,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Failed to process Anthropic request: %s", e, exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e),
+            ) from e
 
     async def _handle_openai_request(
         self,

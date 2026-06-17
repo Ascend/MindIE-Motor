@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -14,7 +13,7 @@ from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.controller import ControllerConfig
 from motor.controller.observability.alarm.alarm_store import AlarmStore
-from motor.controller.observability.metrics.metrics_collector import MetricsCollector
+from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 
 
 logger = get_logger(__name__)
@@ -22,15 +21,15 @@ logger = get_logger(__name__)
 
 class Observability(ThreadSafeSingleton):
     """
-    Observability
-    unified management and coordination of all operation and maintenance modules
-
+    Observability module for Motor Controller: manages alarms.
+    Metrics are served by the Coordinator; this module provides an internal
+    get_metrics() for Controller components that need Coordinator metrics data.
     """
+
     def __init__(self, config: ControllerConfig | None = None) -> None:
         super().__init__()
-        
-        # If already initialized, return 
-        if hasattr(self, '_initialized'):
+
+        if hasattr(self, "_initialized"):
             return
         self._initialized = True
 
@@ -39,20 +38,15 @@ class Observability(ThreadSafeSingleton):
         self.config = config
 
         self.alarm_store = AlarmStore()
-        self.metrics_collector = MetricsCollector(self.config)
-    
+
     def start(self) -> None:
-        """start observability"""
         logger.info("Starting observability...")
 
     def stop(self) -> None:
-        """stop observability"""
         logger.info("Stopping observability...")
-    
+
     def add_alarm(self, record: Record) -> bool:
         try:
-            from motor.common.alarm.instance_exception_alarm import InstanceExceptionAlarm
-            
             is_succeed = self.alarm_store.add_alarm(record)
             if is_succeed:
                 logger.debug("Alarm added successfully via observability, %s", str(record))
@@ -70,9 +64,20 @@ class Observability(ThreadSafeSingleton):
             logger.error("Failed to get alarms via observability: %s", e)
             return []
 
-    def get_metrics(self) -> str:
+    def get_metrics(self, metrics_type: str = "full", role: str | None = None) -> str:
+        """
+        Get metrics from Coordinator (internal API, not exposed via HTTP).
+        Controller components that need metrics data should call this method.
+
+        :param metrics_type: "full" (default), "instance", or "role"
+        :param role: when metrics_type is "role", filter to a specific role
+        :returns: Prometheus text
+        """
         try:
-            return self.metrics_collector.get_full_metrics()
+            result = CoordinatorApiClient.get_metrics(metrics_type=metrics_type, role=role)
+            if result is None:
+                return ""
+            return result
         except Exception as e:
-            logger.error(f"Failed to get metrics via observability: {e}")
+            logger.error("Failed to get metrics via observability: %s", e)
             return ""

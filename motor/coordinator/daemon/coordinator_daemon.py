@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -33,6 +32,7 @@ from motor.coordinator.process.base import BaseProcessManager, SupportsSpawnCont
 from motor.coordinator.process.constants import (
     PROCESS_KEY_INFERENCE,
     PROCESS_KEY_MGMT,
+    PROCESS_KEY_OBS,
     PROCESS_KEY_SCHEDULER,
     STOP_ORDER,
 )
@@ -41,6 +41,7 @@ from motor.coordinator.process.inference_manager import (
     create_shared_socket,
 )
 from motor.coordinator.process.mgmt_manager import MgmtProcessManager
+from motor.coordinator.process.obs_manager import ObsProcessManager
 from motor.coordinator.process.scheduler_manager import SchedulerProcessManager
 from motor.coordinator.daemon.role_shm_holder import RoleShmHolder
 from motor.common.standby.standby_manager import StandbyManager
@@ -79,10 +80,7 @@ class CoordinatorDaemon:
                 logger.debug("[Daemon] set_daemon_pid=%s for %s", daemon_pid, key)
 
         sc = self.config.standby_config
-        need_shm = (
-            sc.enable_master_standby
-            or ROLE_HEARTBEAT_INTERVAL_SEC > 0
-        )
+        need_shm = sc.enable_master_standby or ROLE_HEARTBEAT_INTERVAL_SEC > 0
         if need_shm:
             # When master/standby is enabled, initial role must be standby (0) so Mgmt does
             # not report master before etcd lock is acquired. See coordinator-master-standby-ipc-analysis.md.
@@ -98,8 +96,8 @@ class CoordinatorDaemon:
                 # Initial role standby so Mgmt does not report master until etcd lock is acquired.
                 self._write_role_shm_byte(ROLE_SHM_STANDBY)
 
-        # Scheduler first (both master and standby), then Mgmt, so Mgmt connect() succeeds.
-        self._start_processes([PROCESS_KEY_SCHEDULER, PROCESS_KEY_MGMT])
+        # Scheduler first (both master and standby), then Mgmt, then Obs, so Mgmt connect() succeeds.
+        self._start_processes([PROCESS_KEY_SCHEDULER, PROCESS_KEY_MGMT, PROCESS_KEY_OBS])
 
         if self.config.standby_config.enable_master_standby:
             self._standby_manager = StandbyManager(self.config)
@@ -148,17 +146,15 @@ class CoordinatorDaemon:
         """Called when this node becomes standby: write role shm (if any), then stop Inference only."""
         if self._role_shm_holder is not None:
             self._write_role_shm_byte(ROLE_SHM_STANDBY)
-        self._stop_all_processes(
-            exclude_processes={PROCESS_KEY_MGMT, PROCESS_KEY_SCHEDULER}
-        )
+        self._stop_all_processes(exclude_processes={PROCESS_KEY_MGMT, PROCESS_KEY_OBS, PROCESS_KEY_SCHEDULER})
 
     def _initialize_process_managers(self) -> None:
         """Initialize Mgmt / Scheduler / Infer process managers."""
-        self._process_managers[PROCESS_KEY_SCHEDULER] = SchedulerProcessManager(
-            self.config
-        )
+        self._process_managers[PROCESS_KEY_SCHEDULER] = SchedulerProcessManager(self.config)
 
         self._process_managers[PROCESS_KEY_MGMT] = MgmtProcessManager(self.config)
+
+        self._process_managers[PROCESS_KEY_OBS] = ObsProcessManager(self.config)
 
         host = self.config.api_config.coordinator_api_host
         port = self.config.api_config.coordinator_api_infer_port
@@ -190,9 +186,7 @@ class CoordinatorDaemon:
             if name == PROCESS_KEY_SCHEDULER:
                 time.sleep(2)
 
-    def _stop_all_processes(
-        self, exclude_processes: set[str] | None = None
-    ) -> None:
+    def _stop_all_processes(self, exclude_processes: set[str] | None = None) -> None:
         """Stop in order: Infer -> Mgmt -> Scheduler. Skip specified processes when exclude is set."""
         exclude = exclude_processes or set()
         for name in STOP_ORDER:
@@ -232,4 +226,4 @@ class CoordinatorDaemon:
             return set(self._process_managers)
         if self._standby_manager is not None and self._standby_manager.is_master():
             return set(self._process_managers)
-        return {PROCESS_KEY_SCHEDULER, PROCESS_KEY_MGMT}
+        return {PROCESS_KEY_SCHEDULER, PROCESS_KEY_MGMT, PROCESS_KEY_OBS}

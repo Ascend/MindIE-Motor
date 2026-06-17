@@ -58,8 +58,8 @@
     "logging_config": {
       "log_level": "INFO",
       "log_max_line_length": 8192,
-      "log_format": "%(asctime)s  [%(levelname)s][%(name)s][%(filename)s:%(lineno)d][proc:%(processName)s]  %(message)s",
-      "log_date_format": "%Y-%m-%d %H:%M:%S",
+      "log_format": "(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s [%(name)s][%(fileinfo)s:%(lineno)d] %(message)s",
+      "log_date_format": "%m-%d %H:%M:%S",
       "host_log_dir": "/root/ascend/log",
       "log_rotation_size": 20,
       "log_rotation_count": 10,
@@ -79,13 +79,13 @@
       "instance_assembler_check_interval": 1,
       "instance_assembler_cmd_send_interval": 1,
       "instance_manager_check_interval": 1,
-      "instance_heartbeat_timeout": 5,
+      "instance_heartbeat_timeout": 10,
       "instance_expired_timeout": 1200,
       "send_cmd_retry_times": 3
     },
     "event_config": {
       "event_consumer_sleep_interval": 1.0,
-      "coordinator_heartbeat_interval": 5.0
+      "coordinator_heartbeat_interval": 10.0
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": true,
@@ -94,7 +94,7 @@
       "configmap_prefix": "mindx-dl-deviceinfo-",
       "k8s_cert_path": "",
       "enable_scale_p2d": true,
-      "enable_lingqu_network_recover": true
+      "enable_token_reinference": true
     },
     "observability_config": {
       "observability_enable": false,
@@ -119,8 +119,8 @@
     "logging_config": {
       "log_level": "INFO",
       "log_max_line_length": 8192,
-      "log_format": "%(asctime)s  [%(levelname)s][%(name)s][%(filename)s:%(lineno)d][proc:%(processName)s]  %(message)s",
-      "log_date_format": "%Y-%m-%d %H:%M:%S",
+      "log_format": "(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s [%(name)s][%(fileinfo)s:%(lineno)d] %(message)s",
+      "log_date_format": "%m-%d %H:%M:%S",
       "host_log_dir": "/root/ascend/log",
       "log_rotation_size": 20,
       "log_rotation_count": 10,
@@ -130,7 +130,9 @@
       "log_cleanup_interval": 1800
     },
     "prometheus_metrics_config": {
-      "reuse_time": 3
+      "reuse_time": 3,
+      "pool_metrics_enable": false,
+      "pool_metrics_endpoint": "http://kvp-master.mindie-motor.svc.cluster.local:9003/metrics"
     },
     "exception_config": {
       "max_retry": 5,
@@ -142,7 +144,6 @@
       "infer_timeout": 3600
     },
     "scheduler_config": {
-      "deploy_mode": "pd_separate",
       "scheduler_type": "load_balance"
     },
     "inference_workers_config": {
@@ -177,6 +178,7 @@
     },
     "rate_limit_config": {
       "enable_rate_limit": false,
+      "provider": "simple",
       "max_requests": 1000,
       "window_size": 60,
       "scope": "global",
@@ -212,7 +214,8 @@
       "coordinator_api_host": "127.0.0.1",
       "coordinator_api_dns": "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
       "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026
+      "coordinator_api_mgmt_port": 1026,
+      "coordinator_obs_port": 1027
     },
     "tracer_config": {
       "endpoint": "",
@@ -234,5 +237,11 @@
     "_errors": [],
     "worker_index": null,
     "worker_metaserver_port": null
+  },
+  "motor_nodemanger_config": {
+    "fault_tolerance_config": {
+      "enable_fault_tolerance": false,
+      "zmq_pub_port": 0
+    }
   }
 }

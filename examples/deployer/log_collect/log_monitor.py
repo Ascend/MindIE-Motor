@@ -11,8 +11,8 @@ import threading
 import time
 
 
-STOP_FILE = "stop_log"
 UNKNOWN_NODE_NAME = "unknown"
+IDLE_EXIT_SECONDS = 30  # exit when no pods in namespace for this duration
 
 # Configuration parameters, Configured in the 'log_config.ini' file
 # The log file size is configured in bytes.
@@ -56,6 +56,7 @@ class LogMonitor:
 
         self.threads = []
         self.exit_flag = threading.Event()
+        self._idle = False
         self._logged_save_paths = set()
         # Per pod name: cross-thread log suffix so a new collector after thread exit
         # does not reuse _0 while an older "life" already used lower indices.
@@ -292,6 +293,17 @@ class LogMonitor:
                         "re-checking pod and reopening logs if still Running."
                     )
                     time.sleep(interval)
+                else:
+                    # No data written — clean up empty file to avoid slot inflation
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    log_w(
+                        f"{pod_name}: Failed to pull logs; "
+                        f"pausing {interval}s before retry."
+                    )
+                    time.sleep(interval)
         except Exception as e:
             log_e(f"{pod_name} :Exception: {e}")
         finally:
@@ -331,12 +343,10 @@ class LogMonitor:
             log_e("Exiting: failed to get pod list from kubectl.")
             return False
         if not list_line:
-            log_w(
-                f"No pods in namespace '{g_name_space}'. "
-                "No per-pod log files or output subdirectory will be created. Exiting monitor."
-            )
-            return False
+            self._idle = True
+            return True
 
+        self._idle = False
         dead_log_thread_names = [
             t.name
             for t in self.threads
@@ -385,17 +395,38 @@ class LogMonitor:
             return
 
         # 2、Check whether the stop file for detecting exit exists.
+        stop_file = f"stop_log_{g_name_space}"
         threading.Thread(
             target=self.monitor_stop,
-            args=(STOP_FILE,),
+            args=(stop_file,),
             name="thread-monitor",
             daemon=True
         ).start()
 
-        # 3、Start collect log loop.
+        # 3、Start collect log loop with idle timeout.
+        idle_since = time.monotonic() if self._idle else None
+
         while not self.exit_flag.is_set():
             if not self.start_log_thread():
                 break
+
+            if self._idle:
+                if idle_since is None:
+                    idle_since = time.monotonic()
+                    log_w(
+                        f"No pods in namespace '{g_name_space}'. "
+                        f"Will exit after {IDLE_EXIT_SECONDS}s idle."
+                    )
+                elif time.monotonic() - idle_since >= IDLE_EXIT_SECONDS:
+                    log_i(
+                        f"No pods in namespace for {IDLE_EXIT_SECONDS}s, "
+                        "exiting gracefully."
+                    )
+                    self.exit_flag.set()
+                    break
+            else:
+                idle_since = None
+
             time.sleep(interval)
 
         # 4、Exit gracefully.
@@ -470,6 +501,9 @@ def read_config(config_file: str) -> None:
 
 
 if __name__ == "__main__":
-    log_i(f"Use the command [touch {os.getcwd()}/{STOP_FILE}] to stop the background process.")
     read_config("log_config.ini")
+    log_i(
+        f"Use the command [touch {os.getcwd()}/stop_log_{g_name_space}] "
+        "to stop the background process."
+    )
     LogMonitor().do()

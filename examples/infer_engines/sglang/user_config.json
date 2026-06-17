@@ -8,7 +8,7 @@
     "p_pod_npu_num": 2,
     "d_pod_npu_num": 2,
     "image_name": "sglang:cann8.3.rc2-910b-release1225",
-    "job_id": "mindie-lhb",
+    "job_id": "mindie-motor",
     "hardware_type": "800I_A2",
     "weight_mount_path": "/mnt/weight/",
     "deploy_mode": "multi_deployment"
@@ -20,7 +20,7 @@
     "fault_tolerance_config": {
       "enable_fault_tolerance": true,
       "enable_scale_p2d": true,
-      "enable_lingqu_network_recover": true
+      "enable_token_reinference": true
     },
     "standby_config": {
       "enable_master_standby": false
@@ -38,7 +38,6 @@
       "max_requests": 10000
     },
     "scheduler_config": {
-      "deploy_mode": "pd_dual_dispatch",
       "scheduler_type": "load_balance"
     }
   },
@@ -49,20 +48,13 @@
   },
   "motor_engine_prefill_config": {
     "engine_type": "sglang",
-    "enable_multi_endpoints": false,
-    "model_config": {
-      "model_name": "qwen3-8B",
-      "model_path": "/mnt/share/weight/Qwen3-8B",
-      "npu_mem_utils": 0.9,
-      "parallel_config": {
-        "dp_size": 1,
-        "tp_size": 2,
-        "pp_size": 1,
-        "world_size": 2,
-        "dp_rpc_port": 9000
-      }
-    },
     "engine_config": {
+      "served-model-name": "qwen3-8B",
+      "model-path": "/mnt/share/weight/Qwen3-8B",
+      "mem-fraction-static": 0.9,
+      "dp-size": 1,
+      "tp-size": 2,
+      "pp-size": 1,
       "disaggregation_bootstrap_port": 9100,
       "enable_dp_attention": false,
       "moe_a2a_backend": "none",
@@ -82,20 +74,13 @@
   },
   "motor_engine_decode_config": {
     "engine_type": "sglang",
-    "enable_multi_endpoints": false,
-    "model_config": {
-      "model_name": "qwen3-8B",
-      "model_path": "/mnt/share/weight/Qwen3-8B",
-      "npu_mem_utils": 0.9,
-      "parallel_config": {
-        "dp_size": 1,
-        "tp_size": 2,
-        "pp_size": 1,
-        "world_size": 2,
-        "dp_rpc_port": 9000
-      }
-    },
     "engine_config": {
+      "served-model-name": "qwen3-8B",
+      "model-path": "/mnt/share/weight/Qwen3-8B",
+      "mem-fraction-static": 0.9,
+      "dp-size": 1,
+      "tp-size": 2,
+      "pp-size": 1,
       "enable_dp_attention": false,
       "moe_a2a_backend": "none",
       "disaggregation_transfer_backend": "ascend",

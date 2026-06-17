@@ -21,10 +21,8 @@
   "motor_coordinator_config": {
     "api_config": {
       "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026
-    },
-    "scheduler_config": {
-      "deploy_mode": "pd_disaggregation_single_container"
+      "coordinator_api_mgmt_port": 1026,
+      "coordinator_obs_port": 1027
     }
   },
   "motor_engine_prefill_config": {
@@ -34,20 +32,15 @@
         "node_manager_port": 3026
       }
     },
-    "model_config": {
-      "model_name": "qwen3-8B",
-      "model_path": "/mnt/weights/Qwen3-8B",
-      "npu_mem_utils": 0.9,
-      "parallel_config": {
-        "dp_size": 1,
-        "tp_size": 1,
-        "pp_size": 1,
-        "enable_ep": false,
-        "dp_rpc_port": 9000,
-        "world_size": 1
-      }
-    },
     "engine_config": {
+      "served_model_name": "qwen3-8B",
+      "model": "/mnt/weights/Qwen3-8B",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": false,
       "enforce-eager": true,
       "max_model_len": 2048,
       "kv_transfer_config": {
@@ -58,7 +51,6 @@
         "kv_port": "30001",
         "engine_id": "0",
         "kv_rank": 0,
-        "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
         "kv_connector_extra_config": {}
       }
     }
@@ -70,20 +62,15 @@
         "node_manager_port": 4026
       }
     },
-    "model_config": {
-      "model_name": "qwen3-8B",
-      "model_path": "/mnt/weights/Qwen3-8B",
-      "npu_mem_utils": 0.9,
-      "parallel_config": {
-        "dp_size": 1,
-        "tp_size": 1,
-        "pp_size": 1,
-        "enable_ep": false,
-        "dp_rpc_port": 9000,
-        "world_size": 1
-      }
-    },
     "engine_config": {
+      "served_model_name": "qwen3-8B",
+      "model": "/mnt/weights/Qwen3-8B",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": false,
       "max_model_len": 2048,
       "compilation_config": {
         "cudagraph_mode": "FULL_DECODE_ONLY"
@@ -96,7 +83,6 @@
         "kv_port": "30001",
         "engine_id": "0",
         "kv_rank": 0,
-        "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
         "kv_connector_extra_config": {}
       }
     }

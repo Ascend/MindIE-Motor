@@ -12,15 +12,20 @@ __all__ = [
     "CompressedRotatingFileHandler",
     "get_logger",
     "reconfigure_logging",
+    "ProcessContextFilter",
     "ProcessNameFilter",
     "MaxLengthFormatter",
     "ApiAccessFilter",
+    "ColoredFormatter",
+    "NewLineFormatter",
 ]
 
+from .formatter import ColoredFormatter, NewLineFormatter
 from .logger_handler import CompressedRotatingFileHandler
 from .logger import (
     get_logger,
     reconfigure_logging,
+    ProcessContextFilter,
     ProcessNameFilter,
     MaxLengthFormatter,
     ApiAccessFilter,

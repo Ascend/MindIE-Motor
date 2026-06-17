@@ -22,14 +22,13 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import PlainTextResponse
 
 from motor.common.resources.http_msg_spec import InsEventMsg
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
+from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.http.security_utils import sanitize_error_message, log_audit_event
-from motor.config.coordinator import CoordinatorConfig, DeployMode
-from motor.coordinator.metrics.metrics_collector import MetricsCollector
+from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.models.response import RequestResponse
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
@@ -43,7 +42,10 @@ from motor.coordinator.domain.probe import (
     ReadinessResult,
     RoleShmDaemonLivenessProvider,
 )
+
 logger = get_logger(__name__)
+_rl = RateLimitedLogger(logger)
+_READINESS_REMAINS_READY_KEY = "coordinator.readiness.remains_ready"
 
 # Readiness 503: result -> HTTP detail.
 _READINESS_503: dict[ReadinessResult, str] = {
@@ -90,22 +92,17 @@ class ManagementServer(BaseCoordinatorServer):
         # Create dependencies before app so lifespan and routes see them (lifespan runs on uvicorn start)
         self._scheduler_connection = SchedulerConnectionManager.from_config(self.coordinator_config)
         self._instance_manager = (
-            instance_manager if instance_manager is not None
-            else InstanceManager(self.coordinator_config, TYPE_MGMT)
-        )
-        deploy_mode = (
-            self.coordinator_config.scheduler_config.deploy_mode
-            if (self.coordinator_config and self.coordinator_config.scheduler_config)
-            else DeployMode.PD_SEPARATE
+            instance_manager if instance_manager is not None else InstanceManager(self.coordinator_config, TYPE_MGMT)
         )
         self._readiness_probe = ReadinessProbe(
             self._daemon_liveness,
             self._instance_manager,
-            deploy_mode=deploy_mode,
             enable_master_standby=self.coordinator_config.standby_config.enable_master_standby,
         )
         self._app_builder = AppBuilder(self.coordinator_config)
         self.management_app = self._app_builder.create_management_app(lifespan=self._lifespan)
+        self._readiness_was_ready: bool | None = None
+        self._readiness_last_503_result: ReadinessResult | None = None
         self._register_routes()
 
     @property
@@ -129,12 +126,6 @@ class ManagementServer(BaseCoordinatorServer):
         logger.info("Management server is starting...")
         await self._scheduler_connection.connect()
         try:
-            MetricsCollector().set_event_loop(asyncio.get_running_loop())
-            MetricsCollector().set_scheduler_provider(lambda: self._instance_manager)
-            MetricsCollector().start()
-        except Exception as e:
-            logger.warning("Ignored error setting metrics collector: %s", e)
-        try:
             yield
         except asyncio.CancelledError:
             logger.info("Management server startup was cancelled")
@@ -143,10 +134,6 @@ class ManagementServer(BaseCoordinatorServer):
             raise
         finally:
             logger.info("Management server is shutting down...")
-            try:
-                MetricsCollector().stop()
-            except Exception as e:
-                logger.warning("Ignored error stopping metrics collector: %s", e)
             await self._scheduler_connection.disconnect()
 
     async def run(self) -> None:
@@ -216,7 +203,7 @@ class ManagementServer(BaseCoordinatorServer):
         async def readiness_check(request: Request):
             # Note: If this returns ready=False (e.g. no required instances), K8s removes the pod from
             # the Service. Then the controller's POST /instances/refresh cannot reach this pod (deadlock).
-            logger.info("[Readiness] Probe received")
+            logger.debug("[Readiness] Probe received")
             try:
                 out = await self._readiness_probe.check()
             except HTTPException:
@@ -225,38 +212,60 @@ class ManagementServer(BaseCoordinatorServer):
                 logger.exception("[Readiness] Probe failed: %s", e)
                 raise e from e
 
-            logger.debug(
-                "[Standby] Readiness: result=%s is_ready=%s instances_status=%s",
-                out.result.value,
-                out.is_ready,
-                out.instance_readiness.value if out.instance_readiness else None,
-            )
+            instances_status = out.instance_readiness.value if out.instance_readiness else None
             if out.result in _READINESS_503:
-                logger.warning("[Readiness] result=%s, returning 503", out.result.value)
+                if out.result != self._readiness_last_503_result:
+                    self._readiness_last_503_result = out.result
+                    logger.warning(
+                        "[Readiness] Returning 503, result=%s. "
+                        "Check: daemon alive, master/standby role, role_heartbeat_interval_sec",
+                        out.result.value,
+                    )
+                self._readiness_was_ready = False
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=_READINESS_503[out.result],
                 )
-            msg = (
-                "Coordinator is master"
-                if out.result == ReadinessResult.OK_MASTER
-                else "Coordinator is ok"
-            )
-            logger.info(
-                "[Readiness] is_ready=%s instances_status=%s -> 200",
-                out.is_ready,
-                out.instance_readiness.value if out.instance_readiness else None,
-            )
+
+            self._readiness_last_503_result = None
+            msg = "Coordinator is master" if out.result == ReadinessResult.OK_MASTER else "Coordinator is ok"
+            # Log INFO/WARNING only on ready transitions; steady probes stay DEBUG.
+            prev_ready = self._readiness_was_ready
+            if out.is_ready:
+                if not prev_ready:
+                    logger.info(
+                        "[Readiness] Coordinator is ready. result=%s instances_status=%s",
+                        out.result.value,
+                        instances_status,
+                    )
+                else:
+                    logger.debug(
+                        "[Readiness] Coordinator remains ready. result=%s instances_status=%s",
+                        out.result.value,
+                        instances_status,
+                    )
+                    _rl.record_success(_READINESS_REMAINS_READY_KEY)
+                    _rl.emit_info_periodic(
+                        _READINESS_REMAINS_READY_KEY,
+                        "[Readiness] Coordinator remains ready periodic summary: "
+                        "probe succeeded {count} times in last 60s, result=%s instances_status=%s"
+                        % (out.result.value, instances_status),
+                    )
+            else:
+                if prev_ready:
+                    logger.warning(
+                        "[Readiness] Coordinator is no longer ready. result=%s instances_status=%s",
+                        out.result.value,
+                        instances_status,
+                    )
+                else:
+                    logger.debug(
+                        "[Readiness] Coordinator is not ready yet. result=%s instances_status=%s",
+                        out.result.value,
+                        instances_status,
+                    )
+            self._readiness_was_ready = out.is_ready
             return _build_readiness_response(msg, out.is_ready)
-
-        @self.management_app.get("/metrics")
-        async def get_metrics():
-            metrics = MetricsCollector().prometheus_metrics_handler()
-            return PlainTextResponse(content=metrics)
-
-        @self.management_app.get("/instance/metrics")
-        async def get_instance_metrics():
-            return MetricsCollector().prometheus_instance_metrics_handler()
 
         @self.management_app.post("/instances/refresh", response_model=RequestResponse)
         @self.timeout_handler()
@@ -289,8 +298,6 @@ class ManagementServer(BaseCoordinatorServer):
                     "GET /liveness": "liveness check",
                     "GET /startup": "startup probe",
                     "GET /readiness": "readiness check",
-                    "GET /metrics": "get metrics",
-                    "GET /instance/metrics": "get instance metrics",
                     "POST /instances/refresh": "refresh instances",
                 },
             }
@@ -308,8 +315,7 @@ class ManagementServer(BaseCoordinatorServer):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
-                        "Request body size exceeds maximum allowed size of "
-                        f"{_MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB"
+                        f"Request body size exceeds maximum allowed size of {_MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB"
                     ),
                 )
             body = json.loads(raw_body.decode("utf-8"))
@@ -322,10 +328,7 @@ class ManagementServer(BaseCoordinatorServer):
             raise
         except json.JSONDecodeError as e:
             logger.error("Failed to parse request body as JSON: %s", e)
-            preview = (
-                raw_body.decode("utf-8", errors="ignore")[:_REQUEST_BODY_PREVIEW_LENGTH]
-                if raw_body else "empty"
-            )
+            preview = raw_body.decode("utf-8", errors="ignore")[:_REQUEST_BODY_PREVIEW_LENGTH] if raw_body else "empty"
             logger.error("Request body (first %s chars): %s", _REQUEST_BODY_PREVIEW_LENGTH, preview)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

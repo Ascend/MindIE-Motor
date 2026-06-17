@@ -30,8 +30,8 @@
     "logging_config": {
       "log_level": "INFO",
       "log_max_line_length": 8192,
-      "log_format": "%(asctime)s  [%(levelname)s][%(name)s][%(filename)s:%(lineno)d][proc:%(processName)s]  %(message)s",
-      "log_date_format": "%Y-%m-%d %H:%M:%S",
+      "log_format": "(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s [%(name)s][%(fileinfo)s:%(lineno)d] %(message)s",
+      "log_date_format": "%m-%d %H:%M:%S",
        "host_log_dir": "/root/ascend/log",
        "log_rotation_size": 10,
        "log_rotation_count": 10,

@@ -9,6 +9,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+MOTOR_PATCH_ROOT="/tmp/motor/examples/deployer/patch"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Current node role: ROLE=$ROLE"
@@ -73,7 +75,7 @@ setup_tls_certificates() {
         echo "Please copy openssl_gen_cert.sh to the specified path or set GEN_CERT_SCRIPT environment variable"
         return 1
     fi
-    
+
     if [ ! -f "$CA_PATH/ca.pem" ] || [ ! -f "$CA_PATH/ca.key.pem" ]; then
         echo "Error: CA certificate not found at $CA_PATH"
         echo "Please generate CA certificate first:"
@@ -81,7 +83,7 @@ setup_tls_certificates() {
         echo "Or set CA_PATH environment variable to the correct CA certificate path"
         return 1
     fi
-    
+
     echo "TLS is enabled, generating certificates..."
     echo "CA_PATH: $CA_PATH"
     echo "BASE_CERT_PATH: $BASE_CERT_PATH"
@@ -122,6 +124,15 @@ setup_ascend_cache_path() {
         fi
         export ASCEND_CACHE_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
     fi
+}
+
+apply_shuffle_safetensors_patch() {
+    local patch_script="${MOTOR_PATCH_ROOT}/patch_apply_shuffle_safetensors.py"
+    if [ ! -f "$patch_script" ]; then
+        echo "Warning: shuffle safetensors patch script not found: $patch_script"
+        return 0
+    fi
+    python3 "$patch_script"
 }
 
 setup_jemalloc() {
@@ -188,7 +199,29 @@ set_cann_env() {
     source "$CANN_INSTALL_PATH/nnal/atb/set_env.sh"
 }
 
+_motor_deploy_hardware_type() {
+    local cfg=""
+    if [ -n "$USER_CONFIG_PATH" ] && [ -f "$USER_CONFIG_PATH" ]; then
+        cfg="$USER_CONFIG_PATH"
+    elif [ -n "$USER_CONFIG_FILE" ] && [ -f "$USER_CONFIG_FILE" ]; then
+        cfg="$USER_CONFIG_FILE"
+    fi
+    if [ -z "$cfg" ]; then
+        echo "Error: Config file missing" >&2
+        return
+    fi
+    python3 -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('motor_deploy_config',{}).get('hardware_type',''))" "$cfg" 2>/dev/null || echo ""
+}
+
 gen_ranktable_config() {
+    local hw_type
+    hw_type="$(_motor_deploy_hardware_type)"
+    case "$hw_type" in
+        350-Atlas-8|350-Atlas-16|350-Atlas-4p-8|350-Atlas-4p-16|850-Atlas-8p-8|850-SuperPod-Atlas-8|950-SuperPod-Atlas-8)
+            echo "hardware_type is ${hw_type}: skip gen_ranktable_config (no hccl/ranktable on this platform)"
+            return
+            ;;
+    esac
     if [ -f "$CONFIGMAP_PATH/hccl_tools.py" ]; then
         echo "Using hccl_tools.py to generate ranktable.json..."
         export HCCL_PATH="$CONFIG_PATH/hccl.json"

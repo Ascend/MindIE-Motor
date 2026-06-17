@@ -16,37 +16,84 @@ from __future__ import annotations
 from motor.common.resources.endpoint import Workload
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
+from motor.coordinator.models.request import RequestInfo
+from motor.common.utils.image_utils import get_mul_token
+
 
 logger = get_logger(__name__)
 
 
-def calculate_demand_workload(role: PDRole, request_length: int) -> Workload:
+def calculate_demand_workload(role: PDRole, req_info: RequestInfo) -> Workload:
     """
     Compute demand workload for this allocation from role and request length.
     Shared by BaseRouter.prepare_resource and WorkloadActionHandler ALLOCATION.
 
     Args:
-        role: PDRole enum (prefill/decode/both)
+        role: PDRole enum (encode/prefill/decode/both)
         request_length: Request length
 
     Returns:
         Workload: Load for ALLOCATION (used by select_and_allocate / add_req_workload)
     """
+
+    if role == PDRole.ROLE_E:
+        score = _calculate_encode_scores(req_info)
+        return Workload(active_tokens=score)
     if role == PDRole.ROLE_P:
-        score = _calculate_prefill_scores(request_length)
+        score = _prefill_load_score(req_info)
         return Workload(active_kv_cache=score, active_tokens=score)
     if role == PDRole.ROLE_D:
-        score = _calculate_decode_scores(request_length)
+        score = _calculate_decode_scores(req_info.req_len)
         return Workload(active_tokens=score)
     if role == PDRole.ROLE_U:
-        score = _calculate_both_scores(request_length)
+        score = _calculate_both_scores(req_info.req_len)
         return Workload(active_kv_cache=score, active_tokens=score)
     logger.warning("Unknown role %s for workload calculation", role)
     return Workload()
 
 
+def _calculate_encode_scores(req_info: RequestInfo) -> float:
+    """Encode role workload score."""
+    messages = req_info.req_data.get("messages")
+    mul_token = 0
+    if not messages:
+        return mul_token
+
+    for msg in messages:
+        if not isinstance(msg.get("content"), list):
+            continue
+
+        for content_item in msg["content"]:
+            content_type = content_item.get("type")
+            if not content_type:
+                continue
+
+            if content_type == "image_url":
+                img_url = content_item.get("image_url", {}).get("url", "")
+                mul_token += get_mul_token(img_url)
+            elif content_type == "video_url":
+                mul_token += req_info.req_len * 32
+    return mul_token
+
+
+def _prefill_load_score(req_info: RequestInfo) -> float:
+    """
+    Prefill load in **real prompt tokens** when available, else the legacy byte-length estimate.
+
+    When the request was tokenized at routing (KV affinity sets ``req_info.token_ids``), the load
+    uses the real token count so it shares the token unit with the affinity prefill cost
+    (``isl - matched_tokens``) -- this is what makes the unified score's weights principled instead
+    of mixing token counts with a byte-length fit. Falls back to ``_calculate_prefill_scores`` when
+    token ids are absent (e.g. load_balance/round_robin, or no tokenizer configured).
+    """
+    token_ids = getattr(req_info, "token_ids", None)
+    if isinstance(token_ids, list) and token_ids:
+        return float(len(token_ids))
+    return _calculate_prefill_scores(req_info.req_len)
+
+
 def _calculate_prefill_scores(request_length: int) -> float:
-    """Prefill role workload score."""
+    """Prefill role workload score (legacy byte-length heuristic; fallback only)."""
     length_score = request_length / 4.0
     return length_score * 0.0345 + 120.0745
 

@@ -1,0 +1,107 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 1,
+    "single_d_instance_pod_num": 1,
+    "p_pod_npu_num": 2,
+    "d_pod_npu_num": 2,
+    "image_name": "sglang:cann8.3.rc2-910b-release1225",
+    "job_id": "mindie-lhb",
+    "hardware_type": "950-SuperPod-Atlas-8",
+    "weight_mount_path": "/mnt/weight/",
+    "deploy_mode": "multi_deployment",
+    "enable_pd_heterogeneous": true,
+    "pd_heterogeneous_label_key": "card_type",
+    "pd_heterogeneous_prefill_label_value": "Ascend950PR",
+    "pd_heterogeneous_decode_label_value": "Ascend950DT"
+  },
+  "motor_controller_config": {
+    "logging_config": {
+      "log_level": "INFO"
+    },
+    "fault_tolerance_config": {
+      "enable_fault_tolerance": true,
+      "enable_scale_p2d": true,
+      "enable_lingqu_network_recover": true
+    },
+    "standby_config": {
+      "enable_master_standby": false
+    }
+  },
+  "motor_coordinator_config": {
+    "logging_config": {
+      "log_level": "INFO"
+    },
+    "standby_config": {
+      "enable_master_standby": false
+    },
+    "request_limit": {
+      "single_node_max_requests": 4096,
+      "max_requests": 10000
+    },
+    "scheduler_config": {
+      "scheduler_type": "load_balance"
+    }
+  },
+  "motor_nodemanger_config": {
+    "logging_config": {
+      "log_level": "INFO"
+    }
+  },
+  "motor_engine_prefill_config": {
+    "engine_type": "sglang",
+    "enable_multi_endpoints": false,
+    "engine_config": {
+      "served-model-name": "qwen3-8B",
+      "model-path": "/mnt/share/weight/Qwen3-8B",
+      "mem-fraction-static": 0.9,
+      "dp-size": 1,
+      "tp-size": 2,
+      "pp-size": 1,
+      "disaggregation_bootstrap_port": 9100,
+      "enable_dp_attention": false,
+      "moe_a2a_backend": "none",
+      "disaggregation_transfer_backend": "ascend",
+      "attention_backend": "ascend",
+      "trust_remote_code": true,
+      "log_level": "info",
+      "load_balance_method": "round_robin",
+      "base_gpu_id": 0,
+      "nnodes": 1
+    },
+    "health_check_config": {
+      "enable_virtual_inference": false,
+      "npu_usage_threshold": 3,
+      "max_failure_count": 6
+    }
+  },
+  "motor_engine_decode_config": {
+    "engine_type": "sglang",
+    "enable_multi_endpoints": false,
+    "engine_config": {
+      "served-model-name": "qwen3-8B",
+      "model-path": "/mnt/share/weight/Qwen3-8B",
+      "mem-fraction-static": 0.9,
+      "dp-size": 1,
+      "tp-size": 2,
+      "pp-size": 1,
+      "enable_dp_attention": false,
+      "moe_a2a_backend": "none",
+      "disaggregation_transfer_backend": "ascend",
+      "attention_backend": "ascend",
+      "trust_remote_code": true,
+      "log_level": "info",
+      "prefill_round_robin_balance": true,
+      "base_gpu_id": 4,
+      "nnodes": 1
+    },
+    "health_check_config": {
+      "enable_virtual_inference": false,
+      "npu_usage_threshold": 3,
+      "max_failure_count": 6
+    }
+  },
+  "kv_cache_pool_config": {}
+}

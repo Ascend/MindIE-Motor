@@ -21,26 +21,26 @@ logger = get_logger(__name__)
 
 class Workload(BaseModel):
     """Workload information for load balancing"""
+
     active_kv_cache: float = Field(default=0, description="Active KV cache size")
     active_tokens: float = Field(default=0, description="Number of active requests")
-    
+
     def __iadd__(self, other):
         if not isinstance(other, Workload):
-            raise TypeError("Unsupported operand type(s) for +=: 'Workload' and %s",
-                            type(other).__name__)
-        
+            raise TypeError("Unsupported operand type(s) for +=: 'Workload' and %s", type(other).__name__)
+
         self.active_kv_cache += other.active_kv_cache
         self.active_tokens += other.active_tokens
-        
+
         return self
-    
+
     def calculate_workload_score(self, role: Enum | str | None) -> float:
         """
         Calculate workload score based on role.
-        
+
         Args:
             role: PDRole enum or str ("prefill"/"decode"/"mix") indicating the role.
-            
+
         Returns:
             float: Calculated workload score
         """
@@ -51,7 +51,9 @@ class Workload(BaseModel):
             return self.active_tokens + self.active_kv_cache * 0.3
         elif role_value == "decode":
             return self.active_tokens
-        elif role_value == "both":
+        elif role_value == "encode":
+            return self.active_tokens
+        elif role_value in ("union", "both"):
             return self.active_tokens + self.active_kv_cache * 0.15
         else:
             raise ValueError(f"Invalid role value: {role_value}")
@@ -85,11 +87,12 @@ class Endpoint(BaseModel):
     id: int = Field(..., description="Endpoint ID, it associated with data parallel rank id")
     ip: str = Field(..., description="IP address")
     business_port: str = Field(..., description="Business port")
-    mgmt_port: str = Field(..., description="Management port") 
+    mgmt_port: str = Field(..., description="Management port")
     status: EndpointStatus = Field(default=EndpointStatus.INITIAL, description="Endpoint status")
-    device_infos: list[DeviceInfo] = Field(default_factory=list, description="List of DeviceInfo") 
+    device_infos: list[DeviceInfo] = Field(default_factory=list, description="List of DeviceInfo")
     hb_timestamp: float = Field(default=0, description="Last heartbeat timestamp")
     workload: Workload = Field(default_factory=Workload, description="Current workload of the endpoint")
+    headless: bool = Field(default=False, description="Whether this endpoint runs in headless mode (PCP slave node)")
 
     def __init__(
         self,
@@ -100,7 +103,8 @@ class Endpoint(BaseModel):
         status: EndpointStatus | None = None,
         device_infos: list[DeviceInfo] | None = None,
         hb_timestamp: float | None = None,
-        workload: Workload | None = None
+        workload: Workload | None = None,
+        headless: bool = False,
     ) -> None:
         super().__init__(
             id=id,
@@ -110,7 +114,8 @@ class Endpoint(BaseModel):
             status=status if status is not None else EndpointStatus.INITIAL,
             device_infos=device_infos if device_infos is not None else [],
             hb_timestamp=hb_timestamp if hb_timestamp is not None else time.time(),
-            workload=workload if workload is not None else Workload()
+            workload=workload if workload is not None else Workload(),
+            headless=headless,
         )
         logger.debug("Init endpoint with id:%s ip:%s business_port:%s mgmt_port:%s", id, ip, business_port, mgmt_port)
 
@@ -124,4 +129,3 @@ class Endpoint(BaseModel):
 
     def is_alive(self, timestamp: float, heartbeat_timeout: int = HEARTBEAT_TIMEOUT) -> bool:
         return (timestamp - self.hb_timestamp) <= heartbeat_timeout
-    

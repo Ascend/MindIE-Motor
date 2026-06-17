@@ -11,7 +11,28 @@
 
 set_kv_conductor_env
 
-export CONDUCTOR_CONFIG_PATH="$CONFIG_PATH/kv_conductor_config.json"
-python3 "$CONFIGMAP_PATH/mooncake_config.py" conductor "$CONDUCTOR_CONFIG_PATH" "$USER_CONFIG_PATH"
+KV_CONDUCTOR_PORT=${KV_CONDUCTOR_PORT:-13333}
+KV_CONDUCTOR_HOST=${KV_CONDUCTOR_HOST:-0.0.0.0}
 
-mooncake_conductor
+# Locate the kv-conductor binary: check common installation paths.
+KV_CONDUCTOR_BIN=""
+for candidate in /usr/local/bin/kv-conductor /opt/motor/bin/kv-conductor ./kv-conductor; do
+    if [ -x "$candidate" ]; then
+        KV_CONDUCTOR_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -z "$KV_CONDUCTOR_BIN" ]; then
+    echo "ERROR: kv-conductor binary not found. Searched: /usr/local/bin/kv-conductor, /opt/motor/bin/kv-conductor"
+    exit 1
+fi
+
+echo "Starting KV Conductor on ${KV_CONDUCTOR_HOST}:${KV_CONDUCTOR_PORT}"
+echo "Binary: ${KV_CONDUCTOR_BIN}"
+
+# Start kv-conductor in the foreground (the container's main process).
+# RUST_LOG can be set via env to control tracing verbosity (default: info).
+exec "$KV_CONDUCTOR_BIN" \
+    --host "$KV_CONDUCTOR_HOST" \
+    --port "$KV_CONDUCTOR_PORT"

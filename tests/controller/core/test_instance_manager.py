@@ -22,7 +22,7 @@ from motor.common.resources.instance import (
     NodeManagerInfo,
     InsStatus,
     InsConditionEvent,
-    ReadOnlyInstance
+    ReadOnlyInstance,
 )
 from motor.common.resources import EventType
 from motor.common.utils.singleton import ThreadSafeSingleton
@@ -31,12 +31,7 @@ from motor.controller.core.event_pusher import EventPusher
 
 
 # Helper functions
-def create_test_instance(
-    instance_id: int,
-    job_name: str,
-    pod_ips: list[str],
-    role: str = "prefill"
-) -> Instance:
+def create_test_instance(instance_id: int, job_name: str, pod_ips: list[str], role: str = "prefill") -> Instance:
     """Helper function to create test instances with endpoints"""
     endpoints = {}
     for i, pod_ip in enumerate(pod_ips):
@@ -47,29 +42,23 @@ def create_test_instance(
                 business_port=f"80{0}{i}",
                 mgmt_port=f"80{1}{i}",
                 status=EndpointStatus.NORMAL,
-                hb_timestamp=time.time()
+                hb_timestamp=time.time(),
             )
         }
 
-    return Instance(
-        id=instance_id,
-        job_name=job_name,
-        model_name="test_model",
-        role=role,
-        endpoints=endpoints
-    )
+    return Instance(id=instance_id, job_name=job_name, model_name="test_model", role=role, endpoints=endpoints)
 
 
-def _create_endpoint(id: int, ip: str, business_port: str = "9090", mgmt_port: str = "8080") -> Endpoint:
+def _create_endpoint(endpoint_id: int, ip: str, business_port: str = "9090", mgmt_port: str = "8080") -> Endpoint:
     """Helper function to create an Endpoint with default values"""
     return Endpoint(
-        id=id,
+        id=endpoint_id,
         ip=ip,
         business_port=business_port,
         mgmt_port=mgmt_port,
         status=EndpointStatus.INITIAL,
         device_infos=[],
-        hb_timestamp=time.time()
+        hb_timestamp=time.time(),
     )
 
 
@@ -77,12 +66,7 @@ def get_mock_heartbeat_msg(job_name: str, ins_id: int, ip: str, status_dict: dic
     """Generate a mock heartbeat message with configurable status"""
     if status_dict is None:
         status_dict = {0: EndpointStatus.NORMAL}
-    return HeartbeatMsg(
-        job_name=job_name,
-        ins_id=ins_id,
-        ip=ip,
-        status=status_dict
-    )
+    return HeartbeatMsg(job_name=job_name, ins_id=ins_id, ip=ip, status=status_dict)
 
 
 def create_instance_manager_with_config(enable_etcd=False) -> InstanceManager:
@@ -115,7 +99,7 @@ def test_config():
         'd_role': d_role,
         'pod_ips': pod_ips,
         'p_parallel_config': p_parallel_config,
-        'd_parallel_config': d_parallel_config
+        'd_parallel_config': d_parallel_config,
     }
 
 
@@ -137,7 +121,7 @@ def setup_test_environment():
     if hasattr(ThreadSafeSingleton, '_instances') and InstanceManager in ThreadSafeSingleton._instances:
         try:
             ThreadSafeSingleton._instances[InstanceManager].stop()
-        except:
+        except Exception:
             pass
         del ThreadSafeSingleton._instances[InstanceManager]
 
@@ -157,8 +141,10 @@ def instance_manager(test_config):
             id=0,
             role=test_config['p_role'],
             parallel_config=test_config['p_parallel_config'],
-            node_mgrs=[NodeManagerInfo(pod_ip=pod_ips[0], host_ip=pod_ips[0], port="8080"),
-                       NodeManagerInfo(pod_ip=pod_ips[1], host_ip=pod_ips[1], port="8080")],
+            node_mgrs=[
+                NodeManagerInfo(pod_ip=pod_ips[0], host_ip=pod_ips[0], port="8080"),
+                NodeManagerInfo(pod_ip=pod_ips[1], host_ip=pod_ips[1], port="8080"),
+            ],
             endpoints={
                 pod_ips[0]: {0: _create_endpoint(0, pod_ips[0])},
                 pod_ips[1]: {0: _create_endpoint(0, pod_ips[1])},
@@ -166,19 +152,23 @@ def instance_manager(test_config):
         )
     )
     # p1
-    instance_manager.add_instance(Instance(
-        job_name="prefill-1",
-        model_name="test_model",
-        id=1,
-        role=test_config['p_role'],
-        parallel_config=test_config['p_parallel_config'],
-        node_mgrs=[NodeManagerInfo(pod_ip=pod_ips[2], host_ip=pod_ips[2], port="8080"),
-                   NodeManagerInfo(pod_ip=pod_ips[3], host_ip=pod_ips[3], port="8080")],
+    instance_manager.add_instance(
+        Instance(
+            job_name="prefill-1",
+            model_name="test_model",
+            id=1,
+            role=test_config['p_role'],
+            parallel_config=test_config['p_parallel_config'],
+            node_mgrs=[
+                NodeManagerInfo(pod_ip=pod_ips[2], host_ip=pod_ips[2], port="8080"),
+                NodeManagerInfo(pod_ip=pod_ips[3], host_ip=pod_ips[3], port="8080"),
+            ],
             endpoints={
                 pod_ips[2]: {0: _create_endpoint(0, pod_ips[2])},
-                pod_ips[3]: {0: _create_endpoint(0, pod_ips[3])}
-            }
-        ))
+                pod_ips[3]: {0: _create_endpoint(0, pod_ips[3])},
+            },
+        )
+    )
     # d0
     d_instance = Instance(
         job_name="decode-0",
@@ -186,12 +176,13 @@ def instance_manager(test_config):
         id=2,
         role=test_config['d_role'],
         parallel_config=test_config['d_parallel_config'],
-        node_mgrs=[NodeManagerInfo(pod_ip=pod_ips[4], host_ip=pod_ips[4], port="8080"),
-                   NodeManagerInfo(pod_ip=pod_ips[5], host_ip=pod_ips[5], port="8080"),
-                   NodeManagerInfo(pod_ip=pod_ips[6], host_ip=pod_ips[6], port="8080"),
-                   NodeManagerInfo(pod_ip=pod_ips[7], host_ip=pod_ips[7], port="8080"),
-                   ],
-        endpoints={}
+        node_mgrs=[
+            NodeManagerInfo(pod_ip=pod_ips[4], host_ip=pod_ips[4], port="8080"),
+            NodeManagerInfo(pod_ip=pod_ips[5], host_ip=pod_ips[5], port="8080"),
+            NodeManagerInfo(pod_ip=pod_ips[6], host_ip=pod_ips[6], port="8080"),
+            NodeManagerInfo(pod_ip=pod_ips[7], host_ip=pod_ips[7], port="8080"),
+        ],
+        endpoints={},
     )
     # construct endpoints
     endpoints = {}
@@ -200,10 +191,7 @@ def instance_manager(test_config):
         endpoints[pod_ip] = {}
         for i in range(0, 8):
             endpoints[pod_ip][i] = _create_endpoint(
-                id=i,
-                ip=pod_ip,
-                business_port=str(port_temp),
-                mgmt_port=str(port_temp + 1000)
+                endpoint_id=i, ip=pod_ip, business_port=str(port_temp), mgmt_port=str(port_temp + 1000)
             )
             port_temp += 1
 
@@ -282,22 +270,20 @@ def test_persist_data_failure():
 def test_restore_data_success():
     """Test successful data restoration"""
     instance_data = {
-        "id": 1, "job_name": "test_job", "model_name": "test_model",
-        "role": "prefill", "endpoints": {}, "status": "initial",
-        "parallel_config": None, "node_managers": [], 
-        "gathered_workload": {"active_kv_cache": 0, "active_tokens": 0}
+        "id": 1,
+        "job_name": "test_job",
+        "model_name": "test_model",
+        "role": "prefill",
+        "endpoints": {},
+        "status": "initial",
+        "parallel_config": None,
+        "node_managers": [],
+        "gathered_workload": {"active_kv_cache": 0, "active_tokens": 0},
     }
-    persistent_state = PersistentState(
-        data={"1": instance_data},
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    persistent_state = PersistentState(data={"1": instance_data}, version=1, timestamp=time.time(), checksum="")
     persistent_state.checksum = persistent_state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": persistent_state
-    }
+
+    mock_persistent_states = {"state": persistent_state}
 
     with patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -305,10 +291,10 @@ def test_restore_data_success():
         mock_etcd_class.return_value = mock_client
 
         manager = create_instance_manager_with_config(enable_etcd=True)
-        
+
         mock_event_pusher = MagicMock(spec=EventPusher)
         manager.attach(mock_event_pusher)
-        
+
         result = manager.restore_data()
         assert result is True
         assert 1 in manager.instances
@@ -331,13 +317,22 @@ def test_restore_data_invalid_checksum():
     """Test restoration with invalid checksum"""
     mock_persistent_states = {
         "state": PersistentState(
-            data={"1": {"id": 1, "job_name": "test_job", "model_name": "test_model",
-                        "role": "prefill", "endpoints": {}, "status": "initial",
-                        "parallel_config": None, "node_managers": [], 
-                        "gathered_workload": {"active_kv_cache": 0, "active_tokens": 0}}},
+            data={
+                "1": {
+                    "id": 1,
+                    "job_name": "test_job",
+                    "model_name": "test_model",
+                    "role": "prefill",
+                    "endpoints": {},
+                    "status": "initial",
+                    "parallel_config": None,
+                    "node_managers": [],
+                    "gathered_workload": {"active_kv_cache": 0, "active_tokens": 0},
+                }
+            },
             version=1,
             timestamp=time.time(),
-            checksum="invalid_checksum"
+            checksum="invalid_checksum",
         )
     }
 
@@ -365,23 +360,27 @@ def test_add_instance(instance_manager, test_config):
     assert instance_manager.get_instance_num() == cur_instance_num
 
     # Test valid instance
-    instance_manager.add_instance(Instance(
-        job_name="testAllocInsGroup2",
-        model_name="test_model",
-        id=100,
-        role=test_config['p_role'],
-        parallel_config=ParallelConfig(dp_size=test_config['dp'], tp_size=test_config['tp'] // 2)
-    ))
+    instance_manager.add_instance(
+        Instance(
+            job_name="testAllocInsGroup2",
+            model_name="test_model",
+            id=100,
+            role=test_config['p_role'],
+            parallel_config=ParallelConfig(dp_size=test_config['dp'], tp_size=test_config['tp'] // 2),
+        )
+    )
     assert instance_manager.get_instance_num() == cur_instance_num + 1
 
     # Test duplicate instance
-    instance_manager.add_instance(Instance(
-        job_name="testAllocInsGroup2",
-        model_name="test_model",
-        id=100,
-        role=test_config['p_role'],
-        parallel_config=ParallelConfig(dp_size=test_config['dp'], tp_size=test_config['tp'] // 2)
-    ))
+    instance_manager.add_instance(
+        Instance(
+            job_name="testAllocInsGroup2",
+            model_name="test_model",
+            id=100,
+            role=test_config['p_role'],
+            parallel_config=ParallelConfig(dp_size=test_config['dp'], tp_size=test_config['tp'] // 2),
+        )
+    )
     assert instance_manager.get_instance_num() == cur_instance_num + 1  # Should not increase
 
 
@@ -470,6 +469,31 @@ def test_has_instance_by_job_name(instance_manager):
     assert instance_manager.has_instance_by_job_name("non-existent") is False
 
 
+def test_get_instance_by_job_name(instance_manager):
+    """Test retrieving the current instance by job name"""
+    d_instance = instance_manager.get_instance_by_job_name("decode-0")
+    assert d_instance is not None
+    assert d_instance.job_name == "decode-0"
+    assert d_instance.id == 2
+
+    assert instance_manager.get_instance_by_job_name("non-existent") is None
+
+
+def test_get_instance_by_job_name_returns_newest_when_stale_entries_exist(instance_manager):
+    """Stale and current entries may coexist briefly; return the newest id."""
+    replacement = create_test_instance(
+        instance_id=99,
+        job_name="decode-0",
+        pod_ips=["10.0.0.99"],
+        role="decode",
+    )
+    instance_manager.add_instance(replacement)
+
+    current = instance_manager.get_instance_by_job_name("decode-0")
+    assert current is not None
+    assert current.id == 99
+
+
 def test_handle_heartbeat_success(instance_manager, test_config):
     """Test successful heartbeat handling"""
     pod_ips = test_config['pod_ips']
@@ -538,7 +562,7 @@ def test_separate_instance(instance_manager):
     """Test separating instances"""
     # Enable persistence for this test
     instance_manager.etcd_config.enable_etcd_persistence = True
-    
+
     instance = create_test_instance(100, "test_separate", ["192.168.1.1"])
     instance_manager.add_instance(instance)
     instance.update_instance_status(InsStatus.ACTIVE)
@@ -711,12 +735,7 @@ def test_checksum_calculation(instance_manager):
 
     # Create a persistent state to test checksum calculation
     instance_data = instance.model_dump()
-    state = PersistentState(
-        data=instance_data,
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    state = PersistentState(data=instance_data, version=1, timestamp=time.time(), checksum="")
 
     checksum1 = state.calculate_checksum()
     assert isinstance(checksum1, str)
@@ -725,12 +744,7 @@ def test_checksum_calculation(instance_manager):
     # Test that different instances produce different checksums
     instance2 = create_test_instance(999, "different_job", ["192.168.1.99"])
     instance_data2 = instance2.model_dump()
-    state2 = PersistentState(
-        data=instance_data2,
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    state2 = PersistentState(data=instance_data2, version=1, timestamp=time.time(), checksum="")
     checksum2 = state2.calculate_checksum()
     assert checksum1 != checksum2
 
@@ -746,7 +760,7 @@ def test_persistent_instance_state():
         data=instance_data,
         version=version,
         timestamp=timestamp,
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     state.checksum = state.calculate_checksum()
 
@@ -849,9 +863,6 @@ def test_update_config():
 
         manager = create_instance_manager_with_config(enable_etcd=True)
 
-        # Store original etcd config
-        original_etcd_config = manager.etcd_config
-
         # Create new config with different ETCD settings
         new_config = ControllerConfig()
         new_config.etcd_config.etcd_host = "new-etcd-host"
@@ -872,11 +883,13 @@ def test_update_config():
         assert manager.etcd_config.etcd_timeout == 30.0
 
         # Verify ETCD client constructor was called with new config
-        mock_etcd_class.assert_called_once_with(etcd_config=new_config.etcd_config,
-                                                tls_config=new_config.etcd_tls_config)
+        mock_etcd_class.assert_called_once_with(
+            etcd_config=new_config.etcd_config, tls_config=new_config.etcd_tls_config
+        )
 
 
 # ===== Persistence and Recovery Tests =====
+
 
 def test_persist_and_restore_instance_data_success():
     """Test successful persist and restore of instance manager data"""
@@ -891,7 +904,7 @@ def test_persist_and_restore_instance_data_success():
         with patch.object(manager.etcd_client, 'restore_data') as mock_restore:
             # Persist data
             persist_result = manager.persist_data()
-            assert persist_result == True
+            assert persist_result
 
             # Verify persist was called
             mock_persist.assert_called_once()
@@ -900,12 +913,7 @@ def test_persist_and_restore_instance_data_success():
 
             # Create mock persistent state for restore (new format: single PersistentState)
             instance_data = instance.model_dump()
-            instance_state = PersistentState(
-                data={"201": instance_data},
-                version=1,
-                timestamp=time.time(),
-                checksum=""
-            )
+            instance_state = PersistentState(data={"201": instance_data}, version=1, timestamp=time.time(), checksum="")
             instance_state.checksum = instance_state.calculate_checksum()
             mock_persistent_states = {"state": instance_state}
 
@@ -917,7 +925,7 @@ def test_persist_and_restore_instance_data_success():
 
                 # Restore data
                 restore_result = new_manager.restore_data()
-                assert restore_result == True
+                assert restore_result
 
                 # Verify data was restored
                 assert 201 in new_manager.instances
@@ -937,19 +945,19 @@ def test_persist_data_with_checksum_validation():
     with patch.object(manager.etcd_client, 'persist_data', return_value=True) as mock_persist:
         # Persist data
         result = manager.persist_data()
-        assert result == True
+        assert result
 
         # Verify the data passed to persist_data
         args, kwargs = mock_persist.call_args
         persisted_data = args[1]
 
         assert "state" in persisted_data
-        
+
         # Get the PersistentState data
         state_data = persisted_data["state"]
         assert "checksum" in state_data
         assert len(state_data["checksum"]) > 0
-        
+
         # Verify the instance data is in the state's data field
         assert "202" in state_data["data"]
 
@@ -972,12 +980,12 @@ def test_restore_data_with_invalid_checksum():
                     "model_name": "test_model",
                     "role": "prefill",
                     "endpoints": {},
-                    "status": "initial"
+                    "status": "initial",
                 }
             },
             version=1,
             timestamp=time.time(),
-            checksum="invalid_checksum"  # Wrong checksum
+            checksum="invalid_checksum",  # Wrong checksum
         )
     }
 
@@ -985,7 +993,7 @@ def test_restore_data_with_invalid_checksum():
         result = manager.restore_data()
 
         # Should fail because checksum validation fails
-        assert result == False
+        assert not result
         assert 203 not in manager.instances  # Should not restore invalid data
 
 
@@ -998,9 +1006,9 @@ def test_persistence_disabled_in_config():
     manager.add_instance(instance)
 
     # Try to persist manually - should still work but not be called from state transitions
-    with patch.object(manager.etcd_client, 'persist_data', return_value=True) as mock_persist:
+    with patch.object(manager.etcd_client, 'persist_data', return_value=True):
         result = manager.persist_data()
-        assert result == True  # persist_data always calls etcd_client.persist_data regardless of flag
+        assert result  # persist_data always calls etcd_client.persist_data regardless of flag
 
 
 def test_persist_empty_instances():
@@ -1009,7 +1017,7 @@ def test_persist_empty_instances():
 
     with patch.object(manager.etcd_client, 'persist_data', return_value=True) as mock_persist:
         result = manager.persist_data()
-        assert result == True
+        assert result
 
         # Verify data was persisted
         args, kwargs = mock_persist.call_args
@@ -1029,7 +1037,7 @@ def test_restore_no_instance_data_available():
         result = manager.restore_data()
 
         # Should succeed with empty state
-        assert result == True
+        assert result
         assert len(manager.instances) == 0
 
 
@@ -1042,28 +1050,23 @@ def test_persistent_state_is_valid_method():
         "model_name": "test_model",
         "role": "prefill",
         "endpoints": {},
-        "status": "active"
+        "status": "active",
     }
 
     valid_state = PersistentState(
         data=instance_data,
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
 
     # Manually set correct checksum
     valid_state.checksum = valid_state.calculate_checksum()
-    assert valid_state.is_valid() == True
+    assert valid_state.is_valid()
 
     # Create invalid state with wrong checksum
-    invalid_state = PersistentState(
-        data=instance_data,
-        version=1,
-        timestamp=time.time(),
-        checksum="wrong_checksum"
-    )
-    assert invalid_state.is_valid() == False
+    invalid_state = PersistentState(data=instance_data, version=1, timestamp=time.time(), checksum="wrong_checksum")
+    assert not invalid_state.is_valid()
 
 
 def test_restore_data_with_type_conversion():
@@ -1078,7 +1081,7 @@ def test_restore_data_with_type_conversion():
         "endpoints": {},  # dict
         "parallel_config": None,
         "node_managers": [],
-        "gathered_workload": {"memory_mb": "1024", "cpu_cores": "2"}  # nested dict with string values
+        "gathered_workload": {"memory_mb": "1024", "cpu_cores": "2"},  # nested dict with string values
     }
 
     # Mock persistent state with string-formatted data (new format: single PersistentState)
@@ -1086,13 +1089,11 @@ def test_restore_data_with_type_conversion():
         data={"206": etcd_string_data},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     persistent_state.checksum = persistent_state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": persistent_state
-    }
+
+    mock_persistent_states = {"state": persistent_state}
 
     with patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -1103,7 +1104,7 @@ def test_restore_data_with_type_conversion():
         result = manager.restore_data()
 
         # Should succeed - Pydantic should handle type conversion
-        assert result == True
+        assert result
         assert 206 in manager.instances
 
         instance = manager.instances[206]
@@ -1124,7 +1125,7 @@ def test_restore_data_with_invalid_enum_value():
         "endpoints": {},
         "parallel_config": None,
         "node_managers": [],
-        "gathered_workload": {"memory_mb": "1024", "cpu_cores": "2"}
+        "gathered_workload": {"memory_mb": "1024", "cpu_cores": "2"},
     }
 
     # Mock persistent state (new format: single PersistentState)
@@ -1132,13 +1133,11 @@ def test_restore_data_with_invalid_enum_value():
         data={"207": corrupted_data},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     persistent_state.checksum = persistent_state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": persistent_state
-    }
+
+    mock_persistent_states = {"state": persistent_state}
 
     with patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -1149,7 +1148,7 @@ def test_restore_data_with_invalid_enum_value():
 
         # This should succeed (data restoration succeeds) but instance creation fails
         result = manager.restore_data()
-        assert result == True
+        assert result
 
         # Instance should not be created due to validation error
         assert 207 not in manager.instances
@@ -1167,7 +1166,7 @@ def test_restore_data_with_malformed_numeric_data():
         "endpoints": {},
         "parallel_config": None,
         "node_managers": [],
-        "gathered_workload": {"memory_mb": "1024", "cpu_cores": "2"}
+        "gathered_workload": {"memory_mb": "1024", "cpu_cores": "2"},
     }
 
     # Mock persistent state (new format: single PersistentState)
@@ -1175,13 +1174,11 @@ def test_restore_data_with_malformed_numeric_data():
         data={"invalid": corrupted_data},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     persistent_state.checksum = persistent_state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": persistent_state
-    }
+
+    mock_persistent_states = {"state": persistent_state}
 
     with patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -1192,7 +1189,7 @@ def test_restore_data_with_malformed_numeric_data():
 
         # This should succeed (data restoration succeeds) but instance creation fails
         result = manager.restore_data()
-        assert result == True
+        assert result
 
         # Instance should not be created due to validation error
         assert len(manager.instances) == 0

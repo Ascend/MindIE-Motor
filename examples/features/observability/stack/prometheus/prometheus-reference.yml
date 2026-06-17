@@ -1,0 +1,88 @@
+# 示例：真实集群 Prometheus 配置模板
+# 推荐方式：使用 ./launch.sh 自动发现并生成 generated/prometheus.yml
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  metric_name_validation_scheme: utf8
+  external_labels:
+    monitor: motor-observability
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:9090"
+
+  - job_name: motor-coordinator
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "host.docker.internal:1027"
+        labels:
+          motor_component: coordinator
+          motor_metric_scope: full
+          cluster: example-namespace
+
+  - job_name: motor-coordinator-instance
+    metrics_path: /metrics?type=instance
+    static_configs:
+      - targets:
+          - "host.docker.internal:1027"
+        labels:
+          motor_component: coordinator
+          motor_metric_scope: instance
+          cluster: example-namespace
+
+  - job_name: motor-coordinator-role-prefill
+    metrics_path: /metrics?type=role&role=prefill
+    static_configs:
+      - targets:
+          - "host.docker.internal:1027"
+        labels:
+          motor_component: coordinator
+          motor_metric_scope: role
+          role: prefill
+          pd_role: prefill
+          cluster: example-namespace
+
+  - job_name: motor-coordinator-role-decode
+    metrics_path: /metrics?type=role&role=decode
+    static_configs:
+      - targets:
+          - "host.docker.internal:1027"
+        labels:
+          motor_component: coordinator
+          motor_metric_scope: role
+          role: decode
+          pd_role: decode
+          cluster: example-namespace
+
+  - job_name: motor-engine
+    metrics_path: /metrics
+    honor_labels: true
+    static_configs:
+      - targets:
+          - "host.docker.internal:10001"
+        labels:
+          motor_component: engine
+          pd_role: prefill
+          role: prefill
+          instance_id: p0
+          cluster: example-namespace
+      - targets:
+          - "host.docker.internal:10001"
+        labels:
+          motor_component: engine
+          pd_role: prefill
+          role: prefill
+          instance_id: p1
+          cluster: example-namespace
+      - targets:
+          - "host.docker.internal:10001"
+        labels:
+          motor_component: engine
+          pd_role: decode
+          role: decode
+          instance_id: d0
+          cluster: example-namespace

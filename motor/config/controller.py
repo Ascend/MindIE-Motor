@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -8,21 +7,29 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-import os
 import json
 from dataclasses import dataclass, field, asdict
 from typing import Any
-from pathlib import Path
 
 from motor.common.logger import get_logger, reconfigure_logging
 from motor.common.utils.env import Env
 from motor.config.etcd import EtcdConfig
+from motor.config.port_allocator_config import PortAllocatorConfig
 from motor.config.log_config import LoggingConfig
-from motor.config.standby import StandbyConfig, LOCK_SLASH
+from motor.config.standby import StandbyConfig
 from motor.config.tls_config import TLSConfig
 from motor.config.config_utils import (
     ConfigKey,
-    save_config_to_json,
+    apply_config_path_metadata,
+    apply_standby_persistence_rule,
+    finalize_json_config_load,
+    init_motor_config,
+    log_json_config_load_error,
+    raise_if_config_errors,
+    reload_dataclass_config_from_json,
+    resolve_config_json_path,
+    save_instance_config_to_json,
+    format_config_summary_header,
     _update_tls_config,
     MGMT_TLS_CONFIG,
     ETCD_TLS_CONFIG,
@@ -63,12 +70,16 @@ class InstanceConfig:
 
     # instance assembler configuration
     instance_assemble_timeout: int = 600  # 600 seconds
-    instance_assembler_check_interval: int = 1  # 1 second
-    instance_assembler_cmd_send_interval: int = 1  # 1 second
+    # The assembler background threads use threading.Condition and are woken
+    # immediately by notify_all() when a new registration arrives or an instance
+    # becomes ASSEMBLED.  Registration is infrequent, so the interval only needs
+    # to cover assembly-timeout detection and start-command retries.
+    instance_assembler_check_interval: int = 30  # 30 seconds
+    instance_assembler_cmd_send_interval: int = 30  # 30 seconds
 
     # instance manager configuration
     instance_manager_check_interval: int = 1  # 1 second
-    instance_heartbeat_timeout: int = 5  # 5 seconds
+    instance_heartbeat_timeout: int = 10  # 10 seconds
     instance_expired_timeout: int = 1200  # 1200 seconds
 
     # other instance configuration
@@ -79,11 +90,13 @@ class InstanceConfig:
 class EventPusherConfig:
     """Event configuration class"""
 
-    # event consumer configuration
+    # event consumer configuration (deprecated: consumer now uses queue.get(timeout=1))
     event_consumer_sleep_interval: float = 1.0  # 1 second
 
     # coordinator heartbeat configuration
-    coordinator_heartbeat_interval: float = 5.0  # 5 seconds
+    # Uses threading.Condition — woken immediately by notify_all() on stop.
+    # Coordinator restart detection is rare, so 10 s is sufficient.
+    coordinator_heartbeat_interval: float = 10.0  # 10 seconds
 
 
 @dataclass
@@ -94,7 +107,11 @@ class FaultToleranceConfig:
     enable_fault_tolerance: bool = True
 
     # strategy center configuration
-    strategy_center_check_interval: int = 1  # 1 second
+    # The strategy center thread uses threading.Condition and is woken
+    # immediately by notify_all() on fault reports, node status changes, or
+    # instance lifecycle events.  The interval is only a fallback for periodic
+    # strategy re-evaluation, so 10 s is sufficient.
+    strategy_center_check_interval: int = 10  # 10 seconds
 
     # configmap monitoring configuration - ConfigMap namespace and name prefix
     configmap_namespace: str = "kube-system"
@@ -105,7 +122,7 @@ class FaultToleranceConfig:
 
     # scale and recovery strategy configuration
     enable_scale_p2d: bool = True  # Enable/disable scale p2d strategy
-    enable_lingqu_network_recover: bool = True  # Enable/disable lingqu network recovery strategy
+    enable_token_reinference: bool = True  # Enable/disable token reinference strategy
 
 
 @dataclass
@@ -125,6 +142,9 @@ class ControllerConfig:
     observability_config: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     standby_config: StandbyConfig = field(default_factory=StandbyConfig)
     etcd_config: EtcdConfig = field(default_factory=EtcdConfig)
+    port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
+    # Token sampling precision alarm: when True, controller terminates decode instance on precision alarm
+    precision_auto_recovery_enabled: bool = field(default=False)
 
     # internal fields
     config_path: str | None = field(default=None, init=False)
@@ -132,19 +152,12 @@ class ControllerConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization"""
-        # Refresh master lock key with controller prefix
-        if self.standby_config.master_lock_key == "/master_lock":
-            self.standby_config.master_lock_key = LOCK_SLASH + "controller" + self.standby_config.master_lock_key
-        self.validate_config()
+        init_motor_config(self, "controller")
 
     @classmethod
     def from_json(cls, json_path: str | None = None) -> 'ControllerConfig':
         """Load configuration from JSON file"""
-        if json_path is None:
-            # Read from environment variable
-            json_path = Env.user_config_path
-
-        config_path = Path(json_path) if json_path else None
+        json_path, config_path = resolve_config_json_path(json_path)
 
         cfg = {}
         try:
@@ -159,12 +172,8 @@ class ControllerConfig:
                             cfg = raw
                         tls_configs = [MGMT_TLS_CONFIG, ETCD_TLS_CONFIG, GRPC_TLS_CONFIG, OBSERVABILITY_TLS_CONFIG]
                         _update_tls_config(tls_configs, cfg, raw)
-        except json.JSONDecodeError as e:
-            # If JSON parsing fails, use default configuration
-            logger.warning(f"Configuration file {json_path} format error: {e}, using default configuration")
-        except Exception as e:
-            # If any other error occurs, use default configuration
-            logger.warning(f"Unable to read configuration file {json_path}: {e}, using default configuration")
+        except (json.JSONDecodeError, Exception) as e:
+            log_json_config_load_error(json_path, e)
 
         try:
             config = cls()
@@ -213,32 +222,30 @@ class ControllerConfig:
             if 'observability_config' in cfg:
                 update_config_from_dict(config.observability_config, cfg['observability_config'])
 
-            # Set internal fields
-            if config_path:
-                config.config_path = str(config_path)
-                if config_path.exists():
-                    config.last_modified = config_path.stat().st_mtime
-            else:
-                config.config_path = None
+            if 'port_allocator_config' in cfg:
+                update_config_from_dict(config.port_allocator_config, cfg['port_allocator_config'])
+
+            if 'precision_auto_recovery_enabled' in cfg:
+                config.precision_auto_recovery_enabled = bool(cfg['precision_auto_recovery_enabled'])
+
+            apply_config_path_metadata(config, config_path)
+            if not config_path:
                 config.last_modified = None
+                config.last_modified = None
+
+            apply_standby_persistence_rule(config)
 
             reconfigure_logging(config.logging_config)
 
-            # Now it's safe to log after logging configuration is set
-            if config_path:
-                logger.info(f"Loading configuration file: {config_path}")
-                if config_path.exists():
-                    logger.info(f"Successfully loaded configuration file: {config_path}")
-                else:
-                    logger.warning(f"Configuration file does not exist, using default configuration: {config_path}")
-            else:
-                logger.info("Using default configuration (no config file specified)")
-            logger.info("Configuration loading completed")
+            finalize_json_config_load(
+                config_path,
+                no_path_message="Using default configuration (no config file specified)",
+            )
 
             return config
 
         except Exception as e:
-            logger.error(f"Failed to create configuration instance: {e}")
+            logger.error("Failed to create configuration instance: %s", e)
             raise
 
     def validate_config(self) -> None:
@@ -301,42 +308,16 @@ class ControllerConfig:
         if not (1 <= self.api_config.observability_api_port <= 65535):
             errors.append("observability_api_port must be in range 1-65535")
 
-        if errors:
-            error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        raise_if_config_errors(errors)
 
     def reload(self) -> bool:
         """Reload configuration file"""
-        if not self.config_path or not os.path.exists(self.config_path):
-            logger.warning("Configuration file path does not exist, cannot reload")
-            return False
-
-        try:
-            # Check if file has been modified
-            current_mtime = os.path.getmtime(self.config_path)
-            if self.last_modified and current_mtime <= self.last_modified:
-                logger.debug("Configuration file not modified, skipping reload")
-                return True
-
-            logger.info("Configuration file change detected, reloading...")
-            new_config = self.from_json(self.config_path)
-
-            # Update current configuration
-            for field_name in self.__dataclass_fields__:
-                if not field_name.startswith('_'):
-                    setattr(self, field_name, getattr(new_config, field_name))
-
-            self.last_modified = current_mtime
-
-            reconfigure_logging(self.logging_config)
-
-            logger.info("Configuration reload successful")
-            return True
-
-        except Exception as e:
-            logger.error(f"Configuration reload failed: {e}")
-            return False
+        return reload_dataclass_config_from_json(
+            self,
+            self.from_json,
+            self.logging_config,
+            skip_private=True,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary with grouped structure"""
@@ -352,35 +333,20 @@ class ControllerConfig:
 
     def save_to_json(self, json_path: str | None = None) -> bool:
         """Save configuration to JSON file"""
-        save_path = json_path or self.config_path
-        if not save_path:
-            logger.error("Save path not specified")
-            return False
-
-        try:
-            config_dict = self.to_dict()
-            save_config_to_json(
-                save_path,
-                ConfigKey.MOTOR_CONTROLLER,
-                config_dict,
-                file_encoding=FILE_ENCODING,
-                component_name="controller",
-            )
-            logger.info(f"Configuration saved to: {save_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save configuration: {e}")
-            return False
+        return save_instance_config_to_json(
+            self,
+            json_path,
+            config_key=ConfigKey.MOTOR_CONTROLLER,
+            file_encoding=FILE_ENCODING,
+            component_name="controller",
+        )
 
     def get_config_summary(self) -> str:
         """Get configuration summary information"""
-        separator = "=" * 80
         title = " " * 22 + "Controller Configuration Summary"
         enable_fault_tolerance = self.fault_tolerance_config.enable_fault_tolerance
-        enable_scale_p2d = (self.fault_tolerance_config.enable_scale_p2d
-                            and enable_fault_tolerance)
-        enable_lingqu_network_recover = (self.fault_tolerance_config.enable_lingqu_network_recover
-                                         and enable_fault_tolerance)
+        enable_scale_p2d = self.fault_tolerance_config.enable_scale_p2d and enable_fault_tolerance
+        enable_token_reinference = self.fault_tolerance_config.enable_token_reinference and enable_fault_tolerance
         enable_observability = self.observability_config.observability_enable
         master_standby_check_interval = self.standby_config.master_standby_check_interval
         metrics_ttl = self.observability_config.metrics_ttl
@@ -389,10 +355,7 @@ class ControllerConfig:
         controller_api = f"{self.api_config.controller_api_host}:{self.api_config.controller_api_port}"
         controller_api_dns = f"{self.api_config.controller_api_dns}:{self.api_config.controller_api_port}"
         return (
-            f"{separator}\n"
-            f"{title}\n"
-            f"{separator}\n"
-            "  Logging Configuration:\n"
+            format_config_summary_header(title) + "  Logging Configuration:\n"
             f"    ├─ Log Level:            {self.logging_config.log_level}\n"
             f"    ├─ Log File:             {self.logging_config.host_log_dir}\n"
             f"    └─ Log Max Line Length:  {self.logging_config.log_max_line_length}\n"
@@ -414,7 +377,7 @@ class ControllerConfig:
             "  High Availability:\n"
             f"    ├─ Advanced RAS:         {'Enabled' if enable_fault_tolerance else 'Disabled'}\n"
             f"    │   ├─ Scale P2D:        {'Enabled' if enable_scale_p2d else 'Disabled'}\n"
-            f"    │   └─ Lingqu Recover:   {'Enabled' if enable_lingqu_network_recover else 'Disabled'}\n"
+            f"    │   └─ Token Reinference:   {'Enabled' if enable_token_reinference else 'Disabled'}\n"
             f"    ├─ ETCD:\n"
             f"    │   ├─ Persistence:      {'Enabled' if self.etcd_config.enable_etcd_persistence else 'Disabled'}\n"
             f"    │   ├─ Host:             {self.etcd_config.etcd_host}\n"
@@ -429,5 +392,5 @@ class ControllerConfig:
             "\n"
             "  Configuration:\n"
             f"    └─ Config Path:         {self.config_path or 'Not set'}\n"
-            f"{separator}"
+            f"{'=' * 80}"
         )

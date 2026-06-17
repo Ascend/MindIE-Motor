@@ -12,7 +12,6 @@
 Probe: Daemon liveness + role from role shm; liveness/readiness decision (no HTTP).
 """
 
-
 import asyncio
 import os
 import struct
@@ -24,7 +23,6 @@ from typing import Protocol
 
 from motor.common.logger import get_logger
 from motor.config.coordinator import (
-    DeployMode,
     ROLE_HEARTBEAT_STALE_SEC,
     ROLE_SHM_MASTER,
     ROLE_SHM_NAME,
@@ -47,8 +45,6 @@ def is_master_from_role_shm(shm_name: str = ROLE_SHM_NAME) -> bool:
     except (OSError, IndexError) as e:
         logger.warning("Role shm read failed (name=%s): %s", shm_name, e)
         return False
-
-
 
 
 @dataclass(frozen=True)
@@ -87,7 +83,6 @@ class ReadinessProbeOutput:
     instance_readiness: InstanceReadiness | None  # for logging/debug
 
 
-
 class DaemonLivenessProvider(Protocol):
     """Provides Daemon liveness and master/standby role from role shm. No HTTP."""
 
@@ -118,25 +113,31 @@ class RoleShmDaemonLivenessProvider(DaemonLivenessProvider):
         if self._daemon_pid:
             ppid = os.getppid()
             if ppid != self._daemon_pid:
-                logger.warning("Mgmt orphaned (parent not Daemon): ppid=%s daemon_pid=%s",
-                               ppid, self._daemon_pid)
+                logger.warning("Mgmt orphaned (parent not Daemon): ppid=%s daemon_pid=%s", ppid, self._daemon_pid)
                 return RoleHeartbeatResult(is_master=False, heartbeat_stale=False, orphaned=True)
-            logger.debug("Mgmt parent check: ppid=%s daemon_pid=%s role_shm=%s",
-                         ppid, self._daemon_pid, self._role_shm_name)
+            logger.debug(
+                "Mgmt parent check: ppid=%s daemon_pid=%s role_shm=%s", ppid, self._daemon_pid, self._role_shm_name
+            )
 
         try:
             shm = shm_mod.SharedMemory(name=self._role_shm_name, create=False)
         except FileNotFoundError:
-            logger.warning("Role shm not found: name=%s (Daemon may not have created it yet) -> standby",
-                           self._role_shm_name)
+            logger.warning(
+                "Role shm not found: name=%s (Daemon may not have created it yet) -> standby", self._role_shm_name
+            )
         except Exception as e:
             logger.warning("Read role shm %s failed: %s, treat as standby", self._role_shm_name, e)
         else:
             try:
                 is_master = shm.buf[0] == ROLE_SHM_MASTER
                 heartbeat_stale = self._is_heartbeat_stale(shm.buf)
-                logger.debug("Role shm read: name=%s byte=%s is_master=%s heartbeat_stale=%s",
-                             self._role_shm_name, shm.buf[0], is_master, heartbeat_stale)
+                logger.debug(
+                    "Role shm read: name=%s byte=%s is_master=%s heartbeat_stale=%s",
+                    self._role_shm_name,
+                    shm.buf[0],
+                    is_master,
+                    heartbeat_stale,
+                )
                 return RoleHeartbeatResult(is_master=is_master, heartbeat_stale=heartbeat_stale, orphaned=False)
             finally:
                 shm.close()
@@ -146,8 +147,7 @@ class RoleShmDaemonLivenessProvider(DaemonLivenessProvider):
     def _is_heartbeat_stale(self, shm_buf: memoryview) -> bool:
         """True if heartbeat bytes (1..ROLE_SHM_SIZE-1) are older than _stale_sec."""
         if len(shm_buf) < ROLE_SHM_SIZE:
-            logger.warning("Role shm size=%s, need %s for heartbeat",
-                           len(shm_buf), ROLE_SHM_SIZE)
+            logger.warning("Role shm size=%s, need %s for heartbeat", len(shm_buf), ROLE_SHM_SIZE)
             logger.warning("Set role_heartbeat_interval_sec>0 and restart Daemon.")
             return False
         try:
@@ -165,11 +165,13 @@ class RoleShmDaemonLivenessProvider(DaemonLivenessProvider):
         if age_ns <= stale_threshold_ns:
             logger.debug("Heartbeat OK: age_sec=%.1f stale_sec=%.1f", age_ns / 1e9, self._stale_sec)
             return False
-        logger.warning("Daemon heartbeat stale: last_ns=%s age_sec=%.1f stale_sec=%.1f",
-                      heartbeat_ns, age_ns / 1e9, self._stale_sec)
+        logger.warning(
+            "Daemon heartbeat stale: last_ns=%s age_sec=%.1f stale_sec=%.1f",
+            heartbeat_ns,
+            age_ns / 1e9,
+            self._stale_sec,
+        )
         return True
-
-
 
 
 class LivenessProbe:
@@ -187,8 +189,6 @@ class LivenessProbe:
         return LivenessResult.OK
 
 
-
-
 class ReadinessProbe:
     """Readiness decision only. No HTTP."""
 
@@ -196,12 +196,10 @@ class ReadinessProbe:
         self,
         daemon_liveness: DaemonLivenessProvider,
         instance_manager: InstanceManager,
-        deploy_mode: DeployMode,
         enable_master_standby: bool,
     ):
         self._daemon = daemon_liveness
         self._instance_manager = instance_manager
-        self._deploy_mode = deploy_mode
         self._enable_master_standby = enable_master_standby
 
     @property
@@ -217,9 +215,8 @@ class ReadinessProbe:
     async def check(self) -> ReadinessProbeOutput:
         readiness = await asyncio.to_thread(
             self._instance_manager.get_required_instances_status,
-            self._deploy_mode,
         )
-        is_ready = readiness.is_ready() or readiness == InstanceReadiness.ONLY_PREFILL
+        is_run = readiness.is_run()
 
         r = self._daemon.read_role_and_heartbeat()
         if r.orphaned:
@@ -231,5 +228,5 @@ class ReadinessProbe:
         else:
             result = ReadinessResult.OK_STANDBY
         # Only report ready when result is OK_*; otherwise force False (orphaned/heartbeat_stale/not_master).
-        out_ready = (result in (ReadinessResult.OK_MASTER, ReadinessResult.OK_STANDBY)) and is_ready
+        out_ready = (result in (ReadinessResult.OK_MASTER, ReadinessResult.OK_STANDBY)) and is_run
         return ReadinessProbeOutput(result, out_ready, readiness)

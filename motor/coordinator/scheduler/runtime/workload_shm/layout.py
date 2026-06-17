@@ -10,6 +10,8 @@
 """
 Shared memory layout for workload data.
 Header 64B + Entry 32B × N. Little-endian.
+Sequence in header follows seqlock semantics: odd means writer in progress,
+even means readers may accept the snapshot after a matching second header read.
 Instance_version in header: bumped on instance list change (REFRESH_INSTANCES);
 Infer uses it to refresh local instance cache when version changes.
 """
@@ -25,13 +27,14 @@ MAGIC = 0x574B4C44
 # Schema version for layout compatibility
 SCHEMA_VERSION = 1
 
-# Role mapping: prefill=0, decode=1, hybrid=2
+# Role mapping: prefill=0, decode=1, hybrid=2, encode=3
 ROLE_PREFILL = 0
 ROLE_DECODE = 1
 ROLE_HYBRID = 2
+ROLE_ENCODE = 3
 
 # Header: 64 bytes
-# magic 4B, schema 2B, padding 2B, sequence 8B, entry_count 4B, max_entries 4B,
+# magic 4B, schema 2B, padding 2B, sequence 8B (seqlock), entry_count 4B, max_entries 4B,
 # instance_version 8B (bumped when instance/endpoint set changes),
 # heartbeat_sequence 8B (Scheduler bumps ~1/s), reserved 24B
 HEADER_SIZE = 64

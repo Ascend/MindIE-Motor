@@ -1,0 +1,34 @@
+# Tempo single-binary configuration for local development.
+# Stores traces on the local filesystem under /var/tempo/traces.
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_duration: 5m
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/traces
+
+compactor:
+  compaction:
+    block_retention: 72h  # 本地开发栈保留 3 天即可
+
+usage_report:
+  reporting_enabled: false

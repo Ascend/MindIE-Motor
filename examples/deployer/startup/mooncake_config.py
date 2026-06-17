@@ -32,6 +32,25 @@ logging.basicConfig(
 )
 
 
+def resolve_model_name(engine_section, default="Unknown"):
+    """
+    Resolve model_name from engine_config (native) or model_config (legacy).
+
+    Checks engine_config first using engine-type-specific keys, then falls back
+    to the deprecated model_config.
+    """
+    engine_config = engine_section.get("engine_config", {})
+    engine_type = engine_section.get("engine_type", "vllm")
+    if engine_type == "sglang":
+        name = engine_config.get("served-model-name")
+    else:
+        name = engine_config.get("served_model_name")
+    if name:
+        return name
+    model_config = engine_section.get("model_config", {})
+    return model_config.get("model_name", default)
+
+
 def ensure_parent_dir(path: str) -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
@@ -88,10 +107,13 @@ def generate_kv_conductor_config(output_path: str, user_config_path: str) -> boo
         logging.error("KV cache conductor config not provided, skipping kv_conductor_config generation")
         return False
 
+    logging.info("kv_conductor_config generated: %s", output_path)
+
     out_cfg: dict[str, Any] = dict(kv_cfg)
     kvevent_instance = out_cfg.get(KVEVENT_INSTANCE, None)
     if kvevent_instance is None:
         logging.info("KV cache conductor config kvevent_instance is None")
+        write_json(output_path, out_cfg)
         return True
 
     kv_pool_cfg = user_cfg.get(KV_POOL_CONFIG_KEY)
@@ -106,9 +128,10 @@ def generate_kv_conductor_config(output_path: str, user_config_path: str) -> boo
     master_server_port = kv_pool_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
     mooncake_master = out_cfg[KVEVENT_INSTANCE][MOONCAKE_MASTER]
     mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{kvp_master_service}:{master_server_port}"
-    mooncake_master[MODEL_NAME] = user_cfg["motor_engine_prefill_config"]["model_config"]["model_name"]
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    mooncake_master[MODEL_NAME] = resolve_model_name(user_cfg["motor_engine_prefill_config"])
     write_json(output_path, out_cfg)
-    logging.info("kv_conductor_config generated: %s", output_path)
     return True
 
 

@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -12,21 +10,25 @@
 
 import signal
 import time
-import argparse
-import os
 import sys
-from typing import Optional
 
+from motor.common.utils.process_utils import set_process_title
+
+set_process_title("NodeManager")
+
+# ruff: noqa: E402
 from motor.common.logger import get_logger
 from motor.node_manager.api_server.node_manager_api import NodeManagerAPI
 from motor.config.node_manager import NodeManagerConfig
+from motor.common.utils.port_allocator import apply_node_manager_ports, run_port_setup_or_exit
 from motor.node_manager.core.daemon import Daemon
 from motor.node_manager.core.engine_manager import EngineManager
 from motor.node_manager.core.heartbeat_manager import HeartbeatManager
+from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.utils.env import Env
 
-logger = get_logger("motor.node_manager.main")
+logger = get_logger(__name__)
 
 
 modules = []
@@ -41,19 +43,21 @@ config_watcher: ConfigWatcher | None = None
 
 def log_config_summary(message_prefix: str | None = None) -> None:
     """Log configuration summary with optional message prefix"""
-    if config:
-        if message_prefix:
-            logger.info(message_prefix)
-        for line in config.get_config_summary().splitlines():
-            if line.strip():  # Skip empty lines
-                logger.info(line)
+    log_configuration_summary(config, message_prefix)
 
 
 def on_config_updated() -> None:
     """Callback function called when configuration is updated"""
-    global config
     logger.info("Configuration reloaded, printing updated summary:")
     log_config_summary()
+
+    for module in modules:
+        if hasattr(module, 'update_config'):
+            try:
+                module.update_config(config)
+                logger.info("Updated configuration for %s", type(module).__name__)
+            except Exception as e:
+                logger.error("Failed to update configuration for %s: %s", type(module).__name__, e)
 
 
 def init_all_modules(config_path: str | None = None) -> None:
@@ -62,6 +66,7 @@ def init_all_modules(config_path: str | None = None) -> None:
     global config
     if config is None:
         config = NodeManagerConfig.from_json(config_path)
+        run_port_setup_or_exit(apply_node_manager_ports, config)
 
     modules.append(config)
     modules.append(NodeManagerAPI(config=config))
@@ -78,16 +83,16 @@ def stop_all_modules() -> None:
             try:
                 module.stop()
             except Exception as e:
-                logger.error(f"Failed to stop {type(module).__name__}: {e}")
+                logger.error("Failed to stop %s: %s", type(module).__name__, e)
     logger.info("All modules stopped.")
 
 
 def signal_handler(sig, frame) -> None:
-    global _should_exit, config_watcher
+    global _should_exit
     if _should_exit:
         return
     _should_exit = True
-    logger.info(f"\nReceive signal {sig},exit gracefully...")
+    logger.info("\nReceive signal %s,exit gracefully...", sig)
 
     # Stop config watcher
     if config_watcher:
@@ -102,21 +107,20 @@ def suicide_procedure() -> None:
     and exit the program with return code -1.
     """
     logger.error("Starting suicide procedure...")
-    
-    global config_watcher
+
     if config_watcher:
         try:
             config_watcher.stop()
             logger.info("Config watcher stopped")
         except Exception as e:
-            logger.error(f"Failed to stop config watcher: {e}")
-    
+            logger.error("Failed to stop config watcher: %s", e)
+
     # Stop all other modules
     stop_all_modules()
 
 
 def main() -> int:
-    global _should_exit, config_watcher, config
+    global _should_exit, config_watcher
 
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
@@ -131,14 +135,11 @@ def main() -> int:
     log_config_summary()
 
     # Start configuration file watcher
-    if config.config_path and os.path.exists(config.config_path):
-        config_watcher = ConfigWatcher(
-            config_path=config.config_path,
-            reload_callback=config.reload,
-            config_update_callback=on_config_updated
-        )
-        config_watcher.start()
-        logger.info("Configuration file watcher started")
+    # Disabled when container snapshot is enabled, container snapshot does not support inotify ops
+    if config.snapshot_config.enable_snapshot:
+        logger.info("[snapshot] Snapshot enabled, configuration file watcher disabled")
+    else:
+        config_watcher = start_config_file_watcher(config, on_config_updated)
 
     logger.info("All modules started, monitoring...")
 
@@ -150,13 +151,13 @@ def main() -> int:
                 logger.error("Detected suicide flag from HeartbeatManager")
                 suicide_procedure()
                 return -1
-            
+
             try:
                 user_input = input().strip().lower()
                 if user_input == 'stop':
                     _should_exit = True
                 elif user_input:
-                    logger.warning(f"Unknown command: {user_input}")
+                    logger.warning("Unknown command: %s", user_input)
             except EOFError:
                 if not _should_exit:
                     time.sleep(1)
@@ -177,5 +178,5 @@ def main() -> int:
 
 if __name__ == '__main__':
     exit_code = main()
-    logger.info(f"exit_code: {exit_code}")
+    logger.info("exit_code: %s", exit_code)
     sys.exit(exit_code)

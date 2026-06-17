@@ -11,6 +11,8 @@
 from motor.engine_server.core.config import IConfig
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
+from motor.engine_server.utils.ip import build_endpoint
 
 logger = get_logger(__name__)
 
@@ -22,11 +24,16 @@ class HealthCollector:
         self.port = endpoint_config.port
         self.infer_tls_config = endpoint_config.deploy_config.infer_tls_config
         self.timeout = endpoint_config.deploy_config.health_check_config.health_collector_timeout
-        self.address = f"{self.host}:{self.port}"
+        self.address = build_endpoint(self.host, self.port)
         self._has_connected = False
+        self._has_refreshed_after_restored = False
 
     async def is_healthy(self) -> bool:
         try:
+            if not self._has_refreshed_after_restored and is_restored_from_host_side_snapshot():
+                self.address = build_endpoint(get_pod_ip(), self.port)
+                self._has_refreshed_after_restored = True
+
             async with AsyncSafeHTTPSClient.create_client(
                 address=self.address,
                 tls_config=self.infer_tls_config,
@@ -35,7 +42,7 @@ class HealthCollector:
                 response = await client.get("/health")
                 response.raise_for_status()
                 response_text = await response.aread()
-                health_status = response_text.decode('utf-8').lower() == 'true'
+                health_status = response_text.decode('utf-8').lower() != 'false'
                 self._has_connected = True
                 return health_status
         except Exception as e:

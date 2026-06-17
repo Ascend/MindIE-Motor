@@ -9,119 +9,72 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import os
-import re
-import json
+import select
 import subprocess
-from motor.common.utils.env import Env
+import time
+
+# `npu-smi info watch` streams repeatedly; only wait for the first data row.
+_WATCH_READ_TIMEOUT_SEC = 5
 
 
-def _get_hardware_type():
-    """
-    Get hardware_type from config file
-    """
-    config_path = Env.user_config_path
-    if not config_path:
-        # Config path not set, return empty string
-        return ""
-    
-    try:
-        # Check if config_path is already pointing to user_config.json
-        if os.path.basename(config_path) == "user_config.json":
-            config_file_path = config_path
-        else:
-            config_file_path = os.path.join(config_path, "user_config.json")
-        
-        with open(config_file_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        return config.get("motor_deploy_config", {}).get("hardware_type", "")
-    except Exception as e:
-        # Failed to read config, return empty string
-        logger.debug(f"Failed to read hardware_type from config: {e}")
-        return ""
-
-
-def get_device_info_from_rank_table():
-    """
-    Get device_info from RANK_TABLE_PATH file
-    """
-    rank_table_path = Env.ranktable_path
-    if not rank_table_path:
-        raise ValueError("Environment variable RANKTABLE_PATH is not set")
-    
-    try:
-        with open(rank_table_path, 'r', encoding='utf-8') as f:
-            rank_table = json.load(f)
-    except Exception as e:
-        raise RuntimeError(f"Error reading RANK_TABLE_PATH file: {str(e)}") from e
-    
-    def find_device_id(data):
-        if isinstance(data, dict):
-            if "device_id" in data:
-                return data["device_id"]
-            for value in data.values():
-                result = find_device_id(value)
-                if result is not None:
-                    return result
-        elif isinstance(data, list):
-            for item in data:
-                result = find_device_id(item)
-                if result is not None:
-                    return result
+def _parse_usage_from_line(line: str) -> int | None:
+    """Return AI Core(%) from a watch data row, or None for header/blank lines."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("NpuID"):
         return None
-    
-    device_id_str = find_device_id(rank_table)
-    if device_id_str is None:
-        raise ValueError("device_id field not found in RANK_TABLE_PATH file")
-    
-    try:
-        i = int(device_id_str)
-    except ValueError as e:
-        raise ValueError(f"device_id field value is not a valid integer") from e
-    
-    # Get hardware type from config
-    hardware_type = _get_hardware_type()
-    
-    # Calculate actual device_id and chip_id based on hardware type
-    if hardware_type == "800I_A2":
-        device_id = i
-        chip_id = 0
-    else:
-        device_id = i // 2
-        chip_id = i % 2
-    
-    return device_id, chip_id
+    parts = stripped.split()
+    if len(parts) >= 3:
+        return int(parts[2])
+    return None
+
+
+def _read_first_aicore_usage_from_watch(proc: subprocess.Popen) -> int:
+    """Read stdout line-by-line until the first data row appears, then stop."""
+    if proc.stdout is None:
+        raise RuntimeError("npu-smi watch stdout pipe is not available")
+
+    fd = proc.stdout.fileno()
+    deadline = time.monotonic() + _WATCH_READ_TIMEOUT_SEC
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            break
+        line = proc.stdout.readline()
+        if line == "" and proc.poll() is not None:
+            break
+        usage = _parse_usage_from_line(line)
+        if usage is not None:
+            return usage
+
+    raise RuntimeError("AI Core usage not found in npu-smi watch output (timeout)")
+
+
+def _stop_watch_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.kill()
+    proc.communicate()
 
 
 def get_aicore_usage():
     """
-    Get AICore usage rate
-    """
-    device_id, chip_id = get_device_info_from_rank_table()
-    cmd = [
-        "npu-smi",
-        "info",
-        "-t", "usages",
-        "-i", str(device_id),
-        "-c", str(chip_id)
-    ]
+    Get AICore usage rate.
 
+    `npu-smi info watch -s a` prints continuously. Parse the first data row
+    (e.g. ``0  0  0`` after the header) and terminate the process immediately.
+    """
+    cmd = ["npu-smi", "info", "watch", "-s", "a", "-d", "1"]
     try:
-        result = subprocess.run(
+        with subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True,
             start_new_session=True,
-        )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"npu-smi execution failed from subprocess: {str(e)}") from e
-
-    output = result.stdout
-
-    match = re.search(r"Aicore Usage Rate\(%\)\s*:\s*(\d+)", output)
-    if not match:
-        raise ValueError("Aicore Usage Rate not found")
-
-    return int(match.group(1))
+        ) as proc:
+            try:
+                return _read_first_aicore_usage_from_watch(proc)
+            finally:
+                _stop_watch_process(proc)
+    except OSError as e:
+        raise RuntimeError(f"npu-smi execution failed: {e}") from e

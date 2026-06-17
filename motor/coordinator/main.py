@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -15,18 +15,11 @@ import traceback
 
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.daemon.coordinator_daemon import CoordinatorDaemon
+from motor.common.utils.config_runtime import log_configuration_summary
+from motor.common.utils.port_allocator import apply_coordinator_ports, run_port_setup_or_exit
 from motor.common.logger import get_logger, reconfigure_logging
 
 logger = get_logger(__name__)
-
-
-def log_config_summary(config: CoordinatorConfig, message_prefix: str | None = None) -> None:
-    """Log configuration summary with optional message prefix"""
-    if message_prefix:
-        logger.info(message_prefix)
-    for line in config.get_config_summary().splitlines():
-        if line.strip():
-            logger.info(line)
 
 
 async def main() -> None:
@@ -34,13 +27,14 @@ async def main() -> None:
         logger.info("Starting Motor Coordinator Daemon...")
 
         config = CoordinatorConfig.from_json()
+        run_port_setup_or_exit(apply_coordinator_ports, config)
         if config.config_path:
             logger.info("Loaded configuration from: %s", config.config_path)
         else:
             logger.info("Using default configuration (no config file specified)")
 
         reconfigure_logging(config.logging_config)
-        log_config_summary(config)
+        log_configuration_summary(config)
 
         daemon = CoordinatorDaemon(config)
         await daemon.run()

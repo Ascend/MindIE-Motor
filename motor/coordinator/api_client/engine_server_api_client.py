@@ -11,9 +11,11 @@
 
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.config.coordinator import CoordinatorConfig
 
 logger = get_logger(__name__)
+_rl = RateLimitedLogger(logger)
 
 
 class EngineServerApiClient:
@@ -29,9 +31,22 @@ class EngineServerApiClient:
                 data = response.text
                 return data
             else:
-                logger.warning(f"[Metrics] request metrics failed: code = {response.status_code}")
+                logger.warning(
+                    "Coordinator->EngineServer query_metrics non-2xx. "
+                    "address=%s, status_code=%s. "
+                    "Possible causes: 1) engine_server not ready 2) wrong endpoint 3) auth failure.",
+                    address,
+                    response.status_code,
+                )
         except Exception as e:
-            logger.warning(f"[Metrics] request metrics failed: {e}")
+            logger.warning(
+                "Coordinator->EngineServer query_metrics failed. address=%s, error=%s. "
+                "Possible causes: 1) engine_server down 2) network unreachable 3) tls mismatch. "
+                "Check: ping %s, engine_server process status.",
+                address,
+                e,
+                address,
+            )
 
         return ""
 
@@ -42,4 +57,3 @@ class EngineServerApiClient:
             "tls_config": cls.tls_config,
         }
         return client_ars
-

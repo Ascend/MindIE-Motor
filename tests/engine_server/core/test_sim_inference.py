@@ -12,12 +12,12 @@
 from unittest import mock
 import asyncio
 import httpx
-import threading
 import time
 import pytest
 from motor.engine_server.core.sim_inference import SimInference
 from motor.engine_server.constants import constants
-from motor.common.http.http_client import AsyncSafeHTTPSClient
+
+# pylint: disable=redefined-outer-name
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_set_status(sim_inference):
     """Test status setting functionality"""
     sim_inference.set_status(constants.NORMAL_STATUS)
     assert sim_inference._status == constants.NORMAL_STATUS
-    
+
     sim_inference.set_status(constants.ABNORMAL_STATUS)
     assert sim_inference._status == constants.ABNORMAL_STATUS
 
@@ -81,7 +81,7 @@ def test_reset_abnormal_status(sim_inference):
     """Test abnormal status reset functionality"""
     sim_inference.set_abnormal_status()
     assert sim_inference.is_abnormal()
-    
+
     sim_inference.reset_abnormal_status()
     assert not sim_inference.is_abnormal()
 
@@ -94,23 +94,28 @@ async def test_send_virtual_request_async_success(mock_create_client, sim_infere
     mock_client = mock.MagicMock()
     mock_response = mock.MagicMock()
     mock_response.raise_for_status.return_value = None
-    mock_response.json.return_value = {"id": "test-id", "object": "text_completion", "created": 1234567890, "model": "test-model", "choices": [{"text": "Hello", "index": 0, "logprobs": None, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
-    
+    mock_response.json.return_value = {
+        "id": "test-id",
+        "object": "text_completion",
+        "created": 1234567890,
+        "model": "test-model",
+        "choices": [{"text": "Hello", "index": 0, "logprobs": None, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
     # 使用AsyncMock来模拟异步方法
     mock_client.post = mock.AsyncMock(return_value=mock_response)
     mock_client.is_closed = False
-    
+
     # Make create_client return the mock client directly
     mock_create_client.return_value = mock_client
-    
+
     timeout = httpx.Timeout(5.0)
     await sim_inference.send_virtual_request_async(timeout)
-    
+
     # Verify client creation and post method call
     mock_create_client.assert_called_once_with(
-        address="localhost:8000",
-        tls_config=sim_inference.infer_tls_config,
-        timeout=timeout
+        address="localhost:8000", tls_config=sim_inference.infer_tls_config, timeout=timeout
     )
     mock_client.post.assert_called_once()
     call_args = mock_client.post.call_args
@@ -130,15 +135,13 @@ async def test_send_virtual_request_async_http_error(mock_create_client, sim_inf
     mock_client = mock.MagicMock()
     mock_response = mock.MagicMock()
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "404 Not Found",
-        request=mock.MagicMock(),
-        response=mock_response
+        "404 Not Found", request=mock.MagicMock(), response=mock_response
     )
-    
+
     # 使用AsyncMock来模拟异步方法
     mock_client.post = mock.AsyncMock(return_value=mock_response)
     mock_client.is_closed = False
-    
+
     # Make create_client return the mock client directly
     mock_create_client.return_value = mock_client
 
@@ -153,11 +156,11 @@ async def test_send_virtual_request_async_request_error(mock_create_client, sim_
     """Test virtual request sending with request error"""
     # Mock request error
     mock_client = mock.MagicMock()
-    
+
     # 使用AsyncMock来模拟异步方法并设置异常
     mock_client.post = mock.AsyncMock(side_effect=httpx.RequestError("Connection error"))
     mock_client.is_closed = False
-    
+
     # Make create_client return the mock client directly
     mock_create_client.return_value = mock_client
 
@@ -174,14 +177,14 @@ def test_start_health_check(mock_thread, mock_create_task, sim_inference):
     mock_task = mock.MagicMock()
     mock_task.done.return_value = False
     mock_create_task.return_value = mock_task
-    
+
     # Mock thread creation
     mock_thread_instance = mock.MagicMock()
     mock_thread.return_value = mock_thread_instance
-    
+
     # Start health check
     sim_inference.start_health_check()
-    
+
     # Verify thread was created and started
     assert mock_thread.call_count == 2
 
@@ -192,16 +195,16 @@ def test_stop_health_check(sim_inference):
     mock_task = mock.MagicMock()
     mock_task.done.return_value = False
     sim_inference._health_check_task = mock_task
-    
+
     # Create a mock client
     mock_client = mock.MagicMock()
     mock_client.is_closed = False
     mock_client.aclose = mock.AsyncMock()
     sim_inference._client = mock_client
-    
+
     # Stop health check
     sim_inference.stop_health_check()
-    
+
     # Verify task was canceled
     mock_task.cancel.assert_called_once()
     # Verify abnormal status was reset
@@ -213,14 +216,14 @@ def test_generate_request_id(sim_inference):
     # Test that the function returns a string
     request_id = sim_inference.generate_request_id()
     assert isinstance(request_id, str)
-    
+
     # Test that the request ID contains '_virtual' suffix
     assert '_virtual' in request_id
-    
+
     # Test that the request ID starts with a numeric timestamp
     timestamp_part = request_id.split('_')[0]
     assert timestamp_part.isdigit()
-    
+
     # Test that two consecutive calls generate different IDs (due to timestamp)
     request_id1 = sim_inference.generate_request_id()
     time.sleep(0.001)  # Wait for a short time to ensure timestamp changes
@@ -243,22 +246,19 @@ async def test_health_check_loop_normal(mock_sleep, mock_send_request, mock_thre
     """Test health check loop - normal case"""
     # Set status to normal
     sim_inference.set_status(constants.NORMAL_STATUS)
-    
-    # Mock thread creation and join
-    mock_thread_instance = mock.MagicMock()
-    mock_thread.return_value = mock_thread_instance
-    mock_thread_instance.is_alive.return_value = False
-    
+
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
     # Mock successful request sending
     mock_send_request.return_value = None
-    
+
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
-    
+
     # Verify loop executes normally
     with pytest.raises(asyncio.CancelledError):
         await sim_inference.health_check_loop()
-            
+
     # Verify request was sent
     mock_send_request.assert_called_once()
 
@@ -271,31 +271,28 @@ async def test_health_check_loop_abnormal(mock_sleep, mock_send_request, mock_th
     """Test health check loop - abnormal case"""
     # Set status to normal
     sim_inference.set_status(constants.NORMAL_STATUS)
-    
+
     # Set max_failure_count to 1 for this test to avoid infinite loop
     sim_inference._max_failure_count = 1
 
     sim_inference._count_failure_flag = True
-    
-    # Mock thread creation and join
-    mock_thread_instance = mock.MagicMock()
-    mock_thread.return_value = mock_thread_instance
-    mock_thread_instance.is_alive.return_value = False
-    
+
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
     # Mock failed request sending
     mock_send_request.side_effect = Exception("Request failed")
-    
+
     # Mock low AICore usage
     with sim_inference._shared_data_lock:
         sim_inference._max_aicore_usage = 2  # < 10%
-    
+
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
-    
+
     # Execute loop
     with pytest.raises(asyncio.CancelledError):
         await sim_inference.health_check_loop()
-            
+
     # Verify abnormal status was set
     assert sim_inference.is_abnormal()
 
@@ -310,25 +307,125 @@ async def test_health_check_loop_reset_abnormal(mock_sleep, mock_send_request, m
     sim_inference.set_status(constants.NORMAL_STATUS)
     # First set to abnormal status
     sim_inference.set_abnormal_status()
-    
-    # Mock thread creation and join
-    mock_thread_instance = mock.MagicMock()
-    mock_thread.return_value = mock_thread_instance
-    mock_thread_instance.is_alive.return_value = False
-    
+
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
     # Mock successful request sending
     mock_send_request.return_value = None
-    
+
     # Mock normal AICore usage
     with sim_inference._shared_data_lock:
         sim_inference._max_aicore_usage = 15  # > 10%
-    
+
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
-    
+
     # Execute loop
     with pytest.raises(asyncio.CancelledError):
         await sim_inference.health_check_loop()
-            
+
     # Verify abnormal status was reset
     assert not sim_inference.is_abnormal()
+
+
+def _mock_health_check_loop_thread(mock_thread, sim_inference=None):
+    mock_thread_instance = mock.MagicMock()
+    mock_thread.return_value = mock_thread_instance
+    mock_thread_instance.is_alive.return_value = False
+    if sim_inference is not None:
+
+        def _fast_aicore_wait(timeout=None):
+            with sim_inference._aicore_check_condition:
+                sim_inference._aicore_check_active = False
+
+        sim_inference._aicore_check_condition.wait = _fast_aicore_wait
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_high_aicore_extends_sleep(mock_sleep, mock_thread, sim_inference):
+    """AICore >= 80% should extend virtual inference sleep to 20 seconds."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    async def set_high_aicore_usage(timeout):
+        with sim_inference._shared_data_lock:
+            sim_inference._max_aicore_usage = 85
+
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_high_aicore_usage):
+        mock_sleep.side_effect = asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
+
+    assert sim_inference.sim_sleep == 20
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_low_aicore_keeps_default_sleep(mock_sleep, mock_thread, sim_inference):
+    """AICore < 80% should keep virtual inference sleep at 5 seconds."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    async def set_low_aicore_usage(timeout):
+        with sim_inference._shared_data_lock:
+            sim_inference._max_aicore_usage = 50
+
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_low_aicore_usage):
+        mock_sleep.side_effect = asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
+
+    assert sim_inference.sim_sleep == 5
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_aicore_sleep_keeps_extended_after_moderate_load(
+    mock_sleep, mock_thread, sim_inference
+):
+    """After high AICore, sleep stays at 20s when usage is between threshold and 80%."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    iteration = 0
+
+    async def set_aicore_usage_by_iteration(timeout):
+        nonlocal iteration
+        iteration += 1
+        with sim_inference._shared_data_lock:
+            sim_inference._max_aicore_usage = 85 if iteration == 1 else 50
+
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_aicore_usage_by_iteration):
+        mock_sleep.side_effect = [None, asyncio.CancelledError]
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
+
+    assert sim_inference.sim_sleep == 20
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_aicore_sleep_reverts_below_threshold(mock_sleep, mock_thread, sim_inference):
+    """After high AICore, sleep reverts to 5s when usage drops below npu_usage_threshold."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    iteration = 0
+
+    async def set_aicore_usage_by_iteration(timeout):
+        nonlocal iteration
+        iteration += 1
+        with sim_inference._shared_data_lock:
+            sim_inference._max_aicore_usage = 85 if iteration == 1 else 1
+
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_aicore_usage_by_iteration):
+        mock_sleep.side_effect = [None, asyncio.CancelledError]
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
+
+    assert sim_inference.sim_sleep == 5

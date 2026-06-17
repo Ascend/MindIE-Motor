@@ -17,20 +17,15 @@
   "motor_engine_prefill_config": {
     "engine_type": "vllm",
     "motor_nodemanger_config": {},
-    "model_config": {
-      "model_name": "dsv3_1",
-      "model_path": "/mnt/weights/DeepSeek-V3.1_w8a8mix_mtp/",
-      "npu_mem_utils": 0.9,
-      "parallel_config": {
-        "dp_size": 2,
-        "tp_size": 8,
-        "pp_size": 1,
-        "enable_ep": true,
-        "dp_rpc_port": 9000,
-        "world_size": 16
-      }
-    },
     "engine_config": {
+      "served_model_name": "dsv3_1",
+      "model": "/mnt/weights/DeepSeek-V3.1_w8a8mix_mtp/",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 2,
+      "tensor_parallel_size": 8,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": true,
       "enforce-eager": true,
       "trust-remote-code": true,
       "max_model_len": 73000,
@@ -38,7 +33,6 @@
       "max-num-seqs": 16,
       "quantization": "ascend",
       "seed": 1024,
-      "no-enable-prefix-caching": false,
       "distributed-executor-backend": "mp",
       "speculative-config": {
         "num_speculative_tokens": 1,
@@ -55,7 +49,6 @@
         "kv_port": "30001",
         "engine_id": "0",
         "kv_rank": 0,
-        "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
         "kv_connector_extra_config": {
           "use_ascend_direct": true
         }
@@ -65,27 +58,21 @@
   "motor_engine_decode_config": {
     "engine_type": "vllm",
     "motor_nodemanger_config": {},
-    "model_config": {
-      "model_name": "dsv3_1",
-      "model_path": "/mnt/weights/DeepSeek-V3.1_w8a8mix_mtp/",
-      "npu_mem_utils": 0.9,
-      "parallel_config": {
-        "dp_size": 32,
-        "tp_size": 1,
-        "pp_size": 1,
-        "enable_ep": true,
-        "dp_rpc_port": 9000,
-        "world_size": 32
-      }
-    },
     "engine_config": {
+      "served_model_name": "dsv3_1",
+      "model": "/mnt/weights/DeepSeek-V3.1_w8a8mix_mtp/",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 32,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": true,
       "trust-remote-code": true,
       "max_model_len": 73000,
       "max-num-batched-tokens": 256,
       "max-num-seqs": 24,
       "quantization": "ascend",
       "seed": 1024,
-      "no-enable-prefix-caching": false,
       "compilation_config": {
         "cudagraph_capture_sizes": [4, 8, 16, 32, 48, 64, 80, 96],
         "cudagraph_mode": "FULL_DECODE_ONLY"
@@ -107,7 +94,6 @@
         "kv_port": "30001",
         "engine_id": "0",
         "kv_rank": 0,
-        "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
         "kv_connector_extra_config": {
           "use_ascend_direct": true
         }

@@ -1,0 +1,54 @@
+{
+  "domain": "coordinator",
+  "rules": [
+    {
+      "group": {
+        "priority": 50,
+        "enabled": true,
+        "name": "completions_flow_group",
+        "tags": [
+          {
+            "tag": "URL",
+            "match": "equal",
+            "values": [
+              "/v1/completions",
+              "/v1/chat/completions"
+            ]
+          }
+        ]
+      },
+      "flow": {
+        "name": "completions_flow",
+        "enabled": true,
+        "flowControlMode": "quota",
+        "timeUnit": "second",
+        "timeInterval": 60,
+        "rateLimit": 1000,
+        "burstLimit": 1000
+      }
+    },
+    {
+      "group": {
+        "priority": 50,
+        "enabled": true,
+        "name": "completions_concurrent_group",
+        "tags": [
+          {
+            "tag": "URL",
+            "match": "equal",
+            "values": [
+              "/v1/completions",
+              "/v1/chat/completions"
+            ]
+          }
+        ]
+      },
+      "flow": {
+        "name": "completions_concurrent",
+        "enabled": true,
+        "flowControlMode": "concurrent",
+        "rateLimit": 50
+      }
+    }
+  ]
+}

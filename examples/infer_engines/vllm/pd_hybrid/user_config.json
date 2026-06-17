@@ -1,0 +1,30 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 2,
+    "image_name": "",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "/mnt/weight/"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {},
+  "motor_engine_union_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "served_model_name": "qwen3-8B",
+      "model": "/mnt/weight/qwen3_8B",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "enable_expert_parallel": false,
+      "data_parallel_rpc_port": 9000,
+      "enforce-eager": true,
+      "max_model_len": 2048
+    }
+  }
+}

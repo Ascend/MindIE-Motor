@@ -1,0 +1,60 @@
+# Grafana datasource provisioning for minimal mode.
+# Loki + Trace<->Log linking, aligned with full mode.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s
+      httpMethod: POST
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      httpMethod: GET
+      tracesToLogsV2:
+        datasourceUid: loki
+        tags:
+          - { key: service.name, value: service_name }
+          - { key: x_request_id, value: x_request_id }
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+        tags:
+          - { key: service.name, value: service }
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      serviceMap:
+        datasourceUid: prometheus
+      lokiSearch:
+        datasourceUid: loki
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '(?:trace_id|traceID|traceId)\s*[:=]\s*"?([A-Fa-f0-9]{32})"?'
+          url: '${__value.raw}'
+          datasourceUid: tempo
+        - name: x_request_id
+          matcherRegex: '(?:x_request_id|x-request-id)\s*[:=]\s*"?([A-Za-z0-9_-]+)"?'
+          url: '{ .x_request_id = "${__value.raw}" }'
+          datasourceUid: tempo
+          urlDisplayLabel: 'Find by request_id'

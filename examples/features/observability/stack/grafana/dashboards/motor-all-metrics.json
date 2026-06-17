@@ -1,0 +1,795 @@
+{
+  "uid": "motor-all-metrics",
+  "title": "pyMotor Metrics · 指标总览",
+  "tags": [
+    "pymotor",
+    "overview",
+    "all-metrics"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster!=\"\"}, cluster)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "motor_metric_scope",
+        "label": "Metric Scope",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster=~\"$cluster\", motor_metric_scope!=\"\"}, motor_metric_scope)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "role",
+        "label": "Role",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster=~\"$cluster\", role!=\"\"}, role)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "pd_role",
+        "label": "PD Role",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster=~\"$cluster\", pd_role!=\"\"}, pd_role)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "dp_rank",
+        "label": "DP Rank",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster=~\"$cluster\", dp_rank!=\"\"}, dp_rank)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3
+      },
+      {
+        "name": "pod_ip",
+        "label": "Pod IP",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster=~\"$cluster\", pod_ip!=\"\"}, pod_ip)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3
+      },
+      {
+        "name": "instance_id",
+        "label": "Instance ID",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({cluster=~\"$cluster\", instance_id!=\"\"}, instance_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 3,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "model_name",
+        "label": "Model",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(vllm:num_requests_running{cluster=~\"$cluster\"}, model_name)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "集群概览",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active Prefill",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(motor:active_prefill_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Active Decode",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(motor:active_decode_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Running Requests",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(vllm:num_requests_running{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Waiting Requests",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(vllm:num_requests_waiting{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "KV Cache Usage",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max(vllm:kv_cache_usage_perc{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.8
+              },
+              {
+                "color": "red",
+                "value": 0.95
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "按 PD Role / Instance 分组",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "collapsed": false
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Running Requests by pd_role",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pd_role) (vllm:num_requests_running{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "legendFormat": "{{pd_role}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Running Requests by instance_id",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance_id, pd_role) (vllm:num_requests_running{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "legendFormat": "{{pd_role}}/{{instance_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "bargauge",
+      "title": "Active Workers by pd_role",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pd_role) (motor:active_prefill_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "legendFormat": "prefill {{pd_role}}",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "expr": "sum by (pd_role) (motor:active_decode_workers{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"})",
+          "legendFormat": "decode {{pd_role}}",
+          "refId": "B",
+          "instant": true
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "KV Cache Usage by instance_id",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vllm:kv_cache_usage_perc{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}",
+          "legendFormat": "{{pd_role}}/{{instance_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "吞吐与延迟",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Prompt Token Rate by pd_role",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pd_role) (rate(vllm:prompt_tokens_total{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[1m]))",
+          "legendFormat": "prompt {{pd_role}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tok/s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Generation Token Rate by pd_role",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pd_role) (rate(vllm:generation_tokens_total{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[1m]))",
+          "legendFormat": "gen {{pd_role}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tok/s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "E2E 时延 P50/P95/P99 by pd_role",
+      "description": "端到端请求时延（E2E），与 TTFT 为不同指标，独立展示。",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, pd_role) (rate(vllm:e2e_request_latency_seconds_bucket{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[5m])))",
+          "legendFormat": "p50 {{pd_role}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, pd_role) (rate(vllm:e2e_request_latency_seconds_bucket{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[5m])))",
+          "legendFormat": "p95 {{pd_role}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, pd_role) (rate(vllm:e2e_request_latency_seconds_bucket{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[5m])))",
+          "legendFormat": "p99 {{pd_role}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "TTFT 时延 P50/P95 by pd_role",
+      "description": "首 Token 时延（TTFT），与 E2E 为不同指标，独立展示。",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, pd_role) (rate(vllm:time_to_first_token_seconds_bucket{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[5m])))",
+          "legendFormat": "p50 {{pd_role}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, pd_role) (rate(vllm:time_to_first_token_seconds_bucket{cluster=~\"$cluster\", motor_metric_scope=~\"$motor_metric_scope\", role=~\"$role\", pd_role=~\"$pd_role\", instance_id=~\"$instance_id\", model_name=~\"$model_name\", dp_rank=~\"$dp_rank\", pod_ip=~\"$pod_ip\"}[5m])))",
+          "legendFormat": "p95 {{pd_role}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

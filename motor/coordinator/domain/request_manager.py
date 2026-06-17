@@ -38,9 +38,11 @@ class RequestManager:
 
         self._req_info_dict: dict[str, RequestInfo] = {}
 
-        # Request workload dictionary: {(req_id, role) -> Workload}
-        # Used to track workload allocation for each request and role
-        self._req_workload_dict: dict[tuple[str, PDRole], Workload] = {}
+        # Request workload dictionary.
+        # Legacy routers use (req_id, role). Unified P/D dispatch uses
+        # (root_request_id, attempt_seq, role) so late cleanup from an older
+        # attempt cannot release a newer attempt's allocation.
+        self._req_workload_dict: dict[tuple, Workload] = {}
         logger.info("RequestManager initialized")
 
     async def generate_request_id(self) -> str:
@@ -101,48 +103,79 @@ class RequestManager:
 
     # ==================== Workload Management (async, hot path) ====================
 
+    @staticmethod
+    def _workload_key(req_id: str, role: PDRole, attempt_seq: int | None = None) -> tuple:
+        if attempt_seq is None:
+            return (req_id, role)
+        return (req_id, attempt_seq, role)
+
     async def add_req_workload(self, req_id: str, role: PDRole, workload: Workload) -> bool:
         """Add workload record for a request and role (async, does not block event loop)."""
+        return await self.add_req_attempt_workload(req_id, None, role, workload)
+
+    async def add_req_attempt_workload(
+        self,
+        req_id: str,
+        attempt_seq: int | None,
+        role: PDRole,
+        workload: Workload,
+    ) -> bool:
+        """Add workload record for a request/attempt/role."""
         try:
             async with self._lock:
-                key = (req_id, role)
+                key = self._workload_key(req_id, role, attempt_seq)
                 if key in self._req_workload_dict:
-                    logger.debug("Workload for request %s, role %s already exists", req_id, role)
+                    logger.debug("Workload for key %s already exists", key)
                     return False
                 self._req_workload_dict[key] = workload
-            logger.debug("Added workload for request %s, role %s", req_id, role)
+            logger.debug("Added workload for key %s", key)
             return True
         except Exception as e:
             logger.error("Failed to add workload for request %s, role %s: %s", req_id, role, e)
             return False
 
     async def get_req_workload(self, req_id: str, role: PDRole) -> Workload | None:
+        return await self.get_req_attempt_workload(req_id, None, role)
+
+    async def get_req_attempt_workload(self, req_id: str, attempt_seq: int | None, role: PDRole) -> Workload | None:
         async with self._lock:
-            return self._req_workload_dict.get((req_id, role))
+            return self._req_workload_dict.get(self._workload_key(req_id, role, attempt_seq))
 
     async def update_req_workload(self, req_id: str, role: PDRole, workload: Workload) -> bool:
+        return await self.update_req_attempt_workload(req_id, None, role, workload)
+
+    async def update_req_attempt_workload(
+        self,
+        req_id: str,
+        attempt_seq: int | None,
+        role: PDRole,
+        workload: Workload,
+    ) -> bool:
         try:
             async with self._lock:
-                key = (req_id, role)
+                key = self._workload_key(req_id, role, attempt_seq)
                 if key not in self._req_workload_dict:
-                    logger.debug("Workload for request %s, role %s not found", req_id, role)
+                    logger.debug("Workload for key %s not found", key)
                     return False
                 self._req_workload_dict[key] = workload
-            logger.debug("Updated workload for request %s, role %s", req_id, role)
+            logger.debug("Updated workload for key %s", key)
             return True
         except Exception as e:
             logger.error("Failed to update workload for request %s, role %s: %s", req_id, role, e)
             return False
 
     async def del_req_workload(self, req_id: str, role: PDRole) -> bool:
+        return await self.del_req_attempt_workload(req_id, None, role)
+
+    async def del_req_attempt_workload(self, req_id: str, attempt_seq: int | None, role: PDRole) -> bool:
         try:
             async with self._lock:
-                key = (req_id, role)
+                key = self._workload_key(req_id, role, attempt_seq)
                 if key not in self._req_workload_dict:
-                    logger.debug("Workload for request %s, role %s not found", req_id, role)
+                    logger.debug("Workload for key %s not found", key)
                     return False
                 del self._req_workload_dict[key]
-            logger.debug("Deleted workload for request %s, role %s", req_id, role)
+            logger.debug("Deleted workload for key %s", key)
             return True
         except Exception as e:
             logger.error("Failed to delete workload for request %s, role %s: %s", req_id, role, e)

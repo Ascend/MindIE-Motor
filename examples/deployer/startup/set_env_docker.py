@@ -11,8 +11,12 @@ import json
 import logging
 import argparse
 import os
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from lib.utils import read_json, get_json_by_path, resolve_model_name, shell_escape, update_shell_safely
 
 
 MOTOR_COMMON_ENV = "motor_common_env"
@@ -24,75 +28,6 @@ SERVICE_ID = "service_id"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-
-def read_json(file_path):
-    """Read JSON file"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def shell_escape(value):
-    if not isinstance(value, str):
-        return str(value)
-    
-    value = value.replace('\\', '\\\\')
-    value = value.replace('"', '\\"')
-    value = value.replace('$', '\\$')
-    value = value.replace('`', '\\`')
-    value = value.replace('\n', '\\n')
-    value = value.replace('\r', '\\r')
-    value = value.replace('\t', '\\t')
-    
-    return value
-
-
-def update_shell_safely(script_path, env_config, component_key="", function_name="set_common_env"):
-    all_env_vars = {}
-    all_env_vars.update(env_config[MOTOR_COMMON_ENV])
-    if component_key and component_key in env_config:
-        all_env_vars.update(env_config[component_key])
-
-    with open(script_path, 'r') as f:
-        lines = f.readlines()
-
-    start_idx, end_idx = -1, -1
-    for i, line in enumerate(lines):
-        if line.strip().startswith(f"function {function_name}()"):
-            start_idx = i
-        elif start_idx != -1 and line.strip() == "}":
-            end_idx = i
-            break
-
-    new_function_lines = [
-        f"function {function_name}() {{\n",
-        *[
-            f'    export {key}="{shell_escape(value)}"\n' if isinstance(value, str) else f'    export {key}={value}\n'
-            for key, value in all_env_vars.items()
-        ],
-        "}\n"
-    ]
-
-    if start_idx != -1 and end_idx != -1:
-        new_lines = lines[:start_idx] + new_function_lines + lines[end_idx + 1:]
-    else:
-        new_lines = new_function_lines + lines
-
-    with open(script_path, 'w') as f:
-        f.writelines(new_lines)
-
-
-def get_json_by_path(data, path, default=None):
-    keys = path.split(".")
-    current = data
-    for key in keys:
-        if isinstance(current, dict):
-            current = current.get(key)
-            if current is None:
-                return default
-        else:
-            return default
-    return current
 
 
 def set_env_docker(configmap_path):
@@ -109,7 +44,8 @@ def set_env_docker(configmap_path):
     deploy_mode = get_json_by_path(user_config, "motor_deploy_config.deploy_mode")
 
     engine_type = get_json_by_path(user_config, "motor_engine_prefill_config.engine_type", "Unknown")
-    model_name = get_json_by_path(user_config, "motor_engine_prefill_config.model_config.model_name", "Unknown")
+    prefill_section = user_config.get("motor_engine_prefill_config", {})
+    model_name = resolve_model_name(prefill_section)
     north_platform = get_json_by_path(user_config, "north_config.name")
 
     if MOTOR_COMMON_ENV not in env_config:
@@ -136,6 +72,7 @@ def set_env_docker(configmap_path):
     if deploy_mode == "single_container":
         update_shell_safely(single_container_shell_path, env_config, "motor_controller_env", "set_controller_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_coordinator_env", "set_coordinator_env")
+        update_shell_safely(single_container_shell_path, env_config, "motor_engine_encode_env", "set_encode_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_decode_env", "set_decode_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
@@ -145,6 +82,7 @@ def set_env_docker(configmap_path):
     else:
         update_shell_safely(controller_shell_path, env_config, "motor_controller_env", "set_controller_env")
         update_shell_safely(coordinator_shell_path, env_config, "motor_coordinator_env", "set_coordinator_env")
+        update_shell_safely(engine_shell_path, env_config, "motor_engine_encode_env", "set_encode_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_decode_env", "set_decode_env")
         update_shell_safely(kv_pool_shell_path, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")

@@ -14,7 +14,14 @@ from collections.abc import Callable
 from fastapi import HTTPException
 
 from motor.common.resources import (
-    HeartbeatMsg, Instance, InsStatus, InsConditionEvent, ReadOnlyInstance, EndpointStatus, EventType
+    HeartbeatMsg,
+    Instance,
+    InsStatus,
+    InsConditionEvent,
+    ReadOnlyInstance,
+    EndpointStatus,
+    EventType,
+    PDRole,
 )
 from motor.common.etcd.etcd_client import EtcdClient
 from motor.common.etcd.persistent_state import PersistentState
@@ -38,7 +45,7 @@ HEARTBEAT_HANDLER_RE_REGISTER = 503
 
 
 class InstanceManager(ThreadSafeSingleton):
-    """ Instance Manager
+    """Instance Manager
     Manages all instances including states and heartbeats.
     It is a singleton class and can be accessed by InstanceManager().
     It is responsible for:
@@ -83,14 +90,13 @@ class InstanceManager(ThreadSafeSingleton):
         with self.config_lock:
             self.etcd_client = EtcdClient(etcd_config=self.etcd_config, tls_config=self.etcd_tls_config)
 
-        """
-        self.states: dict[InsStatus, Callable]: State handle function mapping
-        """
+        # self.states: dict[InsStatus, Callable]: State handle function mapping
         self.states: dict[InsStatus, Callable] = {
             InsStatus.INITIAL: self._handle_initial,
             InsStatus.ACTIVE: self._handle_active,
             InsStatus.INACTIVE: self._handle_inactive,
-            InsStatus.DELETED: self._handle_deleted
+            InsStatus.PAUSED: self._handle_paused,
+            InsStatus.DELETED: self._handle_deleted,
         }
 
         """
@@ -107,7 +113,13 @@ class InstanceManager(ThreadSafeSingleton):
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_ABNORMAL): InsStatus.INACTIVE,
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_NORMAL): InsStatus.ACTIVE,
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_INIT): InsStatus.INITIAL,
-            (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT): InsStatus.DELETED
+            (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT): InsStatus.DELETED,
+            (InsStatus.ACTIVE, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_RESUMED): InsStatus.ACTIVE,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_NORMAL): InsStatus.ACTIVE,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT): InsStatus.DELETED,
+            (InsStatus.PAUSED, InsConditionEvent.INSTANCE_ABNORMAL): InsStatus.INACTIVE,
         }
 
         self.instances_management_thread = None
@@ -132,18 +144,11 @@ class InstanceManager(ThreadSafeSingleton):
             current_time = time.time()
             with self.ins_lock:
                 for instance in self.instances.values():
-                    self._maybe_refresh_heartbeat(
-                        instance,
-                        current_time,
-                        self._data_version,
-                        should_notify=False
-                    )
+                    self._maybe_refresh_heartbeat(instance, current_time, self._data_version, should_notify=False)
 
         # Create instance heartbeat timeout management thread
         self.instances_management_thread = threading.Thread(
-            target=self._instances_management_loop,
-            daemon=True,
-            name="InstancesManagementLoop"
+            target=self._instances_management_loop, daemon=True, name="InstancesManagementLoop"
         )
         self.instances_management_thread.start()
 
@@ -201,21 +206,25 @@ class InstanceManager(ThreadSafeSingleton):
                     data=instances_data,
                     version=next_version,
                     timestamp=current_time,
-                    checksum=""  # Will be calculated
+                    checksum="",  # Will be calculated
                 )
                 persistent_state.checksum = persistent_state.calculate_checksum()
-                logger.debug("Persisting instance manager data - calculated checksum: %s, version: %s, timestamp: %s",
-                             persistent_state.checksum, next_version, current_time)
+                logger.debug(
+                    "Persisting instance manager data - calculated checksum: %s, version: %s, timestamp: %s",
+                    persistent_state.checksum,
+                    next_version,
+                    current_time,
+                )
 
                 # Convert PersistentState to dict for etcd storage
                 dict_data = {"state": persistent_state.model_dump()}
                 logger.debug("Persistence data being saved to ETCD: %s", dict_data)
 
-                success = self.etcd_client.persist_data("/controller/instance_manager", dict_data)
-                if success:
-                    logger.info("Successfully persisted %d instances with version %d",
-                                len(instances_data), next_version)
-                return success
+            # Release ins_lock before ETCD I/O to avoid blocking heartbeat lookups
+            success = self.etcd_client.persist_data("/controller/instance_manager", dict_data)
+            if success:
+                logger.info("Successfully persisted %d instances with version %d", len(instances_data), next_version)
+            return success
 
         except Exception as e:
             logger.error("Error persisting instance manager data: %s", e)
@@ -230,11 +239,13 @@ class InstanceManager(ThreadSafeSingleton):
                 return True
 
             logger.info("Restoring instance manager data from ETCD")
-            
+
             persistent_state = persistent_states.get("state")
             if persistent_state is None:
-                logger.warning("Expected 'state' key not found in persistent states, found keys: %s",
-                             list(persistent_states.keys()))
+                logger.warning(
+                    "Expected 'state' key not found in persistent states, found keys: %s",
+                    list(persistent_states.keys()),
+                )
                 return False
             if not isinstance(persistent_state, PersistentState):
                 logger.error("Invalid persistent state format, expected PersistentState instance")
@@ -275,8 +286,11 @@ class InstanceManager(ThreadSafeSingleton):
                         observer.push_event(EventType.SET)
                         break
 
-                logger.info("Successfully restored %d valid instances, %d invalid instances skipped",
-                            valid_instances, invalid_instances)
+                logger.info(
+                    "Successfully restored %d valid instances, %d invalid instances skipped",
+                    valid_instances,
+                    invalid_instances,
+                )
                 return True
         except Exception as e:
             logger.error("Error restoring instance manager data: %s", e)
@@ -302,6 +316,20 @@ class InstanceManager(ThreadSafeSingleton):
                     initial_instances.append(ReadOnlyInstance(instance))
         return initial_instances
 
+    def get_instances(self, statuses: set[InsStatus] | None = None) -> list[ReadOnlyInstance]:
+        """Return instances matching any of the given statuses.
+
+        If statuses is None, returns all non-DELETED instances.
+        """
+        if statuses is None:
+            statuses = {InsStatus.INITIAL, InsStatus.ACTIVE, InsStatus.INACTIVE}
+        result = []
+        with self.ins_lock:
+            for instance in self.instances.values():
+                if instance.status in statuses:
+                    result.append(ReadOnlyInstance(instance))
+        return result
+
     def get_inactive_instances(self) -> list[ReadOnlyInstance]:
         inactive_instances = []
         with self.ins_lock:
@@ -309,6 +337,16 @@ class InstanceManager(ThreadSafeSingleton):
                 if instance.status == InsStatus.INACTIVE:
                     inactive_instances.append(ReadOnlyInstance(instance))
         return inactive_instances
+
+    def get_instances_by_role(self, role: PDRole | str) -> list[Instance]:
+        """Return live instances matching the given PD role."""
+        role_value = role.value if isinstance(role, PDRole) else role
+        matched: list[Instance] = []
+        with self.ins_lock:
+            for instance in self.instances.values():
+                if instance.role == role_value:
+                    matched.append(instance)
+        return matched
 
     def add_instance(self, ins: Instance):
         if ins is None or not isinstance(ins, Instance):
@@ -325,19 +363,26 @@ class InstanceManager(ThreadSafeSingleton):
             timestamp = time.time()
             for pod_ip in ins.endpoints.keys():
                 # Create initial status dict for all endpoints in this pod
-                initial_status = {
-                    endpoint.id: EndpointStatus.INITIAL 
-                    for endpoint in ins.endpoints[pod_ip].values()
-                }
+                initial_status = {endpoint.id: EndpointStatus.INITIAL for endpoint in ins.endpoints[pod_ip].values()}
                 if ins.update_heartbeat(pod_ip, timestamp, initial_status):
-                    logger.debug("Refreshed heartbeat for pod_ip %s in instance %s(id:%d) with initial status",
-                                 pod_ip, ins.job_name, ins.id)
+                    logger.debug(
+                        "Refreshed heartbeat for pod_ip %s in instance %s(id:%d) with initial status",
+                        pod_ip,
+                        ins.job_name,
+                        ins.id,
+                    )
                 else:
-                    logger.warning("Failed to refresh heartbeat for pod_ip %s in instance %s(id:%d)",
-                                   pod_ip, ins.job_name, ins.id)
+                    logger.warning(
+                        "Failed to refresh heartbeat for pod_ip %s in instance %s(id:%d)", pod_ip, ins.job_name, ins.id
+                    )
 
-            logger.info("Instance %s(id:%d) role:%s added, total %d instances", ins.job_name, ins.id, ins.role,
-                        len(self.instances))
+            logger.info(
+                "Instance %s(id:%d) role:%s added, total %d instances",
+                ins.job_name,
+                ins.id,
+                ins.role,
+                len(self.instances),
+            )
             self.notify(ins, ObserverEvent.INSTANCE_INITIAL)
 
     def del_instance(self, ins_id: int):
@@ -348,8 +393,13 @@ class InstanceManager(ThreadSafeSingleton):
                 self.instances.pop(ins_id)
                 # Also remove from forced separated set if present
                 self.forced_separated_instances.discard(ins_id)
-                logger.info("Instance %s(id:%d) role:%s removed, total %d instances", job_name, ins_id, role,
-                            len(self.instances))
+                logger.info(
+                    "Instance %s(id:%d) role:%s removed, total %d instances",
+                    job_name,
+                    ins_id,
+                    role,
+                    len(self.instances),
+                )
             else:
                 logger.error("Instance %d not found.", ins_id)
 
@@ -390,25 +440,37 @@ class InstanceManager(ThreadSafeSingleton):
                     old_status = instance.status
                     instance.update_instance_status(InsStatus.INACTIVE)
                     self.notify(instance, ObserverEvent.INSTANCE_SEPERATED)
-                    
+
                     # Trigger persistence on state change
                     with self.config_lock:
                         enable_persistence = self.etcd_config.enable_etcd_persistence
                     if enable_persistence:
-                        logger.info("Instance %d state changed from %s to %s via separate_instance, "
-                                    "triggering persistence", instance.id, old_status, instance.status)
+                        logger.info(
+                            "Instance %d state changed from %s to %s via separate_instance, triggering persistence",
+                            instance.id,
+                            old_status,
+                            instance.status,
+                        )
                         if not self.persist_data():
-                            logger.error("Failed to persist instance %d state change from %s to "
-                                         "%s via separate_instance", instance.id, old_status, instance.status)
-                logger.info("Successfully separated instance %s (id:%d) in state %s",
-                            instance.job_name, instance.id, instance.status)
+                            logger.error(
+                                "Failed to persist instance %d state change from %s to %s via separate_instance",
+                                instance.id,
+                                old_status,
+                                instance.status,
+                            )
+                logger.info(
+                    "Successfully separated instance %s (id:%d) in state %s",
+                    instance.job_name,
+                    instance.id,
+                    instance.status,
+                )
             else:
                 logger.warning("No instance found for instance ID %d", instance_id)
         except Exception as e:
             logger.error("Error separating instance %d: %s", instance_id, e)
 
     def is_instance_separated(self, instance_id: int) -> bool:
-        """ Check if instance is in forced separated state. """
+        """Check if instance is in forced separated state."""
         try:
             instance = self.get_instance(instance_id)
             if instance is not None:
@@ -426,19 +488,59 @@ class InstanceManager(ThreadSafeSingleton):
         """
         try:
             instance = self.get_instance(instance_id)
-            if instance is not None and instance.id in self.forced_separated_instances:
+            if instance is None:
+                logger.warning("No instance found for instance ID %d", instance_id)
+                return
+
+            # Check if a newer instance with the same job_name already exists (stale instance)
+            newer_instance = self._find_newer_instance_by_job_name(instance.job_name, instance.id)
+            if newer_instance is not None:
+                logger.info(
+                    "Instance %s (id:%d) is stale — newer instance %s (id:%d) already exists, "
+                    "removing from forced separation without recovery",
+                    instance.job_name,
+                    instance.id,
+                    newer_instance.job_name,
+                    newer_instance.id,
+                )
+                with self.ins_lock:
+                    self.forced_separated_instances.discard(instance.id)
+                return
+
+            if instance.id in self.forced_separated_instances:
                 # Remove from forced separated set to allow natural heartbeat recovery
                 with self.ins_lock:
                     self.forced_separated_instances.discard(instance.id)
-                logger.info("Successfully recovered instance %s (id:%d)",
-                            instance.job_name, instance.id)
-            elif instance is not None:
-                logger.warning("Instance %s (id:%d) is not in forced separated list, no need to recover",
-                               instance.job_name, instance.id)
+                logger.info("Successfully recovered instance %s (id:%d)", instance.job_name, instance.id)
             else:
-                logger.warning("No instance found for instance ID %d", instance_id)
+                logger.warning(
+                    "Instance %s (id:%d) is not in forced separated list, no need to recover",
+                    instance.job_name,
+                    instance.id,
+                )
         except Exception as e:
             logger.error("Error recovering instance %d: %s", instance_id, e)
+
+    def _find_newer_instance_by_job_name(self, job_name: str, current_id: int) -> Instance | None:
+        """Find an instance with the same job_name but a higher instance_id."""
+        with self.ins_lock:
+            for instance in self.instances.values():
+                if instance.job_name == job_name and instance.id > current_id:
+                    return instance
+        return None
+
+    def get_instance_by_job_name(self, job_name: str) -> Instance | None:
+        """Return the current instance for the given job_name.
+
+        A job_name maps to one logical instance. During recovery the instance id may
+        change while stale entries linger; the entry with the highest id is current.
+        """
+        current: Instance | None = None
+        with self.ins_lock:
+            for instance in self.instances.values():
+                if instance.job_name == job_name:
+                    current = instance
+        return current
 
     def has_instance_by_job_name(self, job_name: str) -> bool:
         """Check if instance exists by job name"""
@@ -490,9 +592,8 @@ class InstanceManager(ThreadSafeSingleton):
             logger.error("Failed to handle state transition for instance %d.", ins_id)
             raise HTTPException(HEARTBEAT_HANDLER_ERROR)
 
-    """
-    State transition callback function
-    """
+    # State transition callback function
+
     def _instances_management_loop(self) -> None:
         """Instance management loop"""
         while not self.stop_event.is_set():
@@ -507,49 +608,36 @@ class InstanceManager(ThreadSafeSingleton):
                     continue
                 # Use _handle_state_transition with heartbeat timeout event to ensure persistence is triggered
                 if not self._handle_state_transition(instance, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT):
-                    logger.error("Failed to handle state transition for instance %d on heartbeat timeout",
-                                 instance.id)
+                    logger.error("Failed to handle state transition for instance %d on heartbeat timeout", instance.id)
 
             with self.config_lock:
                 check_interval = self.instance_manager_check_interval
             time.sleep(check_interval)
 
-    def _handle_initial(
-        self,
-        from_state: InsStatus,
-        condition_event: InsConditionEvent,
-        instance: Instance
-    ) -> None:
+    def _handle_initial(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.INITIAL:
             return
-        
-        # Sometimes an instance may briefly enter an abnormal state 
+
+        # Sometimes an instance may briefly enter an abnormal state
         # during initialization, then revert to the initial state.
         if from_state == InsStatus.INACTIVE and condition_event == InsConditionEvent.INSTANCE_INIT:
             instance.update_instance_status(InsStatus.INITIAL)
         return
 
-    def _handle_active(
-        self,
-        from_state: InsStatus,
-        condition_event: InsConditionEvent,
-        instance: Instance
-    ) -> None:
+    def _handle_active(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.ACTIVE:
             return
-        if condition_event == InsConditionEvent.INSTANCE_NORMAL:
+        if condition_event in (InsConditionEvent.INSTANCE_NORMAL, InsConditionEvent.INSTANCE_RESUMED):
             instance.update_instance_status(InsStatus.ACTIVE)
-            self.notify(instance, ObserverEvent.INSTANCE_READY)
+            if condition_event == InsConditionEvent.INSTANCE_RESUMED:
+                self.notify(instance, ObserverEvent.INSTANCE_RESUMED)
+            else:
+                self.notify(instance, ObserverEvent.INSTANCE_READY)
             self._report_inst_alarm(instance, True)
             self._report_coordinator_alarm(instance, True)
         return
 
-    def _handle_inactive(
-        self,
-        from_state: InsStatus,
-        condition_event: InsConditionEvent,
-        instance: Instance
-    ) -> None:
+    def _handle_inactive(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.INACTIVE:
             return
 
@@ -559,16 +647,16 @@ class InstanceManager(ThreadSafeSingleton):
             return
 
         if condition_event == InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT:
-            # When heartbeat times out, actively check the instance status to avoid 
+            # When heartbeat times out, actively check the instance status to avoid
             # false positives caused by the controller's own service being unavailable,
             # which prevents node_manager from reporting heartbeats.
 
             # [This scenario occurs when active-standby mode is enabled, and after the node
             # where the originally primary pod is located is forcibly rebooted, kubelet cannot
             # properly report the probe status (such as readiness) of pods on this node.
-            # This causes the active-standby traffic switching logic that relies on kubeproxy to fail. 
-            # After failure, node_manager easily reports heartbeats to the wrong pod, leading to 
-            # heartbeat timeout and instance isolation. Therefore, we need the controller to 
+            # This causes the active-standby traffic switching logic that relies on kubeproxy to fail.
+            # After failure, node_manager easily reports heartbeats to the wrong pod, leading to
+            # heartbeat timeout and instance isolation. Therefore, we need the controller to
             # directly query once using ip+port when heartbeat times out to avoid such situations.]
             if self._check_node_managers_status(instance):
                 instance.update_instance_status(InsStatus.INACTIVE)
@@ -583,19 +671,26 @@ class InstanceManager(ThreadSafeSingleton):
                         endpoint.hb_timestamp = time.time()
         return
 
+    def _handle_paused(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
+        if condition_event == InsConditionEvent.INSTANCE_PAUSED:
+            if from_state != InsStatus.PAUSED:
+                instance.update_instance_status(InsStatus.PAUSED)
+                self.notify(instance, ObserverEvent.INSTANCE_PAUSED)
+                self._report_inst_alarm(instance)
+
     def _report_inst_alarm(self, instance: Instance, is_cleared: bool = False) -> None:
         from motor.controller.observability.observability import Observability
 
         alarm = InstanceExceptionAlarm(
             instance_id=instance.job_name,
             reason_id=InstanceExceptionReason.INSTANCE_EXCEPTION,
-            is_cleared=Cleared.YES if is_cleared else Cleared.NO
+            is_cleared=Cleared.YES if is_cleared else Cleared.NO,
         )
         Observability().add_alarm(alarm)
 
     def _report_coordinator_alarm(self, instance: Instance, is_cleared: bool = False) -> None:
         from motor.controller.observability.observability import Observability
-        
+
         active_instances = self.get_active_instances()
 
         role_to_partner = {"prefill": "decode", "decode": "prefill"}
@@ -609,8 +704,7 @@ class InstanceManager(ThreadSafeSingleton):
             return
 
         alarm_msg = CoordinatorExceptionAlarm(
-            reason_id=CoordinatorExceptionReason.INSTANCE_MISSING,
-            is_cleared=is_cleared
+            reason_id=CoordinatorExceptionReason.INSTANCE_MISSING, is_cleared=is_cleared
         )
         Observability().add_alarm(alarm_msg)
 
@@ -623,8 +717,9 @@ class InstanceManager(ThreadSafeSingleton):
         """
         node_managers = instance.get_node_managers()
         if not node_managers:
-            logger.warning("No node managers found for instance %s(id:%d), setting to INACTIVE",
-                           instance.job_name, instance.id)
+            logger.warning(
+                "No node managers found for instance %s(id:%d), setting to INACTIVE", instance.job_name, instance.id
+            )
             return True
 
         for node_mgr in node_managers:
@@ -633,42 +728,51 @@ class InstanceManager(ThreadSafeSingleton):
                 if isinstance(response, dict) and "status" in response:
                     is_normal = response.get("status", False)
                     if not is_normal:
-                        logger.warning("Node manager %s:%s reports abnormal endpoints for instance %s(id:%d)",
-                                       node_mgr.pod_ip, node_mgr.port, instance.job_name, instance.id)
+                        logger.warning(
+                            "Node manager %s:%s reports abnormal endpoints for instance %s(id:%d)",
+                            node_mgr.pod_ip,
+                            node_mgr.port,
+                            instance.job_name,
+                            instance.id,
+                        )
                         return True
                 else:
-                    logger.warning("Invalid response from node manager %s:%s for instance %s(id:%d): %s",
-                                   node_mgr.pod_ip, node_mgr.port, instance.job_name, instance.id, response)
+                    logger.warning(
+                        "Invalid response from node manager %s:%s for instance %s(id:%d): %s",
+                        node_mgr.pod_ip,
+                        node_mgr.port,
+                        instance.job_name,
+                        instance.id,
+                        response,
+                    )
                     return True
             except Exception as e:
-                logger.warning("Failed to check node manager %s:%s status for instance %s(id:%d): %s",
-                               node_mgr.pod_ip, node_mgr.port, instance.job_name, instance.id, e)
+                logger.warning(
+                    "Failed to check node manager %s:%s status for instance %s(id:%d): %s",
+                    node_mgr.pod_ip,
+                    node_mgr.port,
+                    instance.job_name,
+                    instance.id,
+                    e,
+                )
                 return True
 
-        logger.info("All node managers report normal status for instance %s(id:%d)",
-                    instance.job_name, instance.id)
+        logger.info("All node managers report normal status for instance %s(id:%d)", instance.job_name, instance.id)
         return False
 
-    def _handle_deleted(
-        self,
-        from_state: InsStatus,
-        condition_event: InsConditionEvent,
-        instance: Instance
-    ) -> None:
+    def _handle_deleted(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.DELETED:
             return
-        if condition_event == InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT or \
-                condition_event == InsConditionEvent.INSTANCE_ABNORMAL:
+        if condition_event in (
+            InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT,
+            InsConditionEvent.INSTANCE_ABNORMAL,
+        ):
             instance.update_instance_status(InsStatus.DELETED)
             self.notify(instance, ObserverEvent.INSTANCE_REMOVED)
             self.del_instance(instance.id)
         return
 
-    def _handle_state_transition(
-        self,
-        instance: Instance,
-        event_override: InsConditionEvent | None = None
-    ) -> bool:
+    def _handle_state_transition(self, instance: Instance, event_override: InsConditionEvent | None = None) -> bool:
         """
         Handle state transition based on current state and condition event
         Args:
@@ -678,10 +782,13 @@ class InstanceManager(ThreadSafeSingleton):
             bool: Whether handle state transition is successful
         """
         from_state = instance.status
-        
+
         # Use override event if provided, otherwise detect event based on instance status
         if event_override is not None:
             event = event_override
+            to_state = self.transitions.get((from_state, event), None)
+        elif instance.is_all_endpoints_paused():
+            event = InsConditionEvent.INSTANCE_PAUSED
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_all_endpoints_ready():
             event = InsConditionEvent.INSTANCE_NORMAL
@@ -694,14 +801,18 @@ class InstanceManager(ThreadSafeSingleton):
             to_state = self.transitions.get((from_state, event), None)
 
         if to_state is None:
-            logger.error("No valid state transition for instance %d from %s on event %s.",
-                         instance.id, from_state, event)
+            logger.error(
+                "No valid state transition for instance %d from %s on event %s.", instance.id, from_state, event
+            )
             return False
 
         # Check if this instance is forcibly separated and prevent reactivation to ACTIVE
         if instance.id in self.forced_separated_instances and to_state == InsStatus.ACTIVE:
-            logger.debug("Instance %d (%s) is forcibly separated, preventing reactivation to ACTIVE state",
-                         instance.id, instance.job_name)
+            logger.debug(
+                "Instance %d (%s) is forcibly separated, preventing reactivation to ACTIVE state",
+                instance.id,
+                instance.job_name,
+            )
             return True  # Return success but skip state transition
 
         state_handler = self.states.get(to_state, None)
@@ -712,27 +823,34 @@ class InstanceManager(ThreadSafeSingleton):
             with self.config_lock:
                 enable_persistence = self.etcd_config.enable_etcd_persistence
             if from_state != instance.status and enable_persistence:
-                logger.info("Instance %d state changed from %s to %s, triggering persistence",
-                            instance.id, from_state, instance.status)
+                logger.info(
+                    "Instance %d state changed from %s to %s, triggering persistence",
+                    instance.id,
+                    from_state,
+                    instance.status,
+                )
                 if not self.persist_data():
-                    logger.error("Failed to persist instance %d state change from %s to %s",
-                                 instance.id, from_state, instance.status)
+                    logger.error(
+                        "Failed to persist instance %d state change from %s to %s",
+                        instance.id,
+                        from_state,
+                        instance.status,
+                    )
 
             # Remove from forced separated set if transitioning to DELETED
             if to_state == InsStatus.DELETED and instance.id in self.forced_separated_instances:
                 with self.ins_lock:
                     self.forced_separated_instances.discard(instance.id)
-                logger.info("Instance %d (%s) transitioned to DELETED, removing from forced separated set",
-                            instance.id, instance.job_name)
+                logger.info(
+                    "Instance %d (%s) transitioned to DELETED, removing from forced separated set",
+                    instance.id,
+                    instance.job_name,
+                )
 
         return True
 
     def _maybe_refresh_heartbeat(
-        self,
-        instance: Instance,
-        current_time: float,
-        version: int,
-        should_notify: bool = True
+        self, instance: Instance, current_time: float, version: int, should_notify: bool = True
     ) -> None:
         """Handle logic for restored instance, including heartbeat refresh and notification"""
         # Refresh heartbeat timestamp for ACTIVE instances to avoid immediate timeout
@@ -742,22 +860,28 @@ class InstanceManager(ThreadSafeSingleton):
                 for endpoints in instance.endpoints.values():
                     for endpoint in endpoints.values():
                         endpoint.hb_timestamp = current_time
-                logger.debug("Refreshed heartbeat timestamp for instance %d (%s) to %f",
-                             instance.id, instance.job_name, current_time)
+                logger.debug(
+                    "Refreshed heartbeat timestamp for instance %d (%s) to %f",
+                    instance.id,
+                    instance.job_name,
+                    current_time,
+                )
             except Exception as e:
                 logger.error("Error refreshing heartbeat for instance %d: %s", instance.id, e)
 
             if should_notify:
                 self.notify(instance, ObserverEvent.INSTANCE_READY)
-            logger.info("Restored ACTIVE instance %d (%s) with refreshed heartbeat (v%d)",
-                        instance.id, instance.job_name, version)
+            logger.info(
+                "Restored ACTIVE instance %d (%s) with refreshed heartbeat (v%d)",
+                instance.id,
+                instance.job_name,
+                version,
+            )
         else:
             status_str = instance.status.value if hasattr(instance.status, "value") else str(instance.status)
-            logger.info("Restored instance %d (%s) with status %s (v%d)",
-                        instance.id,
-                        instance.job_name,
-                        status_str,
-                        version)
+            logger.info(
+                "Restored instance %d (%s) with status %s (v%d)", instance.id, instance.job_name, status_str, version
+            )
 
     def _get_next_version(self) -> int:
         """Get next data version for persistence"""

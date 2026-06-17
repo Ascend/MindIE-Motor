@@ -13,7 +13,6 @@ Base class for Mgmt and Infer HTTP servers. Provides common config init, hot-rel
 uvicorn config, and timeout handler.
 """
 
-
 import asyncio
 import logging
 import threading
@@ -21,7 +20,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, status
 
 from motor.common.logger import ApiAccessFilter, get_logger
 from motor.config.coordinator import CoordinatorConfig
@@ -42,7 +41,12 @@ class BaseCoordinatorServer:
     @staticmethod
     def create_base_uvicorn_config(app: FastAPI, host: str, port: int) -> dict[str, Any]:
         """Unified Uvicorn base config."""
-        api_filter = ApiAccessFilter({"/liveness": logging.ERROR})
+        api_filter = ApiAccessFilter(
+            {
+                "/liveness": logging.ERROR,
+                "/readiness": logging.ERROR,
+            }
+        )
         uvicorn_access_logger = logging.getLogger("uvicorn.access")
         uvicorn_access_logger.addFilter(api_filter)
         return {
@@ -66,7 +70,8 @@ class BaseCoordinatorServer:
             @wraps(func)
             async def wrapper(*args, **kwargs):
                 actual_timeout = (
-                    timeout_seconds if timeout_seconds is not None
+                    timeout_seconds
+                    if timeout_seconds is not None
                     else self.coordinator_config.exception_config.infer_timeout
                 )
                 try:

@@ -41,6 +41,7 @@ async def _sglang_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("InferEndpoint lifespan: SGLang serving components created.")
 
     app.state.health_checker = _sglang_health_checker
+    app.state.tokenizer_manager = tokenizer_manager
     app.state.openai_serving_models = OpenAIServingModels(
         tokenizer_manager=tokenizer_manager,
     )
@@ -59,7 +60,6 @@ async def _sglang_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 class SGLangEndpoint(InferEndpoint):
-
     def get_lifespan(self):
         return _sglang_lifespan
 

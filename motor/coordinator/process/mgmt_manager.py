@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -11,14 +10,17 @@
 Mgmt process manager: run_mgmt_server_proc, MgmtProcessManager.
 """
 
+import asyncio
 import os
 from multiprocessing.process import BaseProcess
 
-import uvloop
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
 
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_server.management_server import ManagementServer
-from motor.coordinator.metrics.metrics_collector import MetricsCollector
 from motor.coordinator.process.base import BaseProcessManager
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.logger import get_logger, reconfigure_logging
@@ -35,23 +37,21 @@ def run_mgmt_server_proc(
 
     try:
         import setproctitle
+
         setproctitle.setproctitle("MgmtServer")
     except ImportError:
         pass
 
     logger.info("Mgmt server process starting (PID: %s)", os.getpid())
 
-    # Initialize MetricsCollector singleton with config (used by /metrics, lifespan)
-    MetricsCollector(config)
-
     server = ManagementServer(config, daemon_pid=daemon_pid)
     mgmt_config_watcher = None
 
     if config.config_path and os.path.exists(config.config_path):
         try:
+
             def _mgmt_config_updated() -> None:
                 server.update_config(config)
-                MetricsCollector().update_config(config)
 
             mgmt_config_watcher = ConfigWatcher(
                 config_path=config.config_path,
@@ -64,7 +64,10 @@ def run_mgmt_server_proc(
             logger.warning("Mgmt process: failed to start config watcher (hot-reload disabled): %s", e)
 
     try:
-        uvloop.run(server.run())
+        if uvloop is not None:
+            uvloop.run(server.run())
+        else:
+            asyncio.run(server.run())
     finally:
         if mgmt_config_watcher is not None:
             try:

@@ -16,11 +16,14 @@ __all__ = [
     "InstanceManager",
     "InstanceProvider",
     "InstanceReadiness",
+    "readiness_from_instances",
     "RequestManager",
+    "ScheduledPair",
     "ScheduledResource",
     "SchedulingFacade",
     "UpdateInstanceMode",
     "UpdateWorkloadParams",
+    "build_release_workload_params",
     # probe
     "DaemonLivenessProvider",
     "is_master_from_role_shm",
@@ -53,7 +56,10 @@ from motor.coordinator.domain.probe import (
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.scheduling import (
     InstanceReadiness,
+    readiness_from_instances,
+    ScheduledPair,
     ScheduledResource,
     SchedulingFacade,
     UpdateWorkloadParams,
+    build_release_workload_params,
 )

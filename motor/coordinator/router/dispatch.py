@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 #
 # MindIE is licensed under both the Mulan PSL v2 and the Apache License, Version 2.0.
@@ -25,21 +24,16 @@ from functools import wraps
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse
-import httpx
 
-from motor.config.coordinator import CoordinatorConfig, DeployMode
+from motor.config.coordinator import CoordinatorConfig
+from motor.common.resources.instance import PDRole
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
-from motor.coordinator.router.strategies.pd_separate import SeparatePDRouter
-from motor.coordinator.router.strategies.cdp_separate import SeparateCDPRouter
-from motor.coordinator.router.strategies.pd_dual_dispatch import (
-    SeparatePDDualDispatchRouter,
-)
+from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.common.http.security_utils import (
     sanitize_error_message,
     filter_sensitive_headers,
@@ -47,17 +41,9 @@ from motor.common.http.security_utils import (
     validate_and_sanitize_path,
 )
 from motor.common.logger import get_logger
+import motor.common.utils.error as cancel_error
 
 logger = get_logger(__name__)
-
-_ROUTER_MAP: dict[DeployMode, type["BaseRouter"]] = {
-    DeployMode.CDP_SEPARATE: SeparateCDPRouter,
-    DeployMode.PD_SEPARATE: SeparateCDPRouter,
-    DeployMode.CPCD_SEPARATE: SeparatePDRouter,
-    DeployMode.SINGLE_NODE: PDHybridRouter,
-    DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER: SeparateCDPRouter,
-    DeployMode.PD_DUAL_DISPATCH: SeparatePDDualDispatchRouter,
-}
 
 
 async def listen_for_disconnect(request: Request) -> None:
@@ -68,11 +54,11 @@ async def listen_for_disconnect(request: Request) -> None:
             break
 
 
-async def _cancel_tasks_and_wait(*tasks: asyncio.Task) -> None:
+async def _cancel_tasks_and_wait(*tasks: asyncio.Task, reason: str = "") -> None:
     """Cancel given tasks and await them to avoid pending-task warnings."""
     for t in tasks:
         if not t.done():
-            t.cancel()
+            t.cancel(msg=reason)
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -97,16 +83,61 @@ def with_cancellation(handler_func):
                 [handler_task, disconnect_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            await _cancel_tasks_and_wait(*pending)
-
             if handler_task in done:
+                await _cancel_tasks_and_wait(*pending)
                 return handler_task.result()
-            return None
+            else:
+                await _cancel_tasks_and_wait(*pending, reason=cancel_error.CLIENT_DISCONNECT)
+                return None
         except (Exception, asyncio.CancelledError):
-            await _cancel_tasks_and_wait(handler_task, disconnect_task)
+            await _cancel_tasks_and_wait(handler_task, disconnect_task, reason=cancel_error.DISPATCH_ABORT)
             raise
 
     return wrapper
+
+
+async def select_router_class(scheduler, req_info: RequestInfo | None = None) -> type["BaseRouter"]:
+    """Select the router implementation from the live instance topology.
+
+    Routing is derived from the roles currently present plus whether a P/D pair shares a
+    dispatch capability — no deploy_mode. Shared by user traffic (handle_request) and the
+    internal precision probe so both route identically.
+
+    Raises HTTPException(503) when no routable topology is available.
+    """
+    roles = await scheduler.get_available_instance_roles()
+    has_pd_roles = PDRole.ROLE_P in roles and PDRole.ROLE_D in roles
+    has_compatible_pair = False
+    if has_pd_roles:
+        compatibility_check = getattr(scheduler, "has_compatible_pd_pair", None)
+        has_compatible_pair = await compatibility_check() if compatibility_check is not None else True
+
+    if has_compatible_pair:
+        return UnifiedPDRouter
+    if has_pd_roles and PDRole.ROLE_U not in roles:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No compatible P/D dispatch capability is currently available",
+        )
+    if PDRole.ROLE_U in roles or PDRole.ROLE_P in roles:
+        if has_pd_roles and not has_compatible_pair and PDRole.ROLE_U in roles:
+            message = (
+                "P/D instances are online but advertise no shared dispatch capability; "
+                "falling back to PDHybridRouter via union instances. "
+                "Check the engine kv_connector is recognized or set dispatch_profile explicitly."
+            )
+            if req_info is not None:
+                req_info.trace_obj.set_trace_error_message(message)
+            logger.warning(message)
+        elif req_info is not None and PDRole.ROLE_U not in roles:
+            error_message = "PD separate service degraded to hybrid: only prefill instances available"
+            req_info.trace_obj.set_trace_error_message(error_message)
+            logger.warning(error_message)
+        return PDHybridRouter
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="No routable inference topology is currently available",
+    )
 
 
 @with_cancellation
@@ -134,9 +165,7 @@ async def handle_request(
     req_info = await __create_request_info(raw_request, request_manager)
 
     if TracerManager().contains_trace_headers(raw_request.headers):
-        req_info.trace_obj.parent_context = TracerManager().extract_trace_context(
-            raw_request.headers
-        )
+        req_info.trace_obj.parent_context = TracerManager().extract_trace_context(raw_request.headers)
 
     if scheduler is None:
         raise HTTPException(
@@ -144,36 +173,21 @@ async def handle_request(
             detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
         )
 
-    config_mode = config.scheduler_config.deploy_mode
-    readiness = await scheduler.has_required_instances()
-    if (
-        config_mode
-        in (
-            DeployMode.PD_SEPARATE,
-            DeployMode.CDP_SEPARATE,
-            DeployMode.CPCD_SEPARATE,
-            DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
-        )
-        and readiness == InstanceReadiness.ONLY_PREFILL
-    ):
-        deploy_mode = DeployMode.SINGLE_NODE  # fallback only when has P but no D
-    else:
-        deploy_mode = config_mode
+    router_impl_class = await select_router_class(scheduler, req_info=req_info)
 
-    router_impl_class = _ROUTER_MAP.get(deploy_mode)
-    if not router_impl_class:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unknown deploy mode: {deploy_mode}",
-        )
-
+    sampling_manager = getattr(raw_request.app.state, "sampling_manager", None)
     router_impl = router_impl_class(
-        req_info, config, scheduler=scheduler, request_manager=request_manager
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+        sampling_manager=sampling_manager,
     )
 
     try:
         return await router_impl.handle_request()
     except Exception as e:
+        req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.error(
             f"Error occurred in proxy server endpoint: {req_info.api}, error: {str(e)}",
             exc_info=True,
@@ -181,108 +195,34 @@ async def handle_request(
         if isinstance(e, HTTPException):
             raise e
         safe_error_msg = sanitize_error_message(str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg
-        ) from e
-
-
-@with_cancellation
-async def handle_metaserver_request(
-    raw_request: Request,
-    config: CoordinatorConfig,
-    scheduler=None,
-    *,
-    request_manager: RequestManager,
-) -> httpx.Response:
-    """Handle metaserver forward: route decode-side prefill to a Prefill instance.
-
-    Args:
-        raw_request: The incoming FastAPI request object from D Instance
-        request_manager: RequestManager instance (required, injected by InferenceServer)
-
-    Returns:
-        httpx.Response: The non stream response from the selected P instance
-
-    Raises:
-        HTTPException: If request body is empty or request fail
-    """
-    req_info = await __create_request_info(
-        raw_request, request_manager, metaserver_request=True
-    )
-
-    deploy_mode = config.scheduler_config.deploy_mode
-    if not deploy_mode or deploy_mode not in [
-        DeployMode.CDP_SEPARATE,
-        DeployMode.PD_SEPARATE,
-        DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER,
-    ]:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unsupported deploy mode: {deploy_mode}",
-        )
-
-    if scheduler is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
-        )
-    try:
-        return await SeparateCDPRouter(
-            req_info=req_info,
-            config=config,
-            scheduler=scheduler,
-            request_manager=request_manager,
-        ).handle_metaserver_request()
-    except Exception as e:
-        logger.error(
-            f"Error occurred in meta server endpoint: {req_info.api}, error: {str(e)}",
-            exc_info=True,
-        )
-        if isinstance(e, HTTPException):
-            raise e
-        safe_error_msg = sanitize_error_message(str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg) from e
 
 
 async def __create_request_info(
     raw_request: Request,
     request_manager: RequestManager,
-    metaserver_request: bool = False,
 ) -> RequestInfo:
     request_body = await raw_request.body()
     if not request_body:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request body"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request body")
 
     try:
         request_json = await raw_request.json()
     except Exception as e:
         logger.warning("JSON parse failed: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format") from e
 
     if not request_json:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")
     filtered_headers = filter_sensitive_headers(raw_request.headers)
     filtered_body = filter_sensitive_body(request_json)
     logger.debug("Got request headers: %s, body: %s", filtered_headers, filtered_body)
-    if metaserver_request:
-        req_id = ""
-    else:
-        req_id = await request_manager.generate_request_id()
+    req_id = await request_manager.generate_request_id()
     req_len = len(request_body)
     api = validate_and_sanitize_path(raw_request.url.path)
 
     req_data = request_json.copy()
-    req_data["_client_return_token_ids"] = bool(
-        request_json.get("return_token_ids", False)
-    )
+    client_expects_token_ids = bool(request_json.get("return_token_ids", False))
 
     return RequestInfo(
         req_id=req_id,
@@ -290,5 +230,6 @@ async def __create_request_info(
         api=api,
         req_len=req_len,
         entry_api=api,
+        client_expects_token_ids=client_expects_token_ids,
         client_expects_chat_shape=(OpenAIField.MESSAGES in request_json),
     )

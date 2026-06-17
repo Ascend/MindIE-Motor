@@ -9,160 +9,73 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import os
-import subprocess
 from unittest import mock
+
 import pytest
-from motor.engine_server.utils.aicore import get_aicore_usage, get_device_info_from_rank_table, _get_hardware_type
+
+from motor.engine_server.utils.aicore import (
+    _parse_usage_from_line,
+    _read_first_aicore_usage_from_watch,
+    get_aicore_usage,
+)
 
 
-def test_get_device_info_from_rank_table_success(monkeypatch):
-    # Test with default hardware type (not 800I-A2)
-    mock_rank_table_path = "test_rank_table.json"
-    monkeypatch.setenv("RANKTABLE_PATH", mock_rank_table_path)
-    # Remove USER_CONFIG_PATH to ensure no config file is found
-    if "USER_CONFIG_PATH" in os.environ:
-        monkeypatch.delenv("USER_CONFIG_PATH")
-    mock_rank_table = {
-        "server_list": [
-            {
-                "device": [
-                    {
-                        "device_id": "3",
-                        "rank_id": "0"
-                    }
-                ]
-            }
-        ]
-    }
-    with mock.patch('builtins.open', mock.mock_open(read_data='{"server_list":[{"device":[{"device_id":"3","rank_id":"0"}]}]}')):
-        with mock.patch('json.load', return_value=mock_rank_table):
-            device_id, chip_id = get_device_info_from_rank_table()
-            assert device_id == 1  # 3 // 2 = 1
-            assert chip_id == 1     # 3 % 2 = 1
+def test_parse_usage_from_line():
+    assert _parse_usage_from_line("") is None
+    assert _parse_usage_from_line("NpuID  ChipID  AI Core(%)\n") is None
+    assert _parse_usage_from_line("0  0  37\n") == 37
 
 
-def test_get_device_info_from_rank_table_800I_A2(monkeypatch):
-    # Test with hardware type 800I-A2
-    mock_rank_table_path = "test_rank_table.json"
-    monkeypatch.setenv("RANKTABLE_PATH", mock_rank_table_path)
-    mock_config_path = "/path/to/config"
-    monkeypatch.setenv("USER_CONFIG_PATH", mock_config_path)
-    mock_rank_table = {
-        "server_list": [
-            {
-                "device": [
-                    {
-                        "device_id": "3",
-                        "rank_id": "0"
-                    }
-                ]
-            }
-        ]
-    }
-    mock_config = {
-        "motor_deploy_config": {
-            "hardware_type": "800I_A2"
-        }
-    }
-    with mock.patch('builtins.open', side_effect=[
-        mock.mock_open(read_data='{"server_list":[{"device":[{"device_id":"3","rank_id":"0"}]}]}')(),  # Rank table
-        mock.mock_open(read_data='{"motor_deploy_config":{"hardware_type":"800I-A2"}}')()  # Config file
-    ]):
-        with mock.patch('json.load', side_effect=[mock_rank_table, mock_config]):
-            device_id, chip_id = get_device_info_from_rank_table()
-            assert device_id == 3  # For 800I-A2, device_id = i
-            assert chip_id == 0     # For 800I-A2, chip_id = 0
+def test_get_aicore_usage_watch_success():
+    mock_proc = mock.MagicMock()
+    mock_proc.stdout.readline.side_effect = ["NpuID  ChipID  AI Core(%)\n", "0  0  37\n"]
+    mock_proc.stdout.fileno.return_value = 1
+    mock_proc.poll.return_value = None
 
+    mock_ctx = mock.MagicMock()
+    mock_ctx.__enter__.return_value = mock_proc
+    mock_ctx.__exit__.return_value = False
 
-def test_get_device_info_from_rank_table_no_env(monkeypatch):
-    if "RANKTABLE_PATH" in os.environ:
-        monkeypatch.delenv("RANKTABLE_PATH")
-    with pytest.raises(ValueError) as cm:
-        get_device_info_from_rank_table()
-    assert "Environment variable RANKTABLE_PATH is not set" in str(cm.value)
-
-
-def test_get_device_info_from_rank_table_file_error(monkeypatch):
-    mock_rank_table_path = "test_rank_table.json"
-    monkeypatch.setenv("RANKTABLE_PATH", mock_rank_table_path)
-    with mock.patch('builtins.open', side_effect=IOError("File open failed")):
-        with pytest.raises(RuntimeError) as cm:
-            get_device_info_from_rank_table()
-        assert "Error reading RANK_TABLE_PATH file" in str(cm.value)
-
-
-def test_get_device_info_from_rank_table_no_device_id(monkeypatch):
-    mock_rank_table_path = "test_rank_table.json"
-    monkeypatch.setenv("RANKTABLE_PATH", mock_rank_table_path)
-    mock_rank_table = {
-        "server_list": [
-            {
-                "device": [
-                    {
-                        "rank_id": "0"
-                    }
-                ]
-            }
-        ]
-    }
-    with mock.patch('builtins.open', mock.mock_open(read_data='{"server_list":[{"device":[{"rank_id":"0"}]}]}')):
-        with mock.patch('json.load', return_value=mock_rank_table):
-            with pytest.raises(ValueError) as cm:
-                get_device_info_from_rank_table()
-            assert "device_id field not found in RANK_TABLE_PATH file" in str(cm.value)
-
-
-def test_get_device_info_from_rank_table_invalid_device_id(monkeypatch):
-    mock_rank_table_path = "test_rank_table.json"
-    monkeypatch.setenv("RANKTABLE_PATH", mock_rank_table_path)
-    mock_rank_table = {
-        "server_list": [
-            {
-                "device": [
-                    {
-                        "device_id": "invalid",
-                        "rank_id": "0"
-                    }
-                ]
-            }
-        ]
-    }
-    with mock.patch('builtins.open', mock.mock_open(read_data='{"server_list":[{"device":[{"device_id":"invalid","rank_id":"0"}]}]}')):
-        with mock.patch('json.load', return_value=mock_rank_table):
-            with pytest.raises(ValueError) as cm:
-                get_device_info_from_rank_table()
-            assert f"device_id field value is not a valid integer" in str(cm.value)
-
-
-def test_get_aicore_usage_success():
-    with mock.patch('motor.engine_server.utils.aicore.get_device_info_from_rank_table', return_value=(0, 0)):
-        mock_result = mock.MagicMock()
-        mock_result.stdout = """+-------------------+-----------------+\n| Device ID         | 0               |\n+===================+=================+\n| Chip ID           | 0               |\n+-------------------+-----------------+\n| Aicore Usage Rate(%)           : 50\n| Memory Usage Rate(%)           : 30\n+-------------------+-----------------+\n"""
-        mock_result.stderr = ""
-
-        with mock.patch('subprocess.run', return_value=mock_result):
+    with mock.patch("motor.engine_server.utils.aicore.subprocess.Popen", return_value=mock_ctx):
+        with mock.patch("select.select", return_value=([1], [], [])):
             usage = get_aicore_usage()
-            assert usage == 50
+            assert usage == 37
+
+
+def test_read_first_aicore_usage_from_watch_timeout():
+    mock_proc = mock.MagicMock()
+    mock_proc.stdout.readline.return_value = "NpuID  ChipID  AI Core(%)\n"
+    mock_proc.stdout.fileno.return_value = 1
+    mock_proc.poll.return_value = None
+
+    with mock.patch("select.select", return_value=([], [], [])):
+        with pytest.raises(RuntimeError) as cm:
+            _read_first_aicore_usage_from_watch(mock_proc)
+        assert "AI Core usage not found in npu-smi watch output (timeout)" in str(cm.value)
+
+
+def test_get_aicore_usage_watch_timeout():
+    mock_proc = mock.MagicMock()
+    mock_proc.stdout.readline.return_value = "NpuID  ChipID  AI Core(%)\n"
+    mock_proc.stdout.fileno.return_value = 1
+    mock_proc.poll.return_value = None
+
+    mock_ctx = mock.MagicMock()
+    mock_ctx.__enter__.return_value = mock_proc
+    mock_ctx.__exit__.return_value = False
+
+    with mock.patch("motor.engine_server.utils.aicore.subprocess.Popen", return_value=mock_ctx):
+        with mock.patch("select.select", return_value=([], [], [])):
+            with pytest.raises(RuntimeError) as cm:
+                get_aicore_usage()
+            assert "AI Core usage not found in npu-smi watch output (timeout)" in str(cm.value)
 
 
 def test_get_aicore_usage_npu_smi_failure():
-    with mock.patch('motor.engine_server.utils.aicore.get_device_info_from_rank_table', return_value=(0, 0)):
-        with mock.patch('subprocess.run', side_effect=subprocess.CalledProcessError(
-            returncode=1, cmd=["npu-smi", "info"], stderr="Command execution failed"
-        )):
-            with pytest.raises(RuntimeError) as cm:
-                get_aicore_usage()
-            assert "npu-smi execution failed from subprocess" in str(cm.value)
-
-
-def test_get_aicore_usage_no_match():
-    with mock.patch('motor.engine_server.utils.aicore.get_device_info_from_rank_table', return_value=(0, 0)):
-        mock_result = mock.MagicMock()
-        mock_result.stdout = """+-------------------+-----------------+\n| Device ID         | 0               |\n+===================+=================+\n| Chip ID           | 0               |\n+-------------------+-----------------+\n| Memory Usage Rate(%)           : 30\n+-------------------+-----------------+\n"""
-        mock_result.stderr = ""
-
-        with mock.patch('subprocess.run', return_value=mock_result):
-            with pytest.raises(ValueError) as cm:
-                get_aicore_usage()
-            assert "Aicore Usage Rate not found" in str(cm.value)
+    with mock.patch(
+        "motor.engine_server.utils.aicore.subprocess.Popen",
+        side_effect=OSError("npu-smi not found"),
+    ):
+        with pytest.raises(RuntimeError) as cm:
+            get_aicore_usage()
+        assert "npu-smi execution failed" in str(cm.value)

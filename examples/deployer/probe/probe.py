@@ -30,26 +30,22 @@ KEY_FILE = "key_file"
 class ConfigKey(Enum):
     MOTOR_CONTROLLER = "motor_controller_config"
     MOTOR_COORDINATOR = "motor_coordinator_config"
-    MOTOR_ENGINE_PREFILL = "motor_engine_prefill_config"
-    MOTOR_ENGINE_DECODE = "motor_engine_decode_config"
     MOTOR_NODEMANAGER = "motor_nodemanger_config"
     MOTOR_KV_POOL = "kv_cache_pool_config"
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Hard-coded URLs for all probe types
-PROBE_URLS = {
-    'startup': '/startup',
-    'readiness': '/readiness',
-    'liveness': '/liveness'
-}
+PROBE_URLS = {'startup': '/startup', 'readiness': '/readiness', 'liveness': '/liveness'}
 
 # Hard-coded default ports
 DEFAULT_PORTS = {
     'controller': 1026,
     'coordinator': 1026,
+    'node_manager': 1026,
 }
 
 # HTTP request timeout
@@ -61,7 +57,7 @@ def get_val_by_key_path(config, key_path):
     config_element = config
     for key in keys:
         if not isinstance(config_element, dict) or key not in config_element:
-            logger.info(f"Key '{key}' not found in config: {key_path}")
+            logger.info("Key '%s' not found in config: %s", key, key_path)
             return None
         config_element = config_element[key]
     return config_element
@@ -79,10 +75,10 @@ def get_builtin_default_port(role):
     """
     port = DEFAULT_PORTS.get(role)
     if port is not None:
-        logger.info(f"Using hard-coded default port: {port}")
+        logger.info("Using hard-coded default port: %s", port)
         return port
     else:
-        logger.error(f"Unknown role: {role}")
+        logger.error("Unknown role: %s", role)
         return -1
 
 
@@ -112,23 +108,24 @@ def get_config(role):
         user_config_path = os.path.join(user_config_path, 'user_config.json')
 
     if not os.path.exists(user_config_path):
-        logger.error(f"User config file does not exist: {user_config_path}")
+        logger.error("User config file does not exist: %s", user_config_path)
         return -1
 
     try:
         with open(user_config_path, 'r', encoding='utf-8') as file:
             user_config = json.load(file)
     except Exception as e:
-        logger.error(f"Failed to load JSON config {user_config_path}: {e}")
+        logger.error("Failed to load JSON config %s: %s", user_config_path, e)
         return -1
 
     if not isinstance(user_config, dict):
-        logger.error(f"Invalid config format in {user_config_path}, expected JSON object")
+        logger.error("Invalid config format in %s, expected JSON object", user_config_path)
         return -1
 
     role_key = {
         "controller": ConfigKey.MOTOR_CONTROLLER.value,
         "coordinator": ConfigKey.MOTOR_COORDINATOR.value,
+        "node_manager": ConfigKey.MOTOR_NODEMANAGER.value,
     }.get(role)
 
     role_config = user_config.get(role_key)
@@ -137,9 +134,7 @@ def get_config(role):
     else:
         # Fallback: treat USER_CONFIG_PATH as a raw role config
         config = dict(user_config)
-        logger.warning(
-            f"Role config '{role_key}' not found, using raw config from {user_config_path}"
-        )
+        logger.warning("Role config '%s' not found, using raw config from %s", role_key, user_config_path)
 
     mgmt_tls_config = _get_mgmt_tls_config(user_config)
     if isinstance(mgmt_tls_config, dict) and MGMT_TLS_CONFIG not in config:
@@ -161,13 +156,10 @@ def send_http_request(ip, port, url_path, config):
         True if successful, False otherwise
     """
     url = f"http://{ip}:{port}{url_path}"
-    headers = {
-        'User-Agent': 'sh-probe',
-        'Content-Type': 'application/json'
-    }
+    headers = {'User-Agent': 'sh-probe', 'Content-Type': 'application/json'}
 
     enable_tls = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{ENABLE_TLS}')
-    
+
     try:
         if enable_tls:
             url = f"https://{ip}:{port}{url_path}"
@@ -181,7 +173,7 @@ def send_http_request(ip, port, url_path, config):
                 headers=headers,
                 timeout=TIMEOUT,
                 cert=(cert_file, key_file, password if password else None),
-                verify=ca_file
+                verify=ca_file,
             )
         else:
             client = httpx.Client(headers=headers, timeout=TIMEOUT)
@@ -189,9 +181,9 @@ def send_http_request(ip, port, url_path, config):
         if response.status_code == 200:
             return True
         else:
-            logger.error(f"HTTP request failed with status code: {response.status_code}")
+            logger.error("HTTP request failed with status code: %s", response.status_code)
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error("Unexpected error: %s", e)
 
     return False
 
@@ -201,12 +193,12 @@ def main():
     Main probe function.
     Usage: python probe.py <role> <probe_type>
     Where:
-        role: 'controller' or 'coordinator'
+        role: 'controller', 'coordinator', 'prefill', 'decode', or 'union'
         probe_type: 'startup', 'readiness', or 'liveness'
     """
     if len(sys.argv) != 3:
         logger.error("Usage: python probe.py <role> <probe_type>")
-        logger.error("  role: 'controller' or 'coordinator'")
+        logger.error("  role: 'controller', 'coordinator', 'prefill', 'decode', or 'union'")
         logger.error("  probe_type: 'startup', 'readiness', or 'liveness'")
         sys.exit(1)
 
@@ -214,13 +206,18 @@ def main():
     probe_type = sys.argv[2]
 
     # Validate role
-    if role not in ['controller', 'coordinator']:
-        logger.error(f"Invalid role: {role}. Must be 'controller' or 'coordinator'")
+    if role not in ['controller', 'coordinator', 'prefill', 'decode', 'union']:
+        logger.error(
+            "Invalid role: %s. Must be one of ['controller', 'coordinator', 'prefill', 'decode', 'union']", role
+        )
         sys.exit(1)
+
+    if role in ('prefill', 'decode', 'union'):
+        role = 'node_manager'
 
     # Validate probe_type
     if probe_type not in PROBE_URLS:
-        logger.error(f"Invalid probe type: {probe_type}. Must be one of {list(PROBE_URLS.keys())}")
+        logger.error("Invalid probe type: %s. Must be one of %s", probe_type, list(PROBE_URLS.keys()))
         sys.exit(1)
 
     # Get pod IP from environment
@@ -230,32 +227,30 @@ def main():
         sys.exit(1)
 
     config = get_config(role)
-    logger.info(f"config: {config}")
+    logger.info("config: %s", config)
     if config == -1:
         logger.error("Failed to get config")
         sys.exit(1)
 
-    port = get_val_by_key_path(config, f'api_config.{role}_api_port')
+    port_key = f'api_config.{role}_api_port'
+
+    port = get_val_by_key_path(config, port_key)
     if not isinstance(port, int) or port < 1024 or port > 65535:
-        logger.warning(f"Invalid port in config: {port}, using built-in default port")
+        logger.warning("Invalid port in config (%s=%s), using built-in default port", port_key, port)
         port = get_builtin_default_port(role)
         if port == -1:
             logger.error("Failed to get port")
             sys.exit(1)
 
-    # Get URL path
     url_path = PROBE_URLS[probe_type]
-
-    logger.info(f"Executing {probe_type} probe for {role} at {pod_ip}:{port}{url_path}")
-
-    # Send HTTP request
+    logger.info("Executing %s probe for %s at %s:%s%s", probe_type, role, pod_ip, port, url_path)
     success = send_http_request(pod_ip, port, url_path, config)
 
     if success:
-        logger.info(f"Service is {probe_type}")
+        logger.info("Service is %s", probe_type)
         sys.exit(0)  # success
     else:
-        logger.error(f"Service is not {probe_type}")
+        logger.error("Service is not %s", probe_type)
         sys.exit(1)  # failure
 
 

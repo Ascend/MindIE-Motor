@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -65,7 +64,7 @@ class TracerManager(ThreadSafeSingleton):
         self.local_parent_not_sampled = config.tracer_config.local_parent_not_sampled
 
         self._protocol = self.get_protocol()
-        enable = (len(self._protocol) > 0)
+        enable = len(self._protocol) > 0
         self._trace_provider = None  # set in init_tracer for shutdown()
         self.tracer = self.init_tracer(enable)
         logger.info(f"TracerManager init.(enable:{enable},endpoint:{self.endpoint},protocol:{self._protocol})")
@@ -86,7 +85,7 @@ class TracerManager(ThreadSafeSingleton):
             self.local_parent_not_sampled = config.tracer_config.local_parent_not_sampled
 
             self._protocol = self.get_protocol()
-            enable = (len(self._protocol) > 0)
+            enable = len(self._protocol) > 0
             self.tracer = self.init_tracer(enable)
             logger.info(f"TracerManager update.(enable:{enable},endpoint:{self.endpoint},protocol:{self._protocol})")
 
@@ -112,7 +111,7 @@ class TracerManager(ThreadSafeSingleton):
                 remote_parent_sampled=TraceIdRatioBased(self.remote_parent_sampled),
                 remote_parent_not_sampled=TraceIdRatioBased(self.remote_parent_not_sampled),
                 local_parent_sampled=TraceIdRatioBased(self.local_parent_sampled),
-                local_parent_not_sampled=TraceIdRatioBased(self.local_parent_not_sampled)
+                local_parent_not_sampled=TraceIdRatioBased(self.local_parent_not_sampled),
             )
 
             span_exporter = self.get_span_exporter()
@@ -158,11 +157,7 @@ class TracerManager(ThreadSafeSingleton):
     def extract_trace_context(self, headers: Mapping[str, str] | None) -> context_api.Context:
         """Extract the trace context from headers"""
         headers = headers or {}
-        tmp_headers = {
-            h: headers[h] 
-            for h in self._TRACE_HEADERS 
-            if h in headers
-        }
+        tmp_headers = {h: headers[h] for h in self._TRACE_HEADERS if h in headers}
 
         return self._TEXTMAPPROPOGATOR.extract(tmp_headers)
 
@@ -192,6 +187,8 @@ class TraceObj:
     time_start: int = 0
     time_first_token: int = 0
     count_token: int = 0
+    error_message: str = ""
+    meta_error_message: str = ""
 
     parent_context: Optional[context_api.Context] = None
     span: Optional[trace_api.Span] = None
@@ -240,12 +237,21 @@ class TraceObj:
         self.set_trace_attribute("TOKEN_COUNT", f"{self.count_token}")
         return f"Tracer: TTFT: {ttft_str}ms, TTOT: {ttot_str}ms, count_token: {self.count_token}"
 
-    def set_trace_attribute(
-        self,
-        key: str,
-        value: types.AttributeValue,
-        is_meta: bool = False
-    ) -> None:
+    def set_trace_error_message(self, error_log: str, is_meta: bool = False) -> str:
+        """
+        Sets a readable error message on the trace span and returns the formatted log.
+        """
+        raw_error_log = str(error_log)
+        formatted_error_message = f"error message：{raw_error_log}"
+        if is_meta:
+            self.meta_error_message = raw_error_log
+        else:
+            self.error_message = raw_error_log
+        self.set_trace_attribute("error.message", formatted_error_message, is_meta)
+        self.add_trace_event("Error message", attributes={"error.message": formatted_error_message}, is_meta=is_meta)
+        return formatted_error_message
+
+    def set_trace_attribute(self, key: str, value: types.AttributeValue, is_meta: bool = False) -> None:
         """
         Sets an attribute on the trace span if the trace object and span are available.
         """
@@ -255,11 +261,7 @@ class TraceObj:
         tmp_span.set_attribute(key, value)
 
     def add_trace_event(
-        self, 
-        name: str,
-        attributes: types.Attributes = None,
-        timestamp: Optional[int] = None,
-        is_meta: bool = False
+        self, name: str, attributes: types.Attributes = None, timestamp: Optional[int] = None, is_meta: bool = False
     ) -> None:
         """
         Adds an event to the trace span if the trace object and span are available.
@@ -268,11 +270,8 @@ class TraceObj:
         if tmp_span is None:
             return
         tmp_span.add_event(name, attributes, timestamp)
-    
-    def get_trace_headers_dict(
-        self,
-        is_meta: bool = False
-    ) -> dict[str, str]:
+
+    def get_trace_headers_dict(self, is_meta: bool = False) -> dict[str, str]:
         """
         Returns a copy of the trace headers as a dict.
         Returns an empty dict if trace_headers (or meta_trace_headers when is_meta) is not set.
@@ -282,11 +281,7 @@ class TraceObj:
             return {}
         return dict(tmp_trace_headers)
 
-    def set_trace_exception(
-        self,
-        exception: BaseException,
-        is_meta: bool = False
-    ) -> None:
+    def set_trace_exception(self, exception: BaseException, is_meta: bool = False) -> None:
         """
         Records an exception into the current trace span.
         If is_meta is True, the exception is recorded into meta_span; otherwise, it is recorded into span.
@@ -299,11 +294,7 @@ class TraceObj:
             return
         tmp_span.record_exception(exception)
 
-    def set_trace_status(
-        self,
-        exception: BaseException,
-        is_meta: bool = False
-    ) -> None:
+    def set_trace_status(self, exception: BaseException, is_meta: bool = False) -> None:
         """
         Set the status of the current span to ERROR, with the exception information included.
         If is_meta is True, set it to meta_span; otherwise, set it to span.

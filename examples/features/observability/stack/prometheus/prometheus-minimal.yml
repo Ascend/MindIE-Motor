@@ -1,0 +1,50 @@
+# Minimal Prometheus config for pyMotor real-data observability.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  metric_name_validation_scheme: utf8
+  external_labels:
+    monitor: motor-observability
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:9090"
+
+  - job_name: motor-coordinator
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "host.docker.internal:1027"
+        labels:
+          motor_component: coordinator
+          motor_metric_scope: full
+          cluster: example-namespace
+          source: real
+
+  - job_name: motor-engine
+    metrics_path: /metrics
+    honor_labels: true
+    static_configs:
+      - targets:
+          - "host.docker.internal:10001"
+        labels:
+          motor_component: engine
+          pd_role: prefill
+          role: prefill
+          instance_id: p0
+          cluster: example-namespace
+          source: real
+
+  - job_name: vllm-profiling
+    metrics_path: /metrics
+    honor_labels: true
+    static_configs:
+      - targets:
+          - "host.docker.internal:10001"
+        labels:
+          motor_component: vllm
+          cluster: example-namespace
+          source: real

@@ -55,10 +55,11 @@ def generate_yaml_kv_conductor(input_yaml, output_file, user_config, kv_conducto
     ports[0][C.PORT] = service_port
     ports[0][C.TARGET_PORT] = service_port
 
-    kv_pool_env = [
-        {C.NAME: C.ENV_KVP_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_pool_service}
-    ]
-    container[C.ENV].extend(kv_pool_env)
+    # Inject KV_CONDUCTOR_SERVICE so that coordinator/engine pods can discover
+    # the kv-conductor endpoint for /register and /query calls.
+    kv_conductor_service_name = kv_conductor_config.get("conductor_service", "kv-conductor")
+    kv_conductor_env = [{C.NAME: C.ENV_KV_CONDUCTOR_SERVICE, C.VALUE: kv_conductor_service_name}]
+    container[C.ENV].extend(kv_conductor_env)
 
     write_yaml(data, output_file, False)
     k8s_utils.g_generate_yaml_list.append(output_file)

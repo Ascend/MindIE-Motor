@@ -89,7 +89,7 @@ spec:
               - bash
               - -c
               - "$CONFIGMAP_PATH/probe.sh startup"
-            periodSeconds: 5
+            periodSeconds: 10
             failureThreshold: 100
           readinessProbe:
             exec:
@@ -97,15 +97,18 @@ spec:
               - bash
               - -c
               - "$CONFIGMAP_PATH/probe.sh readiness"
-            periodSeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 30
+            failureThreshold: 5
           livenessProbe:
             exec:
               command:
               - bash
               - -c
               - "$CONFIGMAP_PATH/probe.sh liveness"
-            periodSeconds: 5
-            timeoutSeconds: 4
+            periodSeconds: 10
+            timeoutSeconds: 30
+            failureThreshold: 5
           env:
             - name: POD_IP
               valueFrom:
@@ -175,5 +178,21 @@ spec:
     app: mindie-motor-controller
   sessionAffinity: None
   type: ClusterIP
-status:
-  loadBalancer: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: mindie-motor-controller
+  name: mindie-motor-controller-observability-service
+  namespace: mindie
+spec:
+  ports:
+  - nodePort: 31027
+    port: 1027
+    protocol: TCP
+    targetPort: 1027
+  selector:
+    app: mindie-motor-controller
+  sessionAffinity: None
+  type: NodePort

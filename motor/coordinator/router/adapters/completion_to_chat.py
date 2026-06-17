@@ -18,9 +18,7 @@ from typing import Any
 from motor.coordinator.models.constants import OpenAIField
 
 
-def _lift_prompt_token_ids_from_choice(
-    choice: dict[str, Any], response: dict[str, Any]
-) -> None:
+def _lift_prompt_token_ids_from_choice(choice: dict[str, Any], response: dict[str, Any]) -> None:
     """Move ``prompt_token_ids`` from a completion choice to the top-level response if absent."""
     pti = choice.pop(OpenAIField.PROMPT_TOKEN_IDS, None)
     if pti is not None and response.get(OpenAIField.PROMPT_TOKEN_IDS) is None:
@@ -45,6 +43,44 @@ def is_completion_like_stream_chunk(chunk_json: dict[str, Any]) -> bool:
     return OpenAIField.TEXT in c0
 
 
+def _map_completion_logprobs_to_chat_content(c0: dict[str, Any]) -> None:
+    """Rewrite ``choices[0].logprobs`` (Completion shape) into Chat ``content[]`` shape.
+
+    Completion ``logprobs`` carries ``token_logprobs: list[float|None]`` and
+    optionally ``top_logprobs: list[dict[str, float]]``; Chat carries
+    ``content: list[{token, logprob, top_logprobs}]``. This rewrites the
+    Completion object into the Chat shape so ``update_logprob_cache``'s Chat
+    path can pick it up. The mapping drops a null entry but keeps the rest.
+    """
+    lp = c0.get("logprobs")
+    if not isinstance(lp, dict):
+        return
+    token_logprobs = lp.get("token_logprobs") or []
+    top_logprobs = lp.get("top_logprobs") or []
+    if not token_logprobs:
+        return
+
+    content: list[dict[str, Any]] = []
+    for i, float_lp in enumerate(token_logprobs):
+        if float_lp is None:
+            continue
+        entry: dict[str, Any] = {"logprob": float(float_lp)}
+        if i < len(top_logprobs) and isinstance(top_logprobs[i], dict):
+            sub: list[dict[str, Any]] = []
+            for k, v in top_logprobs[i].items():
+                if v is None:
+                    continue
+                sub.append({"token": str(k), "logprob": float(v)})
+            if sub:
+                entry["top_logprobs"] = sub
+        content.append(entry)
+
+    if content:
+        c0["logprobs"] = {"content": content}
+    else:
+        c0.pop("logprobs", None)
+
+
 def adapt_completion_stream_chunk_to_chat(
     chunk_json: dict[str, Any],
     *,
@@ -63,8 +99,10 @@ def adapt_completion_stream_chunk_to_chat(
     text = c0.pop(OpenAIField.TEXT, None) or ""
     finish_reason = c0.pop("finish_reason", None)
     stop_reason = c0.pop("stop_reason", None)
-    # Completion logprobs shape differs from Chat; omit unless mapped (see SPEC).
-    c0.pop("logprobs", None)
+    # Map Completion logprobs into Chat content[] so precision-sampling can
+    # still cache topk (and so the client still sees structured logprobs).
+    _map_completion_logprobs_to_chat_content(c0)
+    remapped_logprobs = c0.pop("logprobs", None)
 
     _lift_prompt_token_ids_from_choice(c0, chunk_json)
 
@@ -82,6 +120,8 @@ def adapt_completion_stream_chunk_to_chat(
         c0["finish_reason"] = finish_reason
     if stop_reason is not None:
         c0["stop_reason"] = stop_reason
+    if remapped_logprobs is not None:
+        c0["logprobs"] = remapped_logprobs
 
 
 def adapt_completion_nonstream_to_chat(body: dict[str, Any], *, req_id: str) -> None:
@@ -97,7 +137,8 @@ def adapt_completion_nonstream_to_chat(body: dict[str, Any], *, req_id: str) -> 
     finish_reason = c0.pop("finish_reason", None)
     stop_reason = c0.pop("stop_reason", None)
     token_ids = c0.pop(OpenAIField.TOKEN_IDS, None)
-    c0.pop("logprobs", None)
+    _map_completion_logprobs_to_chat_content(c0)
+    remapped_logprobs = c0.pop("logprobs", None)
     c0.pop("prompt_logprobs", None)
 
     _lift_prompt_token_ids_from_choice(c0, body)
@@ -114,3 +155,5 @@ def adapt_completion_nonstream_to_chat(body: dict[str, Any], *, req_id: str) -> 
         c0["stop_reason"] = stop_reason
     if token_ids is not None:
         c0[OpenAIField.TOKEN_IDS] = token_ids
+    if remapped_logprobs is not None:
+        c0["logprobs"] = remapped_logprobs

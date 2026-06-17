@@ -16,9 +16,9 @@ __all__ = [
     "StrategyBase",
     "generate_strategy_map",
     "ScaleP2DStrategy",
-    "LingquNetworkRecoverStrategy",
+    "TokenReinferenceStrategy",
 ]
 
 from .strategy import StrategyBase, generate_strategy_map
 from .scale_p2d import ScaleP2DStrategy
-from .lingqu_network_recover import LingquNetworkRecoverStrategy
+from .token_reinference import TokenReinferenceStrategy

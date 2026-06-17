@@ -26,6 +26,13 @@ grep -qE '^[[:space:]]*name_space[[:space:]]*=[[:space:]]*[^[:space:]#]+' "$CONF
   exit 1
 }
 
+NAMESPACE=$(grep -E '^[[:space:]]*name_space[[:space:]]*=' "$CONFIG" | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//')
+
+# Gracefully stop any existing log_monitor instance for this namespace only
+touch "stop_log_${NAMESPACE}"
+sleep 2
+rm -f "stop_log_${NAMESPACE}"
+
 setsid nohup python3 -u log_monitor.py > output.log 2>&1 </dev/null &
 
 timeout 2 tail -f output.log

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,13 +7,14 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-""" Test cases are organized according to the following logical blocks:
+"""Test cases are organized according to the following logical blocks:
 1. ConfigMap validation
 2. JSON parsing
 3. Device info processing
 4. Switch info processing
 5. Manual NPU separation processing
 """
+
 import json
 from unittest.mock import patch
 
@@ -23,13 +23,11 @@ from motor.controller.fault_tolerance.k8s.configmap_parser import (
     _parse_json_string,
     process_device_info,
     process_switch_info,
-    process_manually_separate_npu
+    process_manually_separate_npu,
 )
-from motor.controller.fault_tolerance.k8s.cluster_fault_codes import (
-    FaultLevel,
-    FaultType,
-    FaultInfo
-)
+from motor.controller.fault_tolerance.fault_types import FaultLevel, HardwareFaultType, FaultInfo
+
+# pylint: disable=redefined-outer-name
 
 
 def test_is_configmap_valid_with_valid_config():
@@ -39,7 +37,7 @@ def test_is_configmap_valid_with_valid_config():
         {"SwitchInfoCfg": {}},
         {"ManuallySeparateNPU": ""},
         {"DeviceInfoCfg": {}, "SwitchInfoCfg": {}},
-        {"DeviceInfoCfg": {}, "ManuallySeparateNPU": "test"}
+        {"DeviceInfoCfg": {}, "ManuallySeparateNPU": "test"},
     ]
 
     for config in valid_configs:
@@ -54,7 +52,7 @@ def test_is_configmap_valid_with_invalid_config():
         {"OtherKey": "value"},
         {"DeviceInfoCfg_wrong": {}},
         {"deviceinfocfg": {}},  # Wrong case
-        {"RandomKey1": {}, "RandomKey2": {}}
+        {"RandomKey1": {}, "RandomKey2": {}},
     ]
 
     for config in invalid_configs:
@@ -66,9 +64,9 @@ def test_parse_json_string_valid():
     test_cases = [
         ('{"key": "value"}', {"key": "value"}),
         ('{"number": 123}', {"number": 123}),
-        ('[]', []),
+        ("[]", []),
         ('  {"key": "value"}  ', {"key": "value"}),  # With whitespace
-        ('null', None)
+        ("null", None),
     ]
 
     for json_str, expected in test_cases:
@@ -85,7 +83,7 @@ def test_parse_json_string_invalid():
         "{invalid json",
         '["unclosed array"',
         123,  # Non-string input
-        [],    # Non-string input
+        [],  # Non-string input
     ]
 
     for invalid_input in invalid_cases:
@@ -95,7 +93,7 @@ def test_parse_json_string_invalid():
 
 def test_parse_json_string_with_logger_error():
     """Test that logger.error is called for invalid JSON"""
-    with patch('motor.controller.fault_tolerance.k8s.configmap_parser.logger') as mock_logger:
+    with patch("motor.controller.fault_tolerance.k8s.configmap_parser.logger") as mock_logger:
         _parse_json_string("{invalid json")
         mock_logger.error.assert_called()
 
@@ -103,7 +101,7 @@ def test_parse_json_string_with_logger_error():
 def test_process_device_info_empty():
     """Test processing empty device info"""
     result = process_device_info("{}")
-    assert result == []
+    assert not result
 
 
 def test_process_device_info_with_fault_devices():
@@ -116,20 +114,20 @@ def test_process_device_info_with_fault_devices():
                         "fault_type": "CardUnhealthy",
                         "npu_name": "Ascend910-0",
                         "fault_level": "RestartBusiness",
-                        "fault_code": "0x1001"
+                        "fault_code": "0x1001",
                     },
                     {
                         "fault_type": "CardNetworkUnhealthy",
                         "npu_name": "Ascend910-1",
                         "fault_level": "RestartRequest",
-                        "fault_code": "0x1002"
-                    }
+                        "fault_code": "0x1002",
+                    },
                 ]
             }
         },
         "UpdateTime": 1234567890,
         "SuperPodID": 1,
-        "ServerIndex": 0
+        "ServerIndex": 0,
     }
     device_info_json = json.dumps(device_info_dict)
     result = process_device_info(device_info_json)
@@ -139,17 +137,137 @@ def test_process_device_info_with_fault_devices():
 
     # Check first fault device
     fault1 = result[0]
-    assert fault1.fault_type == FaultType.CARD_UNHEALTHY
+    assert fault1.fault_type == HardwareFaultType.CARD_UNHEALTHY
     assert fault1.npu_name == "Ascend910-0"
     assert fault1.fault_code == 0x1001
     assert fault1.fault_level == FaultLevel.L3
 
     # Check second fault device
     fault2 = result[1]
-    assert fault2.fault_type == FaultType.CARD_NETWORK_UNHEALTHY
+    assert fault2.fault_type == HardwareFaultType.CARD_NETWORK_UNHEALTHY
     assert fault2.npu_name == "Ascend910-1"
     assert fault2.fault_code == 0x1002
     assert fault2.fault_level == FaultLevel.L2
+
+
+def test_process_device_info_with_fault_devices_json_string_format():
+    """Test processing device info where huawei.com/Ascend910-Fault is a JSON string.
+
+    Some ConfigMap producers serialize the fault array as a JSON-encoded string
+    inside the JSON value (e.g. ``"[{...},{...}]"``) rather than a native array.
+    """
+    fault_list = [
+        {
+            "fault_type": "CardUnhealthy",
+            "npu_name": "Ascend910-1",
+            "fault_level": "RestartNPU",
+            "fault_code": "80F38003",
+        },
+        {
+            "fault_type": "CardUnhealthy",
+            "npu_name": "Ascend910-2",
+            "fault_level": "RestartNPU",
+            "fault_code": "80F38003",
+        },
+    ]
+    # Simulate the nested JSON-string format
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": json.dumps(fault_list),
+            }
+        },
+        "UpdateTime": 1781141675,
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 2
+    assert all(isinstance(item, FaultInfo) for item in result)
+    # Both faults share the same code but come from different NPUs
+    assert result[0].npu_name == "Ascend910-1"
+    assert result[0].fault_code == 0x80F38003
+    assert result[0].fault_level == FaultLevel.L5  # RestartNPU → L5
+    assert result[1].npu_name == "Ascend910-2"
+    assert result[1].fault_code == 0x80F38003
+    assert result[1].fault_level == FaultLevel.L5
+
+
+def test_process_device_info_network_unhealthy_json_string_format():
+    """Test processing device info where huawei.com/Ascend910-NetworkUnhealthy is a JSON string."""
+    fault_list = [
+        {
+            "fault_type": "CardNetworkUnhealthy",
+            "npu_name": "Ascend910-5",
+            "fault_level": "RestartRequest",
+            "fault_code": "0xA001",
+        },
+    ]
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-NetworkUnhealthy": json.dumps(fault_list),
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 1
+    assert result[0].fault_type == HardwareFaultType.CARD_NETWORK_UNHEALTHY
+    assert result[0].npu_name == "Ascend910-5"
+    assert result[0].fault_code == 0xA001
+    assert result[0].fault_level == FaultLevel.L2  # RestartRequest → L2
+
+
+def test_process_device_info_mixed_native_and_string_format():
+    """Both fault and network-unhealthy fields as JSON strings simultaneously."""
+    fault_list = [
+        {
+            "fault_type": "CardUnhealthy",
+            "npu_name": "Ascend910-0",
+            "fault_level": "SeparateNPU",
+            "fault_code": "0xB001",
+        },
+    ]
+    net_list = [
+        {
+            "fault_type": "CardNetworkUnhealthy",
+            "npu_name": "Ascend910-3",
+            "fault_level": "FreeRestartNPU",
+            "fault_code": "0xC001",
+        },
+    ]
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": json.dumps(fault_list),
+                "huawei.com/Ascend910-NetworkUnhealthy": json.dumps(net_list),
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 2
+    assert result[0].npu_name == "Ascend910-0"
+    assert result[0].fault_level == FaultLevel.L6  # SeparateNPU → L6
+    assert result[1].npu_name == "Ascend910-3"
+    assert result[1].fault_level == FaultLevel.L4  # FreeRestartNPU → L4
+
+
+def test_process_device_info_empty_json_string():
+    """Empty JSON string in DeviceList field should be handled gracefully."""
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": "",
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+    assert not result
 
 
 def test_process_device_info_with_invalid_fault_code():
@@ -162,7 +280,7 @@ def test_process_device_info_with_invalid_fault_code():
                         "fault_type": "CardUnhealthy",
                         "npu_name": "Ascend910-0",
                         "fault_level": "L3",
-                        "fault_code": "invalid_hex"
+                        "fault_code": "invalid_hex",
                     }
                 ]
             }
@@ -185,7 +303,7 @@ def test_process_device_info_with_unknown_fault_type():
                         "fault_type": "UnknownType",
                         "npu_name": "Ascend910-0",
                         "fault_level": "L1",
-                        "fault_code": "0x1001"
+                        "fault_code": "0x1001",
                     }
                 ]
             }
@@ -195,12 +313,12 @@ def test_process_device_info_with_unknown_fault_type():
     result = process_device_info(device_info_json)
 
     assert len(result) == 1
-    assert result[0].fault_type == FaultType.NODE_UNHEALTHY  # Default type
+    assert result[0].fault_type == HardwareFaultType.NODE_UNHEALTHY  # Default type
 
 
 def test_process_device_info_exception_handling():
     """Test exception handling in device info processing"""
-    with patch('motor.controller.fault_tolerance.k8s.configmap_parser.logger') as mock_logger:
+    with patch("motor.controller.fault_tolerance.k8s.configmap_parser.logger"):
         # This should trigger an exception during processing
         device_info_dict = {
             "DeviceInfo": {
@@ -210,7 +328,7 @@ def test_process_device_info_exception_handling():
                             "fault_type": "CardUnhealthy",
                             "npu_name": "Ascend910-0",
                             "fault_level": None,  # This might cause issues
-                            "fault_code": "0x1001"
+                            "fault_code": "0x1001",
                         }
                     ]
                 }
@@ -226,7 +344,7 @@ def test_process_device_info_exception_handling():
 def test_process_switch_info_empty():
     """Test processing empty switch info"""
     result = process_switch_info("{}")
-    assert result == []
+    assert not result
 
 
 def test_process_switch_info_with_fault_mappings():
@@ -236,15 +354,9 @@ def test_process_switch_info_with_fault_mappings():
         "UpdateTime": 1234567890,
         "NodeStatus": "Fault",
         "FaultTimeAndLevelMap": {
-            "[0x2001,info]_1_2": {
-                "fault_time": 1234567890,
-                "fault_level": "L2"
-            },
-            "[0x2002,info]_3_4": {
-                "fault_time": 1234567891,
-                "fault_level": "L3"
-            }
-        }
+            "[0x2001,info]_1_2": {"fault_time": 1234567890, "fault_level": "L2"},
+            "[0x2002,info]_3_4": {"fault_time": 1234567891, "fault_level": "L3"},
+        },
     }
 
     switch_info_json = json.dumps(switch_info_dict)
@@ -261,14 +373,7 @@ def test_process_switch_info_with_fault_mappings():
 
 def test_process_switch_info_with_invalid_key_format():
     """Test processing switch info with invalid fault key format"""
-    switch_info_dict = {
-        "FaultTimeAndLevelMap": {
-            "invalid_key_format": {
-                "fault_time": 1234567890,
-                "fault_level": "L2"
-            }
-        }
-    }
+    switch_info_dict = {"FaultTimeAndLevelMap": {"invalid_key_format": {"fault_time": 1234567890, "fault_level": "L2"}}}
 
     switch_info_json = json.dumps(switch_info_dict)
     result = process_switch_info(switch_info_json)
@@ -280,12 +385,7 @@ def test_process_switch_info_with_invalid_key_format():
 def test_process_switch_info_with_malformed_hex_code():
     """Test processing switch info with malformed hex fault code"""
     switch_info_dict = {
-        "FaultTimeAndLevelMap": {
-            "[invalid_hex,info]_1_2": {
-                "fault_time": 1234567890,
-                "fault_level": "L2"
-            }
-        }
+        "FaultTimeAndLevelMap": {"[invalid_hex,info]_1_2": {"fault_time": 1234567890, "fault_level": "L2"}}
     }
 
     switch_info_json = json.dumps(switch_info_dict)
@@ -297,9 +397,9 @@ def test_process_switch_info_with_malformed_hex_code():
 def test_process_manually_separate_npu_empty():
     """Test processing empty manual separation config"""
     result = process_manually_separate_npu("")
-    assert result == []
+    assert not result
     result = process_manually_separate_npu("   ")
-    assert result == []
+    assert not result
 
 
 def test_process_manually_separate_npu_valid():
@@ -336,8 +436,8 @@ def test_process_manually_separate_npu_invalid_rank_number():
 
 def test_process_manually_separate_npu_exception_handling():
     """Test exception handling in manual NPU separation processing"""
-    with patch('motor.controller.fault_tolerance.k8s.configmap_parser.logger') as mock_logger:
+    with patch("motor.controller.fault_tolerance.k8s.configmap_parser.logger") as mock_logger:
         # Force an exception by passing None
         result = process_manually_separate_npu(None)
-        assert result == []
+        assert not result
         mock_logger.error.assert_called()

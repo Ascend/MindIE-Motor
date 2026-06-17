@@ -63,6 +63,7 @@ CONNECTORS = "connectors"
 # parallel config keys
 DP_SIZE = "dp_size"
 TP_SIZE = "tp_size"
+PP_SIZE = "pp_size"
 
 # engine config
 ENGINE_ID = "engine_id"

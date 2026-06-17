@@ -15,27 +15,19 @@
     "deploy_mode": "multi_deployment"
   },
   "motor_controller_config": {},
-  "motor_coordinator_config": {
-    "scheduler_config": {
-      "deploy_mode": "cpcd_separate"
-    }
-  },
+  "motor_coordinator_config": {},
   "motor_engine_prefill_config": {
     "engine_type": "vllm",
     "motor_nodemanger_config": {},
-    "model_config": {
-      "model_name": "dsv4",
-      "model_path": "/mnt/share/v4_w8a8",
-      "npu_mem_utils": 0.85,
-      "parallel_config": {
-        "dp_size": 16,
-        "tp_size": 1,
-        "pp_size": 1,
-        "enable_ep": true,
-        "dp_rpc_port": 9000
-      }
-    },
     "engine_config": {
+      "served_model_name": "dsv4",
+      "model": "/mnt/share/v4_w8a8",
+      "gpu_memory_utilization": 0.85,
+      "data_parallel_size": 16,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "enable_expert_parallel": true,
+      "data_parallel_rpc_port": 9000,
       "seed": 1024,
       "max-model-len": 13000,
       "max-num-batched-tokens": 8192,
@@ -68,19 +60,15 @@
   "motor_engine_decode_config": {
     "engine_type": "vllm",
     "motor_nodemanger_config": {},
-    "model_config": {
-      "model_name": "auto",
-      "model_path": "/mnt/share/v4_w8a8",
-      "npu_mem_utils": 0.88,
-      "parallel_config": {
-        "dp_size": 16,
-        "tp_size": 1,
-        "pp_size": 1,
-        "enable_ep": true,
-        "dp_rpc_port": 9000
-      }
-    },
     "engine_config": {
+      "served_model_name": "auto",
+      "model": "/mnt/share/v4_w8a8",
+      "gpu_memory_utilization": 0.88,
+      "data_parallel_size": 16,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "enable_expert_parallel": true,
+      "data_parallel_rpc_port": 9000,
       "seed": 1024,
       "max-model-len": 13500,
       "max-num-batched-tokens": 120,

@@ -12,14 +12,32 @@ import os
 GREEN = '\033[32m'
 RESET = '\033[0m'
 
+E_INSTANCES_NUM = "e_instances_num"
 P_INSTANCES_NUM = "p_instances_num"
 D_INSTANCES_NUM = "d_instances_num"
+HYBRID_INSTANCES_NUM = "hybrid_instances_num"
+SINGLE_HYBRID_INSTANCE_POD_NUM = "single_hybrid_instance_pod_num"
+HYBRID_POD_NPU_NUM = "hybrid_pod_npu_num"
 CONFIG_JOB_ID = "job_id"
+SINGER_E_INSTANCES_NUM = "single_e_instance_pod_num"
 SINGER_P_INSTANCES_NUM = "single_p_instance_pod_num"
 SINGER_D_INSTANCES_NUM = "single_d_instance_pod_num"
+E_POD_NPU_NUM = "e_pod_npu_num"
 P_POD_NPU_NUM = "p_pod_npu_num"
 D_POD_NPU_NUM = "d_pod_npu_num"
 ASCEND_910_NPU_NUM = "huawei.com/Ascend910"
+ASCEND_950_NPU_NUM = "huawei.com/npu"
+RING_CONTROLLER_ATLAS_LABEL = "ring-controller.atlas"
+HUAWEI_SCHEDULE_POLICY_ANNOTATION = "huawei.com/schedule_policy"
+A5_SCHEDULE_POLICY_BY_ACCELERATOR_TYPE = {
+    "350-Atlas-8": "chip1-node8",
+    "350-Atlas-16": "chip1-node16",
+    "350-Atlas-4p-8": "chip4-node8",
+    "350-Atlas-4p-16": "chip4-node16",
+    "850-Atlas-8p-8": "chip8-node8",
+    "850-SuperPod-Atlas-8": "chip8-node8-sp",
+    "950-SuperPod-Atlas-8": "chip8-node8-ra64-sp",
+}
 METADATA = "metadata"
 CONTROLLER = "controller"
 COORDINATOR = "coordinator"
@@ -46,6 +64,7 @@ ANNOTATIONS = "annotations"
 SP_BLOCK = "sp-block"
 DATA = "data"
 STARTUP_ROOT_PATH = "./startup"
+PATCH_ROOT_PATH = "./patch"
 BOOT_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "boot.sh")
 COMMON_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "common.sh")
 CONTROLLER_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "roles/controller.sh")
@@ -60,6 +79,7 @@ KV_CACHE_POOL_CONFIG = "kv_cache_pool_config"
 KV_POOL_PORT = "port"
 KV_POOL_EVICTION_HIGH_WATERMARK_RATIO = "eviction_high_watermark_ratio"
 KV_POOL_EVICTION_RATIO = "eviction_ratio"
+DEFAULT_KV_LEASE_TTL = "default_kv_lease_ttl"
 DEFAULT_KV_POOL_PORT = 50088
 KV_CONDUCTOR_CONFIG = "kv_conductor_config"
 KV_CONDUCTOR_PORT = "http_server_port"
@@ -80,7 +100,7 @@ ENGINE_TYPE_SGLANG = "sglang"
 SERVER_BASE_NAME_MAP = {
     ENGINE_TYPE_VLLM: ENGINE_TYPE_VLLM,
     ENGINE_TYPE_MINDIE_LLM: ENGINE_TYPE_MINDIE_SERVER,
-    ENGINE_TYPE_SGLANG: ENGINE_TYPE_SGLANG
+    ENGINE_TYPE_SGLANG: ENGINE_TYPE_SGLANG,
 }
 LOG_PATH = "plog-path"
 DEPLOY_YAML_ROOT_PATH = "./yaml_template"
@@ -100,19 +120,43 @@ PRIVILEGED = "privileged"
 
 HARDWARE_TYPE_800I_A2 = "800I_A2"
 HARDWARE_TYPE_800I_A3 = "800I_A3"
+HARDWARE_TYPE_950I_A5 = [
+    "350-Atlas-8",
+    "350-Atlas-16",
+    "350-Atlas-4p-8",
+    "350-Atlas-4p-16",
+    "850-Atlas-8p-8",
+    "850-SuperPod-Atlas-8",
+    "950-SuperPod-Atlas-8",
+]
+ACCELERATOR_A5 = "huawei-npu"
+ACCELERATOR_910 = "huawei-Ascend910"
 ACCELERATOR_TYPE = "accelerator-type"
+ACCELERATOR = "accelerator"
 ACCELERATOR_TYPE_910B = "module-910b-8"
 ACCELERATOR_TYPE_A3 = "module-a3-16"
+
+ENABLE_PD_HETEROGENEOUS = "enable_pd_heterogeneous"
+PD_HETEROGENEOUS_LABEL_KEY = "pd_heterogeneous_label_key"
+PD_HETEROGENEOUS_PREFILL_LABEL_VALUE = "pd_heterogeneous_prefill_label_value"
+PD_HETEROGENEOUS_DECODE_LABEL_VALUE = "pd_heterogeneous_decode_label_value"
+DEFAULT_PD_HETEROGENEOUS_LABEL_KEY = "card_type"
+DEFAULT_PD_HETEROGENEOUS_PREFILL_VALUE = "Ascend950PR"
+DEFAULT_PD_HETEROGENEOUS_DECODE_VALUE = "Ascend950DT"
 
 CONTAINERS = "containers"
 IMAGE = "image"
 IMAGE_NAME = "image_name"
+ROLE_ENCODE = "encode"
 ROLE_PREFILL = "prefill"
 ROLE_DECODE = "decode"
+ROLE_UNION = "union"
 ROLE_KV_POOL = "kv-pool"
 ROLE_KV_CONDUCTOR = "kv-conductor"
+NODE_TYPE_E = "e"
 NODE_TYPE_P = "p"
 NODE_TYPE_D = "d"
+NODE_TYPE_U = "u"
 ROLE_SINGLE_CONTAINER = "SINGLE_CONTAINER"
 REQUESTS = "requests"
 LIMITS = "limits"
@@ -121,11 +165,14 @@ ENV_ROLE = "ROLE"
 ENV_JOB_NAME = "JOB_NAME"
 ENV_CONTROLLER_SERVICE = "CONTROLLER_SERVICE"
 ENV_COORDINATOR_SERVICE = "COORDINATOR_SERVICE"
+ENV_COORDINATOR_INFER_SERVICE = "COORDINATOR_INFER_SERVICE"
+ENV_COORDINATOR_OBS_SERVICE = "COORDINATOR_OBS_SERVICE"
 ENV_KVP_MASTER_SERVICE = "KVP_MASTER_SERVICE"
 ENV_KV_CONDUCTOR_SERVICE = "KV_CONDUCTOR_SERVICE"
 ENV_KV_POOL_PORT = "KV_POOL_PORT"
 ENV_KV_POOL_EVICTION_HIGH_WATERMARK_RATIO = "KV_POOL_EVICTION_HIGH_WATERMARK_RATIO"
 ENV_KV_POOL_EVICTION_RATIO = "KV_POOL_EVICTION_RATIO"
+ENV_DEFAULT_KV_LEASE_TTL = "DEFAULT_KV_LEASE_TTL"
 ENV_DISAGGREGATION_BOOTSTRAP_PORT = "DISAGGREGATION_BOOTSTRAP_PORT"
 ENV_ASCEND_MF_STORE_URL = "ASCEND_MF_STORE_URL"
 ENV_ASCEND_MF_STORE_PORT = "ASCEND_MF_STORE_PORT"
@@ -144,6 +191,7 @@ WEIGHT_MOUNT_PATH = "weight_mount_path"
 
 MOTOR_DEPLOY_CONFIG = "motor_deploy_config"
 MOTOR_ENGINE_PREFILL_CONFIG = "motor_engine_prefill_config"
+MOTOR_ENGINE_UNION_CONFIG = "motor_engine_union_config"
 ENGINE_CONFIG = "engine_config"
 KV_TRANSFER_CONFIG = "kv_transfer_config"
 KV_CONNECTOR = "kv_connector"
@@ -158,4 +206,3 @@ JOB_NAME = "job-name"
 ROLES = "roles"
 SERVICES = "services"
 KIND_KEY = "kind"
-

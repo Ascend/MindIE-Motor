@@ -16,7 +16,7 @@ case "$ROLE" in
     "SINGLE_CONTAINER")
         source "$SCRIPT_DIR/all_combine_in_single_container.sh"
         ;;
-    "prefill"|"decode")
+    "encode"|"prefill"|"decode"|"union")
         source "$SCRIPT_DIR/engine.sh"
         ;;
     "controller")
@@ -36,7 +36,7 @@ case "$ROLE" in
         ;;
     *)
         echo "Error: Unknown ROLE=$ROLE"
-        echo "Valid roles: SINGLE_CONTAINER, prefill, decode, controller, coordinator, kv_pool, kv_conductor"
+        echo "Valid roles: SINGLE_CONTAINER, encode, prefill, decode, union, controller, coordinator, kv_pool, kv_conductor, mf_store"
         exit 1
         ;;
 esac

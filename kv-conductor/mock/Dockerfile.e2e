@@ -1,0 +1,3 @@
+FROM zmq-publisher-base:latest
+
+COPY mock/zmq_publisher.py /usr/local/bin/zmq_publisher.py

@@ -1,0 +1,47 @@
+{
+  "_comment": "Tracing 接入示例片段。复制到 deploy 使用的 env.json / user_config.json，将 <obs-host> 替换为 observability 栈所在主机 IP 或 Service 地址。",
+  "env_json_snippet": {
+    "motor_coordinator_env": {
+      "OTEL_SERVICE_NAME": "mindie-motor-coordinator",
+      "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+      "OTEL_EXPORTER_OTLP_TRACES_INSECURE": "true"
+    },
+    "motor_engine_prefill_env": {
+      "OTEL_SERVICE_NAME": "vllm-server-p",
+      "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+      "OTEL_EXPORTER_OTLP_TRACES_INSECURE": "true"
+    },
+    "motor_engine_decode_env": {
+      "OTEL_SERVICE_NAME": "vllm-server-d",
+      "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+      "OTEL_EXPORTER_OTLP_TRACES_INSECURE": "true"
+    }
+  },
+  "user_config_snippet": {
+    "motor_coordinator_config": {
+      "tracer_config": {
+        "endpoint": "http://<obs-host>:4318/v1/traces",
+        "root_sampling_rate": 1.0,
+        "remote_parent_sampled": 1.0,
+        "remote_parent_not_sampled": 1.0,
+        "local_parent_sampled": 1.0,
+        "local_parent_not_sampled": 1.0
+      }
+    },
+    "motor_engine_prefill_config": {
+      "engine_config": {
+        "otlp-traces-endpoint": "http://<obs-host>:4318/v1/traces"
+      }
+    },
+    "motor_engine_decode_config": {
+      "engine_config": {
+        "otlp-traces-endpoint": "http://<obs-host>:4318/v1/traces"
+      }
+    }
+  },
+  "recommended_protocol": {
+    "coordinator_tracer_config_endpoint": "http://<obs-host>:4318/v1/traces",
+    "engine_otlp_traces_endpoint": "http://<obs-host>:4318/v1/traces",
+    "env_OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf"
+  }
+}

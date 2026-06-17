@@ -19,9 +19,10 @@ class LoggingConfig:
     log_level: str = 'INFO'  # Logging level: DEBUG, INFO, WARNING, ERROR
     log_max_line_length: int = 8192
     log_format: str = (
-        '%(asctime)s  [%(levelname)s][%(name)s][%(filename)s:%(lineno)d][proc:%(processName)s]  %(message)s'
+        '(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s '
+        '[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s'
     )
-    log_date_format: str = '%Y-%m-%d %H:%M:%S'
+    log_date_format: str = '%m-%d %H:%M:%S'
     # Persistent log configuration
     host_log_dir: str = '/root/ascend/log'  # Optional log directory, which is host path, not pod
     log_rotation_size: int = 20  # Log rotation size in MB

@@ -23,6 +23,7 @@ from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     ROLE_PREFILL,
     ROLE_DECODE,
     ROLE_HYBRID,
+    ROLE_ENCODE,
     HEADER_SIZE,
     ENTRY_SIZE,
     HEARTBEAT_OFFSET,
@@ -39,6 +40,8 @@ logger = get_logger(__name__)
 
 def _pdrole_to_shm_role(role: PDRole) -> int:
     """Map PDRole to workload_shm layout role byte."""
+    if role == PDRole.ROLE_E:
+        return ROLE_ENCODE
     if role == PDRole.ROLE_P:
         return ROLE_PREFILL
     if role == PDRole.ROLE_D:
@@ -54,7 +57,7 @@ def _collect_entries_and_slot_map(instance_manager: InstanceManager, max_entries
     entries: list[tuple[int, int, int, float, float]] = []
     slot_map: dict[tuple[int, int], int] = {}
 
-    for role in (PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+    for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
         instances = instance_manager.get_available_instances(role)
         shm_role = _pdrole_to_shm_role(role)
         for instance in instances.values():
@@ -112,6 +115,11 @@ class WorkloadSharedMemoryWriter:
         """Current instance list version (bumped on write_snapshot). Used for PUB push dedup."""
         return self._instance_version
 
+    @property
+    def sequence(self) -> int:
+        """Current workload sequence. Even values are stable; odd values mean write in progress."""
+        return self._sequence
+
     def release(self) -> None:
         """Release buffer reference before owner closes SharedMemory. Prevents BufferError (exported pointers)."""
         self._buf = None
@@ -130,6 +138,7 @@ class WorkloadSharedMemoryWriter:
             self._im, self._max_entries
         )
         self._entry_count = len(entries)
+        self._begin_write()
         for slot, (iid, eid, role, tokens, kv) in enumerate(entries):
             self._write_entry_at_slot(
                 slot,
@@ -141,9 +150,8 @@ class WorkloadSharedMemoryWriter:
                     active_kv_cache=kv,
                 ),
             )
-        self._sequence += 1
         self._instance_version += 1
-        self._write_header()
+        self._end_write()
 
     async def write_single_entry(self, instance_id: int, endpoint_id: int) -> None:
         """Incremental write: only update the changed slot (~1-5 µs)."""
@@ -155,6 +163,7 @@ class WorkloadSharedMemoryWriter:
         if role is None or workload is None:
             return
         shm_role = _pdrole_to_shm_role(role)
+        self._begin_write()
         self._write_entry_at_slot(
             slot,
             WorkloadShmEntry(
@@ -165,7 +174,22 @@ class WorkloadSharedMemoryWriter:
                 active_kv_cache=workload.active_kv_cache,
             ),
         )
-        self._sequence += 1
+        self._end_write()
+
+    def _begin_write(self) -> None:
+        """Mark workload shm as being updated (odd sequence)."""
+        if self._sequence % 2 == 0:
+            self._sequence += 1
+        else:
+            self._sequence += 2
+        self._write_header()
+
+    def _end_write(self) -> None:
+        """Mark workload shm as stable after update (even sequence)."""
+        if self._sequence % 2 == 1:
+            self._sequence += 1
+        else:
+            self._sequence += 2
         self._write_header()
 
     def _write_header(self) -> None:

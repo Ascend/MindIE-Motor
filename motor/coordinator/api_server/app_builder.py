@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -10,13 +9,14 @@
 # See the Mulan PSL v2 for more details.
 
 """
-FastAPI app shell: management / inference, CORS. No business routes;
-ManagementServer / InferenceServer register after getting app.
+FastAPI app shell: management / observability / inference, CORS. No business routes;
+ManagementServer / ObservabilityServer / InferenceServer register after getting app.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,7 +49,21 @@ class AppBuilder:
         """Create Management FastAPI and add CORS."""
         app = FastAPI(
             title="Motor Coordinator Management Server",
-            description="Management plane: liveness, startup, readiness, metrics, instance refresh",
+            description="Management plane: liveness, startup, readiness, instance refresh",
+            version="1.0.0",
+            lifespan=lifespan,
+        )
+        app.add_middleware(CORSMiddleware, **_CORS_CONFIG)
+        return app
+
+    @staticmethod
+    def create_observability_app(
+        lifespan: Callable[..., Any] | None = None,
+    ) -> FastAPI:
+        """Create Observability FastAPI and add CORS."""
+        app = FastAPI(
+            title="Motor Coordinator Observability Server",
+            description="Observability plane: metrics, health, request telemetry",
             version="1.0.0",
             lifespan=lifespan,
         )
@@ -73,4 +87,3 @@ class AppBuilder:
         )
         app.add_middleware(CORSMiddleware, **_CORS_CONFIG)
         return app
-

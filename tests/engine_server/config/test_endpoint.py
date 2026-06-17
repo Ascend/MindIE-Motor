@@ -13,7 +13,6 @@
 import json
 import os
 import tempfile
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -25,11 +24,10 @@ from motor.config.endpoint import (
     HealthCheckConfig,
     DeployConfig,
     EndpointConfig,
-    PARALLEL_CONFIG_KEY,
     PREFILL_PARALLEL_CONFIG_KEY,
     DECODE_PARALLEL_CONFIG_KEY,
+    ENCODE_PARALLEL_CONFIG_KEY,
 )
-from motor.config.tls_config import TLSConfig
 from motor.engine_server.constants import constants
 
 
@@ -37,20 +35,22 @@ from motor.engine_server.constants import constants
 
 
 def test_parallel_config_default_values():
-    """Test ParallelConfig default values and __post_init__"""
+    """Test ParallelConfig default values with auto-computation fallback"""
     config = ParallelConfig()
     assert config.dp_size == 1
     assert config.tp_size == 1
     assert config.pp_size == 1
-    assert config.world_size == 1
+    assert config.world_size == 1  # auto-computed: 1*1*1*1
+    assert config.local_world_size == 1  # auto-computed: 1*1*1
     assert config.enable_ep is False
     assert config.dp_rpc_port == 9000
 
 
-def test_parallel_config_world_size_auto_calculation():
-    """Test that world_size is auto-calculated when None"""
-    config = ParallelConfig(dp_size=2, tp_size=2, pp_size=1)
+def test_parallel_config_with_resolver_values():
+    """Test that world_size and local_world_size are accepted when provided"""
+    config = ParallelConfig(dp_size=2, tp_size=2, pp_size=1, pcp_size=1, world_size=4, local_world_size=2)
     assert config.world_size == 4
+    assert config.local_world_size == 2
 
 
 def test_parallel_config_world_size_explicit():
@@ -61,13 +61,14 @@ def test_parallel_config_world_size_explicit():
 
 def test_parallel_config_from_dict():
     """Test ParallelConfig.from_dict"""
-    data = {"dp_size": 4, "tp_size": 2, "pp_size": 1, "dp_rpc_port": 9001}
+    data = {"dp_size": 4, "tp_size": 2, "pp_size": 1, "dp_rpc_port": 9001, "world_size": 8, "local_world_size": 2}
     config = ParallelConfig.from_dict(data)
     assert config.dp_size == 4
     assert config.tp_size == 2
     assert config.pp_size == 1
     assert config.dp_rpc_port == 9001
     assert config.world_size == 8
+    assert config.local_world_size == 2
 
 
 # --- ModelConfig tests ---
@@ -81,6 +82,7 @@ def test_model_config_from_dict():
         "npu_mem_utils": 0.9,
         PREFILL_PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 1},
         DECODE_PARALLEL_CONFIG_KEY: {"dp_size": 4, "tp_size": 2},
+        ENCODE_PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 1},
     }
     config = ModelConfig.from_dict(data)
     assert config.model_name == "test-model"
@@ -88,16 +90,18 @@ def test_model_config_from_dict():
     assert config.npu_mem_utils == 0.9
     assert config.prefill_parallel_config.dp_size == 2
     assert config.decode_parallel_config.dp_size == 4
+    assert config.encode_parallel_config.dp_size == 2
 
 
 # --- EngineConfig tests ---
 
 
 def test_engine_config_from_dict():
-    """Test EngineConfig.from_dict"""
+    """Test EngineConfig.from_dict normalizes hyphen keys to underscores."""
     data = {"max_model_len": 2048, "enforce-eager": True}
     config = EngineConfig.from_dict(data)
-    assert config.configs == data
+    assert config.configs == {"max_model_len": 2048, "enforce_eager": True}
+    assert config.get("enforce_eager") is True
 
 
 def test_engine_config_get():
@@ -154,6 +158,7 @@ def simple_engine_config_file():
             "npu_mem_utils": 0.9,
             PREFILL_PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 1},
             DECODE_PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 1},
+            ENCODE_PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 1},
         },
         "engine_config": {"max_model_len": 2048},
     }
@@ -181,7 +186,7 @@ def pd_engine_config_file():
                 "model_name": "qwen3-8B",
                 "model_path": "/mnt/weight/qwen3_8B",
                 "npu_mem_utils": 0.9,
-                PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 2, "pp_size": 1},
+                "parallel_config": {"dp_size": 2, "tp_size": 2, "pp_size": 1},
             },
             "engine_config": {"max_model_len": 2048},
         },
@@ -191,7 +196,37 @@ def pd_engine_config_file():
                 "model_name": "qwen3-8B",
                 "model_path": "/mnt/weight/qwen3_8B",
                 "npu_mem_utils": 0.9,
-                PARALLEL_CONFIG_KEY: {"dp_size": 2, "tp_size": 2, "pp_size": 1},
+                "parallel_config": {"dp_size": 2, "tp_size": 2, "pp_size": 1},
+            },
+            "engine_config": {"max_model_len": 2048},
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(config, f)
+        temp_path = f.name
+    yield temp_path
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+
+
+@pytest.fixture
+def pd_hybrid_engine_config_file():
+    """Create a temporary JSON file with PD hybrid union config structure"""
+    config = {
+        "motor_deploy_config": {
+            "hybrid_instances_num": 1,
+            "single_hybrid_instance_pod_num": 1,
+            "hybrid_pod_npu_num": 4,
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "model_config": {
+                "model_name": "qwen3-8B",
+                "model_path": "/mnt/weight/qwen3_8B",
+                "npu_mem_utils": 0.9,
+                "parallel_config": {"dp_size": 2, "tp_size": 2, "pp_size": 1},
             },
             "engine_config": {"max_model_len": 2048},
         },
@@ -230,6 +265,54 @@ def test_deploy_config_load_with_role_decode(pd_engine_config_file):
     assert config.model_config.model_name == "qwen3-8B"
 
 
+def test_deploy_config_load_with_role_union(pd_hybrid_engine_config_file):
+    """Test DeployConfig.load with role=union (PD hybrid config)"""
+    config = DeployConfig.load(pd_hybrid_engine_config_file, role="union")
+    assert config.engine_type == "vllm"
+    assert config.model_config.model_name == "qwen3-8B"
+    assert config.engine_config.get("max_model_len") == 2048
+
+    parallel = config.get_parallel_config("union")
+    assert parallel.dp_size == 2
+    assert parallel.tp_size == 2
+    assert parallel.pp_size == 1
+    assert config.model_config.decode_parallel_config == config.model_config.prefill_parallel_config
+
+
+@pytest.fixture
+def encode_engine_config_file():
+    """Create a temporary JSON file with encode role config section."""
+    config = {
+        "motor_deploy_config": {},
+        "motor_engine_encode_config": {
+            "engine_type": "vllm",
+            "model_config": {
+                "model_name": "test-model-encode",
+                "model_path": "/path/to/encode_model",
+                "npu_mem_utils": 0.9,
+                "parallel_config": {"dp_size": 2, "tp_size": 1},
+            },
+            "engine_config": {"max_model_len": 2048},
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(config, f)
+        temp_path = os.path.realpath(f.name)
+    yield temp_path
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+
+
+def test_deploy_config_load_with_role_encode(encode_engine_config_file):
+    """Test DeployConfig.load with role=encode."""
+    config = DeployConfig.load(encode_engine_config_file, role="encode")
+    assert config.engine_type == "vllm"
+    assert config.model_config.model_name == "test-model-encode"
+    assert config.model_config.encode_parallel_config.dp_size == 2
+
+
 def test_deploy_config_load_with_health_check(simple_engine_config_file):
     """Test DeployConfig.load includes health_check_config"""
     with open(simple_engine_config_file) as f:
@@ -259,6 +342,14 @@ def test_deploy_config_get_parallel_config_decode(pd_engine_config_file):
     config = DeployConfig.load(pd_engine_config_file, role="decode")
     parallel = config.get_parallel_config("decode")
     assert parallel == config.model_config.decode_parallel_config
+
+
+def test_deploy_config_get_parallel_config_encode(simple_engine_config_file):
+    """Test DeployConfig.get_parallel_config for encode role"""
+    config = DeployConfig.load(simple_engine_config_file, role="encode")
+    parallel = config.get_parallel_config("encode")
+    assert parallel == config.model_config.encode_parallel_config
+    assert parallel.dp_size == 2
 
 
 def test_deploy_config_get_parallel_config_invalid_role(simple_engine_config_file):
@@ -306,6 +397,7 @@ def test_endpoint_config_default_values():
     assert config.mgmt_port == 9001
     assert config.instance_id == 0
     assert config.dp_rank == 0
+    assert config.node_rank == 0
     assert config.config_path is None
 
 
@@ -313,12 +405,18 @@ def test_endpoint_config_parse_cli_args():
     """Test EndpointConfig.parse_cli_args"""
     args = [
         "prog",
-        "--host", "192.168.1.1",
-        "--role", "prefill",
-        "--port", "8080",
-        "--mgmt-port", "9080",
-        "--config-path", "/path/to/config.json",
-        "--instance-id", "1",
+        "--host",
+        "192.168.1.1",
+        "--role",
+        "prefill",
+        "--port",
+        "8080",
+        "--mgmt-port",
+        "9080",
+        "--config-path",
+        "/path/to/config.json",
+        "--instance-id",
+        "1",
     ]
     with patch("sys.argv", args):
         parsed = EndpointConfig.parse_cli_args()
@@ -328,6 +426,48 @@ def test_endpoint_config_parse_cli_args():
     assert parsed.mgmt_port == 9080
     assert parsed.config_path == "/path/to/config.json"
     assert parsed.instance_id == 1
+
+
+def test_endpoint_config_parse_node_rank_cli_arg():
+    """Test EndpointConfig.parse_cli_args includes --node-rank"""
+    args = [
+        "prog",
+        "--host",
+        "192.168.1.1",
+        "--role",
+        "prefill",
+        "--port",
+        "8080",
+        "--mgmt-port",
+        "9080",
+        "--config-path",
+        "/path/to/config.json",
+        "--node-rank",
+        "2",
+    ]
+    with patch("sys.argv", args):
+        parsed = EndpointConfig.parse_cli_args()
+    assert parsed.node_rank == 2
+
+
+def test_endpoint_config_node_rank_default():
+    """Test EndpointConfig.node_rank defaults to 0 when not specified"""
+    args = [
+        "prog",
+        "--host",
+        "192.168.1.1",
+        "--role",
+        "prefill",
+        "--port",
+        "8080",
+        "--mgmt-port",
+        "9080",
+        "--config-path",
+        "/path/to/config.json",
+    ]
+    with patch("sys.argv", args):
+        parsed = EndpointConfig.parse_cli_args()
+    assert parsed.node_rank == 0
 
 
 def test_endpoint_config_validate_invalid_role():
@@ -552,23 +692,61 @@ def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_decode(valid_con
         os.unlink(path)
 
 
+def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_encode():
+    """Test load_deploy_config updates dp_rpc_port for encode role"""
+    encode_config = {
+        "motor_deploy_config": {},
+        "motor_engine_encode_config": {
+            "engine_type": "vllm",
+            "model_config": {
+                "model_name": "m",
+                "model_path": "/p",
+                "npu_mem_utils": 0.9,
+                "parallel_config": {"dp_size": 1, "dp_rpc_port": 9000},
+            },
+            "engine_config": {},
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(encode_config, f)
+        path = os.path.realpath(f.name)
+    try:
+        config = EndpointConfig(
+            host="127.0.0.1",
+            role="encode",
+            port=8000,
+            mgmt_port=9001,
+            config_path=path,
+            dp_rpc_port=9020,
+        )
+        config.deploy_config = DeployConfig.load(path, role="encode")
+        config.load_deploy_config()
+        assert config.deploy_config.model_config.encode_parallel_config.dp_rpc_port == 9020
+    finally:
+        os.unlink(path)
+
+
 def test_endpoint_config_update_engine_config():
     """Test update_engine_config modifies kv-events-config endpoint and replay_endpoint"""
     prefill = ParallelConfig(dp_size=1, tp_size=1)
     decode = ParallelConfig(dp_size=1, tp_size=1)
+    encode = ParallelConfig(dp_size=2, tp_size=1)
     model_config = ModelConfig(
         model_name="m",
         model_path="/p",
         npu_mem_utils=0.9,
+        encode_parallel_config=encode,
         prefill_parallel_config=prefill,
         decode_parallel_config=decode,
     )
-    engine_config = EngineConfig(configs={
-        "kv-events-config": {
-            "endpoint": "127.0.0.1*:10000",
-            "replay_endpoint": "127.0.0.1*:10001",
+    engine_config = EngineConfig(
+        configs={
+            "kv-events-config": {
+                "endpoint": "127.0.0.1*:10000",
+                "replay_endpoint": "127.0.0.1*:10001",
+            }
         }
-    })
+    )
     deploy_config = DeployConfig(
         engine_type="vllm",
         model_config=model_config,
@@ -595,6 +773,7 @@ def test_endpoint_config_update_engine_config_no_kv_events():
             model_name="m",
             model_path="/p",
             npu_mem_utils=0.9,
+            encode_parallel_config=ParallelConfig(),
             prefill_parallel_config=ParallelConfig(),
             decode_parallel_config=ParallelConfig(),
         ),
@@ -609,18 +788,21 @@ def test_endpoint_config_update_engine_config_no_kv_events():
 
 def test_endpoint_config_update_engine_config_invalid_endpoint_format():
     """Test update_engine_config skips when endpoint format is invalid (no *: separator)"""
-    engine_config = EngineConfig(configs={
-        "kv-events-config": {
-            "endpoint": "invalid-format",
-            "replay_endpoint": "127.0.0.1*:10001",
+    engine_config = EngineConfig(
+        configs={
+            "kv-events-config": {
+                "endpoint": "invalid-format",
+                "replay_endpoint": "127.0.0.1*:10001",
+            }
         }
-    })
+    )
     deploy_config = DeployConfig(
         engine_type="vllm",
         model_config=ModelConfig(
             model_name="m",
             model_path="/p",
             npu_mem_utils=0.9,
+            encode_parallel_config=ParallelConfig(),
             prefill_parallel_config=ParallelConfig(),
             decode_parallel_config=ParallelConfig(),
         ),

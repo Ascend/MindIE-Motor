@@ -1,0 +1,883 @@
+{
+  "uid": "motor-vllm-profiling",
+  "title": "引擎性能剖析",
+  "tags": [
+    "pymotor",
+    "vllm",
+    "profiling",
+    "ms_service_metric"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "source",
+        "label": "Source",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source!=\"\"}, source)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source=~\"$source\", cluster!=\"\"}, cluster)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source=~\"$source\", cluster=~\"$cluster\", job!=\"\"}, job)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "pd_role",
+        "label": "PD Role",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role!=\"\"}, pd_role)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "role",
+        "label": "Role",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role!=\"\"}, role)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "phase",
+        "label": "Phase",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(vllm_profiling_engine_core:engine_core_step:duration_count{source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role=~\"$role\"}, phase)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "dp",
+        "label": "DP Rank",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", dp_rank!=\"\"}, dp_rank)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3
+      },
+      {
+        "name": "instance_id",
+        "label": "Instance ID",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values({source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", instance_id!=\"\"}, instance_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "静态显存 (engine:memory:* — Gauge)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "显存利用率 utilization",
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max(vllm_profiling_engine:memory:utilization_ratio{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.85
+              },
+              {
+                "color": "red",
+                "value": 0.95
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "总显存 total (GB)",
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max(vllm_profiling_engine:memory:total_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "piechart",
+      "title": "显存构成 composition (GB)",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max(vllm_profiling_engine:memory:weights_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "weights",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "expr": "max(vllm_profiling_engine:memory:kvcache_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "kv_cache",
+          "refId": "B",
+          "instant": true
+        },
+        {
+          "expr": "max(vllm_profiling_engine:memory:activation_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "activation",
+          "refId": "C",
+          "instant": true
+        },
+        {
+          "expr": "max(vllm_profiling_engine:memory:non_torch_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "non_torch",
+          "refId": "D",
+          "instant": true
+        },
+        {
+          "expr": "max(vllm_profiling_engine:memory:graph_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "npu_graph",
+          "refId": "E",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "decimals": 2
+        }
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value"
+          ]
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "reserved vs total (GB) by role",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vllm_profiling_engine:memory:reserved_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}",
+          "legendFormat": "reserved {{role}}",
+          "refId": "A"
+        },
+        {
+          "expr": "vllm_profiling_engine:memory:total_gb{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}",
+          "legendFormat": "total {{role}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "阶段时延 Profiling (timer histogram — 分位数)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "collapsed": false
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "各阶段平均耗时 avg (sum/count rate)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm_profiling_scheduler:duration_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_scheduler:duration_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "scheduler",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_executor:prepare_inputs:duration_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_executor:prepare_inputs:duration_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "prepare_inputs",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_executor:execute_model:duration_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_executor:execute_model:duration_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "execute_model",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_executor:sample_tokens:duration_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_executor:sample_tokens:duration_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "sample_tokens",
+          "refId": "D"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_worker:model_runner_get_output:duration_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_worker:model_runner_get_output:duration_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "get_output",
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "细粒度算子耗时 record_function P95 by name",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, name) (rate(vllm_profiling_record_function_or_nullcontext_bucket{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "NPU 计算时间线 & 请求链路",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "NPU 计算时间线 avg (forward / kernel_launch / non_forward)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm_profiling_npu:forward_duration_sum{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_npu:forward_duration_count{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "forward",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_npu:kernel_launch_sum{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_npu:kernel_launch_count{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "kernel_launch",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_npu:non_forward_duration_sum{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_npu:non_forward_duration_count{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "non_forward",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "请求链路时延 P95 (server / generate / tokenizer / output)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm_profiling_server:create_chat_completion:duration_bucket{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])))",
+          "legendFormat": "create_chat_completion",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm_profiling_engine:generate:duration_bucket{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])))",
+          "legendFormat": "generate",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm_profiling_engine:tokenizer_encode_bucket{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])))",
+          "legendFormat": "tokenizer_encode",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm_profiling_output_processor:duration_bucket{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])))",
+          "legendFormat": "output_processor",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "调度器 Scheduler",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "collapsed": false
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Batch size / Running queue avg",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm_profiling_scheduler:batch_size_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_scheduler:batch_size_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "batch_size",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(vllm_profiling_scheduler:running_queue_size_sum{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])) / clamp_min(sum(rate(vllm_profiling_scheduler:running_queue_size_count{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m])), 1)",
+          "legendFormat": "running_queue",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "序列长度 seqlen (avg / sum)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "avg by (phase) (vllm_profiling_scheduler:seqlen:avg{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "avg {{phase}}",
+          "refId": "A"
+        },
+        {
+          "expr": "avg by (phase) (vllm_profiling_scheduler:seqlen:sum{source=~\"$source\", phase=~\"$phase\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "sum {{phase}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "调度 token 速率 by req_phase",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (req_phase) (rate(vllm_profiling_scheduler:phase_scheduled_token_counter_total{source=~\"$source\", role=~\"$role\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"}[5m]))",
+          "legendFormat": "{{req_phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "EPLB 专家负载 (MoE / EP 场景)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "collapsed": true
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Expert hotness (current / update, mean / max)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max(vllm_profiling_eplb:expert_hotness:current_mean{source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role=~\"$role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "current_mean",
+          "refId": "A"
+        },
+        {
+          "expr": "max(vllm_profiling_eplb:expert_hotness:current_max{source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role=~\"$role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "current_max",
+          "refId": "B"
+        },
+        {
+          "expr": "max(vllm_profiling_eplb:expert_hotness:update_mean{source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role=~\"$role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "update_mean",
+          "refId": "C"
+        },
+        {
+          "expr": "max(vllm_profiling_eplb:expert_hotness:update_max{source=~\"$source\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role=~\"$role\", phase=~\"$phase\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "update_max",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Expert imbalance by layer",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max by (layer) (vllm_profiling_eplb:expert_hotness:imbalance{source=~\"$source\", phase=\"current\", cluster=~\"$cluster\", job=~\"$job\", pd_role=~\"$pd_role\", role=~\"$role\", dp_rank=~\"$dp\", instance_id=~\"$instance_id\"})",
+          "legendFormat": "layer {{layer}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          },
+          "min": 1
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

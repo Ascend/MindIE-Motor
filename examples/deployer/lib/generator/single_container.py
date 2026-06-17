@@ -13,7 +13,10 @@ from lib.utils import (
     generate_unique_id, load_yaml, write_yaml, logger
 )
 from lib.generator import k8s_utils
-from lib.generator.engine import set_engine_weight_mount
+from lib.generator.engine import (
+    set_engine_weight_mount, apply_node_selector_by_hardware, set_container_npu,
+    apply_a5_workload,
+)
 from lib.generator.kv_pool import normalize_kv_cache_pool_config, gen_kv_pool_env
 
 
@@ -56,8 +59,7 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
         container[C.ENV].extend(kv_pool_env)
 
     npu_num = max(int(deploy_config[C.P_POD_NPU_NUM]), int(deploy_config[C.D_POD_NPU_NUM]))
-    container[C.RESOURCES][C.REQUESTS][C.ASCEND_910_NPU_NUM] = npu_num
-    container[C.RESOURCES][C.LIMITS][C.ASCEND_910_NPU_NUM] = npu_num
+    set_container_npu(container, npu_num, deploy_config)
 
     hardware_type = deploy_config[C.HARDWARE_TYPE]
     if hardware_type == C.HARDWARE_TYPE_800I_A2:
@@ -65,6 +67,10 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
         del deployment_data[C.METADATA][C.ANNOTATIONS]
     elif hardware_type == C.HARDWARE_TYPE_800I_A3:
         deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_A3
+        deployment_data[C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
+    elif hardware_type in C.HARDWARE_TYPE_950I_A5:
+        apply_node_selector_by_hardware(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], hardware_type)
+        apply_a5_workload(deployment_data, deploy_config)
         deployment_data[C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
 
     set_engine_weight_mount(deployment_data, container, deploy_config)

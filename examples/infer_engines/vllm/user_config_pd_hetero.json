@@ -1,0 +1,76 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 1,
+    "single_d_instance_pod_num": 1,
+    "p_pod_npu_num": 16,
+    "d_pod_npu_num": 16,
+    "image_name": "",
+    "job_id": "mindie-motor",
+    "hardware_type": "950-SuperPod-Atlas-8",
+    "weight_mount_path": "/mnt/weight/",
+    "enable_pd_heterogeneous": true,
+    "pd_heterogeneous_label_key": "card_type",
+    "pd_heterogeneous_prefill_label_value": "Ascend950PR",
+    "pd_heterogeneous_decode_label_value": "Ascend950DT"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {},
+  "motor_engine_prefill_config": {
+    "engine_type": "vllm",
+    "motor_nodemanger_config": {},
+    "enable_multi_endpoints": true,
+    "engine_config": {
+      "served_model_name": "qwen3-8B",
+      "model": "/mnt/weight/qwen3_8B",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 2,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": false,
+      "enforce-eager": true,
+      "max_model_len": 2048,
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeLayerwiseConnector",
+        "kv_buffer_device": "npu",
+        "kv_role": "kv_producer",
+        "kv_parallel_size": 1,
+        "kv_port": "30001",
+        "engine_id": "0",
+        "kv_rank": 0,
+        "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
+        "kv_connector_extra_config": {}
+      }
+    }
+  },
+  "motor_engine_decode_config": {
+    "engine_type": "vllm",
+    "motor_nodemanger_config": {},
+    "enable_multi_endpoints": true,
+    "engine_config": {
+      "served_model_name": "qwen3-8B",
+      "model": "/mnt/weight/qwen3_8B",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 2,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "enable_expert_parallel": false,
+      "max_model_len": 2048,
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeLayerwiseConnector",
+        "kv_buffer_device": "npu",
+        "kv_role": "kv_consumer",
+        "kv_parallel_size": 1,
+        "kv_port": "30001",
+        "engine_id": "0",
+        "kv_rank": 0,
+        "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
+        "kv_connector_extra_config": {}
+      }
+    }
+  }
+}

@@ -9,7 +9,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
 import httpx
@@ -82,6 +82,23 @@ def mix_instances():
     return instances
 
 
+@pytest.fixture
+def encode_instances():
+    """Create encode (E) instances for testing."""
+    instances = []
+    for i in range(2):
+        instance = Instance(
+            job_name=f"encode_instance_{i+1}",
+            model_name="test_model",
+            id=i+8,
+            role=PDRole.ROLE_E,
+            status=InsStatus.ACTIVE,
+            parallel_config=ParallelConfig(dp_size=2)
+        )
+        instances.append(instance)
+    return instances
+
+
 def mock_create_client(address, tls_config=None, **kwargs):
     client = AsyncMock()
     client.base_url = f"http://{address}"
@@ -92,7 +109,7 @@ def mock_create_client(address, tls_config=None, **kwargs):
 
 
 @pytest.fixture
-async def scheduler_setup(prefill_instances, decode_instances, mix_instances):
+async def scheduler_setup(prefill_instances, decode_instances, mix_instances, encode_instances):
     """Setup scheduler with instances and endpoints."""
     config = CoordinatorConfig()
     instance_manager = InstanceManager(config)
@@ -102,7 +119,7 @@ async def scheduler_setup(prefill_instances, decode_instances, mix_instances):
     if all_existing_instances:
         await instance_manager.refresh_instances(EventType.DEL, all_existing_instances)
 
-    all_instances = prefill_instances + decode_instances + mix_instances
+    all_instances = prefill_instances + decode_instances + mix_instances + encode_instances
     await instance_manager.refresh_instances(EventType.DEL, all_instances)
     for instance in all_instances:
         endpoints = {}
@@ -122,7 +139,7 @@ async def scheduler_setup(prefill_instances, decode_instances, mix_instances):
     await instance_manager.refresh_instances(EventType.ADD, all_instances)
 
     # Fail fast if pool was not populated (e.g. CI missing asyncio_mode or different impl)
-    for role in (PDRole.ROLE_P, PDRole.ROLE_D):
+    for role in (PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_E):
         pool = instance_manager.get_available_instances(role)
         assert len(pool) > 0, (
             f"scheduler_setup: get_available_instances({role}) is empty after ADD. "
@@ -152,7 +169,9 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     assert selected_prefill_instance.role == PDRole.ROLE_P
 
     # 2. allocate prefill workload
-    workload_p = calculate_demand_workload(PDRole.ROLE_P, request_length)
+    req_info = MagicMock()
+    req_info.req_len = request_length
+    workload_p = calculate_demand_workload(PDRole.ROLE_P, req_info)
     result = await load_balance_scheduler.update_workload(
         selected_prefill_instance.id, selected_prefill_endpoint.id, req_id,
         WorkloadAction.ALLOCATION, workload_p
@@ -181,7 +200,7 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     assert selected_decode_instance.role == PDRole.ROLE_D
 
     # 5. allocate decode workload
-    workload_d = calculate_demand_workload(PDRole.ROLE_D, request_length)
+    workload_d = calculate_demand_workload(PDRole.ROLE_D, req_info)
     result = await load_balance_scheduler.update_workload(
         selected_decode_instance.id, selected_decode_endpoint.id, req_id,
         WorkloadAction.ALLOCATION, workload_d
@@ -212,6 +231,42 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
 
 
 @pytest.mark.asyncio
+async def test_request_processing_e_scenario(scheduler_setup):
+    """Test E (encode) role processing similar to P/D scenarios."""
+    all_instances, instance_manager = scheduler_setup
+    scheduler = Scheduler(instance_provider=instance_manager, config=SchedulerType.LOAD_BALANCE)
+    load_balance_scheduler = scheduler.get_scheduling_policy()
+    request_length = 2
+    req_id = "test_request_e_1"
+
+    # select encode instance and endpoint
+    res = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_E)
+    assert res is not None, "select_instance_and_endpoint(ROLE_E) returned None."
+    selected_instance, selected_endpoint = res
+    assert selected_instance.role == PDRole.ROLE_E
+
+    # allocate encode workload
+    req_info = MagicMock()
+    req_info.req_len = request_length
+    workload_e = calculate_demand_workload(PDRole.ROLE_E, req_info)
+    result = await load_balance_scheduler.update_workload(
+        selected_instance.id, selected_endpoint.id, req_id,
+        WorkloadAction.ALLOCATION, workload_e
+    )
+    assert result
+    assert selected_endpoint.workload.active_tokens > 0 or selected_endpoint.workload.active_kv_cache >= 0
+
+    # release tokens if any allocated
+    release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
+    result = await load_balance_scheduler.update_workload(
+        selected_instance.id, selected_endpoint.id, req_id,
+        WorkloadAction.RELEASE_TOKENS, release_tokens
+    )
+    assert result
+    assert selected_endpoint.workload.active_tokens == 0
+
+
+@pytest.mark.asyncio
 async def test_request_processing_mix_scenario(scheduler_setup):
     """Test mixed role scenario with load balance policy."""
     all_instances, instance_manager = scheduler_setup
@@ -228,7 +283,9 @@ async def test_request_processing_mix_scenario(scheduler_setup):
 
     # 2. allocate mix workload
     load_balance_scheduler = scheduler.get_scheduling_policy()
-    workload_u = calculate_demand_workload(PDRole.ROLE_U, request_length)
+    req_info = MagicMock()
+    req_info.req_len = request_length
+    workload_u = calculate_demand_workload(PDRole.ROLE_U, req_info)
     result = await load_balance_scheduler.update_workload(
         selected_instance.id, selected_endpoint.id, req_id,
         WorkloadAction.ALLOCATION, workload_u
@@ -276,7 +333,9 @@ async def test_multiple_requests_load_balancing(scheduler_setup, request_length)
 
     # allocate workload
     load_balance_scheduler = scheduler.get_scheduling_policy()
-    workload = calculate_demand_workload(PDRole.ROLE_P, request_length)
+    req_info = MagicMock()
+    req_info.req_len = request_length
+    workload = calculate_demand_workload(PDRole.ROLE_P, req_info)
     result = await load_balance_scheduler.update_workload(
         selected_instance.id, selected_endpoint.id, req_id,
         WorkloadAction.ALLOCATION, workload
@@ -316,7 +375,9 @@ async def test_workload_calculation_accuracy(scheduler_setup):
     selected_instance, selected_endpoint = result
 
     # allocate prefill workload
-    workload = calculate_demand_workload(PDRole.ROLE_P, request_length)
+    req_info = MagicMock()
+    req_info.req_len = request_length
+    workload = calculate_demand_workload(PDRole.ROLE_P, req_info)
     result = await load_balance_scheduler.update_workload(
         selected_instance.id, selected_endpoint.id, req_id,
         WorkloadAction.ALLOCATION, workload
@@ -370,11 +431,76 @@ async def test_load_balance_policy_selection_logic(scheduler_setup):
     assert mix_instance is not None
     assert mix_instance.role == PDRole.ROLE_U
 
+    # also verify encode (E) selection
+    res_e = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_E)
+    assert res_e is not None, "select_instance_and_endpoint(ROLE_E) returned None."
+    encode_instance, _ = res_e
+    assert encode_instance is not None
+    assert encode_instance.role == PDRole.ROLE_E
+
     res_p2 = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_P)
     assert res_p2 is not None, "select_instance_and_endpoint(ROLE_P) returned None."
     _, endpoint = res_p2
     assert endpoint is not None
     assert endpoint in prefill_instance.get_all_endpoints()
+
+
+@pytest.mark.asyncio
+async def test_load_balance_selects_global_lowest_endpoint():
+    """Load-balance should choose the lowest endpoint globally, not filter by instance first."""
+    config = CoordinatorConfig()
+    config.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+    config.scheduler_config.endpoint_instance_score_weight = 0.0
+    instance_manager = InstanceManager(config)
+
+    inst_a = Instance(
+        job_name="prefill-a",
+        model_name="test_model",
+        id=1,
+        role=PDRole.ROLE_P,
+        status=InsStatus.ACTIVE,
+        parallel_config=ParallelConfig(dp_size=2),
+    )
+    inst_b = Instance(
+        job_name="prefill-b",
+        model_name="test_model",
+        id=2,
+        role=PDRole.ROLE_P,
+        status=InsStatus.ACTIVE,
+        parallel_config=ParallelConfig(dp_size=2),
+    )
+    inst_a.add_endpoints(
+        "pod-a",
+        {
+            0: Endpoint(id=10, ip="10.0.0.1", business_port="8000", mgmt_port="9000",
+                        status=EndpointStatus.NORMAL, workload=Workload()),
+            1: Endpoint(id=11, ip="10.0.0.1", business_port="8001", mgmt_port="9001",
+                        status=EndpointStatus.NORMAL, workload=Workload()),
+        },
+    )
+    inst_b.add_endpoints(
+        "pod-b",
+        {
+            0: Endpoint(id=20, ip="10.0.0.2", business_port="8000", mgmt_port="9000",
+                        status=EndpointStatus.NORMAL, workload=Workload()),
+            1: Endpoint(id=21, ip="10.0.0.2", business_port="8001", mgmt_port="9001",
+                        status=EndpointStatus.NORMAL, workload=Workload()),
+        },
+    )
+    await instance_manager.refresh_instances(EventType.ADD, [inst_a, inst_b])
+
+    await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=10))
+    await instance_manager.update_instance_workload(1, 11, Workload(active_tokens=10))
+    await instance_manager.update_instance_workload(2, 20, Workload(active_tokens=1))
+    await instance_manager.update_instance_workload(2, 21, Workload(active_tokens=50))
+
+    scheduler = Scheduler(instance_provider=instance_manager, config=config)
+    result = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_P)
+
+    assert result is not None
+    selected_instance, selected_endpoint = result
+    assert selected_instance.id == 2
+    assert selected_endpoint.id == 20
 
 
 @pytest.mark.asyncio
@@ -406,6 +532,17 @@ async def test_round_robin_instance_selection(scheduler_setup):
     # verify that the round robin order is correct: 4, 5, 4, 5
     expected_decode_order = [4, 5, 4, 5]
     assert selected_decode_instances == expected_decode_order
+
+    # select 4 times for encode instances (ids 8,9)
+    selected_encode_instances = []
+    for _ in range(4):
+        instance, _ = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_E)
+        assert instance is not None
+        assert instance.role == PDRole.ROLE_E
+        selected_encode_instances.append(instance.id)
+
+    expected_encode_order = [8, 9, 8, 9]
+    assert selected_encode_instances == expected_encode_order
 
 
 @pytest.mark.asyncio
@@ -480,4 +617,6 @@ async def test_round_robin_edge_cases():
     assert result is None
 
     result = await empty_scheduler.select_instance_and_endpoint(role=PDRole.ROLE_D)
+    assert result is None
+    result = await empty_scheduler.select_instance_and_endpoint(role=PDRole.ROLE_E)
     assert result is None

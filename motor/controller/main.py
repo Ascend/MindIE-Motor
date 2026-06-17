@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -8,7 +8,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-import os
+
 import argparse
 import select
 import signal
@@ -17,9 +17,11 @@ import threading
 from typing import Any
 
 from motor.common.standby.standby_manager import StandbyManager
+from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.logger import get_logger
 from motor.config.controller import ControllerConfig
+from motor.common.utils.port_allocator import apply_controller_ports, run_port_setup_or_exit
 from motor.controller.api_server import ControllerAPI
 from motor.controller.core import InstanceAssembler, InstanceManager, EventPusher
 
@@ -47,17 +49,12 @@ previous_fault_tolerance_enabled: bool = False
 
 def log_config_summary(message_prefix: str | None = None) -> None:
     """Log configuration summary with optional message prefix"""
-    if config:
-        if message_prefix:
-            logger.info(message_prefix)
-        for line in config.get_config_summary().splitlines():
-            if line.strip():  # Skip empty lines
-                logger.info(line)
+    log_configuration_summary(config, message_prefix)
 
 
 def on_config_updated() -> None:
     """Callback function called when configuration is updated"""
-    global config, modules, previous_fault_tolerance_enabled
+    global previous_fault_tolerance_enabled
 
     if config is None:
         logger.error("Configuration is None in config update callback")
@@ -72,6 +69,7 @@ def on_config_updated() -> None:
             logger.info("Fault tolerance feature enabled, starting FaultManager...")
             try:
                 from motor.controller.fault_tolerance import FaultManager
+
                 fault_manager = FaultManager(config)
                 modules["FaultManager"] = fault_manager
 
@@ -90,11 +88,15 @@ def on_config_updated() -> None:
                     inactive_instances = instance_manager.get_inactive_instances()
                     all_instances = active_instances + inactive_instances
                     if all_instances:
-                        logger.info("Updating FaultManager with %d existing instances (%d active, %d inactive)",
-                                    len(all_instances), len(active_instances), len(inactive_instances))
+                        logger.info(
+                            "Updating FaultManager with %d existing instances (%d active, %d inactive)",
+                            len(all_instances),
+                            len(active_instances),
+                            len(inactive_instances),
+                        )
                         fault_manager.update_instances(all_instances)
             except Exception as e:
-                logger.error(f"Failed to start FaultManager: {e}")
+                logger.error("Failed to start FaultManager: %s", e)
         else:
             # Fault tolerance was disabled
             logger.info("Fault tolerance feature disabled, stopping FaultManager...")
@@ -111,7 +113,7 @@ def on_config_updated() -> None:
                 else:
                     logger.warning("FaultManager not found in modules")
             except Exception as e:
-                logger.error(f"Failed to stop FaultManager: {e}")
+                logger.error("Failed to stop FaultManager: %s", e)
 
         # Update previous state
         previous_fault_tolerance_enabled = current_fault_tolerance_enabled
@@ -122,9 +124,9 @@ def on_config_updated() -> None:
         if hasattr(module, 'update_config'):
             try:
                 module.update_config(config)
-                logger.info(f"Updated configuration for {module_name}")
+                logger.info("Updated configuration for %s", module_name)
             except Exception as e:
-                logger.error(f"Failed to update configuration for {module_name}: {e}")
+                logger.error("Failed to update configuration for %s: %s", module_name, e)
 
     # Log configuration summary after reload
     log_config_summary("Configuration reloaded, printing updated summary:")
@@ -139,7 +141,7 @@ observers_list = {
 def init_all_modules() -> None:
     """Initialize all modules but don't start them yet"""
 
-    global config, modules
+    global config
     if config is None:
         config = ControllerConfig()
 
@@ -147,10 +149,12 @@ def init_all_modules() -> None:
     modules["EventPusher"] = EventPusher(config)
     if config.fault_tolerance_config.enable_fault_tolerance:
         from motor.controller.fault_tolerance import FaultManager
+
         modules["FaultManager"] = FaultManager(config)
     modules["InstanceManager"] = InstanceManager(config)
     if config.observability_config.observability_enable:
         from motor.controller.observability.observability import Observability
+
         modules["Observability"] = Observability(config)
     modules["ControllerAPI"] = ControllerAPI(config, modules)
 
@@ -177,10 +181,10 @@ def start_all_modules(exclude_modules: set[str] | None = None) -> None:
             continue
         if hasattr(module, 'start'):
             try:
-                logger.info(f"Starting {module_name}")
+                logger.info("Starting %s", module_name)
                 module.start()
             except Exception as e:
-                logger.error(f"Error starting module {module_name}: {e}")
+                logger.error("Error starting module %s: %s", module_name, e)
     logger.info("All modules started")
 
 
@@ -192,22 +196,17 @@ def stop_all_modules(exclude_modules: set[str] | None = None) -> None:
     for module_name, module in modules.items():
         if module_name in exclude_modules:
             continue
-        if (
-            module is not None
-            and hasattr(module, 'stop')
-            and module.is_alive()
-        ):
+        if module is not None and hasattr(module, 'stop') and module.is_alive():
             try:
                 module.stop()
             except Exception as e:
-                logger.error(f"Error stopping module {module_name}: {e}")
+                logger.error("Error stopping module %s: %s", module_name, e)
     logger.info("All modules stopped.")
 
 
 def on_become_master(should_report_event: bool) -> None:
-    """Callback when becoming master - start all modules except ControllerAPI (which runs always)""" 
+    """Callback when becoming master - start all modules except ControllerAPI (which runs always)"""
     logger.info("Becoming master, starting all modules except ControllerAPI...")
-    global config
     if not modules:  # Only initialize if not already initialized
         init_all_modules()
     # Start all modules except ControllerAPI, which should always be running
@@ -216,6 +215,7 @@ def on_become_master(should_report_event: bool) -> None:
     if should_report_event:
         from motor.common.alarm.controller_to_slave_event import ControllerToSlaveEvent, ControllerToSlaveReason
         from motor.controller.observability.observability import Observability
+
         event = ControllerToSlaveEvent(
             reason_id=ControllerToSlaveReason.MASTER_CONTROLLER_EXCEPTION,
         )
@@ -231,7 +231,6 @@ def on_become_standby() -> None:
 
 
 def signal_handler(sig, frame) -> None:
-    global config_watcher, standby_manager
     logger.warning("Receive signal %d, exit gracefully...", sig)
     stop_event.set()
     stop_all_modules()
@@ -250,10 +249,9 @@ def signal_handler(sig, frame) -> None:
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Motor Controller')
-    parser.add_argument('--config', '-c', 
-                        type=str, 
-                        default=None,
-                        help='Path to configuration file (default: auto-detect)')
+    parser.add_argument(
+        '--config', '-c', type=str, default=None, help='Path to configuration file (default: auto-detect)'
+    )
     return parser.parse_args()
 
 
@@ -270,21 +268,15 @@ def main() -> None:
         config = ControllerConfig.from_json()
         logger.info("Using configuration from environment variable USER_CONFIG_PATH")
 
+    run_port_setup_or_exit(apply_controller_ports, config)
+
     # Initialize previous fault tolerance state
     previous_fault_tolerance_enabled = config.fault_tolerance_config.enable_fault_tolerance
 
     # Log configuration summary
     log_config_summary()
 
-    # Start configuration file watcher if config file exists
-    if config.config_path and os.path.exists(config.config_path):
-        config_watcher = ConfigWatcher(
-            config_path=config.config_path,
-            reload_callback=config.reload,
-            config_update_callback=on_config_updated
-        )
-        config_watcher.start()
-        logger.info("Configuration file watcher started")
+    config_watcher = start_config_file_watcher(config, on_config_updated)
 
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -304,10 +296,7 @@ def main() -> None:
 
         # Get singleton instance and initialize/start it
         standby_manager = StandbyManager(config)
-        standby_manager.start(
-            on_become_master=on_become_master,
-            on_become_standby=on_become_standby
-        )
+        standby_manager.start(on_become_master=on_become_master, on_become_standby=on_become_standby)
         logger.info("Controller started in standby mode, waiting to become master...")
     else:
         logger.info("Master/standby feature is disabled, running in standalone mode")
@@ -327,7 +316,7 @@ def main() -> None:
                     if user_input == 'stop':
                         stop_event.set()
                         break
-                    elif user_input:
+                    if user_input:
                         logger.error("Unknown command: %s", user_input)
             except EOFError:
                 # In non-interactive environment, just continue

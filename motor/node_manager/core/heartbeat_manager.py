@@ -10,18 +10,22 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import os
 import threading
 import time
+import socket
 
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.http_msg_spec import StartCmdMsg, HeartbeatMsg
-from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, RETRY_LOG_FREQUENCY
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.node_manager.api_client.engine_server_api_client import EngineServerApiClient
 from motor.node_manager.core.engine_manager import EngineManager
+from motor.node_manager.core.daemon import Daemon
+
 
 logger = get_logger(__name__)
 
@@ -62,6 +66,13 @@ class HeartbeatManager(ThreadSafeSingleton):
         self._abnormal_count_lock = threading.Lock()
         self._should_suicide = False
         self._suicide_lock = threading.Lock()
+        # for snapshot
+        self._register_after_restore_retry_count = 0
+        self._is_registered_after_restore = False
+        self._is_started_after_restore = False
+        self._started_after_restore_lock = threading.Lock()
+        self._endpoints_generation = 0
+
         self._initialized = True
         logger.info("HeartBeatManager module start.")
 
@@ -89,6 +100,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             self._endpoints.clear()
             for item in node_manager_info.endpoints:
                 self._endpoints.append(item)
+            self._endpoints_generation += 1
         # Reset abnormal count when endpoints are updated
         with self._abnormal_count_lock:
             self._consecutive_abnormal_count = 0
@@ -103,7 +115,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         """
         with self._suicide_lock:
             return self._should_suicide
-    
+
     def stop(self) -> None:
         self.stop_event.set()
         if self._heartbeat_report_thread.is_alive():
@@ -117,33 +129,104 @@ class HeartbeatManager(ThreadSafeSingleton):
         Check if all endpoints are in normal status.
 
         Returns:
-            bool: True if all endpoints are normal, False if any endpoint is abnormal
+            bool: True if all endpoints are normal, False if no endpoints or any endpoint is abnormal
         """
         with self._endpoint_lock:
+            if not self._endpoints:
+                logger.debug("[snapshot] No endpoints were pulled up yet")
+                return False
             for endpoint in self._endpoints:
                 if endpoint.status != EndpointStatus.NORMAL:
-                    logger.warning("Endpoint %d at %s:%s is in status %s",
-                                   endpoint.id, endpoint.ip, endpoint.mgmt_port, endpoint.status)
+                    logger.warning(
+                        "Endpoint %d at %s:%s is in status %s",
+                        endpoint.id,
+                        endpoint.ip,
+                        endpoint.mgmt_port,
+                        endpoint.status,
+                    )
                     return False
         logger.debug("All endpoints are in normal status")
         return True
 
+    def pause_all_endpoints(self) -> None:
+        """Set all managed endpoints to PAUSED status for PreStop graceful shutdown.
+
+        After this call:
+        - check_all_endpoints_normal() returns False → readiness probe fails
+        - Heartbeat reports PAUSED status to Controller
+        - Controller triggers instance PAUSE flow
+        """
+        with self._endpoint_lock:
+            for endpoint in self._endpoints:
+                endpoint.status = EndpointStatus.PAUSED
+        logger.info("All endpoints set to PAUSED for graceful shutdown")
+
+    def get_engine_mgmt_addrs(self) -> list[str]:
+        """Return engine management addresses for local metrics polling."""
+        with self._endpoint_lock:
+            return [f"{ep.ip}:{ep.mgmt_port}" for ep in self._endpoints]
+
+    def resume_all_endpoints(self) -> None:
+        """Resume all endpoints from PAUSED back to NORMAL status.
+
+        Used when PreStop is cancelled. The next heartbeat will report
+        NORMAL status, and Controller will trigger instance RESUME flow.
+        """
+        with self._endpoint_lock:
+            for endpoint in self._endpoints:
+                if endpoint.status == EndpointStatus.PAUSED:
+                    endpoint.status = EndpointStatus.NORMAL
+        logger.info("All endpoints resumed to NORMAL")
+
+    def is_started_after_restore(self) -> bool:
+        with self._started_after_restore_lock:
+            return self._is_started_after_restore
+
+    def set_started_after_restore(self, is_started: bool) -> None:
+        with self._started_after_restore_lock:
+            self._is_started_after_restore = is_started
+
     def _refresh_endpoints_status_loop(self) -> None:
+        # Poll each engine server's mgmt port until it responds (max 60s)
+        self._wait_for_engine_servers_ready(timeout=60)
         while not self.stop_event.is_set():
             self._get_engine_server_status()
             time.sleep(1)
 
+    def _wait_for_engine_servers_ready(self, timeout: float = 60) -> None:
+        """Poll each endpoint's mgmt port until it accepts connections or timeout."""
+        with self._endpoint_lock:
+            endpoints = list(self._endpoints)
+
+        deadline = time.time() + timeout
+        daemon = Daemon()
+        for endpoint in endpoints:
+            address = f"{endpoint.ip}:{endpoint.mgmt_port}"
+            logger.info("Waiting for engine server at %s to become ready...", address)
+            while not self.stop_event.is_set() and time.time() < deadline:
+                try:
+                    with socket.create_connection((endpoint.ip, int(endpoint.mgmt_port)), timeout=2):
+                        logger.info("Engine server at %s is ready.", address)
+                        break
+                except (OSError, ConnectionRefusedError, TimeoutError):
+                    # Check if engine process is still alive
+                    if not any(os.path.isdir(f"/proc/{pid}") for pid in daemon.engine_pids):
+                        logger.error("Engine process for %s is no longer running, aborting wait.", address)
+                        break
+                    time.sleep(1)
+
     def _get_engine_server_status(self) -> None:
         with self._endpoint_lock:
             endpoints_snapshot = list(self._endpoints)
+            generation_at_start = self._endpoints_generation
+
+        if not endpoints_snapshot:
+            return
 
         # Check if within one minute after startup
-        if (
-            self._is_within_grace_period
-            and self._engine_status_thread_start_time is not None
-        ):
+        if self._is_within_grace_period and self._engine_status_thread_start_time is not None:
             elapsed_time = time.time() - self._engine_status_thread_start_time
-            self._is_within_grace_period = elapsed_time < 60
+            self._is_within_grace_period = elapsed_time < 120
 
         updated_endpoints = []
         client = None
@@ -158,29 +241,25 @@ class HeartbeatManager(ThreadSafeSingleton):
                     status_value = response.get("status")
                     try:
                         detected_status = EndpointStatus(status_value)
-                        if detected_status != original_status:
-                            logger.info(
-                                "Engine Server rank %d, status change from %s to %s ",
-                                item.id, original_status, detected_status
-                            )
                     except ValueError:
                         logger.error(
                             "Invalid status value '%s' from Engine Server %d: %s",
-                            status_value, item.id, engine_server_base_url
+                            status_value,
+                            item.id,
+                            engine_server_base_url,
                         )
                         detected_status = EndpointStatus.ABNORMAL
                 else:
                     logger.error(
                         "Invalid response format from Engine Server%d: %s: %s",
-                        item.id, engine_server_base_url, response
+                        item.id,
+                        engine_server_base_url,
+                        response,
                     )
                     detected_status = EndpointStatus.ABNORMAL
             except Exception as e:
                 if not self._is_within_grace_period:
-                    logger.error(
-                        "Failed to get engine server status from %s: %s",
-                        engine_server_base_url, e
-                    )
+                    logger.error("Failed to get engine server status from %s: %s", engine_server_base_url, e)
                 detected_status = EndpointStatus.ABNORMAL
             finally:
                 if client is not None:
@@ -189,40 +268,58 @@ class HeartbeatManager(ThreadSafeSingleton):
                     except Exception as e:
                         logger.error("Failed to close client: %s", e)
 
-            # If within grace period and abnormal status detected, do not update status
-            if (
-                self._is_within_grace_period
-                and detected_status == EndpointStatus.ABNORMAL
-            ):
+            if is_restored_from_host_side_snapshot() and not self.is_started_after_restore():
+                # If restored from host side snapshot and not started after restore, keep original status
                 logger.debug(
-                    "Engine server %s status is abnormal within grace period, "
-                    "keeping original status: %s",
-                    engine_server_base_url, original_status
+                    "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
+                    "keeping stale status: %s",
+                    original_status,
                 )
+                item.status = original_status
+            elif self._is_within_grace_period and detected_status == EndpointStatus.ABNORMAL:
+                # If within grace period and abnormal status detected, do not update status
+                logger.debug(
+                    "Engine server %s status is abnormal within grace period, keeping original status: %s",
+                    engine_server_base_url,
+                    original_status,
+                )
+                item.status = original_status
+            # Preserve manually-set PAUSED status (PreStop) — do not overwrite with engine-reported status
+            elif original_status == EndpointStatus.PAUSED:
                 item.status = original_status
             else:
                 item.status = detected_status
 
+            if item.status != original_status:
+                logger.info(
+                    "Engine Server rank %d, status change from %s to %s ",
+                    item.id,
+                    original_status,
+                    item.status,
+                )
+
             updated_endpoints.append(item)
 
         with self._endpoint_lock:
+            if generation_at_start != self._endpoints_generation:
+                return
             self._endpoints = updated_endpoints
 
     def _report_heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
+                if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
+                    logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
+                    self._register_after_restore()
+                    time.sleep(self.heartbeat_interval_seconds)
+                    continue
+
                 with self._endpoint_lock:
                     # Check if any endpoint has abnormal status (only after grace period)
                     # Check actual endpoint status, not the reported status
-                    has_abnormal = any(
-                        item.status == EndpointStatus.ABNORMAL
-                        for item in self._endpoints
-                    )
-                    
-                    endpoint_status_list = {
-                        item.id: item.status
-                        for item in self._endpoints
-                    }
+                    has_abnormal = any(item.status == EndpointStatus.ABNORMAL for item in self._endpoints)
+
+                    endpoint_status_list = {item.id: item.status for item in self._endpoints}
 
                 # Build message and send request outside of lock
                 heartbeat_msg = HeartbeatMsg(
@@ -238,15 +335,11 @@ class HeartbeatManager(ThreadSafeSingleton):
                 with self._abnormal_count_lock:
                     if has_abnormal:
                         self._consecutive_abnormal_count += 1
-                        logger.warning(
-                            "Consecutive abnormal heartbeat count: %d/5",
-                            self._consecutive_abnormal_count
-                        )
+                        logger.warning("Consecutive abnormal heartbeat count: %d/5", self._consecutive_abnormal_count)
                         # Set suicide flag if reached 5 consecutive abnormal heartbeats
                         if self._consecutive_abnormal_count >= 5:
                             logger.error(
-                                "Reached 5 consecutive abnormal heartbeats, "
-                                "setting suicide flag for main to handle..."
+                                "Reached 5 consecutive abnormal heartbeats, setting suicide flag for main to handle..."
                             )
                             with self._suicide_lock:
                                 self._should_suicide = True
@@ -254,15 +347,36 @@ class HeartbeatManager(ThreadSafeSingleton):
                         self._consecutive_abnormal_count = 0
 
             except Exception as e:
-                if "503" in str(e):
-                    logger.warning("Received 503, maybe controller has been restarted, reregistering...")
-                    self._reregister()
+                # Exception triggered by host side snapshot restore, nodeManager re-send register message
+                if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
+                    logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
+                    self._register_after_restore()
+                elif "503" in str(e):
+                    if not is_restored_from_host_side_snapshot() or self.is_started_after_restore():
+                        logger.warning("Received 503, maybe controller has been restarted, reregistering...")
+                        self._reregister()
                 else:
                     with self.config_lock:
                         logger.error("Exception occurred while reporting endpoint status to controller: %s", e)
 
             with self.config_lock:
                 time.sleep(self.heartbeat_interval_seconds)
+
+    def _register_after_restore(self) -> None:
+        # refresh config: job_name from snapshot metadata and new pod ip
+        try:
+            EngineManager().register_prepare_after_restore()
+        except Exception as e:
+            if self._register_after_restore_retry_count % RETRY_LOG_FREQUENCY == 0:
+                logger.error("[snapshot] Failed to register prepare after restore: %s", e)
+            self._register_after_restore_retry_count += 1
+            return
+
+        # Register for post-snapshot brandnew job name
+        # Do not consider retry
+        # If current register failed, next register will be triggered by next heartbeat report exception
+        ret = EngineManager().post_register_msg()
+        self._is_registered_after_restore = ret is True
 
     def _reregister(self) -> None:
         ret = EngineManager().post_reregister_msg()

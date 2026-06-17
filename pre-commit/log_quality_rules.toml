@@ -1,0 +1,40 @@
+# Basic log quality rules for pre-commit (motor/ production code).
+# Full standard: ~/.hermes/skills/local/log-quality/log-quality-standard/external-standard.md
+
+[scope]
+# Only files under these path prefixes are checked (relative to repo root).
+path_prefixes = ["motor/"]
+
+[hard_fail.privacy]
+# Match log message text, keyword names, or variable names passed to logger calls.
+identifiers = [
+  "prompt",
+  "messages",
+  "password",
+  "passwd",
+  "api_key",
+  "access_token",
+  "secret_key",
+  "private_key",
+]
+
+[hard_fail.vague]
+# ERROR/WARNING with a single literal message matching these (case-insensitive) fail.
+exact_messages = [
+  "failed",
+  "error",
+  "timeout",
+  "link failed",
+  "connect failed",
+]
+min_message_length = 15
+
+[soft_warn]
+info_failure_keywords = [
+  "fail",
+  "failed",
+  "error",
+  "exception",
+  "timeout",
+  "unable",
+]

@@ -12,7 +12,7 @@ import hashlib
 import pytest
 from unittest.mock import MagicMock, patch
 
-from motor.common.resources import Instance, ParallelConfig, Endpoint
+from motor.common.resources import Instance, InsStatus, ParallelConfig, Endpoint, ReadOnlyInstance
 from motor.common.resources.http_msg_spec import RegisterMsg, ReregisterMsg, Ranktable, ServerInfo, DeviceInfo
 from motor.controller.core.instance_assembler import (
     InstanceAssembler,
@@ -26,9 +26,9 @@ from motor.config.controller import ControllerConfig
 
 
 def build_pod_ranktable(
-    pod_ip: str, 
-    pod_device_num: int, 
-    rank_offset: int = 0, 
+    pod_ip: str,
+    pod_device_num: int,
+    rank_offset: int = 0,
     is_supperpod: bool = True,
 ) -> Ranktable:
     """
@@ -51,11 +51,12 @@ def build_pod_ranktable(
                         super_device_id="0" if is_supperpod else None,
                     )
                     for i in range(pod_device_num)
-                ]
+                ],
             )
         ],
     )
     return ranktable
+
 
 @pytest.fixture
 def test_config():
@@ -65,14 +66,14 @@ def test_config():
     role = "prefill"
     pod_ip1 = "127.0.0.1"
     pod_ip2 = "127.0.0.2"
-    parallel_config = ParallelConfig(dp_size=dp, tp_size=tp)
+    parallel_config = ParallelConfig(dp_size=dp, tp_size=tp, local_world_size=tp, world_size=dp * tp)
     return {
         'dp': dp,
         'tp': tp,
         'role': role,
         'pod_ip1': pod_ip1,
         'pod_ip2': pod_ip2,
-        'parallel_config': parallel_config
+        'parallel_config': parallel_config,
     }
 
 
@@ -107,7 +108,7 @@ def mock_config():
     config.etcd_config.enable_etcd_persistence = False
     config.instance_config.instance_assemble_timeout = 1.0  # Fast timeout for tests
     config.instance_config.instance_assembler_check_interval = 0.1
-    config.instance_config.instance_assembler_cmd_send_internal = 0.1
+    config.instance_config.instance_assembler_cmd_send_interval = 0.1
     config.instance_config.send_cmd_retry_times = 3
     return config
 
@@ -138,15 +139,11 @@ def create_register_msg(job_name: str, pod_ip: str, config: dict, **kwargs) -> R
         'nm_port': "8088",
         'parallel_config': config['parallel_config'],
         'enable_multi_endpoints': True,
-        'device_num': 2 * config['tp']  # device count based on tp size
+        'device_num': 2 * config['tp'],  # device count based on tp size
     }
     defaults.update(kwargs)
 
-    return RegisterMsg(
-        job_name=job_name,
-        pod_ip=pod_ip,
-        **defaults
-    )
+    return RegisterMsg(job_name=job_name, pod_ip=pod_ip, **defaults)
 
 
 def create_reregister_msg(job_name: str, pod_ip: str, instance_id: int, config: dict, endpoints: list) -> ReregisterMsg:
@@ -172,17 +169,15 @@ def create_reregister_msg(job_name: str, pod_ip: str, instance_id: int, config: 
 
 def register_instance_with_pods(assembler: InstanceAssembler, job_name: str, config: dict, pod_count: int = 2) -> bool:
     """Register pods for an instance and return whether assembly is complete"""
-    pod_ips = [f"127.0.0.{i+1}" for i in range(pod_count)]
+    pod_ips = [f"127.0.0.{i + 1}" for i in range(pod_count)]
 
     for i, pod_ip in enumerate(pod_ips):
         rank_offset = i * 2 * config['tp']
         msg = create_register_msg(
-            job_name, pod_ip, config,
-            ranktable=build_pod_ranktable(
-                pod_ip=pod_ip,
-                pod_device_num=2 * config['tp'],
-                rank_offset=rank_offset
-            )
+            job_name,
+            pod_ip,
+            config,
+            ranktable=build_pod_ranktable(pod_ip=pod_ip, pod_device_num=2 * config['tp'], rank_offset=rank_offset),
         )
         result = assembler.register(msg)
         assert result == 0
@@ -206,10 +201,11 @@ def create_assembled_instance(assembler: InstanceAssembler, job_name: str, confi
 
 # ===== Basic Functionality Tests =====
 
+
 def test_initialization(mock_config):
     """Test InstanceAssembler initialization"""
-    with patch('threading.Thread') as mock_thread_class:
-        with patch('motor.controller.core.instance_assembler.EtcdClient') as mock_etcd_class:
+    with patch('threading.Thread'):
+        with patch('motor.controller.core.instance_assembler.EtcdClient'):
             assembler = InstanceAssembler(mock_config)
 
             assert assembler.etcd_config is mock_config.etcd_config
@@ -274,12 +270,14 @@ def test_register_existing_instance(instance_assembler, test_config):
     assert len(instance_assembler.instances) == 1
 
     # Second registration to same instance
-    msg2 = create_register_msg(job_name, test_config['pod_ip2'], test_config,
-                              ranktable=build_pod_ranktable(
-                                  pod_ip=test_config['pod_ip2'],
-                                  pod_device_num=2 * test_config['tp'],
-                                  rank_offset=2 * test_config['tp']
-                              ))
+    msg2 = create_register_msg(
+        job_name,
+        test_config['pod_ip2'],
+        test_config,
+        ranktable=build_pod_ranktable(
+            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
+        ),
+    )
     result2 = instance_assembler.register(msg2)
     assert result2 == 0
 
@@ -305,8 +303,10 @@ def test_register_already_assembled_instance(instance_assembler, test_config):
     def stop_sleep(*args, **kwargs):
         raise RuntimeError("Stop iteration")
 
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command', return_value=True):
-        with patch('time.sleep', side_effect=stop_sleep):
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command', return_value=True
+    ):
+        with patch.object(instance_assembler.work_condition, 'wait', side_effect=stop_sleep):
             try:
                 instance_assembler._start_commmand_sender()
             except RuntimeError as e:
@@ -331,7 +331,9 @@ def test_reregister_new_instance(instance_assembler, test_config):
     reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
     endpoints = instance_assembler._build_single_endpoint(reg_msg, 0)
 
-    msg = create_reregister_msg(job_name, test_config['pod_ip1'], instance_id=5, config=test_config, endpoints=endpoints)
+    msg = create_reregister_msg(
+        job_name, test_config['pod_ip1'], instance_id=5, config=test_config, endpoints=endpoints
+    )
     result = instance_assembler.reregister(msg)
 
     assert result == 0
@@ -350,21 +352,25 @@ def test_reregister_already_assembled_instance(instance_assembler, test_config):
     # First reregister and assemble (multi-endpoint mode: 2 pods × 2 endpoints = 4 endpoints)
     reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
     endpoints = instance_assembler._build_multi_endpoints(reg_msg, 0)
-    msg = create_reregister_msg(job_name, test_config['pod_ip1'], instance_id=0, config=test_config, endpoints=endpoints)
+    msg = create_reregister_msg(
+        job_name, test_config['pod_ip1'], instance_id=0, config=test_config, endpoints=endpoints
+    )
     result = instance_assembler.reregister(msg)
     assert result == 0
 
     # Register second pod to complete assembly
     reg_msg2 = create_register_msg(
-        job_name, test_config['pod_ip2'], test_config,
+        job_name,
+        test_config['pod_ip2'],
+        test_config,
         ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'],
-            pod_device_num=2 * test_config['tp'],
-            rank_offset=2 * test_config['tp']
-        )
+            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
+        ),
     )
     endpoints2 = instance_assembler._build_multi_endpoints(reg_msg2, 2)
-    msg2 = create_reregister_msg(job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints2)
+    msg2 = create_reregister_msg(
+        job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints2
+    )
     result2 = instance_assembler.reregister(msg2)
     assert result2 == 0
 
@@ -448,12 +454,12 @@ def test_assembly_complete_instance_reregistration(instance_assembler, test_conf
     # Build endpoints for reregistration (multi-endpoint mode: 2 pods × 2 endpoints = 4 endpoints)
     reg_msg1 = create_register_msg(job_name, test_config['pod_ip1'], test_config)
     reg_msg2 = create_register_msg(
-        job_name, test_config['pod_ip2'], test_config,
+        job_name,
+        test_config['pod_ip2'],
+        test_config,
         ranktable=build_pod_ranktable(
-            pod_ip=test_config['pod_ip2'],
-            pod_device_num=2 * test_config['tp'],
-            rank_offset=2 * test_config['tp']
-        )
+            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
+        ),
     )
 
     endpoints1 = instance_assembler._build_multi_endpoints(reg_msg1, 0)
@@ -514,7 +520,9 @@ def test_send_start_command_success(instance_assembler, test_config):
     metadata = create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock successful API calls
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command') as mock_send:
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+    ) as mock_send:
         mock_send.return_value = True
 
         result = instance_assembler._send_start_command(metadata)
@@ -533,12 +541,15 @@ def test_send_start_command_partial_failure(instance_assembler, test_config):
 
     # Mock partial failure
     call_count = 0
+
     def side_effect(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         return call_count == 1  # First call succeeds, second fails
 
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command') as mock_send:
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+    ) as mock_send:
         mock_send.side_effect = side_effect
 
         result = instance_assembler._send_start_command(metadata)
@@ -555,7 +566,7 @@ def test_send_start_command_no_endpoints(instance_assembler, test_config):
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     # Add node managers
@@ -569,7 +580,9 @@ def test_send_start_command_no_endpoints(instance_assembler, test_config):
 
     metadata = AssembleInstanceMetadata(instance=instance)
 
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command') as mock_send:
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+    ) as mock_send:
         mock_send.return_value = True
 
         result = instance_assembler._send_start_command(metadata)
@@ -584,17 +597,19 @@ def test_start_command_sender_success(instance_assembler, test_config):
     job_name = "test_sender_success"
 
     # Create assembled instance
-    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock successful send
     def stop_sleep(*args, **kwargs):
         raise RuntimeError("Stop iteration")
 
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command') as mock_send:
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+    ) as mock_send:
         mock_send.return_value = True
 
-        # Mock time.sleep to stop after one iteration
-        with patch('time.sleep', side_effect=stop_sleep):
+        # Mock work_condition.wait to stop after one iteration
+        with patch.object(instance_assembler.work_condition, 'wait', side_effect=stop_sleep):
             try:
                 instance_assembler._start_commmand_sender()
             except RuntimeError as e:
@@ -610,17 +625,19 @@ def test_start_command_sender_retry(instance_assembler, test_config):
     job_name = "test_sender_retry"
 
     # Create assembled instance
-    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock failed send
     def stop_sleep(*args, **kwargs):
         raise RuntimeError("Stop iteration")
 
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command') as mock_send:
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+    ) as mock_send:
         mock_send.return_value = False
 
-        # Mock time.sleep to stop after one iteration
-        with patch('time.sleep', side_effect=stop_sleep):
+        # Mock work_condition.wait to stop after one iteration
+        with patch.object(instance_assembler.work_condition, 'wait', side_effect=stop_sleep):
             try:
                 instance_assembler._start_commmand_sender()
             except RuntimeError as e:
@@ -640,17 +657,19 @@ def test_start_command_sender_max_retries(instance_assembler, test_config):
     instance_assembler.send_cmd_retry_times = 2
 
     # Create assembled instance
-    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    create_assembled_instance(instance_assembler, job_name, test_config)
 
     # Mock failed sends
     def stop_sleep(*args, **kwargs):
         raise RuntimeError("Stop iteration")
 
-    with patch('motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command') as mock_send:
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+    ) as mock_send:
         mock_send.return_value = False
 
         # First attempt - should increment retry count
-        with patch('time.sleep', side_effect=stop_sleep):
+        with patch.object(instance_assembler.work_condition, 'wait', side_effect=stop_sleep):
             try:
                 instance_assembler._start_commmand_sender()
             except RuntimeError as e:
@@ -662,7 +681,7 @@ def test_start_command_sender_max_retries(instance_assembler, test_config):
         assert instance_assembler.instances[job_name].start_command_send_times == 1
 
         # Second attempt - should remove instance since max retries (2) reached
-        with patch('time.sleep', side_effect=stop_sleep):
+        with patch.object(instance_assembler.work_condition, 'wait', side_effect=stop_sleep):
             try:
                 instance_assembler._start_commmand_sender()
             except RuntimeError as e:
@@ -700,7 +719,7 @@ def test_persist_data_enabled(instance_assembler, test_config):
     # Reset mock to clear previous calls
     instance_assembler.etcd_client.persist_data.reset_mock()
 
-    result = instance_assembler.persist_data()
+    instance_assembler.persist_data()
 
     # Verify persist was called on etcd_client
     instance_assembler.etcd_client.persist_data.assert_called_once()
@@ -713,7 +732,7 @@ def test_restore_data_disabled(instance_assembler, test_config):
     """Test restore_data when ETCD persistence is disabled"""
     # Disable persistence
     instance_assembler.etcd_config.enable_etcd_persistence = False
-    
+
     # Mock ETCD to return None (no data when persistence is disabled)
     with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=None):
         result = instance_assembler.restore_data()
@@ -729,13 +748,11 @@ def test_restore_data_enabled(instance_assembler, test_config):
         data={"ins_id_cnt": 5, "instances": {}},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     state.checksum = state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": state
-    }
+
+    mock_persistent_states = {"state": state}
 
     with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
         result = instance_assembler.restore_data()
@@ -752,12 +769,7 @@ def test_checksum_calculation(instance_assembler, test_config):
     # Create a persistent state to test checksum calculation
     metadata_data = metadata.model_dump(mode='json')
 
-    state = PersistentState(
-        data=metadata_data,
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    state = PersistentState(data=metadata_data, version=1, timestamp=time.time(), checksum="")
 
     checksum = state.calculate_checksum()
 
@@ -775,12 +787,7 @@ def test_ins_id_cnt_checksum(instance_assembler):
 
     # Create a persistent state for ins_id_cnt
     ins_id_cnt_data = {"ins_id_cnt": instance_assembler.ins_id_cnt}
-    state = PersistentState(
-        data=ins_id_cnt_data,
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    state = PersistentState(data=ins_id_cnt_data, version=1, timestamp=time.time(), checksum="")
 
     checksum = state.calculate_checksum()
 
@@ -821,14 +828,14 @@ def test_restore_data_invalid_checksum(instance_assembler):
             data={"ins_id_cnt": 5, "instances": {}},
             version=1,
             timestamp=time.time(),
-            checksum="invalid_checksum"  # Wrong checksum
+            checksum="invalid_checksum",  # Wrong checksum
         )
     }
 
     with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
         result = instance_assembler.restore_data()
 
-        assert result == False  # Should fail because checksum validation fails
+        assert not result  # Should fail because checksum validation fails
         assert instance_assembler.ins_id_cnt == 1  # Should not restore invalid data
 
 
@@ -846,34 +853,36 @@ def test_restore_data_reconstruction_exception(instance_assembler):
                 "id": 0,
                 "role": "prefill",
                 "parallel_config": {
-                    "dp_size": 1, "cp_size": 1, "tp_size": 1, "sp_size": 1,
-                    "ep_size": 1, "pp_size": 1, "world_size": 1
+                    "dp_size": 1,
+                    "pcp_size": 1,
+                    "tp_size": 1,
+                    "ep_size": 1,
+                    "pp_size": 1,
+                    "world_size": 1,
                 },
                 "endpoints": {},
-                "node_managers": []
+                "node_managers": [],
             },
             "register_status": "NOT_REGISTERED",
             "start_command_send_times": 0,
             "register_timestamp": time.time(),
-            "is_reregister": False
+            "is_reregister": False,
         }
-        
+
         state = PersistentState(
             data={"ins_id_cnt": 1, "instances": {"test_instance": metadata_data}},
             version=1,
             timestamp=time.time(),
-            checksum=""  # Will be calculated
+            checksum="",  # Will be calculated
         )
         state.checksum = state.calculate_checksum()
-        
-        mock_persistent_states = {
-            "state": state
-        }
+
+        mock_persistent_states = {"state": state}
 
         with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
             result = instance_assembler.restore_data()
 
-            assert result == True  # Should succeed but skip problematic instance
+            assert result  # Should succeed but skip problematic instance
             assert len(instance_assembler.instances) == 0  # Should not restore invalid instance
 
 
@@ -885,12 +894,7 @@ def test_checksum_calculation_exception_handling(instance_assembler, test_config
     # Create a persistent state to test checksum calculation
     metadata_data = metadata.model_dump(mode='json')
 
-    state = PersistentState(
-        data=metadata_data,
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    state = PersistentState(data=metadata_data, version=1, timestamp=time.time(), checksum="")
 
     # Mock hashlib.sha256 to raise an exception
     with patch.object(hashlib, 'sha256', side_effect=Exception("Hash calculation failed")):
@@ -905,12 +909,7 @@ def test_ins_id_cnt_checksum_exception_handling(instance_assembler):
 
     # Create a persistent state for ins_id_cnt
     ins_id_cnt_data = {"ins_id_cnt": instance_assembler.ins_id_cnt}
-    state = PersistentState(
-        data=ins_id_cnt_data,
-        version=1,
-        timestamp=time.time(),
-        checksum=""
-    )
+    state = PersistentState(data=ins_id_cnt_data, version=1, timestamp=time.time(), checksum="")
 
     # Mock hashlib.sha256 to raise an exception
     with patch.object(hashlib, 'sha256', side_effect=Exception("Hash calculation failed")):
@@ -926,7 +925,7 @@ def test_persistent_state_is_valid_method():
         data={"test": "data"},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
 
     # Manually set correct checksum
@@ -934,13 +933,8 @@ def test_persistent_state_is_valid_method():
     assert valid_state.is_valid() is True
 
     # Create invalid state with wrong checksum
-    invalid_state = PersistentState(
-        data={"test": "data"},
-        version=1,
-        timestamp=time.time(),
-        checksum="wrong_checksum"
-    )
-    assert invalid_state.is_valid() == False
+    invalid_state = PersistentState(data={"test": "data"}, version=1, timestamp=time.time(), checksum="wrong_checksum")
+    assert not invalid_state.is_valid()
 
 
 def test_restore_data_with_type_conversion():
@@ -954,12 +948,12 @@ def test_restore_data_with_type_conversion():
             "role": "prefill",
             "parallel_config": None,
             "endpoints": {},  # dict
-            "node_managers": []  # list
+            "node_managers": [],  # list
         },
         "register_status": "ASSEMBLED",  # enum value as string from ETCD
         "start_command_send_times": "0",  # int as string
         "register_timestamp": str(time.time()),  # float as string
-        "is_reregister": "False"  # bool as string
+        "is_reregister": "False",  # bool as string
     }
 
     # Mock persistent state with string-formatted metadata (new format: single PersistentState)
@@ -967,13 +961,11 @@ def test_restore_data_with_type_conversion():
         data={"ins_id_cnt": 1, "instances": {"test_type_conversion": etcd_string_metadata}},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     persistent_state.checksum = persistent_state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": persistent_state
-    }
+
+    mock_persistent_states = {"state": persistent_state}
 
     with patch('motor.controller.core.instance_assembler.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -996,7 +988,7 @@ def test_restore_data_with_type_conversion():
         assert metadata.instance.id == 208  # string "208" converted to int 208
         assert metadata.register_status == RegisterStatus.ASSEMBLED  # string "ASSEMBLED" converted to enum
         assert metadata.start_command_send_times == 0  # string "0" converted to int 0
-        assert metadata.is_reregister == False  # string "False" converted to bool False
+        assert not metadata.is_reregister  # string "False" converted to bool False
 
 
 def test_restore_data_with_invalid_enum_value():
@@ -1010,12 +1002,12 @@ def test_restore_data_with_invalid_enum_value():
             "role": "prefill",
             "parallel_config": None,
             "endpoints": {},
-            "node_managers": []
+            "node_managers": [],
         },
         "register_status": "999",  # Invalid enum value as string
         "start_command_send_times": "0",
         "register_timestamp": str(time.time()),
-        "is_reregister": "False"
+        "is_reregister": "False",
     }
 
     # Mock persistent state (new format: single PersistentState)
@@ -1023,13 +1015,11 @@ def test_restore_data_with_invalid_enum_value():
         data={"ins_id_cnt": 1, "instances": {"test_invalid_enum": corrupted_metadata}},
         version=1,
         timestamp=time.time(),
-        checksum=""  # Will be calculated
+        checksum="",  # Will be calculated
     )
     persistent_state.checksum = persistent_state.calculate_checksum()
-    
-    mock_persistent_states = {
-        "state": persistent_state
-    }
+
+    mock_persistent_states = {"state": persistent_state}
 
     with patch('motor.controller.core.instance_assembler.EtcdClient') as mock_etcd_class:
         mock_client = MagicMock()
@@ -1092,11 +1082,11 @@ def test_instances_assembler_loop_stop_event(instance_assembler, test_config):
     # Set stop event
     instance_assembler.stop_event.set()
 
-    # Mock sleep to raise RuntimeError when stop event is set
+    # Mock work_condition.wait to raise RuntimeError when stop event is set
     def stop_sleep(*args, **kwargs):
         raise RuntimeError("Stop iteration")
 
-    with patch('time.sleep', side_effect=stop_sleep):
+    with patch.object(instance_assembler.work_condition, 'wait', side_effect=stop_sleep):
         try:
             instance_assembler._instances_assembler_loop()
         except RuntimeError as e:
@@ -1161,11 +1151,13 @@ def test_update_config(instance_assembler):
         assert instance_assembler.etcd_config.etcd_timeout == 30.0
 
         # Verify ETCD client constructor was called with new config
-        mock_etcd_class.assert_called_once_with(etcd_config=new_config.etcd_config,
-                                                tls_config=new_config.etcd_tls_config)
+        mock_etcd_class.assert_called_once_with(
+            etcd_config=new_config.etcd_config, tls_config=new_config.etcd_tls_config
+        )
 
 
 # ===== Persistence and Recovery Tests =====
+
 
 def test_persist_and_restore_data_success(instance_assembler, test_config):
     """Test successful persist and restore of instance assembler data"""
@@ -1189,17 +1181,9 @@ def test_persist_and_restore_data_success(instance_assembler, test_config):
 
             # Create mock persistent state for restore (new format: single PersistentState)
             metadata_data = metadata.model_dump(mode='json')
-            assembler_data = {
-                "ins_id_cnt": instance_assembler.ins_id_cnt,
-                "instances": {"test_persist": metadata_data}
-            }
-            
-            assembler_state = PersistentState(
-                data=assembler_data,
-                version=1,
-                timestamp=time.time(),
-                checksum=""
-            )
+            assembler_data = {"ins_id_cnt": instance_assembler.ins_id_cnt, "instances": {"test_persist": metadata_data}}
+
+            assembler_state = PersistentState(data=assembler_data, version=1, timestamp=time.time(), checksum="")
             assembler_state.checksum = assembler_state.calculate_checksum()
             mock_persistent_states = {"state": assembler_state}
 
@@ -1231,7 +1215,7 @@ def test_persist_and_restore_data_success(instance_assembler, test_config):
 def test_persist_data_with_checksum_validation(instance_assembler, test_config):
     """Test that persisted data includes correct checksums"""
     # Create test instance
-    metadata = create_assembled_instance(instance_assembler, "test_checksum", test_config)
+    create_assembled_instance(instance_assembler, "test_checksum", test_config)
 
     # Enable persistence
     instance_assembler.etcd_config.enable_etcd_persistence = True
@@ -1246,12 +1230,12 @@ def test_persist_data_with_checksum_validation(instance_assembler, test_config):
         persisted_data = args[1]
 
         assert "state" in persisted_data
-        
+
         # Get the PersistentState data
         state_data = persisted_data["state"]
         assert "checksum" in state_data
         assert len(state_data["checksum"]) > 0
-        
+
         # Verify the data structure
         assert "data" in state_data
         assert "ins_id_cnt" in state_data["data"]
@@ -1271,7 +1255,7 @@ def test_restore_data_with_invalid_checksum(instance_assembler, test_config):
             data={"ins_id_cnt": 5, "instances": {}},
             version=1,
             timestamp=time.time(),
-            checksum="invalid_checksum"  # Wrong checksum
+            checksum="invalid_checksum",  # Wrong checksum
         )
     }
 
@@ -1319,7 +1303,7 @@ def test_persist_empty_state(instance_assembler):
         persisted_data = args[1]
 
         assert "state" in persisted_data
-        
+
         # Verify state data
         assembler_data = persisted_data["state"]
         assert assembler_data["data"]["ins_id_cnt"] == instance_assembler.ins_id_cnt
@@ -1348,7 +1332,7 @@ def test_filter_abnormal_endpoints_all_normal(instance_assembler, test_config):
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     # Add node managers
@@ -1373,7 +1357,7 @@ def test_filter_abnormal_endpoints_with_abnormal(instance_assembler, test_config
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     # Add node managers and endpoints
@@ -1408,7 +1392,7 @@ def test_filter_abnormal_endpoints_invalid_response(instance_assembler, test_con
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     # Add node manager and endpoints
@@ -1435,7 +1419,7 @@ def test_filter_abnormal_endpoints_connection_error(instance_assembler, test_con
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     # Add node manager and endpoints
@@ -1462,7 +1446,7 @@ def test_filter_abnormal_endpoints_mixed_scenarios(instance_assembler, test_conf
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     # Add node managers and endpoints
@@ -1495,7 +1479,7 @@ def test_filter_abnormal_endpoints_no_node_managers(instance_assembler, test_con
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']
+        parallel_config=test_config['parallel_config'],
     )
 
     with caplog.at_level('WARNING'):
@@ -1513,7 +1497,7 @@ def test_assemble_instance_with_abnormal_endpoints(instance_assembler, test_conf
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']  # dp=4
+        parallel_config=test_config['parallel_config'],  # dp=4
     )
 
     # Add exactly dp_size endpoints
@@ -1549,7 +1533,7 @@ def test_assemble_instance_with_healthy_endpoints(instance_assembler, test_confi
         model_name="test_model",
         id=1,
         role=test_config['role'],
-        parallel_config=test_config['parallel_config']  # dp=4
+        parallel_config=test_config['parallel_config'],  # dp=4
     )
 
     # Add exactly dp_size endpoints
@@ -1562,11 +1546,12 @@ def test_assemble_instance_with_healthy_endpoints(instance_assembler, test_confi
     # Create metadata
     metadata = AssembleInstanceMetadata(instance=instance, register_timestamp=time.time())
 
-        # Mock _filter_abnormal_endpoints (no return value needed)
+    # Mock _filter_abnormal_endpoints (no return value needed)
     # Mock InstanceManager.add_instance
-    with patch.object(instance_assembler, '_filter_abnormal_endpoints'), \
-         patch('motor.controller.core.instance_assembler.InstanceManager') as mock_im_class:
-
+    with (
+        patch.object(instance_assembler, '_filter_abnormal_endpoints'),
+        patch('motor.controller.core.instance_assembler.InstanceManager') as mock_im_class,
+    ):
         mock_im = MagicMock()
         mock_im_class.return_value = mock_im
 
@@ -1587,11 +1572,11 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         id=1,
         role="both",
         parallel_config=ParallelConfig(world_size=16),  # world_size=16
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
     instance1.add_node_mgr("127.0.0.1", "8080", device_num=8)  # 1 node with 8 devices
-    assert instance1.is_endpoints_enough() == False  # Need 2 nodes (16/8=2)
-    
+    assert not instance1.is_endpoints_enough()  # Need 2 nodes (16/8=2)
+
     # Test case 2: Enough node managers
     instance2 = Instance(
         job_name="test_enough_nodes",
@@ -1599,12 +1584,12 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         id=2,
         role="both",
         parallel_config=ParallelConfig(world_size=16),  # world_size=16
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
     instance2.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance2.add_node_mgr("127.0.0.2", "8081", device_num=8)  # 2 nodes with 8 devices each
-    assert instance2.is_endpoints_enough() == True  # Have 2 nodes (16/8=2)
-    
+    assert instance2.is_endpoints_enough()  # Have 2 nodes (16/8=2)
+
     # Test case 3: World size not divisible by device_num (should use ceiling)
     instance3 = Instance(
         job_name="test_ceiling_nodes",
@@ -1612,13 +1597,13 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         id=3,
         role="both",
         parallel_config=ParallelConfig(world_size=20),  # world_size=20
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
     instance3.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance3.add_node_mgr("127.0.0.2", "8081", device_num=8)
     instance3.add_node_mgr("127.0.0.3", "8082", device_num=8)  # 3 nodes with 8 devices each
-    assert instance3.is_endpoints_enough() == True  # Need 3 nodes (ceil(20/8)=3)
-    
+    assert instance3.is_endpoints_enough()  # Need 3 nodes (ceil(20/8)=3)
+
     # Test case 4: Multi-endpoint enabled (should check dp_size)
     instance4 = Instance(
         job_name="test_multi_endpoint",
@@ -1626,7 +1611,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         id=4,
         role="both",
         parallel_config=ParallelConfig(dp_size=4, tp_size=1, pp_size=1),
-        enable_multi_endpoints=True
+        enable_multi_endpoints=True,
     )
     # Add 2 endpoints (less than dp_size=4)
     endpoints = {
@@ -1634,15 +1619,15 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         1: Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="9001"),
     }
     instance4.add_endpoints("127.0.0.1", endpoints)
-    assert instance4.is_endpoints_enough() == False  # Need 4 endpoints
-    
+    assert not instance4.is_endpoints_enough()  # Need 4 endpoints
+
     # Add more endpoints to reach dp_size
     endpoints2 = {
         2: Endpoint(id=2, ip="127.0.0.2", business_port="8002", mgmt_port="9002"),
         3: Endpoint(id=3, ip="127.0.0.2", business_port="8003", mgmt_port="9003"),
     }
     instance4.add_endpoints("127.0.0.2", endpoints2)
-    assert instance4.is_endpoints_enough() == True  # Have 4 endpoints
+    assert instance4.is_endpoints_enough()  # Have 4 endpoints
 
 
 def test_get_all_endpoints_multi_endpoint_disabled():
@@ -1654,9 +1639,9 @@ def test_get_all_endpoints_multi_endpoint_disabled():
         id=1,
         role="both",
         parallel_config=ParallelConfig(dp_size=2, tp_size=1, pp_size=1),
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
-    
+
     # Add multiple endpoints
     endpoints = {
         0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000"),
@@ -1664,11 +1649,11 @@ def test_get_all_endpoints_multi_endpoint_disabled():
         2: Endpoint(id=2, ip="127.0.0.1", business_port="8002", mgmt_port="9002"),
     }
     instance1.add_endpoints("127.0.0.1", endpoints)
-    
+
     all_eps = instance1.get_all_endpoints()
     assert len(all_eps) == 1  # Only 1 endpoint
     assert all_eps[0].id == 0  # Only endpoint with id=0
-    
+
     # Test case 2: Multi-endpoint enabled - should return all endpoints
     instance2 = Instance(
         job_name="test_all_endpoints",
@@ -1676,14 +1661,14 @@ def test_get_all_endpoints_multi_endpoint_disabled():
         id=2,
         role="both",
         parallel_config=ParallelConfig(dp_size=3, tp_size=1, pp_size=1),
-        enable_multi_endpoints=True
+        enable_multi_endpoints=True,
     )
-    
+
     instance2.add_endpoints("127.0.0.1", endpoints)
     all_eps2 = instance2.get_all_endpoints()
     assert len(all_eps2) == 3  # All 3 endpoints
-    assert set([ep.id for ep in all_eps2]) == {0, 1, 2}
-    
+    assert {ep.id for ep in all_eps2} == {0, 1, 2}
+
     # Test case 3: Multiple pods with multi-endpoint disabled
     instance3 = Instance(
         job_name="test_multi_pods",
@@ -1691,9 +1676,9 @@ def test_get_all_endpoints_multi_endpoint_disabled():
         id=3,
         role="both",
         parallel_config=ParallelConfig(dp_size=2, tp_size=1, pp_size=1),
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
-    
+
     # Add endpoints from multiple pods
     endpoints_pod1 = {
         0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000"),
@@ -1705,7 +1690,7 @@ def test_get_all_endpoints_multi_endpoint_disabled():
     }
     instance3.add_endpoints("127.0.0.1", endpoints_pod1)
     instance3.add_endpoints("127.0.0.2", endpoints_pod2)
-    
+
     all_eps3 = instance3.get_all_endpoints()
     assert len(all_eps3) == 1  # Only 1 endpoint (id=0)
     assert all_eps3[0].id == 0
@@ -1720,31 +1705,32 @@ def test_assemble_instance_multi_endpoint_disabled(instance_assembler):
         id=1,
         role="both",
         parallel_config=ParallelConfig(world_size=16),  # world_size=16
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
-    
+
     # Add node managers with device_num
     instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance.add_node_mgr("127.0.0.2", "8081", device_num=8)
-    
+
     # Add endpoints (only id=0 for each pod)
     endpoints1 = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
     endpoints2 = {0: Endpoint(id=0, ip="127.0.0.2", business_port="8000", mgmt_port="9000")}
     instance.add_endpoints("127.0.0.1", endpoints1)
     instance.add_endpoints("127.0.0.2", endpoints2)
-    
+
     # Create metadata
     metadata = AssembleInstanceMetadata(instance=instance, register_timestamp=time.time())
-    
+
     # Mock _filter_abnormal_endpoints and InstanceManager
-    with patch.object(instance_assembler, '_filter_abnormal_endpoints'), \
-         patch('motor.controller.core.instance_assembler.InstanceManager') as mock_im_class:
-        
+    with (
+        patch.object(instance_assembler, '_filter_abnormal_endpoints'),
+        patch('motor.controller.core.instance_assembler.InstanceManager') as mock_im_class,
+    ):
         mock_im = MagicMock()
         mock_im_class.return_value = mock_im
-        
+
         instance_assembler._assemble_instance(metadata)
-        
+
         # Should be assembled because we have enough node managers
         assert metadata.register_status == RegisterStatus.ASSEMBLED
         mock_im.add_instance.assert_called_once_with(instance)
@@ -1759,22 +1745,758 @@ def test_assemble_instance_multi_endpoint_disabled_not_enough_nodes(instance_ass
         id=1,
         role="both",
         parallel_config=ParallelConfig(world_size=16),  # world_size=16
-        enable_multi_endpoints=False
+        enable_multi_endpoints=False,
     )
-    
+
     # Add only 1 node manager (need 2 for world_size=16 with device_num=8)
     instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
-    
+
     # Add endpoint
     endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
     instance.add_endpoints("127.0.0.1", endpoints)
-    
+
     # Create metadata
     metadata = AssembleInstanceMetadata(instance=instance, register_timestamp=time.time())
-    
+
     # Mock _filter_abnormal_endpoints
     with patch.object(instance_assembler, '_filter_abnormal_endpoints'):
         instance_assembler._assemble_instance(metadata)
-        
+
         # Should NOT be assembled because not enough node managers
         assert metadata.register_status != RegisterStatus.ASSEMBLED
+
+
+# ===== D2D Weight Transfer Tests =====
+
+
+def _make_mock_readonly_instance(
+    job_name: str,
+    role: str,
+    ips: list[str],
+    *,
+    endpoint_id: int = 0,
+    endpoint_ids: list[int] | None = None,
+):
+    """Create a ReadOnlyInstance wrapping a real Instance (required by upstream merge)."""
+    inst = Instance(
+        job_name=job_name,
+        model_name="test",
+        id=abs(hash(job_name)) % 1_000_000,
+        role=role,
+        parallel_config=ParallelConfig(),
+    )
+    for idx, ip in enumerate(ips):
+        ep_id = endpoint_ids[idx] if endpoint_ids is not None else endpoint_id
+        inst.add_endpoints(
+            f"pod-{job_name}-{idx}",
+            {0: Endpoint(id=ep_id, ip=ip, business_port="8000", mgmt_port="9000")},
+        )
+    return ReadOnlyInstance(inst)
+
+
+def _make_mock_peer_instance_cross_node(job_name: str, role: str, ip_by_rank: dict[int, str]):
+    """Peer instance with one pod per DP rank (cross-node DP topology)."""
+    inst = Instance(
+        job_name=job_name,
+        model_name="test",
+        id=abs(hash(job_name)) % 1_000_000,
+        role=role,
+        parallel_config=ParallelConfig(),
+    )
+    for dp_rank, ip in ip_by_rank.items():
+        inst.add_endpoints(
+            f"pod-{job_name}-{dp_rank}",
+            {0: Endpoint(id=dp_rank, ip=ip, business_port="8000", mgmt_port="9000")},
+        )
+    return ReadOnlyInstance(inst)
+
+
+def test_collect_d2d_peer_ips_queries_active_only(instance_assembler, test_config):
+    """_collect_d2d_peer_ips only queries ACTIVE instances from InstanceManager."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[]) as mock_get:
+        instance_assembler._collect_d2d_peer_ips(
+            metadata, [Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")]
+        )
+        mock_get.assert_called_once_with({InsStatus.ACTIVE})
+
+
+def test_collect_d2d_peer_ips_matches_dp_rank(instance_assembler, test_config):
+    """_collect_d2d_peer_ips collects only peer endpoints with matching id."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_peer = _make_mock_peer_instance_cross_node(
+        "peer_job",
+        test_config['role'],
+        {0: "10.0.0.1", 1: "10.0.0.2", 2: "10.0.0.3", 3: "10.0.0.4"},
+    )
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep2 = Endpoint(id=2, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep5 = Endpoint(id=5, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]):
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep0]) == ["0:10.0.0.1"]
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep2]) == ["2:10.0.0.3"]
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep5]) is None
+
+
+def test_collect_d2d_peer_ips_active_same_role(instance_assembler, test_config):
+    """_collect_d2d_peer_ips collects IPs from same-role ACTIVE peer instances."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_peer = _make_mock_readonly_instance("peer_job", test_config['role'], ["10.0.0.1", "10.0.0.2"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]):
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert set(result) == {"0:10.0.0.1", "0:10.0.0.2"}
+
+
+def test_collect_d2d_peer_ips_excludes_own_job_name(instance_assembler, test_config):
+    """_collect_d2d_peer_ips excludes instances with the same job_name (self)."""
+    instance = Instance(
+        job_name="my_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_self = _make_mock_readonly_instance("my_job", test_config['role'], ["10.0.0.1"])
+    mock_peer = _make_mock_readonly_instance("other_job", test_config['role'], ["10.0.0.2"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[mock_self, mock_peer]):
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert result == ["0:10.0.0.2"]
+
+
+def test_collect_d2d_peer_ips_excludes_different_role(instance_assembler, test_config):
+    """_collect_d2d_peer_ips excludes instances with a different role."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role="prefill",
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_same = _make_mock_readonly_instance("peer_prefill", "prefill", ["10.0.0.1"])
+    mock_diff = _make_mock_readonly_instance("peer_decode", "decode", ["10.0.0.2"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[mock_same, mock_diff]):
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert result == ["0:10.0.0.1"]
+
+
+def test_collect_d2d_peer_ips_deduplicates(instance_assembler, test_config):
+    """_collect_d2d_peer_ips deduplicates IPs across multiple peer instances."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_peer1 = _make_mock_readonly_instance("peer1", test_config['role'], ["10.0.0.1", "10.0.0.2"])
+    mock_peer2 = _make_mock_readonly_instance("peer2", test_config['role'], ["10.0.0.2", "10.0.0.3"])
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer1, mock_peer2]):
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert set(result) == {"0:10.0.0.1", "0:10.0.0.2", "0:10.0.0.3"}
+
+
+def test_collect_d2d_peer_ips_no_peers(instance_assembler, test_config):
+    """_collect_d2d_peer_ips returns None when no peer instances exist."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[]):
+        result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
+        assert result is None
+
+
+def test_send_start_command_with_d2d_enabled(instance_assembler, test_config):
+    """_send_start_command includes rank-aligned d2d_peer_ips when D2D is enabled."""
+    instance = Instance(
+        job_name="d2d_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    instance.add_node_mgr("127.0.0.1", "8088")
+    instance.add_node_mgr("127.0.0.2", "8088")
+    reg_msg = create_register_msg("d2d_job", "127.0.0.1", test_config)
+    pod_endpoints = instance_assembler._build_single_endpoint(reg_msg, 0)
+    instance.add_endpoints("127.0.0.1", pod_endpoints)
+    reg_msg2 = create_register_msg("d2d_job", "127.0.0.2", test_config)
+    pod_endpoints2 = instance_assembler._build_single_endpoint(reg_msg2, 1)
+    instance.add_endpoints("127.0.0.2", pod_endpoints2)
+
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_peer = _make_mock_peer_instance_cross_node(
+        "peer_job",
+        test_config['role'],
+        {0: "10.0.0.1", 1: "10.0.0.2"},
+    )
+
+    with (
+        patch.object(instance_assembler, '_is_d2d_enabled_for_role', return_value=True),
+        patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]),
+        patch(
+            'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+        ) as mock_send,
+    ):
+        mock_send.return_value = True
+
+        result = instance_assembler._send_start_command(metadata)
+
+        assert result is True
+        assert mock_send.call_count == 2
+        first_msg = mock_send.call_args_list[0][0][1]
+        second_msg = mock_send.call_args_list[1][0][1]
+        assert first_msg.d2d_peer_ips == ["0:10.0.0.1"]
+        assert second_msg.d2d_peer_ips == ["1:10.0.0.2"]
+
+
+def test_send_start_command_with_d2d_disabled(instance_assembler, test_config):
+    """_send_start_command does not populate d2d_peer_ips when D2D is disabled."""
+    instance = Instance(
+        job_name="d2d_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    instance.add_node_mgr("127.0.0.1", "8088")
+    reg_msg = create_register_msg("d2d_job", "127.0.0.1", test_config)
+    pod_endpoints = instance_assembler._build_single_endpoint(reg_msg, 0)
+    instance.add_endpoints("127.0.0.1", pod_endpoints)
+
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    mock_peer = _make_mock_readonly_instance("peer_job", test_config['role'], ["10.0.0.1"])
+
+    with (
+        patch.object(instance_assembler, '_is_d2d_enabled_for_role', return_value=False),
+        patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]),
+        patch(
+            'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+        ) as mock_send,
+    ):
+        mock_send.return_value = True
+
+        instance_assembler._send_start_command(metadata)
+
+        called_msg = mock_send.call_args[0][1]
+        assert called_msg.d2d_peer_ips is None
+
+
+def test_send_start_command_with_d2d_enabled_no_peers(instance_assembler, test_config):
+    """_send_start_command omits d2d_peer_ips when D2D is enabled but no peers found."""
+    instance = Instance(
+        job_name="d2d_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+    )
+    instance.add_node_mgr("127.0.0.1", "8088")
+    reg_msg = create_register_msg("d2d_job", "127.0.0.1", test_config)
+    pod_endpoints = instance_assembler._build_single_endpoint(reg_msg, 0)
+    instance.add_endpoints("127.0.0.1", pod_endpoints)
+
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    with (
+        patch.object(instance_assembler, '_is_d2d_enabled_for_role', return_value=True),
+        patch.object(InstanceManager(), 'get_instances', return_value=[]),
+        patch(
+            'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command'
+        ) as mock_send,
+    ):
+        mock_send.return_value = True
+
+        instance_assembler._send_start_command(metadata)
+
+        called_msg = mock_send.call_args[0][1]
+        assert called_msg.d2d_peer_ips is None
+
+
+def test_collect_d2d_peer_ips_includes_headless(instance_assembler, test_config):
+    """_collect_d2d_peer_ips includes headless peer endpoints for CP cross-node."""
+    instance = Instance(
+        job_name="current_job",
+        model_name="test",
+        id=99,
+        role=test_config['role'],
+        parallel_config=test_config['parallel_config'],
+        enable_multi_endpoints=True,
+    )
+    metadata = AssembleInstanceMetadata(instance=instance)
+
+    # Peer with both master (id=0) and slave (id=1, headless) endpoints
+    mock_peer = Instance(
+        job_name="peer_job",
+        model_name="test",
+        id=88,
+        role=test_config['role'],
+        parallel_config=ParallelConfig(),
+        enable_multi_endpoints=True,
+    )
+    mock_peer.add_endpoints(
+        "10.0.0.1",
+        {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")},
+    )
+    mock_peer.add_endpoints(
+        "10.0.0.2",
+        {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000", headless=True)},
+    )
+    ro_peer = ReadOnlyInstance(mock_peer)
+
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep1 = Endpoint(id=1, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+
+    with patch.object(InstanceManager(), 'get_instances', return_value=[ro_peer]):
+        # Master endpoint (id=0) matches peer's non-headless endpoint
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep0]) == ["0:10.0.0.1"]
+        # Slave endpoint (id=1) matches peer's headless endpoint
+        assert instance_assembler._collect_d2d_peer_ips(metadata, [ep1]) == ["1:10.0.0.2"]
+
+
+def test_cross_node_pcp_assembly_waits_for_all_nodes(instance_assembler):
+    """Test that nnodes > 1 waits for all nodes before assembling"""
+    instance = Instance(
+        job_name="test_pcp_wait",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+
+    # Add only 1 node manager (nnodes=2, need 2)
+    instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
+    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
+    instance.add_endpoints("127.0.0.1", endpoints)
+
+    metadata = AssembleInstanceMetadata(
+        instance=instance,
+        register_timestamp=time.time(),
+        nnodes=2,
+    )
+
+    with patch.object(instance_assembler, '_filter_abnormal_endpoints'):
+        instance_assembler._assemble_instance(metadata)
+
+        # Should NOT be assembled because only 1/2 nodes registered
+        assert metadata.register_status != RegisterStatus.ASSEMBLED
+
+    # Add second node manager
+    instance.add_node_mgr("127.0.0.2", "8080", device_num=8)
+    endpoints2 = {0: Endpoint(id=1, ip="127.0.0.2", business_port="8000", mgmt_port="9000")}
+    instance.add_endpoints("127.0.0.2", endpoints2)
+
+    with patch.object(instance_assembler, '_filter_abnormal_endpoints'):
+        instance_assembler._assemble_instance(metadata)
+
+        # Should be assembled now with 2/2 nodes
+        assert metadata.register_status == RegisterStatus.ASSEMBLED
+
+
+def test_nnodes_default_backward_compatible(instance_assembler):
+    """Test that nnodes=1 (default) uses existing is_endpoints_enough logic"""
+    instance = Instance(
+        job_name="test_nnodes_default",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=2, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+
+    # Add 1 node manager with 1 endpoint
+    instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
+    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
+    instance.add_endpoints("127.0.0.1", endpoints)
+
+    # nnodes=1 (default) — should use is_endpoints_enough()
+    # With dp_size=2 and only 1 endpoint, is_endpoints_enough returns False
+    metadata = AssembleInstanceMetadata(
+        instance=instance,
+        register_timestamp=time.time(),
+        nnodes=1,
+    )
+
+    with patch.object(instance_assembler, '_filter_abnormal_endpoints'):
+        instance_assembler._assemble_instance(metadata)
+        # Should NOT be assembled: dp_size=2, only 1 endpoint
+        assert metadata.register_status != RegisterStatus.ASSEMBLED
+
+
+def test_cross_node_pcp_assembly_extra_nodes(instance_assembler):
+    """Test that node_managers > nnodes still assembles (tolerant)"""
+    instance = Instance(
+        job_name="test_pcp_extra",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+
+    # Add 3 node managers when nnodes=2
+    for ip_suffix in ["1", "2", "3"]:
+        instance.add_node_mgr(f"127.0.0.{ip_suffix}", "8080", device_num=8)
+        endpoints = {
+            0: Endpoint(id=int(ip_suffix) - 1, ip=f"127.0.0.{ip_suffix}", business_port="8000", mgmt_port="9000")
+        }
+        instance.add_endpoints(f"127.0.0.{ip_suffix}", endpoints)
+
+    metadata = AssembleInstanceMetadata(
+        instance=instance,
+        register_timestamp=time.time(),
+        nnodes=2,
+    )
+
+    with patch.object(instance_assembler, '_filter_abnormal_endpoints'):
+        instance_assembler._assemble_instance(metadata)
+        # Should be assembled: 3 >= 2
+        assert metadata.register_status == RegisterStatus.ASSEMBLED
+
+
+def test_cross_node_pcp_with_dp_waits_for_all_groups(instance_assembler):
+    """DP=4, PCP nnodes=2: needs dp*nnodes=8 nodes, not just 2."""
+    instance = Instance(
+        job_name="test_pcp_dp_combo",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=4, tp_size=16, pcp_size=2),
+        enable_multi_endpoints=True,
+    )
+
+    # Add 7 node managers (1 short of 8)
+    for i in range(7):
+        instance.add_node_mgr(f"10.0.0.{i + 1}", "8080", device_num=16)
+        instance.add_endpoints(
+            f"10.0.0.{i + 1}",
+            {0: Endpoint(id=i, ip=f"10.0.0.{i + 1}", business_port="8000", mgmt_port="9000")},
+        )
+
+    metadata = AssembleInstanceMetadata(instance=instance, nnodes=2)
+
+    with patch.object(instance_assembler, "_filter_abnormal_endpoints"):
+        instance_assembler._assemble_instance(metadata)
+        # 7 < dp(4)*nnodes(2)=8 → not ready
+        assert metadata.register_status != RegisterStatus.ASSEMBLED
+
+    # Add the 8th node
+    instance.add_node_mgr("10.0.0.8", "8080", device_num=16)
+    instance.add_endpoints("10.0.0.8", {0: Endpoint(id=7, ip="10.0.0.8", business_port="8000", mgmt_port="9000")})
+
+    with patch.object(instance_assembler, "_filter_abnormal_endpoints"):
+        instance_assembler._assemble_instance(metadata)
+        # 8 >= 8 → ready
+        assert metadata.register_status == RegisterStatus.ASSEMBLED
+
+
+def test_send_start_command_assigns_node_rank(instance_assembler):
+    """Test that _send_start_command assigns node_rank by registration order"""
+    instance = Instance(
+        job_name="test_node_rank",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+
+    # Add 3 node managers in registration order
+    instance.add_node_mgr("10.0.0.2", "8080", device_num=8)
+    instance.add_node_mgr("10.0.0.1", "8080", device_num=8)
+    instance.add_node_mgr("10.0.0.3", "8080", device_num=8)
+
+    # Add endpoints for each
+    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.1", {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.3", {0: Endpoint(id=0, ip="10.0.0.3", business_port="8000", mgmt_port="9000")})
+
+    metadata = AssembleInstanceMetadata(instance=instance, nnodes=3)
+
+    sent_msgs = []
+
+    def capture_call(node_mgr, start_cmd_msg):
+        sent_msgs.append((node_mgr.pod_ip, start_cmd_msg.node_rank))
+        return True
+
+    with patch(
+        'motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command',
+        side_effect=capture_call,
+    ):
+        instance_assembler._send_start_command(metadata)
+
+    # Verify 3 calls
+    assert len(sent_msgs) == 3
+
+    # Registration order: 10.0.0.2→rank 0 (first), 10.0.0.1→rank 1, 10.0.0.3→rank 2
+    assert sent_msgs[0] == ("10.0.0.2", 0)
+    assert sent_msgs[1] == ("10.0.0.1", 1)
+    assert sent_msgs[2] == ("10.0.0.3", 2)
+
+
+def test_send_start_command_node_rank_modulo_for_dp_pcp(instance_assembler):
+    """DP=2, nnodes=2, 4 nodes: node_rank = registration_index % nnodes (0,1,0,1)."""
+    instance = Instance(
+        job_name="test_node_rank_mod",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=2, tp_size=4, pcp_size=2),
+        enable_multi_endpoints=True,
+    )
+
+    for i in range(4):
+        instance.add_node_mgr(f"10.0.0.{i + 1}", "8080", device_num=8)
+        instance.add_endpoints(
+            f"10.0.0.{i + 1}",
+            {0: Endpoint(id=i, ip=f"10.0.0.{i + 1}", business_port="8000", mgmt_port="9000")},
+        )
+
+    metadata = AssembleInstanceMetadata(instance=instance, nnodes=2)
+
+    sent_ranks = {}
+
+    def capture_call(node_mgr, start_cmd_msg):
+        sent_ranks[node_mgr.pod_ip] = start_cmd_msg.node_rank
+        return True
+
+    with patch(
+        "motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command",
+        side_effect=capture_call,
+    ):
+        instance_assembler._send_start_command(metadata)
+
+    # node_rank = registration_index % 2 → 0,1,0,1
+    assert sent_ranks["10.0.0.1"] == 0
+    assert sent_ranks["10.0.0.2"] == 1
+    assert sent_ranks["10.0.0.3"] == 0
+    assert sent_ranks["10.0.0.4"] == 1
+
+
+def test_register_msg_nnodes_stored_in_metadata(instance_assembler, test_config):
+    """Test that nnodes from RegisterMsg is stored in AssembleInstanceMetadata"""
+    job_name = "test_nnodes_stored"
+    msg = create_register_msg(
+        job_name,
+        test_config['pod_ip1'],
+        test_config,
+        nnodes=3,
+    )
+    result = instance_assembler.register(msg)
+    assert result == 0
+    metadata = instance_assembler.instances[job_name]
+    assert metadata.nnodes == 3, f"Expected nnodes=3, got {metadata.nnodes}"
+
+
+def test_register_msg_nnodes_default(instance_assembler, test_config):
+    """Test that nnodes defaults to 1 when not specified"""
+    job_name = "test_nnodes_default_reg"
+    msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    result = instance_assembler.register(msg)
+    assert result == 0
+    metadata = instance_assembler.instances[job_name]
+    assert metadata.nnodes == 1, f"Expected default nnodes=1, got {metadata.nnodes}"
+
+
+def test_reregister_preserves_nnodes(instance_assembler, test_config):
+    """Test that reregister NOT_REGISTERED path preserves nnodes from ReregisterMsg."""
+    job_name = "test_reregister_nnodes"
+    config = test_config.copy()
+
+    # Simulate first registration
+    register_msg = create_register_msg(job_name, config['pod_ip1'], config, nnodes=2)
+    result = instance_assembler.register(register_msg)
+    assert result == 0
+    assert instance_assembler.instances[job_name].nnodes == 2
+
+    # Clear instances to simulate Controller restart
+    instance_assembler.instances.clear()
+
+    # Reregister with nnodes
+    endpoint = Endpoint(id=0, ip=config['pod_ip1'], business_port="8000", mgmt_port="9000")
+    reregister_msg = ReregisterMsg(
+        job_name=job_name,
+        model_name="test_model",
+        instance_id=1,
+        role=config['role'],
+        pod_ip=config['pod_ip1'],
+        nm_port="8088",
+        parallel_config=config['parallel_config'],
+        endpoints=[endpoint],
+        enable_multi_endpoints=True,
+        nnodes=2,
+    )
+    result = instance_assembler.reregister(reregister_msg)
+    assert result == 0
+    assert instance_assembler.instances[job_name].nnodes == 2
+
+
+# ===== Headless Endpoint Marking Tests (Cross-Node PCP) =====
+
+
+def test_cross_node_pcp_marks_slave_endpoints_headless(instance_assembler):
+    """When nnodes > 1, slave node endpoints (node_rank > 0) are marked headless."""
+    instance = Instance(
+        job_name="test_headless_marking",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+
+    # First registered = master (10.0.0.10), second = slave (10.0.0.2)
+    instance.add_node_mgr("10.0.0.10", "8080", device_num=8)
+    instance.add_node_mgr("10.0.0.2", "8080", device_num=8)
+
+    # Add endpoints for both
+    instance.add_endpoints("10.0.0.10", {0: Endpoint(id=0, ip="10.0.0.10", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000", mgmt_port="9000")})
+
+    metadata = AssembleInstanceMetadata(instance=instance, nnodes=2)
+
+    with patch.object(instance_assembler, "_filter_abnormal_endpoints"):
+        instance_assembler._assemble_instance(metadata)
+
+    assert metadata.register_status == RegisterStatus.ASSEMBLED
+
+    # First registered (10.0.0.10) = master, should NOT be headless
+    eps_master = instance.get_endpoints("10.0.0.10")
+    for ep in eps_master.values():
+        assert ep.headless is False, f"Master endpoint {ep.ip} should not be headless"
+
+    # Second registered (10.0.0.2) = slave, should be headless
+    eps_slave = instance.get_endpoints("10.0.0.2")
+    for ep in eps_slave.values():
+        assert ep.headless is True, f"Slave endpoint {ep.ip} should be headless"
+
+    # get_all_endpoints should only return the master
+    all_eps = instance.get_all_endpoints()
+    assert len(all_eps) == 1
+    assert all_eps[0].ip == "10.0.0.10"
+
+
+def test_cross_node_pcp_reregister_preserves_headless(instance_assembler):
+    """Re-registration uses node_rank from ReregisterMsg, not registration order."""
+    # Simulate slave re-registering first after Controller restart
+    slave_endpoint = Endpoint(id=0, ip="10.0.0.200", business_port="8000", mgmt_port="9000")
+    master_endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="8000", mgmt_port="9000")
+
+    # Slave (node_rank=1) re-registers first
+    slave_msg = ReregisterMsg(
+        job_name="test_reregister_headless",
+        model_name="test_model",
+        instance_id=1,
+        role="prefill",
+        pod_ip="10.0.0.200",
+        nm_port="8088",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        endpoints=[slave_endpoint],
+        nnodes=2,
+        node_rank=1,
+    )
+    instance_assembler.reregister(slave_msg)
+
+    # Master (node_rank=0) re-registers second
+    master_msg = ReregisterMsg(
+        job_name="test_reregister_headless",
+        model_name="test_model",
+        instance_id=1,
+        role="prefill",
+        pod_ip="10.0.0.1",
+        nm_port="8088",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        endpoints=[master_endpoint],
+        nnodes=2,
+        node_rank=0,
+    )
+    instance_assembler.reregister(master_msg)
+
+    metadata = instance_assembler.instances["test_reregister_headless"]
+    assert metadata.nnodes == 2
+    assert metadata.is_reregister is True
+
+    # Slave endpoint should be headless (node_rank=1), master should not
+    eps_slave = metadata.instance.get_endpoints("10.0.0.200")
+    for ep in eps_slave.values():
+        assert ep.headless is True
+
+    eps_master = metadata.instance.get_endpoints("10.0.0.1")
+    for ep in eps_master.values():
+        assert ep.headless is False
+
+
+def test_cross_node_pcp_no_headless_when_nnodes_is_one(instance_assembler):
+    """When nnodes=1, no endpoints are marked headless."""
+    instance = Instance(
+        job_name="test_no_headless_nnodes1",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=2, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+
+    instance.add_node_mgr("10.0.0.1", "8080", device_num=8)
+    instance.add_node_mgr("10.0.0.2", "8080", device_num=8)
+    instance.add_endpoints("10.0.0.1", {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000")})
+
+    metadata = AssembleInstanceMetadata(instance=instance, nnodes=1)
+
+    with patch.object(instance_assembler, "_filter_abnormal_endpoints"):
+        instance_assembler._assemble_instance(metadata)
+
+    assert metadata.register_status == RegisterStatus.ASSEMBLED
+
+    # No endpoints should be headless
+    for ep in instance.get_all_endpoints():
+        assert ep.headless is False

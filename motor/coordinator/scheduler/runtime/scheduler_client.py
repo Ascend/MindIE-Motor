@@ -19,27 +19,57 @@ from typing import Any, Awaitable, Callable
 
 import zmq
 
+from motor.common.resources.dispatch import (
+    compatible_decode_instances,
+    compatible_prefill_instances,
+    has_compatible_dispatch_pair,
+)
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload
-from motor.coordinator.domain import InstanceReadiness, UpdateWorkloadParams
+from motor.coordinator.domain import (
+    InstanceReadiness,
+    ScheduledPair,
+    ScheduledResource,
+    UpdateWorkloadParams,
+    readiness_from_instances,
+)
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
-    SchedulerRequest, SchedulerResponse, SchedulerRequestType, SchedulerResponseType,
+    SchedulerRequest,
+    SchedulerResponse,
+    SchedulerRequestType,
+    SchedulerResponseType,
     INSTANCE_CHANGE_TOPIC,
-    pack_send_frames, unpack_recv_payload,
+    CANDIDATE_POLICY_LOAD_BALANCE,
+    CANDIDATE_POLICY_ROUND_ROBIN,
+    CANDIDATE_POLICY_KV_CACHE_AFFINITY,
+    pack_send_frames,
+    unpack_recv_payload,
     ZMQMessageSerializer,
 )
 from motor.common.logger import get_logger
-from motor.config.coordinator import DeployMode
+from motor.config.coordinator import (
+    KV_AFFINITY_MODE_UNIFIED,
+    KV_AFFINITY_MODES,
+)
+from motor.coordinator.fault_tolerance.precision.streak_result import PrecisionStreakResult
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
+from motor.coordinator.domain.scheduling_pin import (
+    resolve_pinned_instance,
+    select_endpoint_for_instance,
+)
 from motor.coordinator.models.request import RequestInfo
 
 logger = get_logger(__name__)
 
 # Callback signature: receives active endpoint list [(ip, port), ...], returns None
 OnInstanceRefreshedCallback = Callable[[list[tuple[str, str]]], Awaitable[None]]
+
+# Number of affinity-ranked candidates a prefill request proposes to the scheduler. The scheduler
+# re-picks among them by its authoritative workload ledger, spreading bursts across the top few.
+_AFFINITY_CANDIDATE_TOPK = 3
 
 
 def _collect_active_endpoints_from_cache(cache: "_SchedulerInstanceCache") -> list[tuple[str, str]]:
@@ -48,17 +78,13 @@ def _collect_active_endpoints_from_cache(cache: "_SchedulerInstanceCache") -> li
     Filter logic aligned with BaseRouter._select_endpoint_from_instance.
     """
     endpoints: list[tuple[str, str]] = []
-    for role in (PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+    for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
         for inst in cache.get_instances(role):
             if not inst or not inst.endpoints:
                 continue
             for pod_eps in (inst.endpoints or {}).values():
                 for ep in (pod_eps or {}).values():
-                    status_val = (
-                        ep.status.value
-                        if hasattr(ep.status, "value")
-                        else str(ep.status)
-                    )
+                    status_val = ep.status.value if hasattr(ep.status, "value") else str(ep.status)
                     if status_val == "normal":
                         endpoints.append((ep.ip, str(ep.business_port)))
     return endpoints
@@ -98,11 +124,13 @@ class _SchedulerInstanceCache:
 
     def __init__(self):
         self._instance_cache: dict[PDRole, list[Instance]] = {
+            PDRole.ROLE_E: [],
             PDRole.ROLE_P: [],
             PDRole.ROLE_D: [],
             PDRole.ROLE_U: [],
         }
         self._instance_map: dict[PDRole, dict[int, Instance]] = {
+            PDRole.ROLE_E: {},
             PDRole.ROLE_P: {},
             PDRole.ROLE_D: {},
             PDRole.ROLE_U: {},
@@ -134,15 +162,15 @@ class _SchedulerInstanceCache:
         cached_endpoint = self._endpoint_map.get((instance_id, endpoint_id))
         if not cached_endpoint:
             return
+        old_workload = cached_endpoint.workload or Workload()
         cached_endpoint.workload = Workload(
             active_tokens=active_tokens,
             active_kv_cache=active_kv_cache,
         )
-        gathered = Workload()
-        for (iid, eid), ep in self._endpoint_map.items():
-            if iid == instance_id:
-                gathered += ep.workload
-        cached_instance.gathered_workload = gathered
+        if cached_instance.gathered_workload is None:
+            cached_instance.gathered_workload = Workload()
+        cached_instance.gathered_workload.active_tokens += active_tokens - old_workload.active_tokens
+        cached_instance.gathered_workload.active_kv_cache += active_kv_cache - old_workload.active_kv_cache
 
     def _apply_role_under_lock(self, role: PDRole, instances: list[Instance]) -> None:
         """Update cache and maps for one role. Must be called with _lock held."""
@@ -160,7 +188,6 @@ class _SchedulerInstanceCache:
 
 
 class _SchedulerTransport:
-
     def __init__(
         self,
         scheduler_address: str,
@@ -322,9 +349,7 @@ class _SchedulerTransport:
                     if len(parts) < 2:
                         continue
                     async with self._decode_lock:
-                        response = self._serializer.deserialize_response(
-                            unpack_recv_payload(parts)
-                        )
+                        response = self._serializer.deserialize_response(unpack_recv_payload(parts))
                     async with self._request_lock:
                         pending_info = self._pending_requests.get(response.request_id)
                         if pending_info is None:
@@ -361,18 +386,25 @@ OnInstanceChangeNotify = Callable[[int | None], Awaitable[None]]
 
 # ZMQ PUB does not queue; SUB must be ready before PUB sends. Short delay after connect.
 _INSTANCE_PUB_SUB_SETTLE_MS = 150
+# Roles that should use kv_cache_affinity scheduling.
+_KVA_SELECT_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
 
 
 class _InstancePushSubscriber:
     """
-    SUB socket that listens for instance-change notifications from Scheduler PUB.
-    On each message, parses optional instance_version and invokes on_notify(version).
+    SUB socket that listens for Scheduler PUB notifications.
+
+    Instance-change messages trigger instance cache refresh.
     Uses its own ZMQ context to avoid coupling with DEALER transport.
     """
 
-    def __init__(self, sub_address: str, on_notify: OnInstanceChangeNotify) -> None:
+    def __init__(
+        self,
+        sub_address: str,
+        on_instance_change: OnInstanceChangeNotify,
+    ) -> None:
         self._sub_address = sub_address
-        self._on_notify = on_notify
+        self._on_instance_change = on_instance_change
         self._context: zmq.asyncio.Context | None = None
         self._socket: zmq.asyncio.Socket | None = None
         self._stop_event = asyncio.Event()
@@ -426,14 +458,10 @@ class _InstancePushSubscriber:
             while not self._stop_event.is_set() and self._socket:
                 try:
                     frames = await self._socket.recv_multipart()
-                    # Multipart: [INSTANCE_CHANGE_TOPIC, version_bytes] -> version; single frame -> None
-                    version = None
-                    if len(frames) >= 2 and frames[0] == INSTANCE_CHANGE_TOPIC:
-                        try:
-                            version = int(frames[1].decode())
-                        except ValueError:
-                            pass
-                    await self._on_notify(version)
+                    topic = frames[0] if frames else b""
+                    if topic == INSTANCE_CHANGE_TOPIC:
+                        version = self._parse_int_frame(frames, 1)
+                        await self._on_instance_change(version)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -445,12 +473,23 @@ class _InstancePushSubscriber:
             if not self._stop_event.is_set():
                 logger.error("Instance push SUB recv loop error: %s", e, exc_info=True)
 
+    @staticmethod
+    def _parse_int_frame(frames: list[bytes], index: int) -> int | None:
+        """Parse int from a multipart frame."""
+        if len(frames) <= index:
+            return None
+        try:
+            return int(frames[index].decode())
+        except (ValueError, UnicodeDecodeError):
+            return None
+
 
 @dataclass
 class SchedulerClientConfig:
     """
     Config for AsyncSchedulerClient (G.FNM.03: encapsulate many related args).
     """
+
     scheduler_address: str = "ipc:///tmp/scheduler_frontend"
     instance_pub_address: str = ""  # SUB to Scheduler PUB for instance-change push; empty disables
     timeout: float = 5.0
@@ -458,8 +497,16 @@ class SchedulerClientConfig:
     scheduler_type: str | None = None
     client_index: int = 0
     client_count: int = 1
+    endpoint_instance_score_weight: float = 0.05
+    # kv_cache_affinity tunables (see SchedulerConfig). mode = "unified" | "load_gated".
+    kv_affinity_mode: str = KV_AFFINITY_MODE_UNIFIED
+    kv_affinity_load_weight: float = 1.0
+    kv_affinity_overlap_credit: float = 1.0
+    kv_affinity_prefill_load_scale: float = 1.0
+    # Load-gated affinity: keep only the N least-loaded endpoints, then pick the best prefix
+    # match among them. 0 disables it (uses the unified-score / legacy path instead).
+    kv_affinity_load_gate_topn: int = 0
     tls_config: Any | None = None
-    deploy_mode: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
 
 
@@ -474,12 +521,24 @@ class AsyncSchedulerClient:
         self.timeout = config.timeout
         self._client_index = max(0, config.client_index)
         self._client_count = max(1, config.client_count)
-        self._deploy_mode = config.deploy_mode
+        self._endpoint_instance_score_weight = max(0.0, config.endpoint_instance_score_weight)
+        mode = str(config.kv_affinity_mode or KV_AFFINITY_MODE_UNIFIED).lower()
+        if mode not in KV_AFFINITY_MODES:
+            logger.warning(
+                "Invalid kv_affinity_mode %r; expected one of %s. Falling back to %r.",
+                config.kv_affinity_mode,
+                KV_AFFINITY_MODES,
+                KV_AFFINITY_MODE_UNIFIED,
+            )
+            mode = KV_AFFINITY_MODE_UNIFIED
+        self._kv_affinity_mode = mode
+        self._kv_affinity_load_weight = max(0.0, config.kv_affinity_load_weight)
+        self._kv_affinity_overlap_credit = max(0.0, config.kv_affinity_overlap_credit)
+        self._kv_affinity_prefill_load_scale = max(0.0, config.kv_affinity_prefill_load_scale)
+        self._kv_affinity_load_gate_topn = max(0, int(config.kv_affinity_load_gate_topn))
 
         self._serializer = ZMQMessageSerializer()
-        self._transport = _SchedulerTransport(
-            config.scheduler_address, config.timeout, self._serializer
-        )
+        self._transport = _SchedulerTransport(config.scheduler_address, config.timeout, self._serializer)
         self._cache = _SchedulerInstanceCache()
         self._instance_rr_counters: dict[PDRole, int] = {}
         self._endpoint_rr_counters: dict[int, int] = {}
@@ -489,9 +548,14 @@ class AsyncSchedulerClient:
         self._on_instance_refreshed = config.on_instance_refreshed
 
         instance_pub = (config.instance_pub_address or "").strip()
-        self._push_subscriber = _InstancePushSubscriber(
-            instance_pub, self._on_instance_change_notify
-        ) if instance_pub else None
+        self._push_subscriber = (
+            _InstancePushSubscriber(
+                instance_pub,
+                self._on_instance_change_notify,
+            )
+            if instance_pub
+            else None
+        )
 
     @property
     def connected(self) -> bool:
@@ -528,113 +592,182 @@ class AsyncSchedulerClient:
 
     async def select_instance_and_endpoint(self, req_info: RequestInfo, role: PDRole | None = None):
         """Select instance and endpoint from cache or GET_AVAILABLE_INSTANCES. Returns (Instance, Endpoint) or None."""
+        candidates = await self._select_endpoint_candidates(req_info, role, top_k=1)
+        if not candidates:
+            return None
+        instance, endpoint, _ = candidates[0]
+        return (instance, endpoint)
+
+    async def _select_endpoint_candidates(
+        self,
+        req_info: RequestInfo,
+        role: PDRole | None = None,
+        top_k: int = 1,
+    ) -> list[tuple[Instance, Endpoint, float]]:
+        candidates, _ = await self._select_endpoint_candidates_with_policy(req_info, role, top_k)
+        return candidates
+
+    async def _select_endpoint_candidates_with_policy(
+        self,
+        req_info: RequestInfo,
+        role: PDRole | None = None,
+        top_k: int = 1,
+    ) -> tuple[list[tuple[Instance, Endpoint, float]], str]:
+        """Select endpoint candidates from cache or fresh instances."""
         cache_role = role if role is not None else PDRole.ROLE_U
         cached_instances = self._cache.get_instances(cache_role)
         if cached_instances:
             # Cache stores instances sorted by id (see replace_all call sites); use as-is for RR
-            selected = self._select_instance_and_endpoint_from_list(cached_instances, cache_role, req_info)
-            if selected:
-                logger.debug("Selected instance from cache (role=%s, policy=%s)", role, self._scheduler_type)
-                return selected
+            candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
+                cached_instances, cache_role, req_info, top_k=top_k
+            )
+            if candidates:
+                logger.debug(
+                    "Selected %d endpoint candidate(s) from cache (role=%s, policy=%s)",
+                    len(candidates),
+                    role,
+                    self._scheduler_type,
+                )
+                return candidates, candidate_policy
         instances = await self.get_available_instances(role)
         if not instances:
-            return None
+            return [], self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
 
         # get_available_instances already wrote sorted list to cache; build sorted list once for this path
         instance_list = sorted(instances.values(), key=lambda i: i.id)
-        selected = self._select_instance_and_endpoint_from_list(instance_list, cache_role, req_info)
-        if selected:
-            logger.debug("Selected instance from fresh fetch (role=%s, policy=%s)", role, self._scheduler_type)
-        return selected
+        candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
+            instance_list, cache_role, req_info, top_k=top_k
+        )
+        if candidates:
+            logger.debug(
+                "Selected %d endpoint candidate(s) from fresh fetch (role=%s, policy=%s)",
+                len(candidates),
+                role,
+                self._scheduler_type,
+            )
+        return candidates, candidate_policy
+
+    async def _refresh_cache_from_workload_reader(self) -> None:
+        """Patch live workload into the local cache and pull a fresh instance list on
+        heartbeat-stale or instance-version change.
+
+        Shared by single-role (select_and_allocate) and P/D pair (select_pair_and_allocate)
+        selection so both make load-aware decisions on fresh workload and instance membership.
+        """
+        if not self._workload_reader:
+            return
+        current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(self._cache)
+        if heartbeat_stale:
+            await self._pull_instances_and_notify(current_version, "stale heartbeat")
+        elif current_version is not None:
+            if self._last_instance_version is not None and current_version != self._last_instance_version:
+                await self._pull_instances_and_notify(current_version, "version change")
+            else:
+                self._last_instance_version = current_version
+
+    async def _pull_instances_and_notify(self, current_version, reason: str) -> None:
+        """Pull a fresh instance list; on success update the version and fire the refresh callback."""
+        try:
+            await self.get_available_instances(None)
+        except Exception as e:
+            logger.warning("Failed to refresh instances on %s: %s", reason, e)
+            return
+        self._last_instance_version = current_version
+        if self._on_instance_refreshed:
+            active_endpoints = _collect_active_endpoints_from_cache(self._cache)
+            if active_endpoints:
+                try:
+                    await self._on_instance_refreshed(active_endpoints)
+                except Exception as e:
+                    logger.warning("on_instance_refreshed callback failed: %s", e)
 
     async def select_and_allocate(
         self,
         role: "PDRole",
-        req_info: RequestInfo
+        req_info: RequestInfo,
+        *,
+        target_instance_id: int | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
         """Select instance locally + ALLOCATE_ONLY RPC. Allocation workload is decided here (RR=zero, LB=demand)."""
-        role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "both"))
-        cache_role = role if role is not None else PDRole.ROLE_U
+        role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
 
-        if self._workload_reader:
-            current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(
-                self._cache
+        await self._refresh_cache_from_workload_reader()
+
+        if target_instance_id is not None:
+            instances = await self.get_available_instances(role)
+            instance = resolve_pinned_instance(instances, target_instance_id)
+            if instance is None:
+                logger.warning(
+                    "Pinned instance_id=%s not available for role=%s req_id=%s",
+                    target_instance_id,
+                    role_str,
+                    req_info.req_id,
+                )
+                return None
+            endpoint = select_endpoint_for_instance(
+                instance,
+                scheduler_type=self._scheduler_type or "round_robin",
+                endpoint_rr_counters=self._endpoint_rr_counters,
             )
-            if heartbeat_stale:
-                try:
-                    await self.get_available_instances(None)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to refresh instances on stale heartbeat: %s", e
-                    )
-                else:
-                    self._last_instance_version = current_version
-                    if self._on_instance_refreshed:
-                        active_endpoints = _collect_active_endpoints_from_cache(self._cache)
-                        if active_endpoints:
-                            try:
-                                await self._on_instance_refreshed(active_endpoints)
-                            except Exception as e:
-                                logger.warning(
-                                    "on_instance_refreshed callback failed: %s", e
-                                )
-            elif current_version is not None:
-                if (
-                    self._last_instance_version is not None
-                    and current_version != self._last_instance_version
-                ):
-                    try:
-                        await self.get_available_instances(None)
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to refresh instances on version change: %s", e
-                        )
-                    else:
-                        self._last_instance_version = current_version
-                        if self._on_instance_refreshed:
-                            active_endpoints = _collect_active_endpoints_from_cache(
-                                self._cache
-                            )
-                            if active_endpoints:
-                                try:
-                                    await self._on_instance_refreshed(active_endpoints)
-                                except Exception as e:
-                                    logger.warning(
-                                        "on_instance_refreshed callback failed: %s", e
-                                    )
-                else:
-                    self._last_instance_version = current_version
-
-        selected = await self.select_instance_and_endpoint(req_info, role)
-        if not selected:
-            return None
-        instance, endpoint = selected
+            if endpoint is None:
+                logger.warning(
+                    "No endpoint on pinned instance_id=%s role=%s req_id=%s",
+                    target_instance_id,
+                    role_str,
+                    req_info.req_id,
+                )
+                return None
+            candidate_policy = self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
+            candidate_endpoints = [{"instance_id": instance.id, "endpoint_id": endpoint.id}]
+        else:
+            # KVA-eligible roles propose several ranked candidates so the scheduler can re-pick among
+            # them by its fresh ledger (burst spreading); other roles/policies stay at top-1.
+            request_top_k = (
+                _AFFINITY_CANDIDATE_TOPK
+                if (role in _KVA_SELECT_ROLES and (self._scheduler_type or "") == "kv_cache_affinity")
+                else 1
+            )
+            candidates, candidate_policy = await self._select_endpoint_candidates_with_policy(
+                req_info, role, top_k=request_top_k
+            )
+            if not candidates:
+                return None
+            instance, endpoint, _ = candidates[0]
+            # Ranked alternates (best-first) the scheduler may re-pick among on a stale-view burst.
+            candidate_endpoints = [
+                {"instance_id": cand_instance.id, "endpoint_id": cand_endpoint.id}
+                for cand_instance, cand_endpoint, _score in candidates
+            ]
 
         # Allocation workload: RR does not use load, so use zero; LB uses demand for accounting.
         workload = (
             Workload()
             if (self._scheduler_type or "round_robin") == "round_robin"
-            else calculate_demand_workload(role, req_info.req_len)
+            else calculate_demand_workload(role, req_info)
         )
 
         request_id = str(uuid.uuid4())
+        workload_sequence = self._workload_reader.last_sequence if self._workload_reader is not None else None
         request = SchedulerRequest(
             request_type=SchedulerRequestType.ALLOCATE_ONLY,
             request_id=request_id,
             data={
                 "instance_id": instance.id,
                 "endpoint_id": endpoint.id,
+                "candidates": candidate_endpoints,
                 "role": role_str,
                 "req_id": req_info.req_id,
+                "workload_sequence": workload_sequence,
+                "instance_version": self._last_instance_version,
                 "workload": workload.model_dump(mode="json"),
+                "candidate_policy": candidate_policy,
             },
         )
         response = await self._transport.send_request(request)
         if not response or response.response_type != SchedulerResponseType.SUCCESS:
             if response:
                 logger.error(
-                    "ALLOCATE_ONLY failed: role=%s req_id=%s error=%s",
-                    role_str, req_info.req_id, response.error
+                    "ALLOCATE_ONLY failed: role=%s req_id=%s error=%s", role_str, req_info.req_id, response.error
                 )
             return None
         data = response.data or {}
@@ -650,10 +783,188 @@ class AsyncSchedulerClient:
             if out_endpoint:
                 logger.debug(
                     "select_and_allocate success role=%s instance_id=%s endpoint_id=%s",
-                    role_str, out_instance.id, out_endpoint.id
+                    role_str,
+                    out_instance.id,
+                    out_endpoint.id,
                 )
                 return (out_instance, out_endpoint, workload)
         return None
+
+    async def select_pair_and_allocate(self, req_info: RequestInfo) -> ScheduledPair | None:
+        await self._refresh_cache_from_workload_reader()
+        prefill_instances = await self._cached_or_fetch_instances(PDRole.ROLE_P)
+        decode_instances = await self._cached_or_fetch_instances(PDRole.ROLE_D)
+        compatible_prefill = compatible_prefill_instances(prefill_instances, decode_instances)
+        if not compatible_prefill:
+            return None
+
+        p_candidates, _ = self._select_endpoint_candidates_from_list_with_policy(
+            compatible_prefill,
+            PDRole.ROLE_P,
+            req_info,
+            top_k=1,
+        )
+        if not p_candidates:
+            return None
+        p_instance, p_endpoint, _ = p_candidates[0]
+        compatible_decode = compatible_decode_instances(p_instance, decode_instances)
+        d_candidates, _ = self._select_endpoint_candidates_from_list_with_policy(
+            compatible_decode,
+            PDRole.ROLE_D,
+            req_info,
+            top_k=1,
+        )
+        if not d_candidates:
+            return None
+        d_instance, d_endpoint, _ = d_candidates[0]
+        p_workload = self._allocation_workload(PDRole.ROLE_P, req_info)
+        d_workload = self._allocation_workload(PDRole.ROLE_D, req_info)
+
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.ALLOCATE_PAIR,
+            request_id=request_id,
+            data={
+                "req_id": req_info.req_id,
+                "prefill": {
+                    "instance_id": p_instance.id,
+                    "endpoint_id": p_endpoint.id,
+                    "workload": p_workload.model_dump(mode="json"),
+                },
+                "decode": {
+                    "instance_id": d_instance.id,
+                    "endpoint_id": d_endpoint.id,
+                    "workload": d_workload.model_dump(mode="json"),
+                },
+            },
+        )
+        response = await self._transport.send_request(request)
+        if not response or response.response_type != SchedulerResponseType.SUCCESS:
+            if response:
+                logger.error("ALLOCATE_PAIR failed: req_id=%s error=%s", req_info.req_id, response.error)
+            return None
+        data = response.data or {}
+        p_instance_data = data.get("prefill_instance")
+        p_endpoint_data = data.get("prefill_endpoint")
+        d_instance_data = data.get("decode_instance")
+        d_endpoint_data = data.get("decode_endpoint")
+        if not p_instance_data or not p_endpoint_data or not d_instance_data or not d_endpoint_data:
+            return None
+        out_p_instance = _instance_from_dict(p_instance_data)
+        out_p_endpoint = _endpoint_from_dict(p_endpoint_data)
+        out_d_instance = _instance_from_dict(d_instance_data)
+        out_d_endpoint = _endpoint_from_dict(d_endpoint_data)
+        if not out_p_instance or not out_p_endpoint or not out_d_instance or not out_d_endpoint:
+            return None
+        return ScheduledPair(
+            prefill=ScheduledResource(instance=out_p_instance, endpoint=out_p_endpoint),
+            decode=ScheduledResource(instance=out_d_instance, endpoint=out_d_endpoint),
+            prefill_workload=p_workload,
+            decode_workload=d_workload,
+        )
+
+    async def _cached_or_fetch_instances(self, role: PDRole) -> list[Instance]:
+        cached = self._cache.get_instances(role)
+        if cached:
+            return cached
+        instances = await self.get_available_instances(role)
+        return sorted(instances.values(), key=lambda instance: instance.id)
+
+    def _allocation_workload(self, role: PDRole, req_info: RequestInfo) -> Workload:
+        if (self._scheduler_type or "round_robin") == "round_robin":
+            return Workload()
+        return calculate_demand_workload(role, req_info)
+
+    async def confirm_sample(
+        self,
+        key: tuple[int | None, int],
+        now: float,
+        interval_seconds: float,
+    ) -> bool:
+        if not self._transport.connected:
+            logger.warning("confirm_sample: scheduler transport not connected")
+            return False
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.CONFIRM_SAMPLE,
+            request_id=request_id,
+            data={
+                "p_instance_id": key[0],
+                "d_instance_id": key[1],
+                "now": now,
+                "interval_seconds": interval_seconds,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            return bool((response.data or {}).get("confirmed", False))
+        if response:
+            logger.warning("confirm_sample failed pd_group=%s error=%s", key, response.error)
+        else:
+            logger.warning("confirm_sample: no response (timeout) pd_group=%s", key)
+        return False
+
+    async def record_precision_result(
+        self,
+        key: tuple[int | None, int],
+        has_issue: bool,
+        threshold: int,
+    ) -> PrecisionStreakResult | None:
+        if not self._transport.connected:
+            logger.warning("record_precision_result: scheduler transport not connected")
+            return None
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.RECORD_PRECISION_RESULT,
+            request_id=request_id,
+            data={
+                "p_instance_id": key[0],
+                "d_instance_id": key[1],
+                "has_issue": has_issue,
+                "threshold": threshold,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            data = response.data or {}
+            return PrecisionStreakResult(
+                skip=bool(data.get("skip", False)),
+                threshold_hit=bool(data.get("threshold_hit", False)),
+                consecutive=int(data.get("consecutive", 0)),
+                action_token=data.get("action_token"),
+            )
+        if response:
+            logger.warning("record_precision_result failed pd_group=%s error=%s", key, response.error)
+        else:
+            logger.warning("record_precision_result: no response pd_group=%s", key)
+        return None
+
+    async def finish_precision_action(
+        self,
+        key: tuple[int | None, int],
+        action_token: str,
+    ) -> bool:
+        if not self._transport.connected:
+            logger.warning("finish_precision_action: scheduler transport not connected")
+            return False
+        request_id = str(uuid.uuid4())
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.FINISH_PRECISION_ACTION,
+            request_id=request_id,
+            data={
+                "p_instance_id": key[0],
+                "d_instance_id": key[1],
+                "action_token": action_token,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            return bool((response.data or {}).get("finished", False))
+        if response:
+            logger.warning("finish_precision_action failed pd_group=%s error=%s", key, response.error)
+        else:
+            logger.warning("finish_precision_action: no response pd_group=%s", key)
+        return False
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         role_str = params.role.value if hasattr(params.role, "value") else str(params.role)
@@ -667,8 +978,8 @@ class AsyncSchedulerClient:
                 'role': role_str,
                 'req_id': params.req_id,
                 'workload_action': params.workload_action.value,
-                'workload_change': params.workload_change
-            }
+                'workload_change': params.workload_change,
+            },
         )
 
         response = await self._transport.send_request(request)
@@ -679,21 +990,31 @@ class AsyncSchedulerClient:
                 logger.warning(
                     "Update workload returned success=False from scheduler: "
                     "instance_id=%s endpoint_id=%s role=%s req_id=%s action=%s",
-                    params.instance_id, params.endpoint_id, role_str, params.req_id,
-                    params.workload_action.value
+                    params.instance_id,
+                    params.endpoint_id,
+                    role_str,
+                    params.req_id,
+                    params.workload_action.value,
                 )
             return success
 
         if response:
             logger.error(
                 "Failed to update workload: instance_id=%s endpoint_id=%s role=%s req_id=%s error=%s",
-                params.instance_id, params.endpoint_id, role_str, params.req_id, response.error
+                params.instance_id,
+                params.endpoint_id,
+                role_str,
+                params.req_id,
+                response.error,
             )
         else:
             logger.error(
                 "Update workload got no response (timeout or connection): "
                 "instance_id=%s endpoint_id=%s role=%s req_id=%s",
-                params.instance_id, params.endpoint_id, role_str, params.req_id
+                params.instance_id,
+                params.endpoint_id,
+                role_str,
+                params.req_id,
             )
         return False
 
@@ -702,7 +1023,7 @@ class AsyncSchedulerClient:
         request = SchedulerRequest(
             request_type=SchedulerRequestType.GET_AVAILABLE_INSTANCES,
             request_id=request_id,
-            data={'role': role.value if hasattr(role, 'value') else (str(role) if role else None)}
+            data={'role': role.value if hasattr(role, 'value') else (str(role) if role else None)},
         )
 
         response = await self._transport.send_request(request)
@@ -718,14 +1039,12 @@ class AsyncSchedulerClient:
 
             shm_name = data.get('workload_shm_name')
             if shm_name:
-                need_attach = (
-                    not self._workload_reader
-                    or getattr(self._workload_reader, '_shm_name', None) != shm_name
-                )
+                need_attach = not self._workload_reader or getattr(self._workload_reader, '_shm_name', None) != shm_name
                 if need_attach:
                     if self._workload_reader:
                         self._workload_reader.detach()
                     from motor.coordinator.scheduler.runtime.workload_shm import WorkloadSharedMemoryReader
+
                     self._workload_reader = WorkloadSharedMemoryReader(shm_name)
                     try:
                         self._workload_reader.attach()
@@ -735,35 +1054,34 @@ class AsyncSchedulerClient:
                     else:
                         self._last_instance_version = None
 
-            if instances:
-                # Store sorted by instance.id so round-robin order is stable without sorting on each select
-                if role is not None:
-                    await self._cache.replace_all(
-                        role, sorted(instances.values(), key=lambda i: i.id)
-                    )
-                else:
-                    role_to_list: dict[PDRole, list] = {
-                        PDRole.ROLE_P: [],
-                        PDRole.ROLE_D: [],
-                        PDRole.ROLE_U: [],
-                    }
-                    _role_map = {
-                        "prefill": PDRole.ROLE_P,
-                        "decode": PDRole.ROLE_D,
-                        "both": PDRole.ROLE_U,
-                        "hybrid": PDRole.ROLE_U,
-                    }
-                    for inst in instances.values():
-                        r = getattr(inst, "role", None)
-                        if r is None:
-                            continue
-                        role_enum = _role_map.get(r) if isinstance(r, str) else (r if r in role_to_list else None)
-                        if role_enum is not None:
-                            role_to_list[role_enum].append(inst)
-                    for r, lst in role_to_list.items():
-                        await self._cache.replace_all(
-                            r, sorted(lst, key=lambda i: i.id)
-                        )
+            # Store sorted by instance.id so round-robin order is stable without sorting on each select.
+            # Empty successful responses must also clear stale cache entries.
+            if role is not None:
+                await self._cache.replace_all(role, sorted(instances.values(), key=lambda i: i.id))
+            else:
+                role_to_list: dict[PDRole, list] = {
+                    PDRole.ROLE_E: [],
+                    PDRole.ROLE_P: [],
+                    PDRole.ROLE_D: [],
+                    PDRole.ROLE_U: [],
+                }
+                _role_map = {
+                    "encode": PDRole.ROLE_E,
+                    "prefill": PDRole.ROLE_P,
+                    "decode": PDRole.ROLE_D,
+                    "union": PDRole.ROLE_U,
+                    "both": PDRole.ROLE_U,
+                    "hybrid": PDRole.ROLE_U,
+                }
+                for inst in instances.values():
+                    r = getattr(inst, "role", None)
+                    if r is None:
+                        continue
+                    role_enum = _role_map.get(r) if isinstance(r, str) else (r if r in role_to_list else None)
+                    if role_enum is not None:
+                        role_to_list[role_enum].append(inst)
+                for r, lst in role_to_list.items():
+                    await self._cache.replace_all(r, sorted(lst, key=lambda i: i.id))
 
             return instances
 
@@ -771,43 +1089,68 @@ class AsyncSchedulerClient:
             logger.error(f"Failed to get available instances: {response.error}")
         return {}
 
+    def _roles_from_cache(self) -> set[PDRole]:
+        return {
+            role
+            for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U)
+            if self._cache.get_instances(role)
+        }
+
+    async def get_available_instance_roles(self) -> set[PDRole]:
+        """Return topology roles from the client cache; warm-up fetch once if the cache is cold.
+
+        Router selection (dispatch.handle_request) reads roles before any select_*; without this
+        warm-up a cold cache (process start / right after a refresh) would 503 instead of pulling.
+        """
+        roles = self._roles_from_cache()
+        if not roles:
+            try:
+                await self.get_available_instances(None)
+            except Exception as e:
+                logger.debug("get_available_instance_roles: warm-up fetch failed: %s", e)
+            roles = self._roles_from_cache()
+        return roles
+
+    async def has_compatible_pd_pair(self) -> bool:
+        """Return whether cached P/D pools contain a compatible pair.
+
+        Assumes the cache was warmed by a preceding get_available_instance_roles in the same
+        routing decision; falls back to a warm-up fetch if both pools look empty.
+        """
+        prefill = self._cache.get_instances(PDRole.ROLE_P)
+        decode = self._cache.get_instances(PDRole.ROLE_D)
+        if not prefill and not decode:
+            try:
+                await self.get_available_instances(None)
+            except Exception as e:
+                logger.debug("has_compatible_pd_pair: warm-up fetch failed: %s", e)
+            prefill = self._cache.get_instances(PDRole.ROLE_P)
+            decode = self._cache.get_instances(PDRole.ROLE_D)
+        return has_compatible_dispatch_pair(prefill, decode)
+
     async def has_required_instances(self) -> InstanceReadiness:
         """Return InstanceReadiness from cache; warm-up fetch if needed."""
-        mode = self._deploy_mode
-        if mode is None:
-            mode = DeployMode.PD_SEPARATE
-        elif isinstance(mode, str):
-            mode = DeployMode.from_string(mode) or DeployMode.PD_SEPARATE
 
-        def _status(p_list: list, d_list: list, u_list: list) -> InstanceReadiness:
-            if mode in (DeployMode.CDP_SEPARATE, DeployMode.CPCD_SEPARATE, DeployMode.PD_SEPARATE, \
-                    DeployMode.PD_DISAGGREGATION_SINGLE_CONTAINER, DeployMode.PD_DUAL_DISPATCH):
-                has_p, has_d = len(p_list) > 0, len(d_list) > 0
-                if has_p and has_d:
-                    return InstanceReadiness.REQUIRED_MET
-                if has_p:
-                    return InstanceReadiness.ONLY_PREFILL
-                if has_d:
-                    return InstanceReadiness.ONLY_DECODE
-                return InstanceReadiness.NONE
-            if mode == DeployMode.SINGLE_NODE:
-                return InstanceReadiness.REQUIRED_MET if len(u_list) > 0 else InstanceReadiness.NONE
-            return InstanceReadiness.UNKNOWN
+        def _cached_lists() -> tuple[list, list, list, list]:
+            return (
+                self._cache.get_instances(PDRole.ROLE_E),
+                self._cache.get_instances(PDRole.ROLE_P),
+                self._cache.get_instances(PDRole.ROLE_D),
+                self._cache.get_instances(PDRole.ROLE_U),
+            )
 
-        p_list = self._cache.get_instances(PDRole.ROLE_P)
-        d_list = self._cache.get_instances(PDRole.ROLE_D)
-        u_list = self._cache.get_instances(PDRole.ROLE_U)
-        status = _status(p_list, d_list, u_list)
-        if status.is_ready():
+        def _status(cached: tuple[list, list, list, list]) -> InstanceReadiness:
+            return readiness_from_instances(instance for role_instances in cached for instance in role_instances)
+
+        e_list, p_list, d_list, u_list = _cached_lists()
+        status = _status((e_list, p_list, d_list, u_list))
+        if status != InstanceReadiness.NONE:
             return status
         try:
             await self.get_available_instances(None)
         except Exception as e:
             logger.debug("has_required_instances: warm-up get_available_instances failed: %s", e)
-        p_list = self._cache.get_instances(PDRole.ROLE_P)
-        d_list = self._cache.get_instances(PDRole.ROLE_D)
-        u_list = self._cache.get_instances(PDRole.ROLE_U)
-        return _status(p_list, d_list, u_list)
+        return _status(_cached_lists())
 
     async def get_all_instances(self) -> tuple[dict[int, Instance], dict[int, Instance]]:
         """Interface compat; returns empty (Mgmt process uses local InstanceManager)."""
@@ -820,8 +1163,8 @@ class AsyncSchedulerClient:
             request_id=request_id,
             data={
                 'event_type': event_type.value if hasattr(event_type, 'value') else str(event_type),
-                'instances': [_instance_to_dict(inst) for inst in instances]
-            }
+                'instances': [_instance_to_dict(inst) for inst in instances],
+            },
         )
 
         response = await self._transport.send_request(request)
@@ -846,33 +1189,55 @@ class AsyncSchedulerClient:
         except Exception as e:
             logger.warning("Instance change notify refresh failed: %s", e)
 
-    def _select_instance_and_endpoint_from_list(
-        self, instances: list[Instance], role: PDRole, req_info: RequestInfo
-    ) -> tuple[Instance, Endpoint] | None:
+    def _select_endpoint_candidates_from_list(
+        self,
+        instances: list[Instance],
+        role: PDRole,
+        req_info: RequestInfo,
+        top_k: int = 1,
+    ) -> list[tuple[Instance, Endpoint, float]]:
+        candidates, _ = self._select_endpoint_candidates_from_list_with_policy(instances, role, req_info, top_k)
+        return candidates
+
+    def _select_endpoint_candidates_from_list_with_policy(
+        self,
+        instances: list[Instance],
+        role: PDRole,
+        req_info: RequestInfo,
+        top_k: int = 1,
+    ) -> tuple[list[tuple[Instance, Endpoint, float]], str]:
         if not instances:
-            return None
+            return [], self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
         st = self._scheduler_type or "round_robin"
-        selected_instance = None
         if st == "load_balance":
-            selected_instance = self._select_instance_and_endpoint_by_load_balance(instances, role)
-            if selected_instance is not None:
-                return self._select_endpoint_for_instance(selected_instance)
+            candidates = self._select_endpoint_candidates_by_load_balance(instances, role, top_k)
+            if candidates:
+                return candidates, CANDIDATE_POLICY_LOAD_BALANCE
             logger.warning("load_balance failed, falling back to round-robin")
         elif st == "kv_cache_affinity":
-            if role is PDRole.ROLE_P:
-                selected = KvCacheAffinityPolicy.select_endpoint_from_list(instances, req_info)
-                if selected is not None:
-                    return selected
-                logger.warning("kv_cache_affinity failed, falling back to load_balance")
-                selected_instance = self._select_instance_and_endpoint_by_load_balance(instances, role)
-                if selected_instance is not None:
-                    return self._select_endpoint_for_instance(selected_instance)
-                logger.warning("load_balance also failed, falling back to round-robin")
-            else:
-                selected_instance = self._select_instance_and_endpoint_by_load_balance(instances, role)
-            if selected_instance is not None:
-                return self._select_endpoint_for_instance(selected_instance)
-            logger.warning("kv_cache_affinity failed, falling back to round-robin")
+            # Affinity ranking applies to KVA-eligible roles only; others fall through to
+            # the load_balance -> round_robin chain below.
+            if role in _KVA_SELECT_ROLES:
+                # Propose the top-k affinity-ranked candidates. The scheduler re-picks among them
+                # by its authoritative (fresh) workload ledger, so a burst spreads across the top
+                # candidates without a client-local in-flight overlay.
+                ranked = KvCacheAffinityPolicy.select_endpoint_candidates_from_list(
+                    instances,
+                    req_info,
+                    mode=self._kv_affinity_mode,
+                    overlap_credit=self._kv_affinity_overlap_credit,
+                    prefill_load_scale=self._kv_affinity_prefill_load_scale,
+                    load_weight=self._kv_affinity_load_weight,
+                    load_gate_topn=self._kv_affinity_load_gate_topn,
+                    top_k=max(1, top_k),
+                )
+                if ranked:
+                    return ranked, CANDIDATE_POLICY_KV_CACHE_AFFINITY
+                logger.warning("kv_cache_affinity unavailable (no conductor match), falling back to load_balance")
+            candidates = self._select_endpoint_candidates_by_load_balance(instances, role, top_k)
+            if candidates:
+                return candidates, CANDIDATE_POLICY_LOAD_BALANCE
+            logger.warning("load_balance unavailable, falling back to round-robin")
         # Round-robin path: default policy or load_balance fallback
         if role not in self._instance_rr_counters:
             self._instance_rr_counters[role] = 0
@@ -880,17 +1245,17 @@ class AsyncSchedulerClient:
         start_offset = (n * self._client_index) // self._client_count if n else 0
         counter = self._instance_rr_counters[role]
         effective_counter = counter + start_offset
-        selected_instance, next_counter = RoundRobinPolicy.select_instance_from_list(
-            instances, effective_counter
-        )
+        selected_instance, next_counter = RoundRobinPolicy.select_instance_from_list(instances, effective_counter)
         self._instance_rr_counters[role] = next_counter - start_offset
         if not selected_instance:
-            return None
-        return self._select_endpoint_for_instance(selected_instance)
+            return [], CANDIDATE_POLICY_ROUND_ROBIN
+        selected = self._select_endpoint_for_instance(selected_instance)
+        if not selected:
+            return [], CANDIDATE_POLICY_ROUND_ROBIN
+        instance, endpoint = selected
+        return [(instance, endpoint, 0.0)], CANDIDATE_POLICY_ROUND_ROBIN
 
-    def _select_endpoint_for_instance(
-        self, instance: Instance
-    ) -> tuple[Instance, Endpoint] | None:
+    def _select_endpoint_for_instance(self, instance: Instance) -> tuple[Instance, Endpoint] | None:
         if not instance:
             return None
         all_endpoints = instance.get_all_endpoints()
@@ -902,9 +1267,7 @@ class AsyncSchedulerClient:
             if ep:
                 return (instance, ep)
             return (instance, all_endpoints[0])
-        ep = RoundRobinPolicy.select_endpoint_from_instance(
-            instance, self._endpoint_rr_counters
-        )
+        ep = RoundRobinPolicy.select_endpoint_from_instance(instance, self._endpoint_rr_counters)
         return (instance, ep) if ep else None
 
     async def _init_cache(self) -> None:
@@ -914,12 +1277,19 @@ class AsyncSchedulerClient:
         except Exception as e:
             logger.warning("Failed to initialize instance cache: %s", e, exc_info=True)
 
-    def _select_instance_and_endpoint_by_load_balance(
-        self, instances: list[Instance], role: PDRole
-    ) -> Instance | None:
+    def _select_endpoint_candidates_by_load_balance(
+        self,
+        instances: list[Instance],
+        role: PDRole,
+        top_k: int = 1,
+    ) -> list[tuple[Instance, Endpoint, float]]:
         n = len(instances)
         start_index = (n * self._client_index) // self._client_count if n else 0
-        selected_instance = LoadBalancePolicy.select_instance_from_list(
-            instances, role, start_index=start_index
+        candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
+            instances,
+            role,
+            top_k=max(1, top_k),
+            instance_score_weight=self._endpoint_instance_score_weight,
+            start_index=start_index,
         )
-        return selected_instance
+        return [(candidate.instance, candidate.endpoint, candidate.score) for candidate in candidates]

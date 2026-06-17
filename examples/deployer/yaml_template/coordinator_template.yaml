@@ -54,7 +54,7 @@ spec:
               - bash
               - -c
               - "$CONFIGMAP_PATH/probe.sh startup"
-            periodSeconds: 5
+            periodSeconds: 10
             failureThreshold: 100
           readinessProbe:
             exec:
@@ -62,18 +62,18 @@ spec:
               - bash
               - -c
               - "$CONFIGMAP_PATH/probe.sh readiness"
-            periodSeconds: 5
-            timeoutSeconds: 4
-            failureThreshold: 12
+            periodSeconds: 10
+            timeoutSeconds: 30
+            failureThreshold: 5
           livenessProbe:
             exec:
               command:
               - bash
               - -c
               - "$CONFIGMAP_PATH/probe.sh liveness"
-            periodSeconds: 5
-            timeoutSeconds: 4
-            failureThreshold: 12
+            periodSeconds: 10
+            timeoutSeconds: 30
+            failureThreshold: 5
           env:
           - name: POD_IP
             valueFrom:
@@ -132,7 +132,27 @@ kind: Service
 metadata:
   labels:
     app: mindie-motor-coordinator
-  name: mindie-motor-coordinator-service
+  name: mindie-motor-coordinator-infer
+  namespace: mindie
+spec:
+  ports:
+    - nodePort: 31015
+      port: 1025
+      protocol: TCP
+      targetPort: 1025
+  selector:
+    app: mindie-motor-coordinator
+  sessionAffinity: None
+  type: NodePort
+status:
+  loadBalancer: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: mindie-motor-coordinator
+  name: mindie-motor-coordinator-mgmt
   namespace: mindie
 spec:
   ports:
@@ -151,14 +171,14 @@ kind: Service
 metadata:
   labels:
     app: mindie-motor-coordinator
-  name: mindie-motor-coordinator-infer
+  name: mindie-motor-coordinator-obs
   namespace: mindie
 spec:
   ports:
-    - nodePort: 31015
-      port: 1025
+    - nodePort: 31017
+      port: 1027
       protocol: TCP
-      targetPort: 1025
+      targetPort: 1027
   selector:
     app: mindie-motor-coordinator
   sessionAffinity: None

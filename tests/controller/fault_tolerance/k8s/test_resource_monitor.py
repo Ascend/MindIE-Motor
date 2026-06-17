@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -21,22 +20,30 @@ Test cases are organized according to the following logical blocks:
 7. Data processing
 8. Node status extraction
 """
+
 import pytest
 from unittest.mock import patch, Mock
 
 from motor.controller.fault_tolerance.k8s.resource_monitor import ResourceMonitor
-from motor.controller.fault_tolerance.k8s.cluster_fault_codes import NodeStatus, FaultInfo
+from motor.controller.fault_tolerance.fault_types import NodeStatus, FaultInfo
+
+# pylint: disable=redefined-outer-name
 
 
 @pytest.fixture(autouse=True)
 def mock_kubernetes_config():
     """Mock Kubernetes configuration loading to avoid error logs in tests"""
-    with patch('motor.controller.fault_tolerance.k8s.resource_monitor.config.load_incluster_config',
-               side_effect=Exception("In-cluster config not available")):
-        with patch('motor.controller.fault_tolerance.k8s.resource_monitor.config.load_kube_config',
-                   side_effect=Exception("Kubeconfig not available")):
-            with patch('motor.controller.fault_tolerance.k8s.resource_monitor.logger'):
+    with patch(
+        "motor.controller.fault_tolerance.k8s.resource_monitor.config.load_incluster_config",
+        side_effect=Exception("In-cluster config not available"),
+    ):
+        with patch(
+            "motor.controller.fault_tolerance.k8s.resource_monitor.config.load_kube_config",
+            side_effect=Exception("Kubeconfig not available"),
+        ):
+            with patch("motor.controller.fault_tolerance.k8s.resource_monitor.logger"):
                 yield
+
 
 # Common test constants
 DEFAULT_NODE_NAME = "test-node"
@@ -45,10 +52,14 @@ DEFAULT_CONFIGMAP_PREFIX = "fault-config-"
 DEFAULT_RETRY_INTERVAL = 30
 
 
-def create_test_monitor(node_name=DEFAULT_NODE_NAME, namespace=DEFAULT_NAMESPACE,
-                       configmap_name_prefix=DEFAULT_CONFIGMAP_PREFIX,
-                       retry_interval=DEFAULT_RETRY_INTERVAL,
-                       node_handler=None, configmap_handler=None):
+def create_test_monitor(
+    node_name=DEFAULT_NODE_NAME,
+    namespace=DEFAULT_NAMESPACE,
+    configmap_name_prefix=DEFAULT_CONFIGMAP_PREFIX,
+    retry_interval=DEFAULT_RETRY_INTERVAL,
+    node_handler=None,
+    configmap_handler=None,
+):
     """Helper function to create ResourceMonitor instance for testing"""
     return ResourceMonitor(
         node_name=node_name,
@@ -56,7 +67,7 @@ def create_test_monitor(node_name=DEFAULT_NODE_NAME, namespace=DEFAULT_NAMESPACE
         configmap_name_prefix=configmap_name_prefix,
         retry_interval=retry_interval,
         node_change_handler=node_handler,
-        configmap_change_handler=configmap_handler
+        configmap_change_handler=configmap_handler,
     )
 
 
@@ -71,11 +82,12 @@ def test_resource_monitor_initialization_with_valid_params():
     assert monitor.node_change_handler is None
     assert monitor.configmap_change_handler is None
     assert monitor.stop_event.is_set() is False
-    assert monitor.monitor_threads == []
+    assert not monitor.monitor_threads
 
 
 def test_resource_monitor_initialization_with_handlers():
     """Test ResourceMonitor initialization with change handlers"""
+
     def node_handler(status, ip):
         pass
 
@@ -84,8 +96,8 @@ def test_resource_monitor_initialization_with_handlers():
 
     monitor = create_test_monitor(node_handler=node_handler, configmap_handler=configmap_handler)
 
-    assert monitor.node_change_handler == node_handler
-    assert monitor.configmap_change_handler == configmap_handler
+    assert monitor.node_change_handler is node_handler
+    assert monitor.configmap_change_handler is configmap_handler
 
 
 def test_resource_monitor_kubernetes_config_incluster_success():
@@ -127,7 +139,7 @@ def test_resource_monitor_kubernetes_not_available():
     monitor = create_test_monitor()
 
     # Verify that v1 client was not created (when config loading fails, __init__ returns early)
-    assert not hasattr(monitor, 'v1')
+    assert not hasattr(monitor, "v1")
 
 
 def test_start_monitoring_success(caplog):
@@ -192,7 +204,7 @@ def test_stop_monitoring():
     # Dead threads should not be joined
     mock_thread2.join.assert_not_called()
     # Verify thread list was cleared
-    assert monitor.monitor_threads == []
+    assert not monitor.monitor_threads
 
 
 def test_is_alive_kubernetes_available():
@@ -209,8 +221,8 @@ def test_is_alive_kubernetes_not_available():
     monitor = create_test_monitor()
 
     # Simulate Kubernetes not available (no v1 attribute)
-    if hasattr(monitor, 'v1'):
-        delattr(monitor, 'v1')
+    if hasattr(monitor, "v1"):
+        delattr(monitor, "v1")
 
     assert monitor.is_alive() is False
 
@@ -249,9 +261,9 @@ def test_monitor_methods_exist():
     monitor = create_test_monitor()
 
     # Verify monitor methods exist
-    assert hasattr(monitor, '_monitor_node')
+    assert hasattr(monitor, "_monitor_node")
     assert callable(monitor._monitor_node)
-    assert hasattr(monitor, '_monitor_configmap')
+    assert hasattr(monitor, "_monitor_configmap")
     assert callable(monitor._monitor_configmap)
 
 
@@ -269,6 +281,7 @@ def test_handle_node_change_added_modified():
 
     # Mock node change handler
     handler_calls = []
+
     def mock_node_handler(status, ip):
         handler_calls.append((status, ip))
 
@@ -276,12 +289,12 @@ def test_handle_node_change_added_modified():
     monitor.hostname = "test-node"
 
     # Test ADDED event
-    monitor._handle_node_change('ADDED', mock_node)
+    monitor._handle_node_change("ADDED", mock_node)
     assert len(handler_calls) == 1
     assert handler_calls[0] == (NodeStatus.READY, DEFAULT_NODE_NAME)
 
     # Test MODIFIED event with same status (should not trigger handler due to deduplication)
-    monitor._handle_node_change('MODIFIED', mock_node)
+    monitor._handle_node_change("MODIFIED", mock_node)
     assert len(handler_calls) == 1  # Handler should not be called again for duplicate status
 
 
@@ -307,6 +320,7 @@ def test_handle_node_change_deduplication_with_actual_change():
 
     # Mock node change handler
     handler_calls = []
+
     def mock_node_handler(status, ip):
         handler_calls.append((status, ip))
 
@@ -314,12 +328,12 @@ def test_handle_node_change_deduplication_with_actual_change():
     monitor.hostname = "test-node"
 
     # Test first change (READY)
-    monitor._handle_node_change('ADDED', mock_node_ready)
+    monitor._handle_node_change("ADDED", mock_node_ready)
     assert len(handler_calls) == 1
     assert handler_calls[0] == (NodeStatus.READY, DEFAULT_NODE_NAME)
 
     # Test second change with different status (NOT_READY)
-    monitor._handle_node_change('MODIFIED', mock_node_not_ready)
+    monitor._handle_node_change("MODIFIED", mock_node_not_ready)
     assert len(handler_calls) == 2  # Handler should be called again for different status
     assert handler_calls[1] == (NodeStatus.NOT_READY, DEFAULT_NODE_NAME)
 
@@ -337,6 +351,7 @@ def test_handle_node_change_deleted():
 
     # Mock node change handler
     handler_calls = []
+
     def mock_node_handler(status, ip):
         handler_calls.append((status, ip))
 
@@ -344,7 +359,7 @@ def test_handle_node_change_deleted():
     monitor.hostname = "test-node"
 
     # Test DELETED event
-    monitor._handle_node_change('DELETED', mock_node)
+    monitor._handle_node_change("DELETED", mock_node)
     assert len(handler_calls) == 1
     assert handler_calls[0] == (NodeStatus.NOT_READY, DEFAULT_NODE_NAME)
 
@@ -361,8 +376,8 @@ def test_handle_node_change_no_handler():
     mock_node.status.conditions = []  # Empty conditions list
 
     # Test with no handler (should not raise exception)
-    with patch('motor.controller.fault_tolerance.k8s.resource_monitor.logger') as mock_logger:
-        monitor._handle_node_change('ADDED', mock_node)
+    with patch("motor.controller.fault_tolerance.k8s.resource_monitor.logger") as mock_logger:
+        monitor._handle_node_change("ADDED", mock_node)
 
         # Verify that warning was logged about no handler
         mock_logger.warning.assert_called_with("No node change handler configured for node %s", DEFAULT_NODE_NAME)
@@ -379,13 +394,13 @@ def test_handle_node_change_handler_exception():
 
     # Mock node change handler that raises exception
     def mock_node_handler(status, ip):
-        raise Exception("Handler exception")
+        raise RuntimeError("Handler exception")
 
     monitor.node_change_handler = mock_node_handler
 
     # Test that exception is caught and logged
-    with patch('motor.controller.fault_tolerance.k8s.resource_monitor.logger') as mock_logger:
-        monitor._handle_node_change('ADDED', mock_node)
+    with patch("motor.controller.fault_tolerance.k8s.resource_monitor.logger") as mock_logger:
+        monitor._handle_node_change("ADDED", mock_node)
 
         # Verify that error was logged for the handler exception
         mock_logger.error.assert_called_once()
@@ -408,51 +423,66 @@ def test_handle_configmap_change_added_modified():
 
     # Mock configmap change handler
     handler_calls = []
+
     def mock_configmap_handler(faults, ip):
         handler_calls.append((faults, ip))
 
     monitor.configmap_change_handler = mock_configmap_handler
 
     # Test ADDED event
-    monitor._handle_configmap_change('ADDED', mock_configmap, mock_configmap.metadata.name)
+    monitor._handle_configmap_change("ADDED", mock_configmap, mock_configmap.metadata.name)
     assert len(handler_calls) == 1
     assert handler_calls[0][1] == DEFAULT_NODE_NAME  # IP should be passed
 
     # Test MODIFIED event with same data (should not trigger handler due to deduplication)
-    monitor._handle_configmap_change('MODIFIED', mock_configmap, mock_configmap.metadata.name)
+    monitor._handle_configmap_change("MODIFIED", mock_configmap, mock_configmap.metadata.name)
     assert len(handler_calls) == 1  # Handler should not be called again for duplicate data
 
 
 def test_handle_configmap_change_deduplication_with_actual_change():
-    """Test that handler is called when fault information actually changes"""
+    """Test that handler is called when fault information actually changes.
+
+    "Actual change" means a change visible at the storage level (unique fault_code
+    or associated fault_level/type changes).  Mere NPU name rotation with the same
+    code+level is NOT an actual change, because the storage model uses a dict keyed
+    by fault_code.
+
+    NOTE: fault_level in ConfigMap JSON uses OriginFaultLevel string values
+    (e.g. "RestartNPU", "SeparateNPU"), NOT "L5"/"L6" shorthand.
+    """
     monitor = create_test_monitor()
 
-    # Mock ConfigMap with initial data
+    # Mock ConfigMap with initial data (RestartNPU → FaultLevel.L5)
     mock_configmap1 = Mock()
     mock_configmap1.metadata.name = "fault-config-test-node"
     mock_configmap1.metadata.namespace = "default"
-    mock_configmap1.data = {"DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'}
+    mock_configmap1.data = {
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"RestartNPU","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'
+    }
 
-    # Mock ConfigMap with different fault data
+    # Mock ConfigMap with a different fault_level (RestartNPU→SeparateNPU, L5→L6), IS an actual change
     mock_configmap2 = Mock()
     mock_configmap2.metadata.name = "fault-config-test-node"
     mock_configmap2.metadata.namespace = "default"
-    mock_configmap2.data = {"DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu1","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123457},"SuperPodID":1,"ServerIndex":1}'}
+    mock_configmap2.data = {
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"SeparateNPU","fault_code":"0x1001"}]},"UpdateTime":123457},"SuperPodID":1,"ServerIndex":1}'
+    }
 
     # Mock configmap change handler
     handler_calls = []
+
     def mock_configmap_handler(faults, ip):
         handler_calls.append((faults, ip))
 
     monitor.configmap_change_handler = mock_configmap_handler
 
     # Test first change
-    monitor._handle_configmap_change('ADDED', mock_configmap1, mock_configmap1.metadata.name)
+    monitor._handle_configmap_change("ADDED", mock_configmap1, mock_configmap1.metadata.name)
     assert len(handler_calls) == 1
 
-    # Test second change with different fault info (different npu_name)
-    monitor._handle_configmap_change('MODIFIED', mock_configmap2, mock_configmap2.metadata.name)
-    assert len(handler_calls) == 2  # Handler should be called again for different data
+    # Test second change with actually different fault level (L5→L6 via RestartNPU→SeparateNPU)
+    monitor._handle_configmap_change("MODIFIED", mock_configmap2, mock_configmap2.metadata.name)
+    assert len(handler_calls) == 2  # Handler should be called again for genuinely different fault_level
 
 
 def test_handle_configmap_change_no_npu_name():
@@ -464,17 +494,20 @@ def test_handle_configmap_change_no_npu_name():
     mock_configmap.metadata.name = "fault-config-test-node"
     mock_configmap.metadata.namespace = "default"
     # Create a fault with empty npu_name (like node faults)
-    mock_configmap.data = {"DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"NodeUnhealthy","npu_name":"","fault_level":"L3","fault_code":"0x2000"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'}
+    mock_configmap.data = {
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"NodeUnhealthy","npu_name":"","fault_level":"L3","fault_code":"0x2000"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'
+    }
 
     # Mock configmap change handler
     handler_calls = []
+
     def mock_configmap_handler(faults, ip):
         handler_calls.append((faults, ip))
 
     monitor.configmap_change_handler = mock_configmap_handler
 
     # Test ADDED event with node-level fault (no NPU name)
-    monitor._handle_configmap_change('ADDED', mock_configmap, mock_configmap.metadata.name)
+    monitor._handle_configmap_change("ADDED", mock_configmap, mock_configmap.metadata.name)
     assert len(handler_calls) == 1
     assert len(handler_calls[0][0]) == 1  # One fault detected
     assert handler_calls[0][0][0].npu_name == ""  # Empty NPU name
@@ -490,29 +523,34 @@ def test_handle_configmap_change_multiple_configmaps():
     mock_configmap1 = Mock()
     mock_configmap1.metadata.name = "fault-config-node1"
     mock_configmap1.metadata.namespace = "default"
-    mock_configmap1.data = {"DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'}
+    mock_configmap1.data = {
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'
+    }
 
     # Mock ConfigMap for node2 with same data
     mock_configmap2 = Mock()
     mock_configmap2.metadata.name = "fault-config-node2"
     mock_configmap2.metadata.namespace = "default"
-    mock_configmap2.data = {"DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'}
+    mock_configmap2.data = {
+        "DeviceInfoCfg": '{"DeviceInfo":{"DeviceList":{"huawei.com/Ascend910-Fault":[{"fault_type":"CardUnhealthy","npu_name":"npu0","fault_level":"L5","fault_code":"0x1001"}]},"UpdateTime":123456},"SuperPodID":1,"ServerIndex":1}'
+    }
 
     # Mock configmap change handlers
     handler_calls = []
+
     def mock_configmap_handler(faults, ip):
         handler_calls.append((faults, ip))
 
     monitor1.configmap_change_handler = mock_configmap_handler
     monitor2.configmap_change_handler = mock_configmap_handler
 
-    monitor1._handle_configmap_change('ADDED', mock_configmap1, mock_configmap1.metadata.name)
+    monitor1._handle_configmap_change("ADDED", mock_configmap1, mock_configmap1.metadata.name)
     assert len(handler_calls) == 1
-    monitor2._handle_configmap_change('ADDED', mock_configmap2, mock_configmap2.metadata.name)
+    monitor2._handle_configmap_change("ADDED", mock_configmap2, mock_configmap2.metadata.name)
     assert len(handler_calls) == 2  # Should be called for different monitors
-    monitor1._handle_configmap_change('MODIFIED', mock_configmap1, mock_configmap1.metadata.name)
+    monitor1._handle_configmap_change("MODIFIED", mock_configmap1, mock_configmap1.metadata.name)
     assert len(handler_calls) == 2  # Should not be called for duplicate data in same monitor
-    monitor2._handle_configmap_change('MODIFIED', mock_configmap2, mock_configmap2.metadata.name)
+    monitor2._handle_configmap_change("MODIFIED", mock_configmap2, mock_configmap2.metadata.name)
     assert len(handler_calls) == 2  # Should not be called for duplicate data in same monitor
 
 
@@ -527,13 +565,14 @@ def test_handle_configmap_change_deleted():
 
     # Mock configmap change handler
     handler_calls = []
+
     def mock_configmap_handler(faults, ip):
         handler_calls.append((faults, ip))
 
     monitor.configmap_change_handler = mock_configmap_handler
 
     # Test DELETED event
-    monitor._handle_configmap_change('DELETED', mock_configmap, mock_configmap.metadata.name)
+    monitor._handle_configmap_change("DELETED", mock_configmap, mock_configmap.metadata.name)
     assert len(handler_calls) == 1
     assert handler_calls[0] == ([], DEFAULT_NODE_NAME)  # Empty fault list for deleted
 
@@ -549,8 +588,8 @@ def test_handle_configmap_change_no_handler():
     mock_configmap.data = {}
 
     # Test with no handler (should not raise exception)
-    with patch('motor.controller.fault_tolerance.k8s.resource_monitor.logger') as mock_logger:
-        monitor._handle_configmap_change('ADDED', mock_configmap, mock_configmap.metadata.name)
+    with patch("motor.controller.fault_tolerance.k8s.resource_monitor.logger") as mock_logger:
+        monitor._handle_configmap_change("ADDED", mock_configmap, mock_configmap.metadata.name)
 
         # Verify that warning was logged about no handler
         mock_logger.warning.assert_called_with("No configmap change handler configured for node %s", DEFAULT_NODE_NAME)
@@ -568,13 +607,13 @@ def test_handle_configmap_change_handler_exception():
 
     # Mock configmap change handler that raises exception
     def mock_configmap_handler(faults, ip):
-        raise Exception("Handler exception")
+        raise RuntimeError("Handler exception")
 
     monitor.configmap_change_handler = mock_configmap_handler
 
     # Test that exception is caught and logged
-    with patch('motor.controller.fault_tolerance.k8s.resource_monitor.logger') as mock_logger:
-        monitor._handle_configmap_change('ADDED', mock_configmap, mock_configmap.metadata.name)
+    with patch("motor.controller.fault_tolerance.k8s.resource_monitor.logger") as mock_logger:
+        monitor._handle_configmap_change("ADDED", mock_configmap, mock_configmap.metadata.name)
 
         # Verify that error was logged for the handler exception
         mock_logger.error.assert_called_once()
@@ -585,12 +624,13 @@ def test_handle_configmap_change_handler_exception():
         assert str(args[2]) == "Handler exception"
 
 
-@patch('motor.controller.fault_tolerance.k8s.resource_monitor.is_configmap_valid')
-@patch('motor.controller.fault_tolerance.k8s.resource_monitor.process_device_info')
-@patch('motor.controller.fault_tolerance.k8s.resource_monitor.process_switch_info')
-@patch('motor.controller.fault_tolerance.k8s.resource_monitor.process_manually_separate_npu')
-def test_process_configmap_data_valid_config(mock_process_manual, mock_process_switch,
-                                             mock_process_device, mock_is_valid):
+@patch("motor.controller.fault_tolerance.k8s.resource_monitor.is_configmap_valid")
+@patch("motor.controller.fault_tolerance.k8s.resource_monitor.process_device_info")
+@patch("motor.controller.fault_tolerance.k8s.resource_monitor.process_switch_info")
+@patch("motor.controller.fault_tolerance.k8s.resource_monitor.process_manually_separate_npu")
+def test_process_configmap_data_valid_config(
+    mock_process_manual, mock_process_switch, mock_process_device, mock_is_valid
+):
     """Test processing valid ConfigMap data"""
     mock_is_valid.return_value = True
     mock_process_device.return_value = [Mock(spec=FaultInfo)]
@@ -602,7 +642,7 @@ def test_process_configmap_data_valid_config(mock_process_manual, mock_process_s
     config_data = {
         "DeviceInfoCfg": '{"device": "info"}',
         "SwitchInfoCfg": '{"switch": "info"}',
-        "ManuallySeparateNPU": "Ascend910-0,Ascend910-1,Ascend910-2"
+        "ManuallySeparateNPU": "Ascend910-0,Ascend910-1,Ascend910-2",
     }
 
     result = monitor._process_configmap_data(config_data)
@@ -617,7 +657,7 @@ def test_process_configmap_data_valid_config(mock_process_manual, mock_process_s
     assert len(result) == 2  # device + switch faults
 
 
-@patch('motor.controller.fault_tolerance.k8s.resource_monitor.is_configmap_valid')
+@patch("motor.controller.fault_tolerance.k8s.resource_monitor.is_configmap_valid")
 def test_process_configmap_data_invalid_config(mock_is_valid):
     """Test processing invalid ConfigMap data"""
     mock_is_valid.return_value = False
@@ -631,7 +671,7 @@ def test_process_configmap_data_invalid_config(mock_is_valid):
     # Verify validation was called
     mock_is_valid.assert_called_once_with(config_data)
     # Verify empty result for invalid config
-    assert result == []
+    assert not result
 
 
 def test_process_configmap_data_missing_keys():
@@ -639,7 +679,7 @@ def test_process_configmap_data_missing_keys():
     monitor = create_test_monitor()
 
     # Config data with some missing keys: SwitchInfoCfg and ManuallySeparateNPU are missing
-    config_data = { "DeviceInfoCfg": '{"device": "info"}'}
+    config_data = {"DeviceInfoCfg": '{"device": "info"}'}
 
     result = monitor._process_configmap_data(config_data)
 
@@ -655,7 +695,7 @@ def test_process_configmap_data_exception_handling():
     result = monitor._process_configmap_data(None)
 
     # Should return empty list on exception
-    assert result == []
+    assert not result
 
 
 def test_get_node_ready_status_ready_true():

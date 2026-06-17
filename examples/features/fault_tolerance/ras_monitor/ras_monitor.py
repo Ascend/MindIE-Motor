@@ -323,8 +323,9 @@ def main():
             retries=False
         )
     user_config = fetch_user_config(user_config_path)
-    model_name = \
-        user_config["motor_engine_prefill_config"]["model_config"]["model_name"]
+    from lib.utils import resolve_model_name
+    prefill_section = user_config.get("motor_engine_prefill_config", {})
+    model_name = resolve_model_name(prefill_section)
     
     try:
         coordinator_api_config = user_config["motor_coordinator_config"]["api_config"]

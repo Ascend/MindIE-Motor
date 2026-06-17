@@ -95,14 +95,14 @@ class SGLangConfig(IConfig):
             if hasattr(model_config, server_key):
                 value = getattr(model_config, server_key)
                 if value is not None:
-                    flattened[sglang_key] = value
+                    flattened.setdefault(sglang_key, value)
 
         parallel_config = deploy_config.get_parallel_config(role)
         for server_key, sglang_key in _SGLANG_PARAM_MAPPING.items():
             if hasattr(parallel_config, server_key):
                 value = getattr(parallel_config, server_key)
                 if value is not None:
-                    flattened[sglang_key] = value
+                    flattened.setdefault(sglang_key, value)
 
         flattened["host"] = self.endpoint_config.host
         flattened["port"] = self.endpoint_config.port

@@ -78,9 +78,14 @@ metadata:
   namespace: mindie
 spec:
   ports:
-  - port: 50088
+  - name: business
+    port: 50088
     protocol: TCP
     targetPort: 50088
+  - name: metrics
+    port: 9003
+    protocol: TCP
+    targetPort: 9003
   selector:
     app: mindie-motor-kv-pool
   sessionAffinity: None

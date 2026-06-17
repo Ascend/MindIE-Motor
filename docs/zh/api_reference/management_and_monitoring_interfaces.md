@@ -108,28 +108,59 @@ curl -X GET "http://{CoordinatorIP}:{管理端口}/readiness"
 
 **接口功能**
 
-返回Prometheus兼容的监控指标文本。
+返回Prometheus兼容的监控指标文本，支持通过 `type` 参数切换指标聚合粒度。
 
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{CoordinatorIP}:{管理端口}/metrics`
+URL：`http(s)://{CoordinatorIP}:{Observability端口}/metrics?type={指标类型}&role={角色名称}`
 
   >[!NOTE]说明
   >
   > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{管理端口}`：配置项 `api_config.coordinator_api_mgmt_port`（默认 `1026`）。
+  > - `{Observability端口}`：配置项 `api_config.coordinator_obs_port`（默认 `1027`）。Kubernetes 部署时通过 NodePort 对外暴露，可直接被 Prometheus 抓取。
 
 **请求参数**
-无
+
+| 参数名 | 类型 | 必选 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| `type` | string | 否 | `full` | 指标聚合类型：`full`（全量聚合）、`instance`（实例级）、`role`（按角色聚合） |
+| `role` | string | 否 | 无 | 当 `type=role` 时，过滤指定角色：`prefill` 或 `decode`。不传时返回所有角色的聚合指标 |
+
+**`type` 取值说明**
+
+| 取值 | Content-Type | 返回格式 | 说明 |
+|------|-------------|----------|------|
+| `full`（默认） | `text/plain` | Prometheus text | 全局聚合指标，所有实例/端点的指标被聚合为单一值，可直接被 Prometheus 抓取 |
+| `instance` | `text/plain` | Prometheus text | 实例级指标，每条指标的 label 中注入 `instance_id` 和 `role` 标签，可区分不同实例的数据 |
+| `role`（指定 role） | `text/plain` | Prometheus text | 指定角色（`prefill` / `decode`）的聚合指标，label 中注入 `role` 标签 |
+| `role`（不指定 role） | `text/plain` | Prometheus text | 所有角色的聚合指标拼接为单一 Prometheus 文本，可直接被 Prometheus 抓取 |
+
+**数据加工说明**
+
+Coordinator 在 `/metrics` 端点内部完成所有数据加工（实例级标签注入、角色级聚合、Prometheus 格式序列化），调用方直接获取最终格式的指标数据，无需再做二次加工。
 
 **使用样例**
 
 ```bash
-curl -X GET "http://{CoordinatorIP}:{管理端口}/metrics"
+# 全量聚合指标（默认，行为与不带参数时完全一致）
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics"
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=full"
+
+# 实例级指标（注入 instance_id 和 role 标签）
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=instance"
+
+# 所有角色的聚合指标（返回 dict，key 为角色名，value 为 Prometheus 文本）
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=role"
+
+# 仅 Prefill 角色的聚合指标
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=role&role=prefill"
+
+# 仅 Decode 角色的聚合指标
+curl -X GET "http://{CoordinatorIP}:{Observability端口}/metrics?type=role&role=decode"
 ```
 
-**响应示例**
+**响应示例（`type=full`，默认）**
 
 ```text
 # HELP python_gc_objects_collected_total Objects collected during gc
@@ -155,85 +186,68 @@ python_info{implementation="CPython",major="3",minor="11",patchlevel="10",versio
 process_virtual_memory_bytes 46601515008.0
 ```
 
+**响应示例（`type=instance`）**
+
+```text
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{instance_id="0",role="prefill",model_name="Qwen2.5-7B-Instruct"} 12.0
+vllm:num_requests_running{instance_id="1",role="prefill",model_name="Qwen2.5-7B-Instruct"} 8.0
+vllm:num_requests_running{instance_id="2",role="decode",model_name="Qwen2.5-7B-Instruct"} 6.0
+vllm:num_requests_running{instance_id="3",role="decode",model_name="Qwen2.5-7B-Instruct"} 4.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{instance_id="0",role="prefill",model_name="Qwen2.5-7B-Instruct"} 0.62
+vllm:kv_cache_usage_perc{instance_id="1",role="prefill",model_name="Qwen2.5-7B-Instruct"} 0.45
+vllm:kv_cache_usage_perc{instance_id="2",role="decode",model_name="Qwen2.5-7B-Instruct"} 0.72
+vllm:kv_cache_usage_perc{instance_id="3",role="decode",model_name="Qwen2.5-7B-Instruct"} 0.55
+```
+
+**响应示例（`type=role&role=prefill`）**
+
+```text
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{role="prefill",model_name="Qwen2.5-7B-Instruct"} 20.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{role="prefill",model_name="Qwen2.5-7B-Instruct"} 0.535
+```
+
+**响应示例（`type=role`，不指定 role）**
+
+```text
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{role="prefill",model_name="Qwen2.5-7B-Instruct"} 20.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{role="prefill",model_name="Qwen2.5-7B-Instruct"} 0.535
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{role="decode",model_name="Qwen2.5-7B-Instruct"} 10.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{role="decode",model_name="Qwen2.5-7B-Instruct"} 0.635
+```
+
 ---
 
-## 实例指标查询接口
+## 实例指标查询接口（已弃用）
 
-**接口功能**
-
-返回实例与端点维度的指标数据。
+> [!WARNING] 已弃用
+> `GET /instance/metrics` 接口已弃用，请使用 `GET /metrics?type=instance` 代替。调用本接口将返回 HTTP 410 Gone。
 
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{CoordinatorIP}:{管理端口}/instance/metrics`
-
-  >[!NOTE]说明
-  >
-  > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{管理端口}`：配置项 `api_config.coordinator_api_mgmt_port`（默认 `1026`）。
-
-**请求参数**
-无
-
-**使用样例**
-
-```bash
-curl -X GET "http://{CoordinatorIP}:{管理端口}/instance/metrics"
-```
+URL：`http(s)://{CoordinatorIP}:{Observability端口}/instance/metrics`
 
 **响应示例**
 
-```JSON
-{
-  "1": [
-    {
-      "name": "process_resident_memory_bytes",
-      "help": "Resident memory size in bytes.",
-      "type": "gauge",
-      "label": ["process_resident_memory_bytes"],
-      "value": [3683950592.0]
-    },
-    {
-      "name": "http_requests_total",
-      "help": "Total number of requests by method, status and handler.",
-      "type": "counter",
-      "label": [
-        "http_requests_total{handler=\"/v1/chat/completions\",method=\"POST\",status=\"2xx\"}",
-        "http_requests_total{handler=\"/v1/completions\",method=\"POST\",status=\"2xx\"}"
-      ],
-      "value": [101.0, 1.0]
-    }
-  ],
-  "2": [
-    {
-      "name": "python_gc_objects_collected_total",
-      "help": "Objects collected during gc",
-      "type": "counter",
-      "label": [
-        "python_gc_objects_collected_total{generation=\"0\"}",
-        "python_gc_objects_collected_total{generation=\"1\"}",
-        "python_gc_objects_collected_total{generation=\"2\"}"
-      ],
-      "value": [68146.0, 10867.0, 2848.0]
-    }
-  ]
-}
+```text
+# /instance/metrics is deprecated. Use GET /metrics?type=instance instead.
 ```
-
-**输出说明**
-
->[!NOTE]说明
->指标较多时仅返回结构与部分示例，具体标签维度以实际运行时为准。
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| <instance_id> | object | 顶层键为实例ID，值为该实例的指标列表。 |
-| <instance_id>[].name | string | 指标名称。 |
-| <instance_id>[].help | string | 指标说明。 |
-| <instance_id>[].type | string | 指标类型，包括以下几种：<ul><li>counter</li><li>gauge</li><li>histogram</li><li>summary</li></ul>histogram和summary类型会包含 `*_bucket`、`*_count`、`*_sum` 等label项。 |
-| <instance_id>[].label | array | 标签数组，元素为 Prometheus 标签字符串。 |
-| <instance_id>[].value | array | 与label一一对应的数值数组。 |
 
 ---
 
@@ -354,24 +368,14 @@ curl -X GET "http://{CoordinatorIP}:{管理端口}/"
 
 ```JSON
 {
-  "service": "Motor Coordinator Server",
+  "service": "Motor Coordinator Management Server",
   "version": "1.0.0",
-  "description": "coordinator server, management and inference APIs",
-  "docs": {
-    "management": [
-      "/startup",
-      "/liveness",
-      "/readiness",
-      "/metrics",
-      "/instance/metrics",
-      "/instances/refresh"
-    ],
-    "inference": [
-      "/v1/models",
-      "/v1/chat/completions",
-      "/v1/completions",
-      "/v1/metaserver"
-    ]
+  "description": "Management plane: liveness, startup, readiness, instance refresh",
+  "endpoints": {
+    "GET /liveness": "liveness check",
+    "GET /startup": "startup probe",
+    "GET /readiness": "readiness check",
+    "POST /instances/refresh": "refresh instances"
   },
   "timestamp": "2026-01-29T12:00:00+00:00"
 }
@@ -384,7 +388,8 @@ curl -X GET "http://{CoordinatorIP}:{管理端口}/"
 | `service` | string | 服务名称。 |
 | `version` | string | 服务版本号。 |
 | `description` | string | 服务描述。 |
-| `docs` | object | 接口索引信息。 |
-| `docs.management` | array | 管理与监控接口列表。 |
-| `docs.inference` | array | 推理接口列表。 |
+| `endpoints` | object | 接口索引信息，以 `HTTP方法 路径` 为键，说明为值。 |
 | `timestamp` | string | 服务时间戳。 |
+
+>[!NOTE]说明
+>Metrics 可观测性端点（`/metrics`、`/instance/metrics`、`/health`）由 Observability 端口（默认 1027）独立提供服务，不在管理端口返回。详见 [Observability 接口](observability_interface.md)。

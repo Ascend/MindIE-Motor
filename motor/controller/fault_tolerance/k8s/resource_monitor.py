@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -13,15 +12,15 @@ import threading
 from typing import Any
 from collections.abc import Callable
 from kubernetes import client, config, watch
+from kubernetes.client.rest import ApiException
 
 from motor.common.logger import get_logger
-from motor.controller.fault_tolerance.k8s.k8s_client import K8sClient
-from motor.controller.fault_tolerance.k8s.cluster_fault_codes import NodeStatus, FaultInfo
+from motor.controller.fault_tolerance.fault_types import NodeStatus, FaultInfo
 from motor.controller.fault_tolerance.k8s.configmap_parser import (
     process_device_info,
     process_switch_info,
     process_manually_separate_npu,
-    is_configmap_valid
+    is_configmap_valid,
 )
 
 
@@ -36,6 +35,14 @@ class ResourceMonitor:
     providing processed fault information and server status updates to fault manager.
     """
 
+    # Exponential backoff parameters for watch reconnections.
+    # On each consecutive failure the delay doubles until it hits _BACKOFF_MAX.
+    # A successful event delivery resets the counter to zero.
+    _BACKOFF_INITIAL: float = 1.0  # seconds — first retry
+    _BACKOFF_MAX: float = 60.0  # seconds — ceiling (2 × default retry_interval)
+    _BACKOFF_MULTIPLIER: float = 2.0
+    _BACKOFF_410: float = 2.0  # seconds — 410 just needs a fresh LIST, short wait
+
     def __init__(
         self,
         node_name: str,
@@ -43,9 +50,9 @@ class ResourceMonitor:
         configmap_name_prefix: str,
         node_change_handler: Callable[[NodeStatus, str], None] | None = None,
         configmap_change_handler: Callable[[list[FaultInfo], str], None] | None = None,
-        retry_interval: int = 30
+        retry_interval: int = 30,
     ):
-        """ Initialize Resource monitor for a specific node
+        """Initialize Resource monitor for a specific node
 
         Args:
             node_name: Kubernetes node name to monitor
@@ -88,7 +95,7 @@ class ResourceMonitor:
 
     @staticmethod
     def _get_node_ready_status(node) -> NodeStatus:
-        """ Extract the ready status from a Node object """
+        """Extract the ready status from a Node object"""
         ready_condition = None
         if node.status.conditions:
             ready_condition = next(
@@ -102,8 +109,8 @@ class ResourceMonitor:
             return NodeStatus.NOT_READY
 
     def start_monitoring(self) -> None:
-        """ Start monitoring both Node and ConfigMap for this node """
-        if not hasattr(self, 'v1') or self.v1 is None:
+        """Start monitoring both Node and ConfigMap for this node"""
+        if not hasattr(self, "v1") or self.v1 is None:
             logger.error("Resource monitoring not available for node %s", self.node_name)
             return
 
@@ -111,11 +118,7 @@ class ResourceMonitor:
         logger.info("Starting Resource monitor for node %s", node_name)
 
         # Start Node monitoring thread
-        node_thread = threading.Thread(
-            target=self._monitor_node,
-            daemon=True,
-            name=f"ResourceMonitor-Node-{node_name}"
-        )
+        node_thread = threading.Thread(target=self._monitor_node, daemon=True, name=f"ResourceMonitor-Node-{node_name}")
         node_thread.start()
         self.monitor_threads.append(node_thread)
         logger.info("Started Node monitoring for %s", node_name)
@@ -126,7 +129,7 @@ class ResourceMonitor:
             target=self._monitor_configmap,
             args=(configmap_name,),
             daemon=True,
-            name=f"ResourceMonitor-CM-{self.namespace}-{configmap_name}"
+            name=f"ResourceMonitor-CM-{self.namespace}-{configmap_name}",
         )
         cm_thread.start()
         self.monitor_threads.append(cm_thread)
@@ -135,7 +138,7 @@ class ResourceMonitor:
         logger.info("Resource monitor started for node %s", node_name)
 
     def stop_monitoring(self) -> None:
-        """ Stop monitoring for this node """
+        """Stop monitoring for this node"""
         logger.info("Stopping Resource monitor for node %s", self.node_name)
         self.stop_event.set()
 
@@ -150,9 +153,9 @@ class ResourceMonitor:
         logger.info("Resource monitor stopped for node %s", self.node_name)
 
     def is_alive(self) -> bool:
-        """ Check if the Resource monitor is alive and functioning """
+        """Check if the Resource monitor is alive and functioning"""
         # Check if Kubernetes client is available
-        if not hasattr(self, 'v1') or self.v1 is None:
+        if not hasattr(self, "v1") or self.v1 is None:
             return False
 
         # Check if stop event is set (monitor is stopping/stopped)
@@ -167,59 +170,183 @@ class ResourceMonitor:
         return any(thread.is_alive() for thread in self.monitor_threads)
 
     def _monitor_node(self) -> None:
-        """ Monitor Node status changes for this node """
+        """Monitor Node status changes for this node"""
         node_name = self.node_name
+        resource_version = None
+        consecutive_failures = 0
 
         while not self.stop_event.is_set():
             try:
+                # If we lost the resource_version (410 or first connect), get it from a fresh LIST
+                if resource_version is None:
+                    try:
+                        nodes = self.v1.list_node(field_selector=f"metadata.name={node_name}")
+                        if nodes.items:
+                            resource_version = nodes.metadata.resource_version
+                            logger.debug("Starting Node watch from resource_version: %s", resource_version)
+                            # Process current state immediately: the watch only delivers
+                            # events AFTER this resource_version, so we'd miss the
+                            # initial status without an explicit initial handling.
+                            self._handle_node_change("ADDED", nodes.items[0])
+                    except ApiException as e:
+                        logger.error("Error listing Node %s: %s", node_name, str(e).replace('\r\n', ' '))
+                        if not self.stop_event.is_set():
+                            delay = self._compute_backoff(consecutive_failures)
+                            logger.info("Retrying Node monitoring in %.0f seconds...", delay)
+                            time.sleep(delay)
+                            consecutive_failures += 1
+                        continue
+
                 w = watch.Watch()
 
                 # Monitor Node changes
-                for event in w.stream(self.v1.list_node,
-                                      field_selector=f"metadata.name={node_name}"):
+                stream_kwargs = {"field_selector": f"metadata.name={node_name}"}
+                if resource_version:
+                    stream_kwargs["resource_version"] = resource_version
+
+                for event in w.stream(self.v1.list_node, **stream_kwargs):
                     if self.stop_event.is_set():
                         w.stop()
                         break
 
-                    event_type = event['type']
-                    node = event['object']
+                    event_type = event["type"]
+                    node = event["object"]
+
+                    # Update resource_version from each event
+                    if node.metadata and node.metadata.resource_version:
+                        resource_version = node.metadata.resource_version
+
+                    # Reset backoff on successful event delivery
+                    if consecutive_failures > 0:
+                        logger.debug("Node watch recovered after %d failures", consecutive_failures)
+                        consecutive_failures = 0
 
                     self._handle_node_change(event_type, node)
 
-            except Exception as e:
-                logger.error("Error monitoring Node %s: %s", node_name, e)
+            except ApiException as e:
+                error_msg = str(e).replace('\r\n', ' ')
+                logger.error("Error monitoring Node %s: %s", node_name, error_msg)
+                if e.status == 410:
+                    logger.info("Resource version expired for Node, will re-list")
+                    resource_version = None
                 if not self.stop_event.is_set():
-                    logger.info("Retrying Node monitoring in %s seconds...", self.retry_interval)
-                    time.sleep(self.retry_interval)
+                    delay = self._compute_backoff(consecutive_failures, is_410=(e.status == 410))
+                    logger.info("Retrying Node monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
+
+            except Exception as e:
+                logger.error("Error monitoring Node %s: %s", node_name, str(e).replace('\r\n', ' '))
+                if not self.stop_event.is_set():
+                    delay = self._compute_backoff(consecutive_failures)
+                    logger.info("Retrying Node monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
 
     def _monitor_configmap(self, configmap_name: str) -> None:
-        """ Monitor ConfigMap changes for this host """
+        """Monitor ConfigMap changes for this host"""
+        resource_version = None
+        consecutive_failures = 0
+
         while not self.stop_event.is_set():
             try:
+                # If we lost the resource_version (410 or first connect), get it from a fresh LIST
+                if resource_version is None:
+                    try:
+                        cm_list = self.v1.list_namespaced_config_map(
+                            namespace=self.namespace,
+                            field_selector=f"metadata.name={configmap_name}",
+                        )
+                        if cm_list.items:
+                            resource_version = cm_list.metadata.resource_version
+                            logger.debug("Starting ConfigMap watch from resource_version: %s", resource_version)
+                            # Process current state immediately: the watch only delivers
+                            # events AFTER this resource_version, so we'd miss the
+                            # initial state without an explicit initial handling.
+                            self._handle_configmap_change("ADDED", cm_list.items[0], configmap_name)
+                    except ApiException as e:
+                        logger.error(
+                            "Error listing ConfigMap %s/%s: %s",
+                            self.namespace,
+                            configmap_name,
+                            str(e).replace('\r\n', ' '),
+                        )
+                        if not self.stop_event.is_set():
+                            delay = self._compute_backoff(consecutive_failures)
+                            logger.info("Retrying ConfigMap monitoring in %.0f seconds...", delay)
+                            time.sleep(delay)
+                            consecutive_failures += 1
+                        continue
+
                 w = watch.Watch()
 
                 # Monitor ConfigMap changes
-                for event in w.stream(self.v1.list_namespaced_config_map,
-                                      namespace=self.namespace,
-                                      field_selector=f"metadata.name={configmap_name}"):
+                stream_kwargs: dict[str, Any] = {
+                    "namespace": self.namespace,
+                    "field_selector": f"metadata.name={configmap_name}",
+                }
+                if resource_version:
+                    stream_kwargs["resource_version"] = resource_version
+
+                for event in w.stream(self.v1.list_namespaced_config_map, **stream_kwargs):
                     if self.stop_event.is_set():
                         w.stop()
                         break
 
-                    event_type = event['type']
-                    configmap = event['object']
+                    event_type = event["type"]
+                    configmap = event["object"]
+
+                    # Update resource_version from each event
+                    if configmap.metadata and configmap.metadata.resource_version:
+                        resource_version = configmap.metadata.resource_version
+
+                    # Reset backoff on successful event delivery
+                    if consecutive_failures > 0:
+                        logger.debug("ConfigMap watch recovered after %d failures", consecutive_failures)
+                        consecutive_failures = 0
 
                     self._handle_configmap_change(event_type, configmap, configmap_name)
 
-            except Exception as e:
-                logger.error("Error monitoring ConfigMap %s/%s: %s",
-                             self.namespace, configmap_name, e)
+            except ApiException as e:
+                error_msg = str(e).replace('\r\n', ' ')
+                logger.error("Error monitoring ConfigMap %s/%s: %s", self.namespace, configmap_name, error_msg)
+                if e.status == 410:
+                    logger.info("Resource version expired for ConfigMap, will re-list to get latest version")
+                    resource_version = None
                 if not self.stop_event.is_set():
-                    logger.info("Retrying ConfigMap monitoring in %s seconds...", self.retry_interval)
-                    time.sleep(self.retry_interval)
+                    delay = self._compute_backoff(consecutive_failures, is_410=(e.status == 410))
+                    logger.info("Retrying ConfigMap monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
+
+            except Exception as e:
+                logger.error(
+                    "Error monitoring ConfigMap %s/%s: %s",
+                    self.namespace,
+                    configmap_name,
+                    str(e).replace('\r\n', ' '),
+                )
+                if not self.stop_event.is_set():
+                    delay = self._compute_backoff(consecutive_failures)
+                    logger.info("Retrying ConfigMap monitoring in %.0f seconds...", delay)
+                    time.sleep(delay)
+                    consecutive_failures += 1
+
+    def _compute_backoff(self, consecutive_failures: int, is_410: bool = False) -> float:
+        """Compute exponential backoff delay for watch reconnection.
+
+        - 410 (resource version expired): uses a short fixed delay since all we
+          need is a fresh LIST call; the counter is still passed so repeated 410s
+          escalate, but with a lower ceiling.
+        - Other errors: exponential backoff starting from ``_BACKOFF_INITIAL``,
+          doubling each consecutive failure up to ``_BACKOFF_MAX``.
+        """
+        if is_410:
+            return min(self._BACKOFF_410 * (self._BACKOFF_MULTIPLIER**consecutive_failures), self._BACKOFF_MAX / 2)
+        return min(self._BACKOFF_INITIAL * (self._BACKOFF_MULTIPLIER**consecutive_failures), self._BACKOFF_MAX)
 
     def _handle_node_change(self, event_type: str, node) -> None:
-        """ Handle Node change events and call the node change handler
+        """Handle Node change events and call the node change handler
         Args:
             event_type: Event type ('ADDED', 'MODIFIED', 'DELETED')
             node: Node object
@@ -233,7 +360,7 @@ class ResourceMonitor:
         node_name = self.node_name
         if self.node_change_handler:
             try:
-                if event_type in ['ADDED', 'MODIFIED']:
+                if event_type in ["ADDED", "MODIFIED"]:
                     # Check if node status has actually changed (ignore duplicate status updates)
                     if node_status != self.last_node_status:
                         logger.info("Node %s status changed to: %s", node_name, node_status)
@@ -241,7 +368,7 @@ class ResourceMonitor:
                         self.node_change_handler(node_status, node_name)
                     else:
                         logger.debug("Node status unchanged, skipping duplicate processing")
-                elif event_type == 'DELETED':
+                elif event_type == "DELETED":
                     logger.warning("Node %s was deleted", node.metadata.name)
                     # Node deletion is always processed (reset cache)
                     self.last_node_status = None
@@ -267,10 +394,9 @@ class ResourceMonitor:
         # Call the configmap change handler with processed data
         if self.configmap_change_handler:
             try:
-                if event_type in ['ADDED', 'MODIFIED']:
+                if event_type in ["ADDED", "MODIFIED"]:
                     data = configmap.data or {}
-                    logger.debug("ConfigMap %s changed! changed data keys: %s",
-                                 cm_metadata.name, list(data.keys()))
+                    logger.debug("ConfigMap %s changed! changed data keys: %s", cm_metadata.name, list(data.keys()))
 
                     # Process ConfigMap data to check for changes and handle
                     fault_infos = self._process_configmap_data(data)
@@ -282,7 +408,7 @@ class ResourceMonitor:
                         self.configmap_change_handler(fault_infos, self.node_name)
                     else:
                         logger.debug("Fault information unchanged, skipping duplicate processing")
-                elif event_type == 'DELETED':
+                elif event_type == "DELETED":
                     logger.warning("ConfigMap %s was deleted", cm_metadata.name)
                     # ConfigMap deleted means no fault information available
                     self.last_fault_infos = None  # Reset cache on deletion
@@ -296,49 +422,56 @@ class ResourceMonitor:
     def _has_fault_info_changed(self, new_fault_infos: list[FaultInfo]) -> bool:
         """
         Check if the fault information has actually changed compared to the last processed data.
-        Will return True if fault information has changed or this is the first time processing.
+
+        Comparison is done on the deduplicated dict (keyed by fault_code), matching the
+        storage model used by FaultManager.  This prevents spurious "changed" triggers when
+        only the set of affected NPU names shifts but the unique fault codes stay the same.
         """
         if self.last_fault_infos is None:
             return True  # First time processing
 
-        # Compare fault info lists (FaultInfo is a dataclass, so we can compare directly)
-        if len(new_fault_infos) != len(self.last_fault_infos):
-            return True  # Different number of faults
+        def _build_dedup_dict(infos: list[FaultInfo]) -> dict[int, FaultInfo]:
+            return {int(f.fault_code): f for f in infos}
 
-        # Sort both lists by fault attributes for consistent comparison
-        def sort_key(fault: FaultInfo) -> tuple:
-            return (fault.fault_type, fault.npu_name, fault.fault_code, fault.fault_level)
+        new_dict = _build_dedup_dict(new_fault_infos)
+        last_dict = _build_dedup_dict(self.last_fault_infos)
 
-        sorted_new = sorted(new_fault_infos, key=sort_key)
-        sorted_last = sorted(self.last_fault_infos, key=sort_key)
+        # Different sets of fault codes → changed
+        if new_dict.keys() != last_dict.keys():
+            return True
 
-        return sorted_new != sorted_last
+        # Same fault codes: compare level and type (the fields that affect behavior)
+        for code in new_dict:
+            new_f = new_dict[code]
+            old_f = last_dict[code]
+            if new_f.fault_level != old_f.fault_level or new_f.fault_type != old_f.fault_type:
+                return True
+
+        return False
 
     def _process_configmap_data(self, config_data: dict[str, Any]) -> list[FaultInfo]:
-        """ Process ConfigMap configuration data and extract fault information """
+        """Process ConfigMap configuration data and extract fault information"""
         fault_infos = []
 
         try:
             # Handle configuration format with DeviceInfoCfg, SwitchInfoCfg, ManuallySeparateNPU
             if is_configmap_valid(config_data):
                 # Process DeviceInfoCfg
-                device_info_cfg = config_data.get('DeviceInfoCfg', '')
+                device_info_cfg = config_data.get("DeviceInfoCfg", "")
                 if device_info_cfg:
                     device_fault_infos = process_device_info(device_info_cfg)
                     fault_infos.extend(device_fault_infos)
-                    logger.debug("Processed %d device fault infos from DeviceInfoCfg",
-                                 len(device_fault_infos))
+                    logger.debug("Processed %d device fault infos from DeviceInfoCfg", len(device_fault_infos))
 
                 # Process SwitchInfoCfg
-                switch_info_cfg = config_data.get('SwitchInfoCfg', '')
+                switch_info_cfg = config_data.get("SwitchInfoCfg", "")
                 if switch_info_cfg:
                     switch_fault_infos = process_switch_info(switch_info_cfg)
                     fault_infos.extend(switch_fault_infos)
-                    logger.debug("Processed %d switch fault infos from SwitchInfoCfg",
-                                 len(switch_fault_infos))
+                    logger.debug("Processed %d switch fault infos from SwitchInfoCfg", len(switch_fault_infos))
 
                 # Process ManuallySeparateNPU (for future use, not added to fault_infos)
-                manually_separate_npu = config_data.get('ManuallySeparateNPU', '')
+                manually_separate_npu = config_data.get("ManuallySeparateNPU", "")
                 if manually_separate_npu:
                     separated_ranks = process_manually_separate_npu(manually_separate_npu)
                     logger.info("Processed manually separated NPU ranks: %s", separated_ranks)

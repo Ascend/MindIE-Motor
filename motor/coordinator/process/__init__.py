@@ -15,12 +15,15 @@ __all__ = [
     "BaseProcessManager",
     "InferenceProcessManager",
     "MgmtProcessManager",
+    "ObsProcessManager",
     "SchedulerProcessManager",
     "create_shared_socket",
     "run_inference_worker_proc",
+    "run_obs_server_proc",
     "run_scheduler_server_proc",
     "PROCESS_KEY_INFERENCE",
     "PROCESS_KEY_MGMT",
+    "PROCESS_KEY_OBS",
     "PROCESS_KEY_SCHEDULER",
     "START_ORDER",
     "STOP_ORDER",
@@ -30,6 +33,7 @@ from motor.coordinator.process.base import BaseProcessManager
 from motor.coordinator.process.constants import (
     PROCESS_KEY_INFERENCE,
     PROCESS_KEY_MGMT,
+    PROCESS_KEY_OBS,
     PROCESS_KEY_SCHEDULER,
     START_ORDER,
     STOP_ORDER,
@@ -40,6 +44,7 @@ from motor.coordinator.process.inference_manager import (
     run_inference_worker_proc,
 )
 from motor.coordinator.process.mgmt_manager import MgmtProcessManager
+from motor.coordinator.process.obs_manager import ObsProcessManager, run_obs_server_proc
 from motor.coordinator.process.scheduler_manager import (
     SchedulerProcessManager,
     run_scheduler_server_proc,

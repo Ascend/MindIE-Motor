@@ -29,6 +29,7 @@ class Ranktable(BaseModel):
     """
     Instance level ranktable, it is unified between different infer engine
     """
+
     version: str = Field(..., description="")
     status: str = Field(..., description="")
     server_count: str = Field(..., description="")
@@ -39,8 +40,14 @@ class RegisterMsg(BaseModel):
     """
     Registration message format sent from NodeManager to controller.
     """
+
     job_name: str = Field(..., description="Instance job name")
     model_name: str = Field(..., description="Instance model name")
+    engine_type: str | None = Field(default=None, description="Inference engine family")
+    dispatch_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Supported Motor dispatch plans for this instance",
+    )
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")
     business_port: list[str] = Field(..., description="Business port for all endpoints managed by this nm")
@@ -50,20 +57,26 @@ class RegisterMsg(BaseModel):
     enable_multi_endpoints: bool = Field(default=True, description="Whether to enable multi-endpoints mode")
     device_num: int = Field(..., description="Number of visible devices in the container")
     ranktable: Ranktable | None = Field(default=None, description="Ranktable managed by this nm")
+    nnodes: int = Field(default=1, description="PCP cross-node count, from engine_config")
 
 
 class StartCmdMsg(BaseModel):
     """
     Start command message format sent from controller to NodeManager.
-    This msg brings the necessary information .e.g instance's ranktable 
+    This msg brings the necessary information .e.g instance's ranktable
     and instance id and role for NodeManager to start the instance.
     """
+
     job_name: str = Field(..., description="Instance job name")
     role: str = Field(..., description="Instance role")
     instance_id: int = Field(..., description="Instance id")
     endpoints: list[Endpoint] = Field(..., description="endpoints that managed by nm")
     master_dp_ip: str = Field(..., description="Master data parallel node IP address")
     ranktable: Ranktable | None = Field(default=None, description="Ranktable of the instance")
+    d2d_peer_ips: list[str] | None = Field(
+        default=None, description="IP addresses of ready peer instances for D2D weight transfer"
+    )
+    node_rank: int = Field(default=0, description="Node rank assigned by Controller (registration order)")
 
 
 class ReregisterMsg(BaseModel):
@@ -72,8 +85,14 @@ class ReregisterMsg(BaseModel):
     It only occured when controller restarts and NodeManager needs to
     re-register to controller.
     """
+
     job_name: str = Field(..., description="Instance job name")
     model_name: str = Field(..., description="Instance model name")
+    engine_type: str | None = Field(default=None, description="Inference engine family")
+    dispatch_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Supported Motor dispatch plans for this instance",
+    )
     instance_id: int = Field(..., description="Instance id")
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")
@@ -82,12 +101,15 @@ class ReregisterMsg(BaseModel):
     enable_multi_endpoints: bool = Field(default=True, description="Whether to enable multi-endpoints mode")
     device_num: int = Field(default=0, description="Number of visible devices in the container")
     endpoints: list[Endpoint] = Field(..., description="endpoints that managed by nm")
+    nnodes: int = Field(default=1, description="PCP cross-node count, from engine_config")
+    node_rank: int = Field(default=0, description="PCP node rank assigned by Controller")
 
 
 class HeartbeatMsg(BaseModel):
     """
     Heartbeat message format sent from NodeManager to controller.
     """
+
     job_name: str = Field(..., description="Instance job name")
     ins_id: int = Field(..., description="Instance id")
     ip: str = Field(..., description="Pod IP address")
@@ -98,6 +120,7 @@ class TerminateInstanceMsg(BaseModel):
     """
     Heartbeat message format sent from NodeManager to controller.
     """
+
     instance_id: int = Field(..., description="Instance id")
     reason: str = Field(..., description="The reason for terminating the instance")
 
@@ -107,9 +130,12 @@ class EventType(str, Enum):
     Event types for instance events, currently include add, delete, and set.
     And used by EventPusher to notify the coordinator.
     """
+
     ADD = "add"
     DEL = "del"
     SET = "set"
+    PAUSE = "pause"
+    RESUME = "resume"
 
     def __repr__(self) -> str:
         return str.__repr__(self.value)  # return the value of the enum
@@ -121,5 +147,6 @@ class InsEventMsg(BaseModel):
     Add and delete events carry a list of instances, while set events
     carry the full list of instances for the coordinator to update its state.
     """
+
     event: EventType = Field(..., description="event type: add, del, set")
     instances: list[Instance] = Field(..., description="instances for coordinator")

@@ -20,6 +20,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
 from motor.config.node_manager import NodeManagerConfig
+from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
 
 
 logger = get_logger(__name__)
@@ -41,6 +42,12 @@ class Daemon(ThreadSafeSingleton):
         self.device_num = config.basic_config.device_num
         self.single_container_flag = config.single_container_config.single_container_flag
         self.enable_multi_endpoints = config.basic_config.enable_multi_endpoints
+        self.enable_snapshot = config.snapshot_config.enable_snapshot
+        self.snapshot_metadata_path = (
+            config.snapshot_config.snapshot_metadata_path
+            if config.snapshot_config.snapshot_metadata_path != ""
+            else MOTOR_SNAPSHOT_METADATA_PATH
+        )
         if self.single_container_flag:
             self.device_offset = config.single_container_config.device_offset
             self.kv_port = config.single_container_config.kv_port
@@ -55,39 +62,48 @@ class Daemon(ThreadSafeSingleton):
         try:
             port = int(params.business_port)
             if not (MIN_PORT <= port <= MAX_PORT):
-                logger.error(f"Port {port} is out of valid range")
+                logger.error("Port %s is out of valid range", port)
                 return False
         except ValueError:
-            logger.error(f"Invalid port value: {params.business_port}")
+            logger.error("Invalid port value: %s", params.business_port)
             return False
         try:
             ipaddress.ip_address(params.ip)
         except ValueError:
-            logger.error(f"Invalid IP address: {params.ip}")
+            logger.error("Invalid IP address: %s", params.ip)
             return False
         except Exception as e:
-            logger.error(f"Error validating IP address {params.ip}: {e}")
+            logger.error("Error validating IP address %s: %s", params.ip, e)
             return False
 
         return True
+
+    @staticmethod
+    def _to_engine_role(pd_role_info: PDRole) -> str:
+        if pd_role_info == PDRole.ROLE_U:
+            return "union"
+        return str(pd_role_info.value)
 
     def pull_engine(
         self,
         pd_role_info: PDRole,
         endpoints_info: list[Endpoint],
         instance_id: int,
-        master_dp_ip: str
+        master_dp_ip: str,
+        d2d_peer_ips: list[str] | None = None,
+        node_rank: int = 0,
     ):
         """
         start engine processes based on the provided role and endpoint information.
         engine_server parameters:
             --dp-rank engine dpGroup rank
             --engine-id
-            --role  prefill | decode | both
+            --role  prefill | decode | union
             --host engine service ip
             --port engine service port
             --mgmt-port endpoint management port
             --master-dp-ip master data parallel node IP address
+            --node-rank node rank assigned by Controller (registration order)
             --config-path engine config file path
         """
         try:
@@ -99,33 +115,55 @@ class Daemon(ThreadSafeSingleton):
 
                 if self.enable_multi_endpoints:
                     device_ids_str = self._calc_visible_device_ids(i, device_size)
-                    logger.info(f"Device IDs: {device_ids_str}")
+                    logger.info("Device IDs: %s", device_ids_str)
                     env["ASCEND_RT_VISIBLE_DEVICES"] = device_ids_str
 
                 cmd = [
                     "engine_server",
-                    "--dp-rank", str(endpoint.id),
-                    "--instance-id", str(instance_id),
-                    "--role", str(pd_role_info.value),
-                    "--host", str(endpoint.ip),
-                    "--port", str(int(endpoint.business_port)),
-                    "--mgmt-port", str(int(endpoint.mgmt_port)),
-                    "--master-dp-ip", master_dp_ip,
-                    "--config-path", str(Env.user_config_path)
+                    "--dp-rank",
+                    str(endpoint.id),
+                    "--instance-id",
+                    str(instance_id),
+                    "--role",
+                    self._to_engine_role(pd_role_info),
+                    "--host",
+                    str(endpoint.ip),
+                    "--port",
+                    str(int(endpoint.business_port)),
+                    "--mgmt-port",
+                    str(int(endpoint.mgmt_port)),
+                    "--master-dp-ip",
+                    master_dp_ip,
+                    "--node-rank",
+                    str(node_rank),
+                    "--config-path",
+                    str(Env.user_config_path),
                 ]
+                if self.enable_snapshot:
+                    cmd.extend(["--snapshot-metadata", self.snapshot_metadata_path])
                 if self.single_container_flag:
                     cmd.extend(["--kv-port", str(self.kv_port)])
                     cmd.extend(["--dp-rpc-port", str(self.dp_rpc_port)])
                     if self.lookup_rpc_port is not None:
                         cmd.extend(["--lookup-rpc-port", str(self.lookup_rpc_port)])
+                if d2d_peer_ips:
+                    ep_id = str(endpoint.id)
+                    peer_ips = []
+                    for entry in d2d_peer_ips:
+                        encoded_ep_id, ip = entry.split(":", 1)
+                        if encoded_ep_id == ep_id:
+                            peer_ips.append(ip)
+                    if peer_ips:
+                        cmd.extend(["--d2d-peer-ips", ",".join(peer_ips)])
+                    logger.info("D2D peer IPs for ep_id %s: %s", endpoint.id, peer_ips)
                 logger.info(" ".join(cmd))
-                process = subprocess.Popen(cmd, shell=False, env=env)
+                process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
                 if process.poll() is not None:
-                    raise RuntimeError(f"Engine process exited immediately with code {process.returncode}")
+                    raise RuntimeError("Engine process exited immediately with code %s" % process.returncode)
                 with self._pids_lock:
                     self.engine_pids.append(process.pid)
         except Exception as e:
-            raise RuntimeError(f"Failed to pull engine: {e}") from e
+            raise RuntimeError("Failed to pull engine: %s" % e) from e
 
     def stop(self):
         with self._pids_lock:
@@ -134,28 +172,24 @@ class Daemon(ThreadSafeSingleton):
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGKILL)
-                logger.info(f"Killed engine process with PID: {pid}")
+                logger.info("Killed engine process with PID: %s", pid)
             except ProcessLookupError:
-                logger.info(f"Process {pid} already terminated")
+                logger.info("Process %s already terminated", pid)
             except PermissionError:
-                logger.error(f"No permission to kill process {pid}")
+                logger.error("No permission to kill process %s", pid)
             except Exception as e:
-                logger.error(f"Failed to kill process {pid}: {e}")
-        return
+                logger.error("Failed to kill process %s: %s", pid, e)
 
     def _calc_visible_device_ids(self, index: int, device_size: int) -> str:
         """Calculate visible device IDs string for ASCEND_RT_VISIBLE_DEVICES.
         Returns:
             Comma-separated device IDs string, e.g., "0,1,2,3"
         """
-        local_world_size = self.parallel_config.tp_size * self.parallel_config.pp_size
-        start_device_id = (index * local_world_size % device_size)
+        local_world_size = self.parallel_config.local_world_size
+        start_device_id = index * local_world_size % device_size
         end_device_id = start_device_id + local_world_size
         if end_device_id > device_size:
-            device_ids = (
-                list(range(start_device_id, device_size))
-                + list(range(0, end_device_id - device_size))
-            )
+            device_ids = list(range(start_device_id, device_size)) + list(range(0, end_device_id - device_size))
         else:
             device_ids = list(range(start_device_id, end_device_id))
         if self.single_container_flag:

@@ -13,7 +13,7 @@
 import os
 
 
-class Env:
+class _Environment:
     @property
     def job_name(self):
         return os.getenv("JOB_NAME", None)
@@ -33,7 +33,7 @@ class Env:
     @property
     def user_config_path(self):
         return os.getenv("USER_CONFIG_PATH", None)
-    
+
     @property
     def role(self):
         return os.getenv("ROLE", None)
@@ -48,18 +48,41 @@ class Env:
 
     @property
     def coordinator_service(self):
-        return os.getenv("COORDINATOR_SERVICE", "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local")
+        return os.getenv(
+            "COORDINATOR_SERVICE",
+            "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
+        )
+
+    @property
+    def coordinator_infer_service(self):
+        return os.getenv(
+            "COORDINATOR_INFER_SERVICE",
+            os.getenv(
+                "COORDINATOR_SERVICE",
+                "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
+            ),
+        )
+
+    @property
+    def coordinator_obs_service(self):
+        return os.getenv(
+            "COORDINATOR_OBS_SERVICE",
+            os.getenv(
+                "COORDINATOR_SERVICE",
+                "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
+            ),
+        )
 
     @property
     def controller_service(self):
-        return os.getenv("CONTROLLER_SERVICE", "mindie-motor-controller-service.mindie-motor.svc.cluster.local")
+        return os.getenv(
+            "CONTROLLER_SERVICE",
+            "mindie-motor-controller-service.mindie-motor.svc.cluster.local",
+        )
 
     @property
     def conductor_service(self):
         return os.getenv("KV_CONDUCTOR_SERVICE", "")
 
-    @property
-    def disaggregation_bootstrap_port(self):
-        return os.getenv("DISAGGREGATION_BOOTSTRAP_PORT", "")
 
-Env = Env()
+Env = _Environment()

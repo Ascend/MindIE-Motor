@@ -1,0 +1,190 @@
+# pyMotor Observability Stack
+# ----------------------------
+# A self-contained Docker Compose deployment that mirrors NVIDIA Dynamo's
+# local observability stack (Prometheus + Grafana + Tempo + Loki + OTel
+# Collector + Exporters) for pyMotor.
+#
+# Profiles:
+#   - default(no profile flag) : core stack
+#   - npu : enable Ascend npu-exporter (requires Ascend drivers on host)
+#
+# Usage:
+#   docker compose up -d
+#   docker compose --profile npu up -d
+
+name: pymotor-observability
+
+x-image-prefix: &registry "${REGISTRY_PREFIX:-}"
+
+networks:
+  obs:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  tempo-data:
+  loki-data:
+
+services:
+  # ---------------------------------------------------------------
+  # Core: Prometheus
+  # ---------------------------------------------------------------
+  prometheus:
+    image: ${REGISTRY_PREFIX:-}prom/prometheus:${PROMETHEUS_VERSION:-v2.55.1}
+    pull_policy: if_not_present
+    container_name: pymotor-prometheus
+    restart: unless-stopped
+    networks: [obs]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=72h
+      - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
+      # 保留 vllm:* 等带冒号的指标名（与 prometheus.yml 中
+      # metric_name_validation_scheme: utf8 配套）
+      - --enable-feature=utf8-names
+    volumes:
+      - ${PROMETHEUS_CONFIG_FILE:-./prometheus/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------
+  # Core: Tempo (traces)
+  # ---------------------------------------------------------------
+  tempo:
+    image: ${REGISTRY_PREFIX:-}grafana/tempo:${TEMPO_VERSION:-2.6.1}
+    pull_policy: if_not_present
+    container_name: pymotor-tempo
+    restart: unless-stopped
+    networks: [obs]
+    ports:
+      - "${TEMPO_QUERY_PORT:-3200}:3200"
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  # ---------------------------------------------------------------
+  # Core: Loki (logs)
+  # ---------------------------------------------------------------
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3.3.0}
+    pull_policy: if_not_present
+    container_name: pymotor-loki
+    restart: unless-stopped
+    networks: [obs]
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/var/loki
+
+  # ---------------------------------------------------------------
+  # Core: OpenTelemetry Collector
+  # ---------------------------------------------------------------
+  otel-collector:
+    image: ${REGISTRY_PREFIX:-}otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION:-0.115.1}
+    pull_policy: if_not_present
+    container_name: pymotor-otel-collector
+    restart: unless-stopped
+    networks: [obs]
+    depends_on: [tempo, loki]
+    command: ["--config=/etc/otelcol/otel-collector.yaml"]
+    volumes:
+      - ${OTEL_CONFIG_FILE:-./otel-collector/otel-collector.yaml}:/etc/otelcol/otel-collector.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+
+  # ---------------------------------------------------------------
+  # Core: Grafana (visualization)
+  # ---------------------------------------------------------------
+  grafana:
+    # Use upstream image + volume-mounted provisioning (no local build / buildx).
+    image: ${REGISTRY_PREFIX:-}grafana/grafana:${GRAFANA_VERSION:-11.3.0}
+    pull_policy: if_not_present
+    container_name: pymotor-grafana
+    restart: unless-stopped
+    networks: [obs]
+    depends_on: [prometheus, tempo, loki]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-motor}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-motor}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_LOG_LEVEL: warn
+      # Host proxy must not apply to in-compose datasources (prometheus/tempo).
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: prometheus,tempo,loki,otel-collector,localhost,127.0.0.1,host.docker.internal,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      no_proxy: prometheus,tempo,loki,otel-collector,localhost,127.0.0.1,host.docker.internal,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Dashboards are baked into the image, but mount the source dir read-only
+      # so the Grafana provisioner picks up live edits during development.
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ${GRAFANA_PROVISIONING_DIR:-./grafana/provisioning}:/etc/grafana/provisioning:ro
+
+  # ---------------------------------------------------------------
+  # Infra exporters
+  # ---------------------------------------------------------------
+  node-exporter:
+    image: ${REGISTRY_PREFIX:-}prom/node-exporter:${NODE_EXPORTER_VERSION:-v1.8.2}
+    container_name: pymotor-node-exporter
+    restart: unless-stopped
+    profiles: [full]
+    networks: [obs]
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)
+    volumes:
+      - /:/host:ro,rslave
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+
+  cadvisor:
+    image: ${REGISTRY_PREFIX:-}gcr.io/cadvisor/cadvisor:${CADVISOR_VERSION:-v0.49.1}
+    container_name: pymotor-cadvisor
+    restart: unless-stopped
+    profiles: [full]
+    networks: [obs]
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "${CADVISOR_PORT:-8088}:8080"
+  # ---------------------------------------------------------------
+  # Ascend NPU exporter (profile: npu) — requires host drivers
+  # ---------------------------------------------------------------
+  ascend-npu-exporter:
+    image: ${NPU_EXPORTER_IMAGE:-swr.cn-south-1.myhuaweicloud.com/ascendhub/npu-exporter:v6.0.0}
+    container_name: pymotor-npu-exporter
+    restart: unless-stopped
+    profiles: [npu]
+    # NPU exporter needs host network + privileged + DCMI / driver mounts.
+    network_mode: host
+    privileged: true
+    command:
+      - --listen=0.0.0.0:${NPU_EXPORTER_PORT:-8082}
+      - --updateTime=5
+    volumes:
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+      - /usr/local/dcmi:/usr/local/dcmi:ro
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+      - /var/log/Ascend:/var/log/Ascend
+      - /etc/localtime:/etc/localtime:ro

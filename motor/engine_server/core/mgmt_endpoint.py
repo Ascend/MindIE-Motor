@@ -25,10 +25,18 @@ from motor.common.logger import get_logger
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.endpoint import Endpoint
 from motor.engine_server.core.health_collector import HealthCollector
+from motor.engine_server.core.snapshot_monitor import SnapshotMonitor
 from motor.engine_server.core.sim_inference import SimInference
 from motor.engine_server.constants import constants
-from motor.engine_server.constants.constants import METRICS_INTERFACE, \
-    STATUS_INTERFACE, STATUS_KEY, INIT_STATUS, NORMAL_STATUS, ABNORMAL_STATUS
+from motor.engine_server.constants.constants import (
+    METRICS_INTERFACE,
+    STATUS_INTERFACE,
+    STATUS_KEY,
+    INIT_STATUS,
+    NORMAL_STATUS,
+    ABNORMAL_STATUS,
+)
+from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot
 
 
 logger = get_logger(__name__)
@@ -57,10 +65,10 @@ def attach_metrics_router(app: FastAPI):
     logger.info("Created Endpoint metrics route: /metrics successfully")
 
 
-
 class MgmtEndpoint(Endpoint):
     def __init__(self, config: IConfig):
         endpoint_config = config.get_endpoint_config()
+        self.snapshot_enabled = endpoint_config.snapshot_metadata is not None
         self.host = endpoint_config.host
         self.mgmt_port = endpoint_config.mgmt_port
         self.mgmt_tls_config = endpoint_config.deploy_config.mgmt_tls_config
@@ -70,15 +78,14 @@ class MgmtEndpoint(Endpoint):
         args = config.get_args()
         infer_tls_config = endpoint_config.deploy_config.infer_tls_config
         health_check_config = endpoint_config.deploy_config.health_check_config or {}
+        # Headless follower nodes have no API server, disable virtual inference
+        if getattr(args, 'headless', False) and hasattr(health_check_config, 'enable_virtual_inference'):
+            health_check_config.enable_virtual_inference = False
         self.sim_inference = SimInference(args, infer_tls_config, health_check_config, endpoint_config.role)
 
         self._stop_event = threading.Event()
         self._server: uvicorn.Server | None = None
-        self._server_thread = threading.Thread(
-            target=self._run_server,
-            name="endpoint_server_thread",
-            daemon=True
-        )
+        self._server_thread = threading.Thread(target=self._run_server, name="endpoint_server_thread", daemon=True)
         self.health_collector = HealthCollector(config)
         self.attach_status_router()
         self._virtual_inference_started = False
@@ -91,7 +98,7 @@ class MgmtEndpoint(Endpoint):
     def run(self):
         if self._server_thread and not self._server_thread.is_alive():
             self._server_thread.start()
-            logger.info(f"Endpoint server started: http://{self.host}:{self.mgmt_port}")
+            logger.info("Endpoint server started: http://%s:%d", self.host, self.mgmt_port)
 
     def run_virtual_inference(self):
         # start health check
@@ -106,7 +113,7 @@ class MgmtEndpoint(Endpoint):
         if self._server_thread and self._server_thread.is_alive():
             self._server_thread.join(timeout=5)
             log_msg = "exited" if not self._server_thread.is_alive() else "timeout"
-            logger.info(f"Endpoint server thread {log_msg}")
+            logger.info("Endpoint server thread %s", log_msg)
 
         self.sim_inference.stop_health_check()
 
@@ -119,6 +126,14 @@ class MgmtEndpoint(Endpoint):
             try:
                 is_healthy = await self.health_collector.is_healthy()
                 if is_healthy:
+                    if self.snapshot_enabled:
+                        if not is_restored_from_host_side_snapshot() and not SnapshotMonitor().is_suspend_done:
+                            return {STATUS_KEY: INIT_STATUS}
+                        elif is_restored_from_host_side_snapshot() and not SnapshotMonitor().is_resume_done:
+                            return {STATUS_KEY: INIT_STATUS}
+                        elif not is_restored_from_host_side_snapshot() and SnapshotMonitor().is_suspend_done:
+                            return {STATUS_KEY: NORMAL_STATUS}
+
                     async with self._lock:
                         if not self._virtual_inference_started:
                             self.run_virtual_inference()
@@ -126,9 +141,7 @@ class MgmtEndpoint(Endpoint):
                     # check sim_inference status
                     if self.sim_inference and self.sim_inference.is_abnormal():
                         logger.warning("SimInference is in abnormal status, returning ABNORMAL_STATUS")
-                        return {
-                            STATUS_KEY: ABNORMAL_STATUS
-                        }
+                        return {STATUS_KEY: ABNORMAL_STATUS}
                     return {STATUS_KEY: NORMAL_STATUS}
                 return {STATUS_KEY: ABNORMAL_STATUS}
             except Exception:
@@ -150,9 +163,9 @@ class MgmtEndpoint(Endpoint):
                 config.ssl = ssl_context
             else:
                 raise RuntimeError("Failed to create ssl context")
-            logger.info(f"MgmtEndpoint server started: https://{self.host}:{self.mgmt_port}")
+            logger.info("MgmtEndpoint server started: https://%s:%d", self.host, self.mgmt_port)
         else:
-            logger.info(f"MgmtEndpoint server started: http://{self.host}:{self.mgmt_port}")
+            logger.info("MgmtEndpoint server started: http://%s:%d", self.host, self.mgmt_port)
 
         self._server = uvicorn.Server(config)
         if not self._stop_event.is_set():

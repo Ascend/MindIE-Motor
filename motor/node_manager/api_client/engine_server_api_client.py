@@ -10,9 +10,11 @@
 
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.config.node_manager import NodeManagerConfig
 
 logger = get_logger(__name__)
+_rl = RateLimitedLogger(logger)
 
 
 class EngineServerApiClient:
@@ -23,6 +25,11 @@ class EngineServerApiClient:
         client_args = EngineServerApiClient._generate_client_args(address)
         client = SafeHTTPSClient(**client_args, timeout=5)
         response = client.get("/status")
+        _rl.record_success(f"node_manager.engine_server.query_status.{address}")
+        _rl.emit_info_periodic(
+            f"node_manager.engine_server.query_status.{address}",
+            "NodeManager->EngineServer query_status periodic summary: succeeded {count} times in last 60s",
+        )
         logger.debug(f"Query engine server status success, "
                     f"response: {response}, "
                     f"address: {client_args['address']}")

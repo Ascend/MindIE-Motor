@@ -1,3 +1,7 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -109,4 +113,9 @@ venv.bak/
 **/*_pb2_grpc.py
 
 # deployer
-deployer/output/*
+examples/deployer/output_yamls/*
+
+# observability stack local build artifacts
+examples/features/observability/stack/loki/.build/
+examples/features/observability/stack/generated/
+examples/features/observability/stack/.native-runtime/

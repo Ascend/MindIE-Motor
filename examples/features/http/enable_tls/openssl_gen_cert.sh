@@ -87,6 +87,20 @@ if [ -n "$COORDINATOR_SERVICE" ]; then
     echo "Added COORDINATOR_SERVICE: $COORDINATOR_SERVICE"
 fi
 
+# Add COORDINATOR_INFER_SERVICE if set
+if [ -n "$COORDINATOR_INFER_SERVICE" ]; then
+    alt_names_section="${alt_names_section}"$'\n'"DNS.${dns_count} = ${COORDINATOR_INFER_SERVICE}"
+    dns_count=$((dns_count + 1))
+    echo "Added COORDINATOR_INFER_SERVICE: $COORDINATOR_INFER_SERVICE"
+fi
+
+# Add COORDINATOR_OBS_SERVICE if set
+if [ -n "$COORDINATOR_OBS_SERVICE" ]; then
+    alt_names_section="${alt_names_section}"$'\n'"DNS.${dns_count} = ${COORDINATOR_OBS_SERVICE}"
+    dns_count=$((dns_count + 1))
+    echo "Added COORDINATOR_OBS_SERVICE: $COORDINATOR_OBS_SERVICE"
+fi
+
 # Add POD_IP if set
 if [ -n "$POD_IP" ]; then
     alt_names_section="${alt_names_section}"$'\n'"IP.${ip_count} = ${POD_IP}"

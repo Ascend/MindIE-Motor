@@ -38,6 +38,10 @@ def gen_kv_pool_env(kv_pool_config):
             f"Missing required kv cache pool config: {missing_keys}. "
             f"Please configure them in '{C.KV_CACHE_POOL_CONFIG}'."
         )
+    if C.DEFAULT_KV_LEASE_TTL not in kv_pool_config:
+        # Set default value for DEFAULT_KV_LEASE_TTL if not provided
+        # Default lease TTL in milliseconds
+        kv_pool_config[C.DEFAULT_KV_LEASE_TTL] = 11000 
 
     kv_pool_env = [
         {C.NAME: C.ENV_KVP_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_pool_service},
@@ -45,6 +49,7 @@ def gen_kv_pool_env(kv_pool_config):
         {C.NAME: C.ENV_KV_POOL_EVICTION_HIGH_WATERMARK_RATIO,
             C.VALUE: str(kv_pool_config[C.KV_POOL_EVICTION_HIGH_WATERMARK_RATIO])},
         {C.NAME: C.ENV_KV_POOL_EVICTION_RATIO, C.VALUE: str(kv_pool_config[C.KV_POOL_EVICTION_RATIO])},
+        {C.NAME: C.ENV_DEFAULT_KV_LEASE_TTL, C.VALUE: str(kv_pool_config[C.DEFAULT_KV_LEASE_TTL])}
     ]
 
     return kv_pool_env

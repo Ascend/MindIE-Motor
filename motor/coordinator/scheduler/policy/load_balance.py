@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import heapq
 from typing import Iterable
 
 from motor.common.resources.instance import Instance, PDRole
@@ -19,6 +21,17 @@ from motor.common.logger import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT = 0.05
+
+
+@dataclass(frozen=True)
+class EndpointCandidate:
+    """Endpoint candidate plus its load-balance score."""
+
+    instance: Instance
+    endpoint: Endpoint
+    score: float
+
 
 class LoadBalancePolicy(BaseSchedulingPolicy):
     """
@@ -26,11 +39,105 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
     Selects instances and endpoints based on their current workload.
     Implements select_and_endpoint and update_workload required by SchedulingFacade (forwarded via Scheduler).
     """
+
     def __init__(self, instance_provider: InstanceProvider):
         super().__init__(instance_provider=instance_provider)
         self._instance_provider = instance_provider
+        self._endpoint_instance_score_weight = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT
         # Removed req_workload_dict - workload state is now managed by API Server's RequestManager
         logger.info("LoadBalancePolicy started.")
+
+    def set_endpoint_instance_score_weight(self, weight: float) -> None:
+        """Set instance pressure weight used by endpoint-first composite scoring."""
+        self._endpoint_instance_score_weight = max(0.0, float(weight))
+
+    @staticmethod
+    def calculate_endpoint_score(
+        instance: Instance,
+        endpoint: Endpoint,
+        role: PDRole | str | None = None,
+        instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
+    ) -> float:
+        """
+        Score an endpoint globally while preserving some instance-level pressure awareness.
+
+        Endpoint workload is the primary signal. Instance workload is averaged by endpoint count so
+        larger DP instances are not penalized just because they have more endpoints.
+        """
+        score_role = role if role is not None else instance.role
+        endpoint_score = endpoint.workload.calculate_workload_score(role=score_role)
+        if instance_score_weight <= 0:
+            return endpoint_score
+        endpoint_count = max(1, len(instance.get_all_endpoints()))
+        instance_score = instance.gathered_workload.calculate_workload_score(role=score_role)
+        return endpoint_score + instance_score_weight * (instance_score / endpoint_count)
+
+    @staticmethod
+    def select_endpoint_candidates_from_list(
+        instances: list[Instance] | Iterable[Instance],
+        role: PDRole | None = None,
+        top_k: int = 1,
+        instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
+        start_index: int = 0,
+    ) -> list[EndpointCandidate]:
+        """
+        Select top-K endpoints globally across all instances.
+
+        ``start_index`` rotates traversal order and only affects ties, spreading equal-load choices
+        across worker processes without changing load-based ordering.
+        """
+        if top_k <= 0:
+            return []
+        if not isinstance(instances, (list, tuple)):
+            instances = list(instances)
+        if not instances:
+            return []
+
+        n = len(instances)
+        rotated_instances = [instances[(start_index + i) % n] for i in range(n)]
+        scored: list[tuple[float, int, EndpointCandidate]] = []
+        tie_order = 0
+        for instance in rotated_instances:
+            for endpoint in instance.get_all_endpoints():
+                try:
+                    score = LoadBalancePolicy.calculate_endpoint_score(
+                        instance,
+                        endpoint,
+                        role=role,
+                        instance_score_weight=instance_score_weight,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to calculate endpoint score for instance %s endpoint %s: %s",
+                        instance.id,
+                        endpoint.id,
+                        e,
+                    )
+                    continue
+                scored.append((score, tie_order, EndpointCandidate(instance, endpoint, score)))
+                tie_order += 1
+        best = heapq.nsmallest(top_k, scored, key=lambda item: (item[0], item[1]))
+        return [candidate for _, _, candidate in best]
+
+    @staticmethod
+    def select_endpoint_from_list(
+        instances: list[Instance] | Iterable[Instance],
+        role: PDRole | None = None,
+        start_index: int = 0,
+        instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
+    ) -> tuple[Instance, Endpoint] | None:
+        """Select one endpoint globally across all instances."""
+        candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
+            instances,
+            role=role,
+            top_k=1,
+            instance_score_weight=instance_score_weight,
+            start_index=start_index,
+        )
+        if not candidates:
+            return None
+        candidate = candidates[0]
+        return (candidate.instance, candidate.endpoint)
 
     @staticmethod
     def select_instance_from_list(
@@ -118,8 +225,14 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
                 continue
         return selected_endpoint
 
-    async def update_workload(self, instance_id: int, endpoint_id: int, req_id: str,
-                              workload_action: WorkloadAction, workload_change: Workload) -> bool:
+    async def update_workload(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        req_id: str,
+        workload_action: WorkloadAction,
+        workload_change: Workload,
+    ) -> bool:
         """
         Update workload information for load-aware scheduling (by id only).
 
@@ -134,13 +247,9 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             True if workload was updated successfully, False otherwise
         """
         if hasattr(self._instance_provider, "update_instance_workload"):
-            await self._instance_provider.update_instance_workload(
-                instance_id, endpoint_id, workload_change
-            )
+            await self._instance_provider.update_instance_workload(instance_id, endpoint_id, workload_change)
         else:
-            raise RuntimeError(
-                "InstanceProvider must support update_instance_workload for LoadBalancePolicy"
-            )
+            raise RuntimeError("InstanceProvider must support update_instance_workload for LoadBalancePolicy")
 
         if req_id:
             logger.debug(
@@ -156,6 +265,34 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
             )
 
         return True
+
+    def select_instance_and_endpoint(self, role: PDRole = None):
+        """
+        Load-balance by endpoint first, with a configurable instance pressure penalty.
+        """
+        active_instances = self._instance_provider.get_available_instances(role)
+        if not active_instances:
+            logger.warning("No active instances available for scheduling")
+            return None
+        return LoadBalancePolicy.select_endpoint_from_list(
+            active_instances.values(),
+            role,
+            instance_score_weight=self._endpoint_instance_score_weight,
+        )
+
+    def select_instance_and_endpoint_from_list(
+        self,
+        instances: list[Instance],
+        role: PDRole | None = None,
+        req_info=None,
+    ):
+        """Load-balance within a capability-compatible subset."""
+        del req_info
+        return LoadBalancePolicy.select_endpoint_from_list(
+            instances,
+            role,
+            instance_score_weight=self._endpoint_instance_score_weight,
+        )
 
     def _select_instance(self, role: PDRole = None) -> Instance | None:
         """

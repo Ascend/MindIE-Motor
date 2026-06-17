@@ -21,6 +21,7 @@ from motor.common.logger import get_logger
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
+from motor.coordinator.models.request import RequestInfo
 
 logger = get_logger(__name__)
 
@@ -40,7 +41,8 @@ class WorkloadActionHandler:
         if role_raw is None:
             logger.debug(
                 "resource.instance.role is None; instance_id=%s endpoint_id=%s",
-                resource.instance.id, resource.endpoint.id
+                resource.instance.id,
+                resource.endpoint.id,
             )
             return None
         try:
@@ -48,7 +50,9 @@ class WorkloadActionHandler:
         except (ValueError, TypeError):
             logger.debug(
                 "resource.instance.role invalid for PDRole: %r (type=%s), instance_id=%s",
-                role_raw, type(role_raw).__name__, resource.instance.id
+                role_raw,
+                type(role_raw).__name__,
+                resource.instance.id,
             )
             return None
         if role is None or not isinstance(role, PDRole):
@@ -61,7 +65,8 @@ class WorkloadActionHandler:
         resource: ScheduledResource,
         req_id: str,
         action: WorkloadAction,
-        req_len: int,
+        req_info: RequestInfo,
+        attempt_seq: int | None = None,
     ) -> Tuple[Workload | None, PDRole | None]:
         """
         Get/compute workload_change from RequestManager by action, update RequestManager, return (change, role).
@@ -70,12 +75,7 @@ class WorkloadActionHandler:
         Returns:
             (workload_change, role) for caller to pass to scheduler.update_workload; (None, None) if no update.
         """
-        if not (
-            resource
-            and isinstance(resource, ScheduledResource)
-            and resource.instance
-            and resource.endpoint
-        ):
+        if not (resource and isinstance(resource, ScheduledResource) and resource.instance and resource.endpoint):
             logger.warning("WorkloadActionHandler: resource is empty")
             return (None, None)
 
@@ -87,42 +87,63 @@ class WorkloadActionHandler:
         workload_change: Workload | None = None
 
         if action == WorkloadAction.ALLOCATION:
-            allocate_workload = calculate_demand_workload(role, req_len)
-            if not await request_mgr.add_req_workload(req_id, role, allocate_workload):
+            allocate_workload = calculate_demand_workload(role, req_info)
+            if attempt_seq is None:
+                added = await request_mgr.add_req_workload(req_id, role, allocate_workload)
+            else:
+                added = await request_mgr.add_req_attempt_workload(req_id, attempt_seq, role, allocate_workload)
+            if not added:
                 logger.debug(
-                    "Request %s already allocated for role %s, allocation ignored",
-                    req_id, role
+                    "Request %s attempt %s already allocated for role %s, allocation ignored", req_id, attempt_seq, role
                 )
                 return (None, None)
             workload_change = allocate_workload
 
         elif action == WorkloadAction.RELEASE_KV:
-            current_workload = await request_mgr.get_req_workload(req_id, role)
+            current_workload = (
+                await request_mgr.get_req_workload(req_id, role)
+                if attempt_seq is None
+                else await request_mgr.get_req_attempt_workload(req_id, attempt_seq, role)
+            )
             if not current_workload:
                 logger.debug(
-                    "Request %s not allocated for role %s, KV release ignored",
-                    req_id, role
+                    "Request %s attempt %s not allocated for role %s, KV release ignored", req_id, attempt_seq, role
                 )
                 return (None, None)
             workload_change = Workload(active_kv_cache=-current_workload.active_kv_cache)
             current_workload.active_kv_cache = 0
-            await request_mgr.update_req_workload(req_id, role, current_workload)
+            if attempt_seq is None:
+                await request_mgr.update_req_workload(req_id, role, current_workload)
+            else:
+                await request_mgr.update_req_attempt_workload(req_id, attempt_seq, role, current_workload)
             if current_workload.active_tokens <= 0:
-                await request_mgr.del_req_workload(req_id, role)
+                if attempt_seq is None:
+                    await request_mgr.del_req_workload(req_id, role)
+                else:
+                    await request_mgr.del_req_attempt_workload(req_id, attempt_seq, role)
 
         elif action == WorkloadAction.RELEASE_TOKENS:
-            current_workload = await request_mgr.get_req_workload(req_id, role)
+            current_workload = (
+                await request_mgr.get_req_workload(req_id, role)
+                if attempt_seq is None
+                else await request_mgr.get_req_attempt_workload(req_id, attempt_seq, role)
+            )
             if not current_workload:
                 logger.debug(
-                    "Request %s not allocated for role %s, tokens release ignored",
-                    req_id, role
+                    "Request %s attempt %s not allocated for role %s, tokens release ignored", req_id, attempt_seq, role
                 )
                 return (None, None)
             workload_change = Workload(active_tokens=-current_workload.active_tokens)
             current_workload.active_tokens = 0
-            await request_mgr.update_req_workload(req_id, role, current_workload)
+            if attempt_seq is None:
+                await request_mgr.update_req_workload(req_id, role, current_workload)
+            else:
+                await request_mgr.update_req_attempt_workload(req_id, attempt_seq, role, current_workload)
             if current_workload.active_kv_cache <= 0:
-                await request_mgr.del_req_workload(req_id, role)
+                if attempt_seq is None:
+                    await request_mgr.del_req_workload(req_id, role)
+                else:
+                    await request_mgr.del_req_attempt_workload(req_id, attempt_seq, role)
 
         else:
             logger.warning("Unknown workload action: %s", action)

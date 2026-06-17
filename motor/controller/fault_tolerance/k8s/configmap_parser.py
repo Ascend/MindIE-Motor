@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,23 +7,25 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-""" ConfigMap Parser - parses ConfigMap configuration data """
+"""ConfigMap Parser - parses ConfigMap configuration data"""
+
 import json
+from typing import Any
 
 from motor.common.logger import get_logger
-from motor.controller.fault_tolerance.k8s.cluster_fault_codes import (
-    FaultType,
+from motor.controller.fault_tolerance.fault_types import (
+    HardwareFaultType,
     FaultInfo,
     OriginFaultLevel,
     map_fault_level,
-    map_fault_type
+    map_fault_type,
 )
 
 logger = get_logger(__name__)
 
 
 def _parse_json_string(json_str: str) -> dict | None:
-    """ Safely parse JSON string """
+    """Safely parse JSON string"""
     if not json_str or not isinstance(json_str, str):
         return None
 
@@ -40,12 +41,12 @@ def _parse_json_string(json_str: str) -> dict | None:
 
 
 def is_configmap_valid(config_data: dict) -> bool:
-    """ Check if the data is valid format (DeviceInfoCfg, SwitchInfoCfg, ManuallySeparateNPU) """
+    """Check if the data is valid format (DeviceInfoCfg, SwitchInfoCfg, ManuallySeparateNPU)"""
     if not config_data:
         return False
 
     # Check if it contains the expected configuration keys
-    expected_keys = {'DeviceInfoCfg', 'SwitchInfoCfg', 'ManuallySeparateNPU'}
+    expected_keys = {"DeviceInfoCfg", "SwitchInfoCfg", "ManuallySeparateNPU"}
     config_keys = set(config_data.keys())
 
     # Check if any of the expected keys are present (intersection)
@@ -53,9 +54,9 @@ def is_configmap_valid(config_data: dict) -> bool:
 
 
 def _parse_device_fault_code(fault_code_str: str) -> int:
-    """ Parse device fault code from hex string. """
+    """Parse device fault code from hex string."""
     try:
-        if fault_code_str.startswith('0x'):
+        if fault_code_str.startswith("0x"):
             return int(fault_code_str, 16)
         else:
             return int(fault_code_str, 16)  # Assume hex format
@@ -63,13 +64,8 @@ def _parse_device_fault_code(fault_code_str: str) -> int:
         return 0x1001  # Default device fault code
 
 
-def _create_device_fault_info(
-    fault_type_str: str,
-    npu_name: str,
-    fault_level_str: str,
-    fault_code: int
-) -> FaultInfo:
-    """ Create FaultInfo object for device fault. """
+def _create_device_fault_info(fault_type_str: str, npu_name: str, fault_level_str: str, fault_code: int) -> FaultInfo:
+    """Create FaultInfo object for device fault."""
     # Map fault type string to enum
     fault_type = map_fault_type(fault_type_str)
 
@@ -86,24 +82,23 @@ def _create_device_fault_info(
         npu_name=npu_name,
         fault_code=fault_code,
         fault_level=fault_level,
-        origin_fault_level=origin_fault_level
+        origin_fault_level=origin_fault_level,
     )
 
 
 def _process_single_device_fault(fault_device: dict) -> FaultInfo | None:
-    """ Process a single device fault entry, returns FaultInfo object or None if failed """
+    """Process a single device fault entry, returns FaultInfo object or None if failed"""
     try:
-        fault_type_str = fault_device.get('fault_type', '')
-        npu_name = fault_device.get('npu_name', '')
-        fault_level_str = fault_device.get('fault_level', '')
-        fault_code_str = fault_device.get('fault_code', '')
+        fault_type_str = fault_device.get("fault_type", "")
+        npu_name = fault_device.get("npu_name", "")
+        fault_level_str = fault_device.get("fault_level", "")
+        fault_code_str = fault_device.get("fault_code", "")
 
         # Convert fault code from hex string to int
         fault_code = _parse_device_fault_code(fault_code_str)
         # Create fault info object
         fault_info = _create_device_fault_info(fault_type_str, npu_name, fault_level_str, fault_code)
-        logger.debug("Added fault device: %s, level: %s, code: 0x%x",
-                     npu_name, fault_info.fault_level, fault_code)
+        logger.debug("Added fault device: %s, level: %s, code: 0x%x", npu_name, fault_info.fault_level, fault_code)
 
         return fault_info
 
@@ -112,8 +107,24 @@ def _process_single_device_fault(fault_device: dict) -> FaultInfo | None:
         return None
 
 
+def _normalize_device_list_value(value: Any) -> list:
+    """Normalize a DeviceList field value to a list.
+
+    Some ConfigMap producers serialize fault arrays as a JSON string inside the
+    JSON value (e.g. ``"[{...},{...}]"``), while others emit a native JSON array.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        parsed = _parse_json_string(value)
+        if isinstance(parsed, list):
+            return parsed
+        logger.debug("DeviceList field is a string but not a JSON array, skipping: %s...", value[:100])
+    return []
+
+
 def process_device_info(device_info_json: str) -> list[FaultInfo]:
-    """ Process info from DeviceInfoCfg JSON string and return device fault info list.  """
+    """Process info from DeviceInfoCfg JSON string and return device fault info list."""
     device_fault_infos = []
 
     # Parse JSON string first
@@ -123,20 +134,30 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
         return []
 
     try:
-        device_info_data = device_info.get('DeviceInfo', {})
-        device_list = device_info_data.get('DeviceList', {})
-        update_time = device_info.get('UpdateTime', 0)
+        device_info_data = device_info.get("DeviceInfo", {})
+        device_list = device_info_data.get("DeviceList", {})
+        update_time = device_info.get("UpdateTime", 0)
 
         logger.debug("Processing DeviceInfo - UpdateTime: %s", update_time)
 
-        # Process fault devices - L3 level (highest priority)
-        fault_devices = device_list.get('huawei.com/Ascend910-Fault', [])
-        if fault_devices and isinstance(fault_devices, list):
+        # Process fault devices
+        fault_devices = _normalize_device_list_value(device_list.get("huawei.com/Ascend910-Fault", []))
+        if fault_devices:
             logger.debug("Found %s detailed fault devices", len(fault_devices))
             for fault_device in fault_devices:
                 fault_info = _process_single_device_fault(fault_device)
                 if fault_info:
                     device_fault_infos.append(fault_info)
+
+        # Also process network-unhealthy devices (same serialization variants)
+        network_unhealthy = _normalize_device_list_value(device_list.get("huawei.com/Ascend910-NetworkUnhealthy", []))
+        if network_unhealthy:
+            logger.debug("Found %s network-unhealthy devices", len(network_unhealthy))
+            for fault_device in network_unhealthy:
+                fault_info = _process_single_device_fault(fault_device)
+                if fault_info:
+                    device_fault_infos.append(fault_info)
+
         logger.debug("Processed %d device fault infos", len(device_fault_infos))
 
     except Exception as e:
@@ -154,17 +175,17 @@ def _parse_switch_fault_key(fault_key: str) -> tuple[int, int, int]:
     switch_chip_id = 0
     switch_port_id = 0
 
-    if '_' in fault_key:
-        parts = fault_key.split('_')
+    if "_" in fault_key:
+        parts = fault_key.split("_")
         if len(parts) >= 3:
             fault_code_part = parts[0]
             switch_chip_id = int(parts[1]) if parts[1].isdigit() else 0
             switch_port_id = int(parts[2]) if parts[2].isdigit() else 0
 
             # Extract fault code from the bracketed part
-            if fault_code_part.startswith('[') and fault_code_part.endswith(']'):
-                code_info = fault_code_part[1:-1].split(',')[0].strip()
-                if code_info.startswith('0x'):
+            if fault_code_part.startswith("[") and fault_code_part.endswith("]"):
+                code_info = fault_code_part[1:-1].split(",")[0].strip()
+                if code_info.startswith("0x"):
                     try:
                         fault_code = int(code_info, 16)
                     except ValueError:
@@ -174,7 +195,7 @@ def _parse_switch_fault_key(fault_key: str) -> tuple[int, int, int]:
 
 
 def _create_switch_fault_info(fault_level_mapped_str: str, fault_code: int) -> FaultInfo:
-    """Create FaultInfo object for switch fault, returns FaultInfo object """
+    """Create FaultInfo object for switch fault, returns FaultInfo object"""
     # Get original fault level
     try:
         origin_fault_level = OriginFaultLevel(fault_level_mapped_str)
@@ -184,29 +205,35 @@ def _create_switch_fault_info(fault_level_mapped_str: str, fault_code: int) -> F
 
     # Create device fault info for switch fault
     return FaultInfo(
-        fault_type=FaultType.NODE_UNHEALTHY,
+        fault_type=HardwareFaultType.NODE_UNHEALTHY,
         npu_name="",  # Empty for node/switch faults
         fault_code=fault_code,
         fault_level=fault_level_mapped,
-        origin_fault_level=origin_fault_level
+        origin_fault_level=origin_fault_level,
     )
 
 
 def _process_single_switch_fault(fault_key: str, fault_info_data: dict) -> FaultInfo | None:
-    """Process a single switch fault mapping entry, returns FaultInfo object or None if failed """
+    """Process a single switch fault mapping entry, returns FaultInfo object or None if failed"""
     try:
-        fault_time = fault_info_data.get('fault_time', 0)
-        fault_level_mapped_str = fault_info_data.get('fault_level', 'NotHandle')
+        fault_time = fault_info_data.get("fault_time", 0)
+        fault_level_mapped_str = fault_info_data.get("fault_level", "NotHandle")
 
-        logger.debug("Processing switch fault - Key: %s, Time: %s, Level: %s",
-                     fault_key, fault_time, fault_level_mapped_str)
+        logger.debug(
+            "Processing switch fault - Key: %s, Time: %s, Level: %s", fault_key, fault_time, fault_level_mapped_str
+        )
 
         # Parse fault key to extract fault code and location info
         fault_code, switch_chip_id, switch_port_id = _parse_switch_fault_key(fault_key)
         # Create fault info object
         fault_info = _create_switch_fault_info(fault_level_mapped_str, fault_code)
-        logger.debug("Added switch fault: chip=%s, port=%s, code=0x%x, level=%s",
-                     switch_chip_id, switch_port_id, fault_code, fault_info.fault_level)
+        logger.debug(
+            "Added switch fault: chip=%s, port=%s, code=0x%x, level=%s",
+            switch_chip_id,
+            switch_port_id,
+            fault_code,
+            fault_info.fault_level,
+        )
 
         return fault_info
     except Exception as e:
@@ -215,7 +242,7 @@ def _process_single_switch_fault(fault_key: str, fault_info_data: dict) -> Fault
 
 
 def process_switch_info(switch_info_json: str) -> list[FaultInfo]:
-    """ Process info from SwitchInfoCfg JSON string """
+    """Process info from SwitchInfoCfg JSON string"""
     device_fault_infos = []
 
     switch_info = _parse_json_string(switch_info_json)
@@ -224,13 +251,14 @@ def process_switch_info(switch_info_json: str) -> list[FaultInfo]:
         return []
 
     try:
-        fault_level_str = switch_info.get('FaultLevel', 'NotHandle')
+        fault_level_str = switch_info.get("FaultLevel", "NotHandle")
         fault_level = map_fault_level(fault_level_str)
-        update_time = switch_info.get('UpdateTime', 0)
-        fault_time_level_map = switch_info.get('FaultTimeAndLevelMap', {})
+        update_time = switch_info.get("UpdateTime", 0)
+        fault_time_level_map = switch_info.get("FaultTimeAndLevelMap", {})
 
-        logger.debug("Processing SwitchInfo - FaultLevel: %s (%s), UpdateTime: %s",
-                     fault_level_str, fault_level, update_time)
+        logger.debug(
+            "Processing SwitchInfo - FaultLevel: %s (%s), UpdateTime: %s", fault_level_str, fault_level, update_time
+        )
 
         # Process fault time and level mapping - this contains the actual fault information
         if fault_time_level_map:
@@ -248,7 +276,7 @@ def process_switch_info(switch_info_json: str) -> list[FaultInfo]:
 
 
 def process_manually_separate_npu(manually_separate_npu: str) -> list[int]:
-    """ Process manually separate NPU configuration """
+    """Process manually separate NPU configuration"""
     separated_ranks = []
 
     try:
@@ -259,14 +287,14 @@ def process_manually_separate_npu(manually_separate_npu: str) -> list[int]:
         logger.debug("Processing manually separate NPU: %s", manually_separate_npu)
 
         # Parse the configuration - assume it's a comma-separated list of NPU names
-        npu_names = [name.strip() for name in manually_separate_npu.split(',') if name.strip()]
+        npu_names = [name.strip() for name in manually_separate_npu.split(",") if name.strip()]
 
         for npu_name in npu_names:
             # Extract rank number from NPU name
             # Example: "Ascend910-0", "Ascend910-1", "Ascend910-2"
-            if npu_name.startswith('Ascend910-'):
+            if npu_name.startswith("Ascend910-"):
                 try:
-                    rank_str = npu_name.split('-')[-1]
+                    rank_str = npu_name.split("-")[-1]
                     rank = int(rank_str)
                     separated_ranks.append(rank)
                     logger.debug("Added NPU rank %d for manual separation", rank)
