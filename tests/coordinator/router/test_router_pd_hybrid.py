@@ -10,6 +10,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import asyncio
 import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,8 @@ from pytest import MonkeyPatch
 from fastapi import FastAPI, status, Request
 from fastapi.testclient import TestClient
 import pytest
+
+import motor.common.utils.error as cancel_error
 
 from motor.config.coordinator import (
     CoordinatorConfig,
@@ -686,3 +689,334 @@ class TestPDHybridTracer:
 
         assert event_names.count("Begin Scheduled Resource") == 1
         assert event_names.count("Scheduled Resource ok") == 1
+
+
+def _make_cancel_test_config(
+    monkeypatch: MonkeyPatch,
+    *,
+    transport_max_retry: int = 2,
+    recompute_enabled: bool = True,
+) -> MagicMock:
+    mock_scheduler_config = MagicMock()
+    mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+    mock_exception_config = ExceptionConfig(
+        max_retry=5,
+        retry_delay=0.0001,
+        transport_max_retry=transport_max_retry,
+        recompute_enabled=recompute_enabled,
+    )
+    mock_api_config = MagicMock()
+    mock_api_config.coordinator_api_host = "127.0.0.1"
+    mock_api_config.coordinator_api_mgmt_port = 1025
+    mock_config = MagicMock()
+    mock_config.scheduler_config = mock_scheduler_config
+    mock_config.exception_config = mock_exception_config
+    mock_config.api_config = mock_api_config
+    mock_config.tracer_config = TracerConfig()
+    mock_config.infer_tls_config = None
+    monkeypatch.setattr(CoordinatorConfig, "__new__", lambda cls: mock_config)
+    return mock_config
+
+
+class TestPDHybridCancelReschedule:
+    """PD hybrid alignment with unified PD: cancel-reason aware retry and abort."""
+
+    @pytest.fixture(name="hybrid_pool")
+    def _hybrid_pool(self, monkeypatch: MonkeyPatch):
+        mock_instance = TestRouterPDHybrid.create_mock_instance(0, PDRole.ROLE_U)
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
+
+        async def mock_get_available_instance_roles(self):
+            return {PDRole.ROLE_U}
+
+        async def mock_select_and_allocate(self, role, req_info, **_kwargs):
+            if role == PDRole.ROLE_U:
+                return mock_instance, mock_endpoint, Workload()
+            return None
+
+        async def mock_update_workload(self, params):
+            return True
+
+        monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
+        monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
+
+    @staticmethod
+    def _build_router(config, req_data: dict, api: str = "v1/completions") -> PDHybridRouter:
+        req_info = RequestInfo(
+            req_id="cancel-resched-id",
+            req_data=req_data.copy(),
+            req_len=99,
+            api=api,
+            entry_api=api,
+        )
+        return PDHybridRouter(
+            req_info,
+            config,
+            scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
+            request_manager=RequestManager(config),
+        )
+
+    @staticmethod
+    async def _consume_stream(response) -> str:
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    @pytest.mark.asyncio
+    async def test_stream_node_fault_reschedules_with_recompute(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """Node-fault cancel mid-stream: reschedule and continue from cached token ids."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=2, recompute_enabled=True)
+        calls: list[tuple[str, dict]] = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append((api, req_data.copy()))
+            if len(calls) == 1:
+                self.first_chunk_sent = True
+                yield (
+                    b'data: {"choices": [{"index": 0, "text": "A", "prompt_token_ids": [1, 2], "token_ids": [10]}]}\n\n'
+                )
+                raise asyncio.CancelledError(f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8000")
+            yield b'data: {"choices": [{"index": 0, "text": "B", "token_ids": [11], "finish_reason": "stop"}]}\n\n'
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        body = await self._consume_stream(response)
+
+        assert len(calls) == 2
+        # First leg must request token ids so the rescheduler can cache progress.
+        assert calls[0][1].get("return_token_ids") is True
+        # Retry leg continues from prompt + cached output token ids with reduced budget.
+        assert calls[1][1]["prompt"] == [1, 2, 10]
+        assert calls[1][1]["max_tokens"] == 49
+        assert calls[1][0] == "v1/completions"
+        assert "A" in body and "B" in body
+        assert "error" not in body
+        # Internal token id fields must not leak to the client.
+        assert "token_ids" not in body
+
+    @pytest.mark.asyncio
+    async def test_stream_client_disconnect_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """Client disconnect cancel must propagate without rescheduling."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, recompute_enabled=True)
+        calls: list[str] = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append(api)
+            self.first_chunk_sent = True
+            yield b'data: {"choices": [{"index": 0, "text": "A", "token_ids": [10]}]}\n\n'
+            raise asyncio.CancelledError(cancel_error.CLIENT_DISCONNECT)
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        with pytest.raises(asyncio.CancelledError):
+            await self._consume_stream(response)
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_scope_abort_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """Uvicorn/anyio scope cancellation must propagate without rescheduling."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, recompute_enabled=True)
+        calls: list[str] = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append(api)
+            raise asyncio.CancelledError("Cancelled via cancel scope ffff980d3d10")
+            yield b""  # pylint: disable=unreachable
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        with pytest.raises(asyncio.CancelledError):
+            await self._consume_stream(response)
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_node_fault_without_recompute_after_first_chunk_errors(
+        self, monkeypatch: MonkeyPatch, hybrid_pool
+    ):
+        """recompute disabled + chunk already sent: keep error-chunk termination."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, recompute_enabled=False)
+        calls: list[str] = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append(api)
+            self.first_chunk_sent = True
+            yield b'data: {"choices": [{"index": 0, "text": "A"}]}\n\n'
+            raise asyncio.CancelledError(f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8000")
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        body = await self._consume_stream(response)
+
+        assert len(calls) == 1
+        assert "error" in body or "Cancelled" in body
+        assert router_obj.req_info.state == ReqState.EXCEPTION
+
+    @pytest.mark.asyncio
+    async def test_nonstream_node_fault_cancel_retries(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """Non-streaming node-fault cancel: resend the request to another attempt."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=2, recompute_enabled=True)
+        calls: list[str] = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append(api)
+            if len(calls) == 1:
+                raise asyncio.CancelledError(f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8000")
+            resp = MagicMock()
+            resp.json = MagicMock(
+                return_value={
+                    "object": "chat.completion",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+                }
+            )
+            return resp
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}], "stream": False},
+            api="v1/chat/completions",
+        )
+
+        response = await router_obj.handle_request()
+        payload = json.loads(response.body.decode())
+
+        assert len(calls) == 2
+        assert response.status_code == status.HTTP_200_OK
+        assert payload["choices"][0]["message"]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_nonstream_client_disconnect_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """Non-streaming client disconnect cancel: no retry, propagate cancellation."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, recompute_enabled=True)
+        calls: list[str] = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append(api)
+            raise asyncio.CancelledError(cancel_error.CLIENT_DISCONNECT)
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}], "stream": False},
+            api="v1/chat/completions",
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await router_obj.handle_request()
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_client_disconnect_logs_instance_at_warning(
+        self, monkeypatch: MonkeyPatch, hybrid_pool, caplog
+    ):
+        """Client disconnect must be visible at WARNING with the serving instance, like unified PD."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, recompute_enabled=True)
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            self.first_chunk_sent = True
+            yield b'data: {"choices": [{"index": 0, "text": "A"}]}\n\n'
+            raise asyncio.CancelledError(cancel_error.CLIENT_DISCONNECT)
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        with caplog.at_level("WARNING"):
+            with pytest.raises(asyncio.CancelledError):
+                await self._consume_stream(response)
+
+        cancelled_records = [r for r in caplog.records if "Cancelled stream" in r.getMessage()]
+        assert cancelled_records, "client disconnect must log at WARNING or above"
+        message = cancelled_records[0].getMessage()
+        assert cancel_error.CLIENT_DISCONNECT in message
+        assert "127.0.0.1" in message and "test-job-0" in message
+
+    @pytest.mark.asyncio
+    async def test_nonstream_client_disconnect_logs_instance_at_warning(
+        self, monkeypatch: MonkeyPatch, hybrid_pool, caplog
+    ):
+        """Non-stream client disconnect must log the serving instance at WARNING."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, recompute_enabled=True)
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            raise asyncio.CancelledError(cancel_error.CLIENT_DISCONNECT)
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}], "stream": False},
+            api="v1/chat/completions",
+        )
+
+        with caplog.at_level("WARNING"):
+            with pytest.raises(asyncio.CancelledError):
+                await router_obj.handle_request()
+
+        cancelled_records = [r for r in caplog.records if "Cancelled nonstream" in r.getMessage()]
+        assert cancelled_records, "client disconnect must log at WARNING or above"
+        message = cancelled_records[0].getMessage()
+        assert cancel_error.CLIENT_DISCONNECT in message
+        assert "127.0.0.1" in message and "test-job-0" in message
+
+    @pytest.mark.asyncio
+    async def test_stream_cancel_all_cancels_inflight_and_reschedules(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """HTTP pool cancel_all (node fault) cancels in-flight hybrid stream and triggers reschedule."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=2, recompute_enabled=False)
+        calls: list[str] = []
+        started = asyncio.Event()
+        clients: list = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            calls.append(api)
+            clients.append(client)
+            if len(calls) == 1:
+                started.set()
+                await asyncio.Event().wait()  # block until cancelled by cancel_all
+            yield b'data: {"choices": [{"index": 0, "text": "ok"}]}\n\n'
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        consume_task = asyncio.create_task(self._consume_stream(response))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        # Canceller must be registered on the endpoint client while the attempt is in flight.
+        client_ctx = clients[0]
+        assert router_obj.req_info.req_id in client_ctx._cancellers
+        await client_ctx.cancel_all()
+
+        body = await asyncio.wait_for(consume_task, timeout=5)
+        assert len(calls) == 2
+        assert "ok" in body
+        # Canceller must be unregistered once the request finishes.
+        assert router_obj.req_info.req_id not in client_ctx._cancellers
