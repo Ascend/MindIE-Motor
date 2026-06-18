@@ -1,0 +1,3 @@
+motor_version : 1.0.0
+vllm_version : 0.13.0
+vllm_ascend_version : 0.13.0

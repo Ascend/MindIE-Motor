@@ -421,6 +421,16 @@ class InferEndpoint(Endpoint):
             await self.app.state.engine_client.suspend(model_save_path=model_save_path)
             return Response(status_code=200)
 
+        @self.app.post("/device_unlock")
+        async def device_unlock_engine(raw_request: Request):
+            if not callable(getattr(self.app.state.engine_client, "device_unlock", None)):
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+                    detail="Snapshot device_unlock is not supported for this engine.",
+                )
+            await self.app.state.engine_client.device_unlock()
+            return Response(status_code=200)
+
         @self.app.post("/resume")
         async def resume_engine(raw_request: Request):
             data_parallel_master_ip = raw_request.query_params.get("data_parallel_master_ip")

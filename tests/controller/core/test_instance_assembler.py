@@ -835,7 +835,7 @@ def test_restore_data_invalid_checksum(instance_assembler):
     with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
         result = instance_assembler.restore_data()
 
-        assert not result  # Should fail because checksum validation fails
+        assert result is False  # Should fail because checksum validation fails
         assert instance_assembler.ins_id_cnt == 1  # Should not restore invalid data
 
 
@@ -882,7 +882,7 @@ def test_restore_data_reconstruction_exception(instance_assembler):
         with patch.object(instance_assembler.etcd_client, 'restore_data', return_value=mock_persistent_states):
             result = instance_assembler.restore_data()
 
-            assert result  # Should succeed but skip problematic instance
+            assert result is True  # Should succeed but skip problematic instance
             assert len(instance_assembler.instances) == 0  # Should not restore invalid instance
 
 
@@ -934,7 +934,7 @@ def test_persistent_state_is_valid_method():
 
     # Create invalid state with wrong checksum
     invalid_state = PersistentState(data={"test": "data"}, version=1, timestamp=time.time(), checksum="wrong_checksum")
-    assert not invalid_state.is_valid()
+    assert invalid_state.is_valid() is False
 
 
 def test_restore_data_with_type_conversion():
@@ -988,7 +988,7 @@ def test_restore_data_with_type_conversion():
         assert metadata.instance.id == 208  # string "208" converted to int 208
         assert metadata.register_status == RegisterStatus.ASSEMBLED  # string "ASSEMBLED" converted to enum
         assert metadata.start_command_send_times == 0  # string "0" converted to int 0
-        assert not metadata.is_reregister  # string "False" converted to bool False
+        assert metadata.is_reregister is False  # string "False" converted to bool False
 
 
 def test_restore_data_with_invalid_enum_value():
@@ -1575,7 +1575,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         enable_multi_endpoints=False,
     )
     instance1.add_node_mgr("127.0.0.1", "8080", device_num=8)  # 1 node with 8 devices
-    assert not instance1.is_endpoints_enough()  # Need 2 nodes (16/8=2)
+    assert instance1.is_endpoints_enough() is False  # Need 2 nodes (16/8=2)
 
     # Test case 2: Enough node managers
     instance2 = Instance(
@@ -1588,7 +1588,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
     )
     instance2.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance2.add_node_mgr("127.0.0.2", "8081", device_num=8)  # 2 nodes with 8 devices each
-    assert instance2.is_endpoints_enough()  # Have 2 nodes (16/8=2)
+    assert instance2.is_endpoints_enough() is True  # Have 2 nodes (16/8=2)
 
     # Test case 3: World size not divisible by device_num (should use ceiling)
     instance3 = Instance(
@@ -1602,7 +1602,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
     instance3.add_node_mgr("127.0.0.1", "8080", device_num=8)
     instance3.add_node_mgr("127.0.0.2", "8081", device_num=8)
     instance3.add_node_mgr("127.0.0.3", "8082", device_num=8)  # 3 nodes with 8 devices each
-    assert instance3.is_endpoints_enough()  # Need 3 nodes (ceil(20/8)=3)
+    assert instance3.is_endpoints_enough() is True  # Need 3 nodes (ceil(20/8)=3)
 
     # Test case 4: Multi-endpoint enabled (should check dp_size)
     instance4 = Instance(
@@ -1619,7 +1619,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         1: Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="9001"),
     }
     instance4.add_endpoints("127.0.0.1", endpoints)
-    assert not instance4.is_endpoints_enough()  # Need 4 endpoints
+    assert instance4.is_endpoints_enough() is False  # Need 4 endpoints
 
     # Add more endpoints to reach dp_size
     endpoints2 = {
@@ -1627,7 +1627,7 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
         3: Endpoint(id=3, ip="127.0.0.2", business_port="8003", mgmt_port="9003"),
     }
     instance4.add_endpoints("127.0.0.2", endpoints2)
-    assert instance4.is_endpoints_enough()  # Have 4 endpoints
+    assert instance4.is_endpoints_enough() is True  # Have 4 endpoints
 
 
 def test_get_all_endpoints_multi_endpoint_disabled():
@@ -2500,3 +2500,32 @@ def test_cross_node_pcp_no_headless_when_nnodes_is_one(instance_assembler):
     # No endpoints should be headless
     for ep in instance.get_all_endpoints():
         assert ep.headless is False
+
+
+def test_register_records_snapshot_dp_master_ip_when_is_master(instance_assembler, test_config):
+    """Register with is_master=True records snapshot_dp_master_ip on instance metadata."""
+    job_name = "test_snapshot_master_register"
+    slave_msg = create_register_msg(job_name, "10.0.0.2", test_config, is_master=False)
+    master_msg = create_register_msg(job_name, "10.0.0.1", test_config, is_master=True)
+
+    assert instance_assembler.register(slave_msg) == 0
+    assert instance_assembler.register(master_msg) == 0
+
+    metadata = instance_assembler.instances[job_name]
+    assert metadata.snapshot_dp_master_ip == "10.0.0.1"
+
+
+def test_send_start_command_uses_snapshot_dp_master_ip(instance_assembler, test_config):
+    """Start command uses snapshot_dp_master_ip instead of first registered node."""
+    job_name = "test_snapshot_master_start"
+    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    metadata.snapshot_dp_master_ip = "10.0.0.99"
+
+    with patch(
+        "motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command"
+    ) as mock_send:
+        mock_send.return_value = True
+        assert instance_assembler._send_start_command(metadata) is True
+
+        master_ips = {call.args[1].master_dp_ip for call in mock_send.call_args_list}
+        assert master_ips == {"10.0.0.99"}

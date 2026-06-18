@@ -28,6 +28,7 @@ from motor.common.utils.snapshot_utils import (
     load_snapshot_metadata,
     update_snapshot_metadata,
     get_pod_ip,
+    is_restored_from_host_side_snapshot,
     MOTOR_SNAPSHOT_WORKSPACE_DIR,
     MOTOR_SNAPSHOT_METADATA_PATH,
     MOTOR_SNAPSHOT_WEIGHT_DIR,
@@ -53,6 +54,9 @@ class EngineManager(ThreadSafeSingleton):
         self.d2d_peer_ips: list[str] | None = None
         self.node_rank: int = 0
         self.is_working = False
+
+        # for snapshot restore, should be recorded during a snapshot-enabled cold start
+        self.is_snapshot_master = False
 
         self._fault_reporter = FaultReporter(config)
 
@@ -112,6 +116,9 @@ class EngineManager(ThreadSafeSingleton):
             if self._config.snapshot_config.snapshot_metadata_path != "":
                 return
             update_snapshot_metadata(snapshot_metadata_path, "model_save_path", MOTOR_SNAPSHOT_WEIGHT_DIR)
+            logger.info(
+                "[snapshot] Updated default model_save_path to snapshot metadata: %s", MOTOR_SNAPSHOT_WEIGHT_DIR
+            )
 
     def register_prepare_after_restore(self) -> None:
         """Update configuration for the engine manager after restore from host side snapshot"""
@@ -168,12 +175,19 @@ class EngineManager(ThreadSafeSingleton):
             if self._config.snapshot_config.snapshot_metadata_path != "":
                 return
             update_snapshot_metadata(snapshot_metadata_path, "model_load_path", MOTOR_SNAPSHOT_WEIGHT_DIR)
+            logger.info(
+                "[snapshot] Updated default model_load_path to snapshot metadata: %s", MOTOR_SNAPSHOT_WEIGHT_DIR
+            )
 
         try:
             master_ip = load_snapshot_metadata(snapshot_metadata_path, "data_parallel_master_ip")
             logger.info("[snapshot] Keep existing data_parallel_master_ip from snapshot metadata: %s", master_ip)
         except Exception:
             update_snapshot_metadata(snapshot_metadata_path, "data_parallel_master_ip", start_msg.master_dp_ip)
+            logger.info(
+                "[snapshot] Updated data_parallel_master_ip in start_msg to snapshot metadata: %s",
+                start_msg.master_dp_ip,
+            )
 
     def post_register_msg(self) -> bool | None:
         register_msg = self._gen_register_msg()
@@ -199,6 +213,13 @@ class EngineManager(ThreadSafeSingleton):
         self.endpoints = start_cmd.endpoints
         self.d2d_peer_ips = start_cmd.d2d_peer_ips
         self.node_rank = start_cmd.node_rank
+
+        if (
+            self._config.snapshot_config.enable_snapshot
+            and not is_restored_from_host_side_snapshot()
+            and self.node_rank == 0
+        ):
+            self.is_snapshot_master = True
 
         self._write_ranktable_to_file(start_cmd.ranktable)
         return True
@@ -363,6 +384,7 @@ class EngineManager(ThreadSafeSingleton):
             device_num=device_num,
             ranktable=self.ranktable,
             nnodes=nnodes,
+            is_master=self.is_snapshot_master,
         )
         return register_msg
 

@@ -131,7 +131,11 @@ class MgmtEndpoint(Endpoint):
                             return {STATUS_KEY: INIT_STATUS}
                         elif is_restored_from_host_side_snapshot() and not SnapshotMonitor().is_resume_done:
                             return {STATUS_KEY: INIT_STATUS}
-                        elif not is_restored_from_host_side_snapshot() and SnapshotMonitor().is_suspend_done:
+                        elif (
+                            not is_restored_from_host_side_snapshot()
+                            and SnapshotMonitor().is_suspend_done
+                            and not SnapshotMonitor().is_unlock_done
+                        ):
                             return {STATUS_KEY: NORMAL_STATUS}
 
                     async with self._lock:

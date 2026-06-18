@@ -58,6 +58,10 @@ class RegisterMsg(BaseModel):
     device_num: int = Field(..., description="Number of visible devices in the container")
     ranktable: Ranktable | None = Field(default=None, description="Ranktable managed by this nm")
     nnodes: int = Field(default=1, description="PCP cross-node count, from engine_config")
+    is_master: bool = Field(
+        default=False,
+        description="Whether this node hosts the DP0 engine (snapshot master node)",
+    )
 
 
 class StartCmdMsg(BaseModel):

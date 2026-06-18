@@ -153,9 +153,28 @@ class TestEngineManager:
             assert msg.model_name == "test_model"
             assert msg.role == PDRole.ROLE_U
             assert msg.enable_multi_endpoints is True
+            assert msg.is_master is False
         else:
             # If None is returned, that's acceptable for this implementation
             pass
+
+    def test_gen_register_msg_includes_is_snapshot_master(self, engine_manager):
+        """Test _gen_register_msg propagates is_snapshot_master as is_master."""
+        engine_manager._config.basic_config.job_name = "test_job"
+        engine_manager._config.basic_config.model_name = "test_model"
+        engine_manager._config.basic_config.role = PDRole.ROLE_U
+        engine_manager._config.api_config.pod_ip = "192.168.1.100"
+        engine_manager._config.endpoint_config.service_ports = ["8080"]
+        engine_manager._config.endpoint_config.mgmt_ports = ["8081"]
+        engine_manager._config.api_config.node_manager_port = 8080
+        engine_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
+        engine_manager._config.basic_config.enable_multi_endpoints = True
+        engine_manager._config.basic_config.device_num = 8
+        engine_manager.is_snapshot_master = True
+
+        msg = engine_manager._gen_register_msg()
+        assert msg is not None
+        assert msg.is_master is True
 
     def test_gen_register_msg_failure(self, engine_manager):
         """Test _gen_register_msg with invalid config"""

@@ -27,16 +27,16 @@ def teardown_function():
         del SnapshotMonitor._instances[SnapshotMonitor]
 
 
-def _create_snapshot_metadata_file():
+def _create_snapshot_metadata_file(checkpoint: str | None = None):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-        json.dump(
-            {
-                "model_save_path": "/snapshot/weight",
-                "model_load_path": "/snapshot/weight",
-                "data_parallel_master_ip": "10.0.0.1",
-            },
-            f,
-        )
+        data = {
+            "model_save_path": "/snapshot/weight",
+            "model_load_path": "/snapshot/weight",
+            "data_parallel_master_ip": "10.0.0.1",
+        }
+        if checkpoint is not None:
+            data["checkpoint"] = checkpoint
+        json.dump(data, f)
         return f.name
 
 
@@ -133,6 +133,115 @@ def test_call_suspend_retries_until_success(mock_sleep, mock_client_cls, _mock_p
         assert mock_client.do_post.call_count == 2
         assert SnapshotMonitor().is_suspend_done is True
         mock_sleep.assert_called_once()
+    finally:
+        os.unlink(metadata_path)
+
+
+@patch("motor.engine_server.core.snapshot_sentinel.is_restored_from_host_side_snapshot", return_value=False)
+@patch("motor.engine_server.core.snapshot_sentinel.get_pod_ip", return_value="127.0.0.1")
+@patch("motor.engine_server.core.snapshot_sentinel.SafeHTTPSClient")
+@patch("motor.engine_server.core.snapshot_sentinel.time.sleep")
+def test_reach_checkpoint_unlocks_and_stops_on_cold_start(mock_sleep, mock_client_cls, _mock_pod_ip, _mock_restored):
+    metadata_path = _create_snapshot_metadata_file(checkpoint="done")
+    try:
+        mock_client = _mock_http_client(mock_client_cls)
+        sentinel = SnapshotSentinel(_make_endpoint_config(metadata_path))
+        sentinel._reach_checkpoint()
+        mock_client.do_post.assert_called_once_with("device_unlock")
+        assert sentinel._stop_event.is_set()
+        mock_sleep.assert_not_called()
+    finally:
+        os.unlink(metadata_path)
+
+
+@patch("motor.engine_server.core.snapshot_sentinel.is_restored_from_host_side_snapshot", return_value=False)
+@patch("motor.engine_server.core.snapshot_sentinel.get_pod_ip", return_value="127.0.0.1")
+@patch("motor.engine_server.core.snapshot_sentinel.SafeHTTPSClient")
+@patch("motor.engine_server.core.snapshot_sentinel.time.sleep")
+def test_reach_checkpoint_retries_when_checkpoint_not_done(mock_sleep, mock_client_cls, _mock_pod_ip, _mock_restored):
+    metadata_path = _create_snapshot_metadata_file(checkpoint="pending")
+    try:
+        mock_client = _mock_http_client(mock_client_cls)
+        sentinel = SnapshotSentinel(_make_endpoint_config(metadata_path))
+
+        def stop_after_second_retry(_interval):
+            if mock_sleep.call_count >= 2:
+                sentinel.stop()
+
+        mock_sleep.side_effect = stop_after_second_retry
+        sentinel._reach_checkpoint()
+        assert mock_client.do_post.call_count == 0
+        assert mock_sleep.call_count == 2
+    finally:
+        os.unlink(metadata_path)
+
+
+@patch("motor.engine_server.core.snapshot_sentinel.is_restored_from_host_side_snapshot", return_value=False)
+@patch("motor.engine_server.core.snapshot_sentinel.get_pod_ip", return_value="127.0.0.1")
+@patch("motor.engine_server.core.snapshot_sentinel.SafeHTTPSClient")
+@patch("motor.engine_server.core.snapshot_sentinel.time.sleep")
+def test_reach_checkpoint_retries_when_checkpoint_field_missing(
+    mock_sleep, mock_client_cls, _mock_pod_ip, _mock_restored
+):
+    metadata_path = _create_snapshot_metadata_file()
+    try:
+        mock_client = _mock_http_client(mock_client_cls)
+        sentinel = SnapshotSentinel(_make_endpoint_config(metadata_path))
+
+        def stop_after_second_retry(_interval):
+            if mock_sleep.call_count >= 2:
+                sentinel.stop()
+
+        mock_sleep.side_effect = stop_after_second_retry
+        sentinel._reach_checkpoint()
+        assert mock_client.do_post.call_count == 0
+        assert mock_sleep.call_count == 2
+    finally:
+        os.unlink(metadata_path)
+
+
+@patch("motor.engine_server.core.snapshot_sentinel.is_restored_from_host_side_snapshot", return_value=True)
+@patch("motor.engine_server.core.snapshot_sentinel.get_pod_ip", return_value="127.0.0.1")
+@patch("motor.engine_server.core.snapshot_sentinel.SafeHTTPSClient")
+@patch("motor.engine_server.core.snapshot_sentinel.time.sleep")
+def test_reach_checkpoint_skips_loop_when_restored(mock_sleep, mock_client_cls, _mock_pod_ip, _mock_restored):
+    metadata_path = _create_snapshot_metadata_file(checkpoint="done")
+    try:
+        _mock_http_client(mock_client_cls)
+        sentinel = SnapshotSentinel(_make_endpoint_config(metadata_path))
+        sentinel._reach_checkpoint()
+        mock_client_cls.assert_not_called()
+        mock_sleep.assert_not_called()
+        assert not sentinel._stop_event.is_set()
+    finally:
+        os.unlink(metadata_path)
+
+
+@patch("motor.engine_server.core.snapshot_sentinel.is_restored_from_host_side_snapshot", return_value=False)
+@patch("motor.engine_server.core.snapshot_sentinel.SnapshotSentinel._call_resume")
+@patch("motor.engine_server.core.snapshot_sentinel.SnapshotSentinel._call_suspend")
+@patch("motor.engine_server.core.snapshot_sentinel.SnapshotSentinel._wait_until_infer_healthy")
+@patch("motor.engine_server.core.snapshot_sentinel.get_pod_ip", return_value="127.0.0.1")
+@patch("motor.engine_server.core.snapshot_sentinel.SafeHTTPSClient")
+@patch("motor.engine_server.core.snapshot_sentinel.time.sleep")
+def test_run_stops_after_checkpoint_without_resume(
+    mock_sleep,
+    mock_client_cls,
+    _mock_pod_ip,
+    mock_wait_healthy,
+    mock_call_suspend,
+    mock_call_resume,
+    _mock_restored,
+):
+    metadata_path = _create_snapshot_metadata_file(checkpoint="done")
+    try:
+        _mock_http_client(mock_client_cls)
+        sentinel = SnapshotSentinel(_make_endpoint_config(metadata_path))
+        sentinel.run()
+        mock_wait_healthy.assert_called_once()
+        mock_call_suspend.assert_called_once()
+        mock_call_resume.assert_not_called()
+        assert sentinel._stop_event.is_set()
     finally:
         os.unlink(metadata_path)
 

@@ -48,3 +48,4 @@ nav:
       - 服务接口: api_reference/service_interface.md
       - 管理与监控接口: api_reference/management_and_monitoring_interfaces.md
       - Observability 接口: api_reference/observability_interface.md
+      - Engine Server 快照接口: api_reference/engine_server_snapshot_interfaces.md

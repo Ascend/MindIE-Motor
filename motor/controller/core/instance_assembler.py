@@ -57,6 +57,10 @@ class AssembleInstanceMetadata(BaseModel):
         default=None, description="Instance level ranktable, only use in A2, A3. A5 will be None"
     )
     nnodes: int = Field(default=1, description="Expected PCP cross-node count")
+    snapshot_dp_master_ip: str | None = Field(
+        default=None,
+        description="DP master node IP reported by is_master during snapshot restore registration",
+    )
 
     # Non-serializable field (excluded from serialization)
     lock: Any = Field(default=None, exclude=True)
@@ -327,6 +331,23 @@ class InstanceAssembler(ThreadSafeSingleton):
             logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
             return 0
 
+        if msg.is_master:
+            with metadata.lock:
+                if metadata.snapshot_dp_master_ip and metadata.snapshot_dp_master_ip != msg.pod_ip:
+                    logger.warning(
+                        "Instance %s already has snapshot_dp_master_ip=%s, ignoring conflicting is_master from %s",
+                        msg.job_name,
+                        metadata.snapshot_dp_master_ip,
+                        msg.pod_ip,
+                    )
+                else:
+                    metadata.snapshot_dp_master_ip = msg.pod_ip
+                    logger.info(
+                        "Recorded snapshot_dp_master_ip=%s for instance %s from is_master registration",
+                        msg.pod_ip,
+                        msg.job_name,
+                    )
+
         metadata.instance.add_node_mgr(msg.pod_ip, msg.nm_port, msg.device_num)
         pod_endpoints = self._build_endpoints(msg, metadata)
         metadata.instance.add_endpoints(msg.pod_ip, pod_endpoints)
@@ -567,11 +588,19 @@ class InstanceAssembler(ThreadSafeSingleton):
     def _send_start_command(self, metadata: AssembleInstanceMetadata) -> bool:
         is_succeed = True
 
-        # Master DP IP = first registered node (node_rank=0).
+        # If current is cold start instance, Master DP IP = first registered node (node_rank=0).
         # get_all_endpoints() filters headless slaves, confirming it's the master.
-        master_dp_ip = None
+
+        # If current is snapshot restored instance, Master DP IP = registered node with is_master=True
+        master_dp_ip = metadata.snapshot_dp_master_ip
         node_managers = metadata.instance.get_node_managers()
-        if node_managers:
+        if master_dp_ip:
+            logger.info(
+                "Using snapshot_dp_master_ip=%s as master_dp_ip for instance %s",
+                master_dp_ip,
+                metadata.instance.job_name,
+            )
+        elif node_managers:
             master_dp_ip = node_managers[0].pod_ip
 
         if not master_dp_ip:
