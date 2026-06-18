@@ -307,6 +307,7 @@ class HeartbeatManager(ThreadSafeSingleton):
 
     def _report_heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
+            has_abnormal = False
             try:
                 if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
                     logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
@@ -331,21 +332,6 @@ class HeartbeatManager(ThreadSafeSingleton):
 
                 ControllerApiClient.report_heartbeat(heartbeat_msg)
 
-                # Update consecutive abnormal count after successful heartbeat report
-                with self._abnormal_count_lock:
-                    if has_abnormal:
-                        self._consecutive_abnormal_count += 1
-                        logger.warning("Consecutive abnormal heartbeat count: %d/5", self._consecutive_abnormal_count)
-                        # Set suicide flag if reached 5 consecutive abnormal heartbeats
-                        if self._consecutive_abnormal_count >= 5:
-                            logger.error(
-                                "Reached 5 consecutive abnormal heartbeats, setting suicide flag for main to handle..."
-                            )
-                            with self._suicide_lock:
-                                self._should_suicide = True
-                    else:
-                        self._consecutive_abnormal_count = 0
-
             except Exception as e:
                 # Exception triggered by host side snapshot restore, nodeManager re-send register message
                 if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
@@ -358,6 +344,21 @@ class HeartbeatManager(ThreadSafeSingleton):
                 else:
                     with self.config_lock:
                         logger.error("Exception occurred while reporting endpoint status to controller: %s", e)
+
+            # Update consecutive abnormal count after successful heartbeat report
+            with self._abnormal_count_lock:
+                if has_abnormal:
+                    self._consecutive_abnormal_count += 1
+                    logger.warning("Consecutive abnormal heartbeat count: %d/5", self._consecutive_abnormal_count)
+                    # Set suicide flag if reached 5 consecutive abnormal heartbeats
+                    if self._consecutive_abnormal_count >= 5:
+                        logger.error(
+                            "Reached 5 consecutive abnormal heartbeats, setting suicide flag for main to handle..."
+                        )
+                        with self._suicide_lock:
+                            self._should_suicide = True
+                else:
+                    self._consecutive_abnormal_count = 0
 
             with self.config_lock:
                 time.sleep(self.heartbeat_interval_seconds)

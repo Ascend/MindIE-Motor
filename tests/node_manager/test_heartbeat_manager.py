@@ -607,6 +607,36 @@ class TestHeartBeatManager:
         # Even with one endpoint abnormal, suicide should be triggered after 5 consecutive reports
         assert heart_beat_manager.should_suicide() is True
 
+    @patch('motor.node_manager.core.heartbeat_manager.time.sleep')
+    @patch('motor.node_manager.core.heartbeat_manager.ControllerApiClient.report_heartbeat')
+    def test_abnormal_triggers_suicide_when_report_fails(self, mock_report_heartbeat, mock_sleep, heart_beat_manager):
+        """endpoint stays abnormal but Controller heartbeat report fails should still trigger suicide"""
+        call_count = {"count": 0}
+
+        def mock_stop_sleep(seconds):
+            call_count["count"] += 1
+            if call_count["count"] >= 5:
+                heart_beat_manager.stop_event.set()
+
+        mock_report_heartbeat.side_effect = Exception("Connection refused")
+
+        heart_beat_manager._job_name = "test_job"
+        heart_beat_manager._instance_id = 1
+        heart_beat_manager._is_within_grace_period = False
+        heart_beat_manager.stop_event.clear()
+
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.ABNORMAL)
+            ]
+
+        mock_sleep.side_effect = mock_stop_sleep
+
+        heart_beat_manager._report_heartbeat_loop()
+
+        assert heart_beat_manager.should_suicide() is True
+        assert heart_beat_manager._consecutive_abnormal_count == 5
+
     @patch('motor.node_manager.core.heartbeat_manager.threading.Thread')
     def test_should_suicide_thread_safety(self, mock_thread_class, heart_beat_manager):
         """test that should_suicide method is thread-safe"""
