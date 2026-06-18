@@ -23,7 +23,8 @@ CMD_GREP = "/usr/bin/grep"
 PROGRESS_TOTAL = 100
 SAFETENSORS_WEIGHT = 2
 SLEEP_POLL_INTERVAL = 0.1
-SLEEP_LINE_INTERVAL = 0.05
+DESCRIPTION_UPDATE_INTERVAL = 1.0
+SAFETENSORS_UPDATE_INTERVAL = 0.3
 PROCESS_TERMINATE_TIMEOUT = 5
 SEPARATOR_WIDTH = 80
 
@@ -44,6 +45,7 @@ class VLLMProgressMonitor:
         'Graph capturing finished': 90,
         'EndpointStatus.INITIAL to EndpointStatus.NORMAL': 100,
     }
+    _key_step_markers = tuple(key_steps.keys())
 
     def __init__(self):
         """
@@ -57,6 +59,11 @@ class VLLMProgressMonitor:
         self.data: dict[str, tqdm] = {}
         self.completed: dict[str, bool] = {}
         self.lock = threading.Lock()
+
+    @classmethod
+    def is_relevant_log_line(cls, line: str) -> bool:
+        """Return True when the line may contain a startup milestone."""
+        return any(marker in line for marker in cls._key_step_markers)
 
     def parse_log_line(self, line: str) -> int:
         """
@@ -104,7 +111,8 @@ class VLLMProgressMonitor:
         progress_bar = self.data.get(pod_name)
         if progress_bar:
             with self.lock:
-                progress_bar.update(step - progress_bar.n)
+                if step > progress_bar.n:
+                    progress_bar.update(step - progress_bar.n)
 
     def update_description(self, pod_name: str, line_index: int, error_cnt: int, is_error: bool) -> None:
         progress_bar = self.data.get(pod_name)
@@ -113,6 +121,36 @@ class VLLMProgressMonitor:
         msg = "[ERROR]" if is_error else "[_____]"
         with self.lock:
             progress_bar.set_description(f"[{pod_name}], line:[{line_index}], err:[{error_cnt}]{msg}")
+
+    def update_description_throttled(
+        self,
+        pod_name: str,
+        line_index: int,
+        error_cnt: int,
+        last_update_at: float,
+        *,
+        force: bool = False,
+    ) -> float:
+        """Update tqdm description at most once per DESCRIPTION_UPDATE_INTERVAL.
+
+        Returns:
+            Monotonic timestamp to pass as ``last_update_at`` on the next call
+            (``now`` if refreshed, otherwise unchanged ``last_update_at``).
+        """
+        now = time.monotonic()
+        if force or now - last_update_at >= DESCRIPTION_UPDATE_INTERVAL:
+            self.update_description(pod_name, line_index, error_cnt, is_error=False)
+            return now
+        return last_update_at
+
+    def should_update_safetensors_progress(self, log_line: str, step: int, last_update_at: float) -> bool:
+        """Throttle safetensors percentage updates to avoid tqdm overhead."""
+        if step >= PROGRESS_TOTAL or 'Loading safetensors' not in log_line:
+            return True
+        now = time.monotonic()
+        if now - last_update_at < SAFETENSORS_UPDATE_INTERVAL:
+            return False
+        return True
 
     def shell_pull_log(self, name_space: str, pod_name: str) -> None:
         """
@@ -147,31 +185,45 @@ class VLLMProgressMonitor:
             ) as process:
                 line_index = 0
                 error_cnt = 0
+                last_description_update = 0.0
+                last_safetensors_update = 0.0
                 while True:
-                    line_index += 1
                     line = process.stdout.readline()
 
                     if not line:
+                        line_index += 1
                         if process.poll() is not None:
-                            self.update_description(pod_name, line_index, error_cnt, True)
+                            self.update_description(pod_name, line_index, error_cnt, is_error=True)
                             break
                         time.sleep(SLEEP_POLL_INTERVAL)
                         continue
 
+                    line_index += 1
                     log_line = line.rstrip('\n')
-                    if log_line:
-                        if "ERROR" in log_line:
-                            error_cnt += 1
-                        self.update_description(pod_name, line_index, error_cnt, False)
+                    if not log_line:
+                        continue
 
-                        step = self.parse_log_line(log_line)
-                        if step > 0:
-                            self.update_progress(step, pod_name)
+                    if "ERROR" in log_line:
+                        error_cnt += 1
+                    last_description_update = self.update_description_throttled(
+                        pod_name, line_index, error_cnt, last_description_update
+                    )
 
-                        if step == PROGRESS_TOTAL:
-                            self.completed[pod_name] = True
-                            break
-                    time.sleep(SLEEP_LINE_INTERVAL)
+                    if not self.is_relevant_log_line(log_line):
+                        continue
+
+                    step = self.parse_log_line(log_line)
+                    if step <= 0:
+                        continue
+
+                    if self.should_update_safetensors_progress(log_line, step, last_safetensors_update):
+                        self.update_progress(step, pod_name)
+                        if 'Loading safetensors' in log_line:
+                            last_safetensors_update = time.monotonic()
+
+                    if step == PROGRESS_TOTAL:
+                        self.completed[pod_name] = True
+                        break
                 process.terminate()
                 process.wait(timeout=PROCESS_TERMINATE_TIMEOUT)
         except Exception as e:
