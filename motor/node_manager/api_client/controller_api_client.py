@@ -30,7 +30,7 @@ class ControllerApiClient:
         try:
             client_args = ControllerApiClient._generate_client_args()
             with SafeHTTPSClient(timeout=15, **client_args) as client:
-                response = client.post("/controller/register", register_msg.model_dump())
+                _ = client.post("/controller/register", register_msg.model_dump())
                 logger.info("Register success!")
                 return True
         except Exception as e:
@@ -45,7 +45,7 @@ class ControllerApiClient:
         try:
             client_args = ControllerApiClient._generate_client_args()
             with SafeHTTPSClient(timeout=15, **client_args) as client:
-                response = client.post("/controller/reregister", re_register_msg.model_dump())
+                _ = client.post("/controller/reregister", re_register_msg.model_dump())
                 logger.info("Register success!")
                 return True
         except Exception as e:
@@ -60,9 +60,10 @@ class ControllerApiClient:
         with SafeHTTPSClient(timeout=15, **client_args) as client:
             response = client.post("/controller/heartbeat", heartbeat_msg.model_dump())
             _rl.record_success("node_manager.controller.report_heartbeat")
-            _rl.emit_info_periodic(
+            _rl.emit_periodic(
                 "node_manager.controller.report_heartbeat",
                 "NodeManager->Controller report_heartbeat periodic summary: succeeded {count} times in last 60s",
+                level="DEBUG",
             )
             logger.debug(
                 f"Heartbeat success, response: {response}, "

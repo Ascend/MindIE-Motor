@@ -245,7 +245,7 @@ class ManagementServer(BaseCoordinatorServer):
                         instances_status,
                     )
                     _rl.record_success(_READINESS_REMAINS_READY_KEY)
-                    _rl.emit_info_periodic(
+                    _rl.emit_periodic(
                         _READINESS_REMAINS_READY_KEY,
                         "[Readiness] Coordinator remains ready periodic summary: "
                         "probe succeeded {count} times in last 60s, result=%s instances_status=%s"

@@ -667,7 +667,7 @@ class UnifiedPDRouter(BaseRouter):
         )
 
     async def _maybe_submit_sample(self, attempt: AttemptContext, sampling_state: dict) -> None:
-        self.logger.info(
+        self.logger.debug(
             "_maybe_submit_sample entry: enabled=%s mgr_ok=%s",
             sampling_state["enabled"],
             self._sampling_manager is not None,
