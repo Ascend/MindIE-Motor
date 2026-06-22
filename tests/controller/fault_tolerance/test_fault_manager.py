@@ -302,14 +302,18 @@ def test_persist_data_success(fault_manager_with_instances):
 
 
 def test_persist_data_etcd_failure(fault_manager_with_instances):
-    """Test data persistence when ETCD operations fail"""
+    """Test data persistence when ETCD operations fail."""
     manager = fault_manager_with_instances
 
-    with patch.object(manager.etcd_client, "persist_data", return_value=False):
-        # Call persist_data
+    # Use side_effect that raises to avoid the retry-sleep loop in
+    # _PersistenceMixin (300ms + 600ms backoff).  Raising on the first
+    # call exercises the same failure path without the delay.
+    with patch.object(
+        manager.etcd_client,
+        "persist_data",
+        side_effect=RuntimeError("ETCD persist failed"),
+    ):
         result = manager.persist_data()
-
-        # Verify failure
         assert result is False
 
 

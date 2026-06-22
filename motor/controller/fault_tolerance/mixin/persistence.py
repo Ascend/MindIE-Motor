@@ -70,11 +70,30 @@ class _PersistenceMixin:
                 dict_data = {"state": persistent_state.model_dump()}
                 logger.debug("Persistence data being saved to ETCD: %s", dict_data)
 
-            # Release lock before ETCD I/O to avoid blocking other operations
-            success = self.etcd_client.persist_data("/controller/fault_manager", dict_data)
-            if success:
-                logger.info("Successfully persisted fault manager data with version %d", next_version)
-            return success
+            # Release lock before ETCD I/O to avoid blocking other operations.
+            # Retry on transient lock contention: the ConfigMap and Node monitors
+            # run in separate threads and both may trigger _refresh_instance_fault_level
+            # → persist_data concurrently.  The first caller acquires the ETCD lock;
+            # a second caller colliding within the same process gets a local "already
+            # exists" error.  A brief wait + retry is sufficient because the first
+            # caller's ETCD I/O completes quickly.
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                success = self.etcd_client.persist_data("/controller/fault_manager", dict_data)
+                if success:
+                    logger.info("Successfully persisted fault manager data with version %d", next_version)
+                    return True
+                if attempt < max_retries:
+                    backoff = 0.3 * (attempt + 1)  # 300ms, 600ms
+                    logger.debug(
+                        "ETCD persist attempt %d/%d failed, retrying in %.0fms...",
+                        attempt + 1,
+                        max_retries + 1,
+                        backoff * 1000,
+                    )
+                    time.sleep(backoff)
+            logger.debug("Failed to persist fault manager data after %d attempts", max_retries + 1)
+            return False
         except Exception as e:
             logger.error("Error persisting fault manager data: %s", e)
             return False

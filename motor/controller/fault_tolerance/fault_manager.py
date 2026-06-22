@@ -266,14 +266,15 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             for node_name, node_metadata in self.nodes.items():
                 if instance_id not in node_metadata.instance_ids:
                     continue
-                highest = FaultLevel.HEALTHY
-                for fault_info in node_metadata.hardware_fault_infos.values():
-                    if fault_info.fault_level > highest:
-                        highest = fault_info.fault_level
-                for fault_info in node_metadata.software_fault_infos.values():
-                    if fault_info.fault_level > highest:
-                        highest = fault_info.fault_level
-                result[node_name] = highest
+                hw_max = max(
+                    (f.fault_level for f in node_metadata.hardware_fault_infos.values()),
+                    default=FaultLevel.HEALTHY,
+                )
+                sw_max = max(
+                    (f.fault_level for f in node_metadata.software_fault_infos.values()),
+                    default=FaultLevel.HEALTHY,
+                )
+                result[node_name] = max(hw_max, sw_max)
 
             return result
 
@@ -410,28 +411,20 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         with self.config_lock:
             enable_persistence = self.etcd_config.enable_etcd_persistence
         if enable_persistence and not self.persist_data():
-            logger.warning(
+            logger.debug(
                 "Failed to persist fault manager data to ETCD after instance fault level refresh for instance %d",
                 instance_id,
             )
 
     def _highest_hardware_fault(self, instance_nodes: list[NodeMetadata]) -> FaultInfo | None:
         """Get the highest hardware fault across all nodes in an instance."""
-        highest = None
-        for node in instance_nodes:
-            for fault_info in node.hardware_fault_infos.values():
-                if highest is None or fault_info.fault_level > highest.fault_level:
-                    highest = fault_info
-        return highest
+        all_faults = [f for node in instance_nodes for f in node.hardware_fault_infos.values()]
+        return max(all_faults, key=lambda f: f.fault_level, default=None)
 
     def _highest_software_fault(self, instance_nodes: list[NodeMetadata]) -> FaultInfo | None:
         """Get the highest software fault across all nodes in an instance."""
-        highest = None
-        for node in instance_nodes:
-            for fault_info in node.software_fault_infos.values():
-                if highest is None or fault_info.fault_level > highest.fault_level:
-                    highest = fault_info
-        return highest
+        all_faults = [f for node in instance_nodes for f in node.software_fault_infos.values()]
+        return max(all_faults, key=lambda f: f.fault_level, default=None)
 
     def _ft_strategy_center(self) -> None:
         """Background thread: periodically evaluates every instance's fault level and manages strategies."""
@@ -547,7 +540,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             with self.config_lock:
                 enable_persistence = self.etcd_config.enable_etcd_persistence
             if enable_persistence and not self.persist_data():
-                logger.warning(
+                logger.debug(
                     "Failed to persist fault manager data after strategy completion for instance %d",
                     ins_id,
                 )
