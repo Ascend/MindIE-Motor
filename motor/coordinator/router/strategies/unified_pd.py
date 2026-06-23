@@ -10,11 +10,15 @@
 
 import asyncio
 import time
+from contextlib import aclosing
 from typing import Any, AsyncGenerator
 
 import anyio
-from fastapi.responses import JSONResponse, StreamingResponse
+import httpx
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse, Response
 
+import motor.common.utils.error as cancel_error
 from motor.common.resources.dispatch import (
     DispatchPlan,
     DispatchStopReason,
@@ -37,10 +41,18 @@ from motor.coordinator.router.dispatch_session import (
 from motor.coordinator.router.dispatch_capability import select_dispatch_plan_for_pair
 from motor.coordinator.router.stop_client import DispatchStopClient
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
-from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
+from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.precision_sample.request import inject_logprobs
 from motor.coordinator.router.precision_sample import response as sampling_resp
+from motor.coordinator.router.stream_response import (
+    CommitAwareStreamingResponse,
+    StreamCommitController,
+)
+from motor.coordinator.router.upstream_error import (
+    UpstreamHTTPError,
+    is_retryable_upstream_error,
+)
 from motor.coordinator.router.adapters.stream import (
     parse_stream_chunk_json,
     encode_stream_chunk_bytes,
@@ -70,20 +82,75 @@ class UnifiedPDRouter(BaseRouter):
             req_info, config, scheduler, request_manager, workload_action_handler, sampling_manager=sampling_manager
         )
         self.rescheduler = Rescheduler(
-            config.exception_config.recompute_enabled,
+            config.exception_config.reschedule_enabled,
             req_info,
             self.logger,
         )
+        self._stream_commit_controller: StreamCommitController | None = None
+        self._stream_body_sent = False
+        self._active_retry_plan: RetryRequestPlan | None = None
 
-    async def handle_request(self) -> StreamingResponse | JSONResponse:
+    def _capture_prompt_tokens_details(self, body: dict[str, Any]) -> None:
+        candidates = [body]
+        payload = body.get("payload")
+        if isinstance(payload, dict):
+            candidates.append(payload)
+
+        for candidate in candidates:
+            usage = candidate.get("usage")
+            if not isinstance(usage, dict) or "prompt_tokens_details" not in usage:
+                continue
+            details = usage["prompt_tokens_details"]
+            if details is None:
+                details = {"cached_tokens": 0}
+            self.req_info.update_prompt_tokens_details(details)
+            return
+
+    def _record_prefill_complete(self, body: dict[str, Any]) -> None:
+        self._capture_prompt_tokens_details(body)
+        self.req_info.update_state(ReqState.PREFILL_END)
+
+    def _merge_prompt_tokens_details(self, body: dict[str, Any]) -> bool:
+        details = self.req_info.prompt_tokens_details
+        usage = body.get("usage")
+        if not details or not isinstance(usage, dict) or not usage:
+            return False
+        if usage.get("prompt_tokens_details") == details:
+            return False
+        usage["prompt_tokens_details"] = details
+        return True
+
+    def _merge_prompt_tokens_details_into_stream_chunk(self, chunk: bytes) -> bytes:
+        if not self.req_info.prompt_tokens_details:
+            return chunk
+        # Only usage-bearing chunks (typically just the final include_usage chunk) can carry
+        # prompt_tokens_details; skip the JSON parse for the vast majority that have no usage.
+        if b"usage" not in chunk:
+            return chunk
+        chunk_json = parse_stream_chunk_json(chunk, self.logger)
+        if chunk_json is None or not self._merge_prompt_tokens_details(chunk_json):
+            return chunk
+        return encode_stream_chunk_bytes(chunk, chunk_json)
+
+    async def handle_request(self) -> Response:
         await self.do_encode()
         self.is_meta = False
         if self.req_info.req_data.get("stream", False):
-            return StreamingResponse(
+            self._stream_commit_controller = StreamCommitController.requiring({"prefill", "decode"})
+            return CommitAwareStreamingResponse(
                 self._generate_stream_response(),
-                media_type="text/event-stream",
+                self._stream_commit_controller,
+                on_first_body_sent=self._mark_stream_body_sent,
             )
         return await self._generate_response()
+
+    def _mark_stream_body_sent(self) -> None:
+        self._stream_body_sent = True
+
+    def _stream_retry_allowed(self) -> bool:
+        if not self._stream_body_sent:
+            return True
+        return self.rescheduler.can_resume_after_visible_output(self.req_info.req_data)
 
     async def _generate_stream_response(self) -> AsyncGenerator[str, None]:
         trace_obj = self.req_info.trace_obj
@@ -94,31 +161,51 @@ class UnifiedPDRouter(BaseRouter):
             async with self._manage_request_context():
                 for attempt_index in range(max_retry):
                     attempt: AttemptContext | None = None
+                    cleanup_reason = DispatchStopReason.OTHER
                     try:
-                        attempt = await self._create_attempt(session)
-                        attempt.register_canceller()
-                        dispatch_plan = self._select_dispatch_plan(attempt)
+                        self._active_retry_plan = None
                         if attempt_index > 0:
                             self.rescheduler.is_rescheduling = True
                             self.rescheduler.retry_count = attempt_index
+                            self._active_retry_plan = self.rescheduler.build_retry_plan(self.req_info.req_data)
+
+                        attempt = await self._create_attempt(session)
+                        if not self._stream_commit_controller.commit_sealed:
+                            self._stream_commit_controller.begin_attempt(attempt.attempt_seq)
+                        attempt.register_canceller()
+                        dispatch_plan = self._select_dispatch_plan(attempt)
+                        if attempt_index > 0:
                             self.logger.warning(
                                 f"Rescheduling[{attempt_index}/{max_retry}]: P=[{attempt.prefill_resource.endpoint.ip} "
                                 f"{attempt.prefill_resource.instance.job_name}] "
                                 f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
                             )
                         attempt.transition(AttemptState.DISPATCHING)
-                        async for chunk in self._run_stream_attempt(attempt, dispatch_plan):
-                            attempt.transition(AttemptState.FIRST_VISIBLE)
-                            yield chunk
-                        attempt.unregister_canceller()
+                        async with aclosing(self._run_stream_attempt(attempt, dispatch_plan)) as attempt_stream:
+                            async for chunk in attempt_stream:
+                                attempt.transition(AttemptState.FIRST_VISIBLE)
+                                yield chunk
+                        await self._release_attempt(attempt)
                         attempt.transition(AttemptState.DONE)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
                         return
+                    except GeneratorExit:
+                        cleanup_reason = DispatchStopReason.CLIENT_DISCONNECT
+                        raise
                     except (asyncio.CancelledError, Exception) as e:
-                        error, retry = await self._process_response_error(attempt, attempt_index, e)
+                        error, retry = await self._process_response_error(
+                            attempt,
+                            attempt_index,
+                            e,
+                            allow_retry=self._stream_retry_allowed(),
+                        )
                         if not retry:
-                            yield self._generate_streaming_error_chunk(error)
-                            return
+                            raise error
+                    finally:
+                        if attempt is not None:
+                            attempt.unregister_canceller()
+                            if attempt.state not in (AttemptState.DONE, AttemptState.STOPPED):
+                                await self._stop_attempt(attempt, cleanup_reason)
 
     async def _generate_response(self) -> JSONResponse:
         trace_obj = self.req_info.trace_obj
@@ -144,6 +231,7 @@ class UnifiedPDRouter(BaseRouter):
                         body = await self._run_nonstream_attempt(attempt, dispatch_plan)
                         attempt.unregister_canceller()
                         attempt.transition(AttemptState.DONE)
+                        self._merge_prompt_tokens_details(body)
                         return JSONResponse(content=body)
                     except (asyncio.CancelledError, Exception) as e:
                         error, retry = await self._process_response_error(attempt, attempt_index, e)
@@ -159,21 +247,27 @@ class UnifiedPDRouter(BaseRouter):
         attempt: AttemptContext | None,
         attempt_index: int,
         error: Exception | asyncio.CancelledError,
+        *,
+        allow_retry: bool = True,
     ) -> (Exception, bool):
         trace_obj = self.req_info.trace_obj
         trace_obj.set_trace_exception(error)
         max_retry = max(self.config.exception_config.transport_retry_limit, 1)
 
         if isinstance(error, asyncio.CancelledError):
-            reason = DispatchStopReason.CLIENT_DISCONNECT
             reason_str, retry = check_cancel_error(error)
-            retry = retry and (attempt_index < max_retry - 1)
-            error = RuntimeError(f"Unified PD cancelled because of {reason}")
+            reason = self._cancel_stop_reason(reason_str)
+            retry = retry and allow_retry and (attempt_index < max_retry - 1)
+            error = RuntimeError(f"Unified PD cancelled because of {reason_str}")
             label = f"Unified PD cancelled {attempt_index}/{max_retry}"
         else:
             reason = DispatchStopReason.PEER_FAILED
             reason_str = str(error)
-            retry = attempt_index < max_retry - 1
+            retry = allow_retry and attempt_index < max_retry - 1
+            if isinstance(error, HTTPException):
+                retry = False
+            elif isinstance(error, (UpstreamHTTPError, httpx.RequestError)):
+                retry = retry and is_retryable_upstream_error(error)
             label = f"Unified PD exception {attempt_index}/{max_retry}"
 
         if attempt:
@@ -185,7 +279,6 @@ class UnifiedPDRouter(BaseRouter):
             )
             trace_obj.set_trace_error_message(error_msg)
             self.logger.warning("%s", error_msg)
-            attempt.unregister_canceller()
             await self._stop_attempt(attempt, reason)
         else:
             error_msg = str(f"{label}, because of {reason_str}, {retry=}")
@@ -198,20 +291,22 @@ class UnifiedPDRouter(BaseRouter):
             self.req_info.update_state(ReqState.EXCEPTION)
         return error, retry
 
+    @staticmethod
+    def _cancel_stop_reason(reason: str) -> DispatchStopReason:
+        if reason.startswith(cancel_error.NODE_FAULT):
+            return DispatchStopReason.PEER_FAILED
+        if reason == cancel_error.CLIENT_DISCONNECT:
+            return DispatchStopReason.CLIENT_DISCONNECT
+        return DispatchStopReason.OTHER
+
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
-        constraint = self.req_info.scheduling_constraint
-        if constraint is None:
-            select_pair = getattr(self._scheduler, "select_pair_and_allocate", None)
-            if select_pair is not None:
-                pair = await select_pair(self.req_info)
-                if pair is not None:
-                    await self._record_attempt_workload(attempt_seq, PDRole.ROLE_P, pair.prefill_workload)
-                    self.req_info.update_state(ReqState.P_ALLOCATED)
-                    await self._record_attempt_workload(attempt_seq, PDRole.ROLE_D, pair.decode_workload)
-                    self.req_info.update_state(ReqState.D_ALLOCATED)
-                    return session.new_attempt(pair.prefill, pair.decode, self.config)
-
+        # Homogeneous cluster: every prefill is dispatch-compatible with every decode, so a P/D pair
+        # is just two independent single-role allocations. Each leg goes through select_and_allocate
+        # and gets the scheduler's authoritative fresh-load arbitration (plus KV affinity on the
+        # prefill leg); if the decode allocation fails after prefill committed, the prefill leg is
+        # released below. (Heterogeneous P/D compatibility, when needed, is modeled above the
+        # instance layer, not here.)
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
         try:
             d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt_seq)
@@ -234,8 +329,9 @@ class UnifiedPDRouter(BaseRouter):
             run_func = self._run_handoff_stream_attempt
         else:
             run_func = self._run_concurrent_stream_attempt
-        async for chunk in run_func(attempt):
-            yield chunk
+        async with aclosing(run_func(attempt)) as attempt_stream:
+            async for chunk in attempt_stream:
+                yield chunk
         return
 
     async def _run_concurrent_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
@@ -250,19 +346,26 @@ class UnifiedPDRouter(BaseRouter):
         ):
 
             async def prefill_task():
-                await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
+                response = await self.forward_request(
+                    p_api, p_req, p_client, self.config.exception_config.first_token_timeout
+                )
+                self._record_prefill_complete(response.json())
+                self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
-            async for chunk in self._run_stream_decode_phase(
-                attempt,
-                d_client,
-                d_api,
-                d_req,
-                stream_adapter_state,
-                sampling_state=sampling_state,
-                prefill_task=p_task,
-            ):
-                yield chunk
+            async with aclosing(
+                self._run_stream_decode_phase(
+                    attempt,
+                    d_client,
+                    d_api,
+                    d_req,
+                    stream_adapter_state,
+                    sampling_state=sampling_state,
+                    prefill_task=p_task,
+                )
+            ) as decode_stream:
+                async for chunk in decode_stream:
+                    yield chunk
 
     async def _run_stream_decode_phase(
         self,
@@ -275,45 +378,57 @@ class UnifiedPDRouter(BaseRouter):
         sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
     ) -> AsyncGenerator[str, None]:
-        queue = asyncio.Queue()
+        queue = asyncio.Queue(maxsize=1)
+        terminal = asyncio.get_running_loop().create_future()
         self._start_stream_decode_task(
-            attempt, queue, d_api, d_req, d_client, stream_adapter_state, sampling_state=sampling_state
+            attempt,
+            queue,
+            terminal,
+            d_api,
+            d_req,
+            d_client,
         )
-        async for chunk in self._iter_stream_decode_queue(
-            attempt, queue, sampling_state=sampling_state, prefill_task=prefill_task
-        ):
-            yield chunk
+        async with aclosing(
+            self._iter_stream_decode_queue(
+                attempt,
+                queue,
+                terminal,
+                stream_adapter_state,
+                sampling_state=sampling_state,
+                prefill_task=prefill_task,
+            )
+        ) as queue_stream:
+            async for chunk in queue_stream:
+                yield chunk
 
     def _start_stream_decode_task(
         self,
         attempt: AttemptContext,
         queue: asyncio.Queue,
+        terminal: asyncio.Future,
         d_api: str,
         d_req: dict[str, Any],
         d_client,
-        stream_adapter_state: dict,
-        *,
-        sampling_state: dict | None = None,
     ) -> asyncio.Task:
         async def decode_task() -> None:
             try:
                 async for chunk in self.forward_stream_request(
-                    d_api, d_req, d_client, self.config.exception_config.infer_timeout
+                    d_api,
+                    d_req,
+                    d_client,
+                    self.config.exception_config.infer_timeout,
+                    on_response_ready=lambda: self._stream_commit_controller.mark_ready("decode", attempt.attempt_seq),
                 ):
                     if chunk:
-                        attempt.transition(AttemptState.FIRST_VISIBLE)
-                        if sampling_state is not None:
-                            chunk = self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
-                        if self.config.exception_config.recompute_enabled:
-                            chunk = self.rescheduler.process_stream_chunk(
-                                chunk, stream_adapter_state=stream_adapter_state
-                            )
-                        queue.put_nowait(("chunk", chunk))
-                queue.put_nowait(("done", None))
+                        await queue.put(chunk)
+                if not terminal.done():
+                    terminal.set_result(("done", None))
             except asyncio.CancelledError as e:
-                queue.put_nowait(("cancel", e))
+                if not terminal.done():
+                    terminal.set_result(("cancel", e))
             except Exception as e:
-                queue.put_nowait(("error", e))
+                if not terminal.done():
+                    terminal.set_result(("error", e))
 
         return attempt.register_decode_task(asyncio.create_task(decode_task()))
 
@@ -321,18 +436,89 @@ class UnifiedPDRouter(BaseRouter):
         self,
         attempt: AttemptContext,
         queue: asyncio.Queue,
+        terminal: asyncio.Future,
+        stream_adapter_state: dict,
         *,
         sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
     ) -> AsyncGenerator[str, None]:
+        queue_task: asyncio.Task | None = None
         try:
             while True:
-                key, value = await queue.get()
+                # Atomic non-blocking drain: get_nowait() either returns a queued chunk or raises,
+                # so there is no empty()-then-get window. Decode chunks put on the queue are always
+                # non-None, so None unambiguously means "queue was empty".
+                try:
+                    queued_chunk = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    queued_chunk = None
+                if queued_chunk is not None:
+                    key, value = "chunk", queued_chunk
+                elif terminal.done():
+                    key, value = terminal.result()
+                else:
+                    queue_task = asyncio.create_task(
+                        queue.get(),
+                        name=f"unified-pd-queue-{self.req_info.req_id}-a{attempt.attempt_seq}",
+                    )
+                    waitables = [queue_task, terminal]
+                    if prefill_task is not None:
+                        waitables.append(prefill_task)
+                    done, _ = await asyncio.wait(waitables, return_when=asyncio.FIRST_COMPLETED)
+
+                    if prefill_task is not None and prefill_task in done:
+                        try:
+                            await prefill_task
+                        except BaseException as error:
+                            queue_task.cancel()
+                            await asyncio.gather(queue_task, return_exceptions=True)
+                            await attempt.cancel(repr(error))
+                            raise
+                        prefill_task = None
+
+                    if queue_task in done:
+                        key, value = "chunk", queue_task.result()
+                    else:
+                        queue_task.cancel()
+                        await asyncio.gather(queue_task, return_exceptions=True)
+                        if not queue.empty():
+                            continue
+                        if terminal in done:
+                            key, value = terminal.result()
+                        else:
+                            continue
                 if key == "chunk":
+                    if prefill_task is not None:
+                        try:
+                            await prefill_task
+                        except BaseException as error:
+                            await attempt.cancel(repr(error))
+                            raise
+                        prefill_task = None
+                    if sampling_state is not None:
+                        value = self._collect_logprobs_from_stream_chunk(value, sampling_state)
+                    if self.config.exception_config.reschedule_enabled:
+                        # process_stream_chunk already merges prompt_tokens_details into any usage
+                        # block while it parses, so the standalone merge would only re-parse every
+                        # chunk to find the work already done. Keep the two paths mutually exclusive.
+                        value = self.rescheduler.process_stream_chunk(
+                            value,
+                            stream_adapter_state=stream_adapter_state,
+                        )
+                    else:
+                        value = self._merge_prompt_tokens_details_into_stream_chunk(value)
                     yield value
                 elif key == "done":
                     if prefill_task is not None:
-                        await prefill_task
+                        # Mirror the "chunk" branch: a prefill failure surfacing here (e.g. the P
+                        # leg returned a non-JSON body) must abort the decode leg before it
+                        # propagates, so both legs are torn down symmetrically.
+                        try:
+                            await prefill_task
+                        except BaseException as error:
+                            await attempt.cancel(repr(error))
+                            raise
+                        prefill_task = None
                     self.req_info.update_state(ReqState.DECODE_END)
                     if sampling_state is not None:
                         await self._maybe_submit_sample(attempt, sampling_state)
@@ -341,7 +527,11 @@ class UnifiedPDRouter(BaseRouter):
                     await attempt.cancel(repr(value))
                     raise value
         finally:
-            await self._release_attempt(attempt)
+            if queue_task is not None and not queue_task.done():
+                queue_task.cancel()
+                await asyncio.gather(queue_task, return_exceptions=True)
+            if not terminal.done():
+                terminal.cancel()
 
     async def _run_nonstream_attempt(self, attempt: AttemptContext, dispatch_plan: DispatchPlan) -> dict[str, Any]:
         if dispatch_plan == DispatchPlan.PREFILL_HANDOFF_DECODE:
@@ -360,7 +550,10 @@ class UnifiedPDRouter(BaseRouter):
         ):
 
             async def prefill_task():
-                await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
+                response = await self.forward_request(
+                    p_api, p_req, p_client, self.config.exception_config.first_token_timeout
+                )
+                self._record_prefill_complete(response.json())
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
             return await self._await_nonstream_decode(
@@ -423,10 +616,18 @@ class UnifiedPDRouter(BaseRouter):
         ):
             prefill_result = await self._await_handoff_prefill(attempt, p_client)
             d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
-            async for chunk in self._run_stream_decode_phase(
-                attempt, d_client, d_api, d_req, stream_adapter_state, sampling_state=sampling_state
-            ):
-                yield chunk
+            async with aclosing(
+                self._run_stream_decode_phase(
+                    attempt,
+                    d_client,
+                    d_api,
+                    d_req,
+                    stream_adapter_state,
+                    sampling_state=sampling_state,
+                )
+            ) as decode_stream:
+                async for chunk in decode_stream:
+                    yield chunk
 
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
@@ -458,10 +659,14 @@ class UnifiedPDRouter(BaseRouter):
         if role == PDRole.ROLE_P:
             req["stream"] = False
             req = self._apply_prefill_params(req, set_min_tokens=False)
-        if stream and self.config.exception_config.recompute_enabled:
+        if stream and self.config.exception_config.reschedule_enabled:
             req["return_token_ids"] = True
-            if self.rescheduler.is_rescheduling:
-                req, api = self.rescheduler.prepare_retry_request(req)
+            if self._active_retry_plan is not None:
+                req, api = self.rescheduler.apply_retry_plan(
+                    req,
+                    self._active_retry_plan,
+                    prefill=role == PDRole.ROLE_P,
+                )
         if (
             role == PDRole.ROLE_D
             and self.config.token_sampling_config.precision_check_enabled
@@ -476,8 +681,13 @@ class UnifiedPDRouter(BaseRouter):
     async def _request_prefill_result(self, attempt: AttemptContext, p_client) -> PrefillResult:
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
         response = await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
-        prefill_result = PrefillResult.model_validate(response.json())
+        response_body = response.json()
+        self._capture_prompt_tokens_details(response_body)
+        prefill_result = PrefillResult.model_validate(response_body)
         self._validate_prefill_result(attempt, prefill_result, expected_status=PrefillResultStatus.COMPLETED)
+        self.req_info.update_state(ReqState.PREFILL_END)
+        if self._stream_commit_controller is not None:
+            self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
         return prefill_result
 
     @staticmethod
@@ -576,17 +786,23 @@ class UnifiedPDRouter(BaseRouter):
     async def _stop_attempt(self, attempt: AttemptContext | None, reason: DispatchStopReason) -> None:
         if attempt is None:
             return
-        attempt.stop()
-        client = DispatchStopClient(self.config)
-        tasks = []
-        if attempt.prefill_resource:
-            tasks.append(client.stop(attempt.prefill_resource, attempt, reason))
-        if attempt.decode_resource:
-            tasks.append(client.stop(attempt.decode_resource, attempt, reason))
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await self._release_attempt(attempt)
-        attempt.transition(AttemptState.STOPPED)
+        async with attempt.stop_lock:
+            attempt.unregister_canceller()
+            if attempt.state in (AttemptState.DONE, AttemptState.STOPPED):
+                return
+
+            attempt.stop()
+            await attempt.cancel(reason.value)
+            client = DispatchStopClient(self.config)
+            tasks = []
+            if attempt.prefill_resource:
+                tasks.append(client.stop(attempt.prefill_resource, attempt, reason))
+            if attempt.decode_resource:
+                tasks.append(client.stop(attempt.decode_resource, attempt, reason))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._release_attempt(attempt)
+            attempt.transition(AttemptState.STOPPED)
 
     def _client_for(self, resource: ScheduledResource):
         if resource is None:
@@ -704,12 +920,7 @@ class UnifiedPDRouter(BaseRouter):
                 )
             resp_json = response.json()
             self.logger.debug("Prefill response received")
-            usage = resp_json.get("usage", {})
-            if usage and "prompt_tokens_details" in usage:
-                details = usage["prompt_tokens_details"]
-                if details is None:
-                    details = {"cached_tokens": 0}
-                self.req_info.update_prompt_tokens_details(details)
+            self._capture_prompt_tokens_details(resp_json)
             self.req_info.update_state(ReqState.PREFILL_END)
             if hasattr(self.req_info, "p_instance_id"):
                 self.req_info.p_instance_id = schedule_resource.instance.id

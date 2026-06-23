@@ -19,10 +19,9 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the respective licenses for more details.
 
-from http import HTTPStatus
 from typing import Any
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.openai.completion.serving import OpenAIServingCompletion as VllmOpenAIServingCompletion
 from vllm.engine.protocol import EngineClient
@@ -62,26 +61,11 @@ class OpenAIServingCompletion:
         )
 
     async def handle_request(self, request: CompletionRequest, raw_request: Request):
-        try:
-            generator = await self._vllm_serving_completion.create_completion(
-                request, raw_request
-            )
-        except OverflowError as e:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST.value, detail=str(e)
-            )from e
-        except Exception as e:
-            raise HTTPException(
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)
-            )from e
+        generator = await self._vllm_serving_completion.create_completion(request, raw_request)
 
         if isinstance(generator, ErrorResponse):
-            return JSONResponse(
-                content=generator.model_dump(), status_code=generator.error.code
-            )
+            return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
         elif isinstance(generator, CompletionResponse):
-            return JSONResponse(
-                content=generator.model_dump()
-            )
+            return JSONResponse(content=generator.model_dump())
 
         return StreamingResponse(content=generator, media_type="text/event-stream")

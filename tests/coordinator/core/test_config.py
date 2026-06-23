@@ -111,6 +111,8 @@ def test_default_config_initialization():
     assert config.logging_config.log_max_line_length == 8192
     assert config.prometheus_metrics_config.reuse_time == 3
     assert config.exception_config.max_retry == 5
+    assert config.exception_config.reschedule_enabled is True
+    assert config.exception_config.recompute_enabled is True
     assert config.exception_config.first_token_timeout == 600
     assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.scheduler_config.scheduler_type.value == "load_balance"
@@ -152,6 +154,39 @@ def test_from_json_success(_temp_json_file):
     assert config.api_key_config.enable_api_key is True
     assert config.rate_limit_config.enable_rate_limit is True
     assert config.config_path == _temp_json_file
+
+
+def test_from_json_migrates_deprecated_recompute_config(_temp_json_file, caplog):
+    test_config = {
+        "exception_config": {
+            "recompute_enabled": False,
+            "recompute_max_retry": 9,
+        }
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.exception_config.reschedule_enabled is False
+    assert not hasattr(config.exception_config, "recompute_max_retry")
+    assert "recompute_enabled is deprecated" in caplog.text
+    assert "recompute_max_retry is no longer supported" in caplog.text
+
+
+def test_new_reschedule_config_takes_precedence_over_deprecated_alias(_temp_json_file):
+    test_config = {
+        "exception_config": {
+            "recompute_enabled": False,
+            "reschedule_enabled": True,
+        }
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.exception_config.reschedule_enabled is True
 
 
 def test_from_json_maps_hybrid_instances(_temp_json_file):
@@ -384,6 +419,9 @@ def test_to_dict():
     # Check enum serialization
     assert 'deploy_mode' not in config_dict['scheduler_config']
     assert config_dict['scheduler_config']['scheduler_type'] == 'load_balance'
+    assert config_dict['exception_config']['reschedule_enabled'] is True
+    assert 'recompute_enabled' not in config_dict['exception_config']
+    assert 'recompute_max_retry' not in config_dict['exception_config']
 
 
 def test_save_to_json(_temp_json_file):

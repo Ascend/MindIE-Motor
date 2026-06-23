@@ -32,7 +32,6 @@ class SchedulerRequestType(str, Enum):
     """
 
     ALLOCATE_ONLY = "allocate_only"  # Worker selects locally; Scheduler only allocates workload
-    ALLOCATE_PAIR = "allocate_pair"  # Worker selects P/D locally; Scheduler allocates both with compensation
     UPDATE_WORKLOAD = "update_workload"
     GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker fetches instance list and workload shm name
     REFRESH_INSTANCES = "refresh_instances"

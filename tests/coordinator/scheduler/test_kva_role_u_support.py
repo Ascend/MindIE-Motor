@@ -8,6 +8,7 @@ from motor.coordinator.api_client.conductor_api_client import (
     ConductorApiClient,
     conductor_instance_id,
 )
+from motor.config.coordinator import KV_AFFINITY_MODE_LOAD_GATED
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
@@ -156,8 +157,33 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
     mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_U, 1)
 
 
-async def test_select_and_allocate_role_u_uses_affinity_top_k() -> None:
+async def test_select_and_allocate_role_u_unified_forwards_top1() -> None:
+    """Unified affinity forwards every endpoint (with prefill_cost) to the scheduler for a global
+    re-rank, so the worker only needs its own top-1 locally.
+    """
+    client = _build_kv_client()  # default kv_affinity_mode is unified
+    req_info = Mock()
+    req_info.req_id = "req-1"
+    req_info.req_data = {}
+    req_info.req_len = 0
+
+    with patch.object(
+        client,
+        "_select_endpoint_candidates_with_policy",
+        return_value=([], "kv_cache_affinity"),
+    ) as mock_select:
+        await client.select_and_allocate(PDRole.ROLE_U, req_info)
+
+    mock_select.assert_awaited_once()
+    assert mock_select.await_args.kwargs["top_k"] == 1
+
+
+async def test_select_and_allocate_role_u_load_gated_uses_affinity_top_k() -> None:
+    """load_gated still proposes a fixed ranked alternate set the scheduler picks among, so it
+    keeps the affinity topK.
+    """
     client = _build_kv_client()
+    client._kv_affinity_mode = KV_AFFINITY_MODE_LOAD_GATED
     req_info = Mock()
     req_info.req_id = "req-1"
     req_info.req_data = {}

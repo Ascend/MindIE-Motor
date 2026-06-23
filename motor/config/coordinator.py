@@ -160,23 +160,27 @@ class ExceptionConfig:
     """Exception handling configuration class"""
 
     max_retry: int = 5
-    #: When ``False``: no token-cache recompute (``prepare_retry_request`` / bump ``req_id``);
-    #: Decode forwards ``return_token_ids: false`` on PD/CDP so engines omit token-id fields.
-    recompute_enabled: bool = True
-    # Optional split: HTTP transport retries vs recompute rounds (default: both use max_retry).
+    # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
+    # Engine-side recompute is independent of this switch.
+    reschedule_enabled: bool = True
     transport_max_retry: Optional[int] = None
-    recompute_max_retry: Optional[int] = None
     retry_delay: float = 0.2
     first_token_timeout: int = 600  # 10 minutes
     infer_timeout: int = 3600  # 60 minutes
+    upstream_error_body_max_bytes: int = 64 * 1024
 
     @property
     def transport_retry_limit(self) -> int:
         return self.transport_max_retry if self.transport_max_retry is not None else self.max_retry
 
     @property
-    def recompute_retry_limit(self) -> int:
-        return self.recompute_max_retry if self.recompute_max_retry is not None else self.max_retry
+    def recompute_enabled(self) -> bool:
+        """Deprecated compatibility alias for ``reschedule_enabled``."""
+        return self.reschedule_enabled
+
+    @recompute_enabled.setter
+    def recompute_enabled(self, value: bool) -> None:
+        self.reschedule_enabled = value
 
 
 @dataclass
@@ -433,6 +437,32 @@ class CoordinatorConfig:
                 'scheduler_type': lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
             }
 
+            exception_config_data = cfg.get("exception_config", {})
+
+            def set_deprecated_recompute_enabled(obj, _key, value):
+                if "reschedule_enabled" in exception_config_data:
+                    logger.warning(
+                        "exception_config.recompute_enabled is deprecated and ignored because "
+                        "reschedule_enabled is also configured"
+                    )
+                    return
+                logger.warning(
+                    "exception_config.recompute_enabled is deprecated; use reschedule_enabled. "
+                    "Engine-side recompute is not controlled by Coordinator."
+                )
+                obj.reschedule_enabled = value
+
+            def ignore_removed_recompute_retry(_obj, _key, _value):
+                logger.warning(
+                    "exception_config.recompute_max_retry is no longer supported and is ignored; "
+                    "Coordinator does not perform engine recompute"
+                )
+
+            exception_handlers = {
+                "recompute_enabled": set_deprecated_recompute_enabled,
+                "recompute_max_retry": ignore_removed_recompute_retry,
+            }
+
             # Enrich AIGW fields from user_config if present
             if user_config_data and AIGW in cfg:
                 try:
@@ -453,7 +483,7 @@ class CoordinatorConfig:
             config_mappings = [
                 ("logging_config", config.logging_config, None),
                 ("prometheus_metrics_config", config.prometheus_metrics_config, None),
-                ("exception_config", config.exception_config, None),
+                ("exception_config", config.exception_config, exception_handlers),
                 ("scheduler_config", config.scheduler_config, scheduler_handlers),
                 ("inference_workers_config", config.inference_workers_config, None),
                 ("timeout_config", config.timeout_config, None),
@@ -526,15 +556,14 @@ class CoordinatorConfig:
                 "transport_max_retry",
                 allow_zero=True,
             )
-        if self.exception_config.recompute_max_retry is not None:
-            self._validate_positive_number(
-                self.exception_config.recompute_max_retry,
-                "recompute_max_retry",
-                allow_zero=True,
-            )
         self._validate_positive_number(self.exception_config.retry_delay, "retry_delay")
         self._validate_positive_number(self.exception_config.first_token_timeout, "first_token_timeout")
         self._validate_positive_number(self.exception_config.infer_timeout, "infer_timeout")
+        self._validate_positive_number(
+            self.exception_config.upstream_error_body_max_bytes,
+            "upstream_error_body_max_bytes",
+            allow_zero=True,
+        )
 
         # Validate tracer_config configuration
         self._validate_positive_number(self.tracer_config.root_sampling_rate, "root_sampling_rate")

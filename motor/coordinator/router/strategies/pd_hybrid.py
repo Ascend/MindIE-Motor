@@ -12,7 +12,8 @@ from typing import Dict, AsyncGenerator, Any, Iterator
 import asyncio
 import contextlib
 from contextlib import aclosing
-from fastapi.responses import StreamingResponse, JSONResponse
+import httpx
+from fastapi.responses import JSONResponse, Response
 from fastapi import HTTPException
 
 from motor.common.http.http_client import HTTPClientPool
@@ -24,6 +25,14 @@ import motor.coordinator.router.adapters as adapters
 from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
 from motor.common.resources.instance import PDRole
 from motor.coordinator.tracer.tracing import TracerManager
+from motor.coordinator.router.upstream_error import (
+    UpstreamHTTPError,
+    is_retryable_upstream_error,
+)
+from motor.coordinator.router.stream_response import (
+    CommitAwareStreamingResponse,
+    StreamCommitController,
+)
 
 
 class PDHybridRouter(BaseRouter):
@@ -32,9 +41,11 @@ class PDHybridRouter(BaseRouter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._resolved_roles: tuple[PDRole, ...] | None = None
+        self._stream_commit_controller: StreamCommitController | None = None
+        self._stream_body_sent = False
         self._scheduled_resource: ScheduledResource | None = None
         self.rescheduler = Rescheduler(
-            self.config.exception_config.recompute_enabled,
+            self.config.exception_config.reschedule_enabled,
             self.req_info,
             self.logger,
         )
@@ -140,12 +151,20 @@ class PDHybridRouter(BaseRouter):
             ):
                 yield client
 
-    async def handle_request(self) -> StreamingResponse | JSONResponse:
+    async def handle_request(self) -> Response:
         req_data = self.req_info.req_data.copy()
 
         if self.req_info.req_data.get("stream", False):
-            return StreamingResponse(self._generate_stream(req_data), media_type="text/event-stream")
+            self._stream_commit_controller = StreamCommitController.requiring({"engine"})
+            return CommitAwareStreamingResponse(
+                self._generate_stream(req_data),
+                self._stream_commit_controller,
+                on_first_body_sent=self._mark_stream_body_sent,
+            )
         return await self._generate_post(req_data)
+
+    def _mark_stream_body_sent(self) -> None:
+        self._stream_body_sent = True
 
     async def _stream_inference_attempt(  # pylint: disable=contextmanager-generator-missing-cleanup
         self,
@@ -156,15 +175,16 @@ class PDHybridRouter(BaseRouter):
         stream_adapter_state: Dict[str, Any],
     ) -> AsyncGenerator[str, None]:
         trace_obj = self.req_info.trace_obj
-        recompute_enabled = self.config.exception_config.recompute_enabled
+        reschedule_enabled = self.config.exception_config.reschedule_enabled
         async with self._inference_lifecycle(attempt, max_retry) as client:
             async for chunk in self.forward_stream_request(
                 api,
                 req_data,
                 client,
                 self.config.exception_config.first_token_timeout,
+                on_response_ready=lambda: self._stream_commit_controller.mark_ready("engine", attempt + 1),
             ):
-                if recompute_enabled:
+                if reschedule_enabled:
                     # Cache prompt/output token ids so a node-fault reschedule can
                     # continue generation from where the failed leg stopped.
                     yield self.rescheduler.process_stream_chunk(chunk, stream_adapter_state=stream_adapter_state)
@@ -185,19 +205,21 @@ class PDHybridRouter(BaseRouter):
             await self.do_encode()
             self.is_meta = False
             self.logger.debug("Handling hybrid streaming request")
-            max_retry = self.config.exception_config.transport_retry_limit
-            recompute_enabled = self.config.exception_config.recompute_enabled
+            max_retry = max(self.config.exception_config.transport_retry_limit, 1)
+            reschedule_enabled = self.config.exception_config.reschedule_enabled
             api = self.req_info.api
-            if recompute_enabled:
+            if reschedule_enabled:
                 req_data["return_token_ids"] = True
 
             for attempt in range(max_retry):
                 stream_adapter_state: Dict[str, Any] = {}
+                if not self._stream_commit_controller.commit_sealed:
+                    self._stream_commit_controller.begin_attempt(attempt + 1)
                 try:
                     if attempt > 0:
                         self.rescheduler.is_rescheduling = True
                         self.rescheduler.retry_count = attempt
-                        if recompute_enabled:
+                        if reschedule_enabled:
                             req_data, api = self.rescheduler.prepare_retry_request(req_data)
                         self.logger.warning("Rescheduling stream[%d/%d] to a new hybrid instance", attempt, max_retry)
                     async with aclosing(
@@ -207,8 +229,12 @@ class PDHybridRouter(BaseRouter):
                             yield chunk
                     return
                 except asyncio.CancelledError as e:
-                    reason, retryable = check_cancel_error(e)
-                    retry = retryable and attempt < max_retry - 1 and (not self.first_chunk_sent or recompute_enabled)
+                    reason, cancel_retryable = check_cancel_error(e)
+                    retry = (
+                        cancel_retryable
+                        and attempt < max_retry - 1
+                        and (not self._stream_body_sent or reschedule_enabled)
+                    )
                     self.logger.warning(
                         "Cancelled stream[%d/%d]: %s because of %s, retry=%s",
                         attempt,
@@ -218,19 +244,34 @@ class PDHybridRouter(BaseRouter):
                         retry,
                     )
                     if not retry:
-                        if not retryable:
+                        if not cancel_retryable:
                             # Client disconnect or dispatch abort: propagate cancellation;
                             # the engine aborts via upstream connection closure.
                             raise
+                        # Node-fault cancel with retries exhausted: clear the pending
+                        # cancellation, then raise (don't yield) so the commit-aware response
+                        # renders the error itself -- a proper HTTP error before commit, or an
+                        # SSE error chunk after. Yielding here would stall _pump_stream on
+                        # wait_committed() when the failure happens before HTTP 200 was sent.
+                        self._uncancel_current_task()
                         error = RuntimeError(f"Cancelled because of {reason}")
                         trace_obj.set_trace_error_message(str(error))
                         trace_obj.set_trace_error_message(str(error), is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
-                        yield self._generate_streaming_error_chunk(error)
-                        return
+                        raise error
                     self._uncancel_current_task()
                 except Exception as e:
-                    retry = attempt < max_retry - 1 and (not self.first_chunk_sent or recompute_enabled)
+                    if isinstance(e, HTTPException):
+                        transport_retryable = False
+                    elif isinstance(e, (UpstreamHTTPError, httpx.RequestError)):
+                        transport_retryable = is_retryable_upstream_error(e)
+                    else:
+                        transport_retryable = True
+                    retry = (
+                        attempt < max_retry - 1
+                        and (not self._stream_body_sent or reschedule_enabled)
+                        and transport_retryable
+                    )
                     self.logger.error(
                         "Error in streaming (attempt %d/%d): %s", attempt + 1, max_retry, str(e), exc_info=True
                     )
@@ -240,8 +281,7 @@ class PDHybridRouter(BaseRouter):
                         trace_obj.set_trace_status(e)
                         trace_obj.set_trace_exception(e, is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
-                        yield self._generate_streaming_error_chunk(e)
-                        return
+                        raise
 
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
@@ -256,7 +296,7 @@ class PDHybridRouter(BaseRouter):
             await self.do_encode()
             self.is_meta = False
             self.logger.debug("Handling hybrid non-streaming request")
-            max_retries = self.config.exception_config.transport_retry_limit
+            max_retries = max(self.config.exception_config.transport_retry_limit, 1)
 
             for attempt in range(max_retries):
                 try:
@@ -310,6 +350,9 @@ class PDHybridRouter(BaseRouter):
                     trace_obj.set_trace_exception(e, is_meta=True)
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}")
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}", is_meta=True)
+                    if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) and not is_retryable_upstream_error(e):
+                        self.req_info.update_state(ReqState.EXCEPTION)
+                        raise
                     if attempt >= max_retries - 1:
                         self.logger.error("All retries failed for non-streaming decode request.")
                         self.req_info.update_state(ReqState.EXCEPTION)

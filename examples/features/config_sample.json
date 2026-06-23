@@ -136,12 +136,12 @@
     },
     "exception_config": {
       "max_retry": 5,
-      "recompute_enabled": true,
+      "reschedule_enabled": true,
       "transport_max_retry": null,
-      "recompute_max_retry": null,
       "retry_delay": 0.2,
       "first_token_timeout": 600,
-      "infer_timeout": 3600
+      "infer_timeout": 3600,
+      "upstream_error_body_max_bytes": 65536
     },
     "scheduler_config": {
       "scheduler_type": "load_balance"

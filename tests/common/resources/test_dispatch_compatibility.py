@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 
 from motor.common.resources.dispatch import (
     DispatchPlan,
-    compatible_decode_instances,
-    compatible_prefill_instances,
     dispatch_plan_union,
     has_compatible_dispatch_pair,
     shared_dispatch_plans,
@@ -47,36 +45,6 @@ def test_dispatch_plan_union_aggregates_and_ignores_unknown_values():
     }
     assert dispatch_plan_union([]) == set()
     assert dispatch_plan_union([_Inst(dispatch_capabilities=[])]) == set()
-
-
-def test_compatible_prefill_instances_keeps_only_servable_prefill():
-    concurrent_p = _Inst(id=1, dispatch_capabilities=[CONCURRENT])
-    handoff_p = _Inst(id=2, dispatch_capabilities=[HANDOFF])
-    no_cap_p = _Inst(id=3, dispatch_capabilities=[])
-    handoff_d = _Inst(id=4, dispatch_capabilities=[HANDOFF])
-
-    result = compatible_prefill_instances([concurrent_p, handoff_p, no_cap_p], [handoff_d])
-
-    assert result == [handoff_p]
-
-
-def test_compatible_prefill_instances_empty_when_no_decode():
-    assert compatible_prefill_instances([_Inst(dispatch_capabilities=[CONCURRENT])], []) == []
-
-
-def test_compatible_decode_instances_filters_by_selected_prefill():
-    prefill = _Inst(id=1, dispatch_capabilities=[CONCURRENT])
-    concurrent_d = _Inst(id=2, dispatch_capabilities=[CONCURRENT])
-    handoff_d = _Inst(id=3, dispatch_capabilities=[HANDOFF])
-    both_d = _Inst(id=4, dispatch_capabilities=[CONCURRENT, HANDOFF])
-
-    result = compatible_decode_instances(prefill, [concurrent_d, handoff_d, both_d])
-
-    assert result == [concurrent_d, both_d]
-
-
-def test_compatible_decode_instances_empty_when_prefill_has_no_capability():
-    assert compatible_decode_instances(_Inst(), [_Inst(dispatch_capabilities=[CONCURRENT])]) == []
 
 
 def test_has_compatible_dispatch_pair_matches_pairwise_definition():

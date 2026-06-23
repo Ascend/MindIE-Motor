@@ -59,27 +59,41 @@ class _UnifiedPDStreamResponse:
     def __init__(self, chunks, exc: Exception | None = None):
         self.chunks = list(chunks)
         self.exc = exc
-        self.status_code = 200
-        self.is_success = True
-        self.text = ""
+        if isinstance(exc, httpx.HTTPStatusError):
+            self.status_code = exc.response.status_code
+            self.is_success = False
+            self.text = exc.response.text
+            self.headers = exc.response.headers
+            self._error_body = exc.response.content or str(exc).encode()
+        else:
+            self.status_code = 200
+            self.is_success = True
+            self.text = ""
+            self.headers = {}
+            self._error_body = b""
 
     async def __aenter__(self):
+        if isinstance(self.exc, httpx.RequestError):
+            raise self.exc
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return False
 
     async def aread(self):
-        return b""
+        return self._error_body
 
     def raise_for_status(self):
         if self.exc is not None and not self.chunks:
             raise self.exc
 
     async def aiter_bytes(self):
+        if not self.is_success:
+            yield self._error_body
+            return
         for chunk in self.chunks:
             yield chunk
-        if self.exc is not None:
+        if self.exc is not None and not isinstance(self.exc, (httpx.HTTPStatusError, httpx.RequestError)):
             raise self.exc
 
 
@@ -189,6 +203,10 @@ def _assert_stream_error_chunk(
 ) -> None:
     """Assert the SSE error payload propagates the expected message (and optional type)."""
     payload = _parse_stream_error_payload(chunk_str)
+    # Coordinator-synthesized stream errors use the {"error": {...}} envelope (matching the
+    # pre-commit / non-stream shape); unwrap it. Engine-verbatim bodies may already be flat.
+    if isinstance(payload.get("error"), dict):
+        payload = payload["error"]
     assert error_message in payload["message"], (
         f"expected {error_message!r} in error message, got {payload['message']!r}"
     )
@@ -459,7 +477,7 @@ class TestRouterCDPSeparation:
                 return mock_instance_d, mock_endpoint_d
             return None, None
 
-        async def mock_select_and_allocate(self, role, req_info):
+        async def mock_select_and_allocate(self, role, req_info, *, target_instance_id=None):
             if role == PDRole.ROLE_P:
                 return mock_instance_p, mock_endpoint_p, Workload(active_kv_cache=1, active_tokens=1)
             if role == PDRole.ROLE_D:
@@ -478,7 +496,7 @@ class TestRouterCDPSeparation:
 
         mock_scheduler_config = MagicMock()
         mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
-        # Real ExceptionConfig so transport_retry_limit / recompute_retry_limit properties work;
+        # Real ExceptionConfig so transport_retry_limit and rescheduling settings work;
         # MagicMock lacks @property implementation and breaks decode transport loops (range / last-attempt check).
         mock_exception_config = ExceptionConfig(max_retry=5, retry_delay=0.0001)
         mock_api_config = MagicMock()
@@ -603,7 +621,6 @@ class TestRouterCDPSeparation:
         2) Directly return error message
         """
         error_message = "Test Bad Request"
-        max_retry = CoordinatorConfig().exception_config.transport_retry_limit
         d_client = _UnifiedPDDecodeClient(
             stream_exc=httpx.HTTPStatusError(
                 message=error_message,
@@ -638,9 +655,9 @@ class TestRouterCDPSeparation:
         chunk_str = await _collect_stream_chunks(response)
 
         assert req_info.state == ReqState.EXCEPTION
-        _assert_stream_error_chunk(chunk_str, error_message=error_message, error_type="HTTPStatusError")
+        _assert_stream_error_chunk(chunk_str, error_message=error_message, error_type="UpstreamHTTPError")
         assert str(status.HTTP_400_BAD_REQUEST) in chunk_str
-        assert d_client.stream_count == max_retry
+        assert d_client.stream_count == 1
         assert release_d_tokens >= 1
         assert release_p_tokens >= 1
         assert release_p_kv >= 1
@@ -679,7 +696,7 @@ class TestRouterCDPSeparation:
         chunk_str = await _collect_stream_chunks(response)
 
         assert req_info.state == ReqState.EXCEPTION
-        _assert_stream_error_chunk(chunk_str, error_message=error_message, error_type="HTTPStatusError")
+        _assert_stream_error_chunk(chunk_str, error_message=error_message, error_type="UpstreamHTTPError")
         assert str(status.HTTP_500_INTERNAL_SERVER_ERROR) in chunk_str
         assert d_client.stream_count == max_retry
         assert exec_release >= 1
@@ -911,26 +928,97 @@ class TestRouterCDPSeparation:
             # Verify response
             assert response == mock_response
 
+    @pytest.mark.parametrize(
+        ("prefill_details", "expected_details"),
+        [
+            ({"cached_tokens": 10}, {"cached_tokens": 10}),
+            (None, {"cached_tokens": 0}),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_prompt_tokens_details_propagation(self, client, monkeypatch: MonkeyPatch, setup_cdp_separation):
-        """UnifiedPD preserves coordinator-side prompt_tokens_details; decode body is returned as-is."""
-        prompt_tokens_details = {"cached_tokens": 10}
-
+    async def test_prompt_tokens_details_propagation(
+        self,
+        client,
+        monkeypatch: MonkeyPatch,
+        setup_cdp_separation,
+        prefill_details,
+        expected_details,
+    ):
+        """UnifiedPD returns prompt cache details collected from the prefill response."""
         req_info = await create_mock_request_info(stream=False)
-        req_info.update_prompt_tokens_details(prompt_tokens_details)
 
-        p_client = _UnifiedPDPrefillClient()
-        d_client = _UnifiedPDDecodeClient()
+        class _PrefillClient(_UnifiedPDPrefillClient):
+            async def post(self, path, json=None, headers=None, timeout=None):
+                self.requests.append(json)
+                request = httpx.Request("POST", path, headers=headers or {}, json=json)
+                return httpx.Response(
+                    status_code=200,
+                    json={"usage": {"prompt_tokens_details": prefill_details}},
+                    request=request,
+                )
+
+        class _DecodeClient(_UnifiedPDDecodeClient):
+            async def post(self, path, json=None, headers=None, timeout=None):
+                self.post_count += 1
+                if json:
+                    self.requests.append(json)
+                request = httpx.Request("POST", path, headers=headers or {}, json=json)
+                return httpx.Response(
+                    status_code=200,
+                    json={
+                        "choices": [{"message": {"content": "test response"}}],
+                        "usage": {
+                            "prompt_tokens": 15,
+                            "completion_tokens": 1,
+                            "total_tokens": 16,
+                        },
+                    },
+                    request=request,
+                )
+
+        p_client = _PrefillClient()
+        d_client = _DecodeClient()
         cdp_router = self._make_router(req_info, monkeypatch, p_client, d_client)
 
         response = await cdp_router.handle_request()
-        response_json = response.body.decode() if hasattr(response.body, 'decode') else response.body
+        response_json = response.body.decode() if hasattr(response.body, "decode") else response.body
         response_data = json.loads(response_json)
 
-        assert req_info.prompt_tokens_details == prompt_tokens_details
+        assert req_info.prompt_tokens_details == expected_details
         assert response_data["choices"][0]["message"]["content"] == "test response"
-        assert "prompt_tokens_details" not in response_data
-        assert "prompt_tokens_details" not in response_data.get("usage", {})
+        assert response_data["usage"]["prompt_tokens_details"] == expected_details
+
+    @pytest.mark.asyncio
+    async def test_stream_prompt_tokens_details_when_recompute_disabled(
+        self, client, monkeypatch: MonkeyPatch, setup_cdp_separation
+    ):
+        """Prompt cache details are independent of the recompute feature switch."""
+        prompt_tokens_details = {"cached_tokens": 10}
+        req_info = await create_mock_request_info(stream=True)
+
+        usage_chunk = b'data: {"choices":[],"usage":{"prompt_tokens":15,"completion_tokens":1,"total_tokens":16}}\n\n'
+
+        class _DelayedPrefillClient(_UnifiedPDPrefillClient):
+            async def post(self, path, json=None, headers=None, timeout=None):
+                self.requests.append(json)
+                await asyncio.sleep(0.01)
+                request = httpx.Request("POST", path, headers=headers or {}, json=json)
+                return httpx.Response(
+                    status_code=200,
+                    json={"usage": {"prompt_tokens_details": prompt_tokens_details}},
+                    request=request,
+                )
+
+        p_client = _DelayedPrefillClient()
+        d_client = _UnifiedPDDecodeClient(stream_chunks=[usage_chunk])
+        cdp_router = self._make_router(req_info, monkeypatch, p_client, d_client)
+        cdp_router.config.exception_config.reschedule_enabled = False
+
+        response = await cdp_router.handle_request()
+        chunks = [chunk async for chunk in response.body_iterator]
+        response_data = json.loads(chunks[0].removeprefix(b"data: ").strip())
+
+        assert response_data["usage"]["prompt_tokens_details"] == prompt_tokens_details
 
     @pytest.mark.asyncio
     async def test_cdp_nonstream_recompute_returns_decode_body_as_is(

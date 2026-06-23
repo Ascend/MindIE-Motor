@@ -15,7 +15,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Iterator
+from typing import Any, AsyncGenerator, Callable, Iterator
 
 import httpx
 from anyio import CancelScope
@@ -47,6 +47,7 @@ from motor.common.resources.instance import Instance
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.workload import WorkloadActionHandler
+from motor.coordinator.router.upstream_error import UpstreamHTTPError
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.scheduling import InstanceReadiness
 
@@ -140,12 +141,14 @@ class BaseRouter(ABC):
                 type=type(e).__name__,
                 message=e.detail,
             )
-        if isinstance(e, httpx.HTTPStatusError):
+        if isinstance(e, UpstreamHTTPError):
             return ErrorResponse(
-                code=e.response.status_code,
+                code=e.status_code,
                 type=type(e).__name__,
                 message=str(e),
             )
+        if isinstance(e, httpx.HTTPStatusError):
+            return ErrorResponse(code=e.response.status_code, type=type(e).__name__, message=str(e))
         return ErrorResponse(
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             type=type(e).__name__,
@@ -160,11 +163,6 @@ class BaseRouter(ABC):
                 if status_val == "normal":
                     return endpoint
         return None
-
-    @staticmethod
-    def _generate_streaming_error_chunk(e: Exception) -> str:
-        error_response = BaseRouter.build_error_response(e)
-        return f"data: {error_response.model_dump_json()}\n\n"
 
     @staticmethod
     def _apply_prefill_params(
@@ -396,7 +394,13 @@ class BaseRouter(ABC):
         return success
 
     async def forward_stream_request(
-        self, api: str, req_data: dict, client: httpx.AsyncClient, timeout: int
+        self,
+        api: str,
+        req_data: dict,
+        client: httpx.AsyncClient,
+        timeout: int,
+        *,
+        on_response_ready: Callable[[], None] | None = None,
     ) -> AsyncGenerator[str, None]:
         trace_obj = self.req_info.trace_obj
         headers = {'Content-Type': 'application/json', 'X-Request-Id': self._forward_request_id(req_data)}
@@ -425,13 +429,17 @@ class BaseRouter(ABC):
                     api,
                 )
             if not response.is_success:
-                await response.aread()
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                error_message = f"Stream request failed: {e.response.text}"
-                trace_obj.set_trace_error_message(error_message, is_meta=self.is_meta)
-                raise httpx.HTTPStatusError(message=e.response.text, request=e.request, response=e.response)
+                error_body, body_truncated = await self._read_bounded_error_body(response)
+                upstream_error = UpstreamHTTPError.from_response(
+                    response,
+                    body=error_body,
+                    phase="stream",
+                    truncated=body_truncated,
+                )
+                trace_obj.set_trace_error_message(str(upstream_error), is_meta=self.is_meta)
+                raise upstream_error
+            if on_response_ready is not None:
+                on_response_ready()
             count_token = 0
             pending = b""
             async for chunk in response.aiter_bytes():
@@ -498,7 +506,36 @@ class BaseRouter(ABC):
         trace_obj.add_trace_event(f"Begin to post: {client.base_url}/{api}, {client.timeout}", is_meta=self.is_meta)
         t0_forward = time.perf_counter()
         url = f"/{api}"
-        response = await client.post(url, json=req_data, headers=headers, timeout=timeout)
+        async with self._open_nonstream_response(
+            client,
+            url,
+            req_data=req_data,
+            headers=headers,
+            timeout=timeout,
+        ) as (response, streamed):
+            if not response.is_success:
+                if streamed:
+                    error_body, body_truncated = await self._read_bounded_error_body(response)
+                else:
+                    # Compatibility for lightweight internal/test clients that only
+                    # implement post(). Production httpx clients use the bounded path.
+                    limit = max(self.config.exception_config.upstream_error_body_max_bytes, 0)
+                    full_body = response.content
+                    error_body = full_body[:limit]
+                    body_truncated = len(full_body) > limit
+                upstream_error = UpstreamHTTPError.from_response(
+                    response,
+                    body=error_body,
+                    phase="non-stream",
+                    truncated=body_truncated,
+                )
+                trace_obj.set_trace_error_message(str(upstream_error), is_meta=self.is_meta)
+                raise upstream_error
+            # Callers parse the returned response after this context exits, so cache
+            # the complete successful body before the connection is closed.
+            if streamed:
+                await response.aread()
+
         trace_obj.add_trace_event(f"Post ok: {response.status_code}", is_meta=self.is_meta)
         elapsed_forward_ms = (time.perf_counter() - t0_forward) * 1000
         if _should_log_scheduling_sample(self.req_info.req_id):
@@ -507,14 +544,52 @@ class BaseRouter(ABC):
                 elapsed_forward_ms,
                 api,
             )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            error_message = f"Post request failed: {e.response.text}"
-            trace_obj.set_trace_error_message(error_message, is_meta=self.is_meta)
-            raise httpx.HTTPStatusError(message=e.response.text, request=e.request, response=e.response)
-        await response.aclose()
         return response
+
+    @contextlib.asynccontextmanager
+    async def _open_nonstream_response(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        req_data: dict,
+        headers: dict[str, str],
+        timeout: int,
+    ):
+        if isinstance(client, httpx.AsyncClient):
+            async with client.stream("POST", url, json=req_data, headers=headers, timeout=timeout) as response:
+                yield response, True
+            return
+
+        response = await client.post(url, json=req_data, headers=headers, timeout=timeout)
+        try:
+            yield response, False
+        finally:
+            await response.aclose()
+
+    async def _read_bounded_error_body(self, response: httpx.Response) -> tuple[bytes, bool]:
+        """Read at most ``upstream_error_body_max_bytes`` of a streamed error body.
+
+        Returns ``(body, truncated)``; ``truncated`` is True when the engine's error body
+        exceeded the cap, so the caller can avoid forwarding a body cut mid-payload.
+        """
+        limit = max(self.config.exception_config.upstream_error_body_max_bytes, 0)
+        probe_limit = limit + 1
+        body = bytearray()
+        chunk_size = min(8192, probe_limit)
+        if isinstance(response, httpx.Response):
+            chunks = response.aiter_bytes(chunk_size=chunk_size)
+        else:
+            # Compatibility for lightweight response doubles used by router tests.
+            chunks = response.aiter_bytes()
+        async for chunk in chunks:
+            if not chunk:
+                continue
+            remaining = probe_limit - len(body)
+            body.extend(chunk[:remaining])
+            if len(body) >= probe_limit:
+                return bytes(body[:limit]), True
+        return bytes(body), False
 
     def _infer_base_url_for_resource(self, resource: ScheduledResource) -> str:
         scheme = "https" if self.config.infer_tls_config.enable_tls else "http"

@@ -58,6 +58,7 @@ class AttemptContext:
     updated_at: float = field(default_factory=time.time)
     prefill_task: asyncio.Task | None = None
     decode_task: asyncio.Task | None = None
+    stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     config: CoordinatorConfig | None = None
     fail_reason: str | None = None
 

@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -44,8 +45,18 @@ _CHAT_ONLY_KEYS_RECOMPUTE = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class RetryRequestPlan:
+    """Validated token-replay inputs shared by all legs in one retry attempt."""
+
+    prompt_token_ids: tuple[int, ...]
+    api: str
+    remove_chat_fields: bool
+    cached_output_tokens: int
+
+
 class Rescheduler:
-    """Normalize decode responses and build Completions-style retry bodies after recompute."""
+    """Normalize decode responses and build token-replay bodies for transport rescheduling."""
 
     def __init__(self, enable, req: RequestInfo, logger):
         # settings
@@ -54,6 +65,8 @@ class Rescheduler:
         # variables
         self.is_rescheduling = False
         self.retry_count = 0
+        self._replay_progress_complete = True
+        self._stream_finished = False
         # functions
         self.logger = logger
 
@@ -65,9 +78,9 @@ class Rescheduler:
     ) -> bytes:
         """Process one decode stream chunk.
 
-        When ``enable`` is true and ``stop_reason`` is ``recomputed``, returns ``None`` so
-        the router can reschedule. When recompute is disabled, recomputed chunks are still
-        forwarded to the client (with ``recomputed`` mapped to ``stop``).
+        When enabled, token IDs are cached so a later transient transport failure can be
+        retried without discarding already generated output. Engine-side ``recomputed``
+        responses are normalized but do not trigger Coordinator recompute.
 
         Returns:
             Bytes to forward to the client
@@ -79,6 +92,7 @@ class Rescheduler:
             except Exception:
                 text = ""
             if "[DONE]" in text:
+                self._stream_finished = True
                 return chunk
             if self.logger is not None:
                 self.logger.debug("Dropping non-JSON decode stream chunk (Coordinator safety)")
@@ -89,7 +103,11 @@ class Rescheduler:
                 chunk_json[OpenAIField.USAGE]["prompt_tokens_details"] = self.req.prompt_tokens_details
 
         if self.enable:
+            if self._has_visible_output_without_token_ids(chunk_json):
+                self._replay_progress_complete = False
             self.req.update_token_id_cache(chunk_json)
+        if self._has_finish_reason(chunk_json):
+            self._stream_finished = True
 
         sta = stream_adapter_state if stream_adapter_state is not None else {}
         # Chat clients expect chat.completion.chunk; adapt Completion-shaped engine chunks.
@@ -110,8 +128,53 @@ class Rescheduler:
         strip_openai_token_id_fields_for_client(chunk_json, client_return_token_ids=self.req.client_expects_token_ids)
         return encode_stream_chunk_bytes(chunk, chunk_json)
 
+    def can_resume_after_visible_output(self, req_data: dict) -> bool:
+        """Return whether a streamed response can safely continue on a new instance."""
+        if (
+            not self.enable
+            or not self._replay_progress_complete
+            or self._stream_finished
+            or not self.req.prompt_token_ids
+            or not self.req.cached_token_ids
+        ):
+            return False
+
+        try:
+            if int(req_data.get("n", 1)) != 1:
+                return False
+        except (TypeError, ValueError):
+            return False
+
+        if OpenAIField.MESSAGES in req_data:
+            return self.completions_retry_eligible_for_chat_request(req_data)
+        return True
+
+    @staticmethod
+    def _has_visible_output_without_token_ids(chunk_json: dict) -> bool:
+        choices = chunk_json.get(OpenAIField.CHOICES) or []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            token_ids = choice.get(OpenAIField.TOKEN_IDS)
+            if isinstance(token_ids, list) and token_ids:
+                continue
+            if choice.get("text"):
+                return True
+            for field in ("delta", "message"):
+                payload = choice.get(field)
+                if not isinstance(payload, dict):
+                    continue
+                if any(value not in (None, "", [], {}) for key, value in payload.items() if key != "role"):
+                    return True
+        return False
+
+    @staticmethod
+    def _has_finish_reason(chunk_json: dict) -> bool:
+        choices = chunk_json.get(OpenAIField.CHOICES) or []
+        return any(isinstance(choice, dict) and choice.get("finish_reason") is not None for choice in choices)
+
     def prepare_retry_request(self, req_data: dict) -> (dict, str):
-        """Build the retry request body and target API after a recompute signal.
+        """Build the retry request body and target API after a transport failure.
 
         Chat ingress is retried via Completions (``prompt: list[int]``, API
         ``v1/completions``). Ineligible chat requests (tools, logprobs, multimodal parts,
@@ -119,10 +182,17 @@ class Rescheduler:
         ``messages``.
 
         ``max_tokens`` is derived from the client's original budget minus cumulative
-        output token ids from prior legs, with a +1 adjustment when output tokens exist.
+        output token ids from prior legs.
         """
-        if len(self.req.prompt_token_ids) == 0 or len(self.req.cached_token_ids) == 0:
+        plan = self.build_retry_plan(req_data)
+        if plan is None:
             return (req_data, self.req.api)
+        return self.apply_retry_plan(req_data, plan)
+
+    def build_retry_plan(self, req_data: dict) -> RetryRequestPlan | None:
+        """Validate and construct the shared token-replay plan for one retry attempt."""
+        if len(self.req.prompt_token_ids) == 0 or len(self.req.cached_token_ids) == 0:
+            return None
 
         try:
             n_val = int(req_data.get("n", 1))
@@ -142,14 +212,6 @@ class Rescheduler:
                 status.HTTP_502_BAD_GATEWAY,
                 detail="Rescheduling does not support parallel sampling (n>1).",
             )
-
-        if OpenAIField.MAX_TOKENS in req_data:
-            try:
-                max_tokens = int(req_data[OpenAIField.MAX_TOKENS])
-                max_tokens -= len(self.req.cached_token_ids)
-                req_data[OpenAIField.MAX_TOKENS] = max(1, max_tokens)
-            except (TypeError, ValueError):
-                pass
 
         all_ids = list(self.req.prompt_token_ids)
         all_ids.extend(self.req.cached_token_ids)
@@ -171,35 +233,51 @@ class Rescheduler:
                         "Chat messages."
                     ),
                 )
-            for k in _CHAT_ONLY_KEYS_RECOMPUTE:
-                req_data.pop(k, None)
-            req_data[OpenAIField.PROMPT] = all_ids
             reschedule_api = "v1/completions"
-            self.logger.info(
-                "Rescheduling request %s (completions engine): retry=%d all_len=%d prompt_len=%d "
-                "cumulative_completion=%d max_tokens=%s",
-                self.req.req_id,
-                self.retry_count,
-                len(all_ids),
-                len(self.req.prompt_token_ids),
-                len(self.req.cached_token_ids),
-                req_data.get(OpenAIField.MAX_TOKENS, 0),
-            )
         else:
-            req_data[OpenAIField.PROMPT] = all_ids
             reschedule_api = self.req.api
-            self.logger.info(
-                "Rescheduling request %s (token-id completion retry): retry=%d all_len=%d prompt_len=%d "
-                "cumulative_completion=%d max_tokens=%s",
-                self.req.req_id,
-                self.retry_count,
-                len(all_ids),
-                len(self.req.prompt_token_ids),
-                len(self.req.cached_token_ids),
-                req_data.get(OpenAIField.MAX_TOKENS, 0),
-            )
 
-        return (req_data, reschedule_api)
+        plan = RetryRequestPlan(
+            prompt_token_ids=tuple(all_ids),
+            api=reschedule_api,
+            remove_chat_fields=is_chat,
+            cached_output_tokens=len(self.req.cached_token_ids),
+        )
+        self.logger.info(
+            "Prepared token replay for request %s: retry=%d all_len=%d prompt_len=%d cumulative_completion=%d api=%s",
+            self.req.req_id,
+            self.retry_count,
+            len(plan.prompt_token_ids),
+            len(self.req.prompt_token_ids),
+            plan.cached_output_tokens,
+            plan.api,
+        )
+        return plan
+
+    @staticmethod
+    def apply_retry_plan(
+        req_data: dict,
+        plan: RetryRequestPlan,
+        *,
+        prefill: bool = False,
+    ) -> (dict, str):
+        """Apply one shared replay prompt with role-specific generation limits."""
+        if plan.remove_chat_fields:
+            for key in _CHAT_ONLY_KEYS_RECOMPUTE:
+                req_data.pop(key, None)
+        req_data[OpenAIField.PROMPT] = list(plan.prompt_token_ids)
+
+        if not prefill and OpenAIField.MAX_TOKENS in req_data:
+            try:
+                max_tokens = int(req_data[OpenAIField.MAX_TOKENS])
+                req_data[OpenAIField.MAX_TOKENS] = max(
+                    1,
+                    max_tokens - plan.cached_output_tokens,
+                )
+            except (TypeError, ValueError):
+                pass
+
+        return (req_data, plan.api)
 
     def completions_retry_eligible_for_chat_request(self, req_data: dict) -> bool:
         """Return whether a chat request may be retried as Completions with token-id prompt.

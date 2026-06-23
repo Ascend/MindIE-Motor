@@ -27,6 +27,7 @@ from motor.engine_server.core.dispatch_adapter import create_dispatch_adapter
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
 from motor.engine_server.core.endpoint import Endpoint
+from motor.engine_server.core.serving_error import map_serving_exception
 from motor.engine_server.utils.cancellation import with_cancellation
 
 logger = get_logger(__name__)
@@ -154,10 +155,22 @@ class InferEndpoint(Endpoint):
                 await self._handle_dispatch_failure(context)
                 return await self._normalize_openai_response(response, context) if normalize else response
         except Exception as e:
+            mapped_error = map_serving_exception(
+                e,
+                map_unknown_to_http_500=context.dispatch is None,
+            )
+            if (mapped_error is e and not isinstance(e, HTTPException)) or (
+                isinstance(mapped_error, HTTPException) and mapped_error.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+            ):
+                logger.exception(
+                    "Engine serving request failed api=%s error_type=%s",
+                    context.api,
+                    type(e).__name__,
+                )
             if context.dispatch is None:
-                raise
+                raise mapped_error from e
             await self._handle_dispatch_failure(context)
-            mapped = self.dispatch_adapter.map_engine_error(e, context)
+            mapped = self.dispatch_adapter.map_engine_error(mapped_error, context)
             if isinstance(mapped, HTTPException):
                 raise mapped from e
             return mapped

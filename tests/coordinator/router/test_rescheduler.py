@@ -321,6 +321,81 @@ def test_prepare_retry_request_missing_kv_noops():
     assert retry_api == req.api
 
 
+def test_retry_plan_applies_shared_prompt_with_role_specific_budget():
+    req_data = {
+        "model": "m",
+        "prompt": "hello",
+        "stream": True,
+        "max_tokens": 8,
+    }
+    req = _make_request_info(req_data, api="v1/completions")
+    req.prompt_token_ids = [1, 2]
+    req.cached_token_ids = [10]
+    resch = Rescheduler(True, req, logger=logger)
+
+    plan = resch.build_retry_plan(req_data)
+    p_req, p_api = resch.apply_retry_plan(
+        {**req_data, "stream": False, "max_tokens": 1},
+        plan,
+        prefill=True,
+    )
+    d_req, d_api = resch.apply_retry_plan(req_data.copy(), plan)
+
+    assert p_api == d_api == "v1/completions"
+    assert p_req["prompt"] == d_req["prompt"] == [1, 2, 10]
+    assert p_req["max_tokens"] == 1
+    assert d_req["max_tokens"] == 7
+
+
+def test_can_resume_after_visible_output_requires_replay_progress():
+    req_data = {"model": "m", "prompt": "hello", "stream": True}
+    req = _make_request_info(req_data)
+    resch = Rescheduler(True, req, logger=logger)
+
+    assert not resch.can_resume_after_visible_output(req_data)
+
+    req.prompt_token_ids = [1, 2]
+    req.cached_token_ids = [10]
+    assert resch.can_resume_after_visible_output(req_data)
+    assert not Rescheduler(False, req, logger=logger).can_resume_after_visible_output(req_data)
+
+
+def test_can_resume_after_visible_output_rejects_ineligible_chat_request():
+    req_data = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        "stream": True,
+    }
+    req = _make_request_info(req_data)
+    req.prompt_token_ids = [1, 2]
+    req.cached_token_ids = [10]
+    resch = Rescheduler(True, req, logger=logger)
+
+    assert not resch.can_resume_after_visible_output(req_data)
+
+
+def test_can_resume_after_visible_output_rejects_incomplete_token_tracking():
+    req_data = {"model": "m", "prompt": "hello", "stream": True}
+    req = _make_request_info(req_data, api="v1/completions")
+    resch = Rescheduler(True, req, logger=logger)
+    resch.process_stream_chunk(b'data: {"prompt_token_ids":[1,2],"choices":[{"text":"A","token_ids":[10]}]}\n\n')
+    resch.process_stream_chunk(b'data: {"choices":[{"text":"B"}]}\n\n')
+
+    assert not resch.can_resume_after_visible_output(req_data)
+
+
+def test_can_resume_after_visible_output_rejects_finished_stream():
+    req_data = {"model": "m", "prompt": "hello", "stream": True}
+    req = _make_request_info(req_data, api="v1/completions")
+    resch = Rescheduler(True, req, logger=logger)
+    resch.process_stream_chunk(
+        b'data: {"prompt_token_ids":[1,2],"choices":[{"text":"A","token_ids":[10],"finish_reason":"stop"}]}\n\n'
+    )
+
+    assert not resch.can_resume_after_visible_output(req_data)
+
+
 def test_update_token_id_cache_prompt_from_completion_choice():
     """Completion streams may put ``prompt_token_ids`` on ``choices[0]`` only."""
     req = _make_request_info()

@@ -100,14 +100,6 @@ class ScheduledResource(BaseModel):
 
 
 @dataclass(frozen=True)
-class ScheduledPair:
-    prefill: ScheduledResource
-    decode: ScheduledResource
-    prefill_workload: Workload
-    decode_workload: Workload
-
-
-@dataclass(frozen=True)
 class UpdateWorkloadParams:
     """
     Parameters for update_workload (G.FNM.03: encapsulate many related args).
@@ -119,34 +111,6 @@ class UpdateWorkloadParams:
     req_id: str
     workload_action: WorkloadAction
     workload_change: Workload
-
-
-def build_release_workload_params(
-    instance_id: int,
-    endpoint_id: int,
-    role: PDRole,
-    req_id: str,
-    workload: Workload,
-) -> tuple[UpdateWorkloadParams, UpdateWorkloadParams]:
-    """Build token and KV releases that compensate one allocation."""
-    common = {
-        "instance_id": instance_id,
-        "endpoint_id": endpoint_id,
-        "role": role,
-        "req_id": req_id,
-    }
-    return (
-        UpdateWorkloadParams(
-            **common,
-            workload_action=WorkloadAction.RELEASE_TOKENS,
-            workload_change=Workload(active_tokens=-workload.active_tokens),
-        ),
-        UpdateWorkloadParams(
-            **common,
-            workload_action=WorkloadAction.RELEASE_KV,
-            workload_change=Workload(active_kv_cache=-workload.active_kv_cache),
-        ),
-    )
 
 
 class SchedulingFacade(Protocol):
@@ -168,13 +132,6 @@ class SchedulingFacade(Protocol):
         When target_instance_id is set, pin to that instance (skip policy selection).
         Returns (instance, endpoint, allocation_workload). Caller records allocation_workload for release.
         """
-        ...
-
-    async def select_pair_and_allocate(
-        self,
-        req_info: RequestInfo,
-    ) -> ScheduledPair | None:
-        """Select and allocate a P/D pair as one scheduling operation."""
         ...
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:

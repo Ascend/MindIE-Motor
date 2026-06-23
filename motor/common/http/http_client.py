@@ -184,7 +184,7 @@ class HttpClientContext(httpx.AsyncClient):
 
     async def cancel_all(self):
         reason = f"{cancel_error.NODE_FAULT}: {super().base_url}"
-        for canceller in self._cancellers.values():
+        for canceller in list(self._cancellers.values()):
             if canceller:
                 await canceller(reason)
 

@@ -128,6 +128,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
                 overlap_credit,
                 topn,
                 top_k,
+                req_info=req_info,
             )
 
         # "unified" (default); unknown modes fall through here too.
@@ -139,6 +140,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             prefill_load_scale,
             load_weight,
             top_k,
+            req_info=req_info,
         )
 
     @staticmethod
@@ -263,6 +265,38 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         return candidates, any_instance
 
     @staticmethod
+    def _stash_affinity_debug(
+        req_info: RequestInfo | None,
+        raw: list[tuple[float, int, float, Instance, Endpoint]],
+        with_prefill: bool = False,
+    ) -> None:
+        """
+        Cache per-endpoint ``(matched_tokens, load_cost, prefill_cost)`` on ``req_info``.
+
+        Two consumers:
+        * the worker's final allocation log, which reports the KV-affinity prefix hit and load of
+          the endpoint the scheduler actually committed (may differ from the worker's top-1 after
+          the scheduler's fresh-ledger re-pick);
+        * unified-mode :meth:`AsyncSchedulerClient.select_and_allocate`, which forwards every
+          endpoint's affinity-discounted ``prefill_cost`` to the scheduler so it can re-rank all of
+          them by its own fresh load (``prefill_load_scale * prefill_cost + load_weight * load``) --
+          a global selection with no fixed top-k.
+
+        ``prefill_cost`` is stored only when ``with_prefill`` is set; it is None otherwise (e.g.
+        load_gated, whose hard load bound must not be relaxed into a soft unified score on the
+        scheduler). Best-effort: never fail selection over a debug cache.
+        """
+        if req_info is None:
+            return
+        try:
+            req_info.kv_affinity_debug = {
+                (instance.id, ep.id): (matched_tokens, load_cost, prefill_cost if with_prefill else None)
+                for (load_cost, matched_tokens, prefill_cost, instance, ep) in raw
+            }
+        except Exception as e:  # pragma: no cover - req_info may be immutable in some callers
+            logger.debug("Could not cache kv_affinity_debug on req_info: %s", e)
+
+    @staticmethod
     def _select_with_load(
         instances: list[Instance],
         tenant: dict,
@@ -271,6 +305,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         prefill_load_scale: float,
         load_weight: float,
         top_k: int = 1,
+        req_info: RequestInfo | None = None,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Unified cost: score every reported endpoint by affinity-discounted prefill
@@ -294,7 +329,10 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         ]
         ranked = sorted(candidates, key=lambda c: c[0])[: max(1, top_k)]
         top_score, top_inst, top_ep, top_matched = ranked[0]
-        logger.info(
+        # DEBUG, not INFO: this is only the worker's *proposal*. The request's real destination is
+        # decided by the scheduler's authoritative re-pick and logged once at INFO ("scheduled ...")
+        # in AsyncSchedulerClient.select_and_allocate. Emitting this at INFO misleads load analysis.
+        logger.debug(
             "select_endpoint(load-aware): role=%s %s-%s matched:%s score:%.2f (top%d of %d)",
             top_inst.role,
             top_inst.id,
@@ -304,6 +342,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             len(ranked),
             len(candidates),
         )
+        KvCacheAffinityPolicy._stash_affinity_debug(req_info, raw, with_prefill=True)
         return [(inst, ep, score) for (score, inst, ep, _matched) in ranked]
 
     @staticmethod
@@ -314,6 +353,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         overlap_credit: float,
         load_gate_topn: int,
         top_k: int = 1,
+        req_info: RequestInfo | None = None,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Two-stage "load first, affinity second" ranking: keep only the ``load_gate_topn``
@@ -338,7 +378,9 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         # Stage 2: rank the least-loaded by longest cached prefix; tie -> lighter load.
         ranked = sorted(gated, key=lambda c: (-c[1], c[0]))[: max(1, top_k)]
         top_load, top_matched, _prefill, top_inst, top_ep = ranked[0]
-        logger.info(
+        # DEBUG, not INFO: worker proposal only; see _select_with_load / "scheduled ..." for the
+        # authoritative destination the scheduler committed.
+        logger.debug(
             "select_endpoint(load-gated): role=%s %s-%s matched:%s load:%.2f (top%d of %d gated, %d total)",
             top_inst.role,
             top_inst.id,
@@ -349,6 +391,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             topn,
             len(raw),
         )
+        KvCacheAffinityPolicy._stash_affinity_debug(req_info, raw)
         return [(inst, ep, load_cost) for (load_cost, _m, _p, inst, ep) in ranked]
 
     def _select_instance(self, _: PDRole = None) -> Instance | None:

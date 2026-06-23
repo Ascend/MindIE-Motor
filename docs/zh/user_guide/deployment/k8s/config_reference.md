@@ -233,10 +233,18 @@
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | max_retry | int | 请求失败后的最大重试次数。默认：`5` |
-| recompute_enabled | bool | 是否允许 Coordinator 在引擎返回 `stop_reason=recomputed` 时执行 token 缓存重算并重试。默认：`true` |
+| reschedule_enabled | bool | 是否缓存流式响应 token ID，以便瞬时传输故障后重调度并续接请求。该配置不控制引擎侧 recompute。默认：`true` |
+| transport_max_retry | int/null | Coordinator 传输失败的最大尝试次数；`null` 时使用 `max_retry`。默认：`null` |
 | retry_delay | float | 每次重试前的等待时间（秒）。默认：`0.2` |
 | first_token_timeout | int | 等待首 token 返回的超时时间（秒）。默认：`600` |
 | infer_timeout | int | 单次推理请求的总超时时间（秒）。默认：`3600` |
+| upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认：`65536` |
+
+> `recompute_enabled` 仅作为 `reschedule_enabled` 的旧配置兼容别名；`recompute_max_retry` 已移除并会被忽略。模型重计算由引擎侧负责。
+
+流式请求会在上游接受请求后再提交 HTTP 200；Unified PD 模式需等待 Prefill 和 Decode 两路均接受请求。
+提交前的引擎错误会保留原 HTTP 状态码、受限大小的响应体以及安全响应头；提交后 HTTP 状态码已不可修改，
+引擎 JSON 错误体会作为 SSE `data` 事件返回。
 
 ### 3.4 scheduler_config
 

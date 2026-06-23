@@ -13,18 +13,13 @@ import asyncio
 import uuid
 
 from motor.common.resources.dispatch import (
-    compatible_decode_instances,
-    compatible_prefill_instances,
     has_compatible_dispatch_pair,
 )
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import WorkloadAction, Workload
 from motor.coordinator.domain import (
     InstanceReadiness,
-    ScheduledPair,
-    ScheduledResource,
     UpdateWorkloadParams,
-    build_release_workload_params,
     readiness_from_instances,
 )
 from motor.common.resources.http_msg_spec import EventType
@@ -181,80 +176,6 @@ class Scheduler:
         if not success:
             return None
         return (instance, endpoint, workload)
-
-    async def select_pair_and_allocate(self, req_info: RequestInfo) -> ScheduledPair | None:
-        prefill_instances = list(self._instance_provider.get_available_instances(PDRole.ROLE_P).values())
-        decode_instances = list(self._instance_provider.get_available_instances(PDRole.ROLE_D).values())
-        compatible_prefill = compatible_prefill_instances(prefill_instances, decode_instances)
-        if not compatible_prefill:
-            return None
-
-        p_selected = self._select_from_instances(
-            compatible_prefill,
-            PDRole.ROLE_P,
-            req_info,
-        )
-        if p_selected is None:
-            return None
-        p_instance, p_endpoint = p_selected
-        compatible_decode = compatible_decode_instances(p_instance, decode_instances)
-        d_selected = self._select_from_instances(
-            compatible_decode,
-            PDRole.ROLE_D,
-            req_info,
-        )
-        if d_selected is None:
-            return None
-        d_instance, d_endpoint = d_selected
-
-        p_result = await self._allocate_selected(
-            p_instance,
-            p_endpoint,
-            PDRole.ROLE_P,
-            req_info,
-        )
-        if p_result is None:
-            return None
-        p_instance, p_endpoint, p_workload = p_result
-        d_result = await self._allocate_selected(
-            d_instance,
-            d_endpoint,
-            PDRole.ROLE_D,
-            req_info,
-        )
-        if d_result is None:
-            for params in build_release_workload_params(
-                p_instance.id,
-                p_endpoint.id,
-                PDRole.ROLE_P,
-                req_info.req_id,
-                p_workload,
-            ):
-                await self.update_workload(params)
-            return None
-        d_instance, d_endpoint, d_workload = d_result
-        return ScheduledPair(
-            prefill=ScheduledResource(instance=p_instance, endpoint=p_endpoint),
-            decode=ScheduledResource(instance=d_instance, endpoint=d_endpoint),
-            prefill_workload=p_workload,
-            decode_workload=d_workload,
-        )
-
-    def _select_from_instances(
-        self,
-        instances: list[Instance],
-        role: PDRole,
-        req_info: RequestInfo,
-    ):
-        """Select from a filtered subset, including compatibility with test/custom policies."""
-        selector = getattr(self._scheduling_policy, "select_instance_and_endpoint_from_list", None)
-        if selector is not None:
-            return selector(instances, role, req_info)
-        for instance in instances:
-            endpoints = instance.get_all_endpoints()
-            if endpoints:
-                return (instance, endpoints[0])
-        return None
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         """

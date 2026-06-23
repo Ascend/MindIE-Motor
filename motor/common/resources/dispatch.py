@@ -112,34 +112,6 @@ def dispatch_plan_union(instances: Iterable[Any]) -> set[DispatchPlan]:
     return union
 
 
-def compatible_prefill_instances(prefill_instances: Iterable[Any], decode_instances: Iterable[Any]) -> list[Any]:
-    """Prefill instances sharing a dispatch plan with at least one decode instance.
-
-    Each prefill is compared against the decode plan union, so every instance's
-    capabilities are parsed exactly once (O(P+D)) instead of the pairwise O(P*D) scan.
-    """
-    decode_union = dispatch_plan_union(decode_instances)
-    if not decode_union:
-        return []
-    return [
-        prefill
-        for prefill in prefill_instances
-        if dispatch_plans_from_capabilities(getattr(prefill, "dispatch_capabilities", None)) & decode_union
-    ]
-
-
-def compatible_decode_instances(prefill: Any, decode_instances: Iterable[Any]) -> list[Any]:
-    """Decode instances sharing a dispatch plan with the given prefill instance (O(D))."""
-    prefill_plans = dispatch_plans_from_capabilities(getattr(prefill, "dispatch_capabilities", None))
-    if not prefill_plans:
-        return []
-    return [
-        decode
-        for decode in decode_instances
-        if dispatch_plans_from_capabilities(getattr(decode, "dispatch_capabilities", None)) & prefill_plans
-    ]
-
-
 def has_compatible_dispatch_pair(prefill_instances: Iterable[Any], decode_instances: Iterable[Any]) -> bool:
     """Whether at least one P/D instance pair advertises a shared dispatch plan.
 

@@ -20,16 +20,12 @@ from typing import Any, Awaitable, Callable
 import zmq
 
 from motor.common.resources.dispatch import (
-    compatible_decode_instances,
-    compatible_prefill_instances,
     has_compatible_dispatch_pair,
 )
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain import (
     InstanceReadiness,
-    ScheduledPair,
-    ScheduledResource,
     UpdateWorkloadParams,
     readiness_from_instances,
 )
@@ -51,7 +47,9 @@ from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
 )
-from motor.coordinator.fault_tolerance.precision.streak_result import PrecisionStreakResult
+from motor.coordinator.fault_tolerance.precision.streak_result import (
+    PrecisionStreakResult,
+)
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
@@ -72,7 +70,9 @@ OnInstanceRefreshedCallback = Callable[[list[tuple[str, str]]], Awaitable[None]]
 _AFFINITY_CANDIDATE_TOPK = 3
 
 
-def _collect_active_endpoints_from_cache(cache: "_SchedulerInstanceCache") -> list[tuple[str, str]]:
+def _collect_active_endpoints_from_cache(
+    cache: "_SchedulerInstanceCache",
+) -> list[tuple[str, str]]:
     """
     Extract status=normal (ip, business_port) from SchedulerInstanceCache.
     Filter logic aligned with BaseRouter._select_endpoint_from_instance.
@@ -651,8 +651,8 @@ class AsyncSchedulerClient:
         """Patch live workload into the local cache and pull a fresh instance list on
         heartbeat-stale or instance-version change.
 
-        Shared by single-role (select_and_allocate) and P/D pair (select_pair_and_allocate)
-        selection so both make load-aware decisions on fresh workload and instance membership.
+        Runs before select_and_allocate so each role's selection makes load-aware decisions on
+        fresh workload and instance membership.
         """
         if not self._workload_reader:
             return
@@ -693,6 +693,10 @@ class AsyncSchedulerClient:
 
         await self._refresh_cache_from_workload_reader()
 
+        # Set in the kv_cache_affinity unified branch below: forward every endpoint's
+        # affinity-discounted prefill cost so the scheduler re-ranks globally by fresh load.
+        global_affinity = False
+
         if target_instance_id is not None:
             instances = await self.get_available_instances(role)
             instance = resolve_pinned_instance(instances, target_instance_id)
@@ -720,24 +724,51 @@ class AsyncSchedulerClient:
             candidate_policy = self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
             candidate_endpoints = [{"instance_id": instance.id, "endpoint_id": endpoint.id}]
         else:
-            # KVA-eligible roles propose several ranked candidates so the scheduler can re-pick among
-            # them by its fresh ledger (burst spreading); other roles/policies stay at top-1.
+            # Unified affinity forwards EVERY endpoint (with prefill_cost) for the scheduler's global
+            # re-rank, so the worker only needs its own top-1 locally. Only load_gated still proposes
+            # a fixed ranked alternate set the scheduler picks among, so it keeps the topK.
             request_top_k = (
                 _AFFINITY_CANDIDATE_TOPK
-                if (role in _KVA_SELECT_ROLES and (self._scheduler_type or "") == "kv_cache_affinity")
+                if (
+                    role in _KVA_SELECT_ROLES
+                    and (self._scheduler_type or "") == "kv_cache_affinity"
+                    and self._kv_affinity_mode != KV_AFFINITY_MODE_UNIFIED
+                )
                 else 1
             )
-            candidates, candidate_policy = await self._select_endpoint_candidates_with_policy(
-                req_info, role, top_k=request_top_k
-            )
+            (
+                candidates,
+                candidate_policy,
+            ) = await self._select_endpoint_candidates_with_policy(req_info, role, top_k=request_top_k)
             if not candidates:
                 return None
             instance, endpoint, _ = candidates[0]
-            # Ranked alternates (best-first) the scheduler may re-pick among on a stale-view burst.
-            candidate_endpoints = [
-                {"instance_id": cand_instance.id, "endpoint_id": cand_endpoint.id}
-                for cand_instance, cand_endpoint, _score in candidates
-            ]
+            # kv_cache_affinity unified mode: forward EVERY scored endpoint with its
+            # affinity-discounted prefill cost so the scheduler re-ranks all of them by its own
+            # fresh load ledger (prefill_load_scale*prefill_cost + load_weight*fresh_load) -- a
+            # global selection, no fixed top-k. Other policies/modes forward the worker's ranked
+            # alternates (best-first) for the scheduler's existing re-pick.
+            affinity_debug = getattr(req_info, "kv_affinity_debug", None)
+            global_affinity = (
+                candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY
+                and isinstance(affinity_debug, dict)
+                and any(rec[2] is not None for rec in affinity_debug.values())
+            )
+            if global_affinity:
+                candidate_endpoints = [
+                    {
+                        "instance_id": ins_id,
+                        "endpoint_id": ep_id,
+                        "prefill_cost": rec[2],
+                    }
+                    for (ins_id, ep_id), rec in affinity_debug.items()
+                    if rec[2] is not None
+                ]
+            else:
+                candidate_endpoints = [
+                    {"instance_id": cand_instance.id, "endpoint_id": cand_endpoint.id}
+                    for cand_instance, cand_endpoint, _score in candidates
+                ]
 
         # Allocation workload: RR does not use load, so use zero; LB uses demand for accounting.
         workload = (
@@ -748,26 +779,35 @@ class AsyncSchedulerClient:
 
         request_id = str(uuid.uuid4())
         workload_sequence = self._workload_reader.last_sequence if self._workload_reader is not None else None
+        req_data = {
+            "instance_id": instance.id,
+            "endpoint_id": endpoint.id,
+            "candidates": candidate_endpoints,
+            "role": role_str,
+            "req_id": req_info.req_id,
+            "workload_sequence": workload_sequence,
+            "instance_version": self._last_instance_version,
+            "workload": workload.model_dump(mode="json"),
+            "candidate_policy": candidate_policy,
+        }
+        if global_affinity:
+            # Scalars the scheduler needs to recompute the unified score against its fresh load:
+            # combined = prefill_load_scale * prefill_cost + load_weight * fresh_load.
+            req_data["prefill_load_scale"] = self._kv_affinity_prefill_load_scale
+            req_data["load_weight"] = self._kv_affinity_load_weight
         request = SchedulerRequest(
             request_type=SchedulerRequestType.ALLOCATE_ONLY,
             request_id=request_id,
-            data={
-                "instance_id": instance.id,
-                "endpoint_id": endpoint.id,
-                "candidates": candidate_endpoints,
-                "role": role_str,
-                "req_id": req_info.req_id,
-                "workload_sequence": workload_sequence,
-                "instance_version": self._last_instance_version,
-                "workload": workload.model_dump(mode="json"),
-                "candidate_policy": candidate_policy,
-            },
+            data=req_data,
         )
         response = await self._transport.send_request(request)
         if not response or response.response_type != SchedulerResponseType.SUCCESS:
             if response:
                 logger.error(
-                    "ALLOCATE_ONLY failed: role=%s req_id=%s error=%s", role_str, req_info.req_id, response.error
+                    "ALLOCATE_ONLY failed: role=%s req_id=%s error=%s",
+                    role_str,
+                    req_info.req_id,
+                    response.error,
                 )
             return None
         data = response.data or {}
@@ -781,99 +821,44 @@ class AsyncSchedulerClient:
         if endpoint_data:
             out_endpoint = _endpoint_from_dict(endpoint_data)
             if out_endpoint:
-                logger.debug(
-                    "select_and_allocate success role=%s instance_id=%s endpoint_id=%s",
+                # Final, authoritative allocation log (the endpoint the scheduler actually
+                # committed, after its fresh-ledger re-pick). This is the one to trust for load
+                # distribution -- NOT the per-candidate kv_cache_affinity selection log, which is
+                # only the worker's proposal and is emitted at DEBUG. matched/load are the chosen
+                # endpoint's KV-affinity prefix hit and load at selection time (kv_cache_affinity
+                # only; None otherwise); score/fast_path come from the scheduler's authoritative
+                # response; repicked=True means the scheduler moved the request off the worker's
+                # top-1 to spread load.
+                affinity_debug = getattr(req_info, "kv_affinity_debug", None)
+                matched_load = (
+                    affinity_debug.get((out_instance.id, out_endpoint.id))
+                    if (candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY and isinstance(affinity_debug, dict))
+                    else None
+                )
+                matched = matched_load[0] if matched_load else None
+                sel_load = matched_load[1] if matched_load else None
+                repicked = (out_instance.id, out_endpoint.id) != (
+                    instance.id,
+                    endpoint.id,
+                )
+                logger.info(
+                    "scheduled role=%s req_id=%s instance=%s endpoint=%s policy=%s matched=%s "
+                    "load=%s score=%s fast_path=%s repicked=%s proposed=%s-%s",
                     role_str,
+                    req_info.req_id,
                     out_instance.id,
                     out_endpoint.id,
+                    candidate_policy,
+                    matched,
+                    sel_load,
+                    data.get("selected_score"),
+                    data.get("fast_path"),
+                    repicked,
+                    instance.id,
+                    endpoint.id,
                 )
                 return (out_instance, out_endpoint, workload)
         return None
-
-    async def select_pair_and_allocate(self, req_info: RequestInfo) -> ScheduledPair | None:
-        await self._refresh_cache_from_workload_reader()
-        prefill_instances = await self._cached_or_fetch_instances(PDRole.ROLE_P)
-        decode_instances = await self._cached_or_fetch_instances(PDRole.ROLE_D)
-        compatible_prefill = compatible_prefill_instances(prefill_instances, decode_instances)
-        if not compatible_prefill:
-            return None
-
-        p_candidates, _ = self._select_endpoint_candidates_from_list_with_policy(
-            compatible_prefill,
-            PDRole.ROLE_P,
-            req_info,
-            top_k=1,
-        )
-        if not p_candidates:
-            return None
-        p_instance, p_endpoint, _ = p_candidates[0]
-        compatible_decode = compatible_decode_instances(p_instance, decode_instances)
-        d_candidates, _ = self._select_endpoint_candidates_from_list_with_policy(
-            compatible_decode,
-            PDRole.ROLE_D,
-            req_info,
-            top_k=1,
-        )
-        if not d_candidates:
-            return None
-        d_instance, d_endpoint, _ = d_candidates[0]
-        p_workload = self._allocation_workload(PDRole.ROLE_P, req_info)
-        d_workload = self._allocation_workload(PDRole.ROLE_D, req_info)
-
-        request_id = str(uuid.uuid4())
-        request = SchedulerRequest(
-            request_type=SchedulerRequestType.ALLOCATE_PAIR,
-            request_id=request_id,
-            data={
-                "req_id": req_info.req_id,
-                "prefill": {
-                    "instance_id": p_instance.id,
-                    "endpoint_id": p_endpoint.id,
-                    "workload": p_workload.model_dump(mode="json"),
-                },
-                "decode": {
-                    "instance_id": d_instance.id,
-                    "endpoint_id": d_endpoint.id,
-                    "workload": d_workload.model_dump(mode="json"),
-                },
-            },
-        )
-        response = await self._transport.send_request(request)
-        if not response or response.response_type != SchedulerResponseType.SUCCESS:
-            if response:
-                logger.error("ALLOCATE_PAIR failed: req_id=%s error=%s", req_info.req_id, response.error)
-            return None
-        data = response.data or {}
-        p_instance_data = data.get("prefill_instance")
-        p_endpoint_data = data.get("prefill_endpoint")
-        d_instance_data = data.get("decode_instance")
-        d_endpoint_data = data.get("decode_endpoint")
-        if not p_instance_data or not p_endpoint_data or not d_instance_data or not d_endpoint_data:
-            return None
-        out_p_instance = _instance_from_dict(p_instance_data)
-        out_p_endpoint = _endpoint_from_dict(p_endpoint_data)
-        out_d_instance = _instance_from_dict(d_instance_data)
-        out_d_endpoint = _endpoint_from_dict(d_endpoint_data)
-        if not out_p_instance or not out_p_endpoint or not out_d_instance or not out_d_endpoint:
-            return None
-        return ScheduledPair(
-            prefill=ScheduledResource(instance=out_p_instance, endpoint=out_p_endpoint),
-            decode=ScheduledResource(instance=out_d_instance, endpoint=out_d_endpoint),
-            prefill_workload=p_workload,
-            decode_workload=d_workload,
-        )
-
-    async def _cached_or_fetch_instances(self, role: PDRole) -> list[Instance]:
-        cached = self._cache.get_instances(role)
-        if cached:
-            return cached
-        instances = await self.get_available_instances(role)
-        return sorted(instances.values(), key=lambda instance: instance.id)
-
-    def _allocation_workload(self, role: PDRole, req_info: RequestInfo) -> Workload:
-        if (self._scheduler_type or "round_robin") == "round_robin":
-            return Workload()
-        return calculate_demand_workload(role, req_info)
 
     async def confirm_sample(
         self,
@@ -934,7 +919,11 @@ class AsyncSchedulerClient:
                 action_token=data.get("action_token"),
             )
         if response:
-            logger.warning("record_precision_result failed pd_group=%s error=%s", key, response.error)
+            logger.warning(
+                "record_precision_result failed pd_group=%s error=%s",
+                key,
+                response.error,
+            )
         else:
             logger.warning("record_precision_result: no response pd_group=%s", key)
         return None
@@ -961,7 +950,11 @@ class AsyncSchedulerClient:
         if response and response.response_type == SchedulerResponseType.SUCCESS:
             return bool((response.data or {}).get("finished", False))
         if response:
-            logger.warning("finish_precision_action failed pd_group=%s error=%s", key, response.error)
+            logger.warning(
+                "finish_precision_action failed pd_group=%s error=%s",
+                key,
+                response.error,
+            )
         else:
             logger.warning("finish_precision_action: no response pd_group=%s", key)
         return False
@@ -973,19 +966,19 @@ class AsyncSchedulerClient:
             request_type=SchedulerRequestType.UPDATE_WORKLOAD,
             request_id=request_id,
             data={
-                'instance_id': params.instance_id,
-                'endpoint_id': params.endpoint_id,
-                'role': role_str,
-                'req_id': params.req_id,
-                'workload_action': params.workload_action.value,
-                'workload_change': params.workload_change,
+                "instance_id": params.instance_id,
+                "endpoint_id": params.endpoint_id,
+                "role": role_str,
+                "req_id": params.req_id,
+                "workload_action": params.workload_action.value,
+                "workload_change": params.workload_change,
             },
         )
 
         response = await self._transport.send_request(request)
 
         if response and response.response_type == SchedulerResponseType.SUCCESS:
-            success = (response.data or {}).get('success', False)
+            success = (response.data or {}).get("success", False)
             if not success:
                 logger.warning(
                     "Update workload returned success=False from scheduler: "
@@ -1023,33 +1016,38 @@ class AsyncSchedulerClient:
         request = SchedulerRequest(
             request_type=SchedulerRequestType.GET_AVAILABLE_INSTANCES,
             request_id=request_id,
-            data={'role': role.value if hasattr(role, 'value') else (str(role) if role else None)},
+            data={"role": role.value if hasattr(role, "value") else (str(role) if role else None)},
         )
 
         response = await self._transport.send_request(request)
 
         if response and response.response_type == SchedulerResponseType.SUCCESS:
             data = response.data or {}
-            instances_data = data.get('instances', [])
+            instances_data = data.get("instances", [])
             instances = {}
             for inst_data in instances_data:
                 instance = _instance_from_dict(inst_data)
                 if instance:
                     instances[instance.id] = instance
 
-            shm_name = data.get('workload_shm_name')
+            shm_name = data.get("workload_shm_name")
             if shm_name:
-                need_attach = not self._workload_reader or getattr(self._workload_reader, '_shm_name', None) != shm_name
+                need_attach = not self._workload_reader or getattr(self._workload_reader, "_shm_name", None) != shm_name
                 if need_attach:
                     if self._workload_reader:
                         self._workload_reader.detach()
-                    from motor.coordinator.scheduler.runtime.workload_shm import WorkloadSharedMemoryReader
+                    from motor.coordinator.scheduler.runtime.workload_shm import (
+                        WorkloadSharedMemoryReader,
+                    )
 
                     self._workload_reader = WorkloadSharedMemoryReader(shm_name)
                     try:
                         self._workload_reader.attach()
                     except FileNotFoundError:
-                        logger.debug("Workload shm %s not ready, will retry on next get_available_instances", shm_name)
+                        logger.debug(
+                            "Workload shm %s not ready, will retry on next get_available_instances",
+                            shm_name,
+                        )
                         self._workload_reader = None
                     else:
                         self._last_instance_version = None
@@ -1152,7 +1150,9 @@ class AsyncSchedulerClient:
             logger.debug("has_required_instances: warm-up get_available_instances failed: %s", e)
         return _status(_cached_lists())
 
-    async def get_all_instances(self) -> tuple[dict[int, Instance], dict[int, Instance]]:
+    async def get_all_instances(
+        self,
+    ) -> tuple[dict[int, Instance], dict[int, Instance]]:
         """Interface compat; returns empty (Mgmt process uses local InstanceManager)."""
         return {}, {}
 
@@ -1162,8 +1162,8 @@ class AsyncSchedulerClient:
             request_type=SchedulerRequestType.REFRESH_INSTANCES,
             request_id=request_id,
             data={
-                'event_type': event_type.value if hasattr(event_type, 'value') else str(event_type),
-                'instances': [_instance_to_dict(inst) for inst in instances],
+                "event_type": event_type.value if hasattr(event_type, "value") else str(event_type),
+                "instances": [_instance_to_dict(inst) for inst in instances],
             },
         )
 

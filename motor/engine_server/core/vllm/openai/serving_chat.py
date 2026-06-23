@@ -21,10 +21,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from http import HTTPStatus
 from typing import Any
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat as VllmOpenAIServingChat
 from vllm.engine.protocol import EngineClient
@@ -87,19 +86,10 @@ class OpenAIServingChat:
         )
 
     async def handle_request(self, request: ChatCompletionRequest, raw_request: Request):
-        try:
-            generator = await self._vllm_serving_chat.create_chat_completion(
-                request, raw_request
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)
-            )from e
+        generator = await self._vllm_serving_chat.create_chat_completion(request, raw_request)
 
         if isinstance(generator, ErrorResponse):
-            return JSONResponse(
-                content=generator.model_dump(), status_code=generator.error.code
-            )
+            return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
 
         elif isinstance(generator, ChatCompletionResponse):
             return JSONResponse(
