@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -23,6 +22,9 @@ from motor.engine_server.utils.ip import build_endpoint
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
 
 logger = get_logger(__name__)
+
+_VIRTUAL_REQUEST_TIMEOUT_SEC = 5.0
+_AICORE_SAMPLE_WINDOW_SEC = 5.0
 
 
 class SimInference:
@@ -57,7 +59,7 @@ class SimInference:
 
         self._shared_data_lock = threading.Lock()
         self._max_aicore_usage = 0
-        self._check_count = 0
+        self._aicore_usage_available = False
         self._max_check_count = 4
 
         # add _max_failure_count to measure consecutive failure times
@@ -69,7 +71,11 @@ class SimInference:
         # Condition variable to control aicore usage check execution
         self._aicore_check_condition = threading.Condition()
         self._aicore_check_active = False
+        self._aicore_sample_done = threading.Event()
         self._aicore_thread = None
+        self._aicore_sample_generation = 0
+        self._aicore_requested_generation = 0
+        self._aicore_completed_generation = 0
 
         # init http client
         self._client = None
@@ -195,37 +201,78 @@ class SimInference:
             self._aicore_thread.start()
             logger.info("AICore usage check thread started")
 
+    def _sample_aicore_usage(self) -> tuple[int, bool]:
+        """Sample peak AICore usage within a bounded time window."""
+        max_usage = 0
+        usage_available = False
+        end_time = time.time() + _AICORE_SAMPLE_WINDOW_SEC
+        check_count = 0
+
+        while time.time() < end_time and check_count < self._max_check_count:
+            check_count += 1
+            try:
+                usage = get_aicore_usage()
+            except Exception as e:
+                logger.error("Error checking AICore usage: %s", e)
+                break
+            usage_available = True
+            max_usage = max(max_usage, usage)
+            logger.debug("Aicore usage check: %s%%, current max: %s%%", usage, max_usage)
+            if time.time() >= end_time:
+                break
+            time.sleep(0.5)
+
+        logger.debug(
+            "Max Aicore usage in %s seconds: %s%%, available=%s",
+            _AICORE_SAMPLE_WINDOW_SEC,
+            max_usage,
+            usage_available,
+        )
+        return max_usage, usage_available
+
+    def _trigger_aicore_sample(self) -> int:
+        with self._shared_data_lock:
+            self._aicore_sample_generation += 1
+            generation = self._aicore_sample_generation
+            self._aicore_requested_generation = generation
+        self._aicore_sample_done.clear()
+        with self._aicore_check_condition:
+            self._aicore_check_active = True
+            self._aicore_check_condition.notify_all()
+        return generation
+
+    def _read_aicore_sample(self, generation: int, sample_finished: bool) -> tuple[int, bool]:
+        if not sample_finished:
+            return 0, False
+        with self._shared_data_lock:
+            if self._aicore_completed_generation != generation:
+                logger.warning(
+                    "Ignoring stale AICore sample result (expected generation %s, completed %s)",
+                    generation,
+                    self._aicore_completed_generation,
+                )
+                return 0, False
+            return self._max_aicore_usage, self._aicore_usage_available
+
     def check_aicore_usage_worker(self):
         while True:
-            # Wait for signal to start checking
             with self._aicore_check_condition:
                 while not self._aicore_check_active:
                     self._aicore_check_condition.wait()
 
-                # NPU aicore check
-                max_usage = 0
-                end_time = time.time() + 3
-                self._check_count = 0
-
-                while time.time() < end_time or self._check_count <= self._max_check_count:
-                    self._check_count += 1
-                    try:
-                        usage = get_aicore_usage()
-                    except Exception as e:
-                        logger.error("Error checking AICore usage: %s", e)
-                        time.sleep(0.5)
-                        continue
-                    max_usage = max(max_usage, usage)
-                    logger.debug("Aicore usage check: %s%%, current max: %s%%", usage, max_usage)
-                    time.sleep(0.5)
-                with self._shared_data_lock:
-                    self._max_aicore_usage = max_usage
-
-                logger.debug("Max Aicore usage in 3 seconds: %s%%", max_usage)
-
-                # Reset active flag after checking
                 self._aicore_check_active = False
-                self._aicore_check_condition.notify_all()
+
+            with self._shared_data_lock:
+                requested_gen = self._aicore_requested_generation
+
+            max_usage, usage_available = self._sample_aicore_usage()
+
+            with self._shared_data_lock:
+                self._max_aicore_usage = max_usage
+                self._aicore_usage_available = usage_available
+                self._aicore_completed_generation = requested_gen
+
+            self._aicore_sample_done.set()
 
     async def init_client(self, timeout):
         if self._client is None or self._client.is_closed:
@@ -276,67 +323,69 @@ class SimInference:
             logger.error("Unexpected error in virtual request: %s", e)
             raise
 
+    async def _send_virtual_request_safe(self, timeout: httpx.Timeout) -> bool:
+        try:
+            await self.send_virtual_request_async(timeout)
+            return True
+        except Exception as e:
+            logger.error("Virtual request failed: %s", e)
+            return False
+
     async def health_check_loop(self):
         """Regular virtual inference loop; default 5s interval, 20s when AICore peak >= 80%."""
         self.sim_sleep = 5
         while self._status == constants.NORMAL_STATUS:
             try:
-                with self._shared_data_lock:
-                    self._max_aicore_usage = 0
-                    self._check_count = 0
+                timeout = httpx.Timeout(_VIRTUAL_REQUEST_TIMEOUT_SEC)
+                generation = self._trigger_aicore_sample()
 
-                timeout = httpx.Timeout(5.0)
-                sim_inference_success = True
-                try:
-                    await self.send_virtual_request_async(timeout)
-                except Exception as e:
-                    logger.error("Virtual request failed: %s", e)
-                    sim_inference_success = False
+                sim_inference_success, sample_finished = await asyncio.gather(
+                    self._send_virtual_request_safe(timeout),
+                    asyncio.to_thread(self._aicore_sample_done.wait, _AICORE_SAMPLE_WINDOW_SEC),
+                )
 
                 logger.debug(
                     "Virtual request %s",
                     "successful" if sim_inference_success else "failed",
                 )
 
-                # Signal aicore check thread to start checking at line 152
-                with self._aicore_check_condition:
-                    self._aicore_check_active = True
-                    self._aicore_check_condition.notify_all()
-
-                # Wait for aicore check to complete
-                with self._aicore_check_condition:
-                    if self._aicore_check_active:
-                        self._aicore_check_condition.wait(timeout=3)
-                    if self._aicore_check_active:
-                        logger.warning("AICore usage check thread timeout")
-
-                with self._shared_data_lock:
-                    max_usage = self._max_aicore_usage
-
-                logger.info(
-                    "Aicore usage rate: %s%%, virtual request: %s",
-                    max_usage,
-                    "successful" if sim_inference_success else "failed",
-                )
-
-                if max_usage >= 80 and self.sim_sleep != 20:
-                    logger.info("AICore usage is beyond 80%, Simulate Inference sleep longer time 20 seconds")
-                    self.sim_sleep = 20
-                elif max_usage < self.npu_usage_threshold and self.sim_sleep != 5:
-                    logger.info(
-                        "AICore usage is below %s%%, Simulate Inference sleep default time 5 seconds",
-                        self.npu_usage_threshold,
+                if not sample_finished:
+                    logger.warning(
+                        "AICore usage check did not finish within %s seconds",
+                        _AICORE_SAMPLE_WINDOW_SEC,
                     )
-                    self.sim_sleep = 5
 
-                # Set abnormal status when AICore Usage below threshold and virtual inference failed
-                if max_usage < self.npu_usage_threshold and not sim_inference_success:
+                max_usage, aicore_available = self._read_aicore_sample(generation, sample_finished)
+
+                if aicore_available:
+                    logger.info(
+                        "Aicore usage rate: %s%%, virtual request: %s",
+                        max_usage,
+                        "successful" if sim_inference_success else "failed",
+                    )
+                else:
+                    logger.info(
+                        "Aicore usage unavailable, virtual request: %s",
+                        "successful" if sim_inference_success else "failed",
+                    )
+
+                if aicore_available:
+                    if max_usage >= 80 and self.sim_sleep != 20:
+                        logger.info("AICore usage is beyond 80%, Simulate Inference sleep longer time 20 seconds")
+                        self.sim_sleep = 20
+                    elif max_usage < self.npu_usage_threshold and self.sim_sleep != 5:
+                        logger.info(
+                            "AICore usage is below %s%%, Simulate Inference sleep default time 5 seconds",
+                            self.npu_usage_threshold,
+                        )
+                        self.sim_sleep = 5
+
+                if aicore_available and max_usage < self.npu_usage_threshold and not sim_inference_success:
                     logger.warning(
                         "AICore usage (%s%%) < threshold (%s%%) and virtual request failed",
                         max_usage,
                         self.npu_usage_threshold,
                     )
-                    # Only increase failure count when count_failure_flag is true
                     if self._count_failure_flag:
                         self._failure_count += 1
                         logger.warning(
@@ -347,8 +396,9 @@ class SimInference:
                         if self._failure_count >= self._max_failure_count:
                             logger.warning("Reach maximum failure count, set abnormal status")
                             self.set_abnormal_status()
-                else:
-                    # Set count_failure_flag to true when virtual inference succeeds or AICore usage reaches threshold
+                elif not sim_inference_success and not aicore_available:
+                    logger.warning("Virtual request failed but AICore usage unavailable, skip failure count")
+                elif sim_inference_success or (aicore_available and max_usage >= self.npu_usage_threshold):
                     self._count_failure_flag = True
                     logger.debug("count_failure_flag set to True")
                     if self._failure_count > 0:

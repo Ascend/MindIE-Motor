@@ -23,9 +23,12 @@ def _parse_usage_from_line(line: str) -> int | None:
     if not stripped or stripped.startswith("NpuID"):
         return None
     parts = stripped.split()
-    if len(parts) >= 3:
-        return int(parts[2])
-    return None
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[-1])
+    except ValueError:
+        return None
 
 
 def _read_first_aicore_usage_from_watch(proc: subprocess.Popen) -> int:
@@ -63,7 +66,7 @@ def get_aicore_usage():
     `npu-smi info watch -s a` prints continuously. Parse the first data row
     (e.g. ``0  0  0`` after the header) and terminate the process immediately.
     """
-    cmd = ["npu-smi", "info", "watch", "-s", "a", "-d", "1"]
+    cmd = ["npu-smi", "info", "watch", "-s", "a"]
     try:
         with subprocess.Popen(
             cmd,

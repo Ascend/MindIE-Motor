@@ -23,7 +23,27 @@ from motor.engine_server.utils.aicore import (
 def test_parse_usage_from_line():
     assert _parse_usage_from_line("") is None
     assert _parse_usage_from_line("NpuID  ChipID  AI Core(%)\n") is None
+    assert _parse_usage_from_line("NpuID(Idx)  AI Core(%)\n") is None
+    assert _parse_usage_from_line("NpuID(Idx)  ChipId(Idx) AI Core(%)\n") is None
+    assert _parse_usage_from_line("0           0\n") == 0
+    assert _parse_usage_from_line("0           0           3\n") == 3
     assert _parse_usage_from_line("0  0  37\n") == 37
+
+
+def test_get_aicore_usage_watch_success_two_column_format():
+    mock_proc = mock.MagicMock()
+    mock_proc.stdout.readline.side_effect = ["NpuID(Idx)  AI Core(%)\n", "0           0\n"]
+    mock_proc.stdout.fileno.return_value = 1
+    mock_proc.poll.return_value = None
+
+    mock_ctx = mock.MagicMock()
+    mock_ctx.__enter__.return_value = mock_proc
+    mock_ctx.__exit__.return_value = False
+
+    with mock.patch("motor.engine_server.utils.aicore.subprocess.Popen", return_value=mock_ctx):
+        with mock.patch("select.select", return_value=([1], [], [])):
+            usage = get_aicore_usage()
+            assert usage == 0
 
 
 def test_get_aicore_usage_watch_success():
