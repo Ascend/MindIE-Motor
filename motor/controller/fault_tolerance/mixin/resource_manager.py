@@ -14,7 +14,7 @@ are provided by FaultManager.__init__, not redeclared here.
 """
 
 from motor.common.logger import get_logger
-from motor.common.resources import ReadOnlyInstance
+from motor.common.resources import InsStatus, ReadOnlyInstance
 from motor.controller.fault_tolerance.fault_types import (
     FaultCategory,
     FaultInfo,
@@ -23,6 +23,7 @@ from motor.controller.fault_tolerance.fault_types import (
     InstanceMetadata,
     NodeMetadata,
     NodeStatus,
+    OriginFaultLevel,
     SpecialFaultCode,
 )
 from motor.controller.fault_tolerance.k8s.resource_monitor import ResourceMonitor
@@ -368,12 +369,39 @@ class _ResourceManagerMixin:
                 del self.resource_monitors[node_name]
                 logger.info("Stopped Resource monitor for node %s", node_name)
 
+    def _node_has_active_instances(self, node_metadata: NodeMetadata) -> bool:
+        """Check whether any instance on this node is currently INITIAL or ACTIVE.
+
+        Used to dynamically adjust the fault level of PreSeparateNPU faults:
+        - active instances on the node → downgrade to L2 (business is running).
+        - no active instances → keep L6 (safe to isolate the NPU).
+
+        Args:
+            node_metadata: The node to check.
+
+        Returns:
+            True if at least one instance on the node is INITIAL or ACTIVE.
+        """
+        from motor.controller.core.instance_manager import InstanceManager
+
+        for iid in list(node_metadata.instance_ids):
+            if iid not in self.instances:
+                continue
+            inst = InstanceManager().get_instance(iid)
+            if inst is not None and inst.status in (InsStatus.INITIAL, InsStatus.ACTIVE):
+                return True
+        return False
+
     def _handle_fault_info_update(self, fault_infos: list[FaultInfo], node_name: str) -> None:
         """Handle a hardware fault information update pushed by a ResourceMonitor.
 
         Replaces the node's hardware_fault_infos with the incoming fault list.
         Preserves any existing node_reboot fault (managed separately by the node
         status handler), since ConfigMap data does not include reboot faults.
+
+        For PreSeparateNPU faults, dynamically adjusts the fault level based on
+        whether the node still hosts INITIAL/ACTIVE instances (L2 if yes, L6 if no).
+
         After updating, triggers _refresh_instance_fault_level for ALL instances
         on this node.
         """
@@ -424,6 +452,10 @@ class _ResourceManagerMixin:
 
         node_reboot_key = int(SpecialFaultCode.NODE_REBOOT)
 
+        # Pre-resolve active-instance status once for this node so every
+        # PreSeparateNPU fault in the batch uses the same snapshot.
+        node_has_active = self._node_has_active_instances(node_metadata)
+
         with self.lock:
             node_reboot_fault = node_metadata.hardware_fault_infos.get(node_reboot_key)
 
@@ -431,6 +463,25 @@ class _ResourceManagerMixin:
             for code, infos in grouped.items():
                 info = infos[0]
                 info.fault_category = FaultCategory.HARDWARE
+
+                # Dynamically adjust PreSeparateNPU fault level based on
+                # whether any INITIAL/ACTIVE instance still runs on this node.
+                if info.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU:
+                    if node_has_active:
+                        info.fault_level = FaultLevel.L2
+                        logger.info(
+                            "PreSeparateNPU fault 0x%x downgraded to L2: node %s still has active instances",
+                            code,
+                            node_name,
+                        )
+                    else:
+                        info.fault_level = FaultLevel.L6
+                        logger.info(
+                            "PreSeparateNPU fault 0x%x kept at L6: node %s has no active instances, safe to isolate",
+                            code,
+                            node_name,
+                        )
+
                 # Preserve NPU info in stored entry: note count when multiple NPUs
                 # share the same fault code so downstream consumers can see the scope.
                 npu_names = [i.npu_name for i in infos if i.npu_name]

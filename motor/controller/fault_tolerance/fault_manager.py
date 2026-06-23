@@ -24,6 +24,7 @@ from motor.controller.fault_tolerance.fault_types import (
     FaultLevel,
     InstanceMetadata,
     NodeMetadata,
+    OriginFaultLevel,
 )
 from motor.controller.fault_tolerance.mixin.persistence import _PersistenceMixin
 from motor.controller.fault_tolerance.mixin.resource_manager import _ResourceManagerMixin
@@ -358,11 +359,72 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     if has_faults:
                         instance_nodes.append(node_metadata)
 
+        # Re-evaluate PreSeparateNPU fault levels on every node before
+        # computing the instance's overall fault level.  This catches the
+        # scenario where all instances have left a node since the last
+        # ConfigMap update — the PreSeparateNPU fault should now escalate
+        # to L6 (safe to isolate) instead of staying at L2.
+        for node_metadata in instance_nodes:
+            for code, fault_info in list(node_metadata.hardware_fault_infos.items()):
+                if fault_info.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
+                    continue
+                if self._node_has_active_instances(node_metadata):
+                    if fault_info.fault_level != FaultLevel.L2:
+                        logger.info(
+                            "Re-evaluated PreSeparateNPU 0x%x → L2 on node %s (active instances present)",
+                            code,
+                            node_metadata.node_name,
+                        )
+                        fault_info.fault_level = FaultLevel.L2
+                else:
+                    if fault_info.fault_level != FaultLevel.L6:
+                        logger.info(
+                            "Re-evaluated PreSeparateNPU 0x%x → L6 on node %s (no active instances)",
+                            code,
+                            node_metadata.node_name,
+                        )
+                        fault_info.fault_level = FaultLevel.L6
+
         # Evaluate the instance's fault level from both hardware and software faults
         with instance_metadata.lock:
-            # Get the best (highest) fault from hardware and software across all nodes
-            highest_hw_fault = self._highest_hardware_fault(instance_nodes)
-            highest_sw_fault = self._highest_software_fault(instance_nodes)
+            # Synchronize PreSeparateNPU levels that became stale between
+            # Step 1 (re-evaluation) and Step 2 (this block).  If a node has
+            # active instances now but the fault is still L6, downgrade it to
+            # L2 before computing the instance fault level — otherwise a stale
+            # L6 could trigger an unnecessary separate_instance().
+            for node in instance_nodes:
+                for fi in node.hardware_fault_infos.values():
+                    if (
+                        fi.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU
+                        and fi.fault_level == FaultLevel.L6
+                        and self._node_has_active_instances(node)
+                    ):
+                        fi.fault_level = FaultLevel.L2
+                        logger.info(
+                            "Synchronized PreSeparateNPU 0x%x → L2 on node %s "
+                            "(active instances detected after re-evaluation)",
+                            fi.fault_code,
+                            node.node_name,
+                        )
+
+            # Exclude PreSeparateNPU L6 faults on nodes with no active
+            # business.  Those are purely node-level concerns (the NPU is
+            # already isolated, no instance is running there) and should not
+            # trigger instance separation or ScaleP2D.
+            def _affects_instance(fi: FaultInfo) -> bool:
+                if fi.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
+                    return True
+                if fi.fault_level != FaultLevel.L6:
+                    return True  # L2 downgrade → business is running, include it
+                return False  # L6 without active business → exclude
+
+            all_hw_faults = [
+                fi for node in instance_nodes for fi in node.hardware_fault_infos.values() if _affects_instance(fi)
+            ]
+            all_sw_faults = [fi for node in instance_nodes for fi in node.software_fault_infos.values()]
+
+            highest_hw_fault = max(all_hw_faults, key=lambda f: f.fault_level, default=None)
+            highest_sw_fault = max(all_sw_faults, key=lambda f: f.fault_level, default=None)
 
             # Determine overall highest fault
             if highest_hw_fault and highest_sw_fault:
@@ -415,16 +477,6 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 "Failed to persist fault manager data to ETCD after instance fault level refresh for instance %d",
                 instance_id,
             )
-
-    def _highest_hardware_fault(self, instance_nodes: list[NodeMetadata]) -> FaultInfo | None:
-        """Get the highest hardware fault across all nodes in an instance."""
-        all_faults = [f for node in instance_nodes for f in node.hardware_fault_infos.values()]
-        return max(all_faults, key=lambda f: f.fault_level, default=None)
-
-    def _highest_software_fault(self, instance_nodes: list[NodeMetadata]) -> FaultInfo | None:
-        """Get the highest software fault across all nodes in an instance."""
-        all_faults = [f for node in instance_nodes for f in node.software_fault_infos.values()]
-        return max(all_faults, key=lambda f: f.fault_level, default=None)
 
     def _ft_strategy_center(self) -> None:
         """Background thread: periodically evaluates every instance's fault level and manages strategies."""

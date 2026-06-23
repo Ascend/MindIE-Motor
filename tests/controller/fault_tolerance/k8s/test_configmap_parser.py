@@ -25,7 +25,13 @@ from motor.controller.fault_tolerance.k8s.configmap_parser import (
     process_switch_info,
     process_manually_separate_npu,
 )
-from motor.controller.fault_tolerance.fault_types import FaultLevel, HardwareFaultType, FaultInfo
+from motor.controller.fault_tolerance.fault_types import (
+    FaultLevel,
+    HardwareFaultType,
+    FaultInfo,
+    OriginFaultLevel,
+    map_fault_level,
+)
 
 # pylint: disable=redefined-outer-name
 
@@ -441,3 +447,96 @@ def test_process_manually_separate_npu_exception_handling():
         result = process_manually_separate_npu(None)
         assert not result
         mock_logger.error.assert_called()
+
+
+# =============================================================================
+# 6. SubHealthFault and PreSeparateNPU static mapping tests
+# =============================================================================
+
+
+def test_map_fault_level_sub_health_fault():
+    """SubHealthFault should statically map to L1 (informational)."""
+    assert map_fault_level(OriginFaultLevel.SUB_HEALTH_FAULT) == FaultLevel.L1
+
+
+def test_map_fault_level_pre_separate_npu_static():
+    """PreSeparateNPU statically maps to L6 — runtime downgrade to L2 is
+    handled by FaultManager._handle_fault_info_update, not by the parser.
+    """
+    assert map_fault_level(OriginFaultLevel.PRE_SEPARATE_NPU) == FaultLevel.L6
+
+
+def test_process_device_info_with_sub_health_fault_level():
+    """Device info with 'SubHealthFault' level should parse to L1."""
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": [
+                    {
+                        "fault_type": "CardUnhealthy",
+                        "npu_name": "Ascend910-0",
+                        "fault_level": "SubHealthFault",
+                        "fault_code": "0x80E01801",
+                    },
+                ]
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 1
+    assert result[0].fault_level == FaultLevel.L1
+    assert result[0].origin_fault_level == OriginFaultLevel.SUB_HEALTH_FAULT
+
+
+def test_process_device_info_with_pre_separate_npu_level():
+    """Device info with 'PreSeparateNPU' level should statically parse to L6
+    (runtime downgrade to L2 is handled by FaultManager).
+    """
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": [
+                    {
+                        "fault_type": "CardUnhealthy",
+                        "npu_name": "Ascend910-3",
+                        "fault_level": "PreSeparateNPU",
+                        "fault_code": "0x00F1FEF5",
+                    },
+                ]
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 1
+    # Static mapping: PreSeparateNPU → L6
+    assert result[0].fault_level == FaultLevel.L6
+    assert result[0].origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU
+    assert result[0].fault_code == 0x00F1FEF5
+
+
+def test_process_switch_info_with_sub_health_fault_level():
+    """Switch info with SubHealthFault level should map to L1."""
+    switch_info_dict = {
+        "FaultTimeAndLevelMap": {
+            "[0x08520003,na,L2,na]_1_2": {
+                "fault_time": 1234567890,
+                "fault_level": "SubHealthFault",
+            },
+        },
+    }
+    switch_info_json = json.dumps(switch_info_dict)
+    result = process_switch_info(switch_info_json)
+
+    assert len(result) == 1
+    assert result[0].fault_level == FaultLevel.L1
+    assert result[0].origin_fault_level == OriginFaultLevel.SUB_HEALTH_FAULT
+
+
+def test_map_fault_level_unknown_string_returns_healthy():
+    """Unrecognized fault level string should default to HEALTHY (0)."""
+    assert map_fault_level("NonExistentFaultLevel") == FaultLevel.HEALTHY
+    assert map_fault_level("") == FaultLevel.HEALTHY
