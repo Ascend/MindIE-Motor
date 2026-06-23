@@ -52,7 +52,25 @@ PD 混部部署支持的硬件环境如下所示。
 
 ## 部署目录结构
 
-请将本仓库中的 **examples** 目录上传至 K8s 集群的 master 节点。与 PD 混部部署相关的主要目录结构如下：
+请将本仓库中的 `examples` 目录上传至 K8s 集群的 master 节点。`examples` 可使用以下两种方式获取：
+
+- **从本代码仓获取**：将仓库根目录下的 `examples` 目录上传至 master 服务器。
+
+- **从容器镜像获取**：若无完整代码仓，但已拉取PyMotor推理镜像，可使用镜像内预置的示例目录，路径为 **`/tmp/motor/examples`**（目录结构与仓库中的 `examples` 一致）。在已拉取镜像的机器上执行（将 `IMAGE` 替换为实际镜像名或镜像 ID，可与 `user_config.json` 中 `motor_deploy_config.image_name` 保持一致）：
+
+  ```bash
+  IMAGE="<镜像名或镜像ID>"
+
+  cid=$(docker create "$IMAGE")
+  docker cp "$cid:/tmp/motor/examples" ./examples
+  docker rm "$cid"
+  ```
+
+  将得到的 `examples` 目录上传至 master 服务器。
+
+  若使用 Podman，将命令中的 `docker` 替换为 `podman` 即可。
+
+**examples** 中与 PD 混部部署相关的主要目录结构如下：
 
 ```text
 examples/
@@ -276,32 +294,46 @@ python3 deploy.py --config_dir ../infer_engines/vllm/pd_hybrid --dry-run
 
 ### 查看集群状态与日志
 
-查看 Pod 列表：
+- 查看 Pod 列表：
 
-```bash
-kubectl get pods -n <job_id>
-```
+  ```bash
+  kubectl get pods -n <job_id>
+  ```
 
-在 CRD 默认方式下，InferServiceSet 会拉起 controller、coordinator 和 union 角色对应的 Pod。Pod 状态为 Running 仅表示已成功调度并启动，是否业务就绪仍需结合日志进一步确认。
+  在 CRD 默认方式下，InferServiceSet 会拉起 controller、coordinator 和 union 角色对应的 Pod。Pod 状态为 Running 仅表示已成功调度并启动，是否业务就绪仍需结合日志进一步确认。
 
-查看日志可使用 `show_log.sh`：
+- 查看日志可使用 `show_log.sh`：
 
-```bash
-cd examples/deployer
-bash show_log.sh
-```
+  1. 配置 `log_collect/log_config.ini`，设置 `name_sapce` 属性为实际的命名空间，此处为 `mindie-motor`。
 
-也可直接查看单个 Pod 日志：
+  2. 在 `examples/deployer` 目录下执行 `show_log.sh` 获取/查看日志。
 
-```bash
-kubectl logs <pod_name> -n <job_id>
-```
+      ```bash
+      cd examples/deployer
+      bash show_log.sh
+      ```
 
-如果需要进入容器内部排查，可执行：
+      日志将生成在 `examples/deployer/log_collect/log/<YYYYMMDD_hhmmss>` 目录下。
 
-```bash
-kubectl exec -it <pod_name> -n <job_id> -- bash
-```
+      单个 Pod 的日志文件命名格式为 `<pod_name>_<node_name>_<retry_count>.log`，例如 `vllm-0-controller-0-xxxx_node01_0.log`。
+  3. 可以使用 `tail` 命令查看日志。
+
+      ```bash
+      cd examples/deployer
+      tail -f log_collect/log/<YYYYMMDD_hhmmss>/<pod_name>_<node_name>_<retry_count>.log
+      ```
+
+- 直接查看单个 Pod 日志：
+
+  ```bash
+  kubectl logs <pod_name> -n <job_id>
+  ```
+
+- 进入容器内部排查，可执行：
+
+  ```bash
+  kubectl exec -it <pod_name> -n <job_id> -- bash
+  ```
 
 ## 发送推理请求
 
