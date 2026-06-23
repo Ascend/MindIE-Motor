@@ -1,0 +1,19 @@
+--- load.py.ori	2026-05-15 12:28:34.000000000 +0800
++++ load.py	2026-06-18 14:47:21.476988200 +0800
+@@ -113,7 +113,15 @@
+     need to be double quoted for json parsing. For more details, see
+     the original doc for `map_location` parameter in [`torch.load`][] parameter.
+     """
+-
++    shuffle_safetensors_files: bool = True
++    """
++    Whether to shuffle the safetensors checkpoint files during loading.
++    When enabled, files are randomly shuffled based on the distributed rank,
++    which can help with load balancing and improve weight loading speed in
++    startup scenarios. This reduces I/O contention by ensuring different ranks
++    load different files in a randomized order.
++    Set to True to enable shuffling. Default is True (load files in randomized order).
++    """
+     def compute_hash(self) -> str:
+         """
+         WARNING: Whenever a new field is added to this config,

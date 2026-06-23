@@ -1,0 +1,12 @@
+--- default_loader.py.ori	2026-05-15 12:28:34.000000000 +0800
++++ default_loader.py	2026-06-18 14:43:23.347339500 +0800
+@@ -262,6 +262,9 @@
+                         safetensors_prefetch_block_size=(
+                             self.load_config.safetensors_prefetch_block_size
+                         ),
++                        shuffle_safetensors_files=(
++                            self.load_config.shuffle_safetensors_files
++                        ),
+                     )
+         else:
+             if extra_config.get("enable_multithread_load"):
