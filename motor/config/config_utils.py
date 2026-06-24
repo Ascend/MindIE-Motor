@@ -362,7 +362,6 @@ def sync_dataclass_fields_from(
 def reload_dataclass_config_from_json(
     instance: Any,
     loader: Callable[[str], Any],
-    logging_config: Any,
     *,
     skip: frozenset[str] = frozenset(),
     skip_private: bool = True,
@@ -383,7 +382,7 @@ def reload_dataclass_config_from_json(
         new_config = loader(instance.config_path)
         sync_dataclass_fields_from(instance, new_config, skip=skip, skip_private=skip_private)
         instance.last_modified = current_mtime
-        reconfigure_logging(logging_config)
+        reconfigure_logging(instance.logging_config)
         logger.info(success_message)
         return True
     except Exception as exc:
