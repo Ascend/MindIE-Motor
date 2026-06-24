@@ -213,15 +213,50 @@ _motor_deploy_hardware_type() {
     python3 -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('motor_deploy_config',{}).get('hardware_type',''))" "$cfg" 2>/dev/null || echo ""
 }
 
-gen_ranktable_config() {
+is_a5_hardware() {
     local hw_type
     hw_type="$(_motor_deploy_hardware_type)"
     case "$hw_type" in
         350-Atlas-8|350-Atlas-16|350-Atlas-4p-8|350-Atlas-4p-16|850-Atlas-8p-8|850-SuperPod-Atlas-8|950-SuperPod-Atlas-8)
-            echo "hardware_type is ${hw_type}: skip gen_ranktable_config (no hccl/ranktable on this platform)"
-            return
+            return 0
+            ;;
+        *)
+            return 1
             ;;
     esac
+}
+
+set_a5_engine_env() {
+    local if_name ip
+    if_name=$(awk '$2 == "00000000" {print $1; exit}' /proc/net/route)
+    ip="${HOST_IP:-$POD_IP}"
+
+    if [ -z "$if_name" ]; then
+        echo "Warning: failed to detect default route interface from /proc/net/route, skip GLOO/TP/HCCL socket ifname env" >&2
+        unset GLOO_SOCKET_IFNAME TP_SOCKET_IFNAME HCCL_SOCKET_IFNAME
+    else
+        export GLOO_SOCKET_IFNAME="$if_name"
+        export TP_SOCKET_IFNAME="$if_name"
+        export HCCL_SOCKET_IFNAME="$if_name"
+    fi
+
+    if [ -z "$ip" ]; then
+        echo "Warning: HOST_IP and POD_IP are both empty, skip HCCL_IF_IP env" >&2
+        unset HCCL_IF_IP
+    else
+        export HCCL_IF_IP="$ip"
+    fi
+
+    export PATH="$PATH:/usr/local/go/bin"
+    export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
+    export ASCEND_LOCAL_COMM_RES_PATH="${ASCEND_LOCAL_COMM_RES_PATH:-/etc/hixlep}"
+}
+
+gen_ranktable_config() {
+    if is_a5_hardware; then
+        echo "hardware_type is in A5 list, skip gen_ranktable_config (no hccl/ranktable on this platform)"
+        return
+    fi
     if [ -f "$CONFIGMAP_PATH/hccl_tools.py" ]; then
         echo "Using hccl_tools.py to generate ranktable.json..."
         export HCCL_PATH="$CONFIG_PATH/hccl.json"

@@ -9,13 +9,14 @@
 # See the Mulan PSL v2 for more details.
 
 import lib.constant as C
-from lib.utils import (
-    generate_unique_id, load_yaml, write_yaml, logger
-)
+from lib.utils import generate_unique_id, load_yaml, write_yaml, logger
 from lib.generator import k8s_utils
 from lib.generator.engine import (
-    set_engine_weight_mount, apply_node_selector_by_hardware, set_container_npu,
+    set_engine_weight_mount,
+    apply_node_selector_by_hardware,
+    set_container_npu,
     apply_a5_workload,
+    apply_a5_engine_pod_config,
 )
 from lib.generator.kv_pool import normalize_kv_cache_pool_config, gen_kv_pool_env
 
@@ -49,10 +50,12 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     role = C.ROLE_SINGLE_CONTAINER
     uuid_spec = generate_unique_id()
     job_name = f"{deploy_config[C.CONFIG_JOB_ID]}-{role}-{uuid_spec}"
-    container[C.ENV].extend([
-        {C.NAME: C.ENV_ROLE, C.VALUE: role},
-        {C.NAME: C.ENV_JOB_NAME, C.VALUE: job_name},
-    ])
+    container[C.ENV].extend(
+        [
+            {C.NAME: C.ENV_ROLE, C.VALUE: role},
+            {C.NAME: C.ENV_JOB_NAME, C.VALUE: job_name},
+        ]
+    )
     if k8s_utils.g_kv_pool_enabled:
         kv_pool_config = normalize_kv_cache_pool_config(user_config)
         kv_pool_env = gen_kv_pool_env(kv_pool_config)
@@ -69,7 +72,9 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
         deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_A3
         deployment_data[C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
     elif hardware_type in C.HARDWARE_TYPE_950I_A5:
-        apply_node_selector_by_hardware(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], hardware_type)
+        pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+        apply_node_selector_by_hardware(pod_spec, hardware_type)
+        apply_a5_engine_pod_config(pod_spec, container, deploy_config)
         apply_a5_workload(deployment_data, deploy_config)
         deployment_data[C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
 

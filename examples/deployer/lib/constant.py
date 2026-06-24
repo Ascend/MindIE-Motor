@@ -38,6 +38,13 @@ A5_SCHEDULE_POLICY_BY_ACCELERATOR_TYPE = {
     "850-SuperPod-Atlas-8": "chip8-node8-sp",
     "950-SuperPod-Atlas-8": "chip8-node8-ra64-sp",
 }
+A5_HOST_PATH_VOLUMES = [
+    {"name": "host-lib64", "path": "/usr/lib64"},
+    {"name": "hixlep", "path": "/etc/hixlep"},
+]
+HOST_NETWORK = "hostNetwork"
+DNS_POLICY = "dnsPolicy"
+DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET = "ClusterFirstWithHostNet"
 METADATA = "metadata"
 CONTROLLER = "controller"
 COORDINATOR = "coordinator"

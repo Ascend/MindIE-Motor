@@ -24,6 +24,10 @@ gen_ranktable_config
 
 set_cann_env
 
+if is_a5_hardware; then
+    set_a5_engine_env
+fi
+
 pids=()
 
 set_coordinator_env
