@@ -428,19 +428,56 @@ async def test_health_check_loop_does_not_block_beyond_sample_window(mock_send_r
     assert observed_timeout == _AICORE_SAMPLE_WINDOW_SEC
 
 
-def test_read_aicore_sample_ignores_stale_generation(sim_inference, caplog):
+def test_read_aicore_sample_ignores_stale_generation(sim_inference):
     """Stale worker results must not be read after a newer sample was requested."""
     with sim_inference._shared_data_lock:
         sim_inference._max_aicore_usage = 42
         sim_inference._aicore_usage_available = True
         sim_inference._aicore_completed_generation = 1
 
-    with caplog.at_level("WARNING"):
-        max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
 
     assert max_usage == 0
     assert available is False
-    assert "Ignoring stale AICore sample result (expected generation 2, completed 1)" in caplog.text
+
+
+def test_read_aicore_sample_available_with_partial_sample(sim_inference):
+    """Partial successful samples should be readable before the sample window finishes."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 15
+        sim_inference._aicore_usage_available = True
+        sim_inference._aicore_completed_generation = 2
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=False)
+
+    assert max_usage == 15
+    assert available is True
+
+
+def test_read_aicore_sample_unavailable_when_window_timeout_without_data(sim_inference):
+    """Finished sample window with no successful reads should remain unavailable."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 0
+        sim_inference._aicore_usage_available = False
+        sim_inference._aicore_completed_generation = 2
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
+
+    assert max_usage == 0
+    assert available is False
+
+
+def test_read_aicore_sample_returns_zero_when_waiting_for_data(sim_inference):
+    """Waiting for first sample must not expose stale peak usage when unavailable."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 42
+        sim_inference._aicore_usage_available = False
+        sim_inference._aicore_completed_generation = 2
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=False)
+
+    assert max_usage == 0
+    assert available is False
 
 
 @pytest.mark.asyncio

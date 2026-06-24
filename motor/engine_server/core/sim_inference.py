@@ -202,7 +202,7 @@ class SimInference:
             self._aicore_thread.start()
             logger.info("AICore usage check thread started")
 
-    def _sample_aicore_usage(self) -> tuple[int, bool]:
+    def _sample_aicore_usage(self, generation: int | None = None) -> tuple[int, bool]:
         """Sample peak AICore usage within a bounded time window."""
         max_usage = 0
         usage_available = False
@@ -218,6 +218,11 @@ class SimInference:
                 break
             usage_available = True
             max_usage = max(max_usage, usage)
+            if generation is not None:
+                with self._shared_data_lock:
+                    self._max_aicore_usage = max_usage
+                    self._aicore_usage_available = True
+                    self._aicore_completed_generation = generation
             logger.debug("Aicore usage check: %s%%, current max: %s%%", usage, max_usage)
             if time.time() >= end_time:
                 break
@@ -243,17 +248,12 @@ class SimInference:
         return generation
 
     def _read_aicore_sample(self, generation: int, sample_finished: bool) -> tuple[int, bool]:
-        if not sample_finished:
-            return 0, False
         with self._shared_data_lock:
             if self._aicore_completed_generation != generation:
-                logger.warning(
-                    "Ignoring stale AICore sample result (expected generation %s, completed %s)",
-                    generation,
-                    self._aicore_completed_generation,
-                )
                 return 0, False
-            return self._max_aicore_usage, self._aicore_usage_available
+            if self._aicore_usage_available:
+                return self._max_aicore_usage, True
+            return 0, False
 
     def check_aicore_usage_worker(self):
         while True:
@@ -266,7 +266,7 @@ class SimInference:
             with self._shared_data_lock:
                 requested_gen = self._aicore_requested_generation
 
-            max_usage, usage_available = self._sample_aicore_usage()
+            max_usage, usage_available = self._sample_aicore_usage(requested_gen)
 
             with self._shared_data_lock:
                 self._max_aicore_usage = max_usage
