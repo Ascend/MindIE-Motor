@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from motor.common.logger import get_logger
+from motor.common.utils.net import detect_family, format_address, split_address
 from motor.config.coordinator import CoordinatorConfig
 from motor.config.controller import ControllerConfig
 from motor.config.node_manager import NodeManagerConfig
@@ -61,14 +62,22 @@ class PortConflictError(RuntimeError):
     """Raised when a port cannot be allocated under the chosen strategy."""
 
 
+def _socket_host(host: str) -> str:
+    """Normalize a host literal for socket bind/connect (strip URL brackets)."""
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
+
+
 class PortAllocator:
     @staticmethod
     def probe_tcp(host: str, port: int, timeout: float = 0.5) -> bool:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        bind_host = _socket_host(host)
+        sock = socket.socket(detect_family(bind_host), socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.settimeout(timeout)
-            sock.bind((host, port))
+            sock.bind((bind_host, port))
             sock.listen(1)
             return True
         except OSError:
@@ -125,10 +134,11 @@ class PortAllocator:
 
     @staticmethod
     def check_remote_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_host = _socket_host(host)
+        sock = socket.socket(detect_family(connect_host), socket.SOCK_STREAM)
         try:
             sock.settimeout(timeout)
-            sock.connect((host, port))
+            sock.connect((connect_host, port))
             return True
         except OSError:
             return False
@@ -156,13 +166,13 @@ def _allocator(cfg: PortAllocatorConfig) -> tuple[str, int, float, float]:
 def _parse_host_port(address: str, default_port: int) -> tuple[str, int]:
     if not address:
         return "", default_port
-    if ":" in address:
-        host, _, port_str = address.rpartition(":")
-        try:
-            return host or "127.0.0.1", int(port_str)
-        except ValueError:
-            return address, default_port
-    return address, default_port
+    host, port_str = split_address(address)
+    if not port_str:
+        return host or "127.0.0.1", default_port
+    try:
+        return host or "127.0.0.1", int(port_str)
+    except ValueError:
+        return address, default_port
 
 
 def apply_coordinator_ports(config: CoordinatorConfig) -> None:
@@ -216,9 +226,8 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
             )
             if not reachable:
                 logger.warning(
-                    "[Port] Mooncake Conductor %s:%d not reachable at startup",
-                    cond_host,
-                    cond_port,
+                    "[Port] Mooncake Conductor %s not reachable at startup",
+                    format_address(cond_host, cond_port),
                 )
 
         kv_cfg.http_server_port = PortAllocator.allocate_auto(

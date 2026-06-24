@@ -15,6 +15,7 @@ from typing import Any
 from motor.common.logger import get_logger
 from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.utils.net import format_address, format_host
 from motor.config.coordinator import CoordinatorConfig
 
 
@@ -79,7 +80,7 @@ class ConductorApiClient:
 
         instance_id = conductor_instance_id(instance)
         register_data: dict = {
-            "endpoint": f"{kv_endpoints[0]}{endpoint.ip}:{str(int(kv_endpoints[1]) + endpoint.id)}",
+            "endpoint": f"{kv_endpoints[0]}{format_host(endpoint.ip)}:{str(int(kv_endpoints[1]) + endpoint.id)}",
             "type": prefill_kv_event_config.engine_type,
             "modelname": instance.model_name,
             "block_size": prefill_kv_event_config.block_size,
@@ -92,11 +93,15 @@ class ConductorApiClient:
         if prefill_kv_event_config.replay_endpoint != "":
             replay_endpoints = prefill_kv_event_config.replay_endpoint.split("*:")
             if len(replay_endpoints) == 2:
-                replay_endpoint = f"{replay_endpoints[0]}{endpoint.ip}:{str(int(replay_endpoints[1]) + endpoint.id)}"
+                replay_endpoint = (
+                    f"{replay_endpoints[0]}{format_host(endpoint.ip)}:{str(int(replay_endpoints[1]) + endpoint.id)}"
+                )
                 register_data["replay_endpoint"] = replay_endpoint
 
         client_args = {
-            "address": f"{prefill_kv_event_config.conductor_service}:{prefill_kv_event_config.http_server_port}"
+            "address": format_address(
+                prefill_kv_event_config.conductor_service, prefill_kv_event_config.http_server_port
+            )
         }
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
@@ -133,7 +138,9 @@ class ConductorApiClient:
             register_data["tenant_id"] = TENANT_ID
 
         client_args = {
-            "address": f"{prefill_kv_event_config.conductor_service}:{prefill_kv_event_config.http_server_port}"
+            "address": format_address(
+                prefill_kv_event_config.conductor_service, prefill_kv_event_config.http_server_port
+            )
         }
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
@@ -169,7 +176,9 @@ class ConductorApiClient:
         logger.debug(f"query_data : {query_data}")
 
         client_args = {
-            "address": f"{prefill_kv_event_config.conductor_service}:{prefill_kv_event_config.http_server_port}"
+            "address": format_address(
+                prefill_kv_event_config.conductor_service, prefill_kv_event_config.http_server_port
+            )
         }
         try:
             with SafeHTTPSClient(timeout=0.2, **client_args) as client:

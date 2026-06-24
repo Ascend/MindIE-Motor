@@ -25,6 +25,7 @@ from motor.common.standby.standby_manager import StandbyManager, StandbyRole
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger, ApiAccessFilter
 from motor.common.http.http_response import format_success_response, raise_internal_error
+from motor.common.utils.net import format_address
 from motor.common.alarm.record import Record
 from motor.common.alarm.precision_issue_alarm import PRECISION_ISSUE_ALARM_ID
 from motor.config.controller import ControllerConfig
@@ -292,9 +293,9 @@ class ControllerAPI:
                     raise RuntimeError("Failed to create SSL context")
 
                 server_config.ssl = context
-                logger.info("Starting Controller API server on https://%s:%d", self.host, self.port)
+                logger.info("Starting Controller API server on https://%s", format_address(self.host, self.port))
             else:
-                logger.info("Starting Controller API server on http://%s:%d", self.host, self.port)
+                logger.info("Starting Controller API server on http://%s", format_address(self.host, self.port))
 
             self.server = uvicorn.Server(server_config)
             self.loop = asyncio.new_event_loop()
@@ -543,15 +544,13 @@ class ControllerAPI:
 
                 server_config.ssl = context
                 logger.info(
-                    "Starting observability API server on https://%s:%d",
-                    self.observability_api_host,
-                    self.observability_api_port,
+                    "Starting observability API server on https://%s",
+                    format_address(self.observability_api_host, self.observability_api_port),
                 )
             else:
                 logger.info(
-                    "Starting observability API server on http://%s:%d",
-                    self.observability_api_host,
-                    self.observability_api_port,
+                    "Starting observability API server on http://%s",
+                    format_address(self.observability_api_host, self.observability_api_port),
                 )
 
             self.observability_server = uvicorn.Server(server_config)

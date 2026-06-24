@@ -108,6 +108,11 @@ class Daemon(ThreadSafeSingleton):
         """
         try:
             env = os.environ.copy()
+            pod_ip = env.get("POD_IP")
+            if pod_ip and not env.get("VLLM_HOST_IP"):
+                env["VLLM_HOST_IP"] = pod_ip
+            if env.get("MOONCAKE_ASCEND_IPV6_EXPERIMENT") == "1":
+                env["MC_USE_IPV6"] = env.get("MC_USE_IPV6", "1")
             device_size = self.device_num
             for i, endpoint in enumerate(endpoints_info):
                 if not self._check_params(endpoint):

@@ -18,6 +18,8 @@ from enum import Enum
 
 import httpx
 
+from motor.common.utils.net import format_address
+
 MOTOR_DEPLOY_CONFIG = "motor_deploy_config"
 TLS_CONFIG = "tls_config"
 MGMT_TLS_CONFIG = "mgmt_tls_config"
@@ -155,14 +157,15 @@ def send_http_request(ip, port, url_path, config):
     Returns:
         True if successful, False otherwise
     """
-    url = f"http://{ip}:{port}{url_path}"
+    host_port = format_address(ip, port)
+    url = f"http://{host_port}{url_path}"
     headers = {'User-Agent': 'sh-probe', 'Content-Type': 'application/json'}
 
     enable_tls = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{ENABLE_TLS}')
 
     try:
         if enable_tls:
-            url = f"https://{ip}:{port}{url_path}"
+            url = f"https://{host_port}{url_path}"
 
             cert_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{CERT_FILE}')
             key_file = get_val_by_key_path(config, f'{MGMT_TLS_CONFIG}.{KEY_FILE}')
@@ -243,7 +246,7 @@ def main():
             sys.exit(1)
 
     url_path = PROBE_URLS[probe_type]
-    logger.info("Executing %s probe for %s at %s:%s%s", probe_type, role, pod_ip, port, url_path)
+    logger.info("Executing %s probe for %s at %s%s", probe_type, role, format_address(pod_ip, port), url_path)
     success = send_http_request(pod_ip, port, url_path, config)
 
     if success:

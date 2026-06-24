@@ -9,14 +9,12 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import httpx
 
 from motor.coordinator.scheduler.scheduler import Scheduler, SchedulerType
-from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
-from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
 from motor.config.coordinator import CoordinatorConfig
@@ -37,12 +35,12 @@ def prefill_instances():
     instances = []
     for i in range(3):
         instance = Instance(
-            job_name=f"prefill_instance_{i+1}",
+            job_name=f"prefill_instance_{i + 1}",
             model_name="test_model",
-            id=i+1,
+            id=i + 1,
             role=PDRole.ROLE_P,
             status=InsStatus.ACTIVE,
-            parallel_config=ParallelConfig(dp_size=2)
+            parallel_config=ParallelConfig(dp_size=2),
         )
         instances.append(instance)
     return instances
@@ -54,12 +52,12 @@ def decode_instances():
     instances = []
     for i in range(2):
         instance = Instance(
-            job_name=f"decode_instance_{i+1}",
+            job_name=f"decode_instance_{i + 1}",
             model_name="test_model",
-            id=i+4,
+            id=i + 4,
             role=PDRole.ROLE_D,
             status=InsStatus.ACTIVE,
-            parallel_config=ParallelConfig(dp_size=2)
+            parallel_config=ParallelConfig(dp_size=2),
         )
         instances.append(instance)
     return instances
@@ -71,12 +69,12 @@ def mix_instances():
     instances = []
     for i in range(2):
         instance = Instance(
-            job_name=f"mix_instance_{i+1}",
+            job_name=f"mix_instance_{i + 1}",
             model_name="test_model",
-            id=i+6,
+            id=i + 6,
             role=PDRole.ROLE_U,
             status=InsStatus.ACTIVE,
-            parallel_config=ParallelConfig(dp_size=2)
+            parallel_config=ParallelConfig(dp_size=2),
         )
         instances.append(instance)
     return instances
@@ -88,12 +86,12 @@ def encode_instances():
     instances = []
     for i in range(2):
         instance = Instance(
-            job_name=f"encode_instance_{i+1}",
+            job_name=f"encode_instance_{i + 1}",
             model_name="test_model",
-            id=i+8,
+            id=i + 8,
             role=PDRole.ROLE_E,
             status=InsStatus.ACTIVE,
-            parallel_config=ParallelConfig(dp_size=2)
+            parallel_config=ParallelConfig(dp_size=2),
         )
         instances.append(instance)
     return instances
@@ -130,7 +128,7 @@ async def scheduler_setup(prefill_instances, decode_instances, mix_instances, en
                 business_port=f"800{j}",
                 mgmt_port=f"900{j}",
                 status=EndpointStatus.NORMAL,
-                workload=Workload(active_tokens=0, active_kv_cache=0)
+                workload=Workload(active_tokens=0, active_kv_cache=0),
             )
             endpoints[j] = endpoint
         instance.add_endpoints(f"192.168.1.{instance.id}", endpoints)
@@ -173,8 +171,7 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     req_info.req_len = request_length
     workload_p = calculate_demand_workload(PDRole.ROLE_P, req_info)
     result = await load_balance_scheduler.update_workload(
-        selected_prefill_instance.id, selected_prefill_endpoint.id, req_id,
-        WorkloadAction.ALLOCATION, workload_p
+        selected_prefill_instance.id, selected_prefill_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload_p
     )
     assert result
 
@@ -184,8 +181,11 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     # 3. release active_tokens
     release_tokens = Workload(active_tokens=-selected_prefill_endpoint.workload.active_tokens)
     result = await load_balance_scheduler.update_workload(
-        selected_prefill_instance.id, selected_prefill_endpoint.id, req_id,
-        WorkloadAction.RELEASE_TOKENS, release_tokens
+        selected_prefill_instance.id,
+        selected_prefill_endpoint.id,
+        req_id,
+        WorkloadAction.RELEASE_TOKENS,
+        release_tokens,
     )
     assert result
 
@@ -202,8 +202,7 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     # 5. allocate decode workload
     workload_d = calculate_demand_workload(PDRole.ROLE_D, req_info)
     result = await load_balance_scheduler.update_workload(
-        selected_decode_instance.id, selected_decode_endpoint.id, req_id,
-        WorkloadAction.ALLOCATION, workload_d
+        selected_decode_instance.id, selected_decode_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload_d
     )
     assert result
 
@@ -212,8 +211,7 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     # 6. release decode workload
     release_d = Workload(active_tokens=-selected_decode_endpoint.workload.active_tokens)
     result = await load_balance_scheduler.update_workload(
-        selected_decode_instance.id, selected_decode_endpoint.id, req_id,
-        WorkloadAction.RELEASE_TOKENS, release_d
+        selected_decode_instance.id, selected_decode_endpoint.id, req_id, WorkloadAction.RELEASE_TOKENS, release_d
     )
     assert result
 
@@ -222,8 +220,7 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     # 7. release prefill kv_cache
     release_kv = Workload(active_kv_cache=-selected_prefill_endpoint.workload.active_kv_cache)
     result = await load_balance_scheduler.update_workload(
-        selected_prefill_instance.id, selected_prefill_endpoint.id, req_id,
-        WorkloadAction.RELEASE_KV, release_kv
+        selected_prefill_instance.id, selected_prefill_endpoint.id, req_id, WorkloadAction.RELEASE_KV, release_kv
     )
     assert result
 
@@ -250,8 +247,7 @@ async def test_request_processing_e_scenario(scheduler_setup):
     req_info.req_len = request_length
     workload_e = calculate_demand_workload(PDRole.ROLE_E, req_info)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.ALLOCATION, workload_e
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload_e
     )
     assert result
     assert selected_endpoint.workload.active_tokens > 0 or selected_endpoint.workload.active_kv_cache >= 0
@@ -259,8 +255,7 @@ async def test_request_processing_e_scenario(scheduler_setup):
     # release tokens if any allocated
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.RELEASE_TOKENS, release_tokens
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.RELEASE_TOKENS, release_tokens
     )
     assert result
     assert selected_endpoint.workload.active_tokens == 0
@@ -287,8 +282,7 @@ async def test_request_processing_mix_scenario(scheduler_setup):
     req_info.req_len = request_length
     workload_u = calculate_demand_workload(PDRole.ROLE_U, req_info)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.ALLOCATION, workload_u
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload_u
     )
     assert result
 
@@ -298,8 +292,7 @@ async def test_request_processing_mix_scenario(scheduler_setup):
     # 3. release tokens
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.RELEASE_TOKENS, release_tokens
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.RELEASE_TOKENS, release_tokens
     )
     assert result
 
@@ -309,8 +302,7 @@ async def test_request_processing_mix_scenario(scheduler_setup):
     # 4. release kv_cache
     release_kv = Workload(active_kv_cache=-selected_endpoint.workload.active_kv_cache)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.RELEASE_KV, release_kv
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.RELEASE_KV, release_kv
     )
     assert result
 
@@ -324,9 +316,9 @@ async def test_multiple_requests_load_balancing(scheduler_setup, request_length)
     """Test multiple requests with different lengths."""
     all_instances, instance_manager = scheduler_setup
     scheduler = Scheduler(instance_provider=instance_manager, config=SchedulerType.LOAD_BALANCE)
-    
+
     req_id = f"test_request_{request_length}"
-    
+
     result = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_P)
     assert result is not None, "select_instance_and_endpoint returned None (pool empty)."
     selected_instance, selected_endpoint = result
@@ -337,22 +329,20 @@ async def test_multiple_requests_load_balancing(scheduler_setup, request_length)
     req_info.req_len = request_length
     workload = calculate_demand_workload(PDRole.ROLE_P, req_info)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.ALLOCATION, workload
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload
     )
     assert result
-    
+
     assert selected_endpoint.workload.active_tokens > 0
     assert selected_endpoint.workload.active_kv_cache > 0
-    
+
     # release tokens
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.RELEASE_TOKENS, release_tokens
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.RELEASE_TOKENS, release_tokens
     )
     assert result
-    
+
     assert selected_endpoint.workload.active_tokens == 0
     assert selected_endpoint.workload.active_kv_cache > 0
 
@@ -379,8 +369,7 @@ async def test_workload_calculation_accuracy(scheduler_setup):
     req_info.req_len = request_length
     workload = calculate_demand_workload(PDRole.ROLE_P, req_info)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.ALLOCATION, workload
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload
     )
     assert result
 
@@ -396,13 +385,14 @@ async def test_workload_calculation_accuracy(scheduler_setup):
     # release tokens
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
     result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id,
-        WorkloadAction.RELEASE_TOKENS, release_tokens
+        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.RELEASE_TOKENS, release_tokens
     )
     assert result
 
     # verify that the score after release matches the expected score
-    expected_score_after_release = selected_endpoint.workload.active_tokens + selected_endpoint.workload.active_kv_cache * 0.3
+    expected_score_after_release = (
+        selected_endpoint.workload.active_tokens + selected_endpoint.workload.active_kv_cache * 0.3
+    )
     actual_score_after_release = selected_endpoint.workload.calculate_workload_score(role=selected_instance.role)
     assert actual_score_after_release == expected_score_after_release
 
@@ -472,19 +462,43 @@ async def test_load_balance_selects_global_lowest_endpoint():
     inst_a.add_endpoints(
         "pod-a",
         {
-            0: Endpoint(id=10, ip="10.0.0.1", business_port="8000", mgmt_port="9000",
-                        status=EndpointStatus.NORMAL, workload=Workload()),
-            1: Endpoint(id=11, ip="10.0.0.1", business_port="8001", mgmt_port="9001",
-                        status=EndpointStatus.NORMAL, workload=Workload()),
+            0: Endpoint(
+                id=10,
+                ip="10.0.0.1",
+                business_port="8000",
+                mgmt_port="9000",
+                status=EndpointStatus.NORMAL,
+                workload=Workload(),
+            ),
+            1: Endpoint(
+                id=11,
+                ip="10.0.0.1",
+                business_port="8001",
+                mgmt_port="9001",
+                status=EndpointStatus.NORMAL,
+                workload=Workload(),
+            ),
         },
     )
     inst_b.add_endpoints(
         "pod-b",
         {
-            0: Endpoint(id=20, ip="10.0.0.2", business_port="8000", mgmt_port="9000",
-                        status=EndpointStatus.NORMAL, workload=Workload()),
-            1: Endpoint(id=21, ip="10.0.0.2", business_port="8001", mgmt_port="9001",
-                        status=EndpointStatus.NORMAL, workload=Workload()),
+            0: Endpoint(
+                id=20,
+                ip="10.0.0.2",
+                business_port="8000",
+                mgmt_port="9000",
+                status=EndpointStatus.NORMAL,
+                workload=Workload(),
+            ),
+            1: Endpoint(
+                id=21,
+                ip="10.0.0.2",
+                business_port="8001",
+                mgmt_port="9001",
+                status=EndpointStatus.NORMAL,
+                workload=Workload(),
+            ),
         },
     )
     await instance_manager.refresh_instances(EventType.ADD, [inst_a, inst_b])
@@ -574,7 +588,9 @@ async def test_round_robin_mixed_role_selection(scheduler_setup):
 
     # test that the mixed role selection round robin works as expected
     selected_instances = []
-    for _ in range(9):  # select 9 times, should round robin all 3 prefill instances, 2 decode instances, 4 mix instances each 2 times
+    for _ in range(
+        9
+    ):  # select 9 times, should round robin all 3 prefill instances, 2 decode instances, 4 mix instances each 2 times
         if len(selected_instances) % 3 == 0:
             instance, _ = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_P)
             expected_role = PDRole.ROLE_P

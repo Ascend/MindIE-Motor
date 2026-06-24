@@ -16,6 +16,7 @@ from typing import Optional
 import httpx
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.engine_server.utils.aicore import get_aicore_usage
 from motor.engine_server.constants import constants
 from motor.engine_server.utils.ip import build_endpoint
@@ -79,7 +80,7 @@ class SimInference:
 
         # init http client
         self._client = None
-        self._client_address = f"{self.args.host}:{self.args.port}"
+        self._client_address = format_address(self.args.host, self.args.port)
 
     @staticmethod
     def generate_request_id() -> str:
@@ -289,7 +290,7 @@ class SimInference:
             virtual_request["kv_transfer_params"] = {
                 "do_remote_decode": False,
                 "do_remote_prefill": True,
-                "metaserver": f"http://{self.args.host}:{self.args.port}/v1/metaserver",
+                "metaserver": f"http://{format_address(self.args.host, self.args.port)}/v1/metaserver",
                 "do_virtual": True,
             }
 

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import ipaddress
 from typing import Any
 
 ENCODING_UTF8 = "utf-8"
@@ -30,6 +31,15 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+
+
+def format_address(host: str, port) -> str:
+    try:
+        if isinstance(ipaddress.ip_address(host.strip("[]")), ipaddress.IPv6Address):
+            return f"[{host.strip('[]')}]:{port}"
+    except ValueError:
+        pass
+    return f"{host}:{port}"
 
 
 def resolve_model_name(engine_section, default="Unknown"):
@@ -89,7 +99,7 @@ def generate_kv_cache_pool_config(output_path: str, user_config_path: str) -> bo
         logging.error("Env KVP_MASTER_SERVICE is required but not set, cannot generate kv_cache_pool_config")
         return False
     master_server_port = kv_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
-    out_cfg[MASTER_SERVER_ADDRESS] = f"{kvp_master_service}:{master_server_port}"
+    out_cfg[MASTER_SERVER_ADDRESS] = format_address(kvp_master_service, master_server_port)
 
     write_json(output_path, out_cfg)
     logging.info("kv_cache_pool_config generated: %s", output_path)
@@ -127,7 +137,7 @@ def generate_kv_conductor_config(output_path: str, user_config_path: str) -> boo
         return False
     master_server_port = kv_pool_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
     mooncake_master = out_cfg[KVEVENT_INSTANCE][MOONCAKE_MASTER]
-    mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{kvp_master_service}:{master_server_port}"
+    mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{format_address(kvp_master_service, master_server_port)}"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     mooncake_master[MODEL_NAME] = resolve_model_name(user_cfg["motor_engine_prefill_config"])

@@ -26,6 +26,7 @@ from motor.common.resources.dispatch import DispatchStopState, MotorDispatch
 from motor.engine_server.core.dispatch_adapter import create_dispatch_adapter
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
+from motor.common.utils.net import format_address
 from motor.engine_server.core.endpoint import Endpoint
 from motor.engine_server.core.serving_error import map_serving_exception
 from motor.engine_server.utils.cancellation import with_cancellation
@@ -78,7 +79,7 @@ class InferEndpoint(Endpoint):
             self._run_server()
         elif self._server_process and not self._server_process.is_alive():
             self._server_process.start()
-            logger.info("InferEndpoint started in process: http://%s:%s", self.host, self.port)
+            logger.info("InferEndpoint started in process: http://%s", format_address(self.host, self.port))
 
     def join(self) -> None:
         self._server_process.join()
@@ -485,9 +486,9 @@ class InferEndpoint(Endpoint):
                 config.ssl = ssl_context
             else:
                 raise RuntimeError("Failed to create ssl context")
-            logger.info("InferEndpoint started: https://%s:%s", self.host, self.port)
+            logger.info("InferEndpoint started: https://%s", format_address(self.host, self.port))
         else:
-            logger.info("InferEndpoint started: http://%s:%s", self.host, self.port)
+            logger.info("InferEndpoint started: http://%s", format_address(self.host, self.port))
 
         self._server = uvicorn.Server(config)
         if not self._stop_event.is_set():

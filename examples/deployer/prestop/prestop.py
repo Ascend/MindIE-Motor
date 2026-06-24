@@ -29,6 +29,8 @@ import subprocess
 import sys
 import time
 
+from motor.common.utils.net import format_address
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -224,7 +226,7 @@ def main():
 
     nm_port = get_nm_port(config)
     pod_ip = os.environ.get("POD_IP", "127.0.0.1")
-    nm_url = f"http://{pod_ip}:{nm_port}"
+    nm_url = f"http://{format_address(pod_ip, nm_port)}"
     logger.info("NodeManager URL: %s", nm_url)
 
     # Step 1: Send pause to NodeManager

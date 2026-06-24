@@ -27,6 +27,7 @@ from motor.common.resources.instance import PDRole
 from motor.common.http.http_client import HTTPClientPool
 from motor.common.logger import get_logger
 from motor.common.http.security_utils import filter_sensitive_headers, filter_sensitive_body
+from motor.common.utils.net import format_address
 import motor.common.utils.error as cancel_error
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.models.constants import (
@@ -594,7 +595,7 @@ class BaseRouter(ABC):
     def _infer_base_url_for_resource(self, resource: ScheduledResource) -> str:
         scheme = "https" if self.config.infer_tls_config.enable_tls else "http"
         ep = resource.endpoint
-        return f"{scheme}://{ep.ip}:{ep.business_port}"
+        return f"{scheme}://{format_address(ep.ip, ep.business_port)}"
 
     async def release_all(self, resource: ScheduledResource):
         """Release tokens and KV cache; returns True only if both succeed."""

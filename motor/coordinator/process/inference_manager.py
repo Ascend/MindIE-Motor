@@ -24,6 +24,7 @@ except ImportError:
 from motor.common.http.cert_util import CertUtil
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.http.http_client import HTTPClientPool
+from motor.common.utils.net import detect_family, format_address
 from motor.common.logger import get_logger, reconfigure_logging
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_server.inference_server import InferenceServer
@@ -33,6 +34,12 @@ from motor.coordinator.process.utils import set_process_title
 from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
 
 logger = get_logger(__name__)
+
+
+def _socket_host(host: str) -> str:
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
 
 
 def run_inference_worker_proc(
@@ -299,7 +306,8 @@ def create_shared_socket(host: str, port: int) -> socket.socket | None:
     Returns:
         Socket that can be shared between processes, or None if not supported
     """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    bind_host = _socket_host(host)
+    sock = socket.socket(detect_family(bind_host), socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     # SO_REUSEPORT allows multiple processes to bind to the same port (coordinator is Linux-only).
@@ -311,11 +319,11 @@ def create_shared_socket(host: str, port: int) -> socket.socket | None:
         return None
 
     try:
-        sock.bind((host, port))
+        sock.bind((bind_host, port))
         sock.listen(128)  # Backlog
-        logger.info(f"Created shared socket on {host}:{port}")
+        logger.info(f"Created shared socket on {format_address(host, port)}")
         return sock
     except Exception as e:
-        logger.error(f"Failed to bind socket on {host}:{port}: {e}")
+        logger.error(f"Failed to bind socket on {format_address(host, port)}: {e}")
         sock.close()
         return None

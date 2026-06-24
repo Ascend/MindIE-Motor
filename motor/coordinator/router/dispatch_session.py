@@ -17,6 +17,7 @@ from enum import Enum
 from motor.common.http import HTTPClientPool
 from motor.common.resources.dispatch import DispatchEndpoint, DispatchEndpoints, MotorDispatch
 from motor.common.resources.instance import PDRole
+from motor.common.utils.net import format_address
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import ScheduledResource
 
@@ -212,5 +213,5 @@ def _dispatch_endpoint(resource: ScheduledResource | None) -> DispatchEndpoint |
     return DispatchEndpoint(
         instance_id=int(resource.instance.id),
         endpoint_id=int(endpoint.id),
-        url=f"http://{endpoint.ip}:{endpoint.business_port}",
+        url=f"http://{format_address(endpoint.ip, endpoint.business_port)}",
     )

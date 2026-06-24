@@ -18,6 +18,7 @@ import socket
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.http_msg_spec import StartCmdMsg, HeartbeatMsg
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, RETRY_LOG_FREQUENCY
 from motor.config.node_manager import NodeManagerConfig
@@ -165,7 +166,7 @@ class HeartbeatManager(ThreadSafeSingleton):
     def get_engine_mgmt_addrs(self) -> list[str]:
         """Return engine management addresses for local metrics polling."""
         with self._endpoint_lock:
-            return [f"{ep.ip}:{ep.mgmt_port}" for ep in self._endpoints]
+            return [format_address(ep.ip, ep.mgmt_port) for ep in self._endpoints]
 
     def resume_all_endpoints(self) -> None:
         """Resume all endpoints from PAUSED back to NORMAL status.
@@ -235,7 +236,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             original_status = item.status
             client = None
             detected_status = None
-            engine_server_base_url = f"{item.ip}:{item.mgmt_port}"
+            engine_server_base_url = format_address(item.ip, item.mgmt_port)
             try:
                 response = EngineServerApiClient.query_status(engine_server_base_url)
                 if isinstance(response, dict) and "status" in response:

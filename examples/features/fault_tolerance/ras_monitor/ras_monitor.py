@@ -16,6 +16,8 @@ from ssl import create_default_context, Purpose
 from dataclasses import dataclass
 import urllib3
 
+from motor.common.utils.net import format_address
+
 # Configure log format and level
 logging.basicConfig(
     level=logging.INFO,
@@ -208,11 +210,12 @@ def check_service_status(http_pool_manager, params: CheckParams) -> bool:
         if not ip:
             return False
         port = params.coordinator_port
-        logging.info(f"Fetch server ip and port successfully: {ip}:{port}")
+        host_port = format_address(ip, port)
+        logging.info(f"Fetch server ip and port successfully: {host_port}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request(
             "POST",
-            f"{http_prefix}://{ip}:{port}/v1/completions",
+            f"{http_prefix}://{host_port}/v1/completions",
             headers={"Content-Type": "application/json"},
             body=json.dumps(
                 {
@@ -283,7 +286,8 @@ def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) ->
         coordinator_ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
         if not coordinator_ip:
             return tuple(-1 for _ in metric_names)
-        logging.info(f"Fetch coordinator ip successfully: {coordinator_ip}")
+        host_port = format_address(coordinator_ip, params.coordinator_manage_port)
+        logging.info(f"Fetch coordinator ip successfully: {host_port}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request(
             "GET", f"{http_prefix}://{coordinator_ip}:{params.coordinator_manage_port}/metrics"

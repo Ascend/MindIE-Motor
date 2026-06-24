@@ -282,7 +282,14 @@ gen_kv_pool_config() {
 
 set_mf_store_env() {
     if [ -n "$ASCEND_MF_STORE_URL" ]; then
-        if [[ "$ASCEND_MF_STORE_URL" =~ ^(tcp://)?([^:/]+)(:([0-9]+))?$ ]]; then
+        # IPv6 single-stack: accept ASCEND_MF_STORE_URL forms like
+        #   tcp://[2001:db8::1]:2379  /  [::1]:2379
+        if [[ "$ASCEND_MF_STORE_URL" =~ ^(tcp://)?\[([0-9a-fA-F:]+)\](:([0-9]+))?$ ]]; then
+            PROTO="${BASH_REMATCH[1]}"
+            HOST="${BASH_REMATCH[2]}"
+            PORT="${BASH_REMATCH[4]}"
+            echo "HOST is already IPv6 literal: $HOST"
+        elif [[ "$ASCEND_MF_STORE_URL" =~ ^(tcp://)?([^:/]+)(:([0-9]+))?$ ]]; then
             PROTO="${BASH_REMATCH[1]}"
             HOST="${BASH_REMATCH[2]}"
             PORT="${BASH_REMATCH[4]}"
@@ -309,7 +316,12 @@ set_mf_store_env() {
                     exit 1
                 else
                     echo "$HOST pod ip: $MF_STORE_POD_IP"
-                    export ASCEND_MF_STORE_URL="${PROTO}${MF_STORE_POD_IP}:${PORT}"
+                    # Wrap resolved IPv6 literals in [] to keep the URL RFC 3986 compliant.
+                    if [[ "$MF_STORE_POD_IP" == *:* ]]; then
+                        export ASCEND_MF_STORE_URL="${PROTO}[${MF_STORE_POD_IP}]:${PORT}"
+                    else
+                        export ASCEND_MF_STORE_URL="${PROTO}${MF_STORE_POD_IP}:${PORT}"
+                    fi
                 fi
             else
                 echo "HOST is already IP: $HOST"

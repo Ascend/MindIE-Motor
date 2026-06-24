@@ -266,6 +266,11 @@ def test_vllm_enable_multi_endpoints_explicit():
     assert resolver.get_enable_multi_endpoints() is False
 
 
+def test_vllm_enable_multi_endpoints_true():
+    resolver = ConfigResolver(_vllm_section({"enable_multi_endpoints": True}))
+    assert resolver.get_enable_multi_endpoints() is True
+
+
 def test_sglang_enable_multi_endpoints_default():
     resolver = ConfigResolver(_sglang_section())
     assert resolver.get_enable_multi_endpoints() is False

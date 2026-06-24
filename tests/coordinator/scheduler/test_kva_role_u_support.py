@@ -71,6 +71,36 @@ def test_register_post_uses_union_conductor_id_for_role_u() -> None:
     assert register_payload["instance_id"] == "vllm-union-2"
 
 
+def test_register_post_formats_ipv6_endpoint_and_conductor_address() -> None:
+    instance = _build_instance(PDRole.ROLE_P)
+    instance.id = 3
+    instance.model_name = "qwen3-8B"
+    endpoint = Mock()
+    endpoint.id = 2
+    endpoint.ip = "2001:db8::1"
+
+    mock_config = Mock()
+    mock_config.prefill_kv_event_config.endpoint = "tcp://*:5557"
+    mock_config.prefill_kv_event_config.replay_endpoint = "tcp://*:6667"
+    mock_config.prefill_kv_event_config.engine_type = "vLLM"
+    mock_config.prefill_kv_event_config.block_size = 128
+    mock_config.prefill_kv_event_config.conductor_service = "2001:db8::10"
+    mock_config.prefill_kv_event_config.http_server_port = 13333
+
+    with (
+        patch.object(ConductorApiClient, "coordinator_config", mock_config),
+        patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient") as mock_http_client,
+    ):
+        mock_http_client.return_value.__enter__.return_value.post.return_value = None
+        ConductorApiClient.register_post(instance, endpoint)
+
+    mock_http_client.assert_called_once()
+    assert mock_http_client.call_args.kwargs["address"] == "[2001:db8::10]:13333"
+    register_payload = mock_http_client.return_value.__enter__.return_value.post.call_args[0][1]
+    assert register_payload["endpoint"] == "tcp://[2001:db8::1]:5559"
+    assert register_payload["replay_endpoint"] == "tcp://[2001:db8::1]:6669"
+
+
 def test_register_kv_instance_supports_role_u() -> None:
     instances = [
         _build_instance(PDRole.ROLE_P),
