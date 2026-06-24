@@ -89,8 +89,12 @@ class PortAllocator:
         name: str,
         scan_range: int = 100,
         timeout: float = 0.5,
+        skip_ports: set[int] | None = None,
     ) -> int:
+        blocked = skip_ports or set()
         for candidate in range(port, port + scan_range):
+            if candidate in blocked:
+                continue
             if PortAllocator.probe_tcp(host, candidate, timeout=timeout):
                 if candidate != port:
                     logger.warning(
@@ -268,32 +272,27 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     api = config.api_config
     ep = config.endpoint_config
 
-    api.node_manager_port = PortAllocator.allocate_auto(
-        host,
-        api.node_manager_port,
-        "node_manager_port",
-        scan_range=scan_range,
-        timeout=probe_timeout,
-    )
+    reserved = {api.node_manager_port} | {int(p) for p in ep.service_ports + ep.mgmt_ports}
+    sc = config.single_container_config
+    if sc.single_container_flag:
+        reserved |= {p for p in (sc.kv_port, sc.lookup_rpc_port, sc.dp_rpc_port) if p}
+    allocated: set[int] = set()
+
+    def _auto(pref: int, name: str) -> int:
+        p = PortAllocator.allocate_auto(
+            host, pref, name, scan_range=scan_range, timeout=probe_timeout, skip_ports=(reserved - {pref}) | allocated
+        )
+        allocated.add(p)
+        return p
+
+    api.node_manager_port = _auto(api.node_manager_port, "node_manager_port")
     rows.append(_row("NodeManager", host, api.node_manager_port, "auto", "NM API"))
 
     new_service_ports: list[str] = []
     new_mgmt_ports: list[str] = []
     for idx, (svc_pref, mgmt_pref) in enumerate(zip(ep.service_ports, ep.mgmt_ports)):
-        svc_port = PortAllocator.allocate_auto(
-            host,
-            int(svc_pref),
-            f"service_ports[{idx}]",
-            scan_range=scan_range,
-            timeout=probe_timeout,
-        )
-        mgmt_port = PortAllocator.allocate_auto(
-            host,
-            int(mgmt_pref),
-            f"mgmt_ports[{idx}]",
-            scan_range=scan_range,
-            timeout=probe_timeout,
-        )
+        svc_port = _auto(int(svc_pref), f"service_ports[{idx}]")
+        mgmt_port = _auto(int(mgmt_pref), f"mgmt_ports[{idx}]")
         new_service_ports.append(str(svc_port))
         new_mgmt_ports.append(str(mgmt_port))
         rows.append(_row("EngineServer", host, svc_port, "auto", f"DP{idx} business"))
@@ -302,34 +301,15 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     ep.service_ports = new_service_ports
     ep.mgmt_ports = new_mgmt_ports
 
-    sc = config.single_container_config
     if sc.single_container_flag:
         if sc.kv_port is not None:
-            sc.kv_port = PortAllocator.allocate_auto(
-                host,
-                sc.kv_port,
-                "kv_port",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
+            sc.kv_port = _auto(sc.kv_port, "kv_port")
             rows.append(_row("EngineServer", host, sc.kv_port, "auto", "KV transfer"))
         if sc.lookup_rpc_port is not None:
-            sc.lookup_rpc_port = PortAllocator.allocate_auto(
-                host,
-                sc.lookup_rpc_port,
-                "lookup_rpc_port",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
+            sc.lookup_rpc_port = _auto(sc.lookup_rpc_port, "lookup_rpc_port")
             rows.append(_row("EngineServer", host, sc.lookup_rpc_port, "auto", "KV lookup RPC"))
         if sc.dp_rpc_port is not None:
-            sc.dp_rpc_port = PortAllocator.allocate_auto(
-                host,
-                sc.dp_rpc_port,
-                "dp_rpc_port",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
+            sc.dp_rpc_port = _auto(sc.dp_rpc_port, "dp_rpc_port")
             rows.append(_row("EngineServer", host, sc.dp_rpc_port, "auto", "DP RPC"))
 
     PortAllocator.print_matrix(rows)
