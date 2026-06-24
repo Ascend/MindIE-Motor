@@ -40,6 +40,29 @@ class ControllerApiClient:
             return False
 
     @staticmethod
+    def register_after_restore(register_msg: RegisterMsg) -> bool:
+        client_args = {}
+        try:
+            client_args = ControllerApiClient._generate_client_args()
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
+                response = client.post("/controller/register", register_msg.model_dump())
+        except Exception as e:
+            logger.error(
+                "Exception occurred while register to controller at %s: %s", client_args.get("address", "unknown"), e
+            )
+            return False
+
+        if not isinstance(response, dict):
+            logger.error("Invalid register response from controller after restore: %s", response)
+            return False
+        if error := response.get("error"):
+            logger.warning("Register rejected by controller after restore: %s", error)
+            return False
+
+        logger.info("Register after restore success!")
+        return True
+
+    @staticmethod
     def re_register(re_register_msg: ReregisterMsg):
         client_args = {}
         try:

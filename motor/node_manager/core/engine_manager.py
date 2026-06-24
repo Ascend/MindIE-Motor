@@ -120,6 +120,22 @@ class EngineManager(ThreadSafeSingleton):
                 "[snapshot] Updated default model_save_path to snapshot metadata: %s", MOTOR_SNAPSHOT_WEIGHT_DIR
             )
 
+    def is_engine_checkpoint_done(self) -> bool:
+        if not self._config.snapshot_config.enable_snapshot:
+            return True
+
+        snapshot_metadata_path = self.get_snapshot_metadata_path()
+
+        try:
+            checkpoint = load_snapshot_metadata(snapshot_metadata_path, "checkpoint")
+            if checkpoint == "done":
+                return True
+            return False
+        except Exception as e:
+            # Failed to read checkpoint field or snapshot metadata file format error, consider checkpoint not done
+            logger.debug("[snapshot] Container checkpoint is not done: %s", e)
+            return False
+
     def register_prepare_after_restore(self) -> None:
         """Update configuration for the engine manager after restore from host side snapshot"""
         if not self._config.snapshot_config.enable_snapshot:
@@ -196,6 +212,14 @@ class EngineManager(ThreadSafeSingleton):
         logger.debug("register_msg is %s", register_msg)
 
         return ControllerApiClient.register(register_msg)
+
+    def post_register_msg_after_restore(self) -> bool | None:
+        register_msg = self._gen_register_msg()
+        if register_msg is None:
+            return False
+        logger.debug("register_msg is %s", register_msg)
+
+        return ControllerApiClient.register_after_restore(register_msg)
 
     def post_reregister_msg(self) -> bool | None:
         reregister_msg = self._gen_reregister_msg()

@@ -571,3 +571,23 @@ class TestSnapshotSupport:
             "data_parallel_master_ip",
             sample_start_cmd_msg.master_dp_ip,
         )
+
+    def test_is_engine_checkpoint_done_when_snapshot_disabled(self, engine_manager):
+        engine_manager._config.snapshot_config.enable_snapshot = False
+        assert engine_manager.is_engine_checkpoint_done() is True
+
+    def test_is_engine_checkpoint_done_when_checkpoint_missing(self, engine_manager, tmp_path):
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        metadata_path = tmp_path / "snapshot_metadata.json"
+        metadata_path.write_text('{"model_save_path": "/snapshot/weight"}', encoding="utf-8")
+
+        with patch.object(engine_manager, "get_snapshot_metadata_path", return_value=str(metadata_path)):
+            assert engine_manager.is_engine_checkpoint_done() is False
+
+    def test_is_engine_checkpoint_done_when_checkpoint_done(self, engine_manager, tmp_path):
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        metadata_path = tmp_path / "snapshot_metadata.json"
+        metadata_path.write_text('{"checkpoint": "done"}', encoding="utf-8")
+
+        with patch.object(engine_manager, "get_snapshot_metadata_path", return_value=str(metadata_path)):
+            assert engine_manager.is_engine_checkpoint_done() is True
