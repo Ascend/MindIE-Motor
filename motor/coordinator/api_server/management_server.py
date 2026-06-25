@@ -16,6 +16,7 @@ Does not create or start inference Workers; those are started by CoordinatorDaem
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -33,6 +34,7 @@ from motor.coordinator.models.response import RequestResponse
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.api_server.app_builder import AppBuilder
+from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
 from motor.coordinator.domain.instance_manager import InstanceManager, TYPE_MGMT
 from motor.coordinator.domain.probe import (
     DaemonLivenessProvider,
@@ -103,6 +105,8 @@ class ManagementServer(BaseCoordinatorServer):
         self.management_app = self._app_builder.create_management_app(lifespan=self._lifespan)
         self._readiness_was_ready: bool | None = None
         self._readiness_last_503_result: ReadinessResult | None = None
+        self._re_register_task: asyncio.Task | None = None
+        self._re_register_executor: ThreadPoolExecutor | None = None
         self._register_routes()
 
     @property
@@ -125,6 +129,7 @@ class ManagementServer(BaseCoordinatorServer):
     async def _lifespan(self, app: FastAPI):
         logger.info("Management server is starting...")
         await self._scheduler_connection.connect()
+        self._start_re_register_task()
         try:
             yield
         except asyncio.CancelledError:
@@ -133,6 +138,7 @@ class ManagementServer(BaseCoordinatorServer):
             logger.error("Management server startup failed: %s", e)
             raise
         finally:
+            await self._stop_re_register_task()
             logger.info("Management server is shutting down...")
             await self._scheduler_connection.disconnect()
 
@@ -152,6 +158,56 @@ class ManagementServer(BaseCoordinatorServer):
                 mgmt_config.ssl = mgmt_ssl_context
         mgmt_server = uvicorn.Server(mgmt_config)
         await mgmt_server.serve()
+
+    def _start_re_register_task(self) -> None:
+        """Start the periodic KV instance re-register background task."""
+        interval = self.coordinator_config.prefill_kv_event_config.re_register_interval_sec
+        if interval <= 0:
+            logger.info("KV instance re-register timer is disabled (re_register_interval_sec=%s)", interval)
+            return
+        logger.info("Starting KV instance re-register timer (interval=%ss)", interval)
+        self._re_register_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="re-register")
+        self._re_register_task = asyncio.create_task(self._re_register_loop(interval))
+
+    async def _stop_re_register_task(self) -> None:
+        """Cancel the periodic KV instance re-register background task."""
+        task = self._re_register_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._re_register_task = None
+        if self._re_register_executor is not None:
+            self._re_register_executor.shutdown(wait=False)
+            self._re_register_executor = None
+
+    async def _re_register_loop(self, interval: int) -> None:
+        """Periodically re-register KV instances to Conductor."""
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self._do_re_register()
+            except asyncio.CancelledError:
+                logger.info("KV instance re-register loop cancelled")
+                break
+            except Exception as e:
+                logger.error("Unexpected error in KV instance re-register loop: %s", e)
+
+    async def _do_re_register(self) -> None:
+        """Re-register all KVA-eligible instances to Conductor if missing."""
+        instances_view = self._instance_manager.get_available_instances(role=None)
+        instances = list(instances_view.values())
+        if not instances:
+            logger.debug("No instances available for KV re-register, skip")
+            return
+        executor = self._re_register_executor
+        if executor is None:
+            logger.warning("KV re-register executor not available, skip")
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(executor, ConductorApiClient.re_register_kv_instances, instances)
 
     def _apply_config_changes(self, new_config: CoordinatorConfig) -> None:
         """Apply Mgmt-specific config changes."""

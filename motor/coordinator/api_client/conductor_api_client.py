@@ -190,3 +190,96 @@ class ConductorApiClient:
                 "Exception occurred while register to controller at %s: %s", client_args.get('address', 'unknown'), e
             )
         return {}
+
+    @classmethod
+    def _build_register_payload(cls, instance: Instance, endpoint: Endpoint) -> dict[str, Any]:
+        prefill_kv_event_config = cls.coordinator_config.prefill_kv_event_config
+        kv_endpoints = prefill_kv_event_config.endpoint.split("*:")
+        if len(kv_endpoints) != 2:
+            return {}
+
+        instance_id = conductor_instance_id(instance)
+        payload: dict[str, Any] = {
+            "endpoint": f"{kv_endpoints[0]}{endpoint.ip}:{str(int(kv_endpoints[1]) + endpoint.id)}",
+            "type": prefill_kv_event_config.engine_type,
+            "modelname": instance.model_name,
+            "block_size": prefill_kv_event_config.block_size,
+            "instance_id": instance_id,
+            "dp_rank": endpoint.id,
+        }
+
+        if TENANT_ID != "default":
+            payload["tenant_id"] = TENANT_ID
+
+        if prefill_kv_event_config.replay_endpoint != "":
+            replay_endpoints = prefill_kv_event_config.replay_endpoint.split("*:")
+            if len(replay_endpoints) == 2:
+                payload["replay_endpoint"] = (
+                    f"{replay_endpoints[0]}{endpoint.ip}:{str(int(replay_endpoints[1]) + endpoint.id)}"
+                )
+
+        return payload
+
+    @classmethod
+    def get_registered_services(cls) -> list[dict[str, Any]]:
+        prefill_kv_event_config = cls.coordinator_config.prefill_kv_event_config
+        client_args = {
+            "address": f"{prefill_kv_event_config.conductor_service}:{prefill_kv_event_config.http_server_port}"
+        }
+
+        with SafeHTTPSClient(timeout=2, **client_args) as client:
+            response = client.get("/services")
+            if not isinstance(response, dict):
+                return []
+            services = response.get("services", [])
+            return services if isinstance(services, list) else []
+
+    @staticmethod
+    def _normalize_service_key(service: dict[str, Any]) -> tuple[str, int, str, str]:
+        instance_id = service.get("InstanceID", "")
+        dp_raw = service.get("DPRank", -1)
+        if isinstance(dp_raw, int):
+            dp_rank = dp_raw
+        else:
+            dp_rank = -1
+        endpoint = service.get("Endpoint", "")
+        replay_endpoint = service.get("ReplayEndpoint", "")
+        return instance_id, dp_rank, endpoint, replay_endpoint
+
+    @classmethod
+    def re_register_kv_instances(cls, instances: list[Instance]) -> None:
+        logger.info("re_register_kv_instances started.")
+        try:
+            registered_services = cls.get_registered_services()
+        except Exception:
+            logger.info("no registered services found in conductor, skipping re-register.")
+            return
+        registered_keys = {cls._normalize_service_key(service) for service in registered_services}
+
+        for instance in instances:
+            if instance.role not in _KVA_ROLES:
+                continue
+            for ep in instance.get_all_endpoints():
+                payload = cls._build_register_payload(instance, ep)
+                if not payload:
+                    logger.debug(
+                        "skip re-register because payload build failed for instance=%s endpoint=%s",
+                        instance.id,
+                        ep.id,
+                    )
+                    continue
+
+                expected_key = (
+                    payload.get("instance_id", ""),
+                    int(payload.get("dp_rank", -1)),
+                    payload.get("endpoint", ""),
+                    payload.get("replay_endpoint", ""),
+                )
+
+                if expected_key not in registered_keys:
+                    logger.info(
+                        "service missing in conductor, re-registering instance=%s dp_rank=%s",
+                        payload.get("instance_id"),
+                        payload.get("dp_rank"),
+                    )
+                    cls.register_post(instance, ep)

@@ -41,6 +41,8 @@ ENDPOINT = "endpoint"
 REPLAY_ENDPOINT = "replay_endpoint"
 KV_CONDUCTOR_CONFIG = "kv_conductor_config"
 HTTP_SERVER_PORT = "http_server_port"
+RE_REGISTER_INTERVAL_SEC = "re_register_interval_sec"
+DEFAULT_RE_REGISTER_INTERVAL_SEC = 30
 MODEL_PATH = "model_path"
 SSL_ENABLE = "ssl_enable"
 SSL_CA_CERTS = "ssl_ca_certs"
@@ -194,6 +196,19 @@ def _update_instances_num(
     }
 
 
+def _resolve_re_register_interval_sec(user_config_data: dict[str, Any]) -> int:
+    motor_coordinator_config = user_config_data.get(ConfigKey.MOTOR_COORDINATOR.value)
+    if not isinstance(motor_coordinator_config, dict):
+        return DEFAULT_RE_REGISTER_INTERVAL_SEC
+
+    prefill_kv_config = motor_coordinator_config.get(PREFILL_KV_EVENT_CONFIG)
+    if isinstance(prefill_kv_config, dict):
+        interval = prefill_kv_config.get(RE_REGISTER_INTERVAL_SEC)
+        if interval is not None:
+            return int(interval)
+    return DEFAULT_RE_REGISTER_INTERVAL_SEC
+
+
 def _resolve_kv_conductor_http_port(user_config_data: dict[str, Any]) -> int:
     kv_conductor_config = user_config_data.get(KV_CONDUCTOR_CONFIG)
     if isinstance(kv_conductor_config, dict):
@@ -223,6 +238,7 @@ def _build_prefill_kv_event_from_engine_section(
         BLOCK_SIZE: engine_config.get("block-size", 128),
         HTTP_SERVER_PORT: _resolve_kv_conductor_http_port(user_config_data),
         MODEL_PATH: resolver.get_model_path(""),
+        RE_REGISTER_INTERVAL_SEC: _resolve_re_register_interval_sec(user_config_data),
     }
 
 

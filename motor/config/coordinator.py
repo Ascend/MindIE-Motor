@@ -342,6 +342,7 @@ class PrefillKvEventConfig:
     replay_endpoint: str = ""
     engine_type: str = "vLLM"
     model_path: str = ""
+    re_register_interval_sec: int = 0
 
 
 @dataclass
