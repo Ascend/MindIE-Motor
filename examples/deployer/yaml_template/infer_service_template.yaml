@@ -43,8 +43,6 @@ metadata:
 spec:
   replicas: 1
   template:
-    schedulingStrategy:
-      type: Priority
     roles:
     - name: controller
       replicas: 1
@@ -429,14 +427,13 @@ spec:
         kind: StatefulSet
       spec:
         replicas: 2
-        priority: 2
         selector:
           matchLabels:
             app: mindie-server
         template:
           metadata:
             labels:
-              fault-scheduling: external-force
+              fault-scheduling: grace
               fault-retry-times: "10000"
               app: mindie-server
               ring-controller.atlas: ascend-910b
@@ -549,14 +546,13 @@ spec:
         kind: StatefulSet
       spec:
         replicas: 2
-        priority: 1
         selector:
           matchLabels:
             app: mindie-server
         template:
           metadata:
             labels:
-              fault-scheduling: external-force
+              fault-scheduling: grace
               fault-retry-times: "10000"
               app: mindie-server
               ring-controller.atlas: ascend-910b

@@ -93,7 +93,7 @@
       "configmap_namespace": "kube-system",
       "configmap_prefix": "mindx-dl-deviceinfo-",
       "k8s_cert_path": "",
-      "enable_scale_p2d": true,
+      "enable_scale_p2d": false,
       "enable_token_reinference": true
     },
     "observability_config": {

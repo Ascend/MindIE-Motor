@@ -3,17 +3,12 @@
 ## 目录
 
 - [概述](#概述)
-- [适用场景](#适用场景)
 - [代码设计](#代码设计)
 - [类图](#类图)
 - [接口描述](#接口描述)
 - [在 RAS 体系中的位置](#在-ras-体系中的位置)
 - [触发与调度](#触发与调度)
 - [恢复流程](#恢复流程)
-- [配置说明](#配置说明)
-  - [Controller 配置](#controller-配置)
-  - [InferServiceSet YAML 配置（CRD 部署）](#inferserviceset-yaml-配置crd-部署)
-- [日志与排查](#日志与排查)
 - [限制与后续规划](#限制与后续规划)
 - [相关代码与测试](#相关代码与测试)
 
@@ -29,23 +24,7 @@
 | 调度方 | `FaultManager` 策略中心（线程池异步执行） |
 | 策略注册 | `strategy.py` 中 `level4_strategy` / L5 / L6 |
 
----
-
-## 适用场景
-
-| 维度 | 说明 |
-|------|------|
-| 部署形态 | PD 分离：P 实例负责 Prefill，D 实例负责 Decode |
-| 故障对象 | **Decode 实例**（`role == decode`） |
-| 故障级别 | 实例级故障达到 **L4、L5 或 L6**（L5/L6 当前复用 L4 策略逻辑） |
-| 节点故障 | D 实例上存在 **L3 及以上** 设备级硬件故障的节点，或节点元数据缺失 |
-| 前置隔离 | D 实例已脱离 `initial` / `active` 等业务活跃态（由 FaultManager 触发隔离后进入 `inactive` 等状态） |
-
-**不适用于：**
-
-- Prefill 实例故障
-- 故障级别 ≤ L3 且未升级到 L4+
-- `enable_scale_p2d == false`
+使用与配置说明见 [ScaleP2D 用户指南](../../user_guide/features/scale_p2d.md)。
 
 ---
 
@@ -438,120 +417,12 @@ flowchart TD
 | `success` | 全流程成功 |
 | `failed` | 失败或异常 |
 
----
-
-## 配置说明
-
-启用 ScaleP2D 需同时完成 **Controller 侧 JSON 配置**与 **InferServiceSet YAML 配置**（CRD 部署场景）。
-
-### Controller 配置
-
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| `enable_fault_tolerance` | bool | 须 `true` 才启动 FaultManager |
-| `enable_scale_p2d` | bool | 是否启用 ScaleP2D（用户侧默认 `false`） |
-| `strategy_center_check_interval` | int | 策略中心轮询间隔（秒） |
-
-```json
-{
-  "fault_tolerance_config": {
-    "enable_fault_tolerance": true,
-    "enable_scale_p2d": true,
-    "strategy_center_check_interval": 1
-  }
-}
-```
-
-### InferServiceSet YAML 配置（CRD 部署）
-
-除上述 Controller 配置外，ScaleP2D 还依赖 InferServiceSet CRD 侧的**优先级调度**与**实例强制删除**能力：策略通过 NodeManager 停止 P 实例后，需由 CRD Controller 强制回收对应 Pod 并释放节点，供故障 D 实例恢复使用。
-
-修改文件：`examples/deployer/yaml_template/infer_service_template.yaml`（CRD 模式下 deploy 脚本据此生成 `output_yamls/infer_service.yaml`）。
-
-#### 1. 开启优先级调度
-
-在 `InferServiceSet.spec.template` 下增加 `schedulingStrategy`，类型设为 `Priority`：
-
-```yaml
-spec:
-  template:
-    schedulingStrategy:
-      type: Priority
-    roles:
-      # ...
-```
-
-#### 2. 为 prefill / decode 角色配置 priority
-
-在 `prefill`、`decode` 两个 role 的 `spec` 同级增加 `priority` 字段（**仅开启优先级调度时生效**）：
-
-| 字段 | 类型 | 取值范围 | 说明 |
-|------|------|----------|------|
-| `priority` | int | 1–32 | 数值越小，调度优先级越高 |
-
-PD 分离场景下，建议 **prefill 的 `priority` 数值大于 decode**（即 decode 优先级更高、prefill 更易被抢占），与 ScaleP2D「优先释放 P 算力」的策略一致。示例：
-
-```yaml
-    - name: prefill
-      # ...
-      spec:
-        replicas: 2
-        priority: 2          # 优先级低于 decode
-        # ...
-
-    - name: decode
-      # ...
-      spec:
-        replicas: 2
-        priority: 1          # 优先级高于 prefill
-        # ...
-```
-
-#### 3. 将 Pod 标签 fault-scheduling 改为 external-force
-
-将 `prefill`、`decode` 角色 Pod 模板（`spec.template.metadata.labels`）中的 `fault-scheduling` 由默认的 `grace` 改为 `external-force`：
-
-| 标签 | 修改前 | 修改后 | 说明 |
-|------|--------|--------|------|
-| `fault-scheduling` | `grace` | `external-force` | 开启实例级重调度；强制删除原实例并级联删除 Pod，供 ScaleP2D 实现 P 实例的强制释放 |
-
-```yaml
-        template:
-          metadata:
-            labels:
-              fault-scheduling: external-force   # 原为 grace
-              fault-retry-times: "10000"
-              app: mindie-server
-              # ...
-```
-
-> **说明：** 以上 YAML 改动仅作用于 `prefill`、`decode` 推理角色；`controller`、`coordinator` 等角色无需修改。
-
 **类常量：**
 
 | 常量 | 默认值 | 说明 |
 |------|--------|------|
 | `CHECK_D_INSTANCE_STATUS_TIMEOUT` | 30s | D 实例状态等待上限 |
 | `CHECK_D_INSTANCE_STATUS_INTERVAL` | 3s | 轮询间隔 |
-
-详见 [配置参考](../../user_guide/deployment/k8s/config_reference.md#26-fault_tolerance_config)。
-
----
-
-## 日志与排查
-
-日志前缀：`[motor/controller/fault_tolerance/scale_p2d]`
-
-| 关键词 | 可能原因 | 建议 |
-|--------|----------|------|
-| `instance_not_in_instance_manager` | D 实例不存在 | ETCD / InstanceManager 同步 |
-| `ScaleP2D not needed` + `initial/active` | D 未隔离 | `separate_instance` 流程 |
-| `did not become INACTIVE` | 状态检查超时 | 隔离与状态上报延迟 |
-| `Node metadata missing` | 节点未同步 | ResourceMonitor / pod_ip 映射 |
-| `no_p_instances` | 无 P 实例 | 部署与注册 |
-| `Insufficient Prefill nodes` | P 容量不足 | 扩容 P 或降低 `num_required_node` |
-| `Failed to stop P instance node` | NodeManager 不可达 | 进程、网络、Pod 生命周期 |
-| `algorithm_not_implemented` | 占位选择算法 | 实现生产级 `_select_instances_algorithm` |
 
 ---
 

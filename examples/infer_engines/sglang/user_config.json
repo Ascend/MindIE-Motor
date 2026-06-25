@@ -19,7 +19,7 @@
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": true,
-      "enable_scale_p2d": true,
+      "enable_scale_p2d": false,
       "enable_token_reinference": true
     },
     "standby_config": {
