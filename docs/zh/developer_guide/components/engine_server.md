@@ -42,7 +42,7 @@ Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参�
 
 **异常判定**：当 AICore 峰值低于 `npu_usage_threshold` 且虚推请求失败时，累计连续失败次数；达到 `max_failure_count` 后，`GET /status` 返回 `abnormal`。Node Manager 的 `HeartbeatManager` 连续 5 次收到 abnormal 后触发自杀重调度。
 
-**vLLM 0.18.0 指标过滤**：启用虚推时，Engine Server 会 patch vLLM `PrometheusStatLogger`，将虚推请求（2 prompt tokens + 1 generation token）排除在 Prometheus 指标统计之外。
+**vLLM 指标过滤（v0.18+）**：启用虚推时，Engine Server 会 patch vLLM `OutputProcessor._update_stats_from_finished`，在写入 per-request 指标前跳过 `external_req_id` 含 `_virtual` 后缀的虚推请求（对应虚推 `X-Request-Id: {timestamp}_virtual`）。仅过滤 `request_success_total` 等 per-request 指标；`prompt_tokens` / `generation_tokens` 等 iteration 级 counter 仍会累计。
 
 ## 配置说明
 

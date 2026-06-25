@@ -26,6 +26,12 @@ logger = get_logger(__name__)
 
 _VIRTUAL_REQUEST_TIMEOUT_SEC = 5.0
 _AICORE_SAMPLE_WINDOW_SEC = 5.0
+VIRTUAL_REQUEST_ID_MARKER = "_virtual"
+
+
+def _is_virtual_metrics_request(req_state) -> bool:
+    external_req_id = getattr(req_state, "external_req_id", None) or ""
+    return VIRTUAL_REQUEST_ID_MARKER in external_req_id
 
 
 class SimInference:
@@ -97,57 +103,50 @@ class SimInference:
         self._status = status
 
     def patch_vllm_metrics(self):
-        """
-        Patch vLLM's metrics logger to skip virtual inference requests when:
-        1. enable_virtual_inference is True
-        2. VLLM version is 0.18.0
-        """
+        """Patch vLLM output stats to skip virtual inference per-request metrics (v0.18+)."""
         if not self.enable_virtual_inference:
             return
 
         try:
-            # Import the metrics logger module
-            metrics_loggers_module = importlib.import_module("vllm.v1.metrics.loggers")
+            output_processor_module = importlib.import_module("vllm.v1.engine.output_processor")
+            original_update = output_processor_module.OutputProcessor._update_stats_from_finished
+            parent_request_cls = output_processor_module.ParentRequest
 
-            # Get the original record method
-            original_record = metrics_loggers_module.PrometheusStatLogger.record
-
-            # Create a patched version of record method
-            def patched_record(self, scheduler_stats, iteration_stats, mm_cache_stats=None, engine_idx=0):
-                """Patched record method to skip virtual inference requests."""
+            def patched_update_stats_from_finished(
+                processor_self,
+                req_state,
+                finish_reason,
+                iteration_stats,
+            ):
                 if iteration_stats is None:
-                    return original_record(self, scheduler_stats, iteration_stats, mm_cache_stats, engine_idx)
+                    original_update(processor_self, req_state, finish_reason, iteration_stats)
+                    return
 
-                # Filter out virtual inference requests
-                original_finished_requests = iteration_stats.finished_requests
-                filtered_finished_requests = []
-                filtered_count = 0
+                assert finish_reason is not None
+                assert req_state.stats is not None
 
-                for finished_request in original_finished_requests:
-                    # Skip requests with num_prompt_tokens=1 and num_generation_tokens=1
-                    if finished_request.num_prompt_tokens == 2 and finished_request.num_generation_tokens == 1:
-                        filtered_count += 1
-                        continue
-                    filtered_finished_requests.append(finished_request)
+                if _is_virtual_metrics_request(req_state):
+                    logger.debug(
+                        "Skipped virtual inference request from per-request metrics: %s",
+                        req_state.external_req_id,
+                    )
+                    processor_self.lora_states.request_finished(req_state.request_id, req_state.lora_name)
+                    parent_request_cls.observe_finished_request(
+                        req_state.parent_req,
+                        iteration_stats,
+                        req_state.stats.num_generation_tokens,
+                    )
+                    return
 
-                # Log the number of filtered virtual inference requests
-                if filtered_count > 0:
-                    logger.debug("Filtered out %s virtual inference requests from metrics", filtered_count)
+                original_update(processor_self, req_state, finish_reason, iteration_stats)
 
-                # Replace finished_requests with filtered list
-                iteration_stats.finished_requests = filtered_finished_requests
-
-                # Call original method with filtered requests
-                return original_record(self, scheduler_stats, iteration_stats, mm_cache_stats, engine_idx)
-
-            # Apply the patch
-            metrics_loggers_module.PrometheusStatLogger.record = patched_record
-            logger.info("Successfully patched vLLM metrics logger to skip virtual inference requests")
+            output_processor_module.OutputProcessor._update_stats_from_finished = patched_update_stats_from_finished
+            logger.info("Successfully patched vLLM OutputProcessor to skip virtual inference per-request metrics")
 
         except ImportError as e:
-            logger.debug("Failed to import vLLM modules for patching: %s", e)
+            logger.debug("Failed to import vLLM modules for metrics patching: %s", e)
         except Exception as e:
-            logger.error("Failed to patch vLLM metrics logger: %s", e)
+            logger.error("Failed to patch vLLM output processor metrics hook: %s", e)
 
     def start_health_check(self):
         # only start virtual inference when enable_virtual_inference is True and npu_usage_threshold is above 0

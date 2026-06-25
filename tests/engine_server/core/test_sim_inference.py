@@ -13,13 +13,39 @@ from unittest import mock
 import asyncio
 import contextlib
 import httpx
+import sys
 import threading
 import time
+import types
 import pytest
-from motor.engine_server.core.sim_inference import SimInference, _AICORE_SAMPLE_WINDOW_SEC
+from motor.engine_server.core.sim_inference import (
+    SimInference,
+    _AICORE_SAMPLE_WINDOW_SEC,
+    _is_virtual_metrics_request,
+)
 from motor.engine_server.constants import constants
 
 # pylint: disable=redefined-outer-name
+
+
+@pytest.fixture
+def finish_reason(monkeypatch):
+    """Provide FinishReason without requiring vllm to be installed."""
+
+    class FinishReason:
+        LENGTH = 1
+        STOP = 2
+
+    fake_engine = types.ModuleType("vllm.v1.engine")
+    fake_engine.FinishReason = FinishReason
+    fake_v1 = types.ModuleType("vllm.v1")
+    fake_v1.engine = fake_engine
+    fake_vllm = types.ModuleType("vllm")
+    fake_vllm.v1 = fake_v1
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(sys.modules, "vllm.v1", fake_v1)
+    monkeypatch.setitem(sys.modules, "vllm.v1.engine", fake_engine)
+    return FinishReason
 
 
 @pytest.fixture
@@ -671,3 +697,118 @@ async def test_health_check_loop_aicore_sleep_reverts_below_threshold(mock_sleep
                 await sim_inference.health_check_loop()
 
     assert sim_inference.sim_sleep == 5
+
+
+class _FakeStats:
+    def __init__(self, num_generation_tokens: int):
+        self.num_generation_tokens = num_generation_tokens
+
+
+class _FakeReqState:
+    def __init__(
+        self,
+        *,
+        external_req_id: str | None = None,
+        max_tokens_param: int | None = None,
+        prompt_len: int = 1,
+        num_generation_tokens: int = 1,
+        request_id: str | None = None,
+        lora_name: str | None = None,
+        parent_req: object | None = None,
+    ):
+        self.external_req_id = external_req_id
+        self.max_tokens_param = max_tokens_param
+        self.prompt_len = prompt_len
+        self.stats = _FakeStats(num_generation_tokens)
+        self.request_id = request_id
+        self.lora_name = lora_name
+        self.parent_req = parent_req
+
+
+def test_is_virtual_metrics_request_by_external_req_id():
+    assert _is_virtual_metrics_request(_FakeReqState(external_req_id="cmpl-123_virtual"))
+    assert not _is_virtual_metrics_request(_FakeReqState(external_req_id="cmpl-123-normal"))
+
+
+def test_is_virtual_metrics_request_rejects_missing_external_req_id():
+    assert not _is_virtual_metrics_request(_FakeReqState(external_req_id=None))
+
+
+@mock.patch("motor.engine_server.core.sim_inference.importlib.import_module")
+def test_patch_vllm_metrics_skips_virtual_update(mock_import_module, sim_inference, finish_reason):
+    original_update = mock.MagicMock()
+    mock_lora_states = mock.MagicMock()
+    mock_parent_observe = mock.MagicMock()
+
+    mock_module = mock.MagicMock()
+    mock_module.OutputProcessor._update_stats_from_finished = original_update
+    mock_module.ParentRequest.observe_finished_request = mock_parent_observe
+    mock_import_module.return_value = mock_module
+
+    sim_inference.patch_vllm_metrics()
+
+    patched = mock_module.OutputProcessor._update_stats_from_finished
+    processor = mock.MagicMock()
+    processor.lora_states = mock_lora_states
+    req_state = _FakeReqState(
+        external_req_id="cmpl-42_virtual",
+        request_id="internal-42",
+        lora_name=None,
+        parent_req=None,
+    )
+    iteration_stats = mock.MagicMock()
+
+    patched(processor, req_state, finish_reason.LENGTH, iteration_stats)
+
+    original_update.assert_not_called()
+    mock_lora_states.request_finished.assert_called_once_with("internal-42", None)
+    mock_parent_observe.assert_called_once()
+
+
+@mock.patch("motor.engine_server.core.sim_inference.importlib.import_module")
+def test_patch_vllm_metrics_delegates_non_virtual_request(mock_import_module, sim_inference, finish_reason):
+    original_update = mock.MagicMock()
+    mock_module = mock.MagicMock()
+    mock_module.OutputProcessor._update_stats_from_finished = original_update
+    mock_import_module.return_value = mock_module
+
+    sim_inference.patch_vllm_metrics()
+
+    patched = mock_module.OutputProcessor._update_stats_from_finished
+    processor = mock.MagicMock()
+    req_state = _FakeReqState(
+        external_req_id="cmpl-real-request",
+        max_tokens_param=16,
+        prompt_len=10,
+        num_generation_tokens=8,
+    )
+    iteration_stats = mock.MagicMock()
+
+    patched(processor, req_state, finish_reason.STOP, iteration_stats)
+
+    original_update.assert_called_once_with(processor, req_state, finish_reason.STOP, iteration_stats)
+
+
+@mock.patch("motor.engine_server.core.sim_inference.importlib.import_module")
+def test_patch_vllm_metrics_delegates_when_iteration_stats_is_none(mock_import_module, sim_inference, finish_reason):
+    original_update = mock.MagicMock()
+    mock_lora_states = mock.MagicMock()
+    mock_parent_observe = mock.MagicMock()
+
+    mock_module = mock.MagicMock()
+    mock_module.OutputProcessor._update_stats_from_finished = original_update
+    mock_module.ParentRequest.observe_finished_request = mock_parent_observe
+    mock_import_module.return_value = mock_module
+
+    sim_inference.patch_vllm_metrics()
+
+    patched = mock_module.OutputProcessor._update_stats_from_finished
+    processor = mock.MagicMock()
+    processor.lora_states = mock_lora_states
+    req_state = _FakeReqState(external_req_id="cmpl-42_virtual")
+
+    patched(processor, req_state, finish_reason.LENGTH, None)
+
+    original_update.assert_called_once_with(processor, req_state, finish_reason.LENGTH, None)
+    mock_lora_states.request_finished.assert_not_called()
+    mock_parent_observe.assert_not_called()
