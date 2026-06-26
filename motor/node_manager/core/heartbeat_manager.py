@@ -332,25 +332,23 @@ class HeartbeatManager(ThreadSafeSingleton):
                             "[snapshot] Container snapshot enabled, current container checkpoint is not done, do not report heartbeat to controller..."
                         )
                     self._checkpoint_done_inspect_retry_count += 1
-                    time.sleep(self.heartbeat_interval_seconds)
-                    continue
+                else:
+                    # Container snapshot checkpoint is barrier here, so that a new register can be first triggered after restore from snapshot
+                    if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
+                        logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
+                        self._register_after_restore()
+                        time.sleep(self.heartbeat_interval_seconds)
+                        continue
 
-                # Container snapshot checkpoint is barrier here, so that a new register can be first triggered after restore from snapshot
-                if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
-                    logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
-                    self._register_after_restore()
-                    time.sleep(self.heartbeat_interval_seconds)
-                    continue
+                    # Build message and send request outside of lock
+                    heartbeat_msg = HeartbeatMsg(
+                        job_name=self._job_name,
+                        ins_id=self._instance_id,
+                        ip=self._config.api_config.pod_ip,
+                        status=endpoint_status_list,
+                    )
 
-                # Build message and send request outside of lock
-                heartbeat_msg = HeartbeatMsg(
-                    job_name=self._job_name,
-                    ins_id=self._instance_id,
-                    ip=self._config.api_config.pod_ip,
-                    status=endpoint_status_list,
-                )
-
-                ControllerApiClient.report_heartbeat(heartbeat_msg)
+                    ControllerApiClient.report_heartbeat(heartbeat_msg)
 
             except Exception as e:
                 # Exception triggered by host side snapshot restore, nodeManager re-send register message
