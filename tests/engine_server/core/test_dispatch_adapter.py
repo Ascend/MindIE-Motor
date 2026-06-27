@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -157,6 +158,50 @@ async def test_vllm_decode_adapter_strips_dispatch_and_injects_metaserver():
     assert MOTOR_DISPATCH_KEY not in engine_body
     assert engine_body["request_id"] == "req#a1"
     assert engine_body["kv_transfer_params"]["metaserver"] == "http://127.0.0.1:8000/v1/metaserver"
+
+
+@pytest.mark.asyncio
+async def test_vllm_handoff_prefill_request_sets_do_remote_decode():
+    """Handoff prefill leg must instruct the producer engine to generate KV for a
+    remote decode, otherwise the connector emits no bootstrap (mirrors the native
+    proxy build_prefill_request).
+    """
+    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
+    engine_body, _ = await adapter.adapt_request_body(_body("prefill"))
+
+    assert engine_body["kv_transfer_params"] == {
+        "do_remote_decode": True,
+        "do_remote_prefill": False,
+    }
+    # Prefill is still a single-token generation.
+    assert engine_body["max_tokens"] == 1
+    assert engine_body["min_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_vllm_handoff_decode_does_not_inject_metaserver():
+    """A handoff connector decode must never receive a metaserver URL; its KV
+    bootstrap arrives via the prefill result instead.
+    """
+    adapter = VLLMDispatchAdapter(_Config(role="decode", engine_config=_handoff_config()))
+    body = _body("decode")
+    body[MOTOR_PREFILL_RESULT_KEY] = {
+        "object": "motor.prefill_result",
+        "schema_version": "1.0",
+        "root_request_id": "req",
+        "engine_request_id": "req#a1",
+        "pair_id": "pair",
+        "attempt_seq": 1,
+        "status": "completed",
+        "handoff_mode": "handoff",
+        "payload": {"do_remote_prefill": True, "remote_block_ids": [[1, 2]], "remote_host": "10.0.0.5"},
+    }
+
+    engine_body, _ = await adapter.adapt_request_body(body)
+
+    kv = engine_body["kv_transfer_params"]
+    assert kv == {"do_remote_prefill": True, "remote_block_ids": [[1, 2]], "remote_host": "10.0.0.5"}
+    assert "metaserver" not in kv
 
 
 def test_normalization_strips_engine_dispatch_fields():
@@ -359,15 +404,86 @@ async def test_vllm_dispatch_round_trip_decode_metaserver_to_prefill_cache():
 async def test_vllm_cpcd_prefill_response_becomes_completed_prefill_result():
     adapter = VLLMDispatchAdapter(_Config(role="prefill"))
     _, dispatch = await adapter.adapt_request_body(_cpcd_body("prefill"))
-    response = JSONResponse({"kv": "opaque"})
+    # Realistic vLLM prefill response: the KV bootstrap is nested under the
+    # top-level ``kv_transfer_params`` field of the OpenAI response body.
+    response = JSONResponse(
+        {
+            "id": "cmpl-x",
+            "choices": [{"text": "", "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            "kv_transfer_params": {"do_remote_prefill": True, "remote_block_ids": [[12, 13]]},
+        }
+    )
 
     normalized = await adapter.normalize_response(response, _context(dispatch))
-    body = normalized.body.decode("utf-8")
+    body = json.loads(normalized.body.decode("utf-8"))
 
-    assert '"object":"motor.prefill_result"' in body
-    assert '"status":"completed"' in body
-    assert '"handoff_mode":"handoff"' in body
-    assert '"payload":{"kv":"opaque"}' in body
+    assert body["object"] == "motor.prefill_result"
+    assert body["status"] == "completed"
+    assert body["handoff_mode"] == "handoff"
+    # The payload must be only the KV bootstrap sub-object, not the whole
+    # response body, so the decode leg can use it directly as kv_transfer_params.
+    assert body["payload"] == {"do_remote_prefill": True, "remote_block_ids": [[12, 13]]}
+
+
+@pytest.mark.asyncio
+async def test_vllm_handoff_prefill_response_without_kv_transfer_params_yields_empty_payload():
+    adapter = VLLMDispatchAdapter(_Config(role="prefill"))
+    _, dispatch = await adapter.adapt_request_body(_cpcd_body("prefill"))
+    response = JSONResponse({"id": "cmpl-x", "choices": [{"text": ""}]})
+
+    normalized = await adapter.normalize_response(response, _context(dispatch))
+    body = json.loads(normalized.body.decode("utf-8"))
+
+    assert body["status"] == "completed"
+    assert body["payload"] == {}
+
+
+@pytest.mark.asyncio
+async def test_vllm_handoff_prefill_to_decode_round_trip_preserves_bootstrap():
+    """End-to-end: a realistic prefill response threaded into the decode leg must
+    surface the KV bootstrap at the top level of ``kv_transfer_params`` (the shape
+    the engine connector reads), not nested one level too deep.
+    """
+    prefill_adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
+    _, prefill_dispatch = await prefill_adapter.adapt_request_body(_body("prefill"))
+    engine_response = JSONResponse(
+        {
+            "id": "cmpl-x",
+            "choices": [{"text": "", "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 16}},
+            "kv_transfer_params": {
+                "do_remote_prefill": True,
+                "do_remote_decode": False,
+                "remote_block_ids": [[12, 13, 14]],
+                "remote_engine_id": "engX",
+                "remote_request_id": "req#a1",
+                "remote_host": "10.0.0.5",
+                "remote_port": 5567,
+            },
+        }
+    )
+    normalized = await prefill_adapter.normalize_response(engine_response, _context(prefill_dispatch))
+    prefill_result = json.loads(normalized.body.decode("utf-8"))
+
+    # Usage (and its prompt_tokens_details) must survive separately from payload so
+    # the coordinator can still report cached tokens after handoff.
+    assert prefill_result["usage"]["prompt_tokens_details"] == {"cached_tokens": 16}
+
+    decode_adapter = VLLMDispatchAdapter(_Config(role="decode", engine_config=_handoff_config()))
+    decode_body = _body("decode")
+    decode_body[MOTOR_PREFILL_RESULT_KEY] = prefill_result
+    engine_body, _ = await decode_adapter.adapt_request_body(decode_body)
+
+    kv = engine_body["kv_transfer_params"]
+    assert kv["do_remote_prefill"] is True
+    assert kv["remote_block_ids"] == [[12, 13, 14]]
+    assert kv["remote_host"] == "10.0.0.5"
+    assert kv["remote_port"] == 5567
+    # Must NOT be nested or carry the OpenAI response envelope.
+    assert "kv_transfer_params" not in kv
+    assert "choices" not in kv
+    assert "usage" not in kv
 
 
 @pytest.mark.asyncio

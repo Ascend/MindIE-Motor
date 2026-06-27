@@ -277,6 +277,13 @@ class PrefillResult(BaseModel):
     status: PrefillStatus = Field(..., description="Whether prefill was prepared, completed, or skipped")
     handoff_mode: PrefillMode = Field(..., description="Trigger, handoff, or bootstrap coordination mode")
     payload: dict = Field(default_factory=dict, description="Engine-specific prefill handoff data, e.g. KV handles")
+    usage: dict | None = Field(
+        default=None,
+        description=(
+            "Prefill usage block (carries prompt_tokens_details for cached-token reporting); "
+            "kept separate from payload because payload is consumed verbatim as kv_transfer_params"
+        ),
+    )
     expires_at_ms: int | None = Field(
         default=None,
         ge=0,
