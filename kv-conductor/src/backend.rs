@@ -12,15 +12,19 @@
 //!
 //! Three backends are supported, each with different event broadcast semantics:
 //!
-//! | Backend   | Pool model       | Auto-attach          | Usage                                     |
-//! |-----------|------------------|----------------------|-------------------------------------------|
+//! | Backend   | Pool model       | Auto-attach          | Usage                                           |
+//! |-----------|------------------|----------------------|-------------------------------------------------|
 //! | Mooncake  | Centralized      | IP → all DPs on node | One pool subscriber, events carry backend_id=IP |
-//! | Memcache  | Centralized      | IP + dp_rank → exact DP | Pool subscriber, events carry backend_id + dp_rank |
-//! | YuanRong  | Per-node ports   | None (port = DP)     | Per-DP multi-port subscribers            |
+//! | Memcache  | Centralized      | IP → all DPs on node | Same as Mooncake                                |
+//! | YuanRong  | Per-node ports   | None (port = DP)     | Per-DP multi-port subscribers                   |
 //!
 //! The `StoreBackend` enum acts as a lightweight factory: it drives
 //! registration behaviour (whether to index HBM IPs) and event-processing
 //! behaviour (which `MatchMode` the pool subscriber uses).
+//!
+//! Note: For both Mooncake and Memcache, KV events do not carry an exact
+//! dp_rank — instead every DP on the target node records the event's hash.
+//! This avoids the overhead of per-DP event routing.
 
 use crate::protocols::{HbmIpIndex, WorkerKey};
 
@@ -35,9 +39,9 @@ pub enum StoreBackend {
     /// Events carry `backend_id` = node IP.  The conductor matches that IP
     /// against all HBM-registered DPs on the node.
     Mooncake,
-    /// Memcache: similar to Mooncake but per-event `dp_rank` is exact.
-    /// Events carry `backend_id` = node IP **and** an explicit `dp_rank`;
-    /// the conductor matches the exact DP.
+    /// Memcache: same semantics as Mooncake.  KV events carry `backend_id` =
+    /// node IP but do **not** carry an exact `dp_rank`; every DP on the
+    /// target node records the event hash.
     Memcache,
     /// YuanRong: each node has independent ZMQ PUB ports per storage medium.
     /// HBM, DDR and SSD events arrive on separate ports tied to a specific DP.
@@ -74,7 +78,7 @@ impl StoreBackend {
     pub fn match_mode(&self) -> MatchMode {
         match self {
             Self::Mooncake => MatchMode::IpOnly,
-            Self::Memcache => MatchMode::IpAndDpRank,
+            Self::Memcache => MatchMode::IpOnly,
             Self::YuanRong | Self::Unknown => MatchMode::None,
         }
     }
@@ -95,7 +99,7 @@ pub enum MatchMode {
     IpOnly,
     /// Match by IP **and** dp_rank.  An event with `backend_id=<ip>` and
     /// a specific `dp_rank` is applied to only the exact matching DP.
-    /// (Memcache: centralized, but events carry per-DP rank).
+    /// (Currently unused; reserved for future backends that carry per-DP rank).
     IpAndDpRank,
 }
 
@@ -206,7 +210,7 @@ mod tests {
     #[test]
     fn test_store_backend_match_mode() {
         assert_eq!(StoreBackend::Mooncake.match_mode(), MatchMode::IpOnly);
-        assert_eq!(StoreBackend::Memcache.match_mode(), MatchMode::IpAndDpRank);
+        assert_eq!(StoreBackend::Memcache.match_mode(), MatchMode::IpOnly);
         assert_eq!(StoreBackend::YuanRong.match_mode(), MatchMode::None);
         assert_eq!(StoreBackend::Unknown.match_mode(), MatchMode::None);
     }

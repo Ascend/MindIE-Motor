@@ -127,6 +127,30 @@ def test_setup_zmq_multi(mock_zmq, config, endpoints):
 
 
 @patch("motor.node_manager.core.fault_reporter.zmq")
+def test_setup_zmq_ipv6_bracketed_url(mock_zmq, config, endpoints):
+    import zmq as real_zmq
+
+    config.api_config.pod_ip = "2001:db8::1"
+    config.fault_tolerance_config.zmq_pub_port = 5555
+    r = FaultReporter(config)
+    r._endpoints = endpoints[:1]
+
+    mock_ctx_cls = MagicMock()
+    mock_ctx_instance = mock_ctx_cls.return_value
+    mock_sub = MagicMock()
+    mock_ctx_instance.socket.return_value = mock_sub
+    mock_zmq.Context = mock_ctx_cls
+    mock_zmq.SUB = real_zmq.SUB
+    mock_zmq.Poller.return_value = MagicMock()
+
+    sub_sockets, poller, _ = r._setup_zmq_sub_sockets()
+
+    mock_sub.connect.assert_called_once_with("tcp://[2001:db8::1]:5555")
+    assert len(sub_sockets) == 1
+    assert poller is not None
+
+
+@patch("motor.node_manager.core.fault_reporter.zmq")
 def test_setup_zmq_no_port(mock_zmq, config, endpoints):
     r = FaultReporter(config)
     r._endpoints = endpoints
@@ -268,7 +292,8 @@ def test_main_loop_multi_socket(mock_zmq, mock_report, config, endpoints):
 @patch("motor.node_manager.core.fault_reporter.zmq")
 def test_main_loop_retry_after_zmq_error(mock_zmq, mock_report, config, endpoints):
     """When ZMQError occurs during poll, the loop tears down old sockets,
-    reconnects, and continues processing — instead of exiting."""
+    reconnects, and continues processing — instead of exiting.
+    """
     import zmq as real_zmq
     import msgspec.msgpack
 
@@ -348,7 +373,8 @@ def test_main_loop_retry_after_zmq_error(mock_zmq, mock_report, config, endpoint
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_zmq_failed_report_not_deduped(mock_report, reporter):
     """When Controller is unreachable (report returns False), the status must
-    NOT be marked as known so it will be retried on the next ZMQ message."""
+    NOT be marked as known so it will be retried on the next ZMQ message.
+    """
     import msgspec.msgpack
 
     mock_report.return_value = False
@@ -366,7 +392,8 @@ def test_process_zmq_failed_report_not_deduped(mock_report, reporter):
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_zmq_successful_report_marked_as_known(mock_report, reporter):
     """When Controller confirms delivery (report returns True), the status
-    IS marked as known so subsequent identical messages are deduplicated."""
+    IS marked as known so subsequent identical messages are deduplicated.
+    """
     import msgspec.msgpack
 
     mock_report.return_value = True

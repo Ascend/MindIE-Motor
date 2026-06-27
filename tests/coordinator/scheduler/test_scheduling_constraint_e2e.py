@@ -41,7 +41,7 @@ def _make_config() -> MagicMock:
     cfg.scheduler_config.kv_affinity_load_weight = 0.5
     cfg.exception_config.max_retry = 1
     cfg.exception_config.retry_delay = 0.0001
-    cfg.exception_config.recompute_enabled = False
+    cfg.exception_config.reschedule_enabled = False
     cfg.token_sampling_config.precision_check_enabled = True
     cfg.token_sampling_config.interval_seconds = 30.0
     cfg.token_sampling_config.logprobs_count = 1

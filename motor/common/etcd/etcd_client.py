@@ -10,11 +10,15 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+# pylint: disable=no-member,no-name-in-module
+# rpc_pb2 / rpc_pb2_grpc are generated protobuf modules inside an __init__.py
+# namespace package; pylint cannot resolve their classes or the import itself.
+
 import json
 import os
 import threading
 from contextlib import contextmanager
-from typing import Any, Type, TypeVar
+from typing import Any, TypeVar
 
 import grpc
 from pydantic import BaseModel
@@ -24,6 +28,7 @@ from motor.config.tls_config import TLSConfig
 from motor.common.etcd.proto import rpc_pb2, rpc_pb2_grpc
 from motor.common.etcd import locks
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 
 
 T = TypeVar('T', bound=BaseModel)
@@ -60,13 +65,11 @@ class EtcdClient:
                 with open(self.tls_config.cert_file, RB) as f:
                     cert_chain = f.read()
                 creds = grpc.ssl_channel_credentials(
-                    root_certificates=root_cert,
-                    private_key=private_key,
-                    certificate_chain=cert_chain
+                    root_certificates=root_cert, private_key=private_key, certificate_chain=cert_chain
                 )
-                self.channel = grpc.secure_channel(f'{self.host}:{self.port}', creds)
+                self.channel = grpc.secure_channel(format_address(self.host, self.port), creds)
             else:
-                self.channel = grpc.insecure_channel(f'{self.host}:{self.port}')
+                self.channel = grpc.insecure_channel(format_address(self.host, self.port))
 
             self.kv_stub = rpc_pb2_grpc.KVStub(self.channel)
             self.lease_stub = rpc_pb2_grpc.LeaseStub(self.channel)
@@ -83,7 +86,7 @@ class EtcdClient:
 
     @staticmethod
     def get_key_with_namespace_and_job_name(key: str) -> str:
-        """ key must start with / """
+        """key must start with /"""
         if key.startswith(namespace + "/" + job_name + "/"):
             return key
         return namespace + "/" + job_name + key
@@ -94,7 +97,7 @@ class EtcdClient:
         bytes_prefix = prefix.encode(UTF8_ENCODING)
         s = bytearray(bytes_prefix)
         for i in reversed(range(len(s))):
-            if s[i] < 0xff:
+            if s[i] < 0xFF:
                 s[i] = s[i] + 1
                 break
         return bytes(s)
@@ -104,7 +107,7 @@ class EtcdClient:
             with self._lock:
                 lock_key = self.get_key_with_namespace_and_job_name(lock_key)
                 if lock_key in self._leases:
-                    logger.error("Lock %s already exists", lock_key)
+                    logger.debug("Lock %s already exists (held by another thread)", lock_key)
                     return None
 
                 lock = locks.Lock(lock_key, ttl, etcd_client=self)
@@ -143,7 +146,7 @@ class EtcdClient:
 
                 if new_ttl <= 0:
                     # If the returned TTL is <= 0, it means the lease has already expired.
-                    raise Exception("Lease expired (TTL=%s) during renewal", new_ttl)
+                    raise RuntimeError(f"Lease expired (TTL={new_ttl}) during renewal")
                 logger.debug("Renewed lease for lock %s. New TTL: %s", lock_key, new_ttl)
                 return True
         except Exception as e:
@@ -169,12 +172,7 @@ class EtcdClient:
             del self._leases[lock_key]
             return False
 
-    def put_json(
-            self,
-            key: str,
-            data: BaseModel | dict[str, Any],
-            lease: int = None
-    ) -> bool:
+    def put_json(self, key: str, data: BaseModel | dict[str, Any], lease: int = None) -> bool:
         """Store JSON data (pydantic compatible)"""
         try:
             if isinstance(data, BaseModel):
@@ -196,11 +194,8 @@ class EtcdClient:
         try:
             prefix = self.get_key_with_namespace_and_job_name(prefix)
             resp = self.kv_stub.DeleteRange(
-                rpc_pb2.DeleteRangeRequest(
-                    key=prefix.encode(UTF8_ENCODING),
-                    range_end=self._prefix_range_end(prefix)
-                ),
-                timeout=self.timeout
+                rpc_pb2.DeleteRangeRequest(key=prefix.encode(UTF8_ENCODING), range_end=self._prefix_range_end(prefix)),
+                timeout=self.timeout,
             )
             deleted_count = resp.deleted
             logger.info("Deleted %d keys with prefix %s", deleted_count, prefix)
@@ -224,11 +219,7 @@ class EtcdClient:
         try:
             key = self.get_key_with_namespace_and_job_name(key)
             resp = self.kv_stub.Range(
-                rpc_pb2.RangeRequest(
-                    key=key.encode(UTF8_ENCODING),
-                    limit=1
-                ),
-                timeout=self.timeout
+                rpc_pb2.RangeRequest(key=key.encode(UTF8_ENCODING), limit=1), timeout=self.timeout
             )
             if not resp.kvs:
                 return default
@@ -248,8 +239,7 @@ class EtcdClient:
         try:
             key = self.get_key_with_namespace_and_job_name(key)
             resp = self.kv_stub.DeleteRange(
-                rpc_pb2.DeleteRangeRequest(key=key.encode(UTF8_ENCODING)),
-                timeout=self.timeout
+                rpc_pb2.DeleteRangeRequest(key=key.encode(UTF8_ENCODING)), timeout=self.timeout
             )
             deleted_count = resp.deleted
             if deleted_count == 0:
@@ -302,14 +292,10 @@ class EtcdClient:
                 return True
 
         except Exception as e:
-            logger.error("Failed to persist data with prefix %s: %s", key_prefix, e)
+            logger.debug("Failed to persist data with prefix %s: %s", key_prefix, e)
             return False
 
-    def restore_data(
-            self,
-            key_prefix: str,
-            model_class: Type[T] | None = None
-    ) -> dict[str, dict[str, Any] | T] | None:
+    def restore_data(self, key_prefix: str, model_class: type[T] | None = None) -> dict[str, dict[str, Any] | T] | None:
         """Restore data dictionary from key prefix"""
         try:
             data = self.get_prefix_data(key_prefix, model_class)
@@ -324,11 +310,7 @@ class EtcdClient:
             logger.error("Failed to restore data with prefix %s: %s", key_prefix, e)
             return None
 
-    def get_prefix_data(
-            self,
-            key_prefix: str,
-            model_class: Type[T] | None = None
-    ) -> dict[str, dict[str, Any] | T]:
+    def get_prefix_data(self, key_prefix: str, model_class: type[T] | None = None) -> dict[str, dict[str, Any] | T]:
         """Get all data under a prefix as dictionary"""
         data = {}
         try:
@@ -338,9 +320,9 @@ class EtcdClient:
                     key=key_prefix.encode(UTF8_ENCODING),
                     range_end=self._prefix_range_end(key_prefix),
                     limit=0,
-                    keys_only=False
+                    keys_only=False,
                 ),
-                timeout=self.timeout
+                timeout=self.timeout,
             )
 
             logger.info("Getting %d items with prefix %s", len(resp.kvs), key_prefix)
@@ -349,7 +331,7 @@ class EtcdClient:
                 full_key = full_key_bytes.decode(UTF8_ENCODING)
 
                 prefix_len = len(key_prefix)
-                relative_key = full_key[prefix_len + 1:]  # skip '/'
+                relative_key = full_key[prefix_len + 1 :]  # skip '/'
 
                 value_bytes = kv_pair.value  # gRPC return value is bytes type
                 json_str = value_bytes.decode(UTF8_ENCODING)  # decode to JSON
@@ -364,29 +346,16 @@ class EtcdClient:
         except Exception as e:
             logger.error("Failed to get prefix data with prefix %s: %s", key_prefix, e)
             return {}
-    
+
     def _put_key_value(self, key: str, value: str, lease: int = None) -> None:
         """Helper method to put key-value pair with optional lease"""
         key_bytes = key.encode(UTF8_ENCODING)
         value_bytes = value.encode(UTF8_ENCODING)
-        
+
         if lease:
-            self.kv_stub.Put(
-                rpc_pb2.PutRequest(
-                    key=key_bytes,
-                    value=value_bytes,
-                    lease=lease
-                ),
-                timeout=self.timeout
-            )
+            self.kv_stub.Put(rpc_pb2.PutRequest(key=key_bytes, value=value_bytes, lease=lease), timeout=self.timeout)
         else:
-            self.kv_stub.Put(
-                rpc_pb2.PutRequest(
-                    key=key_bytes,
-                    value=value_bytes
-                ),
-                timeout=self.timeout
-            )
+            self.kv_stub.Put(rpc_pb2.PutRequest(key=key_bytes, value=value_bytes), timeout=self.timeout)
 
     def _get_lock_key_and_id(self, lock_key: str) -> tuple[str, int | None]:
         """Helper method to get processed lock key and its lease ID"""

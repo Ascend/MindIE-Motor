@@ -18,6 +18,7 @@ import msgspec.msgpack
 
 from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint
+from motor.common.utils.net import format_address
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 
@@ -131,13 +132,13 @@ class FaultReporter:
                     port = base_port + ep.id
                     sub = zmq_ctx.socket(zmq.SUB)
                     sub.setsockopt(zmq.RECONNECT_IVL, 5000)
-                    sub.connect(f"tcp://{pod_ip}:{port}")
+                    zmq_addr = f"tcp://{format_address(pod_ip, port)}"
+                    sub.connect(zmq_addr)
                     sub.setsockopt_string(zmq.SUBSCRIBE, _FAULT_STATE_PUB_TOPIC)
                     sub_sockets.append(sub)
                     logger.info(
-                        "ZMQ SUB connected to tcp://%s:%d for engine %d",
-                        pod_ip,
-                        port,
+                        "ZMQ SUB connected to %s for engine %d",
+                        zmq_addr,
                         ep.id,
                     )
             else:

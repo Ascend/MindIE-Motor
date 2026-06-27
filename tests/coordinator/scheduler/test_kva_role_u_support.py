@@ -8,6 +8,7 @@ from motor.coordinator.api_client.conductor_api_client import (
     ConductorApiClient,
     conductor_instance_id,
 )
+from motor.config.coordinator import KV_AFFINITY_MODE_LOAD_GATED
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
@@ -52,19 +53,18 @@ def test_register_post_uses_union_conductor_id_for_role_u() -> None:
     endpoint.ip = "10.0.0.1"
 
     mock_config = Mock()
-    # _kv_base() properties on prefill_kv_event_config
-    mock_config.prefill_kv_event_config.engine_type = "vLLM"
-    mock_config.prefill_kv_event_config.block_size = 128
-    mock_config.prefill_kv_event_config.conductor_service = "kv-conductor"
-    mock_config.prefill_kv_event_config.http_server_port = 13333
-    # _kv_reg() properties on scheduler_config.kv_event_registration
-    mock_config.scheduler_config.kv_event_registration.endpoint = "tcp://*:5557"
-    mock_config.scheduler_config.kv_event_registration.xpu_endpoint = ""
-    mock_config.scheduler_config.kv_event_registration.cpu_endpoint = ""
-    mock_config.scheduler_config.kv_event_registration.disk_endpoint = ""
-    mock_config.scheduler_config.kv_event_registration.replay_endpoint = ""
+    # _kv_reg() — scheduler_config.kv_conductor_config: conductor addr, engine type, block size
+    mock_config.scheduler_config.kv_conductor_config.engine_type = "vLLM"
+    mock_config.scheduler_config.kv_conductor_config.block_size = 128
+    mock_config.scheduler_config.kv_conductor_config.conductor_service = "kv-conductor"
+    mock_config.scheduler_config.kv_conductor_config.http_server_port = 13333
+    mock_config.scheduler_config.kv_conductor_config.endpoint = "tcp://*:5557"
+    mock_config.scheduler_config.kv_conductor_config.xpu_endpoint = ""
+    mock_config.scheduler_config.kv_conductor_config.cpu_endpoint = ""
+    mock_config.scheduler_config.kv_conductor_config.disk_endpoint = ""
+    mock_config.scheduler_config.kv_conductor_config.replay_endpoint = ""
     # _resolve_store_backend uses _kv_reg().store_backend
-    mock_config.scheduler_config.kv_event_registration.store_backend = "Mooncake"
+    mock_config.scheduler_config.kv_conductor_config.store_backend = "Mooncake"
 
     with (
         patch.object(ConductorApiClient, "coordinator_config", mock_config),
@@ -75,6 +75,44 @@ def test_register_post_uses_union_conductor_id_for_role_u() -> None:
 
     register_payload = mock_http_client.return_value.__enter__.return_value.post.call_args[0][1]
     assert register_payload["instance_id"] == "vllm-union-2"
+
+
+def test_register_post_formats_ipv6_endpoint_and_conductor_address() -> None:
+    instance = _build_instance(PDRole.ROLE_P)
+    instance.id = 3
+    instance.model_name = "qwen3-8B"
+    endpoint = Mock()
+    endpoint.id = 2
+    endpoint.ip = "2001:db8::1"
+
+    mock_config = Mock()
+    # _kv_reg() — scheduler_config.kv_conductor_config: conductor addr, engine type, block size, endpoint patterns
+    mock_config.scheduler_config.kv_conductor_config.engine_type = "vLLM"
+    mock_config.scheduler_config.kv_conductor_config.block_size = 128
+    mock_config.scheduler_config.kv_conductor_config.model_path = ""
+    mock_config.scheduler_config.kv_conductor_config.conductor_service = "2001:db8::10"
+    mock_config.scheduler_config.kv_conductor_config.http_server_port = 13333
+    mock_config.scheduler_config.kv_conductor_config.xpu_endpoint = ""
+    mock_config.scheduler_config.kv_conductor_config.cpu_endpoint = ""
+    mock_config.scheduler_config.kv_conductor_config.disk_endpoint = ""
+    mock_config.scheduler_config.kv_conductor_config.endpoint = "tcp://*:5557"
+    mock_config.scheduler_config.kv_conductor_config.replay_endpoint = "tcp://*:6667"
+    mock_config.scheduler_config.kv_conductor_config.store_backend = "Mooncake"
+
+    with (
+        patch.object(ConductorApiClient, "coordinator_config", mock_config),
+        patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient") as mock_http_client,
+    ):
+        mock_http_client.return_value.__enter__.return_value.post.return_value = None
+        ConductorApiClient.register_post(instance, endpoint)
+
+    mock_http_client.assert_called_once()
+    assert mock_http_client.call_args.kwargs["address"] == "[2001:db8::10]:13333"
+    register_payload = mock_http_client.return_value.__enter__.return_value.post.call_args[0][1]
+    # Endpoints are now wrapped in medium_endpoints dict (xpu/cpu/disk).
+    # When per-medium fields are empty, all fall back to the legacy "endpoint".
+    assert register_payload["medium_endpoints"]["xpu"] == "tcp://[2001:db8::1]:5559"
+    assert register_payload["replay_endpoint"] == "tcp://[2001:db8::1]:6669"
 
 
 def test_register_kv_instance_supports_role_u() -> None:
@@ -92,11 +130,11 @@ def test_register_kv_instance_supports_role_u() -> None:
 
     # Depending on backend mode, either _register_hbm_dp or _register_yuanrong_dp
     # is called for each KVA-eligible instance endpoint.
-    # Signature: _register_*_dp(cls, reg, base, store_backend, instance, endpoint)
-    # call.args excludes cls, so instance is at index 3.
+    # Signature: _register_*_dp(cls, reg, store_backend, instance, endpoint)
+    # call.args excludes cls, so instance is at index 2.
     registered_method = mock_hbm_dp if mock_hbm_dp.call_count else mock_yuanrong_dp
     assert registered_method.call_count == 2
-    called_roles = {call.args[3].role for call in registered_method.call_args_list}
+    called_roles = {call.args[2].role for call in registered_method.call_args_list}
     assert called_roles == {PDRole.ROLE_P, PDRole.ROLE_U}
 
 
@@ -172,8 +210,33 @@ def test_kv_cache_affinity_falls_back_to_load_balance_for_role_u() -> None:
     mock_load_balance.assert_called_once_with([instance], PDRole.ROLE_U, 1)
 
 
-async def test_select_and_allocate_role_u_uses_affinity_top_k() -> None:
+async def test_select_and_allocate_role_u_unified_forwards_top1() -> None:
+    """Unified affinity forwards every endpoint (with prefill_cost) to the scheduler for a global
+    re-rank, so the worker only needs its own top-1 locally.
+    """
+    client = _build_kv_client()  # default kv_affinity_mode is unified
+    req_info = Mock()
+    req_info.req_id = "req-1"
+    req_info.req_data = {}
+    req_info.req_len = 0
+
+    with patch.object(
+        client,
+        "_select_endpoint_candidates_with_policy",
+        return_value=([], "kv_cache_affinity"),
+    ) as mock_select:
+        await client.select_and_allocate(PDRole.ROLE_U, req_info)
+
+    mock_select.assert_awaited_once()
+    assert mock_select.await_args.kwargs["top_k"] == 1
+
+
+async def test_select_and_allocate_role_u_load_gated_uses_affinity_top_k() -> None:
+    """load_gated still proposes a fixed ranked alternate set the scheduler picks among, so it
+    keeps the affinity topK.
+    """
     client = _build_kv_client()
+    client._kv_affinity_mode = KV_AFFINITY_MODE_LOAD_GATED
     req_info = Mock()
     req_info.req_id = "req-1"
     req_info.req_data = {}

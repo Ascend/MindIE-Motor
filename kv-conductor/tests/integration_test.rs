@@ -277,14 +277,14 @@ async fn test_duplicate_registration() {
         .unwrap();
     assert_eq!(resp.status(), 201);
 
-    // Duplicate should fail
+    // Re-registration with same backend is accepted (201).
     let resp = client
         .post(format!("{}/register", base_url))
         .json(&reg)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 409);
+    assert_eq!(resp.status(), 201);
 }
 
 #[tokio::test]
@@ -504,11 +504,8 @@ async fn test_mooncake_duplicate_hbm_registration() {
         .send()
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        409,
-        "Duplicate HBM registration should return 409"
-    );
+    // Re-registration with same backend is accepted (201).
+    assert_eq!(resp.status(), 201);
 }
 
 // ── Mooncake pool: duplicate pool registration ─────────────────────
@@ -542,7 +539,8 @@ async fn test_mooncake_duplicate_pool_registration() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 409);
+    // Re-registration with same backend is accepted (201).
+    assert_eq!(resp.status(), 201);
 }
 
 // ── Unregister cleans up state ──────────────────────────────────────
@@ -638,26 +636,222 @@ async fn test_unknown_backend_falls_back_to_yuanrong() {
 // ── Registration without endpoint or medium_endpoints fails ──────────
 
 #[tokio::test]
-async fn test_registration_fails_without_endpoint_or_medium_endpoints() {
+async fn test_registration_without_endpoint_allows_http_only() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
 
     let resp = client
         .post(format!("{}/register", base_url))
         .json(&json!({
-            "instance_id": "no-ep",
+            "instance_id": "http-only",
             "type": "vLLM",
             "store_backend": "Mooncake",
-            "modelname": "bad-model",
+            "modelname": "http-model",
             "block_size": 128,
             "dp_rank": 0
         }))
         .send()
         .await
         .unwrap();
+    // HTTP-only registration (no ZMQ endpoints) is now allowed — the
+    // conductor creates an indexer entry without spawning ZMQ subscribers.
     assert_eq!(
         resp.status(),
-        500,
-        "Should fail without endpoint or medium_endpoints"
+        201,
+        "HTTP-only registration (no endpoint) should succeed"
+    );
+
+    // Verify the worker is listed
+    let resp = client
+        .get(format!("{}/workers", base_url))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["workers"].as_array().unwrap().len(), 1);
+}
+
+// ── Re-registration: same backend preserves tree data ────────────────
+
+#[tokio::test]
+async fn test_reregister_same_backend_preserves_tree() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+
+    let reg = json!({
+        "instance_id": "rereg-same",
+        "medium_endpoints": {
+            "xpu": "tcp://10.0.10.1:50090",
+            "cpu": "tcp://10.0.10.1:50090",
+            "disk": "tcp://10.0.10.1:50090"
+        },
+        "type": "vllm",
+        "store_backend": "YuanRong",
+        "modelname": "rereg-model",
+        "block_size": 4,
+        "dp_rank": 0,
+        "tenant_id": "default"
+    });
+
+    // Initial registration
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&reg)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "first registration should succeed");
+
+    // Inject a KV event to populate the radix tree
+    let events = json!({
+        "events": [{
+            "event_id": 1,
+            "data": {
+                "type": "stored",
+                "parent_hash": null,
+                "blocks": [{"block_hash": 900, "tokens_hash": 900}]
+            },
+            "dp_rank": 0
+        }],
+        "shutdown": false
+    });
+    client
+        .post(format!("{}/events", base_url))
+        .json(&events)
+        .send()
+        .await
+        .unwrap();
+
+    // Re-register with same backend (different endpoint)
+    let mut reg2 = reg.clone();
+    reg2["medium_endpoints"] = json!({
+        "xpu": "tcp://10.0.10.2:50090",
+        "cpu": "tcp://10.0.10.2:50090",
+        "disk": "tcp://10.0.10.2:50090"
+    });
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&reg2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "re-registration with same backend should succeed"
+    );
+
+    // Query: tree data should still exist (token hash 900 matches).
+    let query_data = json!({
+        "model": "rereg-model",
+        "block_size": 4,
+        "token_ids": [1, 2, 3, 4],
+        "tenant_id": "default"
+    });
+    let resp = client
+        .post(format!("{}/query", base_url))
+        .json(&query_data)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // With tokens_hash=900 at block_size=4, should match if tree preserved.
+    assert!(
+        body.get("default").is_some(),
+        "tree should be preserved on same-backend re-registration"
+    );
+}
+
+// ── Re-registration: different backend drops tree data ────────────────
+
+#[tokio::test]
+async fn test_reregister_different_backend_drops_tree() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+
+    let reg = json!({
+        "instance_id": "rereg-diff",
+        "medium_endpoints": {
+            "xpu": "tcp://10.0.11.1:50090",
+            "cpu": "tcp://10.0.11.1:50090",
+            "disk": "tcp://10.0.11.1:50090"
+        },
+        "type": "vllm",
+        "store_backend": "YuanRong",
+        "modelname": "rereg-diff-model",
+        "block_size": 4,
+        "dp_rank": 0,
+        "tenant_id": "default"
+    });
+
+    // Initial registration with YuanRong
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&reg)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Inject a KV event
+    let events = json!({
+        "events": [{
+            "event_id": 1,
+            "data": {
+                "type": "stored",
+                "parent_hash": null,
+                "blocks": [{"block_hash": 800, "tokens_hash": 800}]
+            },
+            "dp_rank": 0
+        }],
+        "shutdown": false
+    });
+    client
+        .post(format!("{}/events", base_url))
+        .json(&events)
+        .send()
+        .await
+        .unwrap();
+
+    // Re-register with DIFFERENT backend
+    let mut reg2 = reg.clone();
+    reg2["store_backend"] = json!("Mooncake");
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&reg2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "re-registration with different backend should succeed"
+    );
+
+    // Query: tree data should be gone (backend changed → data dropped).
+    let query_data = json!({
+        "model": "rereg-diff-model",
+        "block_size": 4,
+        "token_ids": [1, 2, 3, 4],
+        "tenant_id": "default"
+    });
+    let resp = client
+        .post(format!("{}/query", base_url))
+        .json(&query_data)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // Default tenant may not appear at all if no workers have data.
+    let default = body.get("default");
+    let has_data = default
+        .and_then(|d| d.as_object())
+        .map(|obj| !obj.is_empty())
+        .unwrap_or(false);
+    assert!(
+        !has_data,
+        "tree should be dropped on backend-change re-registration"
     );
 }

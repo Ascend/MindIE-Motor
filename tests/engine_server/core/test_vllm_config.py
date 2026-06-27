@@ -8,25 +8,9 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import sys
-from unittest.mock import MagicMock
 
-# Mock vllm before importing VLLMConfig (vllm is not available in test environment)
-mock_vllm = MagicMock()
-mock_vllm.entrypoints = MagicMock()
-mock_vllm.entrypoints.openai = MagicMock()
-mock_vllm.entrypoints.openai.cli_args = MagicMock()
-mock_vllm.entrypoints.openai.cli_args.make_arg_parser = MagicMock()
-mock_vllm.entrypoints.openai.cli_args.validate_parsed_serve_args = MagicMock()
-sys.modules['vllm'] = mock_vllm
-sys.modules['vllm.entrypoints'] = mock_vllm.entrypoints
-sys.modules['vllm.entrypoints.openai'] = mock_vllm.entrypoints.openai
-sys.modules['vllm.entrypoints.openai.cli_args'] = mock_vllm.entrypoints.openai.cli_args
-sys.modules['vllm.utils'] = MagicMock()
-sys.modules['vllm.utils.argparse_utils'] = MagicMock()
-
+from motor.config.endpoint import DeployConfig, EndpointConfig, EngineConfig, ModelConfig, ParallelConfig
 from motor.engine_server.core.vllm.vllm_config import VLLMConfig
-from motor.config.endpoint import EndpointConfig, DeployConfig, ModelConfig, EngineConfig, ParallelConfig
 
 
 def _make_endpoint_config(
@@ -71,6 +55,17 @@ def _make_endpoint_config(
         node_rank=node_rank,
         master_dp_ip=master_dp_ip,
         dp_rank=0,
+    )
+
+
+def _set_min_kv_transfer_config(endpoint_config: EndpointConfig) -> None:
+    endpoint_config.deploy_config.engine_config.set(
+        "kv_transfer_config",
+        {
+            "kv_connector": "MooncakeLayerwiseConnector",
+            "kv_port": "30001",
+            "kv_connector_extra_config": {},
+        },
     )
 
 

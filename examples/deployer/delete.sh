@@ -17,6 +17,11 @@ fi
 
 NAMESPACE="$1"
 
+if ! kubectl get namespace "$NAMESPACE" &>/dev/null; then
+    echo "ERROR: Namespace '$NAMESPACE' does not exist"
+    exit 1
+fi
+
 echo -e "NOW EXECUTING [kubectl delete] COMMANDS. THE RESULT IS: \n\n"
 echo "Namespace: $NAMESPACE"
 

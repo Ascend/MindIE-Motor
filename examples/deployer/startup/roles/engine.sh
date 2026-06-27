@@ -22,6 +22,10 @@ gen_kv_pool_config
 
 set_cann_env
 
+if is_a5_hardware; then
+    set_a5_engine_env
+fi
+
 set_mf_store_env
 
 # CRD scenario: refresh JOB_NAME with INFER_SERVICE_INDEX and INSTANCE_INDEX injected by CRD

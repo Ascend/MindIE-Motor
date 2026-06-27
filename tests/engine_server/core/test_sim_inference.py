@@ -11,13 +11,41 @@
 
 from unittest import mock
 import asyncio
+import contextlib
 import httpx
+import sys
+import threading
 import time
+import types
 import pytest
-from motor.engine_server.core.sim_inference import SimInference
+from motor.engine_server.core.sim_inference import (
+    SimInference,
+    _AICORE_SAMPLE_WINDOW_SEC,
+    _is_virtual_metrics_request,
+)
 from motor.engine_server.constants import constants
 
 # pylint: disable=redefined-outer-name
+
+
+@pytest.fixture
+def finish_reason(monkeypatch):
+    """Provide FinishReason without requiring vllm to be installed."""
+
+    class FinishReason:
+        LENGTH = 1
+        STOP = 2
+
+    fake_engine = types.ModuleType("vllm.v1.engine")
+    fake_engine.FinishReason = FinishReason
+    fake_v1 = types.ModuleType("vllm.v1")
+    fake_v1.engine = fake_engine
+    fake_vllm = types.ModuleType("vllm")
+    fake_vllm.v1 = fake_v1
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(sys.modules, "vllm.v1", fake_v1)
+    monkeypatch.setitem(sys.modules, "vllm.v1.engine", fake_engine)
+    return FinishReason
 
 
 @pytest.fixture
@@ -255,9 +283,9 @@ async def test_health_check_loop_normal(mock_sleep, mock_send_request, mock_thre
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
 
-    # Verify loop executes normally
-    with pytest.raises(asyncio.CancelledError):
-        await sim_inference.health_check_loop()
+    with _patched_health_check_loop(mock_thread, sim_inference):
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
 
     # Verify request was sent
     mock_send_request.assert_called_once()
@@ -279,19 +307,23 @@ async def test_health_check_loop_abnormal(mock_sleep, mock_send_request, mock_th
 
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    # Mock failed request sending
-    mock_send_request.side_effect = Exception("Request failed")
+    # Mock failed request sending and low AICore usage
+    async def set_low_aicore_and_fail(timeout):
+        with sim_inference._shared_data_lock:
+            sim_inference._max_aicore_usage = 2  # < 10%
+            sim_inference._aicore_usage_available = True
+            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+        raise RuntimeError("Request failed")
 
-    # Mock low AICore usage
-    with sim_inference._shared_data_lock:
-        sim_inference._max_aicore_usage = 2  # < 10%
+    mock_send_request.side_effect = set_low_aicore_and_fail
 
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
 
     # Execute loop
-    with pytest.raises(asyncio.CancelledError):
-        await sim_inference.health_check_loop()
+    with _patched_health_check_loop(mock_thread, sim_inference):
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
 
     # Verify abnormal status was set
     assert sim_inference.is_abnormal()
@@ -310,19 +342,21 @@ async def test_health_check_loop_reset_abnormal(mock_sleep, mock_send_request, m
 
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    # Mock successful request sending
-    mock_send_request.return_value = None
+    async def set_normal_aicore_on_virtual_request(timeout):
+        with sim_inference._shared_data_lock:
+            sim_inference._max_aicore_usage = 15  # > 10%
+            sim_inference._aicore_usage_available = True
+            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
 
-    # Mock normal AICore usage
-    with sim_inference._shared_data_lock:
-        sim_inference._max_aicore_usage = 15  # > 10%
+    mock_send_request.side_effect = set_normal_aicore_on_virtual_request
 
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
 
     # Execute loop
-    with pytest.raises(asyncio.CancelledError):
-        await sim_inference.health_check_loop()
+    with _patched_health_check_loop(mock_thread, sim_inference):
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
 
     # Verify abnormal status was reset
     assert not sim_inference.is_abnormal()
@@ -333,12 +367,234 @@ def _mock_health_check_loop_thread(mock_thread, sim_inference=None):
     mock_thread.return_value = mock_thread_instance
     mock_thread_instance.is_alive.return_value = False
     if sim_inference is not None:
+        return _patch_parallel_aicore_wait(sim_inference)
+    return None
 
-        def _fast_aicore_wait(timeout=None):
-            with sim_inference._aicore_check_condition:
-                sim_inference._aicore_check_active = False
 
-        sim_inference._aicore_check_condition.wait = _fast_aicore_wait
+def _patch_parallel_aicore_wait(sim_inference, sample_finished=True):
+    def sample_wait(timeout=None):
+        if sample_finished:
+            with sim_inference._shared_data_lock:
+                sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+        return sample_finished
+
+    sim_inference._aicore_sample_done.wait = sample_wait
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    return fake_to_thread
+
+
+@contextlib.contextmanager
+def _patched_health_check_loop(mock_thread, sim_inference):
+    fake_to_thread = _mock_health_check_loop_thread(mock_thread, sim_inference)
+    if fake_to_thread is None:
+        yield
+    else:
+        with mock.patch('motor.engine_server.core.sim_inference.asyncio.to_thread', fake_to_thread):
+            yield
+
+
+@mock.patch('motor.engine_server.core.sim_inference.get_aicore_usage')
+def test_sample_aicore_usage_stops_after_first_error(mock_get_aicore, sim_inference):
+    """A failed npu-smi read should not retry for the entire sample window."""
+    mock_get_aicore.side_effect = RuntimeError("AI Core usage not found in npu-smi watch output (timeout)")
+
+    result, available = sim_inference._sample_aicore_usage()
+
+    assert result == 0
+    assert available is False
+    mock_get_aicore.assert_called_once()
+
+
+@mock.patch('motor.engine_server.core.sim_inference.time.sleep')
+@mock.patch('motor.engine_server.core.sim_inference.get_aicore_usage')
+def test_sample_aicore_usage_reports_zero_when_idle(mock_get_aicore, _mock_sleep, sim_inference):
+    """A successful npu-smi read of 0% should be treated as available."""
+    mock_get_aicore.return_value = 0
+
+    result, available = sim_inference._sample_aicore_usage()
+
+    assert result == 0
+    assert available is True
+    assert mock_get_aicore.call_count >= 1
+
+
+@pytest.mark.asyncio
+@mock.patch.object(SimInference, 'send_virtual_request_async')
+async def test_health_check_loop_does_not_block_beyond_sample_window(mock_send_request, sim_inference):
+    """Virtual inference should wait at most the bounded AICore sample window."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    mock_send_request.return_value = None
+
+    observed_timeout = None
+
+    def sample_wait(timeout=None):
+        nonlocal observed_timeout
+        observed_timeout = timeout
+        return False
+
+    sim_inference._aicore_sample_done.wait = sample_wait
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    start = time.monotonic()
+    with mock.patch('motor.engine_server.core.sim_inference.asyncio.to_thread', fake_to_thread):
+        with mock.patch(
+            'motor.engine_server.core.sim_inference.asyncio.sleep',
+            side_effect=asyncio.CancelledError,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await sim_inference.health_check_loop()
+
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0
+    assert observed_timeout == _AICORE_SAMPLE_WINDOW_SEC
+
+
+def test_read_aicore_sample_ignores_stale_generation(sim_inference):
+    """Stale worker results must not be read after a newer sample was requested."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 42
+        sim_inference._aicore_usage_available = True
+        sim_inference._aicore_completed_generation = 1
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
+
+    assert max_usage == 0
+    assert available is False
+
+
+def test_read_aicore_sample_available_with_partial_sample(sim_inference):
+    """Partial successful samples should be readable before the sample window finishes."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 15
+        sim_inference._aicore_usage_available = True
+        sim_inference._aicore_completed_generation = 2
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=False)
+
+    assert max_usage == 15
+    assert available is True
+
+
+def test_read_aicore_sample_unavailable_when_window_timeout_without_data(sim_inference):
+    """Finished sample window with no successful reads should remain unavailable."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 0
+        sim_inference._aicore_usage_available = False
+        sim_inference._aicore_completed_generation = 2
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
+
+    assert max_usage == 0
+    assert available is False
+
+
+def test_read_aicore_sample_returns_zero_when_waiting_for_data(sim_inference):
+    """Waiting for first sample must not expose stale peak usage when unavailable."""
+    with sim_inference._shared_data_lock:
+        sim_inference._max_aicore_usage = 42
+        sim_inference._aicore_usage_available = False
+        sim_inference._aicore_completed_generation = 2
+
+    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=False)
+
+    assert max_usage == 0
+    assert available is False
+
+
+@pytest.mark.asyncio
+async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inference):
+    """HTTP and AICore sampling should overlap within a single health-check cycle."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+
+    activity_log = []
+    sample_wait_scheduled = threading.Event()
+    original_to_thread = asyncio.to_thread
+
+    async def tracking_to_thread(func, /, *args, **kwargs):
+        sample_wait_scheduled.set()
+        return await original_to_thread(func, *args, **kwargs)
+
+    async def slow_virtual_request(_self, _timeout):
+        activity_log.append(("http_start", time.monotonic()))
+        try:
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                if sample_wait_scheduled.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            else:
+                pytest.fail("AICore wait was never scheduled concurrently with HTTP")
+
+            await asyncio.sleep(0.2)
+        finally:
+            activity_log.append(("http_end", time.monotonic()))
+        return True
+
+    def sample_wait_while_http_in_flight(timeout=None):
+        activity_log.append(("wait_start", time.monotonic()))
+        try:
+            time.sleep(0.15)
+        finally:
+            activity_log.append(("wait_end", time.monotonic()))
+        return True
+
+    async def bound_slow_virtual_request(timeout):
+        return await slow_virtual_request(sim_inference, timeout)
+
+    sim_inference._send_virtual_request_safe = bound_slow_virtual_request
+    sim_inference._aicore_sample_done.wait = sample_wait_while_http_in_flight
+
+    real_sleep = asyncio.sleep
+
+    async def cancel_only_sim_interval_sleep(delay):
+        if delay >= sim_inference.sim_sleep:
+            raise asyncio.CancelledError
+        await real_sleep(delay)
+
+    start = time.monotonic()
+    with mock.patch('motor.engine_server.core.sim_inference.asyncio.to_thread', tracking_to_thread):
+        with mock.patch(
+            'motor.engine_server.core.sim_inference.asyncio.sleep',
+            side_effect=cancel_only_sim_interval_sleep,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await sim_inference.health_check_loop()
+
+    elapsed = time.monotonic() - start
+    windows = dict(activity_log)
+    assert {"http_start", "http_end", "wait_start", "wait_end"} <= windows.keys()
+    assert windows["wait_start"] < windows["http_end"], "AICore wait must start before HTTP finishes"
+    assert windows["http_start"] < windows["wait_end"], "HTTP must start before AICore wait finishes"
+    assert elapsed < 0.35, "Serial execution would exceed the parallel time bound"
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch.object(SimInference, 'send_virtual_request_async')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_skip_failure_count_when_aicore_unavailable(
+    mock_sleep, mock_send_request, mock_thread, sim_inference
+):
+    """Virtual request failure should not count when AICore sampling is unavailable."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    sim_inference._count_failure_flag = True
+    sim_inference._max_failure_count = 1
+
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+    mock_send_request.side_effect = Exception("Request failed")
+    mock_sleep.side_effect = asyncio.CancelledError
+
+    with _patched_health_check_loop(mock_thread, sim_inference):
+        with pytest.raises(asyncio.CancelledError):
+            await sim_inference.health_check_loop()
+
+    assert not sim_inference.is_abnormal()
+    assert sim_inference._failure_count == 0
 
 
 @pytest.mark.asyncio
@@ -352,11 +608,14 @@ async def test_health_check_loop_high_aicore_extends_sleep(mock_sleep, mock_thre
     async def set_high_aicore_usage(timeout):
         with sim_inference._shared_data_lock:
             sim_inference._max_aicore_usage = 85
+            sim_inference._aicore_usage_available = True
+            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
 
     with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_high_aicore_usage):
         mock_sleep.side_effect = asyncio.CancelledError
-        with pytest.raises(asyncio.CancelledError):
-            await sim_inference.health_check_loop()
+        with _patched_health_check_loop(mock_thread, sim_inference):
+            with pytest.raises(asyncio.CancelledError):
+                await sim_inference.health_check_loop()
 
     assert sim_inference.sim_sleep == 20
 
@@ -372,11 +631,14 @@ async def test_health_check_loop_low_aicore_keeps_default_sleep(mock_sleep, mock
     async def set_low_aicore_usage(timeout):
         with sim_inference._shared_data_lock:
             sim_inference._max_aicore_usage = 50
+            sim_inference._aicore_usage_available = True
+            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
 
     with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_low_aicore_usage):
         mock_sleep.side_effect = asyncio.CancelledError
-        with pytest.raises(asyncio.CancelledError):
-            await sim_inference.health_check_loop()
+        with _patched_health_check_loop(mock_thread, sim_inference):
+            with pytest.raises(asyncio.CancelledError):
+                await sim_inference.health_check_loop()
 
     assert sim_inference.sim_sleep == 5
 
@@ -398,11 +660,14 @@ async def test_health_check_loop_aicore_sleep_keeps_extended_after_moderate_load
         iteration += 1
         with sim_inference._shared_data_lock:
             sim_inference._max_aicore_usage = 85 if iteration == 1 else 50
+            sim_inference._aicore_usage_available = True
+            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
 
     with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_aicore_usage_by_iteration):
         mock_sleep.side_effect = [None, asyncio.CancelledError]
-        with pytest.raises(asyncio.CancelledError):
-            await sim_inference.health_check_loop()
+        with _patched_health_check_loop(mock_thread, sim_inference):
+            with pytest.raises(asyncio.CancelledError):
+                await sim_inference.health_check_loop()
 
     assert sim_inference.sim_sleep == 20
 
@@ -422,10 +687,128 @@ async def test_health_check_loop_aicore_sleep_reverts_below_threshold(mock_sleep
         iteration += 1
         with sim_inference._shared_data_lock:
             sim_inference._max_aicore_usage = 85 if iteration == 1 else 1
+            sim_inference._aicore_usage_available = True
+            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
 
     with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_aicore_usage_by_iteration):
         mock_sleep.side_effect = [None, asyncio.CancelledError]
-        with pytest.raises(asyncio.CancelledError):
-            await sim_inference.health_check_loop()
+        with _patched_health_check_loop(mock_thread, sim_inference):
+            with pytest.raises(asyncio.CancelledError):
+                await sim_inference.health_check_loop()
 
     assert sim_inference.sim_sleep == 5
+
+
+class _FakeStats:
+    def __init__(self, num_generation_tokens: int):
+        self.num_generation_tokens = num_generation_tokens
+
+
+class _FakeReqState:
+    def __init__(
+        self,
+        *,
+        external_req_id: str | None = None,
+        max_tokens_param: int | None = None,
+        prompt_len: int = 1,
+        num_generation_tokens: int = 1,
+        request_id: str | None = None,
+        lora_name: str | None = None,
+        parent_req: object | None = None,
+    ):
+        self.external_req_id = external_req_id
+        self.max_tokens_param = max_tokens_param
+        self.prompt_len = prompt_len
+        self.stats = _FakeStats(num_generation_tokens)
+        self.request_id = request_id
+        self.lora_name = lora_name
+        self.parent_req = parent_req
+
+
+def test_is_virtual_metrics_request_by_external_req_id():
+    assert _is_virtual_metrics_request(_FakeReqState(external_req_id="cmpl-123_virtual"))
+    assert not _is_virtual_metrics_request(_FakeReqState(external_req_id="cmpl-123-normal"))
+
+
+def test_is_virtual_metrics_request_rejects_missing_external_req_id():
+    assert not _is_virtual_metrics_request(_FakeReqState(external_req_id=None))
+
+
+@mock.patch("motor.engine_server.core.sim_inference.importlib.import_module")
+def test_patch_vllm_metrics_skips_virtual_update(mock_import_module, sim_inference, finish_reason):
+    original_update = mock.MagicMock()
+    mock_lora_states = mock.MagicMock()
+    mock_parent_observe = mock.MagicMock()
+
+    mock_module = mock.MagicMock()
+    mock_module.OutputProcessor._update_stats_from_finished = original_update
+    mock_module.ParentRequest.observe_finished_request = mock_parent_observe
+    mock_import_module.return_value = mock_module
+
+    sim_inference.patch_vllm_metrics()
+
+    patched = mock_module.OutputProcessor._update_stats_from_finished
+    processor = mock.MagicMock()
+    processor.lora_states = mock_lora_states
+    req_state = _FakeReqState(
+        external_req_id="cmpl-42_virtual",
+        request_id="internal-42",
+        lora_name=None,
+        parent_req=None,
+    )
+    iteration_stats = mock.MagicMock()
+
+    patched(processor, req_state, finish_reason.LENGTH, iteration_stats)
+
+    original_update.assert_not_called()
+    mock_lora_states.request_finished.assert_called_once_with("internal-42", None)
+    mock_parent_observe.assert_called_once()
+
+
+@mock.patch("motor.engine_server.core.sim_inference.importlib.import_module")
+def test_patch_vllm_metrics_delegates_non_virtual_request(mock_import_module, sim_inference, finish_reason):
+    original_update = mock.MagicMock()
+    mock_module = mock.MagicMock()
+    mock_module.OutputProcessor._update_stats_from_finished = original_update
+    mock_import_module.return_value = mock_module
+
+    sim_inference.patch_vllm_metrics()
+
+    patched = mock_module.OutputProcessor._update_stats_from_finished
+    processor = mock.MagicMock()
+    req_state = _FakeReqState(
+        external_req_id="cmpl-real-request",
+        max_tokens_param=16,
+        prompt_len=10,
+        num_generation_tokens=8,
+    )
+    iteration_stats = mock.MagicMock()
+
+    patched(processor, req_state, finish_reason.STOP, iteration_stats)
+
+    original_update.assert_called_once_with(processor, req_state, finish_reason.STOP, iteration_stats)
+
+
+@mock.patch("motor.engine_server.core.sim_inference.importlib.import_module")
+def test_patch_vllm_metrics_delegates_when_iteration_stats_is_none(mock_import_module, sim_inference, finish_reason):
+    original_update = mock.MagicMock()
+    mock_lora_states = mock.MagicMock()
+    mock_parent_observe = mock.MagicMock()
+
+    mock_module = mock.MagicMock()
+    mock_module.OutputProcessor._update_stats_from_finished = original_update
+    mock_module.ParentRequest.observe_finished_request = mock_parent_observe
+    mock_import_module.return_value = mock_module
+
+    sim_inference.patch_vllm_metrics()
+
+    patched = mock_module.OutputProcessor._update_stats_from_finished
+    processor = mock.MagicMock()
+    processor.lora_states = mock_lora_states
+    req_state = _FakeReqState(external_req_id="cmpl-42_virtual")
+
+    patched(processor, req_state, finish_reason.LENGTH, None)
+
+    original_update.assert_called_once_with(processor, req_state, finish_reason.LENGTH, None)
+    mock_lora_states.request_finished.assert_not_called()
+    mock_parent_observe.assert_not_called()

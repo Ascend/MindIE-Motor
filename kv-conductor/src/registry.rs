@@ -98,6 +98,7 @@ pub struct WorkerEntry {
     pub model_name: String,
     pub tenant_id: String,
     pub block_size: u32,
+    pub store_backend: String,
     /// dp_rank -> EndpointInfo
     pub endpoints: HashMap<DpRank, EndpointInfo>,
 }
@@ -186,31 +187,73 @@ impl WorkerRegistry {
     /// exist yet. Spawns ZMQ subscribers for each unique per-medium endpoint
     /// declared in `medium_endpoints`.
     pub async fn register(&self, req: &RegisterRequest) -> Result<(), KvConductorError> {
-        // Resolve endpoint→media mapping from either protocol:
-        //   - New: medium_endpoints (per-medium URLs, deduplicated)
-        //   - Legacy: endpoint (single URL for all media, Mooncake Master compat)
         let endpoint_media = Self::resolve_endpoint_media(req)?;
 
-        // Fast-path duplicate check with a read lock, so we can fail early
-        // without creating ZMQ subscribers.
-        {
-            let instances = self.instances.read().await;
-            if let Some(entry) = instances.get(&req.instance_id) {
-                if entry.endpoints.contains_key(&req.dp_rank) {
-                    return Err(KvConductorError::DuplicateRegistration {
-                        instance_id: req.instance_id.clone(),
-                        dp_rank: req.dp_rank,
-                    });
-                }
-            }
-        }
-
-        // Determine backend-specific behaviour via the StoreBackend factory.
         let sb = StoreBackend::parse(&req.store_backend);
         let is_pool =
             sb.is_pool_auto_attach() && req.medium_endpoints.is_empty() && req.endpoint.is_some();
 
-        // For centralized pool backends, index HBM endpoint IPs for auto-attach.
+        // ── Handle re-registration ────────────────────────────────────
+        // If the same (instance_id, dp_rank) is already registered, stop the
+        // old ZMQ subscribers.  If the backend type changed, drop the radix
+        // tree data for the old registration.  If the backend is the same,
+        // the tree data is preserved and only endpoint info is updated.
+        // This allows clients to fix misconfigured endpoints by simply
+        // re-registering, without a restart or explicit unregister.
+        {
+            let old_info: Option<(bool, HashMap<String, String>)> = {
+                let instances = self.instances.read().await;
+                let entry = instances.get(&req.instance_id);
+                entry.and_then(|e| {
+                    e.endpoints.get(&req.dp_rank).map(|info| {
+                        (
+                            !e.store_backend.eq_ignore_ascii_case(&req.store_backend),
+                            info.medium_endpoints.clone(),
+                        )
+                    })
+                })
+            };
+
+            if let Some((backend_changed, old_medium_endpoints)) = old_info {
+                tracing::info!(
+                    instance_id = %req.instance_id,
+                    dp_rank = req.dp_rank,
+                    old_backend = %req.store_backend,
+                    backend_changed,
+                    "re-registering existing worker"
+                );
+
+                // Stop old subscribers.
+                let mut subs = self.zmq_subscribers.write().await;
+                let matching: Vec<_> = subs
+                    .keys()
+                    .filter(|(iid, dp, _)| iid == &req.instance_id && dp == &req.dp_rank)
+                    .cloned()
+                    .collect();
+                for key in matching {
+                    if let Some(subscriber) = subs.remove(&key) {
+                        subscriber.shutdown();
+                    }
+                }
+                drop(subs);
+
+                // Drop radix tree data if backend changed.
+                if backend_changed {
+                    let ie = self.indexer.get(&req.modelname, &req.tenant_id);
+                    if let Some(ie) = &ie {
+                        ie.remove_worker_all_media(&req.instance_id, req.dp_rank);
+                    }
+                    remove_hbm_ip_index_entries(
+                        &self.hbm_ip_index,
+                        &old_medium_endpoints,
+                        &req.instance_id,
+                        req.dp_rank,
+                    );
+                }
+            }
+        }
+
+        // Index HBM endpoint IPs for pool backends.
         if sb.index_hbm_ip() && !is_pool {
             add_hbm_ip_index_entries(
                 &self.hbm_ip_index,
@@ -220,9 +263,7 @@ impl WorkerRegistry {
             );
         }
 
-        // Pre-create ZMQ subscribers BEFORE acquiring the instances write lock.
-        // If any connection is unreachable we fail early without leaving
-        // orphaned state.
+        // Pre-create ZMQ subscribers before acquiring write lock.
         let subscribers: Vec<(String, crate::zmq_subscriber::ZmqSubscriber)> = {
             let mut subs = Vec::with_capacity(endpoint_media.len());
             let backend_id = req.instance_id.clone();
@@ -254,21 +295,7 @@ impl WorkerRegistry {
             subs
         };
 
-        let mut instances = self.instances.write().await;
-
-        // Re-check for duplicate registration — another caller may have raced
-        // between our read-unlock and write-lock.
-        if let Some(entry) = instances.get(&req.instance_id) {
-            if entry.endpoints.contains_key(&req.dp_rank) {
-                // subscribers will be dropped, cancelling their tasks
-                return Err(KvConductorError::DuplicateRegistration {
-                    instance_id: req.instance_id.clone(),
-                    dp_rank: req.dp_rank,
-                });
-            }
-        }
-
-        // Build normalized medium_endpoints for storage (handles both protocols)
+        // Build normalized medium_endpoints for storage.
         let mut normalized_mediums: HashMap<String, String> = HashMap::new();
         for (ep_url, media) in &endpoint_media {
             for m in media {
@@ -276,11 +303,9 @@ impl WorkerRegistry {
             }
         }
 
-        // Ensure indexer entry exists
-        self.indexer
-            .get_or_create(&req.modelname, &req.tenant_id, req.block_size);
+        self.indexer.get_or_create(&req.modelname, &req.tenant_id);
 
-        // Create or update worker entry
+        let mut instances = self.instances.write().await;
         let entry = instances
             .entry(req.instance_id.clone())
             .or_insert_with(|| WorkerEntry {
@@ -288,9 +313,11 @@ impl WorkerRegistry {
                 model_name: req.modelname.clone(),
                 tenant_id: req.tenant_id.clone(),
                 block_size: req.block_size,
+                store_backend: req.store_backend.clone(),
                 endpoints: HashMap::new(),
             });
 
+        entry.store_backend = req.store_backend.clone();
         entry.endpoints.insert(
             req.dp_rank,
             EndpointInfo {
@@ -302,40 +329,22 @@ impl WorkerRegistry {
         );
 
         tracing::info!(
-            instance_id = %req.instance_id,
-            dp_rank = req.dp_rank,
-            model = %req.modelname,
-            tenant = %req.tenant_id,
-            engine_type = %req.engine_type,
-            store_backend = %req.store_backend,
+            instance_id = %req.instance_id, dp_rank = req.dp_rank,
+            model = %req.modelname, tenant = %req.tenant_id,
+            engine_type = %req.engine_type, store_backend = %req.store_backend,
             num_endpoints = endpoint_media.len(),
             "worker registered"
         );
 
-        // Insert the pre-created subscribers into the map
         {
             let mut subs = self.zmq_subscribers.write().await;
             for (ep_url, sub) in subscribers {
-                tracing::info!(
-                    instance_id = %req.instance_id,
-                    dp_rank = req.dp_rank,
-                    endpoint = %ep_url,
-                    "ZMQ subscriber started"
-                );
                 subs.insert((req.instance_id.clone(), req.dp_rank, ep_url), sub);
             }
         }
 
-        // Trigger replay from the engine's replay endpoint if configured.
-        // This recovers the radix tree after a conductor restart.
         if let Some(ref replay_ep) = req.replay_endpoint {
             if !replay_ep.is_empty() {
-                tracing::info!(
-                    instance_id = %req.instance_id,
-                    dp_rank = req.dp_rank,
-                    endpoint = %replay_ep,
-                    "triggering replay on registration"
-                );
                 self.replay_in_progress
                     .fetch_add(1, std::sync::atomic::Ordering::Release);
                 crate::zmq_subscriber::replay_events(
@@ -436,8 +445,13 @@ impl WorkerRegistry {
         {
             return Err(KvConductorError::ReplayInProgress);
         }
-        self.indexer
-            .query(&req.model, &req.tenant_id, &req.token_ids)
+        self.indexer.query(
+            &req.model,
+            &req.tenant_id,
+            &req.token_ids,
+            req.block_size,
+            req.hit_detail,
+        )
     }
 
     /// Query KV cache overlap using pre-computed block hashes.
@@ -464,10 +478,8 @@ impl WorkerRegistry {
     /// Apply a batch of KV cache events (engine-style, HTTP POST /events).
     ///
     /// When `model_name` / `tenant_id` are provided, they take precedence over
-    /// the registered values. `block_size` is used when creating a new indexer
-    /// entry (falls back to the registered entry's value when one exists).
-    /// If neither a registration nor explicit model exist, the call returns
-    /// [`KvConductorError::InstanceNotFound`].
+    /// the registered values. If neither a registration nor explicit model
+    /// exist, the call returns [`KvConductorError::InstanceNotFound`].
     pub async fn apply_events(
         &self,
         instance_id: &str,
@@ -475,31 +487,27 @@ impl WorkerRegistry {
         events: &[KvCacheEvent],
         model_name: Option<&str>,
         tenant_id: Option<&str>,
-        block_size: u32,
     ) -> Result<usize, KvConductorError> {
-        // Resolve model_name / tenant_id / block_size:
+        // Resolve model_name / tenant_id:
         //   explicit args > registered values > defaults
-        let (model_name, tenant_id, block_size) = {
+        let (model_name, tenant_id) = {
             let instances = self.instances.read().await;
             match instances.get(instance_id) {
                 Some(entry) => (
                     model_name.unwrap_or(&entry.model_name).to_string(),
                     tenant_id.unwrap_or(&entry.tenant_id).to_string(),
-                    entry.block_size,
                 ),
                 None => {
                     let mn = model_name.ok_or_else(|| KvConductorError::InstanceNotFound {
                         instance_id: instance_id.to_string(),
                     })?;
                     let tid = tenant_id.unwrap_or("default");
-                    (mn.to_string(), tid.to_string(), block_size)
+                    (mn.to_string(), tid.to_string())
                 }
             }
         };
 
-        let indexer_entry = self
-            .indexer
-            .get_or_create(&model_name, &tenant_id, block_size);
+        let indexer_entry = self.indexer.get_or_create(&model_name, &tenant_id);
 
         let mut applied = 0;
         for event in events {

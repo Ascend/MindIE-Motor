@@ -8,6 +8,7 @@ from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router import dispatch
+from motor.coordinator.router.upstream_error import UpstreamHTTPError
 
 
 class _Scheduler:
@@ -186,3 +187,46 @@ def test_dispatch_falls_back_to_union_for_incompatible_pd(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"router": "hybrid"}
+
+
+def test_dispatch_preserves_upstream_http_error(monkeypatch):
+    error_body = b'{"error":{"message":"prompt is too long","code":400}}'
+
+    class _RejectingUnifiedRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            pass
+
+        async def handle_request(self):
+            raise UpstreamHTTPError(
+                status_code=400,
+                body=error_body,
+                headers={"content-type": "application/json", "retry-after": "3"},
+                phase="non-stream",
+            )
+
+    monkeypatch.setattr(dispatch, "UnifiedPDRouter", _RejectingUnifiedRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+        2: Instance(
+            job_name="d",
+            model_name="m",
+            id=2,
+            role=PDRole.ROLE_D.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+    }
+
+    response = TestClient(_app(_config(), _Scheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 400
+    assert response.content == error_body
+    assert response.headers["retry-after"] == "3"

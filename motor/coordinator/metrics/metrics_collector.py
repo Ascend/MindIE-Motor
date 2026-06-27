@@ -585,7 +585,7 @@ class MetricsCollector(ThreadSafeSingleton):
         return True
 
     def _parse_metric_text(self, metrics_str: str) -> list[Metric]:
-        lines = [ln for ln in metrics_str.strip().split("\n") if ln]
+        lines = [ln for ln in metrics_str.splitlines() if ln.strip()]
         if not lines:
             return []
 
@@ -641,7 +641,7 @@ class MetricsCollector(ThreadSafeSingleton):
         metric: Metric,
         line: str,
     ) -> bool:
-        parts = line.split()
+        parts = line.rsplit(None, 1)
         if len(parts) != 2:
             logger.error("[Metrics] Parse metric body failed.")
             return False

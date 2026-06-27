@@ -104,159 +104,93 @@ def _req_info() -> RequestInfo:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_select_pair_and_allocate_success():
+async def test_scheduler_select_and_allocate_prefill_success():
+    """select_and_allocate for a single role returns (instance, endpoint, workload) on success."""
     policy = _Policy()
     scheduler = Scheduler(_Provider(policy.p, policy.d), CoordinatorConfig())
     scheduler._scheduling_policy = policy
 
-    pair = await scheduler.select_pair_and_allocate(_req_info())
+    result = await scheduler.select_and_allocate(PDRole.ROLE_P, _req_info())
 
-    assert pair is not None
-    assert pair.prefill.instance.role == PDRole.ROLE_P
-    assert pair.decode.instance.role == PDRole.ROLE_D
-    assert policy.update_workload.await_count == 2
+    assert result is not None
+    instance, endpoint, workload = result
+    assert instance.role == PDRole.ROLE_P
+    assert policy.update_workload.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_scheduler_select_pair_and_allocate_compensates_prefill_when_decode_fails():
+async def test_scheduler_select_and_allocate_returns_none_when_allocation_fails():
+    """select_and_allocate returns None when update_workload fails for the selected role."""
     policy = _Policy(fail_decode_allocation=True)
     scheduler = Scheduler(_Provider(policy.p, policy.d), CoordinatorConfig())
     scheduler._scheduling_policy = policy
 
-    pair = await scheduler.select_pair_and_allocate(_req_info())
+    # First call succeeds (prefill), second call fails (decode with side_effect=[True, False, ...])
+    result_p = await scheduler.select_and_allocate(PDRole.ROLE_P, _req_info())
+    assert result_p is not None
+    assert policy.update_workload.await_count == 1
 
-    assert pair is None
-    # P allocation + failed D allocation + release tokens + release kv.
-    assert policy.update_workload.await_count == 4
+    result_d = await scheduler.select_and_allocate(PDRole.ROLE_D, _req_info())
+    assert result_d is None
+    assert policy.update_workload.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_async_scheduler_client_allocates_pair_with_one_rpc():
+async def test_async_scheduler_client_allocates_with_allocate_only_rpc():
+    """select_and_allocate sends a single ALLOCATE_ONLY RPC for the given role."""
     p = _instance(1, PDRole.ROLE_P)
-    d = _instance(2, PDRole.ROLE_D)
     p_endpoint = next(iter(next(iter(p.endpoints.values())).values()))
-    d_endpoint = next(iter(next(iter(d.endpoints.values())).values()))
     response = SchedulerResponse(
         response_type=SchedulerResponseType.SUCCESS,
         request_id="r",
         data={
-            "prefill_instance": p.model_dump(mode="json"),
-            "prefill_endpoint": p_endpoint.model_dump(mode="json"),
-            "decode_instance": d.model_dump(mode="json"),
-            "decode_endpoint": d_endpoint.model_dump(mode="json"),
+            "instance": p.model_dump(mode="json"),
+            "endpoint": p_endpoint.model_dump(mode="json"),
         },
     )
     client = AsyncSchedulerClient(SchedulerClientConfig())
-    client._cached_or_fetch_instances = AsyncMock(side_effect=[[p], [d]])
+    await client._cache.replace_all(PDRole.ROLE_P, [p])
     transport = _Transport(response)
     client._transport = transport
 
-    pair = await client.select_pair_and_allocate(_req_info())
+    result = await client.select_and_allocate(PDRole.ROLE_P, _req_info())
 
-    assert pair is not None
+    assert result is not None
+    instance, endpoint, workload = result
     assert len(transport.requests) == 1
-    assert transport.requests[0].request_type == SchedulerRequestType.ALLOCATE_PAIR
-    assert pair.prefill.instance.engine_type == "vllm"
-    assert pair.prefill.instance.dispatch_capabilities == ["concurrent_engine_sync"]
+    assert transport.requests[0].request_type == SchedulerRequestType.ALLOCATE_ONLY
+    assert instance.engine_type == "vllm"
+    assert instance.dispatch_capabilities == ["concurrent_engine_sync"]
 
 
 @pytest.mark.asyncio
-async def test_async_scheduler_client_selects_compatible_pair_from_mixed_pool():
-    incompatible_p = _instance(1, PDRole.ROLE_P, DispatchPlan.CONCURRENT_ENGINE_SYNC.value)
+async def test_async_scheduler_client_selects_compatible_instance_from_pool():
+    """select_and_allocate selects from compatible instances for the given role."""
     compatible_p = _instance(2, PDRole.ROLE_P, DispatchPlan.PREFILL_HANDOFF_DECODE.value)
-    compatible_d = _instance(3, PDRole.ROLE_D, DispatchPlan.PREFILL_HANDOFF_DECODE.value)
     p_endpoint = compatible_p.get_all_endpoints()[0]
-    d_endpoint = compatible_d.get_all_endpoints()[0]
     response = SchedulerResponse(
         response_type=SchedulerResponseType.SUCCESS,
         request_id="r",
         data={
-            "prefill_instance": compatible_p.model_dump(mode="json"),
-            "prefill_endpoint": p_endpoint.model_dump(mode="json"),
-            "decode_instance": compatible_d.model_dump(mode="json"),
-            "decode_endpoint": d_endpoint.model_dump(mode="json"),
+            "instance": compatible_p.model_dump(mode="json"),
+            "endpoint": p_endpoint.model_dump(mode="json"),
         },
     )
     client = AsyncSchedulerClient(SchedulerClientConfig())
-    client._cached_or_fetch_instances = AsyncMock(side_effect=[[incompatible_p, compatible_p], [compatible_d]])
+    await client._cache.replace_all(PDRole.ROLE_P, [compatible_p])
     transport = _Transport(response)
     client._transport = transport
 
-    pair = await client.select_pair_and_allocate(_req_info())
+    result = await client.select_and_allocate(PDRole.ROLE_P, _req_info())
 
-    assert pair is not None
-    request = transport.requests[0]
-    assert request.data["prefill"]["instance_id"] == compatible_p.id
-    assert request.data["decode"]["instance_id"] == compatible_d.id
-
-
-@pytest.mark.asyncio
-async def test_scheduler_server_rejects_incompatible_pair_before_allocation():
-    manager = _Manager()
-    manager.d.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-    scheduler = AsyncMock()
-    scheduler.update_workload = AsyncMock(return_value=True)
-    dispatcher = _SchedulerRequestDispatcher(manager, scheduler, CoordinatorConfig())
-
-    response = await dispatcher.dispatch(
-        SchedulerRequest(
-            request_type=SchedulerRequestType.ALLOCATE_PAIR,
-            request_id="pair",
-            data={
-                "req_id": "req",
-                "prefill": {
-                    "instance_id": 1,
-                    "endpoint_id": 1,
-                    "workload": Workload(active_tokens=10).model_dump(mode="json"),
-                },
-                "decode": {
-                    "instance_id": 2,
-                    "endpoint_id": 2,
-                    "workload": Workload(active_kv_cache=5).model_dump(mode="json"),
-                },
-            },
-        )
-    )
-
-    assert response.response_type == SchedulerResponseType.SUCCESS
-    assert response.data["prefill_instance"] is None
-    scheduler.update_workload.assert_not_awaited()
+    assert result is not None
+    instance, endpoint, workload = result
+    assert instance.id == compatible_p.id
 
 
 @pytest.mark.asyncio
-async def test_scheduler_server_allocate_pair_compensates_prefill_when_decode_fails():
-    manager = _Manager()
-    scheduler = AsyncMock()
-    scheduler.update_workload = AsyncMock(side_effect=[True, False, True, True])
-    dispatcher = _SchedulerRequestDispatcher(manager, scheduler, CoordinatorConfig())
-
-    response = await dispatcher.dispatch(
-        SchedulerRequest(
-            request_type=SchedulerRequestType.ALLOCATE_PAIR,
-            request_id="pair",
-            data={
-                "req_id": "req",
-                "prefill": {
-                    "instance_id": 1,
-                    "endpoint_id": 1,
-                    "workload": Workload(active_tokens=10).model_dump(mode="json"),
-                },
-                "decode": {
-                    "instance_id": 2,
-                    "endpoint_id": 2,
-                    "workload": Workload(active_kv_cache=5).model_dump(mode="json"),
-                },
-            },
-        )
-    )
-
-    assert response.response_type == SchedulerResponseType.SUCCESS
-    assert response.data["prefill_instance"] is None
-    assert scheduler.update_workload.await_count == 4
-
-
-@pytest.mark.asyncio
-async def test_scheduler_server_allocate_pair_preserves_engine_metadata():
+async def test_scheduler_server_allocate_only_success():
+    """ALLOCATE_ONLY with valid endpoint returns instance and endpoint data."""
     manager = _Manager()
     scheduler = AsyncMock()
     scheduler.update_workload = AsyncMock(return_value=True)
@@ -264,59 +198,102 @@ async def test_scheduler_server_allocate_pair_preserves_engine_metadata():
 
     response = await dispatcher.dispatch(
         SchedulerRequest(
-            request_type=SchedulerRequestType.ALLOCATE_PAIR,
-            request_id="pair",
+            request_type=SchedulerRequestType.ALLOCATE_ONLY,
+            request_id="alloc",
             data={
+                "instance_id": 1,
+                "endpoint_id": 1,
+                "role": "prefill",
                 "req_id": "req",
-                "prefill": {
-                    "instance_id": 1,
-                    "endpoint_id": 1,
-                    "workload": Workload(active_tokens=10).model_dump(mode="json"),
-                },
-                "decode": {
-                    "instance_id": 2,
-                    "endpoint_id": 2,
-                    "workload": Workload(active_kv_cache=5).model_dump(mode="json"),
-                },
+                "workload": Workload(active_tokens=10).model_dump(mode="json"),
             },
         )
     )
 
     assert response.response_type == SchedulerResponseType.SUCCESS
-    assert response.data["prefill_instance"]["engine_type"] == "vllm"
-    assert response.data["prefill_instance"]["dispatch_capabilities"] == ["concurrent_engine_sync"]
-    assert response.data["decode_instance"]["engine_type"] == "vllm"
-    assert response.data["decode_instance"]["dispatch_capabilities"] == ["concurrent_engine_sync"]
+    assert response.data["instance"] is not None
+    assert response.data["instance"]["id"] == 1
+    scheduler.update_workload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_server_allocate_only_returns_none_when_allocation_fails():
+    """ALLOCATE_ONLY returns SUCCESS with instance=None when update_workload fails."""
+    manager = _Manager()
+    scheduler = AsyncMock()
+    scheduler.update_workload = AsyncMock(return_value=False)
+    dispatcher = _SchedulerRequestDispatcher(manager, scheduler, CoordinatorConfig())
+
+    response = await dispatcher.dispatch(
+        SchedulerRequest(
+            request_type=SchedulerRequestType.ALLOCATE_ONLY,
+            request_id="alloc",
+            data={
+                "instance_id": 1,
+                "endpoint_id": 1,
+                "role": "prefill",
+                "req_id": "req",
+                "workload": Workload(active_tokens=10).model_dump(mode="json"),
+            },
+        )
+    )
+
+    assert response.response_type == SchedulerResponseType.SUCCESS
+    assert response.data["instance"] is None
+    scheduler.update_workload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_server_allocate_only_preserves_engine_metadata():
+    """ALLOCATE_ONLY response includes engine metadata from the selected instance."""
+    manager = _Manager()
+    scheduler = AsyncMock()
+    scheduler.update_workload = AsyncMock(return_value=True)
+    dispatcher = _SchedulerRequestDispatcher(manager, scheduler, CoordinatorConfig())
+
+    response = await dispatcher.dispatch(
+        SchedulerRequest(
+            request_type=SchedulerRequestType.ALLOCATE_ONLY,
+            request_id="alloc",
+            data={
+                "instance_id": 1,
+                "endpoint_id": 1,
+                "role": "prefill",
+                "req_id": "req",
+                "workload": Workload(active_tokens=10).model_dump(mode="json"),
+            },
+        )
+    )
+
+    assert response.response_type == SchedulerResponseType.SUCCESS
+    assert response.data["instance"]["engine_type"] == "vllm"
+    assert response.data["instance"]["dispatch_capabilities"] == ["concurrent_engine_sync"]
 
 
 # --- Fix #1: P/D pair path refreshes live workload / instance membership before selecting ---
 
 
 @pytest.mark.asyncio
-async def test_select_pair_and_allocate_refreshes_cache_before_selection():
-    """The P/D pair path must run the same cache refresh as the single-role path."""
+async def test_select_and_allocate_refreshes_cache_before_selection():
+    """select_and_allocate must refresh the workload cache before selecting an endpoint."""
     p = _instance(1, PDRole.ROLE_P)
-    d = _instance(2, PDRole.ROLE_D)
     p_endpoint = next(iter(next(iter(p.endpoints.values())).values()))
-    d_endpoint = next(iter(next(iter(d.endpoints.values())).values()))
     response = SchedulerResponse(
         response_type=SchedulerResponseType.SUCCESS,
         request_id="r",
         data={
-            "prefill_instance": p.model_dump(mode="json"),
-            "prefill_endpoint": p_endpoint.model_dump(mode="json"),
-            "decode_instance": d.model_dump(mode="json"),
-            "decode_endpoint": d_endpoint.model_dump(mode="json"),
+            "instance": p.model_dump(mode="json"),
+            "endpoint": p_endpoint.model_dump(mode="json"),
         },
     )
     client = AsyncSchedulerClient(SchedulerClientConfig())
+    await client._cache.replace_all(PDRole.ROLE_P, [p])
     client._refresh_cache_from_workload_reader = AsyncMock()
-    client._cached_or_fetch_instances = AsyncMock(side_effect=[[p], [d]])
     client._transport = _Transport(response)
 
-    pair = await client.select_pair_and_allocate(_req_info())
+    result = await client.select_and_allocate(PDRole.ROLE_P, _req_info())
 
-    assert pair is not None
+    assert result is not None
     client._refresh_cache_from_workload_reader.assert_awaited_once()
 
 

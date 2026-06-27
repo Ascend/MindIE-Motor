@@ -37,6 +37,7 @@ from motor.config.config_utils import (
     _update_tls_config,
     _update_instances_num,
     _update_prefill_kv_event_config,
+    _redirect_prefill_kv_event_config,
     MGMT_TLS_CONFIG,
     INFER_TLS_CONFIG,
     ETCD_TLS_CONFIG,
@@ -123,11 +124,11 @@ KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
 
 
 @dataclass
-class KvEventRegistrationConfig:
+class KvConductorConfig:
     """KV cache event registration configuration for kv-conductor.
 
-    Controls how the Coordinator registers engine endpoints with the
-    kv-conductor. Behaviour varies by ``store_backend``:
+    Controls how the Coordinator connects to and registers endpoints with
+    the kv-conductor.  Behaviour varies by ``store_backend``:
 
     - Mooncake / Memcache: register the pool once (``pool_endpoint``) +
       per-DP HBM via ``xpu_endpoint``.
@@ -136,11 +137,35 @@ class KvEventRegistrationConfig:
     Endpoint patterns use ``*`` as IP placeholder and add ``dp_rank``
     to the port, e.g. ``"tcp://*:15557"`` resolves to
     ``tcp://<endpoint_ip>:<15557 + dp_rank>``.
+
+    This config replaces the legacy ``prefill_kv_event_config`` —
+    connection info (``conductor_service``, ``http_server_port``) and
+    engine metadata (``engine_type``, ``model_path``) are now part of
+    this unified config.
     """
 
+    # ── Conductor connection ──────────────────────────────────────────
+    conductor_service: str = field(default_factory=lambda: Env.conductor_service or "")
+    """kv-conductor hostname / IP. Empty disables the KV conductor."""
+
+    http_server_port: int = 13333
+    """kv-conductor HTTP API port."""
+
+    # ── KV cache identity ─────────────────────────────────────────────
     store_backend: str = ""
     """KV cache pooling backend: "Mooncake", "Memcache", "YuanRong"."""
 
+    block_size: int = 128
+    """KV block size in tokens — determines token→hash granularity.
+    Must match the engine's ``--block-size``.  Default 128."""
+
+    engine_type: str = "vLLM"
+    """Inference engine type, sent to conductor on registration."""
+
+    model_path: str = ""
+    """Model path / name, used as ``modelname`` in registration."""
+
+    # ── Endpoint patterns ─────────────────────────────────────────────
     pool_endpoint: str = ""
     """Pool service endpoint for centralized backends, e.g. "tcp://kvp-master:5557"."""
 
@@ -160,6 +185,13 @@ class KvEventRegistrationConfig:
     """Per-DP replay endpoint pattern, e.g. "tcp://*:6667".
     vLLM's ZMQ ROUTER for re-broadcasting buffered KV events on
     conductor restart recovery. Resolved via IP + dp_rank like other endpoints."""
+
+    hit_detail: bool = True
+    """Include per-DP per-medium block counts in query responses (``media_detail`` field)."""
+
+    re_register_interval_sec: int = 0
+    """Interval in seconds for periodic KV instance re-registration.
+    0 or negative disables the re-registration timer."""
 
 
 @dataclass
@@ -185,7 +217,7 @@ class SchedulerConfig:
     # tie-break. Only used when kv_affinity_mode="load_gated"; 0 (default) falls back to 2.
     kv_affinity_load_gate_topn: int = 0
     # KV event registration config for kv-conductor.
-    kv_event_registration: KvEventRegistrationConfig = field(default_factory=KvEventRegistrationConfig)
+    kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
 
 
 @dataclass
@@ -202,23 +234,27 @@ class ExceptionConfig:
     """Exception handling configuration class"""
 
     max_retry: int = 5
-    #: When ``False``: no token-cache recompute (``prepare_retry_request`` / bump ``req_id``);
-    #: Decode forwards ``return_token_ids: false`` on PD/CDP so engines omit token-id fields.
-    recompute_enabled: bool = True
-    # Optional split: HTTP transport retries vs recompute rounds (default: both use max_retry).
+    # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
+    # Engine-side recompute is independent of this switch.
+    reschedule_enabled: bool = True
     transport_max_retry: Optional[int] = None
-    recompute_max_retry: Optional[int] = None
     retry_delay: float = 0.2
     first_token_timeout: int = 600  # 10 minutes
     infer_timeout: int = 3600  # 60 minutes
+    upstream_error_body_max_bytes: int = 64 * 1024
 
     @property
     def transport_retry_limit(self) -> int:
         return self.transport_max_retry if self.transport_max_retry is not None else self.max_retry
 
     @property
-    def recompute_retry_limit(self) -> int:
-        return self.recompute_max_retry if self.recompute_max_retry is not None else self.max_retry
+    def recompute_enabled(self) -> bool:
+        """Deprecated compatibility alias for ``reschedule_enabled``."""
+        return self.reschedule_enabled
+
+    @recompute_enabled.setter
+    def recompute_enabled(self, value: bool) -> None:
+        self.reschedule_enabled = value
 
 
 @dataclass
@@ -376,12 +412,11 @@ class PrefillKvEventConfig:
     conductor_service: str = field(default_factory=lambda: Env.conductor_service or "")
     http_server_port: int = 13333
     block_size: int = 128
-    engine_type: str = "vLLM"
-    model_path: str = ""
-    # Legacy single endpoint for all media (used as fallback when per-medium
-    # endpoints are not configured).
     endpoint: str = ""
     replay_endpoint: str = ""
+    engine_type: str = "vLLM"
+    model_path: str = ""
+    re_register_interval_sec: int = 0
 
 
 @dataclass
@@ -445,6 +480,7 @@ class CoordinatorConfig:
                         ]
                         _update_tls_config(tls_configs, cfg, raw)
                         _update_instances_num(cfg, raw)
+                        _redirect_prefill_kv_event_config(cfg, raw)
                         _update_prefill_kv_event_config(cfg, raw)
         except (json.JSONDecodeError, Exception) as e:
             log_json_config_load_error(json_path, e)
@@ -477,6 +513,32 @@ class CoordinatorConfig:
                 'scheduler_type': lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
             }
 
+            exception_config_data = cfg.get("exception_config", {})
+
+            def set_deprecated_recompute_enabled(obj, _key, value):
+                if "reschedule_enabled" in exception_config_data:
+                    logger.warning(
+                        "exception_config.recompute_enabled is deprecated and ignored because "
+                        "reschedule_enabled is also configured"
+                    )
+                    return
+                logger.warning(
+                    "exception_config.recompute_enabled is deprecated; use reschedule_enabled. "
+                    "Engine-side recompute is not controlled by Coordinator."
+                )
+                obj.reschedule_enabled = value
+
+            def ignore_removed_recompute_retry(_obj, _key, _value):
+                logger.warning(
+                    "exception_config.recompute_max_retry is no longer supported and is ignored; "
+                    "Coordinator does not perform engine recompute"
+                )
+
+            exception_handlers = {
+                "recompute_enabled": set_deprecated_recompute_enabled,
+                "recompute_max_retry": ignore_removed_recompute_retry,
+            }
+
             # Enrich AIGW fields from user_config if present
             if user_config_data and AIGW in cfg:
                 try:
@@ -497,7 +559,7 @@ class CoordinatorConfig:
             config_mappings = [
                 ("logging_config", config.logging_config, None),
                 ("prometheus_metrics_config", config.prometheus_metrics_config, None),
-                ("exception_config", config.exception_config, None),
+                ("exception_config", config.exception_config, exception_handlers),
                 ("scheduler_config", config.scheduler_config, scheduler_handlers),
                 ("inference_workers_config", config.inference_workers_config, None),
                 ("timeout_config", config.timeout_config, None),
@@ -570,15 +632,14 @@ class CoordinatorConfig:
                 "transport_max_retry",
                 allow_zero=True,
             )
-        if self.exception_config.recompute_max_retry is not None:
-            self._validate_positive_number(
-                self.exception_config.recompute_max_retry,
-                "recompute_max_retry",
-                allow_zero=True,
-            )
         self._validate_positive_number(self.exception_config.retry_delay, "retry_delay")
         self._validate_positive_number(self.exception_config.first_token_timeout, "first_token_timeout")
         self._validate_positive_number(self.exception_config.infer_timeout, "infer_timeout")
+        self._validate_positive_number(
+            self.exception_config.upstream_error_body_max_bytes,
+            "upstream_error_body_max_bytes",
+            allow_zero=True,
+        )
 
         # Validate tracer_config configuration
         self._validate_positive_number(self.tracer_config.root_sampling_rate, "root_sampling_rate")
@@ -716,7 +777,6 @@ class CoordinatorConfig:
         return reload_dataclass_config_from_json(
             self,
             self.from_json,
-            self.logging_config,
             skip=frozenset({"worker_index", "worker_metaserver_port"}),
             skip_private=True,
         )

@@ -16,9 +16,11 @@ Two complementary mechanisms:
    into a single ``count=N`` line. Use for transient failures (network, RPC)
    that are expected to retry.
 
-2. ``info_periodic`` — emits a periodic summary line ("succeeded N times in
+2. ``emit_periodic`` — emits a periodic summary line ("succeeded N times in
    last 60s") for high-frequency success paths that would otherwise flood
-   logs. Use alongside a per-call DEBUG line.
+   logs. Use alongside a per-call DEBUG line.  Emit level is configurable;
+   most periodic probes use ``level="DEBUG"`` to reduce noise, while key
+   health probes (e.g. coordinator readiness) remain at INFO.
 
 The helpers are **stateless across instances** — each RateLimitedLogger owns
 its own counters and timers. A single RateLimitedLogger should be shared by
@@ -98,11 +100,11 @@ class RateLimitedLogger:
             # else: inside window, below threshold-equivalent — suppress.
 
     # ------------------------------------------------------------------
-    # info_periodic: periodic success summary
+    # periodic summary (level-agnostic; was info_periodic)
     # ------------------------------------------------------------------
 
     def record_success(self, key: str) -> None:
-        """Record one success event. Pairs with ``emit_info_periodic`` —
+        """Record one success event. Pairs with ``emit_periodic`` —
         typically called once per successful operation.
         """
         now = time.time()
@@ -116,16 +118,23 @@ class RateLimitedLogger:
                 return
             state["success_count"] += 1
 
-    def emit_info_periodic(
+    def emit_periodic(
         self,
         key: str,
         msg_template: str,
         interval_sec: int = 60,
         force: bool = False,
+        level: str = "INFO",
     ) -> None:
-        """Emit a periodic INFO summary if ``interval_sec`` has passed since
-        the last emission. If ``force=True`` and there are unsent counts,
-        emit immediately (call on shutdown / test teardown).
+        """Emit a periodic summary at the configured ``level`` if
+        ``interval_sec`` has passed since the last emission. If ``force=True``
+        and there are unsent counts, emit immediately (call on shutdown /
+        test teardown).
+
+        The ``level`` is **sticky per-key**: the first call to register a key
+        sets the emission level for that key, and subsequent calls reuse it
+        regardless of what is passed. This keeps ``flush_all`` consistent
+        with the per-key periodic emissions.
 
         Args:
             key: dedup key (shared with ``record_success``).
@@ -133,17 +142,23 @@ class RateLimitedLogger:
                 e.g. ``"Periodic summary: succeeded {count} times"``.
             interval_sec: emit interval in seconds.
             force: emit even if interval not reached.
+            level: logging level name (e.g. ``"INFO"``, ``"DEBUG"``). Used
+                only on the first call that registers the key.
         """
         now = time.time()
         with self._lock:
             state = self._info_state.get(key)
             if state is None:
-                # Nothing to report; lazily initialize.
+                # Nothing to report; lazily initialize with the requested level.
                 self._info_state[key] = {
                     "success_count": 0,
                     "last_flush_ts": now,
+                    "level": level,
                 }
                 return
+
+            # Sticky level: first call wins, so flush_all emits at the right level.
+            state.setdefault("level", level)
 
             elapsed = now - state["last_flush_ts"]
             count = state["success_count"]
@@ -151,7 +166,9 @@ class RateLimitedLogger:
                 return
 
             if count > 0:
-                self._logger.info(msg_template.format(count=count))
+                log_level = state.get("level", "INFO").lower()
+                log_method = getattr(self._logger, log_level, self._logger.info)
+                log_method(msg_template.format(count=count))
             # Reset for the next window.
             state["success_count"] = 0
             state["last_flush_ts"] = now
@@ -161,4 +178,4 @@ class RateLimitedLogger:
         with self._lock:
             keys = list(self._info_state.keys())
         for key in keys:
-            self.emit_info_periodic(key, "Periodic summary: succeeded {count} times", force=True)
+            self.emit_periodic(key, "Periodic summary: succeeded {count} times", force=True)

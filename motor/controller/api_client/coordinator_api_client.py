@@ -62,9 +62,10 @@ class CoordinatorApiClient:
             client = SafeHTTPSClient(**client_ars, timeout=0.5)
             response = client.get("/readiness", params=params)
             _rl.record_success("controller.coordinator.query_status")
-            _rl.emit_info_periodic(
+            _rl.emit_periodic(
                 "controller.coordinator.query_status",
                 "Controller->Coordinator query_status periodic summary: succeeded {count} times in last 60s",
+                level="DEBUG",
             )
             return response
         except Exception as e:
@@ -107,9 +108,10 @@ class CoordinatorApiClient:
                     len(response.text),
                 )
                 _rl.record_success(metrics_key)
-                _rl.emit_info_periodic(
+                _rl.emit_periodic(
                     metrics_key,
                     "Controller->Coordinator get_metrics periodic summary: succeeded {count} times in last 60s",
+                    level="DEBUG",
                 )
                 return response.text
             logger.warning(

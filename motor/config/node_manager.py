@@ -641,7 +641,6 @@ class NodeManagerConfig:
         return reload_dataclass_config_from_json(
             self,
             NodeManagerConfig.from_json,
-            self.logging_config,
             skip=frozenset({"config_path", "last_modified"}),
             skip_private=False,
             success_message="NodeManager configuration reload successful",

@@ -153,9 +153,28 @@ class TestEngineManager:
             assert msg.model_name == "test_model"
             assert msg.role == PDRole.ROLE_U
             assert msg.enable_multi_endpoints is True
+            assert msg.is_master is False
         else:
             # If None is returned, that's acceptable for this implementation
             pass
+
+    def test_gen_register_msg_includes_is_snapshot_master(self, engine_manager):
+        """Test _gen_register_msg propagates is_snapshot_master as is_master."""
+        engine_manager._config.basic_config.job_name = "test_job"
+        engine_manager._config.basic_config.model_name = "test_model"
+        engine_manager._config.basic_config.role = PDRole.ROLE_U
+        engine_manager._config.api_config.pod_ip = "192.168.1.100"
+        engine_manager._config.endpoint_config.service_ports = ["8080"]
+        engine_manager._config.endpoint_config.mgmt_ports = ["8081"]
+        engine_manager._config.api_config.node_manager_port = 8080
+        engine_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
+        engine_manager._config.basic_config.enable_multi_endpoints = True
+        engine_manager._config.basic_config.device_num = 8
+        engine_manager.is_snapshot_master = True
+
+        msg = engine_manager._gen_register_msg()
+        assert msg is not None
+        assert msg.is_master is True
 
     def test_gen_register_msg_failure(self, engine_manager):
         """Test _gen_register_msg with invalid config"""
@@ -552,3 +571,23 @@ class TestSnapshotSupport:
             "data_parallel_master_ip",
             sample_start_cmd_msg.master_dp_ip,
         )
+
+    def test_is_engine_checkpoint_done_when_snapshot_disabled(self, engine_manager):
+        engine_manager._config.snapshot_config.enable_snapshot = False
+        assert engine_manager.is_engine_checkpoint_done() is True
+
+    def test_is_engine_checkpoint_done_when_checkpoint_missing(self, engine_manager, tmp_path):
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        metadata_path = tmp_path / "snapshot_metadata.json"
+        metadata_path.write_text('{"model_save_path": "/snapshot/weight"}', encoding="utf-8")
+
+        with patch.object(engine_manager, "get_snapshot_metadata_path", return_value=str(metadata_path)):
+            assert engine_manager.is_engine_checkpoint_done() is False
+
+    def test_is_engine_checkpoint_done_when_checkpoint_done(self, engine_manager, tmp_path):
+        engine_manager._config.snapshot_config.enable_snapshot = True
+        metadata_path = tmp_path / "snapshot_metadata.json"
+        metadata_path.write_text('{"checkpoint": "done"}', encoding="utf-8")
+
+        with patch.object(engine_manager, "get_snapshot_metadata_path", return_value=str(metadata_path)):
+            assert engine_manager.is_engine_checkpoint_done() is True

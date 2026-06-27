@@ -32,6 +32,7 @@ from motor.controller.fault_tolerance.fault_types import (
     InstanceMetadata,
     NodeMetadata,
     NodeStatus,
+    OriginFaultLevel,
     SpecialFaultCode,
 )
 
@@ -138,19 +139,15 @@ def setup_test_environment():
 @pytest.fixture
 def fault_manager():
     """Create a basic FaultManager instance for testing"""
-    config = ControllerConfig()
-    return FaultManager(config)
+    with patch("motor.controller.fault_tolerance.fault_manager.K8sClient"):
+        config = ControllerConfig()
+        yield FaultManager(config)
 
 
 @pytest.fixture
 def fault_manager_with_instances():
     """Create a FaultManager instance with pre-configured instances and nodes"""
-    with patch("motor.controller.fault_tolerance.fault_manager.EtcdClient") as mock_etcd_class:
-        mock_client = MagicMock()
-        mock_client.persist_data.return_value = True
-        mock_client.restore_data.return_value = None
-        mock_etcd_class.return_value = mock_client
-
+    with patch("motor.controller.fault_tolerance.fault_manager.K8sClient"):
         config = ControllerConfig()
         manager = FaultManager(config)
 
@@ -302,14 +299,18 @@ def test_persist_data_success(fault_manager_with_instances):
 
 
 def test_persist_data_etcd_failure(fault_manager_with_instances):
-    """Test data persistence when ETCD operations fail"""
+    """Test data persistence when ETCD operations fail."""
     manager = fault_manager_with_instances
 
-    with patch.object(manager.etcd_client, "persist_data", return_value=False):
-        # Call persist_data
+    # Use side_effect that raises to avoid the retry-sleep loop in
+    # _PersistenceMixin (300ms + 600ms backoff).  Raising on the first
+    # call exercises the same failure path without the delay.
+    with patch.object(
+        manager.etcd_client,
+        "persist_data",
+        side_effect=RuntimeError("ETCD persist failed"),
+    ):
         result = manager.persist_data()
-
-        # Verify failure
         assert result is False
 
 
@@ -1542,3 +1543,347 @@ def test_instances_seperated_event_triggers_fault_refresh(fault_manager):
         ins_meta = fault_manager.instances[1]
         assert ins_meta.fault_level == FaultLevel.L6
         assert ins_meta.fault_code == int(SpecialFaultCode.NODE_REBOOT)
+
+
+# =============================================================================
+# 9. PreSeparateNPU dynamic fault level tests
+# =============================================================================
+
+# _node_has_active_instances() uses a local import of InstanceManager, so
+# the patch target must be the definition site, not the caller's module.
+_CORE_IM = "motor.controller.core.instance_manager.InstanceManager"
+_FAULT_MGR_IM = "motor.controller.fault_tolerance.fault_manager.InstanceManager"
+
+
+# -- Test fixtures ------------------------------------------------------------
+
+FAULT_PRE_SEPARATE_L6 = FaultInfo(
+    fault_category=FaultCategory.HARDWARE,
+    fault_type=HardwareFaultType.CARD_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x00F1FEF5,
+    fault_level=FaultLevel.L6,
+    origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
+)
+
+
+def _mk_active_instance(instance_id, job_name, role="decode"):
+    """Create a mock instance that appears INITIAL / ACTIVE."""
+    inst = Mock(spec=Instance)
+    inst.id = instance_id
+    inst.job_name = job_name
+    inst.role = role
+    inst.status = InsStatus.ACTIVE
+    inst.get_node_managers.return_value = []
+    return inst
+
+
+def _mk_core_im(instance):
+    """Build a mock InstanceManager whose get_instance returns *instance*."""
+    mock_im = MagicMock()
+    mock_im.get_instance.return_value = instance
+    return mock_im
+
+
+# -- _node_has_active_instances ----------------------------------------------
+
+
+def test_node_has_active_instances_true(fault_manager):
+    """Returns True when at least one instance on the node is ACTIVE."""
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    node = NodeMetadata(
+        node_name="node_a",
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "decode-1"},
+    )
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
+        assert fault_manager._node_has_active_instances(node) is True
+
+
+def test_node_has_active_instances_false_inactive_status(fault_manager):
+    """Returns False when the only instance on the node is INACTIVE."""
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    node = NodeMetadata(
+        node_name="node_a",
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "decode-1"},
+    )
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(inst)
+        assert fault_manager._node_has_active_instances(node) is False
+
+
+def test_node_has_active_instances_false_no_instances(fault_manager):
+    """Returns False when node has no instance_ids."""
+    node = NodeMetadata(node_name="empty_node")
+    assert fault_manager._node_has_active_instances(node) is False
+
+
+def test_node_has_active_instances_false_instance_not_in_manager(fault_manager):
+    """Returns False when instance_id is not in self.instances (stale)."""
+    node = NodeMetadata(
+        node_name="node_a",
+        instance_ids={999},  # Not in fault_manager.instances
+        instance_pod_ips={999: "10.0.0.1"},
+        instance_job_names={999: "old-job"},
+    )
+    assert fault_manager._node_has_active_instances(node) is False
+
+
+# -- _handle_fault_info_update: PreSeparateNPU downgrade --------------------
+
+
+def test_handle_fault_info_pre_separate_downgrade_to_l2(fault_manager):
+    """PreSeparateNPU should be downgraded to L2 when the node has ACTIVE instances."""
+    node_name = "node_a"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "decode-1"},
+    )
+
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
+        fault_manager._handle_fault_info_update([FAULT_PRE_SEPARATE_L6], node_name)
+
+    node = fault_manager.nodes[node_name]
+    assert len(node.hardware_fault_infos) == 1
+    stored = next(iter(node.hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L2, "PreSeparateNPU should be L2 when active instances exist on the node"
+    assert stored.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU
+
+
+def test_handle_fault_info_pre_separate_stays_l6_no_active_instances(fault_manager):
+    """PreSeparateNPU stays L6 when the node has NO active instances."""
+    node_name = "node_b"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.2"},
+        instance_job_names={1: "decode-1"},
+    )
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(inst)
+        fault_manager._handle_fault_info_update([FAULT_PRE_SEPARATE_L6], node_name)
+
+    node = fault_manager.nodes[node_name]
+    stored = next(iter(node.hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L6, "PreSeparateNPU should stay L6 when no active instances on the node"
+
+
+# -- _refresh_instance_fault_level: PreSeparateNPU exclusion -----------------
+
+
+def test_refresh_pre_separate_l6_excluded_when_no_active_instances(
+    fault_manager_with_instances,
+):
+    """PreSeparateNPU L6 on a node with no active instances should NOT
+    raise the instance's fault level (excluded from computation).
+    """
+    manager = fault_manager_with_instances
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {
+        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
+    }
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(inst)
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._refresh_instance_fault_level(1)
+
+    # Instance should be HEALTHY — PreSeparateNPU L6 excluded
+    ins_meta = manager.instances[1]
+    assert ins_meta.fault_level == FaultLevel.HEALTHY, (
+        "PreSeparateNPU L6 without active business should not affect instance fault level"
+    )
+    assert ins_meta.fault_code == 0x0
+
+
+def test_refresh_pre_separate_l2_included_when_active_instances(
+    fault_manager_with_instances,
+):
+    """PreSeparateNPU L2 (downgraded because active instances exist) should
+    be included in instance fault level computation.
+    """
+    manager = fault_manager_with_instances
+    pre_sep_l2 = FaultInfo(
+        fault_category=FaultCategory.HARDWARE,
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu0",
+        fault_code=0x00F1FEF5,
+        fault_level=FaultLevel.L2,
+        origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
+    )
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {pre_sep_l2.fault_code: pre_sep_l2}
+
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._refresh_instance_fault_level(1)
+
+    ins_meta = manager.instances[1]
+    assert ins_meta.fault_level == FaultLevel.L2, (
+        "PreSeparateNPU L2 with active business should be reflected in instance fault level"
+    )
+    assert ins_meta.fault_code == 0x00F1FEF5
+
+
+# -- Re-evaluation: L2 → L6 when instances leave -----------------------------
+
+
+def test_reevaluate_pre_separate_l2_to_l6_when_instance_leaves(
+    fault_manager_with_instances,
+):
+    """When all instances leave a node, PreSeparateNPU should be re-evaluated
+    from L2 to L6.  The L6 fault should then be excluded from the instance's
+    fault level (no active business).
+    """
+    manager = fault_manager_with_instances
+    pre_sep_l2 = FaultInfo(
+        fault_category=FaultCategory.HARDWARE,
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu0",
+        fault_code=0x00F1FEF5,
+        fault_level=FaultLevel.L2,
+        origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
+    )
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {pre_sep_l2.fault_code: pre_sep_l2}
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(inst)
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._refresh_instance_fault_level(1)
+
+    # Fault on node should have been re-evaluated to L6
+    stored = node.hardware_fault_infos[0x00F1FEF5]
+    assert stored.fault_level == FaultLevel.L6, (
+        "PreSeparateNPU should escalate to L6 after all instances leave the node"
+    )
+    # Instance fault level should be HEALTHY (L6 excluded — no business)
+    ins_meta = manager.instances[1]
+    assert ins_meta.fault_level == FaultLevel.HEALTHY
+
+
+# -- PreSeparateNPU L6 coexisting with other faults ---------------------------
+
+
+def test_refresh_pre_separate_l6_excluded_but_other_l3_fault_still_counts(
+    fault_manager_with_instances,
+):
+    """When a node has PreSeparateNPU L6 (no active instances) AND another
+    node has L3 fault, the instance should get L3 (not L6, not HEALTHY).
+    """
+    manager = fault_manager_with_instances
+
+    node0 = manager.nodes["node_0"]
+    node0.hardware_fault_infos = {
+        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
+    }
+    node1 = manager.nodes["node_1"]
+    node1.hardware_fault_infos = {
+        FAULT_NODE_L3.fault_code: FAULT_NODE_L3,
+    }
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(inst)
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._refresh_instance_fault_level(1)
+
+    ins_meta = manager.instances[1]
+    assert ins_meta.fault_level == FaultLevel.L3, (
+        "PreSeparateNPU L6 should be excluded but L3 from another node still counts"
+    )
+    assert ins_meta.fault_code == FAULT_NODE_L3.fault_code
+
+
+# -- ScaleP2D not triggered for PreSeparateNPU L6 without business ------------
+
+
+def test_pre_separate_l6_no_active_instances_no_scale_p2d(
+    fault_manager_with_instances,
+):
+    """PreSeparateNPU L6 without active instances should NOT trigger
+    ScaleP2D strategy dispatch.
+    """
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_scale_p2d = True
+
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {
+        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
+    }
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(inst)
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._process_instance_strategy(1)
+
+    ins_meta = manager.instances[1]
+    assert ins_meta.strategy is None, "PreSeparateNPU L6 without active business should not trigger ScaleP2D"
+
+
+# -- Multi-instance: one active, one inactive --------------------------------
+
+
+def test_node_has_active_instances_true_when_any_instance_active(fault_manager):
+    """If a node hosts instance 1 (ACTIVE) and instance 2 (INACTIVE),
+    _node_has_active_instances should return True — the presence of at
+    least one active instance is sufficient regardless of iteration order.
+    """
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.instances[2] = InstanceMetadata(instance_id=2)
+    node = NodeMetadata(
+        node_name="shared_node",
+        instance_ids=[1, 2],
+        instance_pod_ips={1: "10.0.0.1", 2: "10.0.0.2"},
+        instance_job_names={1: "decode-1", 2: "prefill-1"},
+    )
+
+    def side_effect(iid):
+        if iid == 1:
+            return _mk_active_instance(1, "decode-1")
+        inst = _mk_active_instance(2, "prefill-1")
+        inst.status = InsStatus.INACTIVE
+        return inst
+
+    mock_im = MagicMock()
+    mock_im.get_instance.side_effect = side_effect
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = mock_im
+        assert fault_manager._node_has_active_instances(node) is True

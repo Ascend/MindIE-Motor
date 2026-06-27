@@ -129,6 +129,7 @@ class DeployConfig:
     infer_tls_config: TLSConfig | None
     dispatch_profile: str | None = None
     health_check_config: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    enable_multi_endpoints: bool = True
 
     @classmethod
     def load(cls, file_path: str | Path, role: str | None = None) -> "DeployConfig":
@@ -195,9 +196,14 @@ class DeployConfig:
             )
         else:
             model_config = ModelConfig.from_dict(data.get("model_config", {}))
+            resolver = ConfigResolver(data, engine_type=data.get("engine_type"))
 
         mgmt_tls_config = data.get("mgmt_tls_config")
         infer_tls_config = data.get("infer_tls_config")
+
+        enable_multi_endpoints = data.get("enable_multi_endpoints")
+        if enable_multi_endpoints is None:
+            enable_multi_endpoints = resolver.get_enable_multi_endpoints()
 
         return cls(
             engine_type=data["engine_type"],
@@ -207,6 +213,7 @@ class DeployConfig:
             infer_tls_config=TLSConfig.from_dict(infer_tls_config) if infer_tls_config else None,
             dispatch_profile=data.get(DISPATCH_PROFILE_KEY),
             health_check_config=HealthCheckConfig.from_dict(data.get("health_check_config", {})),
+            enable_multi_endpoints=bool(enable_multi_endpoints),
         )
 
     def get_parallel_config(self, role: str = "union") -> ParallelConfig:

@@ -26,19 +26,15 @@ class EngineServerApiClient:
         client = SafeHTTPSClient(**client_args, timeout=5)
         response = client.get("/status")
         _rl.record_success(f"node_manager.engine_server.query_status.{address}")
-        _rl.emit_info_periodic(
+        _rl.emit_periodic(
             f"node_manager.engine_server.query_status.{address}",
             "NodeManager->EngineServer query_status periodic summary: succeeded {count} times in last 60s",
+            level="DEBUG",
         )
-        logger.debug(f"Query engine server status success, "
-                    f"response: {response}, "
-                    f"address: {client_args['address']}")
+        logger.debug(f"Query engine server status success, response: {response}, address: {client_args['address']}")
         return response
 
     @classmethod
     def _generate_client_args(cls, address: str) -> dict[str, str]:
-        client_ars = {
-            "address": f"{address}",
-            "tls_config": cls.tls_config
-        }
+        client_ars = {"address": f"{address}", "tls_config": cls.tls_config}
         return client_ars

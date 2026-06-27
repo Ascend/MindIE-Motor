@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 
 SUSPEND_TIMEOUT = 3600.0
 RESUME_TIMEOUT = 3600.0
+DEVICE_UNLOCK_TIMEOUT = 10
 
 RETRY_INTERVAL = 1.0
 
@@ -56,15 +57,14 @@ class SnapshotSentinel(threading.Thread):
             logger.info("[snapshot] Snapshot sentinel stopped before suspend completed")
             return
 
-        # checkpoint
-        while not self._stop_event.is_set() and not is_restored_from_host_side_snapshot():
-            time.sleep(RETRY_INTERVAL)
+        # reach checkpoint
+        self._reach_checkpoint()
         if self._stop_event.is_set():
-            logger.info("[snapshot] Snapshot sentinel stopped before host-side restore was detected")
+            logger.info("[snapshot] Snapshot sentinel stopped, maybe current is cold start and reach checkpoint")
             return
-        logger.info("[snapshot] Restored from host-side snapshot, starting to resume")
 
         # post-snapshot
+        logger.info("[snapshot] Restored from host-side snapshot, starting to resume")
         self._call_resume()
 
     def _wait_until_infer_healthy(self) -> None:
@@ -85,6 +85,39 @@ class SnapshotSentinel(threading.Thread):
                 if retries % RETRY_LOG_FREQUENCY == 0:
                     logger.warning("[snapshot] Infer health check failed, will retry: %s", str(e))
                 retries += 1
+            time.sleep(RETRY_INTERVAL)
+
+    def _reach_checkpoint(self) -> None:
+        retries = 0
+        while not self._stop_event.is_set() and not is_restored_from_host_side_snapshot():
+            # If current is restored from snapshot and directly reach checkpoint, break idle loop to resume
+            try:
+                checkpoint = load_snapshot_metadata(self._snapshot_metadata, "checkpoint")
+                if checkpoint != "done" and not is_restored_from_host_side_snapshot():
+                    # Current is cold start and do not reach checkpoint
+                    raise ValueError("Current is cold start and checkpoint is not done")
+                elif checkpoint == "done" and not is_restored_from_host_side_snapshot():
+                    # Current is cold start and reach checkpoint, unlock device and stop snapshot sentinel
+                    infer_address = build_endpoint(get_pod_ip(), self._infer_port)
+                    with SafeHTTPSClient(
+                        address=infer_address,
+                        tls_config=self._infer_tls,
+                        timeout=DEVICE_UNLOCK_TIMEOUT,
+                    ) as client:
+                        client.do_post(
+                            "device_unlock",
+                        )
+                    logger.info(
+                        "[snapshot] Reach checkpoint, should unlock device and stop snapshot sentinel during cold start"
+                    )
+                    SnapshotMonitor().mark_unlock_done()
+                    self._stop_event.set()
+                    return
+            except Exception as e:
+                if retries % RETRY_LOG_FREQUENCY == 0:
+                    logger.warning("[snapshot] Do not reach Checkpoint, will retry inspect: %s", str(e))
+                retries += 1
+
             time.sleep(RETRY_INTERVAL)
 
     def _call_suspend(self) -> None:

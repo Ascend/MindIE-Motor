@@ -126,7 +126,25 @@ pip install dist/*.whl
 
 ## 部署目录结构
 
-请将本仓库中的 **examples** 目录上传至 K8s 集群的 master 节点。与 PD 分离部署相关的主要目录结构如下：
+请将本仓库中的 `examples` 目录上传至 K8s 集群的 master 节点。`examples` 可使用以下两种方式获取：
+
+- **从本代码仓获取**：将仓库根目录下的 `examples` 目录上传至 master 服务器。
+
+- **从容器镜像获取**：若无完整代码仓，但已拉取PyMotor推理镜像，可使用镜像内预置的示例目录，路径为 **`/tmp/motor/examples`**（目录结构与仓库中的 `examples` 一致）。在已拉取镜像的机器上执行（将 `IMAGE` 替换为实际镜像名或镜像 ID，可与 `user_config.json` 中 `motor_deploy_config.image_name` 保持一致）：
+
+  ```bash
+  IMAGE="<镜像名或镜像ID>"
+
+  cid=$(docker create "$IMAGE")
+  docker cp "$cid:/tmp/motor/examples" ./examples
+  docker rm "$cid"
+  ```
+
+  将得到的 `examples` 目录上传至 master 服务器。
+
+  若使用 Podman，将命令中的 `docker` 替换为 `podman` 即可。
+
+`examples` 中与 PD 分离部署相关的主要目录结构如下：
 
 ```text
 examples/

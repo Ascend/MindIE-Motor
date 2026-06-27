@@ -57,6 +57,14 @@ class RequestInfo(BaseModel):
         description="Prompt token ids tokenized once at routing (KV affinity); reused for "
         "prefill load accounting so load and affinity share the same token unit",
     )
+    kv_affinity_debug: dict | None = Field(
+        default=None,
+        exclude=True,
+        description="Per-endpoint (matched_tokens, load_cost, prefill_cost) cached by the "
+        "kv_cache_affinity policy at selection; the worker forwards prefill_cost for the "
+        "scheduler's global fresh-load re-rank and logs matched/load for the committed endpoint. "
+        "Keyed by (instance_id, endpoint_id) tuples, so excluded from serialization.",
+    )
     api: str = Field(..., description="API need to be forwarded")
     entry_api: str = Field(
         default="",

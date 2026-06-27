@@ -315,7 +315,6 @@ class ControllerConfig:
         return reload_dataclass_config_from_json(
             self,
             self.from_json,
-            self.logging_config,
             skip_private=True,
         )
 

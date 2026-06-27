@@ -13,6 +13,7 @@ from typing import Any
 from motor.common.logger import get_logger
 from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.utils.net import format_address, format_host
 from motor.config.coordinator import CoordinatorConfig
 
 
@@ -20,12 +21,6 @@ TENANT_ID = "default"
 logger = get_logger(__name__)
 # Roles whose KV events should be registered with the conductor.
 _KVA_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
-
-# When consecutive query failures reach this threshold, the conductor is
-# presumed to have restarted and all instance endpoints must be re-registered.
-_QUERY_FAILURE_THRESHOLD = 10
-_query_failure_count = 0
-_needs_reregister = False
 
 
 def conductor_instance_id(instance: Instance) -> str:
@@ -45,13 +40,8 @@ class ConductorApiClient:
 
     @classmethod
     def _kv_reg(cls):
-        """Endpoint patterns (kv_event_registration)."""
-        return cls.coordinator_config.scheduler_config.kv_event_registration
-
-    @classmethod
-    def _kv_base(cls):
-        """Base config: conductor addr, engine type, block size."""
-        return cls.coordinator_config.prefill_kv_event_config
+        """Unified KV event config (conductor addr + registration patterns)."""
+        return cls.coordinator_config.scheduler_config.kv_conductor_config
 
     @classmethod
     def _resolve_store_backend(cls) -> str:
@@ -72,23 +62,22 @@ class ConductorApiClient:
         """Register all KVA-eligible instance endpoints with the KV conductor."""
         logger.info("register_kv_instance started.")
         reg = cls._kv_reg()
-        base = cls._kv_base()
         mode = cls._resolve_backend_mode()
         sb = cls._resolve_store_backend()
 
         if mode == "pool":
-            cls._register_pool(reg, base, sb)
+            cls._register_pool(reg, sb)
             for instance in instances:
                 if instance.role not in _KVA_ROLES:
                     continue
                 for ep in instance.get_all_endpoints():
-                    cls._register_hbm_dp(reg, base, sb, instance, ep)
+                    cls._register_hbm_dp(reg, sb, instance, ep)
         else:
             for instance in instances:
                 if instance.role not in _KVA_ROLES:
                     continue
                 for ep in instance.get_all_endpoints():
-                    cls._register_yuanrong_dp(reg, base, sb, instance, ep)
+                    cls._register_yuanrong_dp(reg, sb, instance, ep)
 
     @classmethod
     def unregister_kv_instance(cls, instances: list[Instance]) -> None:
@@ -104,7 +93,7 @@ class ConductorApiClient:
     # ── Pool registration (Mooncake / Memcache) ──────────────────────
 
     @classmethod
-    def _register_pool(cls, reg, base, store_backend: str) -> None:
+    def _register_pool(cls, reg, store_backend: str) -> None:
         """Register the centralized pool once per cluster (domain name)."""
         if cls._pool_registered:
             return
@@ -115,16 +104,16 @@ class ConductorApiClient:
         register_data: dict = {
             "instance_id": f"{store_backend.lower()}-pool",
             "endpoint": reg.pool_endpoint,
-            "type": base.engine_type,
+            "type": reg.engine_type,
             "store_backend": store_backend,
-            "modelname": base.model_path or "default",
-            "block_size": base.block_size,
+            "modelname": reg.model_path or "default",
+            "block_size": reg.block_size,
             "dp_rank": 0,
         }
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
 
-        client_args = {"address": f"{base.conductor_service}:{base.http_server_port}"}
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/register", register_data)
@@ -136,7 +125,7 @@ class ConductorApiClient:
     # ── HBM per-DP (Mooncake / Memcache) ─────────────────────────────
 
     @classmethod
-    def _register_hbm_dp(cls, reg, base, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+    def _register_hbm_dp(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
         """Register a single DP's HBM endpoint for pool-backend auto-attach."""
         instance_id = conductor_instance_id(instance)
         xpu_url = cls._resolve_endpoint_url(reg.xpu_endpoint or reg.endpoint, endpoint.ip, endpoint.id)
@@ -144,10 +133,10 @@ class ConductorApiClient:
         replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
         register_data: dict = {
             "instance_id": instance_id,
-            "type": base.engine_type,
+            "type": reg.engine_type,
             "store_backend": store_backend,
             "modelname": instance.model_name,
-            "block_size": base.block_size,
+            "block_size": reg.block_size,
             "dp_rank": endpoint.id,
         }
         if xpu_url:
@@ -157,7 +146,7 @@ class ConductorApiClient:
         if replay_url:
             register_data["replay_endpoint"] = replay_url
 
-        client_args = {"address": f"{base.conductor_service}:{base.http_server_port}"}
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/register", register_data)
@@ -175,7 +164,7 @@ class ConductorApiClient:
     # ── YuanRong per-DP multi-port ────────────────────────────────────
 
     @classmethod
-    def _register_yuanrong_dp(cls, reg, base, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+    def _register_yuanrong_dp(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
         """Register a single DP with multi-port endpoints for YuanRong."""
         instance_id = conductor_instance_id(instance)
         medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
@@ -184,10 +173,10 @@ class ConductorApiClient:
         replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
         register_data: dict = {
             "instance_id": instance_id,
-            "type": base.engine_type,
+            "type": reg.engine_type,
             "store_backend": store_backend,
             "modelname": instance.model_name,
-            "block_size": base.block_size,
+            "block_size": reg.block_size,
             "dp_rank": endpoint.id,
         }
         if has_endpoints:
@@ -197,7 +186,7 @@ class ConductorApiClient:
         if replay_url:
             register_data["replay_endpoint"] = replay_url
 
-        client_args = {"address": f"{base.conductor_service}:{base.http_server_port}"}
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/register", register_data)
@@ -223,7 +212,7 @@ class ConductorApiClient:
         if len(parts) != 2:
             logger.debug(f"endpoint pattern malformed: {pattern}")
             return None
-        return f"{parts[0]}{ip}:{int(parts[1]) + dp_rank}"
+        return f"{parts[0]}{format_host(ip)}:{int(parts[1]) + dp_rank}"
 
     @classmethod
     def _build_medium_endpoints(cls, config, ip: str, dp_rank: int) -> dict[str, str]:
@@ -242,7 +231,6 @@ class ConductorApiClient:
     def register_post(cls, instance: "Instance", endpoint: "Endpoint") -> None:
         """Legacy single-DP registration (used by re-registration path)."""
         reg = cls._kv_reg()
-        base = cls._kv_base()
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 
@@ -254,10 +242,10 @@ class ConductorApiClient:
         replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
         register_data: dict = {
             "medium_endpoints": medium_endpoints,
-            "type": base.engine_type,
+            "type": reg.engine_type,
             "store_backend": sb,
             "modelname": instance.model_name,
-            "block_size": base.block_size,
+            "block_size": reg.block_size,
             "instance_id": instance_id,
             "dp_rank": endpoint.id,
         }
@@ -266,7 +254,7 @@ class ConductorApiClient:
         if replay_url:
             register_data["replay_endpoint"] = replay_url
 
-        client_args = {"address": f"{base.conductor_service}:{base.http_server_port}"}
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/register", register_data)
@@ -284,21 +272,19 @@ class ConductorApiClient:
 
         :returns:
         """
-        prefill_kv_event_config = cls.coordinator_config.prefill_kv_event_config
+        reg = cls._kv_reg()
         instance_id = conductor_instance_id(instance)
         register_data: dict = {
-            "type": prefill_kv_event_config.engine_type,
+            "type": reg.engine_type,
             "modelname": instance.model_name,
-            "block_size": prefill_kv_event_config.block_size,
+            "block_size": reg.block_size,
             "instance_id": instance_id,
             "dp_rank": endpoint.id,
         }
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
 
-        client_args = {
-            "address": f"{prefill_kv_event_config.conductor_service}:{prefill_kv_event_config.http_server_port}"
-        }
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
             with SafeHTTPSClient(timeout=2, **client_args) as client:
                 client.post("/unregister", register_data)
@@ -316,77 +302,224 @@ class ConductorApiClient:
 
     @classmethod
     def query_conductor(cls, instances: list[Instance], encoded_ids: list[int]) -> dict[str, Any]:
-        """Query KV conductor for prefix cache overlap scores.
-
-        On consecutive query failures (conductor restart / network partition),
-        triggers automatic re-registration of all prefill instance endpoints
-        once the conductor becomes reachable again.
-        """
-        prefill_kv_event_config = cls.coordinator_config.prefill_kv_event_config
+        """Query KV conductor for prefix cache overlap scores."""
+        reg = cls._kv_reg()
         query_data: dict = {
             "model": instances[0].model_name,
-            "block_size": prefill_kv_event_config.block_size,
+            "block_size": reg.block_size,
             "token_ids": encoded_ids,
+            "hit_detail": reg.hit_detail,
         }
         if TENANT_ID != "default":
             query_data["tenant_id"] = TENANT_ID
 
         logger.debug(f"query_data : {query_data}")
 
-        client_args = {
-            "address": f"{prefill_kv_event_config.conductor_service}:{prefill_kv_event_config.http_server_port}"
-        }
-        global _query_failure_count, _needs_reregister
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
 
         try:
             with SafeHTTPSClient(timeout=0.5, **client_args) as client:
                 response = client.post("/query", query_data)
-                logger.info(f"query success! {response}")
-
-                if _needs_reregister:
-                    try:
-                        # Verify the conductor is truly alive before re-registering.
-                        # A /health check confirms the conductor process is up (not
-                        # just a transient network recovery) and avoids unnecessary
-                        # DuplicateRegistration errors when the original registrations
-                        # are still valid.
-                        client.get("/health")
-                    except Exception as e:
-                        logger.warning(
-                            "Re-registration skipped: conductor health check failed (%s). "
-                            "Will retry on next successful query.",
-                            e,
-                        )
-                        _query_failure_count = 0
-                        return response
-
-                    # Health check passed — conductor is up: re-register.
-                    _needs_reregister = False
-                    try:
-                        logger.warning(
-                            "Conductor recovered after %d consecutive failures, "
-                            "re-registering all prefill instance endpoints",
-                            _query_failure_count,
-                        )
-                        cls.register_kv_instance(instances)
-                    except Exception as e:
-                        logger.error("Re-registration during recovery failed: %s", e)
-                _query_failure_count = 0
-
+                cls._log_hit_summary(response)
                 return response
         except Exception as e:
-            _query_failure_count += 1
             logger.error(
-                "Exception occurred while register to conductor at %s: %s",
+                "Exception occurred while querying conductor at %s: %s",
                 client_args.get('address', 'unknown'),
                 e,
             )
-            if _query_failure_count >= _QUERY_FAILURE_THRESHOLD and not _needs_reregister:
-                _needs_reregister = True
-                logger.warning(
-                    "Query failure count reached %d (threshold=%d), "
-                    "conductor may have restarted; will re-register on next successful query",
-                    _query_failure_count,
-                    _QUERY_FAILURE_THRESHOLD,
-                )
         return {}
+
+    @classmethod
+    def _log_hit_summary(cls, response: dict[str, Any]) -> None:
+        """Log a concise per-instance hit summary from the query response."""
+        if not isinstance(response, dict):
+            return
+        for tenant_id, instances in response.items():
+            if not isinstance(instances, dict):
+                continue
+            for inst_id, imd in instances.items():
+                if not isinstance(imd, dict):
+                    continue
+                longest = imd.get("longest_matched", 0)
+                xpu = imd.get("XPU", 0)
+                cpu = imd.get("CPU", 0)
+                disk = imd.get("DISK", 0)
+                dp = imd.get("DP", {})
+                media = imd.get("media_detail")
+                parts = [f"best={longest}", f"XPU={xpu}", f"CPU={cpu}", f"DISK={disk}"]
+                if isinstance(dp, dict):
+                    parts.append(f"DP={{{','.join(f'{k}:{v}' for k, v in sorted(dp.items()))}}}")
+                hit = any(v > 0 for v in (xpu, cpu, disk))
+                logger.info(
+                    "conductor hit: %s/%s %s %s",
+                    tenant_id,
+                    inst_id,
+                    "HIT" if hit else "MISS",
+                    " ".join(parts),
+                )
+                if isinstance(media, dict):
+                    for rank, m in sorted(media.items()):
+                        logger.info(
+                            "conductor media: %s/%s dp=%s XPU=%s CPU=%s DISK=%s",
+                            tenant_id,
+                            inst_id,
+                            rank,
+                            m.get("XPU", 0),
+                            m.get("CPU", 0),
+                            m.get("DISK", 0),
+                        )
+
+    @classmethod
+    def _build_register_payload(cls, instance: Instance, endpoint: Endpoint) -> dict[str, Any]:
+        """Build registration payload using the unified kv_conductor_config config.
+
+        Produces the same payload format as :meth:`register_post` so the
+        re-registration comparison is consistent.
+        """
+        reg = cls._kv_reg()
+        instance_id = conductor_instance_id(instance)
+        sb = cls._resolve_store_backend()
+
+        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
+        # Keep only non-empty endpoints
+        filtered = {k: v for k, v in medium_endpoints.items() if v}
+        if not filtered:
+            return {}
+
+        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
+        payload: dict[str, Any] = {
+            "medium_endpoints": filtered,
+            "type": reg.engine_type,
+            "store_backend": sb,
+            "modelname": instance.model_name,
+            "block_size": reg.block_size,
+            "instance_id": instance_id,
+            "dp_rank": endpoint.id,
+        }
+        if TENANT_ID != "default":
+            payload["tenant_id"] = TENANT_ID
+        if replay_url:
+            payload["replay_endpoint"] = replay_url
+
+        return payload
+
+    @classmethod
+    def get_registered_services(cls) -> list[dict[str, Any]]:
+        """Get registered services from the conductor.
+
+        Tries both API flavours so the same code works with:
+        - kv-conductor: ``GET /workers`` → ``{"workers": [...]}``
+        - Mooncake Master: ``GET /services`` → ``{"services": [...]}``
+        """
+        reg = cls._kv_reg()
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
+
+        with SafeHTTPSClient(timeout=2, **client_args) as client:
+            # ── kv-conductor flavour (preferred) ─────────────────────
+            try:
+                response = client.get("/workers")
+            except Exception:
+                response = None
+            if isinstance(response, dict):
+                workers = response.get("workers")
+                if isinstance(workers, list) and workers:
+                    return workers
+
+            # ── Mooncake Master flavour (fallback) ───────────────────
+            try:
+                response = client.get("/services")
+            except Exception:
+                response = None
+            if isinstance(response, dict):
+                services = response.get("services", [])
+                if isinstance(services, list):
+                    return services
+
+        return []
+
+    @staticmethod
+    def _normalize_service_key(service: dict[str, Any]) -> set[tuple[str, int]]:
+        """Extract (instance_id, dp_rank) pairs from a service entry.
+
+        Handles both response formats:
+
+        - kv-conductor ``WorkerSummary``:
+          ``{"instance_id": "...", "endpoints": {"0": {...}, "1": {...}}}``
+        - Mooncake Master service entry:
+          ``{"InstanceID": "...", "DPRank": 0, ...}``
+        """
+        keys: set[tuple[str, int]] = set()
+
+        # ── kv-conductor format: nested endpoints HashMap ────────────
+        instance_id = service.get("instance_id", "")
+        endpoints = service.get("endpoints")
+        if instance_id and isinstance(endpoints, dict):
+            for dp_rank_str in endpoints:
+                try:
+                    dp_rank = int(dp_rank_str)
+                except (ValueError, TypeError):
+                    continue
+                keys.add((instance_id, dp_rank))
+            if keys:
+                return keys
+
+        # ── Mooncake Master format: flat fields ──────────────────────
+        instance_id = service.get("InstanceID", "")
+        if instance_id:
+            dp_raw = service.get("DPRank", -1)
+            if isinstance(dp_raw, int):
+                dp_rank = dp_raw
+            else:
+                try:
+                    dp_rank = int(dp_raw)
+                except (ValueError, TypeError):
+                    dp_rank = -1
+            keys.add((instance_id, dp_rank))
+
+        return keys
+
+    @classmethod
+    def re_register_kv_instances(cls, instances: list[Instance]) -> None:
+        """Re-register any KVA-eligible instances that are missing from the conductor.
+
+        Compares the set of locally known (instance_id, dp_rank) pairs against
+        those already registered on the conductor (via GET /workers).  Missing
+        entries are re-registered with :meth:`register_post`.
+        """
+        logger.info("re_register_kv_instances started.")
+        try:
+            registered_services = cls.get_registered_services()
+        except Exception:
+            logger.info("no registered services found in conductor, skipping re-register.")
+            return
+
+        # Collect all (instance_id, dp_rank) already registered on the conductor.
+        registered_dps: set[tuple[str, int]] = set()
+        for worker in registered_services:
+            if isinstance(worker, dict):
+                registered_dps |= cls._normalize_service_key(worker)
+
+        for instance in instances:
+            if instance.role not in _KVA_ROLES:
+                continue
+            for ep in instance.get_all_endpoints():
+                payload = cls._build_register_payload(instance, ep)
+                if not payload:
+                    logger.debug(
+                        "skip re-register because payload build failed for instance=%s endpoint=%s",
+                        instance.id,
+                        ep.id,
+                    )
+                    continue
+
+                instance_id = conductor_instance_id(instance)
+                if (instance_id, ep.id) in registered_dps:
+                    continue  # already registered
+
+                logger.info(
+                    "service missing in conductor, re-registering instance=%s dp_rank=%s",
+                    instance_id,
+                    ep.id,
+                )
+                cls.register_post(instance, ep)

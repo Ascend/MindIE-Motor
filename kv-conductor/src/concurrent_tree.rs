@@ -15,7 +15,7 @@
 //! - Exclusive `apply_event` (write locks with hand-over-hand ordering)
 //!
 //! The reverse lookup table is maintained externally (by [`Indexer`](crate::indexer::Indexer))
-//! and passed in during event application, following Dynamo's pattern.
+//! and passed in during event application.
 
 use std::sync::Arc;
 
@@ -107,6 +107,7 @@ impl ConcurrentRadixTree {
     /// Returns per-worker overlap scores indicating the depth of the longest
     /// matching prefix for each worker.
     pub fn find_matches(&self, sequence: &[LocalBlockHash]) -> OverlapScores {
+        let t0 = std::time::Instant::now();
         let mut scores = OverlapScores::new();
 
         if sequence.is_empty() {
@@ -120,6 +121,7 @@ impl ConcurrentRadixTree {
         };
 
         let Some(first_child) = first_child else {
+            tracing::trace!(seq_len = sequence.len(), "tree miss at root");
             return scores;
         };
 
@@ -202,6 +204,13 @@ impl ConcurrentRadixTree {
             scores.update_score(worker, matched_depth);
         }
 
+        tracing::debug!(
+            seq_len = sequence.len(),
+            depth = matched_depth,
+            active_workers = scores.scores.len(),
+            elapsed_us = t0.elapsed().as_micros(),
+            "find_matches"
+        );
         scores
     }
 
@@ -291,7 +300,7 @@ impl ConcurrentRadixTree {
 
             // Update reverse lookup
             lookup.insert(seq_hash, Arc::clone(&child));
-            tracing::debug!(
+            tracing::trace!(
                 seq_hash = ?seq_hash,
                 lookup_len = lookup.len(),
                 "stored block in lookup"
@@ -305,7 +314,7 @@ impl ConcurrentRadixTree {
             current.write().workers.insert(worker.clone());
         }
 
-        tracing::debug!(final_lookup_len = lookup.len(), "apply_store finished");
+        tracing::trace!(final_lookup_len = lookup.len(), "apply_store finished");
 
         Ok(())
     }
@@ -326,7 +335,7 @@ impl ConcurrentRadixTree {
             if let Some(block) = lookup.remove(&seq_hash) {
                 block.write().drop_worker(worker);
             } else {
-                tracing::debug!(
+                tracing::trace!(
                     instance_id = %worker.instance_id,
                     dp_rank = worker.dp_rank,
                     ?block_hash,

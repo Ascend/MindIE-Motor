@@ -22,8 +22,9 @@
 import asyncio
 from functools import wraps
 
+import httpx
 from fastapi import HTTPException, Request, status
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import Response
 
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.resources.instance import PDRole
@@ -34,6 +35,11 @@ from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
+from motor.coordinator.router.upstream_error import (
+    UpstreamHTTPError,
+    render_transport_error,
+    render_upstream_error,
+)
 from motor.common.http.security_utils import (
     sanitize_error_message,
     filter_sensitive_headers,
@@ -147,7 +153,7 @@ async def handle_request(
     scheduler=None,
     *,
     request_manager: RequestManager,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     """Handle incoming requests and route them to appropriate router implementation
 
     Args:
@@ -155,8 +161,7 @@ async def handle_request(
         request_manager: RequestManager instance (required, injected by InferenceServer)
 
     Returns:
-        StreamingResponse: The stream response from the selected router implementation
-        JSONResponse: The nonstream response from the selected router implementation
+        Response: The response from the selected router implementation (stream, non-stream, or error)
 
     Raises:
         HTTPException: If request body is empty or request fail
@@ -186,6 +191,19 @@ async def handle_request(
 
     try:
         return await router_impl.handle_request()
+    except UpstreamHTTPError as e:
+        req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
+        logger.warning(
+            "Upstream inference request failed api=%s status_code=%s phase=%s",
+            req_info.api,
+            e.status_code,
+            e.phase,
+        )
+        return render_upstream_error(e)
+    except httpx.RequestError as e:
+        req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
+        logger.warning("Upstream inference transport failed api=%s error=%s", req_info.api, e)
+        return render_transport_error(e)
     except Exception as e:
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.error(

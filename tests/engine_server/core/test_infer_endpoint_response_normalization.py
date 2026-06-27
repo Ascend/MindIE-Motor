@@ -3,6 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 
@@ -61,6 +62,20 @@ class _RaisingServing:
 
     async def handle_request(self, request, raw_request):
         raise RuntimeError(self.message)
+
+
+class _RaisingHTTPServing:
+    async def handle_request(self, request, raw_request):
+        raise HTTPException(
+            status_code=429,
+            detail="engine rate limited",
+            headers={"Retry-After": "3"},
+        )
+
+
+class _RaisingContextLengthServing:
+    async def handle_request(self, request, raw_request):
+        raise ValueError("This model's maximum context length is 2048 tokens. However, you requested 2049 tokens.")
 
 
 class _PeerStopResponse:
@@ -240,6 +255,19 @@ def test_infer_endpoint_leaves_plain_openai_response_unchanged():
     assert "prompt_token_ids" in response.text
 
 
+def test_infer_endpoint_plain_unknown_error_returns_structured_500():
+    endpoint = _Endpoint(_Config(role="decode"))
+    endpoint.app.state.openai_serving_completion = _RaisingServing("engine boom")
+
+    response = TestClient(endpoint.app, raise_server_exceptions=False).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hello"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "engine boom"}
+
+
 def test_infer_endpoint_normalizes_dispatch_stream_response():
     async def _chunks():
         yield b'data: {"choices":[{"text":"A","token_ids":[1]}]}\n\n'
@@ -310,6 +338,37 @@ def test_infer_endpoint_dispatch_error_response_stops_peer(monkeypatch):
     assert response.status_code == 503
     assert _response_json(response)["error"]["message"] == "engine rejected"
     assert calls[0]["ip"] == "127.0.0.1"
+    assert calls[1]["path"] == "/v1/dispatch/stop"
+
+
+def test_infer_endpoint_dispatch_http_exception_preserves_status_headers(monkeypatch):
+    calls = _install_peer_stop_client(monkeypatch)
+    endpoint = _Endpoint(_Config(role="decode"))
+    endpoint.app.state.openai_serving_completion = _RaisingHTTPServing()
+
+    response = TestClient(endpoint.app).post(
+        "/v1/completions",
+        json=_dispatch_body("decode"),
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {"detail": "engine rate limited"}
+    assert response.headers["retry-after"] == "3"
+    assert calls[1]["path"] == "/v1/dispatch/stop"
+
+
+def test_infer_endpoint_dispatch_context_length_error_returns_400(monkeypatch):
+    calls = _install_peer_stop_client(monkeypatch)
+    endpoint = _Endpoint(_Config(role="decode"))
+    endpoint.app.state.openai_serving_completion = _RaisingContextLengthServing()
+
+    response = TestClient(endpoint.app).post(
+        "/v1/completions",
+        json=_dispatch_body("decode"),
+    )
+
+    assert response.status_code == 400
+    assert "maximum context length" in response.json()["detail"]
     assert calls[1]["path"] == "/v1/dispatch/stop"
 
 

@@ -11,7 +11,6 @@
 //! XXH3-based token block hashing.
 //!
 //! Computes `LocalBlockHash` values from token sequences using a sliding-window
-//! approach matching Dynamo's `compute_block_hash_for_seq`.
 
 use xxhash_rust::xxh3;
 
@@ -26,11 +25,18 @@ pub fn compute_block_hash(data: &[u8]) -> LocalBlockHash {
     LocalBlockHash(xxh3::xxh3_64_with_seed(data, XXH3_SEED))
 }
 
+/// Minimum number of blocks to trigger parallel hash computation via rayon.
+/// With multi-core pods (>=4 CPU), parallel is beneficial above ~2048 blocks.
+/// Below this, sequential is fast enough (<1ms) and avoids rayon overhead.
+const PAR_THRESHOLD: usize = 2048;
+
+/// Number of blocks per batch for parallel processing.
+/// Each rayon task processes this many blocks sequentially, avoiding
+/// excessive task-spawning overhead. For 50600 blocks → ~50 tasks.
+const PAR_BATCH_BLOCKS: usize = 1024;
+
 /// Compute block hashes for a sequence of tokens using a sliding window of
 /// `block_size` tokens. Each window produces one `LocalBlockHash`.
-///
-/// Tokens that are `i64` (from Python JSON) are converted to `u32` via `as u32`.
-/// For typical LLM tokenizers, token IDs are well within u16 range.
 pub fn compute_block_hash_for_seq(tokens: &[i64], block_size: u32) -> Vec<LocalBlockHash> {
     if block_size == 0 {
         return Vec::new();
@@ -38,38 +44,65 @@ pub fn compute_block_hash_for_seq(tokens: &[i64], block_size: u32) -> Vec<LocalB
 
     let stride = block_size as usize;
     let estimated_blocks = tokens.len().div_ceil(stride);
-    let mut hashes = Vec::with_capacity(estimated_blocks);
 
     // Convert i64 tokens to u32 for hashing
     let tokens_u32: Vec<u32> = tokens.iter().map(|t| *t as u32).collect();
 
-    for chunk in tokens_u32.chunks(stride) {
-        // On little-endian targets, reinterpret u32 slice as u8 bytes directly
-        #[cfg(target_endian = "little")]
-        {
-            let chunk_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    chunk.as_ptr().cast::<u8>(),
-                    std::mem::size_of_val(chunk),
-                )
-            };
-            hashes.push(LocalBlockHash(xxh3::xxh3_64_with_seed(
-                chunk_bytes,
-                XXH3_SEED,
-            )));
-        }
+    if estimated_blocks <= PAR_THRESHOLD {
+        hash_chunks_sequential(&tokens_u32, stride)
+    } else {
+        hash_chunks_parallel(&tokens_u32, stride)
+    }
+}
 
-        #[cfg(not(target_endian = "little"))]
-        {
-            let mut bytes = Vec::with_capacity(chunk.len() * 4);
-            for &token in chunk {
-                bytes.extend_from_slice(&token.to_le_bytes());
+/// Hash each chunk on a single thread.
+#[inline]
+fn hash_chunks_sequential(tokens_u32: &[u32], stride: usize) -> Vec<LocalBlockHash> {
+    let estimated_blocks = tokens_u32.len().div_ceil(stride);
+    let mut hashes = Vec::with_capacity(estimated_blocks);
+    for chunk in tokens_u32.chunks(stride) {
+        hashes.push(hash_u32_chunk(chunk));
+    }
+    hashes
+}
+
+/// Hash chunks in parallel using rayon, processing blocks in batches.
+fn hash_chunks_parallel(tokens_u32: &[u32], stride: usize) -> Vec<LocalBlockHash> {
+    use rayon::prelude::*;
+    let batch_elems = stride * PAR_BATCH_BLOCKS;
+    tokens_u32
+        .par_chunks(batch_elems)
+        .flat_map(|batch| {
+            let b_stride = stride.min(batch.len());
+            let count = batch.len().div_ceil(b_stride);
+            let mut hashes = Vec::with_capacity(count);
+            for chunk in batch.chunks(b_stride) {
+                hashes.push(hash_u32_chunk(chunk));
             }
-            hashes.push(LocalBlockHash(xxh3::xxh3_64_with_seed(&bytes, XXH3_SEED)));
-        }
+            hashes
+        })
+        .collect()
+}
+
+/// Hash a single chunk of u32 tokens as raw bytes (little-endian).
+#[inline]
+fn hash_u32_chunk(chunk: &[u32]) -> LocalBlockHash {
+    #[cfg(target_endian = "little")]
+    {
+        let chunk_bytes = unsafe {
+            std::slice::from_raw_parts(chunk.as_ptr().cast::<u8>(), std::mem::size_of_val(chunk))
+        };
+        LocalBlockHash(xxh3::xxh3_64_with_seed(chunk_bytes, XXH3_SEED))
     }
 
-    hashes
+    #[cfg(not(target_endian = "little"))]
+    {
+        let mut bytes = Vec::with_capacity(chunk.len() * 4);
+        for &token in chunk {
+            bytes.extend_from_slice(&token.to_le_bytes());
+        }
+        LocalBlockHash(xxh3::xxh3_64_with_seed(&bytes, XXH3_SEED))
+    }
 }
 
 #[cfg(test)]
@@ -126,5 +159,52 @@ mod tests {
         let hashes = compute_block_hash_for_seq(&tokens, 128);
         // 1000 / 128 = 7.8 -> 8 blocks
         assert_eq!(hashes.len(), 8);
+    }
+
+    /// Sequential and parallel paths must produce identical results.
+    #[test]
+    fn test_sequential_and_parallel_produce_same_hashes() {
+        let tokens: Vec<i64> = (0..2000).collect(); // 2000/4 = 500 blocks → parallel
+        let h_auto = compute_block_hash_for_seq(&tokens, 4);
+        let h_seq =
+            hash_chunks_sequential(&tokens.iter().map(|t| *t as u32).collect::<Vec<_>>(), 4);
+        assert_eq!(h_auto, h_seq);
+    }
+
+    /// Small sequences stay sequential (below PAR_THRESHOLD).
+    #[test]
+    fn test_small_sequence_stays_sequential() {
+        // 100 tokens / 4 = 25 blocks < 256 threshold
+        let tokens: Vec<i64> = (0..100).collect();
+        let hashes = compute_block_hash_for_seq(&tokens, 4);
+        assert_eq!(hashes.len(), 25);
+    }
+
+    /// Large sequences trigger parallel path.
+    #[test]
+    fn test_large_sequence_triggers_parallel() {
+        // 2000 tokens / 4 = 500 blocks > 256 threshold
+        let tokens: Vec<i64> = (0..2000).collect();
+        let hashes = compute_block_hash_for_seq(&tokens, 4);
+        assert_eq!(hashes.len(), 500);
+    }
+
+    /// DeepSeek V4 style: 128K tokens, block_size=4.
+    #[test]
+    fn test_deepseek_v4_style_large_sequence() {
+        let tokens: Vec<i64> = (0i64..131072).collect(); // 128K tokens
+        let hashes = compute_block_hash_for_seq(&tokens, 4);
+        assert_eq!(hashes.len(), 32768); // 131072 / 4
+    }
+
+    /// hash_u32_chunk with a partial block (last chunk shorter than stride).
+    #[test]
+    fn test_hash_u32_chunk_partial() {
+        let chunk: Vec<u32> = vec![1, 2, 3];
+        let h = hash_u32_chunk(&chunk);
+        let chunk4: Vec<u32> = vec![1, 2, 3, 4];
+        let h4 = hash_u32_chunk(&chunk4);
+        // Different token sequences → different hashes
+        assert_ne!(h, h4);
     }
 }

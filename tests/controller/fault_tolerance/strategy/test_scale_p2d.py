@@ -144,7 +144,8 @@ def test_execute_fails_when_d_instance_still_active(strategy):
         # returning the ACTIVE instance causes it to abort immediately.
         mock_im.get_instance_by_job_name.return_value = d_inst
         with patch.object(strategy, "_get_faulty_node_count", return_value=0):
-            strategy.execute(1)
+            with patch.object(strategy, "_check_d_instance_status", return_value=False):
+                strategy.execute(1)
 
     assert strategy.is_finished()
     assert strategy.context.current_state == RecoveryState.FAILED

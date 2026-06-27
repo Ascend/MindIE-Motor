@@ -8,7 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Tests for ConductorApiClient query failure re-registration logic."""
+"""Tests for ConductorApiClient query and registration logic."""
 
 import pytest
 from unittest.mock import Mock, patch
@@ -46,188 +46,6 @@ def _mock_failed_query(mock_http):
     mock_http.return_value.__enter__.side_effect = ConnectionError("connection refused")
 
 
-@pytest.fixture(autouse=True)
-def _reset_reregister_state():
-    """Reset module-level re-registration state before each test."""
-    saved_failure_count = cac_module._query_failure_count
-    saved_needs_reregister = cac_module._needs_reregister
-    cac_module._query_failure_count = 0
-    cac_module._needs_reregister = False
-    yield
-    cac_module._query_failure_count = saved_failure_count
-    cac_module._needs_reregister = saved_needs_reregister
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_failure_count_increments_on_query_error(mock_http):
-    """Each query failure increments the counter."""
-    _mock_failed_query(mock_http)
-    instances = [_make_mock_instance(1)]
-
-    for i in range(5):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-        assert cac_module._query_failure_count == i + 1
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_failure_below_threshold_does_not_set_flag(mock_http):
-    """Fewer than threshold failures should not set the re-registration flag."""
-    _mock_failed_query(mock_http)
-    instances = [_make_mock_instance(1)]
-
-    for _ in range(cac_module._QUERY_FAILURE_THRESHOLD - 1):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    assert not cac_module._needs_reregister
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_failure_reaches_threshold_sets_flag(mock_http):
-    """Exactly threshold failures sets the re-registration flag."""
-    _mock_failed_query(mock_http)
-    instances = [_make_mock_instance(1)]
-
-    for _ in range(cac_module._QUERY_FAILURE_THRESHOLD):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    assert cac_module._needs_reregister
-    assert cac_module._query_failure_count == cac_module._QUERY_FAILURE_THRESHOLD
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_flag_not_set_again_after_threshold(mock_http):
-    """After the flag is already set, additional failures should not re-trigger."""
-    _mock_failed_query(mock_http)
-    instances = [_make_mock_instance(1)]
-
-    for _ in range(cac_module._QUERY_FAILURE_THRESHOLD):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert cac_module._needs_reregister
-
-    for _ in range(5):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    assert cac_module._needs_reregister
-    assert cac_module._query_failure_count == cac_module._QUERY_FAILURE_THRESHOLD + 5
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_success_before_threshold_resets_counter(mock_http):
-    """A successful query before the threshold resets the failure counter."""
-    instances = [_make_mock_instance(1)]
-
-    _mock_failed_query(mock_http)
-    for _ in range(5):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert cac_module._query_failure_count == 5
-
-    _mock_successful_query(mock_http)
-    ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    assert cac_module._query_failure_count == 0
-    assert not cac_module._needs_reregister
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.ConductorApiClient.register_kv_instance")
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_success_after_threshold_triggers_reregister(mock_http, mock_register):
-    """Success after reaching threshold triggers re-registration and resets state."""
-    instances = [_make_mock_instance(1)]
-
-    _mock_failed_query(mock_http)
-    for _ in range(cac_module._QUERY_FAILURE_THRESHOLD):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert cac_module._needs_reregister
-
-    _mock_successful_query(mock_http)
-    result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    mock_register.assert_called_once_with(instances)
-    assert not cac_module._needs_reregister
-    assert cac_module._query_failure_count == 0
-    assert result is not None
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.ConductorApiClient.register_kv_instance")
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_success_before_threshold_does_not_reregister(mock_http, mock_register):
-    """Success before threshold just resets counter, no re-registration."""
-    instances = [_make_mock_instance(1)]
-
-    _mock_failed_query(mock_http)
-    for _ in range(3):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    _mock_successful_query(mock_http)
-    ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    mock_register.assert_not_called()
-    assert not cac_module._needs_reregister
-    assert cac_module._query_failure_count == 0
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.ConductorApiClient.register_kv_instance")
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_reregister_only_once_per_recovery_cycle(mock_http, mock_register):
-    """After re-registration, subsequent queries should not re-register again."""
-    instances = [_make_mock_instance(1)]
-
-    _mock_failed_query(mock_http)
-    for _ in range(cac_module._QUERY_FAILURE_THRESHOLD):
-        ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    _mock_successful_query(mock_http)
-    ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert mock_register.call_count == 1
-
-    _mock_successful_query(mock_http)
-    ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert mock_register.call_count == 1
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.ConductorApiClient.register_kv_instance")
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_reregister_failure_still_clears_flag(mock_http, mock_register):
-    """If register_kv_instance raises, the flag is still cleared so workers don't retry forever."""
-    instances = [_make_mock_instance(1)]
-    mock_register.side_effect = RuntimeError("register failed")
-
-    cac_module._query_failure_count = cac_module._QUERY_FAILURE_THRESHOLD
-    cac_module._needs_reregister = True
-
-    _mock_successful_query(mock_http)
-    result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
-
-    # Flag is cleared even when register_kv_instance raises —
-    # individual register_post failures (e.g. conductor rejecting duplicates)
-    # should not cause the worker to retry forever.
-    assert not cac_module._needs_reregister
-    assert cac_module._query_failure_count == 0
-    assert result is not None
-
-
-@patch("motor.coordinator.api_client.conductor_api_client.ConductorApiClient.register_kv_instance")
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_no_reregister_after_flag_cleared(mock_http, mock_register):
-    """Once the flag is cleared (even after a failed attempt), no more re-registration."""
-    instances = [_make_mock_instance(1)]
-    mock_register.side_effect = RuntimeError("register failed")
-
-    cac_module._query_failure_count = cac_module._QUERY_FAILURE_THRESHOLD
-    cac_module._needs_reregister = True
-
-    _mock_successful_query(mock_http)
-    ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert mock_register.call_count == 1
-    assert not cac_module._needs_reregister
-
-    # Next query succeeds normally, no re-registration triggered.
-    mock_register.side_effect = None
-    _mock_successful_query(mock_http)
-    ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert mock_register.call_count == 1  # no additional call
-
-
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
 def test_return_value_on_success(mock_http):
     """On success, query_conductor returns the response dict."""
@@ -249,43 +67,15 @@ def test_return_value_on_failure(mock_http):
     assert result == {}
 
 
-@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_full_recovery_cycle(mock_http):
-    """End-to-end: failures → threshold → re-registration → normal operation."""
-    instances = [_make_mock_instance(1)]
-
-    # Phase 1: Conductor is down, queries fail
-    _mock_failed_query(mock_http)
-    for _ in range(cac_module._QUERY_FAILURE_THRESHOLD):
-        result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
-        assert result == {}
-    assert cac_module._needs_reregister
-
-    # Phase 2: Conductor recovers, first success triggers re-registration
-    _mock_successful_query(mock_http)
-    result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
-    assert result != {}
-    assert not cac_module._needs_reregister
-    assert cac_module._query_failure_count == 0
-
-    # Phase 3: Normal operation resumes
-    for _ in range(3):
-        _mock_successful_query(mock_http)
-        result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
-        assert result != {}
-        assert cac_module._query_failure_count == 0
-        assert not cac_module._needs_reregister
-
-
 # ── Registration dispatch tests ──────────────────────────────────────
 
 
 def _setup_reg_config(store_backend, pool_endpoint="", xpu_endpoint="",
                       cpu_endpoint="", disk_endpoint="", replay_endpoint=""):
     """Patch ConductorApiClient's config for registration testing."""
-    from motor.config.coordinator import KvEventRegistrationConfig, SchedulerConfig
+    from motor.config.coordinator import KvConductorConfig, SchedulerConfig
 
-    reg = KvEventRegistrationConfig(
+    reg = KvConductorConfig(
         store_backend=store_backend,
         pool_endpoint=pool_endpoint,
         xpu_endpoint=xpu_endpoint,
@@ -293,7 +83,7 @@ def _setup_reg_config(store_backend, pool_endpoint="", xpu_endpoint="",
         disk_endpoint=disk_endpoint,
         replay_endpoint=replay_endpoint,
     )
-    sched = SchedulerConfig(kv_event_registration=reg)
+    sched = SchedulerConfig(kv_conductor_config=reg)
     return patch.object(ConductorApiClient, "coordinator_config",
                         scheduler_config=sched,
                         prefill_kv_event_config=Mock(

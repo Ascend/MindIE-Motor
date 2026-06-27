@@ -43,6 +43,32 @@ def _apply_a5_schedule_policy_annotation(template_metadata, hardware_type):
     )
 
 
+def _append_a5_host_path_volumes(pod_spec, container):
+    existing_volume_names = {volume[C.NAME] for volume in pod_spec.get(C.VOLUMES, []) if C.NAME in volume}
+    existing_mount_names = {mount[C.NAME] for mount in container.get(C.VOLUME_MOUNTS, []) if C.NAME in mount}
+    for volume_def in C.A5_HOST_PATH_VOLUMES:
+        volume_name = volume_def[C.NAME]
+        if volume_name not in existing_volume_names:
+            pod_spec[C.VOLUMES].append({C.NAME: volume_name, C.HOST_PATH: {C.PATH: volume_def[C.PATH]}})
+            existing_volume_names.add(volume_name)
+        if volume_name not in existing_mount_names:
+            container[C.VOLUME_MOUNTS].append(
+                {C.NAME: volume_name, C.MOUNT_PATH: volume_def.get("mountPath", volume_def[C.PATH])}
+            )
+            existing_mount_names.add(volume_name)
+
+
+def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
+    """Apply A5-specific pod network and hostPath settings to engine pods."""
+    hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
+    if hardware_type not in C.HARDWARE_TYPE_950I_A5:
+        return
+    pod_spec[C.HOST_NETWORK] = True
+    pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
+    _append_a5_host_path_volumes(pod_spec, container)
+    logger.info("Applied A5 engine pod config for hardware_type=%s", hardware_type)
+
+
 def apply_a5_workload(workload, deploy_config):
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_950I_A5:
@@ -249,6 +275,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     set_engine_npu(container, deploy_config, node_type)
     set_engine_node_selector(deployment_data, deploy_config, node_type)
     set_engine_weight_mount(deployment_data, container, deploy_config)
+    apply_a5_engine_pod_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], container, deploy_config)
     apply_a5_workload(deployment_data, deploy_config)
     modify_log_mount(deployment_data, user_config, deployment_data[C.METADATA][C.NAME])
 

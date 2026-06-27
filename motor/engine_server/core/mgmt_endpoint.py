@@ -22,6 +22,7 @@ from starlette.routing import Mount
 
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.endpoint import Endpoint
 from motor.engine_server.core.health_collector import HealthCollector
@@ -98,7 +99,7 @@ class MgmtEndpoint(Endpoint):
     def run(self):
         if self._server_thread and not self._server_thread.is_alive():
             self._server_thread.start()
-            logger.info("Endpoint server started: http://%s:%d", self.host, self.mgmt_port)
+            logger.info("Endpoint server started: http://%s", format_address(self.host, self.mgmt_port))
 
     def run_virtual_inference(self):
         # start health check
@@ -131,7 +132,11 @@ class MgmtEndpoint(Endpoint):
                             return {STATUS_KEY: INIT_STATUS}
                         elif is_restored_from_host_side_snapshot() and not SnapshotMonitor().is_resume_done:
                             return {STATUS_KEY: INIT_STATUS}
-                        elif not is_restored_from_host_side_snapshot() and SnapshotMonitor().is_suspend_done:
+                        elif (
+                            not is_restored_from_host_side_snapshot()
+                            and SnapshotMonitor().is_suspend_done
+                            and not SnapshotMonitor().is_unlock_done
+                        ):
                             return {STATUS_KEY: NORMAL_STATUS}
 
                     async with self._lock:
@@ -163,9 +168,9 @@ class MgmtEndpoint(Endpoint):
                 config.ssl = ssl_context
             else:
                 raise RuntimeError("Failed to create ssl context")
-            logger.info("MgmtEndpoint server started: https://%s:%d", self.host, self.mgmt_port)
+            logger.info("MgmtEndpoint server started: https://%s", format_address(self.host, self.mgmt_port))
         else:
-            logger.info("MgmtEndpoint server started: http://%s:%d", self.host, self.mgmt_port)
+            logger.info("MgmtEndpoint server started: http://%s", format_address(self.host, self.mgmt_port))
 
         self._server = uvicorn.Server(config)
         if not self._stop_event.is_set():

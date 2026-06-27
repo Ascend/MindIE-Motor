@@ -30,6 +30,10 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
+/// Maximum request body size (16 MB). Large queries (402400+ token IDs)
+/// exceed axum's default 2 MB limit.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 use crate::error::KvConductorError;
 use crate::protocols::*;
 use crate::registry::WorkerRegistry;
@@ -47,14 +51,20 @@ pub fn create_router(state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
+    let mut router = Router::new()
         .route("/register", post(register_handler))
         .route("/unregister", post(unregister_handler))
         .route("/query", post(query_handler))
         .route("/query_by_hash", post(query_by_hash_handler))
         .route("/events", post(events_handler))
         .route("/health", get(health_handler))
-        .route("/workers", get(workers_handler))
+        .route("/workers", get(workers_handler));
+
+    // Raise body limit for query/events endpoints — DeepSeek V4 queries
+    // carry 400K+ token IDs (~2.4 MB JSON body).
+    router = router.layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES));
+
+    router
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
@@ -264,7 +274,6 @@ async fn events_handler(
                 events,
                 batch.model_name.as_deref(),
                 batch.tenant_id.as_deref(),
-                batch.block_size,
             )
             .await
         {

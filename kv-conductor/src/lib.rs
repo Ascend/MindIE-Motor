@@ -18,6 +18,7 @@
 pub mod backend;
 pub mod concurrent_tree;
 pub mod error;
+pub mod events;
 pub mod hashing;
 pub mod indexer;
 pub mod protocols;

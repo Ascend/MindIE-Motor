@@ -37,8 +37,9 @@ class BaseConfigResolver:
     _warned_conflict_keys: set[str] = set()
 
     def __init__(self, engine_section: dict[str, Any]):
-        raw_model = engine_section.get("model_config") or {}
-        raw_engine = engine_section.get("engine_config") or {}
+        self._section: dict[str, Any] = normalize_keys(engine_section)
+        raw_model = self._section.get("model_config") or {}
+        raw_engine = self._section.get("engine_config") or {}
         self._model_cfg: dict[str, Any] = normalize_keys(raw_model)
         self._engine_cfg: dict[str, Any] = normalize_keys(raw_engine)
 
@@ -82,7 +83,9 @@ class BaseConfigResolver:
         return self.get("npu_mem_utils", default)
 
     def get_enable_multi_endpoints(self, default: bool = True) -> bool:
-        """Get enable_multi_endpoints, defaulting per engine type."""
+        """Get enable_multi_endpoints from the engine section (top-level or engine_config)."""
+        if "enable_multi_endpoints" in self._section:
+            return bool(self._section["enable_multi_endpoints"])
         return bool(self._engine_cfg.get("enable_multi_endpoints", default))
 
     # ------------------------------------------------------------------
@@ -186,7 +189,7 @@ class BaseConfigResolver:
         """
         import json as _json
 
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             raw = _json.load(f)
         section = raw.get(section_key, {})
         return ConfigResolver(section)

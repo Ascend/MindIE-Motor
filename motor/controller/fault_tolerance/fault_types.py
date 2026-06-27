@@ -53,6 +53,7 @@ class OriginFaultLevel(str, Enum):
     """Original fault level enumeration for mapping fault type strings"""
 
     NOT_HANDLE_FAULT = "NotHandleFault"
+    SUB_HEALTH_FAULT = "SubHealthFault"
     RESTART_REQUEST = "RestartRequest"
     RESTART_BUSINESS = "RestartBusiness"
     FREE_RESTART_NPU = "FreeRestartNPU"
@@ -69,12 +70,12 @@ class FaultLevel(int, Enum):
     """
 
     HEALTHY = 0  # Healthy state, no faults
-    L1 = 1  # Level 1 faults that don't require handling
-    L2 = 2  # Level 2 faults that can be self-healed
-    L3 = 3  # Level 3 faults that cannot be handled automatically
-    L4 = 4  # Level 4 faults requiring severe isolation actions
-    L5 = 5  # Level 5 faults requiring NPU restart
-    L6 = 6  # Level 6 faults requiring NPU separation
+    L1 = 1  # Level 1: informational / sub-health — no action required
+    L2 = 2  # Level 2: self-healing or pre-separation with active business
+    L3 = 3  # Level 3: faults that cannot be handled automatically
+    L4 = 4  # Level 4: faults requiring severe isolation actions
+    L5 = 5  # Level 5: faults requiring NPU restart → instance separation
+    L6 = 6  # Level 6: faults requiring NPU separation → instance separation
 
 
 class FaultInfo(BaseModel):
@@ -181,15 +182,20 @@ def map_fault_level(fault_level_str: str) -> FaultLevel:
         FaultLevel: Mapped fault level enum value, defaults to HEALTHY for unknown types
 
     Mapping rules:
-    - L1: OriginFaultLevel.NOT_HANDLE_FAULT
+    - L1: OriginFaultLevel.NOT_HANDLE_FAULT, OriginFaultLevel.SUB_HEALTH_FAULT
     - L2: OriginFaultLevel.RESTART_REQUEST
     - L3: OriginFaultLevel.RESTART_BUSINESS
     - L4: OriginFaultLevel.FREE_RESTART_NPU
     - L5: OriginFaultLevel.RESTART_NPU
     - L6: OriginFaultLevel.SEPARATE_NPU, OriginFaultLevel.PRE_SEPARATE_NPU
+
+    Note: OriginFaultLevel.PRE_SEPARATE_NPU is statically mapped to L6 here,
+    but at runtime the FaultManager may downgrade it to L2 when the affected
+    node still hosts INITIAL/ACTIVE instances (see _handle_fault_info_update).
     """
     fault_level_mapping = {
         OriginFaultLevel.NOT_HANDLE_FAULT: FaultLevel.L1,
+        OriginFaultLevel.SUB_HEALTH_FAULT: FaultLevel.L1,
         OriginFaultLevel.RESTART_REQUEST: FaultLevel.L2,
         OriginFaultLevel.RESTART_BUSINESS: FaultLevel.L3,
         OriginFaultLevel.FREE_RESTART_NPU: FaultLevel.L4,

@@ -1,11 +1,17 @@
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from starlette.requests import ClientDisconnect
 
+import motor.common.utils.error as cancel_error
+from motor.common.http import HTTPClientPool
 from motor.common.resources.dispatch import (
     DispatchPlan,
+    DispatchStopReason,
     MOTOR_DISPATCH_KEY,
     MOTOR_PREFILL_RESULT_KEY,
 )
@@ -14,9 +20,14 @@ from motor.common.resources.instance import Instance, InsStatus, ParallelConfig,
 from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.router.dispatch_capability import DispatchPlanNotSupported, select_dispatch_plan_for_pair
+from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.router.dispatch_session import AttemptState
+from motor.coordinator.router.dispatch_capability import (
+    DispatchPlanNotSupported,
+    select_dispatch_plan_for_pair,
+)
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
+from motor.coordinator.router.upstream_error import UpstreamHTTPError
 
 
 def _instance(
@@ -49,7 +60,6 @@ def _instance(
 class _Scheduler:
     def __init__(
         self,
-        enable_pair: bool = False,
         *,
         prefill_engine_type: str | None = None,
         decode_engine_type: str | None = None,
@@ -72,29 +82,12 @@ class _Scheduler:
             engine_type=decode_engine_type,
             dispatch_capabilities=decode_capabilities,
         )
-        self.enable_pair = enable_pair
-        self.pair_calls = 0
         self.update_workload = AsyncMock(return_value=True)
 
     async def select_and_allocate(self, role, req_info, **_kwargs):
         instance = self.p if role == PDRole.ROLE_P else self.d
         endpoint = next(iter(next(iter(instance.endpoints.values())).values()))
         return instance, endpoint, Workload(active_kv_cache=1, active_tokens=1)
-
-    async def select_pair_and_allocate(self, req_info):
-        if not self.enable_pair:
-            return None
-        from motor.coordinator.domain import ScheduledPair
-
-        self.pair_calls += 1
-        p_endpoint = next(iter(next(iter(self.p.endpoints.values())).values()))
-        d_endpoint = next(iter(next(iter(self.d.endpoints.values())).values()))
-        return ScheduledPair(
-            prefill=ScheduledResource(instance=self.p, endpoint=p_endpoint),
-            decode=ScheduledResource(instance=self.d, endpoint=d_endpoint),
-            prefill_workload=Workload(active_kv_cache=1, active_tokens=1),
-            decode_workload=Workload(active_kv_cache=0, active_tokens=1),
-        )
 
 
 class _Client:
@@ -123,6 +116,33 @@ class _Client:
             json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
             request=request,
         )
+
+
+class _HTTPErrorClient(_Client):
+    def __init__(self, name: str, status_code: int, body: dict):
+        super().__init__(name)
+        self.status_code = status_code
+        self.body = body
+
+    async def post(self, path, json=None, headers=None, timeout=None):
+        self.requests.append(json)
+        self.headers.append(headers or {})
+        request = httpx.Request("POST", path, headers=headers or {}, json=json)
+        return httpx.Response(
+            status_code=self.status_code,
+            json=self.body,
+            request=request,
+        )
+
+
+class _DelayedHTTPErrorClient(_HTTPErrorClient):
+    def __init__(self, name: str, status_code: int, body: dict, release: asyncio.Event):
+        super().__init__(name, status_code, body)
+        self.release = release
+
+    async def post(self, path, json=None, headers=None, timeout=None):
+        await self.release.wait()
+        return await super().post(path, json=json, headers=headers, timeout=timeout)
 
 
 class _PrefillResultClient(_Client):
@@ -191,11 +211,120 @@ class _StreamClient(_Client):
         )
 
 
+class _SequenceStreamClient(_Client):
+    def __init__(self, name: str, responses: list[_StreamResponse]):
+        super().__init__(name)
+        self.responses = responses
+
+    def stream(self, method, path, json=None, headers=None, timeout=None):
+        self.requests.append(json)
+        self.headers.append(headers or {})
+        return self.responses[len(self.requests) - 1]
+
+
+class _SignallingStreamResponse(_StreamResponse):
+    def __init__(self, release: asyncio.Event):
+        super().__init__(
+            [
+                b'data: {"choices":[{"delta":{"content":"invisible"},"index":0}],"token_ids":[101]}\n\n',
+            ]
+        )
+        self.release = release
+
+    async def aiter_bytes(self):
+        self.release.set()
+        async for chunk in super().aiter_bytes():
+            yield chunk
+
+
+class _SignallingStreamClient(_Client):
+    def __init__(self, name: str, release: asyncio.Event):
+        super().__init__(name)
+        self.release = release
+
+    def stream(self, method, path, json=None, headers=None, timeout=None):
+        self.requests.append(json)
+        self.headers.append(headers or {})
+        return _SignallingStreamResponse(self.release)
+
+
+class _BlockingStreamResponse(_StreamResponse):
+    def __init__(self, *, chunk: bytes | None = None):
+        super().__init__([])
+        self.chunk = chunk
+        self.started = asyncio.Event()
+        self.closed = asyncio.Event()
+
+    async def aiter_bytes(self):
+        self.started.set()
+        try:
+            if self.chunk is not None:
+                yield self.chunk
+            await asyncio.Event().wait()
+        finally:
+            self.closed.set()
+
+
+class _BlockingStreamClient(_Client):
+    def __init__(self, name: str, response: _BlockingStreamResponse):
+        super().__init__(name)
+        self.response = response
+
+    def stream(self, method, path, json=None, headers=None, timeout=None):
+        self.requests.append(json)
+        self.headers.append(headers or {})
+        return self.response
+
+
 def _config() -> CoordinatorConfig:
     config = CoordinatorConfig()
     config.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
     config.exception_config = ExceptionConfig(max_retry=1, retry_delay=0)
     return config
+
+
+def _asgi_scope() -> dict:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/completions",
+        "raw_path": b"/v1/completions",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 1234),
+        "server": ("127.0.0.1", 8000),
+    }
+
+
+async def _never_disconnect():
+    await asyncio.Event().wait()
+    return {"type": "http.disconnect"}
+
+
+async def _invoke_asgi_response(response) -> list[dict]:
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    await response(_asgi_scope(), _never_disconnect, send)
+    return messages
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8102", DispatchStopReason.PEER_FAILED),
+        (cancel_error.CLIENT_DISCONNECT, DispatchStopReason.CLIENT_DISCONNECT),
+        (cancel_error.DISPATCH_ABORT, DispatchStopReason.OTHER),
+        (cancel_error.SCOPE_ABORT, DispatchStopReason.OTHER),
+    ],
+)
+def test_unified_pd_cancel_stop_reason_mapping(reason, expected):
+    assert UnifiedPDRouter._cancel_stop_reason(reason) == expected
 
 
 def test_dispatch_plan_prefers_explicit_capability_over_engine_fallback():
@@ -244,7 +373,9 @@ def test_dispatch_plan_requires_capability_from_both_instances():
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_nonstream_dispatches_prefill_and_decode_with_same_attempt(monkeypatch):
+async def test_unified_pd_nonstream_dispatches_prefill_and_decode_with_same_attempt(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-1",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -290,42 +421,9 @@ async def test_unified_pd_nonstream_dispatches_prefill_and_decode_with_same_atte
     assert p_client.headers[0]["X-Request-Id"] == "root-1#a1"
     assert d_client.headers[0]["X-Request-Id"] == "root-1#a1"
     assert scheduler.update_workload.await_count == 3
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_prefers_pair_allocation(monkeypatch):
-    req_info = RequestInfo(
-        req_id="root-pair",
-        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
-        api="v1/completions",
-        entry_api="v1/completions",
-        req_len=10,
-    )
-    scheduler = _Scheduler(enable_pair=True)
-    router = UnifiedPDRouter(
-        req_info,
-        _config(),
-        scheduler=scheduler,
-        request_manager=RequestManager(_config()),
-    )
-    p_client = _Client("prefill")
-    d_client = _Client("decode")
-
-    @asynccontextmanager
-    async def _client_for(resource: ScheduledResource):
-        if resource.instance.role == PDRole.ROLE_P:
-            yield p_client
-        else:
-            yield d_client
-
-    monkeypatch.setattr(router, "_client_for", _client_for)
-
-    await router.handle_request()
-
-    assert scheduler.pair_calls == 1
-    assert p_client.requests[0][MOTOR_DISPATCH_KEY]["attempt_seq"] == 1
-    # P tokens + P KV + D tokens
-    assert scheduler.update_workload.await_count == 3
+    assert ReqState.PREFILL_END in req_info.status
+    assert req_info.status[ReqState.P_ALLOCATED] <= req_info.status[ReqState.PREFILL_END]
+    assert req_info.status[ReqState.PREFILL_END] <= req_info.status[ReqState.DECODE_END]
 
 
 @pytest.mark.asyncio
@@ -375,7 +473,9 @@ async def test_unified_pd_decode_failure_stops_both_legs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_dual_dispatch_uses_dispatch_context_not_bootstrap_fields(monkeypatch):
+async def test_unified_pd_dual_dispatch_uses_dispatch_context_not_bootstrap_fields(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-sglang",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -453,6 +553,113 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
     assert prefill_result["handoff_mode"] == "handoff"
     assert prefill_result["payload"] == {"opaque": "kv"}
     assert scheduler.update_workload.await_count == 3
+    assert ReqState.PREFILL_END in req_info.status
+    assert req_info.status[ReqState.P_ALLOCATED] <= req_info.status[ReqState.PREFILL_END]
+    assert req_info.status[ReqState.PREFILL_END] <= req_info.status[ReqState.DECODE_END]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_nonretryable_upstream_error_is_not_retried(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-reject",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    config.exception_config.transport_max_retry = 3
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _HTTPErrorClient(
+        "prefill",
+        400,
+        {"error": {"message": "prompt exceeds maximum context length", "code": 400}},
+    )
+    d_client = _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        return None
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    with pytest.raises(UpstreamHTTPError) as exc_info:
+        await router.handle_request()
+
+    assert exc_info.value.status_code == 400
+    assert len(p_client.requests) == 1
+    assert len(d_client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_prefill_rejection_is_returned_before_first_decode_token(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-stream-reject",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    config.exception_config.transport_max_retry = 3
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    error_body = {"error": {"message": "prompt exceeds maximum context length", "code": 400}}
+    decode_chunk_received = asyncio.Event()
+    p_client = _DelayedHTTPErrorClient("prefill", 400, error_body, decode_chunk_received)
+    d_client = _SignallingStreamClient("decode", decode_chunk_received)
+    processed_chunks = []
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        return None
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+    monkeypatch.setattr(
+        router.rescheduler,
+        "process_stream_chunk",
+        lambda chunk, **_kwargs: processed_chunks.append(chunk) or chunk,
+    )
+
+    response = await router.handle_request()
+    messages = await asyncio.wait_for(_invoke_asgi_response(response), timeout=1)
+
+    assert messages[0]["status"] == 400
+    assert json.loads(messages[1]["body"]) == error_body
+    assert processed_chunks == []
+    assert len(p_client.requests) == 1
+    assert len(d_client.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -535,7 +742,9 @@ async def test_unified_pd_rejects_pair_without_shared_connector_capability(monke
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(monkeypatch):
+async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-stream",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -571,10 +780,485 @@ async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(mon
     assert d_client.requests[0][MOTOR_DISPATCH_KEY]["role"] == "decode"
     assert p_client.requests[0][MOTOR_DISPATCH_KEY]["pair_id"] == d_client.requests[0][MOTOR_DISPATCH_KEY]["pair_id"]
     assert scheduler.update_workload.await_count == 3
+    assert ReqState.PREFILL_END in req_info.status
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_stream_error_after_visible_chunk_does_not_retry(monkeypatch):
+async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-stream-disconnect",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    config.exception_config.transport_max_retry = 3
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _Client("prefill")
+    d_response = _BlockingStreamResponse()
+    d_client = _BlockingStreamClient("decode", d_response)
+    attempts = []
+    stop_calls = []
+    original_create_attempt = router._create_attempt
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _create_attempt(session):
+        attempt = await original_create_attempt(session)
+        attempts.append(attempt)
+        return attempt
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
+        return None
+
+    async def receive():
+        await d_response.started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(_message):
+        return None
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(router, "_create_attempt", _create_attempt)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    response = await router.handle_request()
+    await asyncio.wait_for(response(_asgi_scope(), receive, send), timeout=1)
+
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    await asyncio.wait_for(d_response.closed.wait(), timeout=1)
+    assert attempt.state == AttemptState.STOPPED
+    assert attempt.stop_sent is True
+    assert attempt.prefill_task.done()
+    assert attempt.decode_task.done()
+    assert set(stop_calls) == {
+        (PDRole.ROLE_P, 1, DispatchStopReason.CLIENT_DISCONNECT),
+        (PDRole.ROLE_D, 1, DispatchStopReason.CLIENT_DISCONNECT),
+    }
+    assert scheduler.update_workload.await_count == 3
+    assert not any(
+        task.get_name() == "unified-pd-queue-root-stream-disconnect-a1" and not task.done()
+        for task in asyncio.all_tasks()
+    )
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_send_failure_closes_decode_and_stops_engine(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-stream-send-failure",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _Client("prefill")
+    d_response = _BlockingStreamResponse(
+        chunk=b'data: {"choices":[{"text":"A","index":0}]}\n\n',
+    )
+    d_client = _BlockingStreamClient("decode", d_response)
+    attempts = []
+    stop_calls = []
+    original_create_attempt = router._create_attempt
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _create_attempt(session):
+        attempt = await original_create_attempt(session)
+        attempts.append(attempt)
+        return attempt
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
+        return None
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            raise OSError("client socket closed")
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(router, "_create_attempt", _create_attempt)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    response = await router.handle_request()
+    with pytest.raises(ClientDisconnect):
+        await asyncio.wait_for(response(_asgi_scope(), _never_disconnect, send), timeout=1)
+
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    await asyncio.wait_for(d_response.closed.wait(), timeout=1)
+    assert attempt.state == AttemptState.STOPPED
+    assert attempt.stop_sent is True
+    assert attempt.prefill_task.done()
+    assert attempt.decode_task.done()
+    assert set(stop_calls) == {
+        (PDRole.ROLE_P, 1, DispatchStopReason.CLIENT_DISCONNECT),
+        (PDRole.ROLE_D, 1, DispatchStopReason.CLIENT_DISCONNECT),
+    }
+    assert scheduler.update_workload.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_error_after_visible_chunk_reschedules_with_token_replay(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-stream-reschedule",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler()
+    config = _config()
+    config.exception_config.transport_max_retry = 2
+    config.exception_config.reschedule_enabled = True
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    build_plan_calls = []
+    original_build_retry_plan = router.rescheduler.build_retry_plan
+
+    def _build_retry_plan(req_data):
+        build_plan_calls.append(req_data)
+        return original_build_retry_plan(req_data)
+
+    monkeypatch.setattr(router.rescheduler, "build_retry_plan", _build_retry_plan)
+    p_client = _Client("prefill")
+    d_client = _SequenceStreamClient(
+        "decode",
+        [
+            _StreamResponse(
+                [
+                    b'data: {"choices":[{"text":"A","index":0,"prompt_token_ids":[1,2],"token_ids":[10]}]}\n\n',
+                ],
+                exc_after_chunks=httpx.ReadError("after chunk"),
+            ),
+            _StreamResponse(
+                [
+                    b'data: {"choices":[{"text":"B","index":0,"token_ids":[11],"finish_reason":"stop"}]}\n\n',
+                ]
+            ),
+        ],
+    )
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        return None
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    response = await router.handle_request()
+    messages = await _invoke_asgi_response(response)
+    body = b"".join(message["body"] for message in messages if message["type"] == "http.response.body")
+
+    assert messages[0]["status"] == 200
+    assert len(build_plan_calls) == 1
+    assert len(p_client.requests) == 2
+    assert len(d_client.requests) == 2
+    assert d_client.requests[0]["return_token_ids"] is True
+    assert p_client.requests[1]["prompt"] == [1, 2, 10]
+    assert p_client.requests[1]["max_tokens"] == 1
+    assert p_client.requests[1]["stream"] is False
+    assert d_client.requests[1]["prompt"] == [1, 2, 10]
+    assert d_client.requests[1]["max_tokens"] == 7
+    assert b'"text":"A"' in body
+    assert b'"text":"B"' in body
+    assert b"token_ids" not in body
+    assert b"ReadError" not in body
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_retry_plan_validation_fails_before_new_attempt_allocation(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-stream-invalid-replay",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8, "n": 2},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    config.exception_config.transport_max_retry = 3
+    config.exception_config.reschedule_enabled = True
+    scheduler = _Scheduler()
+    select_and_allocate = scheduler.select_and_allocate
+    scheduler.select_and_allocate = AsyncMock(side_effect=select_and_allocate)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    stop_calls = []
+    build_plan_calls = []
+    original_build_retry_plan = router.rescheduler.build_retry_plan
+
+    async def _run_stream_attempt(_attempt, _dispatch_plan):
+        req_info.prompt_token_ids = [1, 2]
+        req_info.cached_token_ids = [10]
+        raise httpx.ReadError("after token cache")
+        yield b""  # pylint: disable=unreachable
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
+        return None
+
+    def _build_retry_plan(req_data):
+        build_plan_calls.append(req_data)
+        return original_build_retry_plan(req_data)
+
+    monkeypatch.setattr(router, "_run_stream_attempt", _run_stream_attempt)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+    monkeypatch.setattr(router.rescheduler, "build_retry_plan", _build_retry_plan)
+
+    response = await router.handle_request()
+    messages = await _invoke_asgi_response(response)
+    body = json.loads(messages[1]["body"])
+
+    assert messages[0]["status"] == 502
+    assert "parallel sampling" in body["detail"]
+    assert len(build_plan_calls) == 1
+    assert scheduler.select_and_allocate.await_count == 2
+    assert set(stop_calls) == {
+        (PDRole.ROLE_P, 1, DispatchStopReason.PEER_FAILED),
+        (PDRole.ROLE_D, 1, DispatchStopReason.PEER_FAILED),
+    }
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_stream_retry_replays_same_prompt_through_prefill(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-handoff-reschedule",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    config = _config()
+    config.exception_config.transport_max_retry = 2
+    config.exception_config.reschedule_enabled = True
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _PrefillResultClient("prefill")
+    d_client = _SequenceStreamClient(
+        "decode",
+        [
+            _StreamResponse(
+                [
+                    b'data: {"choices":[{"text":"A","index":0,"prompt_token_ids":[1,2],"token_ids":[10]}]}\n\n',
+                ],
+                exc_after_chunks=httpx.ReadError("after chunk"),
+            ),
+            _StreamResponse(
+                [
+                    b'data: {"choices":[{"text":"B","index":0,"token_ids":[11],"finish_reason":"stop"}]}\n\n',
+                ]
+            ),
+        ],
+    )
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        return None
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    response = await router.handle_request()
+    messages = await _invoke_asgi_response(response)
+    body = b"".join(message["body"] for message in messages if message["type"] == "http.response.body")
+
+    assert messages[0]["status"] == 200
+    assert len(p_client.requests) == 2
+    assert len(d_client.requests) == 2
+    assert p_client.requests[1]["prompt"] == [1, 2, 10]
+    assert p_client.requests[1]["max_tokens"] == 1
+    assert d_client.requests[1]["prompt"] == [1, 2, 10]
+    assert d_client.requests[1]["max_tokens"] == 7
+    retry_prefill_result = d_client.requests[1][MOTOR_PREFILL_RESULT_KEY]
+    assert retry_prefill_result["attempt_seq"] == 2
+    assert retry_prefill_result["pair_id"] == d_client.requests[1][MOTOR_DISPATCH_KEY]["pair_id"]
+    assert b'"text":"A"' in body
+    assert b'"text":"B"' in body
+    assert b"ReadError" not in body
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_pool_node_fault_reschedules_and_stops_as_peer_failure(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-pool-node-fault",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler()
+    config = _config()
+    config.exception_config.transport_max_retry = 2
+    config.exception_config.reschedule_enabled = True
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    decode_started = asyncio.Event()
+    decode_calls = []
+    prefill_calls = []
+    stop_calls = []
+
+    async def _forward_prefill(self, api, req_data, client, timeout):
+        prefill_calls.append(req_data.copy())
+        request = httpx.Request("POST", f"/{api}", json=req_data)
+        return httpx.Response(
+            status_code=200,
+            json={"status": "cached", "id": req_data["request_id"]},
+            request=request,
+        )
+
+    async def _forward_decode(self, api, req_data, client, timeout, *, on_response_ready=None):
+        decode_calls.append(req_data.copy())
+        if on_response_ready is not None:
+            on_response_ready()
+        if len(decode_calls) == 1:
+            yield (b'data: {"choices":[{"text":"A","index":0,"prompt_token_ids":[1,2],"token_ids":[10]}]}\n\n')
+            decode_started.set()
+            await asyncio.Event().wait()
+        yield b'data: {"choices":[{"text":"B","index":0,"token_ids":[11],"finish_reason":"stop"}]}\n\n'
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
+        return None
+
+    monkeypatch.setattr(UnifiedPDRouter, "forward_request", _forward_prefill)
+    monkeypatch.setattr(UnifiedPDRouter, "forward_stream_request", _forward_decode)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    pool = HTTPClientPool()
+    p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
+    d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
+    await pool.get_client(
+        p_endpoint.ip,
+        p_endpoint.business_port,
+        tls_config=config.infer_tls_config,
+    )
+    d_client = await pool.get_client(
+        d_endpoint.ip,
+        d_endpoint.business_port,
+        tls_config=config.infer_tls_config,
+    )
+
+    try:
+        response = await router.handle_request()
+        response_task = asyncio.create_task(_invoke_asgi_response(response))
+        await asyncio.wait_for(decode_started.wait(), timeout=5)
+        while len(d_client._cancellers) != 1:
+            await asyncio.sleep(0)
+
+        first_pair_id = next(iter(d_client._cancellers))
+        await d_client.cancel_all()
+
+        messages = await asyncio.wait_for(response_task, timeout=5)
+        body = b"".join(message["body"] for message in messages if message["type"] == "http.response.body")
+
+        assert first_pair_id not in d_client._cancellers
+        assert len(prefill_calls) == 2
+        assert len(decode_calls) == 2
+        assert decode_calls[1]["prompt"] == [1, 2, 10]
+        assert b'"text":"A"' in body
+        assert b'"text":"B"' in body
+        assert len(stop_calls) == 2
+        assert {call[0] for call in stop_calls} == {PDRole.ROLE_P, PDRole.ROLE_D}
+        assert all(call[1] == 1 for call in stop_calls)
+        assert all(call[2] == DispatchStopReason.PEER_FAILED for call in stop_calls)
+        assert req_info.state == ReqState.DECODE_END
+    finally:
+        await pool.close_client(
+            p_endpoint.ip,
+            p_endpoint.business_port,
+            tls_config=config.infer_tls_config,
+        )
+        await pool.close_client(
+            d_endpoint.ip,
+            d_endpoint.business_port,
+            tls_config=config.infer_tls_config,
+        )
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_error_after_visible_chunk_without_replay_does_not_retry(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-stream-error",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -583,11 +1267,13 @@ async def test_unified_pd_stream_error_after_visible_chunk_does_not_retry(monkey
         req_len=10,
     )
     scheduler = _Scheduler()
+    config = _config()
+    config.exception_config.transport_max_retry = 3
     router = UnifiedPDRouter(
         req_info,
-        _config(),
+        config,
         scheduler=scheduler,
-        request_manager=RequestManager(_config()),
+        request_manager=RequestManager(config),
     )
     p_client = _Client("prefill")
     d_client = _StreamClient("decode", exc_after_chunks=httpx.ReadError("after chunk"))
@@ -619,3 +1305,60 @@ async def test_unified_pd_stream_error_after_visible_chunk_does_not_retry(monkey
     assert len(d_client.requests) == 1
     assert len(stop_calls) == 2
     assert scheduler.update_workload.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_error_before_first_body_retries_without_token_replay(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-stream-prebody-retry",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler()
+    config = _config()
+    config.exception_config.transport_max_retry = 2
+    config.exception_config.reschedule_enabled = False
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _Client("prefill")
+    d_client = _SequenceStreamClient(
+        "decode",
+        [
+            _StreamResponse([], exc_after_chunks=httpx.ReadError("before first body")),
+            _StreamResponse(
+                [
+                    b'data: {"choices":[{"delta":{"content":"B"},"index":0,"finish_reason":"stop"}]}\n\n',
+                ]
+            ),
+        ],
+    )
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        return None
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    response = await router.handle_request()
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(d_client.requests) == 2
+    assert chunks == [b'data: {"choices":[{"delta":{"content":"B"},"index":0,"finish_reason":"stop"}]}\n\n']

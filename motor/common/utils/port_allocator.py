@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from motor.common.logger import get_logger
+from motor.common.utils.net import detect_family, format_address, split_address
 from motor.config.coordinator import CoordinatorConfig
 from motor.config.controller import ControllerConfig
 from motor.config.node_manager import NodeManagerConfig
@@ -61,14 +62,22 @@ class PortConflictError(RuntimeError):
     """Raised when a port cannot be allocated under the chosen strategy."""
 
 
+def _socket_host(host: str) -> str:
+    """Normalize a host literal for socket bind/connect (strip URL brackets)."""
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
+
+
 class PortAllocator:
     @staticmethod
     def probe_tcp(host: str, port: int, timeout: float = 0.5) -> bool:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        bind_host = _socket_host(host)
+        sock = socket.socket(detect_family(bind_host), socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.settimeout(timeout)
-            sock.bind((host, port))
+            sock.bind((bind_host, port))
             sock.listen(1)
             return True
         except OSError:
@@ -89,8 +98,12 @@ class PortAllocator:
         name: str,
         scan_range: int = 100,
         timeout: float = 0.5,
+        skip_ports: set[int] | None = None,
     ) -> int:
+        blocked = skip_ports or set()
         for candidate in range(port, port + scan_range):
+            if candidate in blocked:
+                continue
             if PortAllocator.probe_tcp(host, candidate, timeout=timeout):
                 if candidate != port:
                     logger.warning(
@@ -121,10 +134,11 @@ class PortAllocator:
 
     @staticmethod
     def check_remote_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_host = _socket_host(host)
+        sock = socket.socket(detect_family(connect_host), socket.SOCK_STREAM)
         try:
             sock.settimeout(timeout)
-            sock.connect((host, port))
+            sock.connect((connect_host, port))
             return True
         except OSError:
             return False
@@ -152,13 +166,13 @@ def _allocator(cfg: PortAllocatorConfig) -> tuple[str, int, float, float]:
 def _parse_host_port(address: str, default_port: int) -> tuple[str, int]:
     if not address:
         return "", default_port
-    if ":" in address:
-        host, _, port_str = address.rpartition(":")
-        try:
-            return host or "127.0.0.1", int(port_str)
-        except ValueError:
-            return address, default_port
-    return address, default_port
+    host, port_str = split_address(address)
+    if not port_str:
+        return host or "127.0.0.1", default_port
+    try:
+        return host or "127.0.0.1", int(port_str)
+    except ValueError:
+        return address, default_port
 
 
 def apply_coordinator_ports(config: CoordinatorConfig) -> None:
@@ -196,7 +210,7 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
     )
     rows.append(_row("Coordinator", host, api.coordinator_obs_port, "auto", "observability API"))
 
-    kv_cfg = config.prefill_kv_event_config
+    kv_cfg = config.scheduler_config.kv_conductor_config
     if kv_cfg.conductor_service:
         cond_host, cond_port = _parse_host_port(kv_cfg.conductor_service, kv_cfg.http_server_port)
         if cond_host:
@@ -212,9 +226,8 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
             )
             if not reachable:
                 logger.warning(
-                    "[Port] Mooncake Conductor %s:%d not reachable at startup",
-                    cond_host,
-                    cond_port,
+                    "[Port] Mooncake Conductor %s not reachable at startup",
+                    format_address(cond_host, cond_port),
                 )
 
         kv_cfg.http_server_port = PortAllocator.allocate_auto(
@@ -268,32 +281,27 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     api = config.api_config
     ep = config.endpoint_config
 
-    api.node_manager_port = PortAllocator.allocate_auto(
-        host,
-        api.node_manager_port,
-        "node_manager_port",
-        scan_range=scan_range,
-        timeout=probe_timeout,
-    )
+    reserved = {api.node_manager_port} | {int(p) for p in ep.service_ports + ep.mgmt_ports}
+    sc = config.single_container_config
+    if sc.single_container_flag:
+        reserved |= {p for p in (sc.kv_port, sc.lookup_rpc_port, sc.dp_rpc_port) if p}
+    allocated: set[int] = set()
+
+    def _auto(pref: int, name: str) -> int:
+        p = PortAllocator.allocate_auto(
+            host, pref, name, scan_range=scan_range, timeout=probe_timeout, skip_ports=(reserved - {pref}) | allocated
+        )
+        allocated.add(p)
+        return p
+
+    api.node_manager_port = _auto(api.node_manager_port, "node_manager_port")
     rows.append(_row("NodeManager", host, api.node_manager_port, "auto", "NM API"))
 
     new_service_ports: list[str] = []
     new_mgmt_ports: list[str] = []
     for idx, (svc_pref, mgmt_pref) in enumerate(zip(ep.service_ports, ep.mgmt_ports)):
-        svc_port = PortAllocator.allocate_auto(
-            host,
-            int(svc_pref),
-            f"service_ports[{idx}]",
-            scan_range=scan_range,
-            timeout=probe_timeout,
-        )
-        mgmt_port = PortAllocator.allocate_auto(
-            host,
-            int(mgmt_pref),
-            f"mgmt_ports[{idx}]",
-            scan_range=scan_range,
-            timeout=probe_timeout,
-        )
+        svc_port = _auto(int(svc_pref), f"service_ports[{idx}]")
+        mgmt_port = _auto(int(mgmt_pref), f"mgmt_ports[{idx}]")
         new_service_ports.append(str(svc_port))
         new_mgmt_ports.append(str(mgmt_port))
         rows.append(_row("EngineServer", host, svc_port, "auto", f"DP{idx} business"))
@@ -302,34 +310,15 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     ep.service_ports = new_service_ports
     ep.mgmt_ports = new_mgmt_ports
 
-    sc = config.single_container_config
     if sc.single_container_flag:
         if sc.kv_port is not None:
-            sc.kv_port = PortAllocator.allocate_auto(
-                host,
-                sc.kv_port,
-                "kv_port",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
+            sc.kv_port = _auto(sc.kv_port, "kv_port")
             rows.append(_row("EngineServer", host, sc.kv_port, "auto", "KV transfer"))
         if sc.lookup_rpc_port is not None:
-            sc.lookup_rpc_port = PortAllocator.allocate_auto(
-                host,
-                sc.lookup_rpc_port,
-                "lookup_rpc_port",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
+            sc.lookup_rpc_port = _auto(sc.lookup_rpc_port, "lookup_rpc_port")
             rows.append(_row("EngineServer", host, sc.lookup_rpc_port, "auto", "KV lookup RPC"))
         if sc.dp_rpc_port is not None:
-            sc.dp_rpc_port = PortAllocator.allocate_auto(
-                host,
-                sc.dp_rpc_port,
-                "dp_rpc_port",
-                scan_range=scan_range,
-                timeout=probe_timeout,
-            )
+            sc.dp_rpc_port = _auto(sc.dp_rpc_port, "dp_rpc_port")
             rows.append(_row("EngineServer", host, sc.dp_rpc_port, "auto", "DP RPC"))
 
     PortAllocator.print_matrix(rows)

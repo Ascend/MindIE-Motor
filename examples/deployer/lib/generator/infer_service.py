@@ -38,6 +38,7 @@ from lib.generator.engine import (
     is_hybrid_deploy,
     apply_pd_heterogeneous_node_selector,
     apply_a5_workload,
+    apply_a5_engine_pod_config,
 )
 from lib.generator.kv_pool import normalize_kv_cache_pool_config, gen_kv_pool_env
 from lib.generator.kv_conductor import normalize_kv_conductor_config
@@ -189,10 +190,10 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
         build_engine_env_items(env_role, deploy_config, job_name_base, include_kv_pool=True),
     )
     npu_num = int(deploy_config.get(npu_key, 1))
-    set_container_npu(container, npu_num)
     set_container_npu(container, npu_num, deploy_config)
     weight_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     set_weight_mount(pod_spec, container, weight_path)
+    apply_a5_engine_pod_config(pod_spec, container, deploy_config)
     _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, npu_key, role_name)
 
 

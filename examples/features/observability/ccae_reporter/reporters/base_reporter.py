@@ -18,11 +18,16 @@ from abc import ABC, abstractmethod
 from ccae_reporter.backends import select_backend
 from ccae_reporter.common.cert_util import AdapterCertUtil
 from ccae_reporter.common.logging import Log
+from ccae_reporter.common.util import format_address
 from ccae_reporter.config import ConfigUtil
 from ccae_reporter.reporters.kafka_client.kafka_produce import KafkaProducer
 
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.config.tls_config import TLSConfig
+
+
+def _format_remote_info(monitor_ip, log_ports):
+    return ','.join([format_address(monitor_ip, port) for port in log_ports])
 
 
 class BaseReporter(ABC):
@@ -45,7 +50,7 @@ class BaseReporter(ABC):
             f"Detect monitor config successfully! monitor_ip = {self.monitor_ip}, "
             f"monitor_http_port = {monitor_http_port}"
         )
-        self.url_prefix = f"{self.monitor_ip}:{monitor_http_port}"
+        self.url_prefix = format_address(self.monitor_ip, monitor_http_port)
 
         self.tls_config = ConfigUtil.get_config("motor_deploy_config.tls_config.north_tls_config")
         if self.tls_config and self.tls_config.get("enable_tls"):
@@ -109,7 +114,7 @@ class BaseReporter(ABC):
         self.logger.info("Heartbeat thread starts successfully!")
         self.heart_beat_ready.wait()
 
-        self.remote_info = ','.join([f"{self.monitor_ip}:{port}" for port in self.log_ports])
+        self.remote_info = _format_remote_info(self.monitor_ip, self.log_ports)
         self.init_producer()
         log_thread = threading.Thread(target=self.fetch_log_and_upload)
         log_thread.start()

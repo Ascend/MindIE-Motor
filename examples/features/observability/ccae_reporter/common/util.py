@@ -9,13 +9,33 @@
 # See the Mulan PSL v2 for more details.
 
 import os
+import ipaddress
 import re
 import stat
 import socket
 
 
+def format_address(host, port):
+    try:
+        if isinstance(ipaddress.ip_address(host.strip("[]")), ipaddress.IPv6Address):
+            return f"[{host.strip('[]')}]:{port}"
+    except ValueError:
+        pass
+    return f"{host}:{port}"
+
 
 def get_local_ip():
+    pod_ip = os.getenv("POD_IP")
+    if pod_ip:
+        return pod_ip
+    for family, _, _, _, sockaddr in socket.getaddrinfo(
+        socket.gethostname(),
+        None,
+        socket.AF_UNSPEC,
+        socket.SOCK_DGRAM,
+    ):
+        if family in (socket.AF_INET, socket.AF_INET6):
+            return sockaddr[0]
     return socket.gethostbyname(socket.gethostname())
 
 
@@ -26,7 +46,8 @@ def safe_open(file, *args, **kwargs):
     if not PathCheck.check_file_size(file):
         error_message = f"Failed to open file {file}"
         raise OSError(error_message)
-    return open(os.path.realpath(file), *args, **kwargs)
+    encoding = kwargs.pop("encoding", "utf-8")
+    return open(os.path.realpath(file), *args, encoding=encoding, **kwargs)
 
 
 def safe_read(file_path):
@@ -34,8 +55,7 @@ def safe_read(file_path):
         return f.read()
 
 
-class PathCheckBase(object):
-
+class PathCheckBase:
     logger_screen = None
 
     @classmethod
@@ -47,6 +67,7 @@ class PathCheckBase(object):
         """
         import logging
         import sys
+
         if not cls.logger_screen:
             cls.logger_screen = logging.getLogger("adaptor_screen")
             cls.logger_screen.setLevel(logging.INFO)
@@ -56,8 +77,12 @@ class PathCheckBase(object):
 
     @classmethod
     def check_path_full(cls, path: str, is_support_root: bool = True):
-        return cls.check_name_valid(path) and cls.check_soft_link(path) \
-            and cls.check_exists(path) and cls.check_owner_group(path, is_support_root)
+        return (
+            cls.check_name_valid(path)
+            and cls.check_soft_link(path)
+            and cls.check_exists(path)
+            and cls.check_owner_group(path, is_support_root)
+        )
 
     @classmethod
     def check_exists(cls, path: str):
@@ -137,19 +162,20 @@ class PathCheckBase(object):
             cls.log_error("[CCAE Reporter] The path %s is not exists" % path)
             return False
         if file_size > max_file_size:
-            cls.log_error(f"[CCAE Reporter] Invalid file size, "
-                          f"should be no more than {max_file_size} but got {file_size}")
+            cls.log_error(
+                f"[CCAE Reporter] Invalid file size, should be no more than {max_file_size} but got {file_size}"
+            )
             return False
         return True
 
 
 class PathCheck(PathCheckBase):
-
     logger = None
 
     @classmethod
     def log_error(cls, msg: str):
         from ccae_reporter.common.logging import Log
+
         if not cls.logger:
             cls.logger = Log(__name__).getlog()
         cls.logger.error(msg)

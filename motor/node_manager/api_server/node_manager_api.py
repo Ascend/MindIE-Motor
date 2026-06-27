@@ -10,6 +10,9 @@
 
 import asyncio
 import json
+import os
+import socket
+import logging
 import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, status
@@ -17,10 +20,10 @@ from fastapi.responses import Response
 import uvicorn
 
 from motor.common.http.cert_util import CertUtil
-
+from motor.common.utils.net import detect_family, format_address
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.core.heartbeat_manager import HeartbeatManager
-from motor.common.logger import get_logger
+from motor.common.logger import ApiAccessFilter, get_logger
 from motor.common.resources.http_msg_spec import StartCmdMsg
 from motor.node_manager.core.engine_manager import EngineManager
 from motor.node_manager.core.daemon import Daemon
@@ -230,7 +233,9 @@ class NodeManagerAPI:
         if self._config and self._config.api_config.pod_ip:
             self.host = self._config.api_config.pod_ip
         else:
-            self.host = "0.0.0.0"  # Default host
+            # IPv6 single-stack: when POD_IP env is an IPv6 literal, default to
+            # the v6 wildcard (::) instead of the v4 wildcard (0.0.0.0).
+            self.host = "::" if detect_family(os.getenv("POD_IP", "")) == socket.AF_INET6 else "0.0.0.0"
 
         if self._config:
             self.port = self._config.api_config.node_manager_port
@@ -270,9 +275,20 @@ class NodeManagerAPI:
             if self._thread.is_alive():
                 logger.warning("API server thread did not stop within timeout")
 
+    @staticmethod
+    def _suppress_probe_access_logs() -> None:
+        """Suppress noisy uvicorn access logs from K8s readiness/liveness probes."""
+        probe_filter = ApiAccessFilter(
+            {
+                "/readiness": logging.ERROR,
+            }
+        )
+        logging.getLogger("uvicorn.access").addFilter(probe_filter)
+
     def _serve_in_thread(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self._suppress_probe_access_logs()
         config = uvicorn.Config(app, host=self.host, port=self.port, loop="asyncio")
         config.load()
         if self._config.mgmt_tls_config.enable_tls:
@@ -281,9 +297,9 @@ class NodeManagerAPI:
                 raise RuntimeError("Failed to create SSL context")
             config.ssl = context
 
-            logger.info("Node Manager server started: https://%s:%s", self.host, self.port)
+            logger.info("Node Manager server started: https://%s", format_address(self.host, self.port))
         else:
-            logger.info("Node Manager server stated: http://%s:%s", self.host, self.port)
+            logger.info("Node Manager server stated: http://%s", format_address(self.host, self.port))
 
         self.server = uvicorn.Server(config)
         try:

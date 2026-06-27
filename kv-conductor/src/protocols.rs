@@ -197,6 +197,9 @@ pub struct QueryRequest {
     pub token_ids: Vec<i64>,
     #[serde(default = "default_tenant")]
     pub tenant_id: String,
+    /// When true, include per-DP per-medium block detail in the response.
+    #[serde(default)]
+    pub hit_detail: bool,
 }
 
 /// POST /query_by_hash request body — query using pre-computed block hashes
@@ -223,10 +226,22 @@ pub struct QueryByHashRequest {
 /// Per-DP-rank KV match data.
 pub type DpScores = HashMap<String, u32>;
 
+/// Per-DP per-medium match detail.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct DpMediaDetail {
+    #[serde(rename = "XPU")]
+    pub xpu: u32,
+    #[serde(rename = "CPU")]
+    pub cpu: u32,
+    #[serde(rename = "DISK")]
+    pub disk: u32,
+}
+
 /// Per-instance match data returned in query response.
 ///
 /// Follows RFC #1527 query response shape: per-tier XPU/CPU/DISK plus
-/// per-DP-rank breakdown.
+/// per-DP-rank breakdown.  When ``hit_detail`` is set in the request,
+/// ``media_detail`` is populated with per-DP per-medium blocks.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct InstanceMatchData {
     /// Longest continuous prefix match across all tiers and DP ranks, in tokens.
@@ -243,6 +258,9 @@ pub struct InstanceMatchData {
     /// Per-DP-rank match depth, in tokens.
     #[serde(rename = "DP")]
     pub dp: DpScores,
+    /// Per-DP per-medium block counts (only when ``hit_detail`` is requested).
+    #[serde(rename = "media_detail", skip_serializing_if = "Option::is_none")]
+    pub media_detail: Option<HashMap<String, DpMediaDetail>>,
 }
 
 /// Full query response: { tenant_id: { instance_id: InstanceMatchData } }

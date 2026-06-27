@@ -12,13 +12,13 @@ FaultManager 通过 Mixin 模式将功能拆分到三个模块中，降低单文
 
 ```text
 motor/controller/fault_tolerance/
-├── fault_manager.py          (541 行)   FaultManager 主类
-├── fault_types.py            (259 行)   枚举 + Pydantic 数据模型
+├── fault_manager.py                       FaultManager 主类
+├── fault_types.py                         枚举 + Pydantic 数据模型
 ├── mixin/
 │   ├── __init__.py
-│   ├── resource_manager.py   (448 行)   _ResourceManagerMixin
-│   └── persistence.py        (144 行)   _PersistenceMixin
-└── strategy/                            策略实现
+│   ├── resource_manager.py                _ResourceManagerMixin
+│   └── persistence.py                     _PersistenceMixin
+└── strategy/                              策略实现
 ```
 
 ```python
@@ -80,7 +80,7 @@ vllm EngineCore 异常
 class FaultInfo(BaseModel):
     # 公共字段
     fault_category: FaultCategory  # HARDWARE / SOFTWARE
-    fault_level: FaultLevel        # L0(HEALTHY) ~ L6
+    fault_level: FaultLevel        # L1 ~ L6 (HEALTHY=0 表示无故障)
     fault_code: int                # 硬件故障码 或 SpecialFaultCode
 
     # 硬件专用
@@ -97,22 +97,59 @@ class FaultInfo(BaseModel):
     additional_info: dict | None
 ```
 
+#### OriginFaultLevel → FaultLevel 静态映射
+
+`OriginFaultLevel` 是 mind-cluster 上游 ConfigMap 中的故障处理策略字符串，通过 `map_fault_level()` 映射为 PyMotor 内部的 `FaultLevel`：
+
+| OriginFaultLevel | FaultLevel | 语义 |
+|---|---|---|
+| `NotHandleFault` | **L1** | 不处理 |
+| `SubHealthFault` | **L1** | 亚健康通知（新增） |
+| `RestartRequest` | **L2** | 请求重启 / 可自愈 |
+| `RestartBusiness` | **L3** | 业务级重启 |
+| `FreeRestartNPU` | **L4** | 空闲时重启 NPU |
+| `RestartNPU` | **L5** | 立即重启 NPU → 触发实例隔离 |
+| `SeparateNPU` | **L6** | 隔离 NPU（致命）→ 触发实例隔离 |
+| `PreSeparateNPU` | **L6** (静态) | 预隔离 NPU，**运行时动态降级**（见下文） |
+
+#### PreSeparateNPU 动态等级调整
+
+`PreSeparateNPU` 在 mind-cluster 中表示 NPU 进入预警状态（节点状态 `PreSeparate`，不同于 `UnHealthy`）：不给该 NPU 调度新任务，但现有任务可继续运行。因此 PyMotor 采用**运行时动态判定**而非静态映射：
+
+```text
+PreSeparateNPU 故障感知
+  ├─ 节点上有 INITIAL/ACTIVE 实例
+  │     → 降级为 L2（有业务运行，不隔离，可自愈）
+  │     → 正常参与实例故障等级计算
+  └─ 节点上无活跃实例
+        → 保持 L6（无业务影响，安全隔离 NPU）
+        → 但该故障被排除在实例级故障计算之外
+        → 不触发 separate_instance()，不触发 ScaleP2D
+```
+
+动态判定发生在两个位置：
+
+- **ConfigMap 更新时** (`_handle_fault_info_update`)：首次接收故障即判定
+- **故障等级刷新时** (`_refresh_instance_fault_level`)：重新评估，覆盖"实例离开节点后无 ConfigMap 变更"的场景
+
 软件故障等级映射: `DEAD(1) → L2 (ENGINE_DEAD)`, `UNHEALTHY(2) → L2 (ENGINE_UNHEALTHY)`。软件故障会更新实例的 fault_level，但目前不触发自动恢复策略。
 
 ### NodeMetadata
 
 ```python
 class NodeMetadata(BaseModel):
-    pod_ip: str
-    node_name: str
-    instance_id: int
-    job_name: str                          # 所属实例的 job_name，O(1) 查询
-    node_status: NodeStatus                # READY / NOT_READY
-    hardware_fault_infos: dict[int, FaultInfo]   # 硬件故障 (ConfigMap 刷新)
-    software_fault_infos: dict[int, FaultInfo]   # 软件故障 (引擎上报)
+    node_name: str                                          # Kubernetes 节点名（稳定标识）
+    instance_ids: set[int]                                  # 运行在此节点的实例 ID 集合
+    instance_pod_ips: dict[int, str]                        # instance_id → pod_ip
+    instance_job_names: dict[int, str]                      # instance_id → job_name
+    node_status: NodeStatus                                 # READY / NOT_READY
+    hardware_fault_infos: dict[int, FaultInfo]              # 硬件故障，key=fault_code
+    software_fault_infos: dict[int, FaultInfo]              # 软件故障，key=fault_code
 ```
 
-`job_name` 字段在节点创建时设置，swap 时同步更新。通过直接读 `node.job_name` 替代频繁的 `InstanceManager.get_instance()` 查询。
+一个物理节点可能承载多个实例（如 2P1D 部署中 Prefill 和 Decode 共用节点），因此 `instance_ids`、`instance_pod_ips`、`instance_job_names` 均为集合/字典结构。
+
+`instance_job_names` 在节点创建时设置，swap 时同步更新。通过直接读 `node.instance_job_names[instance_id]` 替代频繁的 `InstanceManager.get_instance()` 查询。
 
 硬件故障按 fault_code 做 key 覆盖刷新；软件故障按 fault_code 写入，不受硬件刷新影响。`_refresh_instance_fault_level` 综合两类故障评估。
 
@@ -326,9 +363,12 @@ L2 策略按 fault_code 分发:
 
 - 软件故障（`ENGINE_DEAD`, `ENGINE_UNHEALTHY`）→ 暂不实现自动恢复，仅更新实例故障等级
 - 白名单硬件码 `0x00F1FEF5`, `0x08520003` → TokenReinferenceStrategy
+- PreSeparateNPU 动态降级到 L2（有活跃业务）→ 走 L2 正常分发
 - 其它 → None
 
 L4/L5/L6 → 根据实例角色 (decode) → ScaleP2DStrategy
+
+> **注意**: PreSeparateNPU 在无活跃业务时，故障在 Step 2（故障评估流程）被排除，不会到达 L6 的策略分发 —— 因此不会触发 ScaleP2D。
 
 ### 策略与故障解耦
 
@@ -340,11 +380,37 @@ L4/L5/L6 → 根据实例角色 (decode) → ScaleP2DStrategy
 
 清理操作在 `ins_metadata.lock` 外执行，避免与 `_refresh_instance_fault_level` 的锁顺序导致死锁。
 
+## 故障评估流程
+
+`_refresh_instance_fault_level()` 计算实例综合故障等级，包含三步：
+
+### Step 1 — 重新评估 PreSeparateNPU
+
+遍历实例所有节点的硬件故障，对 `origin_fault_level == PRE_SEPARATE_NPU` 的故障按当前活跃实例状态重新判定：
+
+- 节点有 INITIAL/ACTIVE 实例 → 降级为 L2
+- 节点无活跃实例 → 升级为 L6
+
+这覆盖了"实例离开节点后无 ConfigMap 变更"导致等级过期的场景。
+
+### Step 2 — 过滤无业务影响的故障
+
+使用 `_affects_instance()` 过滤函数：PreSeparateNPU L6 且节点无活跃实例的故障被**排除在实例级故障计算之外**。这种故障是纯节点级问题（NPU 已可安全隔离，无业务运行），不应触发实例隔离或 ScaleP2D。
+
+其他故障（包括 PreSeparateNPU L2）正常参与计算。
+
+### Step 3 — 取最高等级
+
+从过滤后的硬件/软件故障中取最高 `fault_level`，更新 `InstanceMetadata`。
+
 ## 实例隔离/恢复规则
 
 - **fault_level > L2**: `InstanceManager().separate_instance()` 强制隔离
 - **fault_level ≤ L2 且之前被隔离**: `recover_instance()` 恢复
 - **fault_level = HEALTHY**: 确保实例处于恢复状态
+- **特殊规则 — PreSeparateNPU**: 经动态等级调整和过滤后（见故障评估流程）：
+  - 有活跃业务时降级为 L2 → 不触发隔离
+  - 无活跃业务时 L6 被排除在实例级计算外 → 不触发隔离，不触发 ScaleP2D
 
 ## 配置参数
 

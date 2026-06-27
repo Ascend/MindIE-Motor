@@ -23,9 +23,17 @@ from requests.adapters import HTTPAdapter
 
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address, split_address
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.tls_config import TLSConfig
 import motor.common.utils.error as cancel_error
+
+
+def _normalize_address(address: str) -> str:
+    """Make sure IPv6 literals inside an ``host:port`` string are bracketed."""
+    host, port = split_address(address)
+    return format_address(host, port) if port else address
+
 
 logger = get_logger(__name__)
 
@@ -62,7 +70,7 @@ class SafeHTTPSClient:
                 maxsize=10,
             )
             self.session.mount(self.protocol, adapter)
-        self.base_url = self.protocol + address.rstrip('/')
+        self.base_url = self.protocol + _normalize_address(address).rstrip('/')
 
         # set https headers
         self.session.headers.update(
@@ -184,7 +192,7 @@ class HttpClientContext(httpx.AsyncClient):
 
     async def cancel_all(self):
         reason = f"{cancel_error.NODE_FAULT}: {super().base_url}"
-        for canceller in self._cancellers.values():
+        for canceller in list(self._cancellers.values()):
             if canceller:
                 await canceller(reason)
 
@@ -196,11 +204,12 @@ class AsyncSafeHTTPSClient:
     def create_client(address: str, tls_config: TLSConfig | None = None, **client_kwargs):
         verify = True
 
+        normalized = _normalize_address(address)
         if tls_config and tls_config.enable_tls:
             verify = CertUtil.create_ssl_context(tls_config=tls_config, purpose=Purpose.CLIENT_AUTH)
-            base_url = f"https://{address}"
+            base_url = f"https://{normalized}"
         else:
-            base_url = f"http://{address}"
+            base_url = f"http://{normalized}"
 
         if 'limits' not in client_kwargs:
             client_kwargs['limits'] = httpx.Limits(
@@ -250,7 +259,7 @@ class HTTPClientPool(ThreadSafeSingleton):
                 logger.debug("HTTPClientPool cache hit (post-lock). pool_key=%s", pool_key)
                 return client
 
-            address = f"{ip}:{port}"
+            address = format_address(ip, port)
             client = AsyncSafeHTTPSClient.create_client(address=address, tls_config=tls_config, **client_kwargs)
 
             if pool_key in self._client_pool:
@@ -350,7 +359,7 @@ class HTTPClientPool(ThreadSafeSingleton):
                 tls_hash = hashlib.md5(tls_str.encode(), usedforsecurity=False).hexdigest()[:8]
                 self._tls_hash_cache[tls_id] = tls_hash
 
-        return f"{ip}:{port}:{tls_hash}"
+        return f"{format_address(ip, port)}:{tls_hash}"
 
     async def _safe_aclose(self, client: httpx.AsyncClient | None) -> None:
         """Close client outside lock; ignore errors."""
@@ -371,7 +380,7 @@ class HTTPClientPool(ThreadSafeSingleton):
                 logger.debug("HTTPClientPool warmup skipped (already cached). pool_key=%s", pool_key)
                 return
 
-            address = f"{ip}:{port}"
+            address = format_address(ip, port)
             client = AsyncSafeHTTPSClient.create_client(address=address, tls_config=tls_config, **client_kwargs)
             self._client_pool[pool_key] = client
             logger.debug(

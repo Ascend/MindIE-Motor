@@ -41,6 +41,8 @@ ENDPOINT = "endpoint"
 REPLAY_ENDPOINT = "replay_endpoint"
 KV_CONDUCTOR_CONFIG = "kv_conductor_config"
 HTTP_SERVER_PORT = "http_server_port"
+RE_REGISTER_INTERVAL_SEC = "re_register_interval_sec"
+DEFAULT_RE_REGISTER_INTERVAL_SEC = 30
 MODEL_PATH = "model_path"
 SSL_ENABLE = "ssl_enable"
 SSL_CA_CERTS = "ssl_ca_certs"
@@ -194,6 +196,19 @@ def _update_instances_num(
     }
 
 
+def _resolve_re_register_interval_sec(user_config_data: dict[str, Any]) -> int:
+    motor_coordinator_config = user_config_data.get(ConfigKey.MOTOR_COORDINATOR.value)
+    if not isinstance(motor_coordinator_config, dict):
+        return DEFAULT_RE_REGISTER_INTERVAL_SEC
+
+    prefill_kv_config = motor_coordinator_config.get(PREFILL_KV_EVENT_CONFIG)
+    if isinstance(prefill_kv_config, dict):
+        interval = prefill_kv_config.get(RE_REGISTER_INTERVAL_SEC)
+        if interval is not None:
+            return int(interval)
+    return DEFAULT_RE_REGISTER_INTERVAL_SEC
+
+
 def _resolve_kv_conductor_http_port(user_config_data: dict[str, Any]) -> int:
     kv_conductor_config = user_config_data.get(KV_CONDUCTOR_CONFIG)
     if isinstance(kv_conductor_config, dict):
@@ -223,6 +238,7 @@ def _build_prefill_kv_event_from_engine_section(
         BLOCK_SIZE: engine_config.get("block-size", 128),
         HTTP_SERVER_PORT: _resolve_kv_conductor_http_port(user_config_data),
         MODEL_PATH: resolver.get_model_path(""),
+        RE_REGISTER_INTERVAL_SEC: _resolve_re_register_interval_sec(user_config_data),
     }
 
 
@@ -238,6 +254,9 @@ def _select_kv_event_engine_section(user_config_data: dict[str, Any]) -> dict[st
     return None
 
 
+KV_CONDUCTOR_CONFIG = "kv_conductor_config"
+
+
 def _update_prefill_kv_event_config(updated_config: dict[str, Any], user_config_data: dict[str, Any]) -> None:
     try:
         engine_section = _select_kv_event_engine_section(user_config_data)
@@ -251,6 +270,49 @@ def _update_prefill_kv_event_config(updated_config: dict[str, Any], user_config_
         updated_config[PREFILL_KV_EVENT_CONFIG] = prefill_kv_event
     except Exception as e:
         logger.warning("Failed to get kv event engine config: %s", e)
+
+
+def _redirect_prefill_kv_event_config(updated_config: dict[str, Any], user_config_data: dict[str, Any]) -> None:
+    """Redirect legacy prefill_kv_event_config into the unified kv_conductor_config.
+
+    1. If the user config still has a ``prefill_kv_event_config`` section, merge its
+       fields into ``kv_conductor_config`` (backward compat).
+    2. Auto-derive connection info from engine sections and kv_conductor_config.
+    """
+    try:
+        reg = updated_config.setdefault("scheduler_config", {}).setdefault(KV_CONDUCTOR_CONFIG, {})
+
+        # ── Backward compat: migrate old prefill_kv_event_config ──────
+        old_config = updated_config.pop(PREFILL_KV_EVENT_CONFIG, None)
+        if isinstance(old_config, dict):
+            logger.warning(
+                "prefill_kv_event_config is deprecated and will be removed in a future version. "
+                "Please migrate to kv_conductor_config under scheduler_config. "
+                "See docs/zh/user_guide/features/kvcache_affinity.md for details."
+            )
+            for key in (
+                "conductor_service",
+                "http_server_port",
+                "engine_type",
+                "model_path",
+                "block_size",
+                "endpoint",
+                "replay_endpoint",
+                "re_register_interval_sec",
+            ):
+                if key in old_config and not reg.get(key):
+                    reg[key] = old_config[key]
+
+        # ── Auto-derive from engine sections ──────────────────────────
+        engine_section = _select_kv_event_engine_section(user_config_data)
+        if engine_section is not None:
+            derived = _build_prefill_kv_event_from_engine_section(engine_section, user_config_data)
+            if isinstance(derived, dict):
+                for key in ("http_server_port", "model_path", "endpoint", "replay_endpoint", "block_size"):
+                    if key in derived and not reg.get(key):
+                        reg[key] = derived[key]
+    except Exception as e:
+        logger.warning("Failed to redirect kv event config: %s", e)
 
 
 def log_json_config_format_error(json_path: str | None, exc: Exception) -> None:
@@ -362,7 +424,6 @@ def sync_dataclass_fields_from(
 def reload_dataclass_config_from_json(
     instance: Any,
     loader: Callable[[str], Any],
-    logging_config: Any,
     *,
     skip: frozenset[str] = frozenset(),
     skip_private: bool = True,
@@ -383,7 +444,7 @@ def reload_dataclass_config_from_json(
         new_config = loader(instance.config_path)
         sync_dataclass_fields_from(instance, new_config, skip=skip, skip_private=skip_private)
         instance.last_modified = current_mtime
-        reconfigure_logging(logging_config)
+        reconfigure_logging(instance.logging_config)
         logger.info(success_message)
         return True
     except Exception as exc:

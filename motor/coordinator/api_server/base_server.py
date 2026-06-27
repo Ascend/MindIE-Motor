@@ -35,6 +35,7 @@ class BaseCoordinatorServer:
 
     def __init__(self, config: CoordinatorConfig | None = None):
         self._config_lock = threading.RLock()
+        self.coordinator_config: CoordinatorConfig | None = None
         self._initialize_config(config)
         self._service_start_timestamp = int(datetime.now(timezone.utc).timestamp())
 
@@ -45,6 +46,9 @@ class BaseCoordinatorServer:
             {
                 "/liveness": logging.ERROR,
                 "/readiness": logging.ERROR,
+                "/startup": logging.ERROR,
+                "/metrics": logging.ERROR,
+                "/health": logging.ERROR,
             }
         )
         uvicorn_access_logger = logging.getLogger("uvicorn.access")

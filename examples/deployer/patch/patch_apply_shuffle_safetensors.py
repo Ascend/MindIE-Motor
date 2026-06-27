@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Patch only when the installed vLLM base version matches
-TARGET_VLLM_VERSION = "0.20.2"
+TARGET_VLLM_VERSIONS = ("0.20.2", "0.21.0", "0.22.1")
 
 # Patch list
 PATCH_SPECS = [
@@ -36,8 +36,8 @@ PATCH_SPECS = [
 def should_apply_patch() -> bool:
     """Return True when the installed vLLM version should be patched."""
     version = md.version("vllm")
-    if version.split("+")[0].split("-")[0] != TARGET_VLLM_VERSION:
-        logger.info("Skip shuffle safetensors patch: vLLM %s is not %s", version, TARGET_VLLM_VERSION)
+    if version.split("+")[0].split("-")[0] not in TARGET_VLLM_VERSIONS:
+        logger.info("Skip shuffle safetensors patch: vLLM %s is not in %s", version, TARGET_VLLM_VERSIONS)
         return False
     logger.info("Applying shuffle safetensors patch for vLLM %s", version)
     return True
@@ -85,10 +85,12 @@ def main() -> int:
         return 0
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    version = md.version("vllm").split("+")[0].split("-")[0]
+    patch_dir = os.path.join(script_dir, version)
     vllm_root = vllm.__path__[0]
     failed = 0
     for rel_path, patch_name in PATCH_SPECS:
-        if not apply_patch(os.path.join(vllm_root, rel_path), os.path.join(script_dir, patch_name)):
+        if not apply_patch(os.path.join(vllm_root, rel_path), os.path.join(patch_dir, patch_name)):
             failed += 1
     return 1 if failed else 0
 

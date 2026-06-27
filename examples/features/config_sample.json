@@ -93,7 +93,7 @@
       "configmap_namespace": "kube-system",
       "configmap_prefix": "mindx-dl-deviceinfo-",
       "k8s_cert_path": "",
-      "enable_scale_p2d": true,
+      "enable_scale_p2d": false,
       "enable_token_reinference": true
     },
     "observability_config": {
@@ -136,12 +136,12 @@
     },
     "exception_config": {
       "max_retry": 5,
-      "recompute_enabled": true,
+      "reschedule_enabled": true,
       "transport_max_retry": null,
-      "recompute_max_retry": null,
       "retry_delay": 0.2,
       "first_token_timeout": 600,
-      "infer_timeout": 3600
+      "infer_timeout": 3600,
+      "upstream_error_body_max_bytes": 65536
     },
     "scheduler_config": {
       "scheduler_type": "load_balance"
@@ -225,14 +225,19 @@
       "local_parent_sampled": 1.0,
       "local_parent_not_sampled": 1.0
     },
-    "prefill_kv_event_config": {
+    "kv_event_registration": {
       "conductor_service": "",
       "http_server_port": 13333,
+      "store_backend": "Mooncake",
       "block_size": 128,
-      "endpoint": "",
-      "replay_endpoint": "",
       "engine_type": "vLLM",
-      "model_path": ""
+      "model_path": "",
+      "pool_endpoint": "",
+      "xpu_endpoint": "",
+      "cpu_endpoint": "",
+      "disk_endpoint": "",
+      "endpoint": "",
+      "replay_endpoint": ""
     },
     "_errors": [],
     "worker_index": null,

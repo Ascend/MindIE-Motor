@@ -2,27 +2,31 @@
 # KV Conductor CLI — register publishers, query cache hits, inspect state.
 #
 # Usage:
-#   ./conductor_cli.sh register                  # Register all mock publishers
-#   ./conductor_cli.sh unregister                # Unregister all
-#   ./conductor_cli.sh status                    # Workers + block counts
-#   ./conductor_cli.sh query <hash1> <hash2>...  # Query by block hashes
-#   ./conductor_cli.sh query --blocks 3          # Auto-detect hashes from publisher
-#   ./conductor_cli.sh query-tokens --count 256   # Query by token IDs
-#   ./conductor_cli.sh quick                     # One-shot: register → wait → status
-#   ./conductor_cli.sh health                    # Health check
+#   ./conductor_cli.sh up                          # Deploy multi-medium publishers + conductor
+#   ./conductor_cli.sh up --single-port             # Legacy single-port mode
+#   ./conductor_cli.sh down                        # Tear down
+#   ./conductor_cli.sh register                    # Register all publishers
+#   ./conductor_cli.sh status                      # Workers + block counts
+#   ./conductor_cli.sh query-tokens --count 256     # Query by token IDs
+#   ./conductor_cli.sh bench                       # Benchmark
+#   ./conductor_cli.sh quick                       # One-shot: register → wait → status
+#   ./conductor_cli.sh health                      # Health check
 #
 # Environment:
 #   KV_NAMESPACE      K8s namespace (default: mindie-motor)
 #   CONDUCTOR_ADDR    Conductor address (default: localhost:13333)
+#   BLOCK_SIZE        KV block size (default: 128)
+#   NUM_PUBLISHERS    Number of publisher pods (default: 8)
 
 set -euo pipefail
 
-# Pre-flight dependency check
 _check_deps() {
     local missing=()
     command -v curl    &>/dev/null || missing+=("curl")
     command -v python3 &>/dev/null || missing+=("python3")
-    command -v kubectl &>/dev/null || missing+=("kubectl")
+    if [[ -z "${SKIP_KUBECTL_CHECK:-}" ]]; then
+        command -v kubectl &>/dev/null || missing+=("kubectl")
+    fi
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "\033[0;31mMissing dependencies: ${missing[*]}\033[0m" >&2
         echo "Install with: apt install ${missing[*]}" >&2
@@ -37,7 +41,7 @@ BASE_URL="http://${CONDUCTOR_ADDR}"
 
 NUM_PUBLISHERS="${NUM_PUBLISHERS:-8}"
 MODEL_NAME="opt-125m"
-BLOCK_SIZE=128
+BLOCK_SIZE="${BLOCK_SIZE:-128}"
 TENANT_ID="default"
 
 RED='\033[0;31m'
@@ -47,6 +51,10 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+KV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+YAML_FILE="$SCRIPT_DIR/e2e_test.yaml"
+
 usage() {
     cat << 'EOF'
 KV Conductor CLI — build, deploy, register, query, all-in-one.
@@ -54,47 +62,50 @@ KV Conductor CLI — build, deploy, register, query, all-in-one.
 Usage:  ./conductor_cli.sh <command> [options]
 
 Setup:
-  build                 Build all Docker images (kv-conductor + zmq-publisher)
-  up                    Deploy N single-port publishers + kv-conductor
-  up-multi              Deploy multi-port publisher (XPU:15557 + CPU/DISK:15558) + kv-conductor
+  build                 Build all Docker images
+  up [flags]            Deploy multi-medium publishers + conductor (default)
   down                  Tear down all resources
-  logs [filter]         Collect logs (see collect_logs.sh for filters)
+  logs [filter]         Collect logs (see collect_logs.sh)
 
 Runtime:
-  register [name]       Register single-port publishers with conductor
-  register-multi        Register multi-port publisher (medium_endpoints protocol)
-  unregister [name]     Unregister mock publishers
+  register              Register publishers with conductor
+  unregister            Unregister mock publishers
   status                Show workers and block counts
-  query [hashes...]     Query cache hits by block hash
-  query-tokens [tokens] Query cache hits by raw token IDs
-  quick                 One-shot: register -> wait -> status (single-port)
-  quick-multi           One-shot: health -> register-multi -> status (multi-port)
+  query-tokens [opts]   Query cache hits by raw token IDs
+  bench [opts]          Benchmark query throughput
+  quick                 One-shot: register → wait → status
   health                Health check
+  smoke                 API smoke test
 
-Options for 'query':
-  --model NAME          Model name (default: opt-125m)
-  --blocks N            Auto-detect N hashes from publisher logs
-  --tenant ID           Tenant ID (default: default)
+Flags for 'up':
+  --single-port         Single-port legacy mode (default: multi-medium)
+  --mooncake-format     Legacy Mooncake wire format (default: vLLM msgspec)
+  --no-swa-mixed        Disable SWA attention event mixing
+  --block-size N        KV block size (default: 128)
+  --initial-blocks N    Initial cache capacity (default: 8192)
 
 Options for 'query-tokens':
   --model NAME          Model name (default: opt-125m)
   --count N             Number of sequential tokens (default: 128)
   --tenant ID           Tenant ID (default: default)
 
+Options for 'bench':
+  --block-size N        Block size (default: 128)
+  --tokens N            Tokens per query (default: 512)
+  --count N             Number of queries (default: 20)
+  --throughput          Throughput mode (by hash, 100% hits)
+
 Environment:
   KV_NAMESPACE          K8s namespace (default: mindie-motor)
   CONDUCTOR_ADDR        Conductor address (default: localhost:13333)
+  BLOCK_SIZE            KV block size (default: 128)
+  NUM_PUBLISHERS        Number of publisher pods (default: 8)
 
-Quick start (single-port):
+Quick start:
   ./conductor_cli.sh build && ./conductor_cli.sh up
   kubectl -n mindie-motor port-forward deploy/mindie-motor-kv-conductor 13333:13333 &
   ./conductor_cli.sh quick
-  ./conductor_cli.sh query --blocks 3
-
-Quick start (multi-port):
-  ./conductor_cli.sh build && ./conductor_cli.sh up-multi
-  kubectl -n mindie-motor port-forward deploy/mindie-motor-kv-conductor 13333:13333 &
-  ./conductor_cli.sh quick-multi
+  ./conductor_cli.sh query-tokens --count 256
 EOF
 }
 
@@ -107,12 +118,6 @@ api_get() {
 api_post() {
     curl -s --max-time 3 -w "\n%{http_code}" -X POST "${BASE_URL}$1" \
         -H 'Content-Type: application/json' -d "$2" 2>/dev/null
-}
-
-split_response() {
-    # $1 = "body\nhttp_code"; prints body to stdout, sets RESP_CODE
-    RESP_CODE=$(echo "$1" | tail -1)
-    echo "$1" | sed '$d'
 }
 
 # ── K8s helpers ────────────────────────────────────────────────────────
@@ -128,21 +133,28 @@ cmd_register() {
     echo -e "${BOLD}Registering ${NUM_PUBLISHERS} publishers → ${CONDUCTOR_ADDR}${NC}\n"
 
     for ((dp=0; dp<NUM_PUBLISHERS; dp++)); do
-        local iid="mock-publisher-${dp}" svc="zmq-publisher-${dp}" port=$((5557 + dp))
+        local svc="zmq-publisher-${dp}"
+        local xpu_port=$((15557 + dp * 2)) cpu_port=$((15557 + dp * 2 + 1))
+        local iid="mock-publisher-${dp}"
         local ip; ip=$(pod_ip "$svc")
         [[ -z "$ip" ]] && { echo -e "  ${RED}dp=${dp}: pod not found${NC}"; continue; }
 
-        printf "  dp=%-2d tcp://%s:%s ... " "$dp" "$ip" "$port"
+        printf "  dp=%-2d tcp://%s:%d (XPU) + :%d (CPU/DISK) ... " "$dp" "$ip" "$xpu_port" "$cpu_port"
 
         local medium_endpoints
         medium_endpoints=$(python3 -c "
 import json
-print(json.dumps({'xpu': 'tcp://${ip}:${port}'}))
+print(json.dumps({
+    'xpu':  'tcp://${ip}:${xpu_port}',
+    'cpu':  'tcp://${ip}:${cpu_port}',
+    'disk': 'tcp://${ip}:${cpu_port}',
+}))
 ")
         local resp; resp=$(api_post "/register" "{
             \"instance_id\": \"${iid}\",
             \"medium_endpoints\": ${medium_endpoints},
             \"type\": \"Mooncake\",
+            \"store_backend\": \"YuanRong\",
             \"modelname\": \"${MODEL_NAME}\",
             \"block_size\": ${BLOCK_SIZE},
             \"dp_rank\": ${dp},
@@ -200,17 +212,14 @@ if ws:
     print(f'  {len(ws)} registered worker(s):')
     for w in ws:
         for dp, info in w.get('endpoints', {}).items():
-            # New protocol: medium_endpoints map
             meps = info.get('medium_endpoints', {})
             if meps:
-                # Collect unique endpoint -> media mapping
                 ep_media = {}
                 for medium, ep in sorted(meps.items()):
                     ep_media.setdefault(ep, []).append(medium.upper())
-                ep_strs = [f'{ep} ({",".join(media)})' for ep, media in ep_media.items()]
+                ep_strs = [f'{ep} ({\",\".join(media)})' for ep, media in ep_media.items()]
                 print(f'    {w[\"instance_id\"]:30s}  dp={dp}  {info[\"engine_type\"]:8s}  {\" | \".join(ep_strs)}')
             else:
-                # Legacy: single endpoint
                 ep = info.get('endpoint', 'N/A')
                 print(f'    {w[\"instance_id\"]:30s}  dp={dp}  {info[\"engine_type\"]:8s}  {ep}')
 else:
@@ -219,37 +228,6 @@ else:
 }
 
 # ── Query ──────────────────────────────────────────────────────────────
-
-cmd_query() {
-    local model="$MODEL_NAME" tenant="$TENANT_ID" bs="$BLOCK_SIZE"
-    local hashes=()
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --model)  model="$2"; shift 2 ;;
-            --tenant) tenant="$2"; shift 2 ;;
-            *)        hashes+=("$1"); shift ;;
-        esac
-    done
-
-    if [[ ${#hashes[@]} -eq 0 ]]; then
-        echo "Usage: conductor_cli.sh query <hash1> <hash2> ..."
-        echo "       conductor_cli.sh query-tokens --count 512  (recommended)"
-        return 1
-    fi
-
-    local hlist; hlist=$(IFS=','; echo "${hashes[*]}")
-    echo -e "${BOLD}Query: ${#hashes[@]} hashes, model=${model}, block_size=${bs}${NC}\n"
-
-    local resp body code
-    resp=$(api_post "/query_by_hash" "{
-        \"model\": \"${model}\", \"block_size\": ${bs},
-        \"block_hashes\": [${hlist}], \"tenant_id\": \"${tenant}\"
-    }")
-    code=$(echo "$resp" | tail -1); body=$(echo "$resp" | sed '$d')
-    [[ "$code" != "200" ]] && { echo -e "${RED}Query failed (${code})${NC}"; return 1; }
-    format_hits "$body" "$bs"
-}
 
 cmd_query_tokens() {
     local model="$MODEL_NAME" tenant="$TENANT_ID" bs="$BLOCK_SIZE"
@@ -278,7 +256,8 @@ cmd_query_tokens() {
         \"model\": \"${model}\",
         \"block_size\": ${bs},
         \"token_ids\": [${tlist}],
-        \"tenant_id\": \"${tenant}\"
+        \"tenant_id\": \"${tenant}\",
+        \"hit_detail\": true
     }")
     code=$(echo "$resp" | tail -1)
     body=$(echo "$resp" | sed '$d')
@@ -296,7 +275,6 @@ format_hits() {
 import json, sys
 d = json.load(sys.stdin)
 bs = int('$bs')
-
 for tenant_id, instances in d.items():
     if not instances:
         print('  (no matches)'); continue
@@ -312,32 +290,24 @@ for tenant_id, instances in d.items():
             print(f'  {\"dp=\"+rank:<30s} {\"DP\":>6s} {t//bs:>8d} {t:>8d}')
         best = imd.get('longest_matched', 0)
         print(f'  {\"\":30s} {\"best\":>6s} {best//bs:>8d} {best:>8d}')
+        md = imd.get('media_detail')
+        if md:
+            print(f'  {\"media_detail (blocks)\":<30s}')
+            for rank, media in sorted(md.items()):
+                xpu_b = media.get('XPU', 0)
+                cpu_b = media.get('CPU', 0)
+                disk_b = media.get('DISK', 0)
+                parts = []
+                if xpu_b: parts.append(f'XPU={xpu_b}')
+                if cpu_b: parts.append(f'CPU={cpu_b}')
+                if disk_b: parts.append(f'DISK={disk_b}')
+                if parts:
+                    print(f'  {\"dp=\"+rank:<30s} {\", \".join(parts)}')
     print()
 " 2>/dev/null || echo "$json"
 }
 
-# --- Bench -----------------------------------------------------------
-
-# Common token IDs mimicking real LLM tokenizer output.
-# Mix of frequent (100-3000), mid (3000-25000), rare (25000-50000).
-# These are used as "seeds" — each bench query picks a random window of
-# block_size tokens from this pool.
-COMMON_TOKENS=(
-    101 2023 318 559 234 1039 640 1024 286 562 317 859 1053 1288 2000
-    345 678 901 1234 1567 1890 2123 2456 2789 3012 3345 3678 4001
-    4334 4667 4999 5321 5654 5987 6319 6652 6985 7318 7650 7983
-    8316 8649 8981 9314 9647 9980 10313 10646 10979 11312 11645 11978
-    12311 12644 12977 13310 13643 13976 14309 14642 14975 15308 15641
-    15974 16307 16640 16973 17306 17639 17972 18305 18638 18971 19304
-    19637 19970 20303 20636 20969 21302 21635 21968 22301 22634 22967
-    23300 23633 23966 24299 24632 24965 25298 25631 25964 26297 26630
-    26963 27296 27629 27962 28295 28628 28961 29294 29627 29960 30293
-    30626 30959 31292 31625 31958 32291 32624 32957 33290 33623 33956
-    34289 34622 34955 35288 35621 35954 36287 36620 36953 37286 37619
-    37952 38285 38618 38951 39284 39617 39950 40283 40616 40949 41282
-    41615 41948 42281 42614 42947 43280 43613 43946 44279 44612 44945
-    45278 45611 45944 46277 46610 46943 47276 47609 47942 48275 98306
-)
+# ── Bench ──────────────────────────────────────────────────────────────
 
 cmd_bench() {
     local model="$MODEL_NAME" tenant="$TENANT_ID" bs="$BLOCK_SIZE"
@@ -349,27 +319,24 @@ cmd_bench() {
             --tenant) tenant="$2"; shift 2 ;;
             --count)  count="$2"; shift 2 ;;
             --tokens) tokens_per="$2"; shift 2 ;;
+            --block-size) bs="$2"; shift 2 ;;
             --throughput) throughput="1"; shift ;;
             *) shift ;;
         esac
     done
 
     local mode="realistic"
-    local desc="common LLM token IDs"
     if [[ -n "$throughput" ]]; then
         mode="throughput"
-        desc="by hash (100% hits, measures latency/QPS)"
     fi
 
-    local token_pool
-    token_pool=$(IFS=','; echo "${COMMON_TOKENS[*]}")
+    echo -e "${BOLD}Benchmark: ${count} queries, bs=${bs}, mode=${mode}${NC}\n"
 
     # Pre-extract hashes for throughput mode
     local cached_hashes=""
     if [[ -n "$throughput" ]]; then
-        # Try multi-port publisher first, then single-port
-        for deploy_name in zmq-publisher-multi-0 zmq-publisher-0; do
-            cached_hashes=$(kubectl -n "$NAMESPACE" logs "deploy/${deploy_name}" --tail=100 2>/dev/null \
+        for deploy_name in zmq-publisher-0; do
+            cached_hashes=$(kubectl -n "$NAMESPACE" logs "deploy/${deploy_name}" --tail=200 2>/dev/null \
                 | grep 'STORE' \
                 | grep -oP 'seq_hashes=\[([0-9, ]+)\]' \
                 | tail -1 | grep -oP '[0-9]+' | head -"$tokens_per" | tr '\n' ' ')
@@ -381,34 +348,35 @@ cmd_bench() {
         fi
     fi
 
-    echo -e "${BOLD}Benchmark: ${count} queries, bs=${bs}, mode=${mode}${NC}"
-    echo "  ${desc}"
-    echo ""
-
     python3 -c "
-import json, random, time, subprocess, re
+import json, random, time, urllib.request, os
 
 count = $count
 block_size = $bs
 model = '$model'
 tenant = '$tenant'
 mode = '$mode'
-token_pool = [$token_pool]
 cached = '$cached_hashes'
 
-# Parse cached hashes
+# Load shared token pool; fall back to inline pool if import fails.
+try:
+    pool_dir = '$SCRIPT_DIR'
+    if pool_dir not in ('', None):
+        os.chdir(pool_dir)
+    from token_pool import TOKEN_POOL as token_pool
+except ImportError:
+    token_pool = [101,2023,318,559,234,1039,640,1024,286,562,317,859,1053,1288,2000,345,678,901,1234,1567,1890,2123,2456,2789]
+
 all_hashes = [int(h) for h in cached.split() if h.strip()] if cached else []
 num_hashes = len(all_hashes)
 
 hits = 0; misses = 0; total_blocks = 0; max_blocks = 0; best_worker = None
 latencies = []; total_tok_matched = 0
 block_hits_by_worker = {}
-
-import urllib.request
+pool_size = len(token_pool)
 
 for i in range(count):
     if mode == 'throughput' and num_hashes > 0:
-        # Use query_by_hash with random hash windows
         win = min($tokens_per // block_size if block_size else 8, num_hashes)
         win = max(1, win)
         start = random.randint(0, max(0, num_hashes - win))
@@ -419,21 +387,20 @@ for i in range(count):
             'block_hashes': query_hashes, 'tenant_id': tenant,
         }).encode()
     else:
-        # Realistic: POST /query with common tokens, simulating a
-        # real prompt that might overlap with any DP's cached prefix.
-        # Try dp_rank-based offsets (same logic as publisher) to get
-        # non-zero hit rates when blocks were stored from the same pool.
+        # Use deterministic token generation matching the mock publisher.
+        # publisher dp=N generates block_index 0..8191+. Eviction removes
+        # oldest-first, so pick block_index from the upper half.
         dp = random.randint(0, 7)
-        pool_size = len(token_pool)
-        offset = (dp * 1000) % pool_size
-        start = (offset + random.randint(0, max(0, pool_size - $tokens_per))) % pool_size
+        block_index = random.randint(4000, 8192)
+        offset = (dp * 1000 + block_index * block_size) % pool_size
         tokens = []
         for j in range($tokens_per):
-            tokens.append(token_pool[(start + j) % pool_size])
+            tokens.append(token_pool[(offset + j) % pool_size])
         endpoint = '/query'
         data = json.dumps({
             'model': model, 'block_size': block_size,
             'token_ids': tokens[:$tokens_per], 'tenant_id': tenant,
+            'hit_detail': True,
         }).encode()
 
     t0 = time.time()
@@ -457,6 +424,14 @@ for i in range(count):
                     bk = tok // block_size if block_size else 0
                     key = f'{inst_id}/dp={rank}'
                     block_hits_by_worker[key] = block_hits_by_worker.get(key, 0) + bk
+                md = imd.get('media_detail')
+                if md:
+                    for rank, media in md.items():
+                        xpu_b = media.get('XPU', 0)
+                        cpu_b = media.get('CPU', 0)
+                        disk_b = media.get('DISK', 0)
+                        if xpu_b or cpu_b or disk_b:
+                            print(f'        dp={rank} XPU={xpu_b} CPU={cpu_b} DISK={disk_b} blocks', flush=True)
         if matched > 0:
             hits += 1; total_blocks += matched
             total_tok_matched += matched * block_size
@@ -494,10 +469,10 @@ if latencies:
           f'p90={latencies[min(len(latencies)-1, len(latencies)*90//100)]:.1f}  '
           f'p99={latencies[min(len(latencies)-1, len(latencies)*99//100)]:.1f}  '
           f'max={latencies[-1]:.1f}')
-" 2>/dev/null
+"
 }
 
-# --- Smoke test ----------------------------------------------------
+# ── Smoke test ─────────────────────────────────────────────────────────
 
 cmd_smoke() {
     echo -e "${BOLD}=== API Smoke Test ===${NC}\n"
@@ -507,20 +482,16 @@ cmd_smoke() {
     check() {
         local desc="$1" ok="$2"
         if [[ "$ok" == "1" ]]; then
-            echo -e "  ${GREEN}[PASS]${NC} $desc"
-            pass=$((pass + 1))
+            echo -e "  ${GREEN}[PASS]${NC} $desc"; pass=$((pass + 1))
         else
-            echo -e "  ${RED}[FAIL]${NC} $desc"
-            fail=$((fail + 1))
+            echo -e "  ${RED}[FAIL]${NC} $desc"; fail=$((fail + 1))
         fi
     }
 
-    # 1. Health
     echo "  1. GET /health"
     local resp; resp=$(api_get "/health")
     check "/health" "$([[ "$resp" == "OK" ]] && echo 1 || echo 0)"
 
-    # 2. Register
     echo "  2. POST /register"
     local reg_resp reg_code
     reg_resp=$(api_post "/register" "{
@@ -531,15 +502,12 @@ cmd_smoke() {
     reg_code=$(echo "$reg_resp" | tail -1)
     check "/register (201)" "$([[ "$reg_code" == "201" ]] && echo 1 || echo 0)"
 
-    # 3. GET /workers
     echo "  3. GET /workers"
     local wk; wk=$(api_get "/workers")
     check "/workers" "$(echo "$wk" | python3 -c "import json,sys; d=json.load(sys.stdin); print(1 if d.get('workers') else 0)" 2>/dev/null || echo 0)"
 
-    # 4. POST /events (HTTP injection)
     echo "  4. POST /events"
-    local ev_resp ev_code
-    ev_resp=$(api_post "/events" "{
+    local ev_body; ev_body=$(api_post "/events" "{
         \"instance_id\": \"${iid}\",
         \"model_name\": \"smoke-model\", \"tenant_id\": \"default\",
         \"block_size\": 4,
@@ -550,43 +518,30 @@ cmd_smoke() {
                 \"blocks\": [{\"block_hash\": 100, \"tokens_hash\": 1}]
             }, \"dp_rank\": 0
         }], \"shutdown\": false
-    }")
-    ev_code=$(echo "$ev_resp" | tail -1)
-    local ev_body; ev_body=$(echo "$ev_resp" | sed '$d')
-    local ev_ok
-    ev_ok=$(echo "$ev_body" | python3 -c "import json,sys; d=json.load(sys.stdin); print(1 if d.get('events_applied',0)>0 else 0)" 2>/dev/null || echo 0)
-    check "/events ($ev_code, applied=$ev_ok)" "$ev_ok"
+    }" | sed '$d')
+    local ev_ok; ev_ok=$(echo "$ev_body" | python3 -c "import json,sys; d=json.load(sys.stdin); print(1 if d.get('events_applied',0)>0 else 0)" 2>/dev/null || echo 0)
+    check "/events (applied=$ev_ok)" "$ev_ok"
 
-    # 5. POST /query (by tokens)
     echo "  5. POST /query"
-    local q_resp q_code q_body
-    q_resp=$(api_post "/query" '{
+    local q_code; q_code=$(api_post "/query" '{
         "model": "smoke-model", "block_size": 4,
         "token_ids": [1,2,3,4,5,6,7,8], "tenant_id": "default"
-    }')
-    q_code=$(echo "$q_resp" | tail -1)
-    q_body=$(echo "$q_resp" | sed '$d')
+    }' | tail -1)
     check "/query (200)" "$([[ "$q_code" == "200" ]] && echo 1 || echo 0)"
 
-    # 6. POST /query_by_hash
     echo "  6. POST /query_by_hash"
-    local qh_resp qh_code
-    qh_resp=$(api_post "/query_by_hash" '{
+    local qh_code; qh_code=$(api_post "/query_by_hash" '{
         "model": "smoke-model", "block_size": 4,
         "block_hashes": [1], "tenant_id": "default"
-    }')
-    qh_code=$(echo "$qh_resp" | tail -1)
+    }' | tail -1)
     check "/query_by_hash (200)" "$([[ "$qh_code" == "200" ]] && echo 1 || echo 0)"
 
-    # 7. POST /unregister
     echo "  7. POST /unregister"
-    local unreg_resp unreg_code
-    unreg_resp=$(api_post "/unregister" "{
+    local unreg_code; unreg_code=$(api_post "/unregister" "{
         \"instance_id\": \"${iid}\", \"type\": \"vllm\",
         \"modelname\": \"smoke-model\", \"block_size\": 4,
         \"dp_rank\": 0, \"tenant_id\": \"default\"
-    }")
-    unreg_code=$(echo "$unreg_resp" | tail -1)
+    }" | tail -1)
     check "/unregister (200)" "$([[ "$unreg_code" == "200" ]] && echo 1 || echo 0)"
 
     echo ""
@@ -605,24 +560,25 @@ cmd_health() {
     fi
 }
 
-# --- Build ----------------------------------------------------------
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-KV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# ── Build ──────────────────────────────────────────────────────────────
 
 cmd_build() {
     echo -e "${BOLD}Building images...${NC}\n"
 
-    echo "  [1/2] kv-conductor"
+    echo "  [1/3] kv-conductor"
     (cd "$KV_DIR" && cargo build --release) || {
         echo -e "${RED}  cargo build failed${NC}"; return 1; }
     (cd "$KV_DIR" && docker build -q -t kv-conductor:latest .) || {
         echo -e "${RED}  docker build kv-conductor failed${NC}"; return 1; }
     echo -e "  ${GREEN}kv-conductor:latest${NC}"
 
-    echo "  [2/3] zmq-publisher-base (python:3.11-slim + deps)"
-    (cd "$KV_DIR" && docker build -q -t zmq-publisher-base:latest -f mock/Dockerfile.base .) || {
-        echo -e "${RED}  docker build zmq-publisher-base failed${NC}"; return 1; }
+    if docker image inspect zmq-publisher-base:latest &>/dev/null; then
+        echo "  [2/3] zmq-publisher-base (cached)"
+    else
+        echo "  [2/3] zmq-publisher-base (python:3.11-slim + deps, first-time build)"
+        (cd "$KV_DIR" && docker build -q -t zmq-publisher-base:latest -f mock/Dockerfile.base .) || {
+            echo -e "${RED}  docker build zmq-publisher-base failed${NC}"; return 1; }
+    fi
     echo -e "  ${GREEN}zmq-publisher-base:latest${NC}"
 
     echo "  [3/3] zmq-publisher"
@@ -633,26 +589,48 @@ cmd_build() {
     echo -e "\n${GREEN}All images built.${NC}"
 }
 
-# --- Deploy / Teardown -----------------------------------------------
-
-YAML_FILE="$SCRIPT_DIR/e2e_test.yaml"
+# ── Deploy / Teardown ──────────────────────────────────────────────────
 
 cmd_up() {
-    echo -e "${BOLD}Deploying kv-conductor + ${NUM_PUBLISHERS} publishers...${NC}\n"
+    local single_port="" vllm_fmt="1" swa_mix="1"
+    local bs="$BLOCK_SIZE" init_blocks="8192"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --single-port)     single_port="1"; shift ;;
+            --mooncake-format) vllm_fmt=""; shift ;;
+            --no-swa-mixed)    swa_mix=""; shift ;;
+            --block-size)      bs="$2"; shift 2 ;;
+            --initial-blocks)  init_blocks="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local mode="multi-medium"
+    [[ -n "$single_port" ]] && mode="single-port"
+
+    echo -e "${BOLD}Deploying: ${NUM_PUBLISHERS} publishers, mode=${mode}, block_size=${bs}${NC}"
+    echo -e "  two-phase offload: XPU emits cpu-blocks → cached → CPU port confirms → tree insert"
+    [[ -z "$vllm_fmt" ]] && echo -e "  format: Mooncake (legacy)"
+    [[ -z "$swa_mix" ]] && echo -e "  SWA:    disabled"
 
     kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null
 
+    # ConfigMap with scripts (token_pool.py + zmq_publisher.py)
     kubectl -n "$NAMESPACE" create configmap zmq-publisher-script \
         --from-file=zmq_publisher.py="$SCRIPT_DIR/zmq_publisher.py" \
+        --from-file=token_pool.py="$SCRIPT_DIR/token_pool.py" \
         --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - 2>/dev/null
 
     # Apply base YAML (configmap + kv-conductor)
     kubectl apply -f "$YAML_FILE"
 
-    # Create N publisher Deployments + Services
     for ((dp=0; dp<NUM_PUBLISHERS; dp++)); do
-        local port=$((5557 + dp)) iid="mock-publisher-${dp}" svc="zmq-publisher-${dp}"
-        kubectl apply -f - <<PUB
+        local xpu_port=$((15557 + dp * 2)) cpu_port=$((15557 + dp * 2 + 1))
+        local iid="mock-publisher-${dp}" svc="zmq-publisher-${dp}"
+        local port=$((5557 + dp))
+
+        if [[ -n "$single_port" ]]; then
+            kubectl apply -f - <<PUB
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -675,38 +653,24 @@ spec:
       - name: publisher
         image: zmq-publisher:latest
         imagePullPolicy: IfNotPresent
-        command: ["python3", "/scripts/zmq_publisher.py"]
-        args:
-        - "--model=\$(MODEL_NAME)"
-        - "--dp-rank=\$(DP_RANK)"
-        - "--initial-blocks=\$(NUM_BLOCKS)"
-        - "--port=\$(PUB_PORT)"
-        - "--block-size=\$(BLOCK_SIZE)"
-        - "--interval=\$(INTERVAL)"
-        - "--tenant-id=\$(TENANT_ID)"
-        - "--instance-id=\$(INSTANCE_ID)"
+        command:
+        - sh
+        - -c
+        - |
+          exec python3 /scripts/zmq_publisher.py \\
+            --single-port --port ${port} \\
+            --model "\$MODEL_NAME" --dp-rank ${dp} \\
+            --block-size ${bs} --initial-blocks ${init_blocks} \\
+            --interval "\$INTERVAL" --tenant-id "\$TENANT_ID" \\
+            --instance-id "${iid}" \\
+            \${MOONCAKE:+--mooncake-format} \\
+            \${NO_SWA:+--no-swa-mixed}
         env:
-        - name: INSTANCE_ID
-          value: "${iid}"
         - name: MODEL_NAME
           valueFrom:
             configMapKeyRef:
               name: mock-zmq-config
               key: model
-        - name: DP_RANK
-          value: "${dp}"
-        - name: NUM_BLOCKS
-          valueFrom:
-            configMapKeyRef:
-              name: mock-zmq-config
-              key: initial_blocks
-        - name: PUB_PORT
-          value: "${port}"
-        - name: BLOCK_SIZE
-          valueFrom:
-            configMapKeyRef:
-              name: mock-zmq-config
-              key: block_size
         - name: INTERVAL
           valueFrom:
             configMapKeyRef:
@@ -717,6 +681,10 @@ spec:
             configMapKeyRef:
               name: mock-zmq-config
               key: tenant_id
+        - name: MOONCAKE
+          value: "$([ -z "$vllm_fmt" ] && echo 1 || echo '')"
+        - name: NO_SWA
+          value: "$([ -z "$swa_mix" ] && echo 1 || echo '')"
         - name: POD_IP
           valueFrom:
             fieldRef:
@@ -752,62 +720,8 @@ spec:
     app: ${svc}
   type: ClusterIP
 PUB
-    done
-
-    echo "Waiting for pods..."
-    kubectl -n "$NAMESPACE" wait --for=condition=ready pod --all --timeout=120s
-    echo ""
-    kubectl -n "$NAMESPACE" get pods,svc
-}
-
-cmd_down() {
-    echo -e "${BOLD}Tearing down...${NC}"
-    kubectl delete -f "$YAML_FILE" 2>/dev/null || true
-    kubectl delete -f "$YAML_MULTI" 2>/dev/null || true
-    for ((dp=0; dp<${NUM_PUBLISHERS:-8}; dp++)); do
-        kubectl -n "$NAMESPACE" delete deploy,svc "zmq-publisher-${dp}" 2>/dev/null || true
-        kubectl -n "$NAMESPACE" delete deploy,svc "zmq-publisher-multi-${dp}" 2>/dev/null || true
-    done
-    echo -e "${GREEN}Done.${NC}"
-}
-
-# --- Logs -----------------------------------------------------------
-
-cmd_logs() {
-    exec "$SCRIPT_DIR/collect_logs.sh" "$@"
-}
-
-# --- Quick E2E ------------------------------------------------------
-
-cmd_quick() {
-    echo -e "${BOLD}=== Quick E2E Test ===${NC}\n"
-    cmd_health || return 1; echo ""
-    cmd_register "all"
-    echo "Waiting for first events to arrive..."
-    sleep 3
-    cmd_status
-}
-
-# ── Multi-Port ────────────────────────────────────────────────────────
-
-YAML_MULTI="$SCRIPT_DIR/e2e_multi_port.yaml"
-
-cmd_up_multi() {
-    local np="${NUM_PUBLISHERS:-8}"
-    echo -e "${BOLD}Deploying multi-port: kv-conductor + ${np} publisher(s)...${NC}\n"
-
-    kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null
-
-    # Apply base YAML (kv-conductor + service only)
-    kubectl apply -f "$YAML_MULTI"
-
-    # Create N multi-port publisher Deployments
-    for ((dp=0; dp<np; dp++)); do
-        local xpu_port=$((15557 + dp * 2))
-        local cpu_port=$((15557 + dp * 2 + 1))
-        local iid="mock-publisher-multi-${dp}" svc="zmq-publisher-multi-${dp}"
-
-        kubectl apply -f - <<PUB
+        else
+            kubectl apply -f - <<PUB
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -834,7 +748,6 @@ spec:
         - sh
         - -c
         - |
-          echo "Waiting for kv-conductor:13333..."
           until wget -q -O- http://kv-conductor:13333/health 2>/dev/null; do
             sleep 2
           done
@@ -843,35 +756,27 @@ spec:
       - name: publisher
         image: zmq-publisher:latest
         imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          exec python3 /scripts/zmq_publisher.py \\
+            --xpu-port ${xpu_port} --cpu-disk-port ${cpu_port} \\
+            --model "${MODEL_NAME}" --dp-rank ${dp} \\
+            --block-size ${bs} --initial-blocks ${init_blocks} \\
+            --interval 2.0 --instance-id "${iid}" \\
+            --store-backend YuanRong --conductor-url kv-conductor:13333 \\
+            \${MOONCAKE:+--mooncake-format} \\
+            \${NO_SWA:+--no-swa-mixed}
         env:
+        - name: MOONCAKE
+          value: "$([ -z "$vllm_fmt" ] && echo 1 || echo '')"
+        - name: NO_SWA
+          value: "$([ -z "$swa_mix" ] && echo 1 || echo '')"
         - name: POD_IP
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
-        command:
-        - python3
-        - /usr/local/bin/zmq_publisher.py
-        - --multi-port
-        - --xpu-port
-        - "${xpu_port}"
-        - --cpu-disk-port
-        - "${cpu_port}"
-        - --model
-        - "${MODEL_NAME}"
-        - --dp-rank
-        - "${dp}"
-        - --block-size
-        - "${BLOCK_SIZE}"
-        - --initial-blocks
-        - "8"
-        - --interval
-        - "2.0"
-        - --instance-id
-        - "${iid}"
-        - --store-backend
-        - YuanRong
-        - --conductor-url
-        - kv-conductor:13333
         ports:
         - containerPort: ${xpu_port}
           protocol: TCP
@@ -882,7 +787,35 @@ spec:
         resources:
           requests: {memory: "64Mi", cpu: "50m"}
           limits:   {memory: "128Mi", cpu: "200m"}
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+      volumes:
+      - name: script
+        configMap:
+          name: zmq-publisher-script
+          defaultMode: 0555
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${svc}
+  namespace: ${NAMESPACE}
+spec:
+  ports:
+  - port: ${xpu_port}
+    protocol: TCP
+    targetPort: ${xpu_port}
+    name: xpu
+  - port: ${cpu_port}
+    protocol: TCP
+    targetPort: ${cpu_port}
+    name: cpu-disk
+  selector:
+    app: ${svc}
+  type: ClusterIP
 PUB
+        fi
     done
 
     echo "Waiting for pods (up to 120s)..."
@@ -890,60 +823,45 @@ PUB
     echo ""
     kubectl -n "$NAMESPACE" get pods,svc
     echo ""
-    echo -e "${GREEN}Multi-port deployment ready (${np} publishers).${NC}"
-    echo "  Each publisher: XPU + CPU/DISK ports, auto-registers with medium_endpoints"
+    echo -e "${GREEN}Deployment ready (${NUM_PUBLISHERS} publishers, ${mode}).${NC}"
 }
 
-cmd_register_multi() {
-    local np="${NUM_PUBLISHERS:-8}"
-    echo -e "${BOLD}Registering ${np} multi-port publisher(s) → ${CONDUCTOR_ADDR}${NC}\n"
-
-    for ((dp=0; dp<np; dp++)); do
-        local svc="zmq-publisher-multi-${dp}"
-        local xpu_port=$((15557 + dp * 2))
-        local cpu_port=$((15557 + dp * 2 + 1))
-        local iid="mock-publisher-multi-${dp}"
-        local ip; ip=$(pod_ip "$svc")
-        [[ -z "$ip" ]] && { echo -e "  ${RED}dp=${dp}: pod not found${NC}"; continue; }
-
-        local medium_endpoints
-        medium_endpoints=$(python3 -c "
-import json
-print(json.dumps({
-    'xpu':  'tcp://${ip}:${xpu_port}',
-    'cpu':  'tcp://${ip}:${cpu_port}',
-    'disk': 'tcp://${ip}:${cpu_port}',
-}))
-")
-
-        printf "  dp=%-2d tcp://%s:%d (XPU) + tcp://%s:%d (CPU/DISK) ... " "$dp" "$ip" "$xpu_port" "$ip" "$cpu_port"
-
-        local resp; resp=$(api_post "/register" "{
-            \"instance_id\": \"${iid}\",
-            \"medium_endpoints\": ${medium_endpoints},
-            \"type\": \"Mooncake\",
-            \"store_backend\": \"YuanRong\",
-            \"modelname\": \"${MODEL_NAME}\",
-            \"block_size\": ${BLOCK_SIZE},
-            \"dp_rank\": ${dp},
-            \"tenant_id\": \"${TENANT_ID}\"
-        }")
-        local code; code=$(echo "$resp" | tail -1)
-        case "$code" in
-            201|200) echo -e "${GREEN}OK${NC}" ;;
-            409)     echo -e "${YELLOW}ALREADY REGISTERED${NC}" ;;
-            *)       echo -e "${RED}FAIL${NC} ($code)" ;;
-        esac
+cmd_down() {
+    echo -e "${BOLD}Tearing down...${NC}"
+    kubectl delete -f "$YAML_FILE" 2>/dev/null || true
+    for ((dp=0; dp<${NUM_PUBLISHERS:-8}; dp++)); do
+        kubectl -n "$NAMESPACE" delete deploy,svc "zmq-publisher-${dp}" 2>/dev/null || true
     done
-    echo ""
+    echo -e "${GREEN}Done.${NC}"
 }
 
-cmd_quick_multi() {
-    cmd_health
+# ── Logs ───────────────────────────────────────────────────────────────
+
+cmd_logs() {
+    exec "$SCRIPT_DIR/collect_logs.sh" "$@"
+}
+
+cmd_logs_profile() {
+    local out="${1:-/tmp/conductor_profile.log}"
+    echo "Writing profiling logs to ${out} ..."
+    kubectl -n "$NAMESPACE" logs deploy/mindie-motor-kv-conductor --since=10m 2>&1 \
+        | grep -E "hash_computed|find_matches|query profile|latency" \
+        | tee "$out"
     echo ""
-    cmd_register_multi
+    echo "=== Summary ==="
+    echo "hash_computed: $(grep -c hash_computed "$out") lines"
+    echo "find_matches:  $(grep -c find_matches "$out") lines"
+    echo "Saved to: $out"
+}
+
+# ── Quick E2E ──────────────────────────────────────────────────────────
+
+cmd_quick() {
+    echo -e "${BOLD}=== Quick E2E Test ===${NC}\n"
+    cmd_health || return 1; echo ""
+    cmd_register
+    echo "Waiting for first events to arrive..."
     sleep 3
-    echo ""
     cmd_status
 }
 
@@ -954,20 +872,17 @@ cmd_quick_multi() {
 CMD="$1"; shift
 case "$CMD" in
     build)        cmd_build ;;
-    up|deploy)    cmd_up ;;
-    up-multi)     cmd_up_multi ;;
+    up|deploy)    cmd_up "$@" ;;
     down|delete)  cmd_down ;;
     logs)         cmd_logs "$@" ;;
+    logs-profile) cmd_logs_profile "$@" ;;
     register)     cmd_register ;;
-    register-multi) cmd_register_multi ;;
     unregister)   cmd_unregister ;;
     status|-s)    cmd_status ;;
-    query)        cmd_query "$@" ;;
     query-tokens) cmd_query_tokens "$@" ;;
     bench)        cmd_bench "$@" ;;
     smoke)        cmd_smoke ;;
     quick|-q)     cmd_quick ;;
-    quick-multi)  cmd_quick_multi ;;
     health)       cmd_health ;;
     help|--help)  usage ;;
     *)            echo -e "${RED}Unknown: $CMD${NC}\n"; usage; exit 1 ;;

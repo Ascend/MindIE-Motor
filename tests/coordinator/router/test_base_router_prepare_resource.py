@@ -38,6 +38,15 @@ def _make_resource(role: PDRole) -> ScheduledResource:
     return ScheduledResource(instance=instance, endpoint=endpoint)
 
 
+def _make_router(config: CoordinatorConfig | None = None) -> _TestRouter:
+    return _TestRouter(
+        _make_req_info(),
+        config or CoordinatorConfig(),
+        scheduler=MagicMock(),
+        request_manager=MagicMock(),
+    )
+
+
 def _make_req_info(req_id: str = "req-1") -> RequestInfo:
     return RequestInfo(
         req_id=req_id,
@@ -45,6 +54,21 @@ def _make_req_info(req_id: str = "req-1") -> RequestInfo:
         req_len=2,
         api="/v1/chat/completions",
     )
+
+
+def test_infer_base_url_for_resource_brackets_ipv6_literal():
+    router = _make_router()
+    resource = _make_resource(PDRole.ROLE_D)
+    resource.endpoint.ip = "2001:db8::1"
+
+    assert router._infer_base_url_for_resource(resource) == "http://[2001:db8::1]:8080"
+
+
+def test_infer_base_url_for_resource_keeps_ipv4_format():
+    router = _make_router()
+    resource = _make_resource(PDRole.ROLE_D)
+
+    assert router._infer_base_url_for_resource(resource) == "http://127.0.0.1:8080"
 
 
 @pytest.mark.asyncio
@@ -56,9 +80,7 @@ async def test_prepare_resource_rolls_back_scheduler_allocation_when_local_recor
     allocated_workload = Workload(active_tokens=12, active_kv_cache=3)
 
     scheduler = MagicMock()
-    scheduler.select_and_allocate = AsyncMock(
-        return_value=(resource.instance, resource.endpoint, allocated_workload)
-    )
+    scheduler.select_and_allocate = AsyncMock(return_value=(resource.instance, resource.endpoint, allocated_workload))
     scheduler.update_workload = AsyncMock(return_value=True)
     request_manager = MagicMock()
     request_manager.add_req_workload = AsyncMock(return_value=False)

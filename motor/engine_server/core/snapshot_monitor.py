@@ -19,6 +19,7 @@ class SnapshotMonitor(ThreadSafeSingleton):
             return
         self._flags_lock = threading.Lock()
         self._suspend_done = False
+        self._unlock_done = False
         self._resume_done = False
         self._initialized = True
 
@@ -28,6 +29,11 @@ class SnapshotMonitor(ThreadSafeSingleton):
             return self._suspend_done
 
     @property
+    def is_unlock_done(self) -> bool:
+        with self._flags_lock:
+            return self._unlock_done
+
+    @property
     def is_resume_done(self) -> bool:
         with self._flags_lock:
             return self._resume_done
@@ -35,6 +41,10 @@ class SnapshotMonitor(ThreadSafeSingleton):
     def mark_suspend_done(self) -> None:
         with self._flags_lock:
             self._suspend_done = True
+
+    def mark_unlock_done(self) -> None:
+        with self._flags_lock:
+            self._unlock_done = True
 
     def mark_resume_done(self) -> None:
         with self._flags_lock:

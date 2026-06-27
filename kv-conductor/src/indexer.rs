@@ -10,8 +10,22 @@
 
 //! Per-(model, tenant) radix tree indexer.
 //!
-//! Each `IndexerEntry` manages a `ConcurrentRadixTree` and per-worker reverse
-//! lookup tables for a single (model_name, tenant_id) pair.
+//! Each `IndexerEntry` manages a `ConcurrentRadixTree`, per-worker reverse
+//! lookup tables, and a non-HBM event cache for a single (model_name, tenant_id)
+//! pair.
+//!
+//! ## Two-phase non-HBM event matching
+//!
+//! When the engine offloads blocks to CPU/DISK, the conductor uses a two-phase
+//! approach:
+//!
+//! 1. Engine offloading event → cache the ``block_hash → tokens_hash`` mapping
+//!    (do NOT insert into radix tree — the pool backend may place the block on
+//!    a different node).
+//! 2. Pool backend confirm event → look up the cache, insert ``tokens_hash``
+//!    into the radix tree under the pool backend's worker key.
+//! 3. Pool backend eviction event → look up the cache, remove from tree,
+//!    evict cache entry.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,6 +40,8 @@ use crate::hashing::compute_block_hash_for_seq;
 use crate::protocols::*;
 
 /// Key identifying a unique indexer instance: (model_name, tenant_id).
+/// Hashes at different block_sizes coexist in the same tree — they are
+/// distinct u64 values with no collision risk.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndexerKey {
     pub model_name: String,
@@ -36,26 +52,75 @@ pub struct IndexerKey {
 pub struct IndexerEntry {
     /// The shared radix tree.
     pub tree: Arc<ConcurrentRadixTree>,
-    /// KV block size (tokens per block).
-    pub block_size: u32,
     /// Per-worker reverse lookup tables: WorkerKey -> WorkerLookup.
     /// Protected by a single RwLock for simplicity in the standalone case.
     pub lookups: Arc<RwLock<FxHashMap<WorkerKey, WorkerLookup>>>,
+    /// Cache for non-HBM engine events: maps the engine's `block_hash` (SHA256
+    /// u64) → the kv-conductor's `tokens_hash` (XXH3 content hash).
+    ///
+    /// When a vLLM engine publishes offloading events (medium=``"cpu"`` or
+    /// ``"disk"``), we cache the computed XXH3 hash here instead of inserting
+    /// into the radix tree.  Later, when the pool backend (Mooncake Master)
+    /// broadcasts its own store/remove events carrying the same `seq_hash`,
+    /// we look up the cache to find the correct `tokens_hash` and insert it
+    /// into the tree under the appropriate worker key.
+    pub non_hbm_cache: Arc<RwLock<FxHashMap<u64, u64>>>,
+}
+
+impl Default for IndexerEntry {
+    fn default() -> Self {
+        Self {
+            tree: Arc::new(ConcurrentRadixTree::new()),
+            lookups: Arc::new(RwLock::new(FxHashMap::default())),
+            non_hbm_cache: Arc::new(RwLock::new(FxHashMap::default())),
+        }
+    }
 }
 
 impl IndexerEntry {
-    pub fn new(block_size: u32) -> Self {
-        Self {
-            tree: Arc::new(ConcurrentRadixTree::new()),
-            block_size,
-            lookups: Arc::new(RwLock::new(FxHashMap::default())),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Find matches for a token sequence against all registered workers.
-    pub fn find_matches(&self, token_ids: &[i64]) -> OverlapScores {
-        let block_hashes = compute_block_hash_for_seq(token_ids, self.block_size);
-        self.tree.find_matches(&block_hashes)
+    /// Find matches for a token sequence against all registered workers,
+    /// using the given `block_size` for hash computation.
+    pub fn find_matches(&self, token_ids: &[i64], block_size: u32) -> OverlapScores {
+        let t_hash = std::time::Instant::now();
+        let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
+        let hash_us = t_hash.elapsed().as_micros();
+        let scores = self.tree.find_matches(&block_hashes);
+        tracing::debug!(
+            num_tokens = token_ids.len(),
+            block_size,
+            num_hashes = block_hashes.len(),
+            hash_us,
+            "hash_computed"
+        );
+        scores
+    }
+
+    /// Cache a block_hash → tokens_hash mapping for a non-HBM engine event.
+    ///
+    /// Called when a vLLM engine publishes offloading events (medium != HBM).
+    /// The mapping is later used to insert the correct XXH3 hash into the
+    /// radix tree when the pool backend confirms the block has been stored.
+    #[inline]
+    pub fn cache_non_hbm_block(&self, block_hash: u64, tokens_hash: u64) {
+        self.non_hbm_cache.write().insert(block_hash, tokens_hash);
+    }
+
+    /// Look up a cached tokens_hash by the engine's block_hash.
+    /// Returns `None` if this hash was never cached (e.g. the pool backend
+    /// stored a block the engine never offloaded, or the cache was evicted).
+    #[inline]
+    pub fn lookup_cached_tokens_hash(&self, block_hash: u64) -> Option<u64> {
+        self.non_hbm_cache.read().get(&block_hash).copied()
+    }
+
+    /// Remove a cached entry (called when a pool backend remove event arrives).
+    #[inline]
+    pub fn evict_cached_block(&self, block_hash: u64) {
+        self.non_hbm_cache.write().remove(&block_hash);
     }
 
     /// Apply a KV cache event for a specific worker.
@@ -82,7 +147,7 @@ impl IndexerEntry {
         };
 
         let lookup_size_after = lookup.len();
-        tracing::debug!(
+        tracing::trace!(
             instance_id = %worker.instance_id,
             dp_rank = worker.dp_rank,
             lookup_before = lookup_size_before,
@@ -149,37 +214,16 @@ impl Indexer {
     }
 
     /// Get or create an indexer entry for the given model and tenant.
-    pub fn get_or_create(
-        &self,
-        model_name: &str,
-        tenant_id: &str,
-        block_size: u32,
-    ) -> Arc<IndexerEntry> {
+    pub fn get_or_create(&self, model_name: &str, tenant_id: &str) -> Arc<IndexerEntry> {
         let key = IndexerKey {
             model_name: model_name.to_string(),
             tenant_id: tenant_id.to_string(),
         };
-
-        let entry = self
-            .entries
+        self.entries
             .entry(key)
-            .or_insert_with(|| Arc::new(IndexerEntry::new(block_size)))
+            .or_insert_with(|| Arc::new(IndexerEntry::new()))
             .value()
-            .clone();
-
-        // Warn if an existing entry has a different block_size — this
-        // indicates a configuration mismatch between workers for the same
-        // model/tenant.
-        if entry.block_size != block_size {
-            tracing::warn!(
-                model_name,
-                tenant_id,
-                existing_block_size = entry.block_size,
-                requested_block_size = block_size,
-                "block_size mismatch for existing indexer; using existing value"
-            );
-        }
-        entry
+            .clone()
     }
 
     /// Get an existing indexer entry.
@@ -192,23 +236,15 @@ impl Indexer {
     }
 
     /// Remove an indexer entry if it has no more workers.
-    ///
-    /// Holds the write lock on the entry's lookups table while checking
-    /// emptiness so that a concurrent `apply_event` cannot add a worker
-    /// between the check and the removal.
     pub fn remove_if_empty(&self, model_name: &str, tenant_id: &str) {
         let key = IndexerKey {
             model_name: model_name.to_string(),
             tenant_id: tenant_id.to_string(),
         };
-
-        let should_remove = if let Some(entry) = self.entries.get(&key) {
-            let lookups = entry.lookups.write();
-            lookups.is_empty()
-        } else {
-            false
-        };
-
+        let should_remove = self
+            .entries
+            .get(&key)
+            .is_some_and(|e| e.value().lookups.read().is_empty());
         if should_remove {
             self.entries.remove(&key);
         }
@@ -216,14 +252,18 @@ impl Indexer {
 
     /// Query overlap scores for a token sequence against a specific model/tenant.
     ///
-    /// Returns a `QueryResponse` with per-instance and per-DP-rank match depths
-    /// in tokens (scaled by block_size).
+    /// `block_size` determines the token-to-hash granularity — it must match
+    /// the size used by the engine when publishing events.
     pub fn query(
         &self,
         model_name: &str,
         tenant_id: &str,
         token_ids: &[i64],
+        block_size: u32,
+        hit_detail: bool,
     ) -> Result<QueryResponse, KvConductorError> {
+        let t0 = std::time::Instant::now();
+
         let entry = self
             .get(model_name, tenant_id)
             .ok_or_else(|| KvConductorError::NoIndexer {
@@ -231,15 +271,23 @@ impl Indexer {
                 tenant_id: tenant_id.to_string(),
             })?;
 
-        let overlap = entry.find_matches(token_ids);
+        let overlap = entry.find_matches(token_ids, block_size);
+        let t_tree = t0.elapsed();
 
-        self.build_response(overlap, tenant_id, entry.block_size)
+        let resp = self.build_response(overlap, tenant_id, block_size, hit_detail);
+        let total = t0.elapsed();
+
+        tracing::debug!(
+            num_tokens = token_ids.len(),
+            block_size,
+            hash_us = t_tree.as_micros(),
+            total_us = total.as_micros(),
+            "query profile"
+        );
+        resp
     }
 
-    /// Query overlap scores using pre-computed `LocalBlockHash` values,
-    /// skipping the XXH3 hashing step. This is useful when the caller has
-    /// already computed block hashes (e.g. from a previous query or from
-    /// a shared hash cache).
+    /// Query overlap scores using pre-computed `LocalBlockHash` values.
     pub fn query_by_hash(
         &self,
         model_name: &str,
@@ -254,15 +302,17 @@ impl Indexer {
             })?;
 
         let overlap = entry.tree.find_matches(block_hashes);
-
         if overlap.is_empty() {
             return Err(KvConductorError::NoWorkers {
                 model_name: model_name.to_string(),
                 tenant_id: tenant_id.to_string(),
             });
         }
-
-        self.build_response(overlap, tenant_id, entry.block_size)
+        // query_by_hash uses pre-computed hashes — block_size is irrelevant
+        // for the hashes themselves, but we still need it for token scaling.
+        // Default to 1 token per hash (no scaling) since we don't know the
+        // original block_size from the hash alone.
+        self.build_response(overlap, tenant_id, 1, false)
     }
 
     /// Build a `QueryResponse` from overlap scores.
@@ -271,6 +321,7 @@ impl Indexer {
         overlap: OverlapScores,
         tenant_id: &str,
         block_size: u32,
+        hit_detail: bool,
     ) -> Result<QueryResponse, KvConductorError> {
         if overlap.is_empty() {
             return Err(KvConductorError::NoWorkers {
@@ -298,7 +349,30 @@ impl Indexer {
                 }
             }
 
-            imd.dp.insert(dp_rank_str, matched_tokens);
+            imd.dp.insert(dp_rank_str.clone(), matched_tokens);
+
+            // Populate per-DP per-medium detail when requested.
+            if hit_detail {
+                let detail = imd
+                    .media_detail
+                    .get_or_insert_with(HashMap::new)
+                    .entry(dp_rank_str.clone())
+                    .or_default();
+                match worker.medium {
+                    StorageMedium::Xpu => detail.xpu = detail.xpu.max(*matched_blocks),
+                    StorageMedium::Cpu => detail.cpu = detail.cpu.max(*matched_blocks),
+                    StorageMedium::Disk => detail.disk = detail.disk.max(*matched_blocks),
+                    StorageMedium::Unknown => detail.xpu = detail.xpu.max(*matched_blocks),
+                }
+
+                tracing::trace!(
+                    instance_id = %worker.instance_id,
+                    dp_rank = worker.dp_rank,
+                    medium = %worker.medium.as_str(),
+                    matched_blocks,
+                    "query hit detail"
+                );
+            }
         }
 
         let mut response = QueryResponse::default();
@@ -319,7 +393,6 @@ impl Indexer {
                 IndexerSummary {
                     model_name: key.model_name.clone(),
                     tenant_id: key.tenant_id.clone(),
-                    block_size: value.block_size,
                     worker_count: value.worker_keys().len(),
                     total_blocks: value.total_blocks(),
                 }
@@ -338,7 +411,6 @@ impl Default for Indexer {
 pub struct IndexerSummary {
     pub model_name: String,
     pub tenant_id: String,
-    pub block_size: u32,
     pub worker_count: usize,
     pub total_blocks: usize,
 }
@@ -352,8 +424,7 @@ mod tests {
     #[test]
     fn test_indexer_get_or_create_and_query() {
         let indexer = Indexer::new();
-        let entry = indexer.get_or_create("model-a", "tenant-1", 4);
-        assert_eq!(entry.block_size, 4);
+        let entry = indexer.get_or_create("model-a", "tenant-1");
 
         // Compute the actual hash for the test token sequence
         let tokens: Vec<i64> = vec![10, 20, 30, 40];
@@ -380,7 +451,9 @@ mod tests {
         entry.apply_event(&wk_xpu, &store).unwrap();
 
         // Query with the same tokens
-        let resp = indexer.query("model-a", "tenant-1", &tokens).unwrap();
+        let resp = indexer
+            .query("model-a", "tenant-1", &tokens, 4, false)
+            .unwrap();
         let tenant = &resp.tenants["tenant-1"];
         let imd = &tenant["inst-1"];
         assert!(imd.xpu > 0, "should have XPU match");
@@ -392,7 +465,7 @@ mod tests {
     #[test]
     fn test_per_tier_aggregation() {
         let indexer = Indexer::new();
-        let entry = indexer.get_or_create("model-b", "t1", 4);
+        let entry = indexer.get_or_create("model-b", "t1");
 
         // Two different token sequences → different block hashes
         let tokens_a: Vec<i64> = vec![10, 20, 30, 40];
@@ -443,7 +516,7 @@ mod tests {
             .unwrap();
 
         // Query with tokens_a — should match inst-1 (XPU) only
-        let resp = indexer.query("model-b", "t1", &tokens_a).unwrap();
+        let resp = indexer.query("model-b", "t1", &tokens_a, 4, false).unwrap();
         let tenant = &resp.tenants["t1"];
 
         let imd1 = &tenant["inst-1"];
@@ -451,7 +524,7 @@ mod tests {
         assert_eq!(imd1.cpu, 0, "inst-1 should have no CPU match");
 
         // Query with tokens_b — should match inst-2 (CPU) only
-        let resp = indexer.query("model-b", "t1", &tokens_b).unwrap();
+        let resp = indexer.query("model-b", "t1", &tokens_b, 4, false).unwrap();
         let tenant = &resp.tenants["t1"];
 
         let imd2 = &tenant["inst-2"];
@@ -462,7 +535,7 @@ mod tests {
     #[test]
     fn test_no_indexer_error() {
         let indexer = Indexer::new();
-        let err = indexer.query("no-such-model", "default", &[1, 2, 3, 4]);
+        let err = indexer.query("no-such-model", "default", &[1, 2, 3, 4], 4, false);
         assert!(err.is_err());
         assert!(matches!(
             err.unwrap_err(),

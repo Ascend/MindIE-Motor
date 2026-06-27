@@ -123,12 +123,12 @@ Encapsulates backend-specific registration and event-processing behaviour via
 | Backend | Pool Model | MatchMode | HBM IP Indexing |
 |---------|-----------|-----------|----------------|
 | Mooncake | Centralized master, one ZMQ PUB | `IpOnly` — `backend_id`=IP → all DPs on node | Yes |
-| Memcache | Centralized master, one ZMQ PUB | `IpAndDpRank` — `backend_id`=IP + `dp_rank` → exact DP | Yes |
+| Memcache | Centralized master, one ZMQ PUB | `IpOnly` — `backend_id`=IP → all DPs on node (same as Mooncake) | Yes |
 | YuanRong | Per-node multi-port ZMQ PUB | `None` — port = DP | No |
 
 **Pool registration** (Mooncake/Memcache): uses legacy `endpoint` field, spawns a
-subscriber with `MatchMode` auto-attach. Events from the central master carry
-`backend_id` (node IP) and are routed to matching HBM-registered DPs.
+subscriber with `MatchMode::IpOnly` auto-attach. Events from the central master carry
+`backend_id` (node IP); every HBM-registered DP on that node records the event hash.
 
 **HBM registration** (Mooncake/Memcache): uses `medium_endpoints` with `"xpu"` only.
 Extracts IP from the XPU endpoint, indexes it in `hbm_ip_index`.
@@ -223,8 +223,38 @@ tree:  root → children[0xA] → children[0xB] → match!
 
 ```
 
-Uses `unsafe` zero-copy reinterpretation of `&[u32]` as `&[u8]` on little-endian
-platforms, avoiding allocation per block.
+`block_size` is passed by the caller (from `QueryRequest.block_size`), not stored
+in the indexer. Hashes computed at different `block_size` values coexist in the
+same tree — they are distinct u64 values with no collision risk. The Coordinator
+must use the same `block_size` that the engine uses for KV event publishing.
+For DeepSeek V4, the main attention group (Full MLA) uses a unified `block_size`
+(e.g. 256); events from SWA and other non-main attention groups are filtered
+out by the conductor, matching Dynamo kv-router's strategy.
+
+#### 5.1 Non-HBM Event Caching (Two-Phase Matching)
+
+The engine may offload KV blocks to CPU/DISK via the pool backend (Mooncake
+Master). The engine publishes a store event *before* the pool backend places
+the block; the pool backend later confirms placement with its own event.
+Because the pool backend may store the block on a different node than the
+engine that offloaded it, the conductor uses a **two-phase cache strategy**:
+
+```text
+Phase 1 — Engine offloading event (medium=cpu/disk):
+  block_hash (SHA256) → cache[tokens_hash] = XXH3(token_ids)
+  NOT inserted into radix tree.
+
+Phase 2 — Pool backend confirms placement (store event from Mooncake Master):
+  Look up block_hash in cache → get tokens_hash (XXH3)
+  Insert into radix tree under the pool backend's worker node.
+
+Phase 3 — Pool backend eviction (remove event):
+  Look up block_hash in cache → find tokens_hash → remove from tree
+  → evict cache entry.
+```
+
+This ensures the radix tree always maps to the *actual* node where the
+KV block resides, not the node that originally offloaded it.
 
 #### 6. ZMQ Subscriber (`zmq_subscriber.rs`, feature-gated)
 
@@ -350,6 +380,51 @@ Engine (vLLM/SGLang)             KV Conductor
 
 ```
 
+### ZMQ Event Wire Format
+
+Events arrive via ZMQ PUB as 3-part messages: `[topic] [seq: u64 BE] [msgpack payload]`.
+
+The payload is parsed in three formats, tried in order:
+
+**Format 1 — Map batch (preferred)**:
+
+```msgpack
+{"timestamp_ms": 1782281033484, "dp_rank": 0, "events": [
+  {
+    "event_id": 66,
+    "event_type": "stored",
+    "medium": "cpu",
+    "backend_id": "10.0.0.1",
+    "dp_rank": 0,
+    "seq_hashes": [7575625822238262545],
+    "tenant_id": "default"
+  }
+]}
+```
+
+**Format 2 — Array batch (legacy)**:
+
+```msgpack
+[1782281033484,
+  [
+    {"event_id": 66, "event_type": "stored", "medium": "cpu",
+     "seq_hashes": [7575625822238262545]}
+  ],
+  0
+]
+```
+
+**Format 3 — Bare event** (no batch wrapper, for simple single-event publishers):
+
+```msgpack
+{"event_id": 66, "event_type": "stored", "medium": "cpu",
+ "seq_hashes": [7575625822238262545]}
+```
+
+Events **missing** `model_name` / `block_size` / `dp_rank` / `medium` use
+the subscriber's registration-time defaults — pool backends do not need
+to populate these fields.
+
 ### Error Model
 
 | Error | HTTP Status | Trigger |
@@ -444,7 +519,7 @@ compatibility with Mooncake Master.
 }
 ```
 
-**Memcache (exact DP matching):**
+**Memcache (IP-only matching, same as Mooncake):**
 
 ```json
 {
@@ -459,8 +534,9 @@ compatibility with Mooncake Master.
 ```
 
 Pool registration for Memcache uses the same legacy `endpoint` field as Mooncake.
-The `store_backend` field determines the matching strategy: Mooncake fans out to
-all DPs on a node (`IpOnly`), Memcache matches the exact `dp_rank` (`IpAndDpRank`).
+Both Mooncake and Memcache use `IpOnly` matching: events carry `backend_id` (node IP),
+and every HBM-registered DP on that node records the event hash — KV events do not
+carry an exact `dp_rank`.
 
 ### POST /query
 

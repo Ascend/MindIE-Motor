@@ -197,3 +197,40 @@ COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENA
 COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP4>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
 COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP5>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
 ```
+
+### A5 环境额外修改内容
+
+A5创建容器时，需做如下调整：
+
+**网络**：使用 `--network host`，替代 `-p` 端口映射。
+
+**额外挂载路径**：
+
+| 宿主机路径 | 容器路径 | 说明 |
+| :--- | :--- | :--- |
+| `/dev/ummu` | `/dev/ummu` | A5 卡间 UB 互联内存设备，UB 内存池访问依赖此通路 |
+| `/dev/uburma` | `/dev/uburma` | 服务器间 UB RDMA 通信设备节点 |
+| `/usr/lib64` | `/usr/lib64` | 提供 `liburma` 等 UB 用户态通信库 |
+| `/etc/hixlep` | `/etc/hixlep` | UB 链路拓扑结构 |
+| `/etc/hccl_rootinfo.json` | `/etc/hccl_rootinfo.json` | HCCL 集群建链配置文件 |
+| `/usr/local/bin/npu-smi` | `/usr/local/bin/npu-smi` | NPU 管理工具 |
+| `/usr/local/dcmi` | `/usr/local/dcmi` | DCMI 库目录，npu-smi 查卡/管卡的前端接口 |
+
+A5 启动示例片段（基于上述实例基础修改）：
+
+```shell
+ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
+# 按 ASCEND_VISIBLE_DEVICES 循环追加 --device=/dev/davinci$i
+
+docker run -u root --rm --name single_container \
+  --network host \
+  ... \
+  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+  -v /usr/lib64:/usr/lib64 \
+  -v /etc/hixlep:/etc/hixlep \
+  -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \
+  -v /usr/local/dcmi:/usr/local/dcmi \
+  -v /dev/ummu:/dev/ummu \
+  -v /dev/uburma:/dev/uburma \
+  ... \
+```

@@ -19,6 +19,7 @@ from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_se
 from motor.config.endpoint import EndpointConfig
 from motor.engine_server.core.config import IConfig
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.engine_server.constants import constants
 
 logger = get_logger(__name__)
@@ -67,10 +68,11 @@ class VLLMConfig(IConfig):
 
     def initialize(self):
         role = self.endpoint_config.role
-        if self.endpoint_config.deploy_config.get_parallel_config(role).dp_size > 1:
+        parallel_config = self.endpoint_config.deploy_config.get_parallel_config(role)
+        if parallel_config.dp_size > 1:
             self.data_parallel_address = self.endpoint_config.master_dp_ip
-            self.data_parallel_rpc_port = self.endpoint_config.deploy_config.get_parallel_config(role).dp_rpc_port
-        if role == constants.PREFILL_ROLE or role == constants.DECODE_ROLE:
+            self.data_parallel_rpc_port = parallel_config.dp_rpc_port
+        if role in (constants.PREFILL_ROLE, constants.DECODE_ROLE):
             self._process_kv_transfer_config()
         self._process_d2d_config()
 
@@ -202,7 +204,10 @@ class VLLMConfig(IConfig):
         dp_rank = self.endpoint_config.dp_rank
         offset = dp_rank * local_world_size
         self._d2d_source = [
-            {"device_id": offset + rank, "sources": [f"{ip}:{int(listen_port) + offset + rank}" for ip in peer_ips]}
+            {
+                "device_id": offset + rank,
+                "sources": [format_address(ip, int(listen_port) + offset + rank) for ip in peer_ips],
+            }
             for rank in range(local_world_size)
         ]
         logger.info("D2D peer SOURCE: %s", self._d2d_source)

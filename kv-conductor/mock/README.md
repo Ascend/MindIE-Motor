@@ -46,6 +46,25 @@ kubectl -n mindie-motor port-forward deploy/mindie-motor-kv-conductor 13333:1333
 ./mock/conductor_cli.sh quick-multi
 ```
 
+### DeepSeek V4 模拟（block_size=4）
+
+```bash
+cd kv-conductor
+
+# 1. 构建镜像
+./mock/conductor_cli.sh build
+
+# 2. 部署 + 注册，全部用 block_size=4
+./mock/conductor_cli.sh up-multi --block-size 4
+kubectl -n mindie-motor port-forward deploy/mindie-motor-kv-conductor 13333:13333 &
+./mock/conductor_cli.sh register-multi --block-size 4
+
+# 3. 压测（202400 tokens → 50600 blocks）
+./mock/conductor_cli.sh bench --count 16 --tokens 202400 --block-size 4
+```
+
+> ``--block-size`` 统一控制 publisher 的事件粒度和注册时的 block_size。查询时 bench 的 ``--block-size`` 也必须一致才能命中。标准模型用 128，DeepSeek V4 用 4。
+
 多端口模式架构：
 
 ```text
@@ -121,9 +140,11 @@ zmq-publisher-multi
 |---|---|
 | `build` | 构建所有镜像：`cargo build --release --features zmq` + docker build × 2 |
 | `up` | 部署：ConfigMap + KV Conductor + N 个单端口 Publisher（默认 N=8） |
-| `up-multi` | 部署：ConfigMap + KV Conductor + 1 个多端口 Publisher（XPU:15557 + CPU/DISK:15558） |
+| `up-multi [--block-size N] [--initial-blocks N]` | 部署：KV Conductor + N 个多端口 Publisher。默认 block_size=128，DeepSeek V4 设 4；`--initial-blocks` 控制初始缓存块数（默认 8192）|
 | `down` | 清理所有 K8s 资源 |
 | `logs [filter]` | 采集日志（封装 `collect_logs.sh`） |
+| `logs-save [file]` | 保存最近 30 分钟 Conductor 日志到文件（默认 `/tmp/conductor_full.log`） |
+| `logs-profile [file]` | 提取并保存 profiling 日志（`hash_computed` / `find_matches` / `query profile`），默认 `/tmp/conductor_profile.log` |
 
 控制单端口 Publisher 数量：
 
@@ -132,12 +153,23 @@ NUM_PUBLISHERS=4 ./mock/conductor_cli.sh up    # 只起 4 个
 NUM_PUBLISHERS=16 ./mock/conductor_cli.sh up   # 起 16 个
 ```
 
+block_size 与 initial_blocks 配置：
+
+```bash
+# 标准模式
+./mock/conductor_cli.sh up-multi --block-size 4 --initial-blocks 8192
+./mock/conductor_cli.sh register-multi --block-size 4
+./mock/conductor_cli.sh bench --count 16 --tokens 202400 --block-size 4
+```
+
+`--initial-blocks` 控制每 Publisher 预填充的缓存块数（默认 8192），`--block-size` 三者必须一致。`up-multi` 发布间隔为 0.1s/批，事件积累快速。注册由 Publisher 启动后自动完成，无需手动调用 `register-multi`，除非需要重新注册。
+
 ### 运行时操作
 
 | 命令 | 说明 |
 |---|---|
 | `register` | 注册全部 N 个单端口 Publisher（`type: Mooncake`） |
-| `register-multi` | 注册多端口 Publisher（`medium_endpoints` 协议） |
+| `register-multi [--block-size N]` | 注册多端口 Publisher（`medium_endpoints` 协议） |
 | `unregister` | 注销全部 Publisher |
 | `status` | 查看 workers + blocks 计数 + per-DP 分布 |
 | `query <hash...>` | 按显式 block hash 查询（`/query_by_hash`） |
@@ -154,7 +186,11 @@ NUM_PUBLISHERS=16 ./mock/conductor_cli.sh up   # 起 16 个
 默认用常见 LLM token ID（101, 2023, 318...）发 `/query`，模拟真实请求命中率：
 
 ```bash
+# 标准模式（block_size=128）
 ./mock/conductor_cli.sh bench --count 100 --tokens 1024
+
+# DeepSeek V4 模拟（block_size=4，202400 tokens → 50600 blocks）
+./mock/conductor_cli.sh bench --count 16 --tokens 202400 --block-size 4
 ```
 
 输出示例：
@@ -267,6 +303,41 @@ kubectl -n mindie-motor set env deploy/mindie-motor-kv-conductor RUST_LOG=info
 | `POST /query` | 按 token IDs 查询 |
 | `POST /query_by_hash` | 按 hash 查询 |
 | `POST /events` | HTTP 注入事件 |
+
+## 性能分析
+
+### 耗时分布
+
+Conductor 查询链路由三个阶段组成，可通过 `logs-profile` 命令提取各阶段耗时：
+
+```bash
+# 跑压测
+./mock/conductor_cli.sh bench --count 16 --tokens 102400
+
+# 提取 profiling 日志
+./mock/conductor_cli.sh logs-profile /tmp/bench.log
+
+# 或手动分析
+grep 'hash_computed\|find_matches\|query profile' /tmp/bench.log
+```
+
+### 关键字对照
+
+| 关键字 | 含义 | 优化方向 |
+|--------|------|---------|
+| `hash_computed` | XXH3 哈希计算耗时（`hash_us`） | 大序列 + 小 `block_size` 时耗时高，已通过 rayon 并行加速 |
+| `find_matches` | 前缀树遍历耗时（`elapsed_us`、`depth`） | `depth` 表示命中块数，miss 多则遍历提前结束 |
+| `query profile` | 全链路总耗时（`total_us`） | `total_us = hash_us + find_matches + 序列化` |
+
+### 示例输出
+
+```text
+hash_computed num_tokens=102400 block_size=128 num_hashes=800 hash_us=234
+find_matches seq_len=800 depth=4 active_workers=3 elapsed_us=2913
+query profile num_tokens=102400 block_size=128 hash_us=291500 total_us=292100
+```
+
+hash 计算与树遍历各自耗时比例清晰，便于定位瓶颈。
 
 ## 文件
 

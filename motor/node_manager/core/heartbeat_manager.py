@@ -18,6 +18,7 @@ import socket
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.http_msg_spec import StartCmdMsg, HeartbeatMsg
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, RETRY_LOG_FREQUENCY
 from motor.config.node_manager import NodeManagerConfig
@@ -68,6 +69,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         self._suicide_lock = threading.Lock()
         # for snapshot
         self._register_after_restore_retry_count = 0
+        self._checkpoint_done_inspect_retry_count = 0
         self._is_registered_after_restore = False
         self._is_started_after_restore = False
         self._started_after_restore_lock = threading.Lock()
@@ -164,7 +166,7 @@ class HeartbeatManager(ThreadSafeSingleton):
     def get_engine_mgmt_addrs(self) -> list[str]:
         """Return engine management addresses for local metrics polling."""
         with self._endpoint_lock:
-            return [f"{ep.ip}:{ep.mgmt_port}" for ep in self._endpoints]
+            return [format_address(ep.ip, ep.mgmt_port) for ep in self._endpoints]
 
     def resume_all_endpoints(self) -> None:
         """Resume all endpoints from PAUSED back to NORMAL status.
@@ -234,7 +236,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             original_status = item.status
             client = None
             detected_status = None
-            engine_server_base_url = f"{item.ip}:{item.mgmt_port}"
+            engine_server_base_url = format_address(item.ip, item.mgmt_port)
             try:
                 response = EngineServerApiClient.query_status(engine_server_base_url)
                 if isinstance(response, dict) and "status" in response:
@@ -268,9 +270,9 @@ class HeartbeatManager(ThreadSafeSingleton):
                     except Exception as e:
                         logger.error("Failed to close client: %s", e)
 
-            if is_restored_from_host_side_snapshot() and not self.is_started_after_restore():
-                # If restored from host side snapshot and not started after restore, keep original status
-                logger.debug(
+            if is_restored_from_host_side_snapshot() and item.ip != self._config.api_config.pod_ip:
+                # If restored from host side snapshot and not started after restore(pod_ip do not refresh yet), keep original status
+                logger.info(
                     "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
                     "keeping stale status: %s",
                     original_status,
@@ -307,44 +309,46 @@ class HeartbeatManager(ThreadSafeSingleton):
 
     def _report_heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
+            has_abnormal = False
+            is_normal = True
             try:
-                if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
-                    logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
-                    self._register_after_restore()
-                    time.sleep(self.heartbeat_interval_seconds)
-                    continue
-
                 with self._endpoint_lock:
                     # Check if any endpoint has abnormal status (only after grace period)
                     # Check actual endpoint status, not the reported status
                     has_abnormal = any(item.status == EndpointStatus.ABNORMAL for item in self._endpoints)
+                    is_normal = all(item.status == EndpointStatus.NORMAL for item in self._endpoints)
 
                     endpoint_status_list = {item.id: item.status for item in self._endpoints}
 
-                # Build message and send request outside of lock
-                heartbeat_msg = HeartbeatMsg(
-                    job_name=self._job_name,
-                    ins_id=self._instance_id,
-                    ip=self._config.api_config.pod_ip,
-                    status=endpoint_status_list,
-                )
+                # If container snapshot enabled
+                # During cold start, when suspend done, node manager should not report heartbeat to controller until engine checkpoint is done
+                if (
+                    is_normal
+                    and not is_restored_from_host_side_snapshot()
+                    and not EngineManager().is_engine_checkpoint_done()
+                ):
+                    if self._checkpoint_done_inspect_retry_count % RETRY_LOG_FREQUENCY == 0:
+                        logger.info(
+                            "[snapshot] Container snapshot enabled, current container checkpoint is not done, do not report heartbeat to controller..."
+                        )
+                    self._checkpoint_done_inspect_retry_count += 1
+                else:
+                    # Container snapshot checkpoint is barrier here, so that a new register can be first triggered after restore from snapshot
+                    if is_restored_from_host_side_snapshot() and not self._is_registered_after_restore:
+                        logger.warning("[snapshot] Node manager is restored from host side snapshot, registering...")
+                        self._register_after_restore()
+                        time.sleep(self.heartbeat_interval_seconds)
+                        continue
 
-                ControllerApiClient.report_heartbeat(heartbeat_msg)
+                    # Build message and send request outside of lock
+                    heartbeat_msg = HeartbeatMsg(
+                        job_name=self._job_name,
+                        ins_id=self._instance_id,
+                        ip=self._config.api_config.pod_ip,
+                        status=endpoint_status_list,
+                    )
 
-                # Update consecutive abnormal count after successful heartbeat report
-                with self._abnormal_count_lock:
-                    if has_abnormal:
-                        self._consecutive_abnormal_count += 1
-                        logger.warning("Consecutive abnormal heartbeat count: %d/5", self._consecutive_abnormal_count)
-                        # Set suicide flag if reached 5 consecutive abnormal heartbeats
-                        if self._consecutive_abnormal_count >= 5:
-                            logger.error(
-                                "Reached 5 consecutive abnormal heartbeats, setting suicide flag for main to handle..."
-                            )
-                            with self._suicide_lock:
-                                self._should_suicide = True
-                    else:
-                        self._consecutive_abnormal_count = 0
+                    ControllerApiClient.report_heartbeat(heartbeat_msg)
 
             except Exception as e:
                 # Exception triggered by host side snapshot restore, nodeManager re-send register message
@@ -358,6 +362,21 @@ class HeartbeatManager(ThreadSafeSingleton):
                 else:
                     with self.config_lock:
                         logger.error("Exception occurred while reporting endpoint status to controller: %s", e)
+
+            # Update consecutive abnormal count after successful heartbeat report
+            with self._abnormal_count_lock:
+                if has_abnormal:
+                    self._consecutive_abnormal_count += 1
+                    logger.warning("Consecutive abnormal heartbeat count: %d/5", self._consecutive_abnormal_count)
+                    # Set suicide flag if reached 5 consecutive abnormal heartbeats
+                    if self._consecutive_abnormal_count >= 5:
+                        logger.error(
+                            "Reached 5 consecutive abnormal heartbeats, setting suicide flag for main to handle..."
+                        )
+                        with self._suicide_lock:
+                            self._should_suicide = True
+                else:
+                    self._consecutive_abnormal_count = 0
 
             with self.config_lock:
                 time.sleep(self.heartbeat_interval_seconds)
@@ -375,7 +394,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         # Register for post-snapshot brandnew job name
         # Do not consider retry
         # If current register failed, next register will be triggered by next heartbeat report exception
-        ret = EngineManager().post_register_msg()
+        ret = EngineManager().post_register_msg_after_restore()
         self._is_registered_after_restore = ret is True
 
     def _reregister(self) -> None:

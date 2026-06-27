@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, List
 
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.config.endpoint import EndpointConfig
 from motor.engine_server.constants import constants
 from motor.engine_server.core.config import IConfig
@@ -30,7 +31,7 @@ _SGLANG_PARAM_MAPPING = {
     "npu_mem_utils": "mem-fraction-static",
     "dp_size": "dp-size",
     "tp_size": "tp-size",
-    "pp_size": "pp-size"
+    "pp_size": "pp-size",
 }
 
 
@@ -71,6 +72,7 @@ class SGLangConfig(IConfig):
 
         sys.argv = ["serve"] + arg_list
         from sglang.srt.server_args import ServerArgs
+
         parser = argparse.ArgumentParser()
         ServerArgs.add_cli_args(parser)
         raw_args = parser.parse_args()
@@ -108,7 +110,7 @@ class SGLangConfig(IConfig):
         flattened["port"] = self.endpoint_config.port
 
         if flattened.get("nnodes", 1) > 1:
-            flattened["dist-init-addr"] = f"{self.endpoint_config.master_dp_ip}:{parallel_config.dp_rpc_port}"
+            flattened["dist-init-addr"] = format_address(self.endpoint_config.master_dp_ip, parallel_config.dp_rpc_port)
             flattened["node-rank"] = self.endpoint_config.dp_rank
 
         if role == constants.PREFILL_ROLE:

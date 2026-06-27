@@ -22,10 +22,9 @@
 
 """OpenAI Completions serving for SGLang engine (EngineServer openai/sglang)."""
 
-from http import HTTPStatus
 from typing import TYPE_CHECKING
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 
 from sglang.srt.entrypoints.openai.serving_completions import (
     OpenAIServingCompletion as SglangOpenAIServingCompletion,
@@ -45,20 +44,7 @@ class OpenAIServingCompletion:
         tokenizer_manager: "TokenizerManager",
         template_manager: "TemplateManager",
     ) -> None:
-        self._sglang_serving_completion = SglangOpenAIServingCompletion(
-            tokenizer_manager, template_manager
-        )
+        self._sglang_serving_completion = SglangOpenAIServingCompletion(tokenizer_manager, template_manager)
 
     async def handle_request(self, request: CompletionRequest, raw_request: Request):
-        try:
-            return await self._sglang_serving_completion.handle_request(
-                request, raw_request
-            )
-        except OverflowError as e:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST.value, detail=str(e)
-            ) from e
-        except Exception as e:
-            raise HTTPException(
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)
-            ) from e
+        return await self._sglang_serving_completion.handle_request(request, raw_request)

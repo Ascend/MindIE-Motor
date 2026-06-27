@@ -741,8 +741,8 @@ class TestTokenizerManagerFunction(unittest.TestCase):
     def test_init_with_model_path(self, mock_auto_tokenizer, mock_config_class):
         """Test tokenizer manager"""
         mock_config = Mock()
-        mock_config.prefill_kv_event_config.conductor_service = "test_service"
-        mock_config.prefill_kv_event_config.model_path = "/path/to/model"
+        mock_config.scheduler_config.kv_conductor_config.conductor_service = "test_service"
+        mock_config.scheduler_config.kv_conductor_config.model_path = "/path/to/model"
         mock_config_class.return_value = mock_config
 
         # Mock tokenizer
@@ -799,7 +799,7 @@ class TestTokenizerManagerInitialize(unittest.TestCase):
     def test_init_with_empty_conductor_service(self, mock_config_class):
         """Test initialize - null conductor_service"""
         mock_config = Mock()
-        mock_config.prefill_kv_event_config.conductor_service = ""
+        mock_config.scheduler_config.kv_conductor_config.conductor_service = ""
         mock_config_class.return_value = mock_config
 
         # Create TokenizerManager
@@ -1115,8 +1115,8 @@ def _build_tokenizer_manager(
     _reset_tokenizer_manager_singleton()
     config = Mock()
     config.tracer_config.endpoint = ""
-    config.prefill_kv_event_config.conductor_service = "stub-conductor"
-    config.prefill_kv_event_config.model_path = ""
+    config.scheduler_config.kv_conductor_config.conductor_service = "stub-conductor"
+    config.scheduler_config.kv_conductor_config.model_path = ""
 
     with patch.dict("os.environ", {"OPENAI_STANDARD": openai_standard}, clear=False):
         manager = TokenizerManager(config)

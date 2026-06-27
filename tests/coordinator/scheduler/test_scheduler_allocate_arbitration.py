@@ -324,6 +324,133 @@ async def test_allocate_only_affinity_reselects_least_loaded_among_candidates():
 
 
 @pytest.mark.asyncio
+async def test_allocate_only_affinity_global_prefers_cache_hit_despite_higher_load():
+    """
+    Unified global selection: with per-candidate prefill_cost, the scheduler re-ranks EVERY
+    reported endpoint by prefill_load_scale*prefill_cost + load_weight*fresh_load. A big cache hit
+    (prefill_cost=0) wins over lighter-loaded but un-cached endpoints, and the winner is not the
+    worker's stale top-1.
+    """
+    config = CoordinatorConfig()
+    config.scheduler_config.scheduler_type = SchedulerType.KV_CACHE_AFFINITY
+    config.scheduler_config.endpoint_instance_score_weight = 0.0
+    instance_manager = InstanceManager(config)
+
+    inst_a = _make_prefill_instance(1, (10, 11))
+    inst_b = _make_prefill_instance(2, (20, 21))
+    await instance_manager.refresh_instances(EventType.ADD, [inst_a, inst_b])
+    await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=1))
+    await instance_manager.update_instance_workload(1, 11, Workload(active_tokens=1))
+    await instance_manager.update_instance_workload(2, 20, Workload(active_tokens=50))
+    await instance_manager.update_instance_workload(2, 21, Workload(active_tokens=1))
+
+    scheduler = Scheduler(instance_provider=instance_manager, config=config)
+    workload_writer = _DummyWorkloadWriter()
+    dispatcher = _SchedulerRequestDispatcher(
+        instance_manager,
+        scheduler,
+        config,
+        workload_writer=workload_writer,
+    )
+    request = SchedulerRequest(
+        request_type=SchedulerRequestType.ALLOCATE_ONLY,
+        request_id="alloc-kv-global-affinity",
+        data={
+            "instance_id": 1,
+            "endpoint_id": 10,  # worker top-1 (stale view): un-cached, lightly loaded
+            "candidates": [
+                {"instance_id": 1, "endpoint_id": 10, "prefill_cost": 10000.0},
+                {"instance_id": 1, "endpoint_id": 11, "prefill_cost": 10000.0},
+                {"instance_id": 2, "endpoint_id": 20, "prefill_cost": 0.0},  # big cache hit
+                {"instance_id": 2, "endpoint_id": 21, "prefill_cost": 10000.0},
+            ],
+            "role": PDRole.ROLE_P.value,
+            "req_id": "req-kv-global-affinity",
+            "workload_sequence": workload_writer.sequence - 2,  # stale -> slow path
+            "instance_version": workload_writer.instance_version,
+            "workload": Workload(active_tokens=3).model_dump(mode="json"),
+            "candidate_policy": CANDIDATE_POLICY_KV_CACHE_AFFINITY,
+            "prefill_load_scale": 1.0,
+            "load_weight": 1.0,
+        },
+    )
+
+    response = await dispatcher.dispatch(request)
+
+    assert response.response_type == SchedulerResponseType.SUCCESS
+    assert response.data["fast_path"] is False
+    # combined: 2-20 = 0 + 50 = 50  <  1-10 = 10000 + 1. Cache hit wins despite higher load.
+    assert response.data["instance"]["id"] == 2
+    assert response.data["endpoint"]["id"] == 20
+    assert response.data["selected_score"] == pytest.approx(50.0)
+    _, selected_workload = await instance_manager.get_endpoint_workload(2, 20)
+    assert selected_workload.active_tokens == 53
+    assert workload_writer.writes == [(2, 20)]
+
+
+@pytest.mark.asyncio
+async def test_allocate_only_affinity_global_breaks_equal_affinity_by_fresh_load():
+    """
+    With equal affinity (all prefill_cost=0, e.g. everything cached), the global selection reduces
+    to lowest fresh load across ALL endpoints -- not just the worker's stale top-1.
+    """
+    config = CoordinatorConfig()
+    config.scheduler_config.scheduler_type = SchedulerType.KV_CACHE_AFFINITY
+    config.scheduler_config.endpoint_instance_score_weight = 0.0
+    instance_manager = InstanceManager(config)
+
+    inst_a = _make_prefill_instance(1, (10, 11))
+    inst_b = _make_prefill_instance(2, (20, 21))
+    await instance_manager.refresh_instances(EventType.ADD, [inst_a, inst_b])
+    await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=20))
+    await instance_manager.update_instance_workload(1, 11, Workload(active_tokens=30))
+    await instance_manager.update_instance_workload(2, 20, Workload(active_tokens=5))
+    await instance_manager.update_instance_workload(2, 21, Workload(active_tokens=40))
+
+    scheduler = Scheduler(instance_provider=instance_manager, config=config)
+    workload_writer = _DummyWorkloadWriter()
+    dispatcher = _SchedulerRequestDispatcher(
+        instance_manager,
+        scheduler,
+        config,
+        workload_writer=workload_writer,
+    )
+    request = SchedulerRequest(
+        request_type=SchedulerRequestType.ALLOCATE_ONLY,
+        request_id="alloc-kv-global-tie",
+        data={
+            "instance_id": 1,
+            "endpoint_id": 10,  # worker top-1 (stale): load 20
+            "candidates": [
+                {"instance_id": 1, "endpoint_id": 10, "prefill_cost": 0.0},
+                {"instance_id": 1, "endpoint_id": 11, "prefill_cost": 0.0},
+                {"instance_id": 2, "endpoint_id": 20, "prefill_cost": 0.0},  # load 5 -> win
+                {"instance_id": 2, "endpoint_id": 21, "prefill_cost": 0.0},
+            ],
+            "role": PDRole.ROLE_P.value,
+            "req_id": "req-kv-global-tie",
+            "workload_sequence": workload_writer.sequence - 2,  # stale -> slow path
+            "instance_version": workload_writer.instance_version,
+            "workload": Workload(active_tokens=3).model_dump(mode="json"),
+            "candidate_policy": CANDIDATE_POLICY_KV_CACHE_AFFINITY,
+            "prefill_load_scale": 1.0,
+            "load_weight": 1.0,
+        },
+    )
+
+    response = await dispatcher.dispatch(request)
+
+    assert response.response_type == SchedulerResponseType.SUCCESS
+    assert response.data["fast_path"] is False
+    assert response.data["instance"]["id"] == 2
+    assert response.data["endpoint"]["id"] == 20
+    assert response.data["selected_score"] == pytest.approx(5.0)
+    _, selected_workload = await instance_manager.get_endpoint_workload(2, 20)
+    assert selected_workload.active_tokens == 8
+    assert workload_writer.writes == [(2, 20)]
+
+
+@pytest.mark.asyncio
 async def test_allocate_only_unknown_candidate_policy_falls_back_to_scheduler_type():
     """Unknown candidate_policy should not silently disable LB's global scan."""
     config = CoordinatorConfig()

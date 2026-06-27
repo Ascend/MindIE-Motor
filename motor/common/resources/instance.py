@@ -187,13 +187,13 @@ class Instance(BaseModel):
             logger.warning("Invalid pod_ip: %s or port: %s", pod_ip, port)
             return
 
-        node_mgr_info = NodeManagerInfo(pod_ip=pod_ip, port=port)
         with self._lock:
-            if node_mgr_info in self.node_managers:
-                self.node_managers.remove(node_mgr_info)
-                logger.info("Del node manager %s:%s from instance:%s", pod_ip, port, self.job_name)
-            else:
-                logger.info("Node manager %s:%s not in instance:%s", pod_ip, port, self.job_name)
+            for i, nm in enumerate(self.node_managers):
+                if nm.pod_ip == pod_ip and nm.port == port:
+                    self.node_managers.pop(i)
+                    logger.info("Del node manager %s:%s from instance:%s", pod_ip, port, self.job_name)
+                    return
+            logger.info("Node manager %s:%s not in instance:%s", pod_ip, port, self.job_name)
 
     def has_node_mgr(self, pod_ip: str) -> bool:
         if pod_ip is None:

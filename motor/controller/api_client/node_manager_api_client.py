@@ -13,6 +13,7 @@ from typing import Any
 from motor.common.resources import NodeManagerInfo, StartCmdMsg
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.config.controller import ControllerConfig
 
 logger = get_logger(__name__)
@@ -29,16 +30,23 @@ class NodeManagerApiClient:
             # when we use atlas A2 server which doesn't have superpod_id.
             client_args = NodeManagerApiClient._generate_client_args(node_mgr)
             client = SafeHTTPSClient(**client_args)
-            response = client.post(
+            client.post(
                 "/node-manager/start",
                 data=start_cmd_msg.model_dump(exclude_none=True),
             )
-            logger.info("Start command sent to node manager %s for instance %s successfully.",
-                        client_args.get('address', 'unknown'), start_cmd_msg.job_name)
+            logger.info(
+                "Start command sent to node manager %s for instance %s successfully.",
+                client_args.get('address', 'unknown'),
+                start_cmd_msg.job_name,
+            )
         except Exception as e:
             is_succeed = False
-            logger.error("Error sending start command to node manager %s for instance %s: %s",
-                         client_args.get('address', 'unknown'), start_cmd_msg.job_name, e)
+            logger.error(
+                "Error sending start command to node manager %s for instance %s: %s",
+                client_args.get('address', 'unknown'),
+                start_cmd_msg.job_name,
+                e,
+            )
         finally:
             client.close()
 
@@ -47,15 +55,15 @@ class NodeManagerApiClient:
     @staticmethod
     def stop(node_mgr: NodeManagerInfo) -> bool:
         is_succeed = True
+        addr = format_address(node_mgr.pod_ip, node_mgr.port)
         try:
             client_args = NodeManagerApiClient._generate_client_args(node_mgr)
             client = SafeHTTPSClient(**client_args)
-            response = client.post("/node-manager/stop", data={})
-            logger.info(f"Stop command sent to node manager {node_mgr.pod_ip}:{node_mgr.port}")
+            client.post("/node-manager/stop", data={})
+            logger.info("Stop command sent to node manager %s", addr)
         except Exception as e:
             is_succeed = False
-            logger.error(f"Error sending stop command to node manager {node_mgr.pod_ip}:{node_mgr.port}, \
-                        details: {e}")
+            logger.error("Error sending stop command to node manager %s: %s", addr, e)
         finally:
             client.close()
 
@@ -71,7 +79,7 @@ class NodeManagerApiClient:
     @classmethod
     def _generate_client_args(cls, node_mgr: NodeManagerInfo) -> dict[str, str]:
         client_ars = {
-            "address": f"{node_mgr.pod_ip}:{node_mgr.port}",
+            "address": format_address(node_mgr.pod_ip, node_mgr.port),
             "tls_config": cls.tls_config,
         }
         return client_ars

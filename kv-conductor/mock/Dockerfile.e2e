@@ -1,3 +1,4 @@
 FROM zmq-publisher-base:latest
 
 COPY mock/zmq_publisher.py /usr/local/bin/zmq_publisher.py
+COPY mock/token_pool.py /usr/local/bin/token_pool.py

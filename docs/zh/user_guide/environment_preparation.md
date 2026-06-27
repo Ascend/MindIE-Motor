@@ -20,7 +20,7 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
 |Ascend Device Plugin|基于Kubernetes设备插件机制，提供昇腾AI处理器的设备发现、分配和健康状态上报功能，使能Kubernetes管理昇腾AI处理器资源。需安装Ascend Docker Runtime后方可使用。|Y|Y|
 |ClusterD|使用整卡调度、静态vNPU调度、动态vNPU调度、断点续训、弹性训练、推理卡故障恢复或推理卡故障重调度的用户，必须安装ClusterD。|Y|N|
 |Volcano|基于开源Volcano调度插件机制，增加昇腾AI处理器的亲和性调度、故障重调度等特性，最大化发挥昇腾AI处理器计算性能。|Y|N|
-|Ascend Docker Runtime|提供docker或containerd的昇腾容器化支持，自动挂载所需文件和设备依赖。|Y|N|
+|Ascend Docker Runtime|提供docker或containerd的昇腾容器化支持，自动挂载所需文件和设备依赖。|Y|Y|
 |Infer Operator|创建推理实例Workload与Service，提供推理实例的手动扩缩容能力。|Y|N|
 
 ## Kubernetes安装与集群创建
@@ -404,7 +404,7 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
 集群管理组件依赖MindCluster中的Ascend Docker Runtime、Ascend Device Plugin、ClusterD、Volcano和Infer Operator组件。其中，**管理节点需要安装全部组件，计算节点仅需要构建Ascend Device Plugin的镜像**。推荐安装26.0.0及之后的版本。
 
 1. 请参考《MindCluster  集群调度用户指南》的[安装前准备](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md)章节完成创建用户、创建日志目录、构建镜像和创建命名空间。
-2. 请参考《MindCluster  集群调度用户指南》的[Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/02_ascend_docker_runtime.md)章节中的 “Containerd场景下安装Ascend Docker Runtime” 安装Ascend Docker Runtime。
+2. 请参考《MindCluster  集群调度用户指南》的[Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/02_ascend_docker_runtime.md)章节安装Ascend Docker Runtime。
 3. 请参考《MindCluster  集群调度用户指南》的[Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/04_ascend_device_plugin.md)章节安装Ascend Device Plugin，使用device-plugin-_xxx_-v\{version\}.yaml文件进行安装。
     >[!NOTE]说明
     >当Ascend Device Plugin启动时，_xxx_.yaml配置文件中useAscendDocker参数配置为true且用户已安装Ascend Docker Runtime并生效，会自动挂载在“/usr/local/Ascend”下驱动相关目录。

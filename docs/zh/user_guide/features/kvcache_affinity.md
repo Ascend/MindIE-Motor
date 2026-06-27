@@ -56,6 +56,7 @@ Coordinator 的 `motor_coordinator_config.scheduler_config` 中新增 `kv_event_
       "scheduler_type": "kv_cache_affinity",
       "kv_event_registration": {
         "store_backend": "Mooncake",
+        "block_size": 128,
         "pool_endpoint": "tcp://kvp-master:5557",
         "xpu_endpoint": "tcp://*:50090"
       }
@@ -158,6 +159,7 @@ Coordinator 的 `motor_coordinator_config.scheduler_config` 中新增 `kv_event_
 | `scheduler_type` | `scheduler_config` | 设为 `"kv_cache_affinity"` 启用亲和性调度 |
 | `kv_event_registration` | `scheduler_config` | KV 事件注册配置（Coordinator → kv-conductor） |
 | `kv_event_registration.store_backend` | 子配置 | 池化后端类型：`"Mooncake"` / `"Memcache"` / `"YuanRong"` |
+| `kv_event_registration.block_size` | 子配置 | 事件广播 hash 粒度（token 数）。标准模型等于引擎 `--block-size`（默认 128）；DeepSeek V4 等混合模型需设为引擎各 KV group block_size 的 GCD（如 4）。见下方说明 |
 | `kv_event_registration.pool_endpoint` | 子配置 | 中心化后端的池服务地址 |
 | `kv_event_registration.xpu_endpoint` | 子配置 | Per-DP HBM 端口模式 |
 | `kv-events-config` | `engine_config` | vLLM KV 事件发布配置（引擎侧，publisher 设置） |
@@ -181,6 +183,7 @@ YuanRong（per-DP 多端口）：
 ```json
 "kv_event_registration": {
   "store_backend": "YuanRong",
+  "block_size": 128,
   "xpu_endpoint": "tcp://*:15557",
   "cpu_endpoint": "tcp://*:15558",
   "disk_endpoint": "tcp://*:15558"
@@ -201,6 +204,38 @@ Memcache（中心化 pool + 精确 dp_rank）：
 > `kv_event_registration` 是 Motor 配置，用于 Coordinator 向 kv-conductor **注册**。
 > 两者分离，互不干扰——vLLM 不会解析 `kv_event_registration`，Coordinator 也不会
 > 把 `kv-events-config` 发给 conductor。
+
+### DeepSeek V4 / 混合 KV Cache 模型
+
+DeepSeek V4 开启了 `--no-disable-hybrid-kv-cache-manager`，引擎内部有**多种 KV cache group**，每种 block_size 不同：
+
+| KV Group | block_size | 说明 |
+|----------|-----------|------|
+| Full MLA | 128（随 `--block-size`） | 全注意力层 |
+| SWA MLA  | 64 | Sliding Window MLA |
+| C128 状态 | 8 | 压缩 KV 状态 |
+| C4 状态   | 4 | 压缩 KV 状态 |
+
+引擎内部用 `hash_block_size = GCD([128, 64, 8, 4]) = 4` 计算事件的 block hashes。
+因此 `kv_event_registration.block_size` **必须设 4**，不能是 128：
+
+```json
+"kv_event_registration": {
+  "store_backend": "Mooncake",
+  "block_size": 4,
+  "pool_endpoint": "tcp://kvp-master:5557",
+  "xpu_endpoint": "tcp://*:50090"
+}
+```
+
+否则 conductor 查询时用 128 粒度的 hash 去匹配引擎用 4 粒度存的 hash，永远命中不了。
+
+引擎启动日志中会打印实际采用的 hash_block_size，可以据此确认：
+
+```text
+# vLLM 日志输出示例
+hash_block_size = 4
+```
 
 ## 部署流程
 
@@ -223,6 +258,7 @@ PD 混部使用 `motor_engine_union_config`，Coordinator 自动从 union 段读
       "scheduler_type": "kv_cache_affinity",
       "kv_event_registration": {
         "store_backend": "Mooncake",
+        "block_size": 128,
         "pool_endpoint": "tcp://kvp-master:5557",
         "xpu_endpoint": "tcp://*:50090"
       }
