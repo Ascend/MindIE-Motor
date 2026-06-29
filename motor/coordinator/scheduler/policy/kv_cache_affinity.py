@@ -11,14 +11,17 @@ import os
 import threading
 
 from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint
+from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.coordinator.domain import InstanceProvider
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.logger import get_logger
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.api_client.conductor_api_client import ConductorApiClient, TENANT_ID
+from motor.coordinator.api_client.conductor_api_client import (
+    ConductorApiClient,
+    TENANT_ID,
+)
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.coordinator.scheduler.policy.utils import preprocess_input
 
@@ -40,8 +43,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
 
     @staticmethod
     def select_endpoint_from_list(
-        instances: list[Instance],
-        req_info: RequestInfo
+        instances: list[Instance], req_info: RequestInfo
     ) -> tuple[Instance, Endpoint] | None:
         """
         Select an endpoint with the least workload from the given instance.
@@ -60,7 +62,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         rsp = ConductorApiClient.query_conductor(instances, encoded_ids)
         tenant = rsp.get(TENANT_ID, None)
         if tenant is None:
-            logger.warning(f"tenant is none")
+            logger.warning("tenant is none")
             return None
 
         max_kv_matched = 0
@@ -82,11 +84,11 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             selected_data_dp = instance_data.get("DP", {})
 
         if selected_instance is None:
-            logger.warning(f"selected_instance is None")
+            logger.warning("selected_instance is None")
             return None
 
         if not selected_data_dp:
-            logger.warning(f"selected_data_dp is None")
+            logger.warning("selected_data_dp is None")
             return None
 
         for endpoint in selected_instance.endpoints.values():
@@ -99,10 +101,57 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
                 selected_endpoint = ep
 
         if selected_endpoint is None:
-            logger.warning(f"selected_endpoint is None")
+            logger.warning("selected_endpoint is None")
             return None
-        logger.info(f"select_endpoint: {selected_instance.id}-{selected_endpoint.id}  max_kv_matched:{max_kv_matched}")
+        logger.info(
+            f"select_endpoint: {selected_instance.id}-{selected_endpoint.id}  max_kv_matched:{max_kv_matched}"
+        )
         return (selected_instance, selected_endpoint)
+
+    async def update_workload(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        req_id: str,
+        workload_action: WorkloadAction,
+        workload_change: Workload,
+    ) -> bool:
+        """
+        Update workload information for load-aware scheduling (by id only).
+
+        Args:
+            instance_id: Instance ID
+            endpoint_id: Endpoint ID
+            req_id: Request identifier (optional, only for logging)
+            workload_action: Workload action type
+            workload_change: Workload change value (calculated and passed by API Server)
+
+        Returns:
+            True if workload was updated successfully, False otherwise
+        """
+        if hasattr(self._instance_provider, "update_instance_workload"):
+            await self._instance_provider.update_instance_workload(
+                instance_id, endpoint_id, workload_change
+            )
+        else:
+            raise RuntimeError(
+                "InstanceProvider must support update_instance_workload for KvCacheAffinityPolicy"
+            )
+
+        if req_id:
+            logger.debug(
+                f"Request {req_id} updated workload: instance_id={instance_id}, "
+                f"endpoint_id={endpoint_id}, action={workload_action.value}, "
+                f"change={workload_change}"
+            )
+        else:
+            logger.debug(
+                f"Updated workload: instance_id={instance_id}, "
+                f"endpoint_id={endpoint_id}, action={workload_action.value}, "
+                f"change={workload_change}"
+            )
+
+        return True
 
     def _select_instance(self, _: PDRole = None) -> Instance | None:
         """
@@ -125,7 +174,7 @@ class TokenizerManager(ThreadSafeSingleton):
     def __init__(self, config: CoordinatorConfig | None = None):
         """TracerManager init"""
         # If the instance manager is already initialized, return.
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
         self._initialized = True
         self.config_lock = threading.RLock()
@@ -143,17 +192,22 @@ class TokenizerManager(ThreadSafeSingleton):
 
         model_path = config.prefill_kv_event_config.model_path
         if model_path:
-            os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
+            os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
             from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path, trust_remote_code=True
+            )
 
         logger.info(f"TokenizerManager init.(model_path:{model_path})")
 
         self.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
 
-    def apply_chat_template(self, messages: list, tools: list | None = None) -> list[int]:
+    def apply_chat_template(
+        self, messages: list, tools: list | None = None
+    ) -> list[int]:
         """
-        When the inference API /v1/chat/completions is called, 
+        When the inference API /v1/chat/completions is called,
         this method is used for encoding.
         """
         if self.tokenizer is None:
@@ -169,7 +223,7 @@ class TokenizerManager(ThreadSafeSingleton):
 
     def encode(self, prompt: str) -> list[int]:
         """
-        When the inference API /v1/completions is called, 
+        When the inference API /v1/completions is called,
         this method is used for encoding.
         """
         if self.tokenizer is None:
@@ -177,9 +231,11 @@ class TokenizerManager(ThreadSafeSingleton):
         result = self.tokenizer.encode(prompt)
         return result
 
-    def _apply_chat_template_with_preproces(self, messages: list, tools: list | None = None) -> list[int]:
+    def _apply_chat_template_with_preproces(
+        self, messages: list, tools: list | None = None
+    ) -> list[int]:
         """
-        When the inference API /v1/chat/completions is called, 
+        When the inference API /v1/chat/completions is called,
         this method is used for non standard model encoding.
         """
         messages_copy, tools_copy = preprocess_input(messages, tools)

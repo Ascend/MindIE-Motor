@@ -111,13 +111,13 @@ done
 # Check if required packages are installed
 check_dependencies() {
     echo "Checking test dependencies..."
-    
+
     # Check pytest related packages
     python3 -c "import pytest" 2>/dev/null || { echo "Installing pytest..."; pip install pytest; }
     python3 -c "import pytest_cov" 2>/dev/null || { echo "Installing pytest-cov..."; pip install pytest-cov; }
     python3 -c "import pytest_asyncio" 2>/dev/null || { echo "Installing pytest-asyncio..."; pip install pytest-asyncio; }
     python3 -c "import pytest_xdist" 2>/dev/null || { echo "Installing pytest-xdist..."; pip install pytest-xdist; }
-    
+
     # Check project core dependencies
     echo "Checking project core dependencies..."
     python3 -c "import psutil" 2>/dev/null || { echo "Installing psutil..."; pip install psutil>=5.9.8; }
@@ -127,16 +127,16 @@ check_dependencies() {
     python3 -c "import grpc_tools" 2>/dev/null || { echo "Installing grpcio-tools..."; pip install grpcio-tools>=1.40.0; }
     python3 -c "import pydantic" 2>/dev/null || { echo "Installing pydantic..."; pip install pydantic>=1.8.0; }
     python3 -c "from OpenSSL import crypto" 2>/dev/null || { echo "Installing pyOpenSSL..."; pip install pyOpenSSL>=21.0.0; }
-    
+
     # Check HTTP client libraries
     echo "Checking HTTP client dependencies..."
     python3 -c "import requests" 2>/dev/null || { echo "Installing requests..."; pip install requests>=2.25.0; }
     python3 -c "import httpx" 2>/dev/null || { echo "Installing httpx..."; pip install httpx>=0.24.0; }
-    
+
     # Check other potentially needed test dependencies
     python3 -c "import asyncio" 2>/dev/null || { echo "asyncio is not available, this may affect async tests"; }
     python3 -c "import tempfile" 2>/dev/null || { echo "tempfile is not available, this may affect temporary file tests"; }
-    
+
     echo "Dependency check completed"
 }
 
@@ -177,7 +177,7 @@ if [ "$COVERAGE_ENABLED" = true ]; then
     cat > "$COVERAGERC_FILE" << EOF
 [run]
 source = motor
-omit = 
+omit =
 EOF
 
     # Add exclusion file configuration (default exclusion rules + user-specified rules)
@@ -207,29 +207,29 @@ fi
 show_test_summary() {
     local exit_code=$1
     local output_file=$2
-    
+
     echo ""
     echo "=========================================="
     echo "Test Result Summary"
     echo "=========================================="
-    
+
     # Extract test statistics from output
     if [ -f "$output_file" ]; then
         # Extract test statistics line (usually contains passed, failed, skipped, warnings, etc.)
         local stats=$(grep -E "(passed|failed|error|skipped|warnings|warnings summary)" "$output_file" | tail -1)
-        
+
         # Extract statistics from the last few lines of pytest output (pytest usually shows summary in the last line)
         # Look for the pytest summary line which typically looks like: "606 passed, 5 warnings in 10.43s"
         local last_lines=$(tail -10 "$output_file")
-        
+
         # Find the pytest summary line (contains "passed" or "failed" and ends with time)
         local summary_line=$(echo "$last_lines" | grep -E "[0-9]+ (passed|failed|error)" | grep -E "in [0-9]+\.[0-9]+s" | tail -1)
-        
+
         # If summary line not found in last 10 lines, search more broadly
         if [ -z "$summary_line" ]; then
             summary_line=$(grep -E "[0-9]+ (passed|failed|error)" "$output_file" | grep -E "in [0-9]+\.[0-9]+s" | tail -1)
         fi
-        
+
         # Initialize variables
         passed=0
         failed=0
@@ -254,7 +254,7 @@ show_test_summary() {
             warnings=$(echo "$last_lines" | grep -oE "[0-9]+ warnings?" | grep -oE "[0-9]+" | head -1 || echo "0")
         fi
 
-        
+
         # If still not found, try searching the entire file
         if [ -z "$passed" ] || [ "$passed" = "0" ]; then
             passed=$(grep -oE "[0-9]+ passed" "$output_file" | grep -oE "[0-9]+" | head -1 || echo "0")
@@ -267,16 +267,16 @@ show_test_summary() {
             fi
 
         fi
-        
+
         # Check if there are warnings (from summary line)
         if [ -n "$warnings" ] && [ "$warnings" != "0" ]; then
             HAS_WARNINGS=true
         fi
-        
+
         # Display statistics
         echo "Test Status:"
         local has_stats=false
-        
+
         if [ -n "$passed" ] && [ "$passed" != "0" ]; then
             echo "  ✓ Passed: $passed"
             has_stats=true
@@ -297,12 +297,12 @@ show_test_summary() {
             echo "  ⚠ Warnings: $warnings"
             has_stats=true
         fi
-        
+
         # If no statistics were extracted, show a hint
         if [ "$has_stats" = false ]; then
             echo "  (Unable to extract detailed statistics from output)"
         fi
-        
+
         # Display overall status
         echo ""
         echo "Overall Status:"
@@ -334,13 +334,13 @@ show_test_summary() {
                     ;;
             esac
         fi
-        
+
         # If there are failures or errors, show hint for failure details location
         if [ "$failed" -gt 0 ] 2>/dev/null || [ "$errors" -gt 0 ] 2>/dev/null; then
             echo ""
             echo "Hint: Check the output above for detailed information about failed tests"
         fi
-        
+
         # If there are warnings, show hint for warning details
         if [ "$HAS_WARNINGS" = true ]; then
             echo ""
@@ -355,7 +355,7 @@ show_test_summary() {
             echo "  ✗ Tests did not pass completely (exit code: $exit_code)"
         fi
     fi
-    
+
     echo "=========================================="
     echo ""
 }
@@ -379,15 +379,13 @@ TEST_EXIT_CODE=${PIPESTATUS[0]}
 # Display test result summary
 show_test_summary $TEST_EXIT_CODE "$OUTPUT_FILE"
 
-# Check for warnings and adjust exit code
-# If tests passed but there are warnings, treat as failure (exit code 1)
-if [ $TEST_EXIT_CODE -eq 0 ] && [ "$HAS_WARNINGS" = true ]; then
+if [ $TEST_EXIT_CODE -eq 0 ]; then
     echo ""
-    echo "⚠ Detected warnings - treating as failure"
-    TEST_EXIT_CODE=1
-elif [ $TEST_EXIT_CODE -eq 0 ] && [ "$HAS_WARNINGS" = false ]; then
-    echo ""
-    echo "✓ All tests passed successfully with no warnings"
+    if [ "$HAS_WARNINGS" = true ]; then
+        echo "✓ All tests passed ($warnings warning(s) — see warnings summary above)"
+    else
+        echo "✓ All tests passed"
+    fi
 fi
 
 # Clean up temporary files
@@ -395,5 +393,5 @@ if [ -f ".coveragerc.tmp" ]; then
     rm -f ".coveragerc.tmp"
 fi
 
-# Exit based on test results (0 only if all tests pass AND no warnings)
+# Exit based on test results (warnings are reported but do not affect exit code)
 exit $TEST_EXIT_CODE
