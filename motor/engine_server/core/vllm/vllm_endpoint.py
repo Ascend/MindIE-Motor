@@ -26,12 +26,10 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from vllm import envs
 from vllm.entrypoints.chat_utils import load_chat_template
-from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.models.protocol import BaseModelPath
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.entrypoints.utils import process_lora_modules
 
 from motor.common.logger import get_logger
 from motor.engine_server.core.infer_endpoint import InferEndpoint, CONFIG_KEY
@@ -39,7 +37,9 @@ from motor.engine_server.core.vllm.vllm_engine import VLLMEngine
 from motor.engine_server.core.vllm.openai.serving_chat import OpenAIServingChat
 from motor.engine_server.core.vllm.openai.serving_completion import OpenAIServingCompletion
 from motor.engine_server.core.vllm.vllm_openai_compat import (
+    RequestLogger,
     create_openai_serving_render,
+    process_lora_modules,
     vllm_openai_chat_needs_render,
 )
 

@@ -12,7 +12,6 @@ import importlib.metadata as md
 from typing import Any
 
 import vllm
-from vllm.entrypoints.utils import cli_env_setup
 from vllm.usage.usage_lib import UsageContext
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.executor.multiproc_executor import MultiprocExecutor
@@ -20,6 +19,7 @@ from vllm.v1.executor.multiproc_executor import MultiprocExecutor
 from motor.common.logger import get_logger
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.engine import Engine
+from motor.engine_server.core.vllm.vllm_openai_compat import cli_env_setup
 
 logger = get_logger(__name__)
 
