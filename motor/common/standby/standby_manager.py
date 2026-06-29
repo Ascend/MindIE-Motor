@@ -23,9 +23,13 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 
 logger = get_logger(__name__)
 
+CONTROLLER_REPORT_EVENT_KEY = "/controller/should_report_event"
+COORDINATOR_REPORT_EVENT_KEY = "/coordinator/should_report_event"
+
 
 class StandbyConfigProvider(Protocol):
     """Protocol for configuration objects that provide standby configuration"""
+
     standby_config: StandbyConfig
 
 
@@ -46,10 +50,7 @@ class StandbyManager(ThreadSafeSingleton):
         if config is None:
             raise ValueError("config must be provided for first initialization of StandbyManager singleton")
         self.config = config
-        self.etcd_client = EtcdClient(
-            etcd_config=config.etcd_config,
-            tls_config=config.etcd_tls_config
-        )
+        self.etcd_client = EtcdClient(etcd_config=config.etcd_config, tls_config=config.etcd_tls_config)
         standby_config = config.standby_config
         self.current_role = StandbyRole.STANDBY
         self.role_lock = threading.Lock()
@@ -66,11 +67,10 @@ class StandbyManager(ThreadSafeSingleton):
         # Callbacks (on_become_master receives should_report_event from etcd)
         self.on_become_master: Callable[[bool], None] | None = None
         self.on_become_standby: Callable[[], None] | None = None
+        self.report_event_key = CONTROLLER_REPORT_EVENT_KEY
 
         self.stanyby_loop_thread = threading.Thread(
-            target=self._master_standby_loop,
-            name="MasterStandbyManager",
-            daemon=False
+            target=self._master_standby_loop, name="MasterStandbyManager", daemon=False
         )
 
         self._initialized = True
@@ -92,7 +92,8 @@ class StandbyManager(ThreadSafeSingleton):
     def start(
         self,
         on_become_master: Callable[[bool], None],
-        on_become_standby: Callable[[], None]
+        on_become_standby: Callable[[], None],
+        report_event_key: str = CONTROLLER_REPORT_EVENT_KEY,
     ) -> None:
         """Start the master/standby management thread."""
         if self.is_running:
@@ -102,6 +103,7 @@ class StandbyManager(ThreadSafeSingleton):
         # Set callbacks
         self.on_become_master = on_become_master
         self.on_become_standby = on_become_standby
+        self.report_event_key = report_event_key
 
         # Reset stop_event if it was previously set (for singleton reuse)
         if self.stop_event.is_set():
@@ -172,8 +174,8 @@ class StandbyManager(ThreadSafeSingleton):
                     if self._try_become_master():
                         logger.info("Became master, starting modules")
                         if self.on_become_master:
-                            self.on_become_master(self.etcd_client.get_bool(key="should_report_event"))
-                            self.etcd_client.set_bool(key="should_report_event", value=True)
+                            self.on_become_master(self.etcd_client.get_bool(key=self.report_event_key))
+                            self.etcd_client.set_bool(key=self.report_event_key, value=True)
                     self.has_set_role = True
 
             except Exception as e:
@@ -214,8 +216,7 @@ class StandbyManager(ThreadSafeSingleton):
             try:
                 # Try to acquire master lock with increased TTL
                 lease_id = self.etcd_client.acquire_lock(
-                    lock_key=self.config.standby_config.master_lock_key,
-                    ttl=self.lock_ttl
+                    lock_key=self.config.standby_config.master_lock_key, ttl=self.lock_ttl
                 )
                 if lease_id:
                     self.set_role(StandbyRole.MASTER)
@@ -228,8 +229,9 @@ class StandbyManager(ThreadSafeSingleton):
 
             except Exception as e:
                 consecutive_failures += 1
-                logger.warning("Failed to acquire master lock (attempt %d/%d): %s",
-                             consecutive_failures, self.max_lock_failures, e)
+                logger.warning(
+                    "Failed to acquire master lock (attempt %d/%d): %s", consecutive_failures, self.max_lock_failures, e
+                )
 
                 if consecutive_failures < self.max_lock_failures:
                     # Wait before retrying, but allow interruption by stop_event

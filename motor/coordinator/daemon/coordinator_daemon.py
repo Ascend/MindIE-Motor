@@ -44,7 +44,7 @@ from motor.coordinator.process.mgmt_manager import MgmtProcessManager
 from motor.coordinator.process.obs_manager import ObsProcessManager
 from motor.coordinator.process.scheduler_manager import SchedulerProcessManager
 from motor.coordinator.daemon.role_shm_holder import RoleShmHolder
-from motor.common.standby.standby_manager import StandbyManager
+from motor.common.standby.standby_manager import COORDINATOR_REPORT_EVENT_KEY, StandbyManager
 from motor.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -104,6 +104,7 @@ class CoordinatorDaemon:
             self._standby_manager.start(
                 on_become_master=self._on_become_master,
                 on_become_standby=self._on_become_standby,
+                report_event_key=COORDINATOR_REPORT_EVENT_KEY,
             )
             get_supervised_keys = self._get_supervised_keys
         else:
@@ -141,12 +142,30 @@ class CoordinatorDaemon:
         if self._role_shm_holder is not None:
             self._write_role_shm_byte(ROLE_SHM_MASTER)
         self._start_processes([PROCESS_KEY_INFERENCE])
+        logger.info("_on_become_master")
+        if should_report_event:
+            self._report_coordinator_to_slave_event()
 
     def _on_become_standby(self) -> None:
         """Called when this node becomes standby: write role shm (if any), then stop Inference only."""
         if self._role_shm_holder is not None:
             self._write_role_shm_byte(ROLE_SHM_STANDBY)
         self._stop_all_processes(exclude_processes={PROCESS_KEY_MGMT, PROCESS_KEY_OBS, PROCESS_KEY_SCHEDULER})
+
+    def _report_coordinator_to_slave_event(self) -> None:
+        """Report coordinator master-to-slave event to controller observability."""
+        from motor.common.alarm.master_to_slave_event import (
+            MasterToSlaveComponent,
+            MasterToSlaveEvent,
+            MasterToSlaveReason,
+        )
+        from motor.coordinator.api_client.controller_api_client import ControllerApiClient
+
+        event = MasterToSlaveEvent(
+            component=MasterToSlaveComponent.COORDINATOR,
+            reason_id=MasterToSlaveReason.MASTER_COMPONENT_EXCEPTION,
+        )
+        ControllerApiClient.report_alarms(event.model_dump(mode="json"))
 
     def _initialize_process_managers(self) -> None:
         """Initialize Mgmt / Scheduler / Infer process managers."""

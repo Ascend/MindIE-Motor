@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -16,7 +15,7 @@ import sys
 import threading
 from typing import Any
 
-from motor.common.standby.standby_manager import StandbyManager
+from motor.common.standby.standby_manager import CONTROLLER_REPORT_EVENT_KEY, StandbyManager
 from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.logger import get_logger
@@ -213,11 +212,16 @@ def on_become_master(should_report_event: bool) -> None:
     start_all_modules(exclude_modules={"ControllerAPI"})
 
     if should_report_event:
-        from motor.common.alarm.controller_to_slave_event import ControllerToSlaveEvent, ControllerToSlaveReason
+        from motor.common.alarm.master_to_slave_event import (
+            MasterToSlaveComponent,
+            MasterToSlaveEvent,
+            MasterToSlaveReason,
+        )
         from motor.controller.observability.observability import Observability
 
-        event = ControllerToSlaveEvent(
-            reason_id=ControllerToSlaveReason.MASTER_CONTROLLER_EXCEPTION,
+        event = MasterToSlaveEvent(
+            component=MasterToSlaveComponent.CONTROLLER,
+            reason_id=MasterToSlaveReason.MASTER_COMPONENT_EXCEPTION,
         )
         Observability().add_alarm(event)
         logger.info("Reported ControllerToSlave event")
@@ -296,7 +300,11 @@ def main() -> None:
 
         # Get singleton instance and initialize/start it
         standby_manager = StandbyManager(config)
-        standby_manager.start(on_become_master=on_become_master, on_become_standby=on_become_standby)
+        standby_manager.start(
+            on_become_master=on_become_master,
+            on_become_standby=on_become_standby,
+            report_event_key=CONTROLLER_REPORT_EVENT_KEY,
+        )
         logger.info("Controller started in standby mode, waiting to become master...")
     else:
         logger.info("Master/standby feature is disabled, running in standalone mode")
