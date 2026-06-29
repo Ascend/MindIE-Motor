@@ -41,6 +41,5 @@ pub use protocols::{
     RegisterRequest, SequenceBlockHash, StatusResponse, StorageMedium, UnregisterRequest,
     WorkerKey,
 };
-pub use radix_tree::RadixTree;
 pub use registry::WorkerRegistry;
 pub use server::create_router;

@@ -263,7 +263,7 @@ impl RadixTree {
                         Some(block) => {
                             // Verify block_hash consistency
                             if block.borrow().block_hash != Some(seq_hash) {
-                                tracing::warn!(
+                                tracing::debug!(
                                     instance_id = %worker.instance_id,
                                     dp_rank = worker.dp_rank,
                                     expected = ?seq_hash,

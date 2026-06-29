@@ -46,6 +46,22 @@ from token_pool import TOKEN_POOL
 
 
 # ---------------------------------------------------------------------------
+# IPv6 helpers
+# ---------------------------------------------------------------------------
+
+
+def _zmq_endpoint(host: str, port: int) -> str:
+    """Build a ZMQ tcp:// endpoint URL, bracketing IPv6 addresses."""
+    if ":" in host:
+        return f"tcp://[{host}]:{port}"
+    return f"tcp://{host}:{port}"
+
+
+def _pod_ip(default: str = "127.0.0.1") -> str:
+    return os.environ.get("POD_IP", default)
+
+
+# ---------------------------------------------------------------------------
 # XXH3 hashing — replicates kv-conductor's compute_block_hash_for_seq
 # ---------------------------------------------------------------------------
 
@@ -70,16 +86,13 @@ def compute_block_hashes(tokens, block_size):
 
 
 def generate_tokens_for_publisher(dp_rank, block_size, block_index):
-    """Deterministic tokens from the shared pool at a dp_rank-specific offset.
+    """Deterministic unique tokens per (dp_rank, block_index).
 
-    Each publisher (dp_rank) starts at a different segment of the pool,
-    so queries with common tokens can match any DP's cached blocks.
+    Uses hash-based generation from token_pool.generate_tokens — each
+    block gets a distinct sequence, no cycling, no cross-DP collisions.
     """
-    offset = (dp_rank * 1000 + block_index * block_size) % len(TOKEN_POOL)
-    tokens = []
-    for i in range(block_size):
-        tokens.append(TOKEN_POOL[(offset + i) % len(TOKEN_POOL)])
-    return tokens
+    from token_pool import generate_tokens
+    return generate_tokens(dp_rank, block_size, block_index)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +125,7 @@ class MockZmqPublisher:
         self.block_size = block_size
         self.interval = interval
         self.instance_id = instance_id or f"mock-{model_name}-dp{dp_rank}"
-        self.backend_id = backend_id or os.environ.get("POD_IP", "127.0.0.1")
+        self.backend_id = backend_id or _pod_ip()
         self.tenant_id = tenant_id
         self.vllm_format = vllm_format
         self.swa_mixed = swa_mixed
@@ -248,20 +261,35 @@ class MockZmqPublisher:
         # Mooncake-format confirm event — seq_hashes match the engine's block_hashes.
         # The kv-conductor's apply_zmq_event looks up seq_hashes in the non-HBM
         # cache and inserts the corresponding XXH3 tokens_hash into the radix tree.
-        event = {
-            "event_id": eid,
-            "event_type": "stored",
-            "model_name": self.model_name,
-            "tenant_id": self.tenant_id,
-            "backend_id": self.backend_id,
-            "medium": "cpu",
-            "dp_rank": self.dp_rank,
-            "seq_hashes": hashes,
-            "block_size": self.block_size,
-        }
-        print(f"[pool] confirm offload batch=#{eid} n={len(hashes)} hashes={hashes[:3]}", flush=True)
+        # Emit two batches: one for CPU, one for DISK.
+        # Split hashes roughly 60/40 to simulate different pool tiers.
+        split = max(1, len(hashes) * 3 // 5)
+        cpu_hashes = hashes[:split]
+        disk_hashes = hashes[split:]
+        batches = []
         ts = int(time.time() * 1000)
-        return [[ts, [event], self.dp_rank]]
+
+        for medium, hlist in [("cpu", cpu_hashes), ("disk", disk_hashes)]:
+            if not hlist:
+                continue
+            with self._lock:
+                self._event_id += 1
+                eid = self._event_id
+            event = {
+                "event_id": eid,
+                "event_type": "stored",
+                "model_name": self.model_name,
+                "tenant_id": self.tenant_id,
+                "backend_id": self.instance_id,
+                "medium": medium,
+                "dp_rank": self.dp_rank,
+                "seq_hashes": hlist,
+                "block_size": self.block_size,
+            }
+            batches.append([ts, [event], self.dp_rank])
+
+        print(f"[pool] confirm offload cpu={len(cpu_hashes)} disk={len(disk_hashes)} hashes={hashes[:3]}", flush=True)
+        return batches
 
     def _make_store_batch(self, count):
         if count <= 0:
@@ -300,19 +328,22 @@ class MockZmqPublisher:
         medium = "cpu" if is_offload else None
 
         if self.vllm_format:
-            event = {
-                "type": "BlockStored",
-                "block_hashes": tokens_hashes,
-                "parent_block_hash": None,
-                "token_ids": all_tokens,
-                "block_size": self.block_size,
-                "model_name": self.model_name,
-                "tenant_id": self.tenant_id,
-                "dp_rank": self.dp_rank,
-                "backend_id": self.backend_id,
-                "kv_cache_spec_kind": spec_kind,
-                "medium": medium,
-            }
+            # vLLM msgspec array format (array_like=True, tag=True,
+            # omit_defaults=True).  Include int anchors (lora_id=0,
+            # group_idx=0) so Rust's type-pattern parser stays synced.
+            # Fields: [tag, block_hashes, token_ids, block_size,
+            #          lora_id, medium, group_idx, kv_cache_spec_kind]
+            # (parent_block_hash, lora_name, extra_keys, sliding_window omitted)
+            event = [
+                "BlockStored",
+                tokens_hashes,
+                all_tokens,
+                self.block_size,
+                0,  # lora_id (int anchor)
+                medium or "GPU",  # medium (str anchor)
+                0,  # group_idx (int anchor)
+                spec_kind,
+            ]
             if is_offload:
                 self.offload_queue.extend(tokens_hashes)
         else:
@@ -351,15 +382,12 @@ class MockZmqPublisher:
             self._total_rem += len(removed)
 
         if self.vllm_format:
-            event = {
-                "type": "BlockRemoved",
-                "block_hashes": removed_ths,
-                "model_name": self.model_name,
-                "tenant_id": self.tenant_id,
-                "dp_rank": self.dp_rank,
-                "backend_id": self.backend_id,
-                "kv_cache_spec_kind": "FullAttention",
-            }
+            # vLLM msgspec array: [tag, block_hashes]
+            # (medium, group_idx omitted — omit_defaults=True)
+            event = [
+                "BlockRemoved",
+                removed_ths,
+            ]
         else:
             event = {
                 "event_id": eid,
@@ -387,13 +415,8 @@ class MockZmqPublisher:
             self._stats_cleared += 1
 
         if self.vllm_format:
-            event = {
-                "type": "AllBlocksCleared",
-                "model_name": self.model_name,
-                "tenant_id": self.tenant_id,
-                "dp_rank": self.dp_rank,
-                "backend_id": self.backend_id,
-            }
+            # vLLM msgspec array: [tag]
+            event = ["AllBlocksCleared"]
         else:
             event = {
                 "event_id": eid,
@@ -438,56 +461,75 @@ class MockZmqPublisher:
     def _publish_all_initial_blocks(self):
         if self.is_pool_publisher:
             return  # pool publisher: no blocks, drains offload queue only
-        blocks = []
-        all_tokens = []
+
+        # Collect pre-generated blocks in order.
+        items: list[tuple[int, int, list[int]]] = []
         with self._lock:
-            for _seq, (th, tokens) in list(self._active_blocks.items())[:]:
-                blocks.append({"block_hash": th, "tokens_hash": th})
-                all_tokens.extend(tokens)
-            self._stats_stored = len(blocks)
-            self._total_pub += len(blocks)
-        if not blocks:
+            for _seq, (th, tokens) in list(self._active_blocks.items()):
+                items.append((_seq, th, tokens))
+            self._stats_stored = len(items)
+            self._total_pub += len(items)
+        if not items:
             return
-        with self._lock:
-            self._event_id += 1
-            eid = self._event_id
 
-        hashes = [b["tokens_hash"] for b in blocks]
-        if self.vllm_format:
-            event = {
-                "type": "BlockStored",
-                "block_hashes": hashes,
-                "parent_block_hash": None,
-                "token_ids": all_tokens,
-                "block_size": self.block_size,
-                "model_name": self.model_name,
-                "tenant_id": self.tenant_id,
-                "dp_rank": self.dp_rank,
-                "backend_id": self.backend_id,
-                "kv_cache_spec_kind": "FullAttention",
-            }
-            ts = time.time()
-        else:
-            event = {
-                "event_id": eid,
-                "event_type": "stored",
-                "model_name": self.model_name,
-                "tenant_id": self.tenant_id,
-                "dp_rank": self.dp_rank,
-                "block_size": self.block_size,
-                "blocks": blocks,
-                "parent_hash": None,
-                "seq_hashes": hashes,
-            }
-            ts = int(time.time() * 1000)
+        # Publish in BATCH_SIZE chunks so each chunk starts a new chain
+        # from root.  A single giant chain would bury later block indices
+        # deep in the tree where queries cannot find them at root.children.
+        BATCH_SIZE = 16
+        total_published = 0
+        for chunk_start in range(0, len(items), BATCH_SIZE):
+            chunk = items[chunk_start : chunk_start + BATCH_SIZE]
+            hashes = []
+            all_tokens = []
+            for _, th, tokens in chunk:
+                hashes.append(th)
+                all_tokens.extend(tokens)
 
-        payload = msgpack.packb([ts, [event], self.dp_rank])
-        self._socket.send(b"", zmq.SNDMORE)
-        self._socket.send(b"0", zmq.SNDMORE)
-        self._socket.send(payload)
+            with self._lock:
+                self._event_id += 1
+                eid = self._event_id
+
+            if self.vllm_format:
+                event = [
+                    "BlockStored",
+                    hashes,
+                    all_tokens,
+                    self.block_size,
+                    0,       # lora_id
+                    "GPU",   # medium
+                    0,       # group_idx
+                    "FullAttention",
+                ]
+                ts = time.time()
+            else:
+                blocks_data = [
+                    {"block_hash": th, "tokens_hash": th}
+                    for _, th, _ in chunk
+                ]
+                event = {
+                    "event_id": eid,
+                    "event_type": "stored",
+                    "model_name": self.model_name,
+                    "tenant_id": self.tenant_id,
+                    "dp_rank": self.dp_rank,
+                    "block_size": self.block_size,
+                    "blocks": blocks_data,
+                    "parent_hash": None,
+                    "seq_hashes": hashes,
+                }
+                ts = int(time.time() * 1000)
+
+            payload = msgpack.packb([ts, [event], self.dp_rank])
+            self._socket.send(b"", zmq.SNDMORE)
+            self._socket.send(b"0", zmq.SNDMORE)
+            self._socket.send(payload)
+            total_published += len(hashes)
+
         fmt_note = " (vLLM)" if self.vllm_format else ""
         print(
-            f"[mock] initial burst published: {len(blocks)} blocks batch=#{eid} dp={self.dp_rank}{fmt_note}",
+            f"[mock] initial burst published: {total_published} blocks "
+            f"in {(total_published + BATCH_SIZE - 1) // BATCH_SIZE} batches "
+            f"dp={self.dp_rank}{fmt_note}",
             flush=True,
         )
 
@@ -506,7 +548,7 @@ class MockZmqPublisher:
                 "tenant_id": self.tenant_id,
             }
         else:
-            endpoint = f"tcp://{os.environ.get('POD_IP', '127.0.0.1')}:{self.port}"
+            endpoint = _zmq_endpoint(_pod_ip(), self.port)
             payload = {
                 "instance_id": self.instance_id,
                 "endpoint": endpoint,
@@ -655,7 +697,7 @@ class MultiPortRunner:
         self.instance_id = instance_id or f"mock-{model_name}-dp{dp_rank}"
         self.conductor_url = conductor_url
         self.store_backend = store_backend
-        bid = backend_id or os.environ.get("POD_IP", "127.0.0.1")
+        bid = backend_id or _pod_ip()
 
         # Shared offload queue: XPU publisher pushes offloaded block hashes;
         # CPU/DISK publisher drains them to emit Mooncake confirm events.
@@ -692,11 +734,11 @@ class MultiPortRunner:
             print("[multi] ERROR: conductor URL required for registration")
             return
 
-        pod_ip = os.environ.get("POD_IP", "127.0.0.1")
+        pod_ip = _pod_ip()
         medium_endpoints = {
-            "xpu": f"tcp://{pod_ip}:{self.xpu_port}",
-            "cpu": f"tcp://{pod_ip}:{self.cpu_disk_port}",
-            "disk": f"tcp://{pod_ip}:{self.cpu_disk_port}",
+            "xpu": _zmq_endpoint(pod_ip, self.xpu_port),
+            "cpu": _zmq_endpoint(pod_ip, self.cpu_disk_port),
+            "disk": _zmq_endpoint(pod_ip, self.cpu_disk_port),
         }
 
         self._xpu_pub.register(url, medium_endpoints=medium_endpoints)

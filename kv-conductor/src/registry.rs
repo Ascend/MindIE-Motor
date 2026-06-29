@@ -25,8 +25,15 @@ use crate::protocols::*;
 
 /// Extract the IP/host portion from a ZMQ endpoint URL.
 /// e.g. "tcp://10.0.0.1:5557" → "10.0.0.1"
+///      "tcp://[::1]:5557"   → "::1"
 fn extract_ip_from_endpoint(endpoint: &str) -> Option<String> {
     let without_prefix = endpoint.strip_prefix("tcp://")?;
+    // IPv6 bracket notation: tcp://[::1]:5557
+    if let Some(rest) = without_prefix.strip_prefix('[') {
+        let close_bracket = rest.find(']')?;
+        return Some(rest[..close_bracket].to_string());
+    }
+    // IPv4 or hostname: tcp://10.0.0.1:5557
     let colon_pos = without_prefix.rfind(':')?;
     Some(without_prefix[..colon_pos].to_string())
 }
@@ -114,7 +121,8 @@ pub struct WorkerRegistry {
     indexer: Arc<Indexer>,
     /// Count of active replay sessions. Queries are rejected while > 0
     /// to avoid returning incomplete results during prefix-tree rebuild.
-    replay_in_progress: std::sync::atomic::AtomicU64,
+    /// Wrapped in Arc so it can be shared with spawn_blocking tasks.
+    replay_in_progress: Arc<std::sync::atomic::AtomicU64>,
     /// Active ZMQ subscribers, keyed by (instance_id, dp_rank, endpoint_url).
     /// Multiple subscribers may exist per dp_rank when a backend uses separate
     /// ports for different storage media (e.g. YuanRong: HBM port vs DDR/SSD port).
@@ -171,11 +179,11 @@ impl WorkerRegistry {
         Ok(HashMap::new())
     }
 
-    pub fn new() -> Self {
+    pub fn new(scoring: ScoringConfig) -> Self {
         Self {
             instances: tokio::sync::RwLock::new(HashMap::new()),
-            indexer: Arc::new(Indexer::new()),
-            replay_in_progress: std::sync::atomic::AtomicU64::new(0),
+            indexer: Arc::new(Indexer::new(scoring)),
+            replay_in_progress: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             zmq_subscribers: tokio::sync::RwLock::new(HashMap::new()),
             hbm_ip_index: Arc::new(ParkingRwLock::new(HashMap::new())),
         }
@@ -192,6 +200,12 @@ impl WorkerRegistry {
         let sb = StoreBackend::parse(&req.store_backend);
         let is_pool =
             sb.is_pool_auto_attach() && req.medium_endpoints.is_empty() && req.endpoint.is_some();
+
+        // Detect whether this instance_id already exists (for replay gating).
+        let instance_exists = {
+            let instances = self.instances.read().await;
+            instances.contains_key(&req.instance_id)
+        };
 
         // ── Handle re-registration ────────────────────────────────────
         // If the same (instance_id, dp_rank) is already registered, stop the
@@ -344,19 +358,31 @@ impl WorkerRegistry {
         }
 
         if let Some(ref replay_ep) = req.replay_endpoint {
-            if !replay_ep.is_empty() {
+            if !replay_ep.is_empty() && !instance_exists {
                 self.replay_in_progress
                     .fetch_add(1, std::sync::atomic::Ordering::Release);
-                crate::zmq_subscriber::replay_events(
-                    replay_ep,
-                    &req.modelname,
-                    &req.tenant_id,
-                    req.block_size,
-                    &self.indexer,
-                    &req.instance_id,
-                );
-                self.replay_in_progress
-                    .fetch_sub(1, std::sync::atomic::Ordering::Release);
+
+                let replay_ep = replay_ep.clone();
+                let modelname = req.modelname.clone();
+                let tenant_id = req.tenant_id.clone();
+                let block_size = req.block_size;
+                let indexer = Arc::clone(&self.indexer);
+                let instance_id = req.instance_id.clone();
+                let replay_counter = Arc::clone(&self.replay_in_progress);
+
+                // Offload blocking ZMQ I/O to a dedicated thread so the
+                // tokio runtime worker is not starved during replay.
+                tokio::task::spawn_blocking(move || {
+                    crate::zmq_subscriber::replay_events(
+                        &replay_ep,
+                        &modelname,
+                        &tenant_id,
+                        block_size,
+                        &indexer,
+                        &instance_id,
+                    );
+                    replay_counter.fetch_sub(1, std::sync::atomic::Ordering::Release);
+                });
             }
         }
 
@@ -578,7 +604,7 @@ impl WorkerRegistry {
 
 impl Default for WorkerRegistry {
     fn default() -> Self {
-        Self::new()
+        Self::new(ScoringConfig::default())
     }
 }
 
@@ -592,3 +618,43 @@ pub struct WorkerSummary {
 }
 
 use serde::Serialize;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_ip_ipv4() {
+        assert_eq!(
+            extract_ip_from_endpoint("tcp://10.0.0.1:5557"),
+            Some("10.0.0.1".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_ip_ipv6_bracketed() {
+        assert_eq!(
+            extract_ip_from_endpoint("tcp://[::1]:5557"),
+            Some("::1".into())
+        );
+        assert_eq!(
+            extract_ip_from_endpoint("tcp://[2001:db8::1]:15557"),
+            Some("2001:db8::1".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_ip_hostname() {
+        assert_eq!(
+            extract_ip_from_endpoint("tcp://kv-conductor:13333"),
+            Some("kv-conductor".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_ip_invalid() {
+        assert_eq!(extract_ip_from_endpoint("invalid"), None);
+        assert_eq!(extract_ip_from_endpoint("tcp://"), None);
+        assert_eq!(extract_ip_from_endpoint("tcp://[:5557"), None);
+    }
+}

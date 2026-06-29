@@ -48,6 +48,14 @@ def log_e(msg: str) -> None:
 
 
 class LogMonitor:
+    # Regex to strip ANSI escape sequences (e.g. \x1b[32m, \x1b[0m)
+    # produced by Rust tracing-subscriber / kubectl logs with color.
+    _ANSI_ESCAPE_RE = __import__("re").compile(r'\x1b\[[0-9;]*m')
+
+    @classmethod
+    def _strip_ansi(cls, line: str) -> str:
+        return cls._ANSI_ESCAPE_RE.sub('', line)
+
     def __init__(self):
         self.encode_type = "utf-8"
         self.cmd_kubectl = "/usr/bin/kubectl"
@@ -236,8 +244,8 @@ class LogMonitor:
                     time.sleep(interval)
                     continue
                 b_write_flag = True
-                # Remove newlines and write to log.
-                log_line = line.rstrip('\n')
+                # Remove newlines and ANSI escape codes, then write to log.
+                log_line = self._strip_ansi(line.rstrip('\n'))
                 logger.info(log_line)
         except Exception as e:
             log_e(f"{pod_name} :Exception: {e}")

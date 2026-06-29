@@ -3,11 +3,11 @@
 #
 # Usage:
 #   ./conductor_cli.sh up                          # Deploy multi-medium publishers + conductor
-#   ./conductor_cli.sh up --single-port             # Legacy single-port mode
+#   ./conductor_cli.sh up --single-port            # Legacy single-port mode
 #   ./conductor_cli.sh down                        # Tear down
 #   ./conductor_cli.sh register                    # Register all publishers
 #   ./conductor_cli.sh status                      # Workers + block counts
-#   ./conductor_cli.sh query-tokens --count 256     # Query by token IDs
+#   ./conductor_cli.sh query-tokens --count 256    # Query by token IDs
 #   ./conductor_cli.sh bench                       # Benchmark
 #   ./conductor_cli.sh quick                       # One-shot: register → wait → status
 #   ./conductor_cli.sh health                      # Health check
@@ -279,20 +279,38 @@ for tenant_id, instances in d.items():
     if not instances:
         print('  (no matches)'); continue
     print(f'  tenant: {tenant_id}')
-    print(f'  {\"instance\":<30s} {\"tier\":>6s} {\"blocks\":>8s} {\"tokens\":>8s}')
-    print(f'  {\"-\"*30} {\"-\"*6} {\"-\"*8} {\"-\"*8}')
+    header = f'  {\"instance\":<30s} {\"score\":>6s} {\"XPU\":>6s} {\"CPU\":>6s} {\"DISK\":>6s} {\"blocks\":>8s} {\"tokens\":>8s}'
+    print(header)
+    print(f'  {\"-\"*30} {\"-\"*6} {\"-\"*6} {\"-\"*6} {\"-\"*6} {\"-\"*8} {\"-\"*8}')
     for inst_id, imd in sorted(instances.items()):
-        for tier in ['XPU', 'CPU', 'DISK']:
-            t = imd.get(tier, 0)
-            if t > 0:
-                print(f'  {inst_id:<30s} {tier:>6s} {t//bs:>8d} {t:>8d}')
-        for rank, t in sorted(imd.get('DP', {}).items()):
-            print(f'  {\"dp=\"+rank:<30s} {\"DP\":>6s} {t//bs:>8d} {t:>8d}')
-        best = imd.get('longest_matched', 0)
-        print(f'  {\"\":30s} {\"best\":>6s} {best//bs:>8d} {best:>8d}')
+        # Legacy per-medium tokens
+        xpu_t = imd.get('XPU', 0)
+        cpu_t = imd.get('CPU', 0)
+        disk_t = imd.get('DISK', 0)
+        best_t = imd.get('longest_matched', 0)
+        total_score = imd.get('total_score', 0)
+        # Show instance-level summary
+        parts = []
+        if xpu_t: parts.append(f'{xpu_t//bs}blk')
+        if cpu_t: parts.append(f'{cpu_t//bs}blk')
+        if disk_t: parts.append(f'{disk_t//bs}blk')
+        blk_str = '/'.join(parts) if parts else '0blk'
+        best_blk = best_t // bs if bs else 0
+        print(f'  {inst_id:<30s} {total_score:>6d} {xpu_t//bs:>6d} {cpu_t//bs:>6d} {disk_t//bs:>6d} {best_blk:>8d} {best_t:>8d}')
+        # Per-DP scoring breakdown
+        dps = imd.get('DP', {})
+        if dps:
+            for rank, ds in sorted(dps.items()):
+                x_s = ds.get('XPU', 0) if isinstance(ds, dict) else 0
+                c_s = ds.get('CPU', 0) if isinstance(ds, dict) else 0
+                d_s = ds.get('DISK', 0) if isinstance(ds, dict) else 0
+                total = ds.get('total', 0) if isinstance(ds, dict) else ds
+                if isinstance(ds, dict) and (x_s or c_s or d_s):
+                    print(f'  {\"  dp=\"+rank:<30s} {total:>6d} {x_s:>6d} {c_s:>6d} {d_s:>6d} {\"\":>8s} {\"\":>8s}')
+        # media_detail (blocks, for hit_detail)
         md = imd.get('media_detail')
         if md:
-            print(f'  {\"media_detail (blocks)\":<30s}')
+            print(f'  {\"  per-DP blocks:\":<30s}')
             for rank, media in sorted(md.items()):
                 xpu_b = media.get('XPU', 0)
                 cpu_b = media.get('CPU', 0)
@@ -302,7 +320,7 @@ for tenant_id, instances in d.items():
                 if cpu_b: parts.append(f'CPU={cpu_b}')
                 if disk_b: parts.append(f'DISK={disk_b}')
                 if parts:
-                    print(f'  {\"dp=\"+rank:<30s} {\", \".join(parts)}')
+                    print(f'  {\"  dp=\"+rank:<30s} {\", \".join(parts)}')
     print()
 " 2>/dev/null || echo "$json"
 }
@@ -363,9 +381,10 @@ try:
     pool_dir = '$SCRIPT_DIR'
     if pool_dir not in ('', None):
         os.chdir(pool_dir)
-    from token_pool import TOKEN_POOL as token_pool
+    from token_pool import generate_tokens
 except ImportError:
-    token_pool = [101,2023,318,559,234,1039,640,1024,286,562,317,859,1053,1288,2000,345,678,901,1234,1567,1890,2123,2456,2789]
+    def generate_tokens(dp, bs, bi):
+        return [(abs(hash(f'{dp}:{bi}:{p}')) % 50000 + 100) for p in range(bs)]
 
 all_hashes = [int(h) for h in cached.split() if h.strip()] if cached else []
 num_hashes = len(all_hashes)
@@ -373,7 +392,6 @@ num_hashes = len(all_hashes)
 hits = 0; misses = 0; total_blocks = 0; max_blocks = 0; best_worker = None
 latencies = []; total_tok_matched = 0
 block_hits_by_worker = {}
-pool_size = len(token_pool)
 
 for i in range(count):
     if mode == 'throughput' and num_hashes > 0:
@@ -388,14 +406,15 @@ for i in range(count):
         }).encode()
     else:
         # Use deterministic token generation matching the mock publisher.
-        # publisher dp=N generates block_index 0..8191+. Eviction removes
-        # oldest-first, so pick block_index from the upper half.
+        # Each block gets unique tokens via XXH3 hash — no cycling.
+        # Align block_index to batch boundary (multiple of 16) so HBM
+        # prefix tree matches from root.children chain heads.
         dp = random.randint(0, 7)
-        block_index = random.randint(4000, 8192)
-        offset = (dp * 1000 + block_index * block_size) % pool_size
+        block_index = random.randint(250, 512) * 16
+        blocks_needed = $tokens_per // block_size if block_size else 1
         tokens = []
-        for j in range($tokens_per):
-            tokens.append(token_pool[(offset + j) % pool_size])
+        for bi in range(block_index, block_index + blocks_needed):
+            tokens.extend(generate_tokens(dp, block_size, bi))
         endpoint = '/query'
         data = json.dumps({
             'model': model, 'block_size': block_size,
@@ -414,16 +433,25 @@ for i in range(count):
         lat = (time.time() - t0) * 1000
         latencies.append(lat)
 
-        matched = 0; worker = None
+        matched = 0; worker = None; best_score = 0
         for tid, instances in result.items():
             for inst_id, imd in instances.items():
-                b = imd.get('longest_matched', 0) // block_size if block_size else 0
-                if b > matched:
-                    matched = b; worker = inst_id
-                for rank, tok in imd.get('DP', {}).items():
-                    bk = tok // block_size if block_size else 0
+                score = imd.get('total_score', 0)
+                if score > best_score:
+                    best_score = score; worker = inst_id
+                # Per-DP scoring: DP now contains {XPU, CPU, DISK, total}
+                for rank, ds in imd.get('DP', {}).items():
                     key = f'{inst_id}/dp={rank}'
-                    block_hits_by_worker[key] = block_hits_by_worker.get(key, 0) + bk
+                    if isinstance(ds, dict):
+                        s = ds.get('total', 0)
+                        x_s = ds.get('XPU', 0)
+                        c_s = ds.get('CPU', 0)
+                        d_s = ds.get('DISK', 0)
+                        block_hits_by_worker[key] = block_hits_by_worker.get(key, 0) + s
+                    else:
+                        # Legacy format: plain integer (backward compat)
+                        bk = ds // block_size if block_size else 0
+                        block_hits_by_worker[key] = block_hits_by_worker.get(key, 0) + bk
                 md = imd.get('media_detail')
                 if md:
                     for rank, media in md.items():
@@ -432,7 +460,11 @@ for i in range(count):
                         disk_b = media.get('DISK', 0)
                         if xpu_b or cpu_b or disk_b:
                             print(f'        dp={rank} XPU={xpu_b} CPU={cpu_b} DISK={disk_b} blocks', flush=True)
-        if matched > 0:
+                # Legacy: longest_matched for backward compat display
+                b = imd.get('longest_matched', 0) // block_size if block_size else 0
+                if b > matched:
+                    matched = b
+        if best_score > 0:
             hits += 1; total_blocks += matched
             total_tok_matched += matched * block_size
             if matched > max_blocks:
@@ -458,10 +490,11 @@ if hits > 0:
     print(f'    avg blocks hit:  {total_blocks/hits:.1f}')
     print(f'    avg tokens hit:  {total_tok_matched/hits:.0f}')
     print(f'    max blocks:      {max_blocks}  ({best_worker})')
+    print(f'    best score:      {best_score}')
     if block_hits_by_worker:
-        print('    per-worker:')
-        for wk, bk in sorted(block_hits_by_worker.items()):
-            print(f'      {wk:35s}  {bk:>6d} blocks')
+        print('    per-worker (score):')
+        for wk, sc in sorted(block_hits_by_worker.items(), key=lambda x: -x[1]):
+            print(f'      {wk:35s}  {sc:>6d} pts')
 if latencies:
     latencies.sort()
     print('    latency (ms):')

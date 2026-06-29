@@ -349,7 +349,16 @@ class ConductorApiClient:
                 media = imd.get("media_detail")
                 parts = [f"best={longest}", f"XPU={xpu}", f"CPU={cpu}", f"DISK={disk}"]
                 if isinstance(dp, dict):
-                    parts.append(f"DP={{{','.join(f'{k}:{v}' for k, v in sorted(dp.items()))}}}")
+                    # dp values may be DpScoring dicts (new) or plain ints (old); unify to a
+                    # token count for logging.
+                    dp_items = sorted(dp.items())
+                    dp_parts = []
+                    for k, v in dp_items:
+                        if isinstance(v, dict):
+                            dp_parts.append(f"{k}:{v.get('matched_tokens', v)}")
+                        else:
+                            dp_parts.append(f"{k}:{v}")
+                    parts.append(f"DP={{{','.join(dp_parts)}}}")
                 hit = any(v > 0 for v in (xpu, cpu, disk))
                 logger.info(
                     "conductor hit: %s/%s %s %s",

@@ -139,21 +139,28 @@ Deduplicates shared ports (e.g. `cpu` + `disk` on same endpoint).
 #### 3. Indexer (`indexer.rs`)
 
 Manages a `DashMap<IndexerKey, Arc<IndexerEntry>>` — a concurrent hash map keyed by
-`(model_name, tenant_id)`. Each `IndexerEntry` holds:
+`(model_name, tenant_id)`. Stores a `ScoringConfig` for per-medium block weights
+(configurable at startup via `--hbm-weight/--cpu-weight/--disk-weight`).
 
-- `tree: Arc<ConcurrentRadixTree>` — the shared radix tree for this model/tenant.
-- `block_size: u32` — tokens per KV block (used to scale match depths back to token counts).
+Each `IndexerEntry` holds per-medium data structures:
 
-- `lookups: Arc<RwLock<FxHashMap<WorkerKey, WorkerLookup>>>` — per-worker reverse
-  lookup tables (`SequenceBlockHash → SharedBlock`) enabling O(1) parent-block access
-  during event application.
+| Medium | Structure | Weight | Rationale |
+|--------|-----------|--------|-----------|
+| HBM/XPU | `hbm_tree: ConcurrentRadixTree` (prefix chain) | ×3 | Prefix-tree enables O(L) contiguous-prefix queries |
+| CPU | `cpu_blocks: FxHashMap<tokens_hash, FxHashSet<WorkerKey>>` (flat) | ×2 | Pool blocks are isolated — no chain relationship |
+| Disk | `disk_blocks` (same flat HashMap) | ×1 | Same as CPU — "is this block cached?" lookup |
+| HBM reverse | `lookups: FxHashMap<WorkerKey, WorkerLookup>` | — | seq_hash → tree node for O(1) removal |
+| CPU/Disk reverse | `cpu_lookups/disk_lookups` | — | seq_hash → tokens_hash for O(1) flat removal |
+| Offload cache | `non_hbm_cache: FxHashMap<u64, u64>` | — | engine block_hash → tokens_hash for two-phase pool confirm |
 
 The `Indexer::query()` method:
 
 1. Computes `LocalBlockHash` values from the token sequence via `compute_block_hash_for_seq()`.
-2. Traverses the radix tree to find per-worker match depths (in blocks).
-3. Multiplies by `block_size` to produce token-level match scores.
-4. Groups results: per-tier (XPU/CPU/DISK) and per-DP-rank, per instance, per tenant.
+2. HBM: prefix-tree traversal → per-worker depth (blocks) × hbm_weight.
+3. CPU: flat lookup → each matched block × cpu_weight.
+4. Disk: flat lookup → each matched block × disk_weight.
+5. DP total score = sum of all three media scores.
+6. Groups results: per-tier scores + per-DP breakdown, per instance, per tenant.
 
 #### 4. Radix Tree (`radix_tree.rs`, `concurrent_tree.rs`)
 
@@ -384,46 +391,42 @@ Engine (vLLM/SGLang)             KV Conductor
 
 Events arrive via ZMQ PUB as 3-part messages: `[topic] [seq: u64 BE] [msgpack payload]`.
 
-The payload is parsed in three formats, tried in order:
+The payload is dispatched in **5 formats**, tried in order:
 
-**Format 1 — Map batch (preferred)**:
+**Format 1 — vLLM msgspec batch** (preferred, `array_like=True` + `tag=True`):
+
+```
+[ts: f64, [["BlockStored", block_hashes, token_ids, block_size, 0, "GPU", 0, "FullAttention"]], dp_rank: int|null]
+```
+
+Events are tagged-union arrays with `omit_defaults=True` — null fields are absent from the array.
+The Rust deserializer uses `rmpv::Value` + tag-based dispatch + type-pattern parsing.
+
+**Format 2 — vLLM bare event** (single event, no batch wrapper):
+
+```
+["BlockRemoved", block_hashes]
+```
+
+**Format 3 — Map batch** (Mooncake Master):
 
 ```msgpack
 {"timestamp_ms": 1782281033484, "dp_rank": 0, "events": [
-  {
-    "event_id": 66,
-    "event_type": "stored",
-    "medium": "cpu",
-    "backend_id": "10.0.0.1",
-    "dp_rank": 0,
-    "seq_hashes": [7575625822238262545],
-    "tenant_id": "default"
-  }
+  {"event_id": 66, "event_type": "stored", "medium": "cpu",
+   "seq_hashes": [7575625822238262545]}
 ]}
 ```
 
-**Format 2 — Array batch (legacy)**:
+**Format 4 — Array batch** (Mooncake legacy):
 
 ```msgpack
-[1782281033484,
-  [
-    {"event_id": 66, "event_type": "stored", "medium": "cpu",
-     "seq_hashes": [7575625822238262545]}
-  ],
-  0
-]
+[1782281033484, [{"event_type": "stored", ...}], 0]
 ```
 
-**Format 3 — Bare event** (no batch wrapper, for simple single-event publishers):
-
-```msgpack
-{"event_id": 66, "event_type": "stored", "medium": "cpu",
- "seq_hashes": [7575625822238262545]}
-```
+**Format 5 — Bare Mooncake event** (single event, no batch wrapper).
 
 Events **missing** `model_name` / `block_size` / `dp_rank` / `medium` use
-the subscriber's registration-time defaults — pool backends do not need
-to populate these fields.
+the subscriber's registration-time defaults.
 
 ### Error Model
 
@@ -465,6 +468,8 @@ error.rs  ←  used by all modules
 cargo build --release
 ./target/release/kv-conductor --port 13333
 
+# With custom scoring weights:
+./target/release/kv-conductor --port 13333 --hbm-weight 3 --cpu-weight 2 --disk-weight 1
 ```
 
 ## API
@@ -556,16 +561,21 @@ Response:
 {
   "default": {
     "vllm-prefill-42": {
-      "longest_matched": 256,
-      "XPU": 256,
+      "longest_matched": 384,
+      "XPU": 384,
       "CPU": 0,
       "DISK": 0,
-      "DP": { "0": 256 }
+      "total_score": 1152,
+      "DP": {
+        "0": { "XPU": 384, "CPU": 0, "DISK": 0, "total": 384 }
+      }
     }
   }
 }
-
 ```
+
+Each DP's score is the sum of per-medium weighted scores: `total = XPU + CPU + DISK`.
+Weights are configurable at startup.
 
 ### POST /query_by_hash
 

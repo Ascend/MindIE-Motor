@@ -42,6 +42,8 @@ use crate::registry::WorkerRegistry;
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Arc<WorkerRegistry>,
+    /// Per-medium block scoring weights.
+    pub scoring: ScoringConfig,
 }
 
 /// Create the axum Router with all endpoints.
@@ -236,7 +238,7 @@ async fn query_by_hash_handler(
 /// Ingest a batch of KV cache events from a worker.
 async fn events_handler(
     State(state): State<AppState>,
-    Json(batch): Json<KvEventBatch>,
+    Json(mut batch): Json<KvEventBatch>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     tracing::debug!(
         instance_id = %batch.instance_id,
@@ -252,26 +254,27 @@ async fn events_handler(
         );
     }
 
-    // Group events by dp_rank
-    let mut by_dp_rank: std::collections::BTreeMap<u32, Vec<KvCacheEvent>> =
-        std::collections::BTreeMap::new();
-    for event in &batch.events {
-        by_dp_rank
-            .entry(event.dp_rank)
-            .or_default()
-            .push(event.clone());
-    }
+    // Process events grouped by dp_rank without cloning.
+    // Sort in-place by dp_rank, then pass contiguous slices to apply_events.
+    batch.events.sort_by_key(|e| e.dp_rank);
 
     let mut total_applied = 0usize;
     let mut errors: Vec<String> = Vec::new();
 
-    for (dp_rank, events) in &by_dp_rank {
+    let mut i = 0;
+    while i < batch.events.len() {
+        let dp_rank = batch.events[i].dp_rank;
+        let mut j = i + 1;
+        while j < batch.events.len() && batch.events[j].dp_rank == dp_rank {
+            j += 1;
+        }
+
         match state
             .registry
             .apply_events(
                 &batch.instance_id,
-                *dp_rank,
-                events,
+                dp_rank,
+                &batch.events[i..j],
                 batch.model_name.as_deref(),
                 batch.tenant_id.as_deref(),
             )
@@ -281,13 +284,14 @@ async fn events_handler(
             Err(e) => {
                 tracing::warn!(
                     instance_id = %batch.instance_id,
-                    dp_rank = *dp_rank,
+                    dp_rank,
                     error = %e,
                     "failed to apply events"
                 );
                 errors.push(format!("dp_rank={}: {}", dp_rank, e));
             }
         }
+        i = j;
     }
 
     // Handle shutdown flag: unregister the instance if it's shutting down

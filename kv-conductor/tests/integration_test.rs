@@ -16,13 +16,15 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
+use kv_conductor::protocols::ScoringConfig;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
 
 /// Start a test server on a random port, returning the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
-    let registry = Arc::new(WorkerRegistry::new());
-    let state = AppState { registry };
+    let scoring = ScoringConfig::default();
+    let registry = Arc::new(WorkerRegistry::new(scoring.clone()));
+    let state = AppState { registry, scoring };
     let router = create_router(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

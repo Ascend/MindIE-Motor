@@ -8,40 +8,46 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
-//! Per-(model, tenant) radix tree indexer.
+//! Per-(model, tenant) radix tree indexer with per-medium scoring.
 //!
-//! Each `IndexerEntry` manages a `ConcurrentRadixTree`, per-worker reverse
-//! lookup tables, and a non-HBM event cache for a single (model_name, tenant_id)
-//! pair.
+//! Each `IndexerEntry` manages:
 //!
-//! ## Two-phase non-HBM event matching
+//! - **HBM tree** (`hbm_tree`) — prefix-chain radix tree for XPU/GPU blocks
+//!   (weight ×3). Only HBM blocks need prefix-chain matching.
+//! - **CPU flat map** (`cpu_blocks`) — ``tokens_hash → {workers}`` (weight ×2).
+//! - **Disk flat map** (`disk_blocks`) — ``tokens_hash → {workers}`` (weight ×1).
+//! - **non_hbm_cache** — engine offload ``block_hash → tokens_hash`` for
+//!   two-phase pool confirmation.
 //!
-//! When the engine offloads blocks to CPU/DISK, the conductor uses a two-phase
-//! approach:
-//!
-//! 1. Engine offloading event → cache the ``block_hash → tokens_hash`` mapping
-//!    (do NOT insert into radix tree — the pool backend may place the block on
-//!    a different node).
-//! 2. Pool backend confirm event → look up the cache, insert ``tokens_hash``
-//!    into the radix tree under the pool backend's worker key.
-//! 3. Pool backend eviction event → look up the cache, remove from tree,
-//!    evict cache entry.
+//! Scoring: each matched HBM block = 3 pts, CPU block = 2 pts, disk block = 1 pt.
+//! A DP's total score is the sum across all its media.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 
 use crate::concurrent_tree::{ConcurrentRadixTree, WorkerLookup};
 use crate::error::KvConductorError;
 use crate::hashing::compute_block_hash_for_seq;
 use crate::protocols::*;
 
+/// Number of HBM removals after which `sweep_stale_nodes` is triggered
+/// to reclaim orphan tree nodes.
+const HBM_SWEEP_THRESHOLD: u64 = 1000;
+
+/// Minimum number of block hashes to trigger parallel CPU/Disk flat lookup.
+const FLAT_PAR_THRESHOLD: usize = 4096;
+
+/// Per-worker reverse-lookup for non-HBM flat stores.
+/// Maps ``SequenceBlockHash → LocalBlockHash(XXH3 tokens_hash)``.
+type FlatLookup = FxHashMap<u64, u64>;
+
 /// Key identifying a unique indexer instance: (model_name, tenant_id).
-/// Hashes at different block_sizes coexist in the same tree — they are
-/// distinct u64 values with no collision risk.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IndexerKey {
     pub model_name: String,
@@ -50,29 +56,41 @@ pub struct IndexerKey {
 
 /// An indexer entry for one (model, tenant) pair.
 pub struct IndexerEntry {
-    /// The shared radix tree.
-    pub tree: Arc<ConcurrentRadixTree>,
-    /// Per-worker reverse lookup tables: WorkerKey -> WorkerLookup.
-    /// Protected by a single RwLock for simplicity in the standalone case.
+    /// HBM prefix-chain radix tree (XPU workers, weight ×3).
+    pub hbm_tree: Arc<ConcurrentRadixTree>,
+    /// HBM per-worker reverse lookups: WorkerKey → WorkerLookup.
     pub lookups: Arc<RwLock<FxHashMap<WorkerKey, WorkerLookup>>>,
-    /// Cache for non-HBM engine events: maps the engine's `block_hash` (SHA256
-    /// u64) → the kv-conductor's `tokens_hash` (XXH3 content hash).
-    ///
-    /// When a vLLM engine publishes offloading events (medium=``"cpu"`` or
-    /// ``"disk"``), we cache the computed XXH3 hash here instead of inserting
-    /// into the radix tree.  Later, when the pool backend (Mooncake Master)
-    /// broadcasts its own store/remove events carrying the same `seq_hash`,
-    /// we look up the cache to find the correct `tokens_hash` and insert it
-    /// into the tree under the appropriate worker key.
+
+    /// CPU flat blocks: tokens_hash → set of workers with this block cached.
+    pub cpu_blocks: Arc<RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>>,
+    /// CPU per-worker reverse lookups: WorkerKey → (seq_hash → tokens_hash).
+    cpu_lookups: Arc<RwLock<FxHashMap<WorkerKey, FlatLookup>>>,
+
+    /// Disk flat blocks: tokens_hash → set of workers with this block cached.
+    pub disk_blocks: Arc<RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>>,
+    /// Disk per-worker reverse lookups.
+    disk_lookups: Arc<RwLock<FxHashMap<WorkerKey, FlatLookup>>>,
+
+    /// Cache for non-HBM engine offloading events.
     pub non_hbm_cache: Arc<RwLock<FxHashMap<u64, u64>>>,
+
+    /// Count of HBM block removals since last sweep. When this exceeds
+    /// `HBM_SWEEP_THRESHOLD`, `sweep_stale_nodes` is called to reclaim
+    /// orphan tree nodes that accumulate after worker drops.
+    hbm_removal_count: AtomicU64,
 }
 
 impl Default for IndexerEntry {
     fn default() -> Self {
         Self {
-            tree: Arc::new(ConcurrentRadixTree::new()),
+            hbm_tree: Arc::new(ConcurrentRadixTree::new()),
             lookups: Arc::new(RwLock::new(FxHashMap::default())),
+            cpu_blocks: Arc::new(RwLock::new(FxHashMap::default())),
+            cpu_lookups: Arc::new(RwLock::new(FxHashMap::default())),
+            disk_blocks: Arc::new(RwLock::new(FxHashMap::default())),
+            disk_lookups: Arc::new(RwLock::new(FxHashMap::default())),
             non_hbm_cache: Arc::new(RwLock::new(FxHashMap::default())),
+            hbm_removal_count: AtomicU64::new(0),
         }
     }
 }
@@ -82,134 +100,463 @@ impl IndexerEntry {
         Self::default()
     }
 
-    /// Find matches for a token sequence against all registered workers,
-    /// using the given `block_size` for hash computation.
-    pub fn find_matches(&self, token_ids: &[i64], block_size: u32) -> OverlapScores {
+    // -----------------------------------------------------------------------
+    // Query
+    // -----------------------------------------------------------------------
+
+    pub fn find_matches(
+        &self,
+        token_ids: &[i64],
+        block_size: u32,
+        cfg: &ScoringConfig,
+    ) -> OverlapScores {
         let t_hash = std::time::Instant::now();
         let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
         let hash_us = t_hash.elapsed().as_micros();
-        let scores = self.tree.find_matches(&block_hashes);
+
+        let mut scores = OverlapScores::new();
+
+        // --- HBM: prefix-chain tree ---
+        let hbm_scores = self.hbm_tree.find_matches(&block_hashes);
+        for (worker, depth) in hbm_scores.scores {
+            scores.add_score(worker, depth * cfg.hbm_weight);
+        }
+
+        // --- CPU + Disk: flat lookup (parallel for large hash sets) ---
+        if block_hashes.len() > FLAT_PAR_THRESHOLD {
+            self.flat_lookup_parallel(&block_hashes, cfg, &mut scores);
+        } else {
+            self.flat_lookup_sequential(&block_hashes, cfg, &mut scores);
+        }
+
         tracing::debug!(
             num_tokens = token_ids.len(),
             block_size,
             num_hashes = block_hashes.len(),
             hash_us,
+            scores = scores.scores.len(),
             "hash_computed"
         );
         scores
     }
 
-    /// Cache a block_hash → tokens_hash mapping for a non-HBM engine event.
-    ///
-    /// Called when a vLLM engine publishes offloading events (medium != HBM).
-    /// The mapping is later used to insert the correct XXH3 hash into the
-    /// radix tree when the pool backend confirms the block has been stored.
+    pub fn find_matches_by_hash(
+        &self,
+        block_hashes: &[LocalBlockHash],
+        cfg: &ScoringConfig,
+    ) -> OverlapScores {
+        let mut scores = OverlapScores::new();
+
+        let hbm_scores = self.hbm_tree.find_matches(block_hashes);
+        for (worker, depth) in hbm_scores.scores {
+            scores.add_score(worker, depth * cfg.hbm_weight);
+        }
+
+        if block_hashes.len() > FLAT_PAR_THRESHOLD {
+            self.flat_lookup_parallel(block_hashes, cfg, &mut scores);
+        } else {
+            self.flat_lookup_sequential(block_hashes, cfg, &mut scores);
+        }
+
+        scores
+    }
+
+    /// Sequential CPU + Disk flat lookup (for small hash sets).
+    fn flat_lookup_sequential(
+        &self,
+        block_hashes: &[LocalBlockHash],
+        cfg: &ScoringConfig,
+        scores: &mut OverlapScores,
+    ) {
+        let cpu = self.cpu_blocks.read();
+        for hash in block_hashes {
+            if let Some(workers) = cpu.get(hash) {
+                for w in workers {
+                    scores.add_score(w.clone(), cfg.cpu_weight);
+                }
+            }
+        }
+        drop(cpu);
+
+        let disk = self.disk_blocks.read();
+        for hash in block_hashes {
+            if let Some(workers) = disk.get(hash) {
+                for w in workers {
+                    scores.add_score(w.clone(), cfg.disk_weight);
+                }
+            }
+        }
+    }
+
+    /// Parallel CPU + Disk flat lookup using rayon (for large hash sets,
+    /// e.g. DeepSeek V4 with 32K+ block hashes).
+    fn flat_lookup_parallel(
+        &self,
+        block_hashes: &[LocalBlockHash],
+        cfg: &ScoringConfig,
+        scores: &mut OverlapScores,
+    ) {
+        use rayon::prelude::*;
+
+        let cpu = self.cpu_blocks.read();
+        let disk = self.disk_blocks.read();
+
+        let (cpu_scores, disk_scores): (OverlapScores, OverlapScores) = rayon::join(
+            || {
+                block_hashes
+                    .par_iter()
+                    .fold(OverlapScores::new, |mut acc, hash| {
+                        if let Some(workers) = cpu.get(hash) {
+                            for w in workers {
+                                acc.add_score(w.clone(), cfg.cpu_weight);
+                            }
+                        }
+                        acc
+                    })
+                    .reduce(OverlapScores::new, |mut a, b| {
+                        a.merge(b);
+                        a
+                    })
+            },
+            || {
+                block_hashes
+                    .par_iter()
+                    .fold(OverlapScores::new, |mut acc, hash| {
+                        if let Some(workers) = disk.get(hash) {
+                            for w in workers {
+                                acc.add_score(w.clone(), cfg.disk_weight);
+                            }
+                        }
+                        acc
+                    })
+                    .reduce(OverlapScores::new, |mut a, b| {
+                        a.merge(b);
+                        a
+                    })
+            },
+        );
+
+        scores.merge(cpu_scores);
+        scores.merge(disk_scores);
+    }
+
+    // -----------------------------------------------------------------------
+    // Non-HBM cache (unchanged two-phase protocol)
+    // -----------------------------------------------------------------------
+
     #[inline]
     pub fn cache_non_hbm_block(&self, block_hash: u64, tokens_hash: u64) {
         self.non_hbm_cache.write().insert(block_hash, tokens_hash);
     }
 
-    /// Look up a cached tokens_hash by the engine's block_hash.
-    /// Returns `None` if this hash was never cached (e.g. the pool backend
-    /// stored a block the engine never offloaded, or the cache was evicted).
     #[inline]
     pub fn lookup_cached_tokens_hash(&self, block_hash: u64) -> Option<u64> {
         self.non_hbm_cache.read().get(&block_hash).copied()
     }
 
-    /// Remove a cached entry (called when a pool backend remove event arrives).
     #[inline]
     pub fn evict_cached_block(&self, block_hash: u64) {
         self.non_hbm_cache.write().remove(&block_hash);
     }
 
-    /// Apply a KV cache event for a specific worker.
+    // -----------------------------------------------------------------------
+    // Flat (CPU/Disk) store / remove helpers
+    // -----------------------------------------------------------------------
+
+    /// Insert a block into the CPU or Disk flat store.
+    fn flat_store(
+        blocks: &RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>,
+        lookups: &RwLock<FxHashMap<WorkerKey, FlatLookup>>,
+        worker: &WorkerKey,
+        tokens_hash: u64,
+        seq_hash: u64,
+    ) {
+        // Update flat block set: tokens_hash → {workers}
+        {
+            let mut map = blocks.write();
+            map.entry(LocalBlockHash(tokens_hash))
+                .or_default()
+                .insert(worker.clone());
+        }
+        // Update per-worker reverse lookup for removal
+        {
+            let mut lu = lookups.write();
+            lu.entry(worker.clone())
+                .or_default()
+                .insert(seq_hash, tokens_hash);
+        }
+        tracing::trace!(
+            instance_id = %worker.instance_id,
+            dp_rank = worker.dp_rank,
+            medium = %worker.medium.as_str(),
+            ?seq_hash,
+            tokens_hash,
+            "flat store"
+        );
+    }
+
+    /// Remove a block from the CPU or Disk flat store.
+    fn flat_remove(
+        blocks: &RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>,
+        lookups: &RwLock<FxHashMap<WorkerKey, FlatLookup>>,
+        worker: &WorkerKey,
+        seq_hash: u64,
+    ) {
+        // Find tokens_hash from per-worker reverse lookup
+        let tokens_hash = {
+            let lu = lookups.read();
+            lu.get(worker).and_then(|m| m.get(&seq_hash).copied())
+        };
+
+        if let Some(th) = tokens_hash {
+            // Remove worker from the flat set
+            let mut map = blocks.write();
+            if let Some(set) = map.get_mut(&LocalBlockHash(th)) {
+                set.remove(worker);
+                if set.is_empty() {
+                    map.remove(&LocalBlockHash(th));
+                }
+            }
+            // Clean up reverse lookup
+            let mut lu = lookups.write();
+            if let Some(m) = lu.get_mut(worker) {
+                m.remove(&seq_hash);
+            }
+        }
+    }
+
+    /// Clear all CPU/Disk flat blocks for a worker.
+    fn flat_clear(
+        blocks: &RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>,
+        lookups: &RwLock<FxHashMap<WorkerKey, FlatLookup>>,
+        worker: &WorkerKey,
+    ) {
+        // Collect tokens_hashes from reverse lookup
+        let tokens_hashes: Vec<LocalBlockHash> = {
+            let lu = lookups.read();
+            lu.get(worker)
+                .map(|m| m.values().map(|&th| LocalBlockHash(th)).collect())
+                .unwrap_or_default()
+        };
+        // Remove worker from each block set
+        if !tokens_hashes.is_empty() {
+            let mut map = blocks.write();
+            for th in &tokens_hashes {
+                if let Some(set) = map.get_mut(th) {
+                    set.remove(worker);
+                    if set.is_empty() {
+                        map.remove(th);
+                    }
+                }
+            }
+        }
+        // Clear reverse lookup
+        lookups.write().remove(worker);
+    }
+
+    /// Trigger a sweep of stale HBM tree nodes if the removal counter
+    /// exceeds the threshold. Called after each HBM remove/clear.
+    fn maybe_sweep_hbm(&self) {
+        let count = self.hbm_removal_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_multiple_of(HBM_SWEEP_THRESHOLD) {
+            let pruned = self.hbm_tree.sweep_stale_nodes();
+            if pruned > 0 {
+                tracing::debug!(pruned, total_removals = count, "swept stale HBM tree nodes");
+            }
+        }
+    }
+
+    /// Apply a KV cache event for a specific worker, dispatching to the
+    /// correct data structure based on storage medium.
     pub fn apply_event(
         &self,
         worker: &WorkerKey,
         event: &KvCacheEventData,
     ) -> Result<(), KvConductorError> {
-        let mut lookups = self.lookups.write();
-        let lookup = lookups.entry(worker.clone()).or_default();
-        let lookup_size_before = lookup.len();
-
-        let result = match event {
+        match event {
             KvCacheEventData::Stored(store_data) => {
-                self.tree.apply_store(worker, lookup, store_data)
+                match worker.medium {
+                    StorageMedium::Xpu | StorageMedium::Unknown => {
+                        // HBM: prefix-chain tree insert
+                        let mut lookups = self.lookups.write();
+                        let lookup = lookups.entry(worker.clone()).or_default();
+                        self.hbm_tree.apply_store(worker, lookup, store_data)
+                    }
+                    StorageMedium::Cpu => {
+                        // CPU: flat insert
+                        for block in &store_data.blocks {
+                            Self::flat_store(
+                                &self.cpu_blocks,
+                                &self.cpu_lookups,
+                                worker,
+                                block.tokens_hash,
+                                block.block_hash,
+                            );
+                        }
+                        Ok(())
+                    }
+                    StorageMedium::Disk => {
+                        // Disk: flat insert
+                        for block in &store_data.blocks {
+                            Self::flat_store(
+                                &self.disk_blocks,
+                                &self.disk_lookups,
+                                worker,
+                                block.tokens_hash,
+                                block.block_hash,
+                            );
+                        }
+                        Ok(())
+                    }
+                }
             }
-            KvCacheEventData::Removed { block_hashes } => {
-                self.tree.apply_remove(worker, lookup, block_hashes)
-            }
+            KvCacheEventData::Removed { block_hashes } => match worker.medium {
+                StorageMedium::Xpu | StorageMedium::Unknown => {
+                    let mut lookups = self.lookups.write();
+                    let lookup = lookups.entry(worker.clone()).or_default();
+                    let result = self.hbm_tree.apply_remove(worker, lookup, block_hashes);
+                    self.maybe_sweep_hbm();
+                    result
+                }
+                StorageMedium::Cpu => {
+                    for &h in block_hashes {
+                        Self::flat_remove(&self.cpu_blocks, &self.cpu_lookups, worker, h);
+                    }
+                    Ok(())
+                }
+                StorageMedium::Disk => {
+                    for &h in block_hashes {
+                        Self::flat_remove(&self.disk_blocks, &self.disk_lookups, worker, h);
+                    }
+                    Ok(())
+                }
+            },
             KvCacheEventData::Cleared => {
-                self.tree.clear_worker(worker, lookup);
+                match worker.medium {
+                    StorageMedium::Xpu | StorageMedium::Unknown => {
+                        let mut lookups = self.lookups.write();
+                        let lookup = lookups.entry(worker.clone()).or_default();
+                        self.hbm_tree.clear_worker(worker, lookup);
+                        self.maybe_sweep_hbm();
+                    }
+                    StorageMedium::Cpu => {
+                        Self::flat_clear(&self.cpu_blocks, &self.cpu_lookups, worker);
+                    }
+                    StorageMedium::Disk => {
+                        Self::flat_clear(&self.disk_blocks, &self.disk_lookups, worker);
+                    }
+                }
                 Ok(())
             }
-        };
-
-        let lookup_size_after = lookup.len();
-        tracing::trace!(
-            instance_id = %worker.instance_id,
-            dp_rank = worker.dp_rank,
-            lookup_before = lookup_size_before,
-            lookup_after = lookup_size_after,
-            result = ?result.as_ref().map_err(|e| e.to_string()),
-            "apply_event completed"
-        );
-
-        result
+        }
     }
 
     /// Remove a worker entirely from this indexer entry.
     pub fn remove_worker(&self, worker: &WorkerKey) {
-        let mut lookups = self.lookups.write();
-        if let Some(lookup) = lookups.get_mut(worker) {
-            self.tree.remove_worker_from_tree(worker, lookup);
+        match worker.medium {
+            StorageMedium::Xpu | StorageMedium::Unknown => {
+                let mut lookups = self.lookups.write();
+                if let Some(lookup) = lookups.get_mut(worker) {
+                    self.hbm_tree.remove_worker_from_tree(worker, lookup);
+                }
+                lookups.remove(worker);
+            }
+            StorageMedium::Cpu => {
+                Self::flat_clear(&self.cpu_blocks, &self.cpu_lookups, worker);
+            }
+            StorageMedium::Disk => {
+                Self::flat_clear(&self.disk_blocks, &self.disk_lookups, worker);
+            }
         }
-        lookups.remove(worker);
     }
 
     /// Remove all cache entries for a given instance and DP rank across
-    /// **all** storage media (XPU, CPU, DISK). This is the correct cleanup
-    /// path for worker unregistration, as a single instance may have blocks
-    /// spread across multiple tiers.
+    /// **all** storage media.
     pub fn remove_worker_all_media(&self, instance_id: &str, dp_rank: u32) {
-        let mut lookups = self.lookups.write();
-        // Collect all WorkerKeys matching this (instance_id, dp_rank)
-        let matching: Vec<WorkerKey> = lookups
-            .keys()
-            .filter(|k| k.instance_id == instance_id && k.dp_rank == dp_rank)
-            .cloned()
-            .collect();
-        for wk in &matching {
-            if let Some(lookup) = lookups.get_mut(wk) {
-                self.tree.remove_worker_from_tree(wk, lookup);
+        // HBM tree
+        {
+            let mut lookups = self.lookups.write();
+            let matching: Vec<WorkerKey> = lookups
+                .keys()
+                .filter(|k| k.instance_id == instance_id && k.dp_rank == dp_rank)
+                .cloned()
+                .collect();
+            for wk in &matching {
+                if let Some(lookup) = lookups.get_mut(wk) {
+                    self.hbm_tree.remove_worker_from_tree(wk, lookup);
+                }
+                lookups.remove(wk);
             }
-            lookups.remove(wk);
+        }
+        // CPU flat — collect keys first to avoid holding read lock
+        // across the write in flat_clear.
+        {
+            let cpu_matches: Vec<WorkerKey> = {
+                let cpu_lu = self.cpu_lookups.read();
+                cpu_lu
+                    .keys()
+                    .filter(|wk| wk.instance_id == instance_id && wk.dp_rank == dp_rank)
+                    .cloned()
+                    .collect()
+            };
+            for wk in &cpu_matches {
+                Self::flat_clear(&self.cpu_blocks, &self.cpu_lookups, wk);
+            }
+        }
+        // Disk flat — same pattern
+        {
+            let disk_matches: Vec<WorkerKey> = {
+                let disk_lu = self.disk_lookups.read();
+                disk_lu
+                    .keys()
+                    .filter(|wk| wk.instance_id == instance_id && wk.dp_rank == dp_rank)
+                    .cloned()
+                    .collect()
+            };
+            for wk in &disk_matches {
+                Self::flat_clear(&self.disk_blocks, &self.disk_lookups, wk);
+            }
         }
     }
 
-    /// Get the total number of cached blocks across all workers.
+    /// Get the total number of cached blocks across all workers and media.
     pub fn total_blocks(&self) -> usize {
-        let lookups = self.lookups.read();
-        lookups.values().map(|l| l.len()).sum()
+        let hbm = self.lookups.read().values().map(|l| l.len()).sum::<usize>();
+        let cpu = self
+            .cpu_lookups
+            .read()
+            .values()
+            .map(|l| l.len())
+            .sum::<usize>();
+        let disk = self
+            .disk_lookups
+            .read()
+            .values()
+            .map(|l| l.len())
+            .sum::<usize>();
+        hbm + cpu + disk
     }
 
     /// Get all registered worker keys.
     pub fn worker_keys(&self) -> Vec<WorkerKey> {
-        let lookups = self.lookups.read();
-        lookups.keys().cloned().collect()
+        let mut keys: Vec<WorkerKey> = self.lookups.read().keys().cloned().collect();
+        keys.extend(self.cpu_lookups.read().keys().cloned());
+        keys.extend(self.disk_lookups.read().keys().cloned());
+        keys
     }
 }
 
 /// Top-level indexer managing multiple (model, tenant) trees.
 pub struct Indexer {
     entries: DashMap<IndexerKey, Arc<IndexerEntry>>,
+    scoring: ScoringConfig,
 }
 
 impl Indexer {
-    pub fn new() -> Self {
+    pub fn new(scoring: ScoringConfig) -> Self {
         Self {
             entries: DashMap::new(),
+            scoring,
         }
     }
 
@@ -235,16 +582,19 @@ impl Indexer {
         self.entries.get(&key).map(|e| e.value().clone())
     }
 
-    /// Remove an indexer entry if it has no more workers.
+    /// Remove an indexer entry if it has no more workers across any medium.
     pub fn remove_if_empty(&self, model_name: &str, tenant_id: &str) {
         let key = IndexerKey {
             model_name: model_name.to_string(),
             tenant_id: tenant_id.to_string(),
         };
-        let should_remove = self
-            .entries
-            .get(&key)
-            .is_some_and(|e| e.value().lookups.read().is_empty());
+        let should_remove = self.entries.get(&key).is_some_and(|e| {
+            let entry = e.value();
+            entry.lookups.read().is_empty()
+                && entry.cpu_lookups.read().is_empty()
+                && entry.disk_lookups.read().is_empty()
+                && entry.non_hbm_cache.read().is_empty()
+        });
         if should_remove {
             self.entries.remove(&key);
         }
@@ -271,7 +621,7 @@ impl Indexer {
                 tenant_id: tenant_id.to_string(),
             })?;
 
-        let overlap = entry.find_matches(token_ids, block_size);
+        let overlap = entry.find_matches(token_ids, block_size, &self.scoring);
         let t_tree = t0.elapsed();
 
         let resp = self.build_response(overlap, tenant_id, block_size, hit_detail);
@@ -301,21 +651,13 @@ impl Indexer {
                 tenant_id: tenant_id.to_string(),
             })?;
 
-        let overlap = entry.tree.find_matches(block_hashes);
-        if overlap.is_empty() {
-            return Err(KvConductorError::NoWorkers {
-                model_name: model_name.to_string(),
-                tenant_id: tenant_id.to_string(),
-            });
-        }
-        // query_by_hash uses pre-computed hashes — block_size is irrelevant
-        // for the hashes themselves, but we still need it for token scaling.
+        let overlap = entry.find_matches_by_hash(block_hashes, &self.scoring);
         // Default to 1 token per hash (no scaling) since we don't know the
         // original block_size from the hash alone.
         self.build_response(overlap, tenant_id, 1, false)
     }
 
-    /// Build a `QueryResponse` from overlap scores.
+    /// Build a `QueryResponse` from weighted overlap scores.
     fn build_response(
         &self,
         overlap: OverlapScores,
@@ -332,26 +674,48 @@ impl Indexer {
 
         let mut instance_data: HashMap<String, InstanceMatchData> = HashMap::new();
 
-        for (worker, matched_blocks) in &overlap.scores {
-            let matched_tokens = matched_blocks * block_size;
+        for (worker, &score) in &overlap.scores {
             let dp_rank_str = worker.dp_rank.to_string();
+
+            // Derive per-medium block count from the score and weight.
+            let (weight, matched_blocks) = match worker.medium {
+                StorageMedium::Xpu | StorageMedium::Unknown => {
+                    (self.scoring.hbm_weight, score / self.scoring.hbm_weight)
+                }
+                StorageMedium::Cpu => (self.scoring.cpu_weight, score / self.scoring.cpu_weight),
+                StorageMedium::Disk => (self.scoring.disk_weight, score / self.scoring.disk_weight),
+            };
+            let matched_tokens = matched_blocks * block_size;
+            let _ = weight;
 
             let imd = instance_data.entry(worker.instance_id.clone()).or_default();
 
+            // Per-instance legacy tokens (for backward compat)
             imd.longest_matched = imd.longest_matched.max(matched_tokens);
 
             match worker.medium {
-                StorageMedium::Xpu => imd.xpu = imd.xpu.max(matched_tokens),
-                StorageMedium::Cpu => imd.cpu = imd.cpu.max(matched_tokens),
-                StorageMedium::Disk => imd.disk = imd.disk.max(matched_tokens),
-                StorageMedium::Unknown => {
+                StorageMedium::Xpu | StorageMedium::Unknown => {
                     imd.xpu = imd.xpu.max(matched_tokens);
                 }
+                StorageMedium::Cpu => imd.cpu = imd.cpu.max(matched_tokens),
+                StorageMedium::Disk => imd.disk = imd.disk.max(matched_tokens),
             }
 
-            imd.dp.insert(dp_rank_str.clone(), matched_tokens);
+            // Per-DP scoring breakdown
+            let dp_score = imd.dp.entry(dp_rank_str.clone()).or_default();
+            match worker.medium {
+                StorageMedium::Xpu | StorageMedium::Unknown => {
+                    dp_score.xpu_score = dp_score.xpu_score.max(score);
+                }
+                StorageMedium::Cpu => dp_score.cpu_score = dp_score.cpu_score.max(score),
+                StorageMedium::Disk => dp_score.disk_score = dp_score.disk_score.max(score),
+            }
+            dp_score.matched_tokens = dp_score.matched_tokens.max(matched_tokens);
+            dp_score.total = dp_score.xpu_score + dp_score.cpu_score + dp_score.disk_score;
 
-            // Populate per-DP per-medium detail when requested.
+            // Instance total score (sum across DPs)
+            imd.total_score = imd.dp.values().map(|s| s.total).sum();
+
             if hit_detail {
                 let detail = imd
                     .media_detail
@@ -359,19 +723,12 @@ impl Indexer {
                     .entry(dp_rank_str.clone())
                     .or_default();
                 match worker.medium {
-                    StorageMedium::Xpu => detail.xpu = detail.xpu.max(*matched_blocks),
-                    StorageMedium::Cpu => detail.cpu = detail.cpu.max(*matched_blocks),
-                    StorageMedium::Disk => detail.disk = detail.disk.max(*matched_blocks),
-                    StorageMedium::Unknown => detail.xpu = detail.xpu.max(*matched_blocks),
+                    StorageMedium::Xpu | StorageMedium::Unknown => {
+                        detail.xpu = detail.xpu.max(matched_blocks);
+                    }
+                    StorageMedium::Cpu => detail.cpu = detail.cpu.max(matched_blocks),
+                    StorageMedium::Disk => detail.disk = detail.disk.max(matched_blocks),
                 }
-
-                tracing::trace!(
-                    instance_id = %worker.instance_id,
-                    dp_rank = worker.dp_rank,
-                    medium = %worker.medium.as_str(),
-                    matched_blocks,
-                    "query hit detail"
-                );
             }
         }
 
@@ -403,7 +760,7 @@ impl Indexer {
 
 impl Default for Indexer {
     fn default() -> Self {
-        Self::new()
+        Self::new(ScoringConfig::default())
     }
 }
 
@@ -423,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_indexer_get_or_create_and_query() {
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let entry = indexer.get_or_create("model-a", "tenant-1");
 
         // Compute the actual hash for the test token sequence
@@ -464,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_per_tier_aggregation() {
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let entry = indexer.get_or_create("model-b", "t1");
 
         // Two different token sequences → different block hashes
@@ -534,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_no_indexer_error() {
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let err = indexer.query("no-such-model", "default", &[1, 2, 3, 4], 4, false);
         assert!(err.is_err());
         assert!(matches!(

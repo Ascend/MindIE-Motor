@@ -32,8 +32,8 @@ cd kv-conductor
 
 ### user_config.json
 
-Coordinator 的 `motor_coordinator_config.scheduler_config` 中新增 `kv_event_registration`
-子配置，统一管理 KV 事件注册参数。引擎侧的 `kv-events-config`（vLLM publisher 配置）
+Coordinator 的 `motor_coordinator_config.scheduler_config` 中通过 `kv_conductor_config`
+子配置统一管理 kv-conductor 的连接、注册、查询、重注册参数。引擎侧的 `kv-events-config`（vLLM publisher 配置）
 与 `kv_transfer_config`（KV 传输配置）一并放在 `engine_config` 中：
 
 ```json
@@ -54,7 +54,7 @@ Coordinator 的 `motor_coordinator_config.scheduler_config` 中新增 `kv_event_
   "motor_coordinator_config": {
     "scheduler_config": {
       "scheduler_type": "kv_cache_affinity",
-      "kv_event_registration": {
+      "kv_conductor_config": {
         "store_backend": "Mooncake",
         "block_size": 128,
         "pool_endpoint": "tcp://kvp-master:5557",
@@ -157,21 +157,26 @@ Coordinator 的 `motor_coordinator_config.scheduler_config` 中新增 `kv_event_
 | 字段 | 层级 | 说明 |
 |------|------|------|
 | `scheduler_type` | `scheduler_config` | 设为 `"kv_cache_affinity"` 启用亲和性调度 |
-| `kv_event_registration` | `scheduler_config` | KV 事件注册配置（Coordinator → kv-conductor） |
-| `kv_event_registration.store_backend` | 子配置 | 池化后端类型：`"Mooncake"` / `"Memcache"` / `"YuanRong"` |
-| `kv_event_registration.block_size` | 子配置 | 事件广播 hash 粒度（token 数）。标准模型等于引擎 `--block-size`（默认 128）；DeepSeek V4 等混合模型需设为引擎各 KV group block_size 的 GCD（如 4）。见下方说明 |
-| `kv_event_registration.pool_endpoint` | 子配置 | 中心化后端的池服务地址 |
-| `kv_event_registration.xpu_endpoint` | 子配置 | Per-DP HBM 端口模式 |
+| `kv_conductor_config` | `scheduler_config` | kv-conductor 连接、注册、查询、重注册配置（Coordinator → kv-conductor） |
+| `kv_conductor_config.store_backend` | 子配置 | 池化后端类型：`"Mooncake"` / `"Memcache"` / `"YuanRong"` |
+| `kv_conductor_config.block_size` | 子配置 | 事件广播 hash 粒度（token 数）。标准模型等于引擎 `--block-size`（默认 128）；DeepSeek V4 等混合模型需设为引擎各 KV group block_size 的 GCD（如 4）。见下方说明 |
+| `kv_conductor_config.pool_endpoint` | 子配置 | 中心化后端的池服务地址 |
+| `kv_conductor_config.xpu_endpoint` | 子配置 | Per-DP HBM 端口模式 |
+| `kv_conductor_config.cpu_endpoint` | 子配置 | Per-DP CPU/DDR 端口模式（YuanRong 等多介质后端） |
+| `kv_conductor_config.disk_endpoint` | 子配置 | Per-DP DISK/SSD 端口模式（YuanRong 等多介质后端） |
+| `kv_conductor_config.replay_endpoint` | 子配置 | Per-DP replay 端口模式，conductor 重启恢复时回放缓冲的 KV 事件 |
+| `kv_conductor_config.hit_detail` | 子配置 | 是否在查询响应中包含 per-DP per-介质命中块数（`true`/`false`，默认 `true`） |
+| `kv_conductor_config.re_register_interval_sec` | 子配置 | 周期性重注册间隔（秒）。0 或负数禁用定时重注册（默认 0） |
 | `kv-events-config` | `engine_config` | vLLM KV 事件发布配置（引擎侧，publisher 设置） |
 | `kv-transfer-config` | `engine_config` | KV 传输配置（Mooncake / AscendStore connector） |
 | `kv_conductor_config.http_server_port` | 顶层 | kv-conductor HTTP 端口，默认 13333 |
 
-**三种后端的 `kv_event_registration` 配置示例：**
+**三种后端的 `kv_conductor_config` 配置示例：**
 
 Mooncake（中心化 pool + per-DP HBM）：
 
 ```json
-"kv_event_registration": {
+"kv_conductor_config": {
   "store_backend": "Mooncake",
   "pool_endpoint": "tcp://kvp-master:5557",
   "xpu_endpoint": "tcp://*:50090"
@@ -181,7 +186,7 @@ Mooncake（中心化 pool + per-DP HBM）：
 YuanRong（per-DP 多端口）：
 
 ```json
-"kv_event_registration": {
+"kv_conductor_config": {
   "store_backend": "YuanRong",
   "block_size": 128,
   "xpu_endpoint": "tcp://*:15557",
@@ -193,7 +198,7 @@ YuanRong（per-DP 多端口）：
 Memcache（中心化 pool + 精确 dp_rank）：
 
 ```json
-"kv_event_registration": {
+"kv_conductor_config": {
   "store_backend": "Memcache",
   "pool_endpoint": "tcp://kvp-master:5557",
   "xpu_endpoint": "tcp://*:50090"
@@ -201,8 +206,8 @@ Memcache（中心化 pool + 精确 dp_rank）：
 ```
 
 > **注意**：`kv-events-config` 是 vLLM 原生配置，用于控制引擎侧的 KV 事件**发布**行为。
-> `kv_event_registration` 是 Motor 配置，用于 Coordinator 向 kv-conductor **注册**。
-> 两者分离，互不干扰——vLLM 不会解析 `kv_event_registration`，Coordinator 也不会
+> `kv_conductor_config` 是 Motor 配置，用于 Coordinator 向 kv-conductor **注册**。
+> 两者分离，互不干扰——vLLM 不会解析 `kv_conductor_config`，Coordinator 也不会
 > 把 `kv-events-config` 发给 conductor。
 
 ### DeepSeek V4 / 混合 KV Cache 模型
@@ -217,10 +222,10 @@ DeepSeek V4 开启了 `--no-disable-hybrid-kv-cache-manager`，引擎内部有**
 | C4 状态   | 4 | 压缩 KV 状态 |
 
 引擎内部用 `hash_block_size = GCD([128, 64, 8, 4]) = 4` 计算事件的 block hashes。
-因此 `kv_event_registration.block_size` **必须设 4**，不能是 128：
+因此 `kv_conductor_config.block_size` **必须设 4**，不能是 128：
 
 ```json
-"kv_event_registration": {
+"kv_conductor_config": {
   "store_backend": "Mooncake",
   "block_size": 4,
   "pool_endpoint": "tcp://kvp-master:5557",
@@ -256,7 +261,7 @@ PD 混部使用 `motor_engine_union_config`，Coordinator 自动从 union 段读
     "scheduler_config": {
       "deploy_mode": "single_node",
       "scheduler_type": "kv_cache_affinity",
-      "kv_event_registration": {
+      "kv_conductor_config": {
         "store_backend": "Mooncake",
         "block_size": 128,
         "pool_endpoint": "tcp://kvp-master:5557",

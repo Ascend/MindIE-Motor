@@ -162,41 +162,391 @@ pub(crate) struct ZmqEventMap {
 // vLLM-native event types (msgspec KVEventBatch wire format)
 // ---------------------------------------------------------------------------
 
-/// A single event from vLLM's msgspec-tagged union.
+/// A vLLM msgspec-tagged union event, sent as arrays:
+/// ``["BlockStored", block_hashes, parent_hash?, token_ids, block_size, ...]``
+/// because ``KVEventBatch`` uses ``array_like=True`` which propagates to
+/// child structs.
 ///
-/// vLLM encodes `KVCacheEvent` subclasses with `tag=True`, producing a map
-/// with a `"type"` discriminator field.  `omit_defaults=True` means most
-/// optional fields are absent when null.
-#[derive(Debug, Deserialize)]
+/// Field order (same as vLLM's ``BlockStored`` struct definition):
+///
+/// ```text
+/// [tag, block_hashes, parent_block_hash?, token_ids, block_size,
+///  lora_id?, medium?, lora_name?, extra_keys?, group_idx?,
+///  kv_cache_spec_kind?, kv_cache_spec_sliding_window?]
+/// ```
+///
+/// Optional fields are OMITTED when null (msgspec ``omit_defaults=True``),
+/// so array length varies. This deserializer collects remaining
+/// elements as ``rmpv::Value`` and matches them by type + order.
+#[derive(Debug)]
 struct VllmEventMap {
-    #[serde(rename = "type")]
     event_type: String,
-    #[serde(default)]
     block_hashes: Option<Vec<FlexHash>>,
-    #[serde(default)]
     parent_block_hash: Option<FlexHash>,
-    /// Raw token IDs for all blocks in this event, concatenated.
-    #[serde(default)]
     token_ids: Option<Vec<i64>>,
-    #[serde(default)]
     block_size: Option<u32>,
-    #[serde(default)]
     medium: Option<String>,
-    #[serde(default)]
     group_idx: Option<u32>,
-    #[serde(default)]
     #[allow(dead_code)]
     lora_id: Option<i64>,
-    #[serde(default)]
     #[allow(dead_code)]
     lora_name: Option<String>,
-    /// Attention type tag from vLLM (e.g. "FullAttention", "MlaAttention",
-    /// "SlidingWindow").  Used to filter out non-main attention groups.
-    #[serde(default)]
     kv_cache_spec_kind: Option<String>,
-    #[serde(default)]
     #[allow(dead_code)]
     kv_cache_spec_sliding_window: Option<u32>,
+}
+
+impl VllmEventMap {
+    fn empty(event_type: String) -> Self {
+        VllmEventMap {
+            event_type,
+            block_hashes: None,
+            parent_block_hash: None,
+            token_ids: None,
+            block_size: None,
+            medium: None,
+            group_idx: None,
+            lora_id: None,
+            lora_name: None,
+            kv_cache_spec_kind: None,
+            kv_cache_spec_sliding_window: None,
+        }
+    }
+}
+
+/// Deserializes the **array format** from vLLM's msgspec ``array_like`` encoding.
+///
+/// Uses tag-based dispatch: reads the event type string, collects remaining
+/// elements as ``Vec<serde_json::Value>``, then parses each variant according
+/// to its own field layout.  This is robust against ``omit_defaults=True``
+/// (which skips null fields, changing array length).
+impl<'de> Deserialize<'de> for VllmEventMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct VllmEventVisitor;
+        impl<'de> serde::de::Visitor<'de> for VllmEventVisitor {
+            type Value = VllmEventMap;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sequence representing a vLLM KV cache event")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<VllmEventMap, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let event_type: String = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+
+                // Collect remaining elements as rmpv::Value so we can
+                // inspect types before consuming – necessary because msgspec's
+                // omit_defaults=True skips null fields, shifting positions.
+                // rmpv::Value handles binary (default vLLM block hash format)
+                // which serde_json::Value cannot represent.
+                let mut values: Vec<rmpv::Value> = Vec::new();
+                while let Some(v) = seq.next_element::<rmpv::Value>()? {
+                    values.push(v);
+                }
+
+                match event_type.as_str() {
+                    "BlockStored" => parse_block_stored_values(event_type, &values)
+                        .map_err(serde::de::Error::custom),
+                    "BlockRemoved" => parse_block_removed_values(event_type, &values)
+                        .map_err(serde::de::Error::custom),
+                    "AllBlocksCleared" => Ok(VllmEventMap::empty(event_type)),
+                    _ => Ok(VllmEventMap::empty(event_type)),
+                }
+            }
+        }
+        deserializer.deserialize_seq(VllmEventVisitor)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// rmpv::Value → field converters
+// ---------------------------------------------------------------------------
+
+/// Convert an `rmpv::Value` to `FlexHash`.
+///
+/// Handles three representations of vLLM's `ExternalBlockHash`:
+/// - **Integer** — `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=true` (truncated u64)
+/// - **Binary**  — default: raw SHA256 bytes (≤8 bytes used, big-endian)
+/// - **String**  — hex (``"0xABCD"``) or decimal string
+fn flex_hash_from_rmpv(v: &rmpv::Value) -> Option<FlexHash> {
+    match v {
+        rmpv::Value::Integer(i) => i.as_u64().map(FlexHash),
+        rmpv::Value::String(s) => {
+            let s = s.as_str().unwrap_or("").trim();
+            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                u64::from_str_radix(hex, 16).ok().map(FlexHash)
+            } else if let Ok(n) = s.parse::<u64>() {
+                Some(FlexHash(n))
+            } else {
+                u64::from_str_radix(s, 16).ok().map(FlexHash)
+            }
+        }
+        rmpv::Value::Binary(b) => {
+            if b.len() > 8 {
+                // vLLM: SHA256 truncated to u64 → last 8 bytes
+                let start = b.len().saturating_sub(8);
+                let mut buf = [0u8; 8];
+                let usable = (b.len() - start).min(8);
+                buf[8 - usable..].copy_from_slice(&b[start..start + usable]);
+                Some(FlexHash(u64::from_be_bytes(buf)))
+            } else {
+                let mut buf = [0u8; 8];
+                buf[8 - b.len()..].copy_from_slice(b);
+                Some(FlexHash(u64::from_be_bytes(buf)))
+            }
+        }
+        rmpv::Value::Nil => None,
+        _ => None,
+    }
+}
+
+fn flex_hashes_from_rmpv(v: &rmpv::Value) -> Option<Vec<FlexHash>> {
+    v.as_array()
+        .map(|arr| arr.iter().filter_map(flex_hash_from_rmpv).collect())
+}
+
+fn i64_vec_from_rmpv(v: &rmpv::Value) -> Option<Vec<i64>> {
+    v.as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+}
+
+fn u32_from_rmpv(v: &rmpv::Value) -> Option<u32> {
+    v.as_u64().and_then(|n| u32::try_from(n).ok())
+}
+
+// ---------------------------------------------------------------------------
+// Per-event-type parsers (operating on Vec<serde_json::Value>)
+// ---------------------------------------------------------------------------
+
+/// Parse BlockStored fields from collected rmpv values.
+///
+/// Expected sequence (``?`` = optional, may be omitted):
+///
+/// ```text
+/// block_hashes (arr)  parent_hash? (int|bin|str|nil)  token_ids (arr)
+/// block_size (int)  lora_id? (int|nil)  medium? (str|nil)
+/// lora_name? (str|nil)  extra_keys? (arr|nil)  group_idx? (int|nil)
+/// kv_cache_spec_kind? (str|nil)  kv_cache_spec_sliding_window? (int|nil)
+/// ```
+fn parse_block_stored_values(
+    event_type: String,
+    values: &[rmpv::Value],
+) -> Result<VllmEventMap, String> {
+    // Filter out explicit nils.  With ``omit_defaults=True`` null fields
+    // are omitted from the array entirely.  Test data may include nil
+    // placeholders for the old fixed-position format — strip them.
+    let values: Vec<&rmpv::Value> = values.iter().filter(|v| !v.is_nil()).collect();
+    let len = values.len();
+    let mut p: usize = 0;
+
+    // --- block_hashes: first array (required) ---
+    let block_hashes = if p < len && matches!(values[p], rmpv::Value::Array(_)) {
+        let v = flex_hashes_from_rmpv(values[p]);
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // --- parent_block_hash: optional scalar before the token_ids array ---
+    // If the next value is NOT an array it may be parent_block_hash.
+    // If it IS an array, parent_hash was omitted and it's already token_ids.
+    let parent_block_hash = if p < len && !matches!(values[p], rmpv::Value::Array(_)) {
+        let v = flex_hash_from_rmpv(values[p]);
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // --- token_ids: array of ints (required) ---
+    let token_ids = if p < len && matches!(values[p], rmpv::Value::Array(_)) {
+        let v = i64_vec_from_rmpv(values[p]);
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // --- block_size: integer (required) ---
+    let block_size = if p < len && matches!(values[p], rmpv::Value::Integer(_)) {
+        let v = u32_from_rmpv(values[p]);
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // --- optional tail: types follow a predictable alternation ---
+    //   int(lora_id?)  str(medium?)  str(lora_name?)
+    //   arr(extra_keys?)  int(group_idx?)
+    //   str(spec_kind?)  int(sliding_window?)
+    let lora_id = if p < len && matches!(values[p], rmpv::Value::Integer(_)) {
+        let v = if let rmpv::Value::Integer(i) = values[p] {
+            i.as_i64()
+        } else {
+            None
+        };
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    let medium = if p < len && matches!(values[p], rmpv::Value::String(_)) {
+        let v = if let rmpv::Value::String(s) = values[p] {
+            s.as_str().map(|x| x.to_string())
+        } else {
+            None
+        };
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    let lora_name = if p < len && matches!(values[p], rmpv::Value::String(_)) {
+        let v = if let rmpv::Value::String(s) = values[p] {
+            s.as_str().map(|x| x.to_string())
+        } else {
+            None
+        };
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // extra_keys – skip
+    if p < len && matches!(values[p], rmpv::Value::Array(_)) {
+        p += 1;
+    }
+
+    let group_idx = if p < len && matches!(values[p], rmpv::Value::Integer(_)) {
+        let v = u32_from_rmpv(values[p]);
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    let kv_cache_spec_kind = if p < len && matches!(values[p], rmpv::Value::String(_)) {
+        let v = if let rmpv::Value::String(s) = values[p] {
+            s.as_str().map(|x| x.to_string())
+        } else {
+            None
+        };
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    let kv_cache_spec_sliding_window = if p < len && matches!(values[p], rmpv::Value::Integer(_)) {
+        u32_from_rmpv(values[p])
+    } else {
+        None
+    };
+
+    // Drain any unexpected trailing values (forward compat).
+
+    Ok(VllmEventMap {
+        event_type,
+        block_hashes,
+        parent_block_hash,
+        token_ids,
+        block_size,
+        medium,
+        group_idx,
+        lora_id,
+        lora_name,
+        kv_cache_spec_kind,
+        kv_cache_spec_sliding_window,
+    })
+}
+
+/// Parse BlockRemoved fields from collected rmpv values.
+///
+/// Expected sequence (``?`` = optional):
+///
+/// ```text
+/// block_hashes (arr)  medium? (str|nil)  group_idx? (int|nil)
+/// ```
+fn parse_block_removed_values(
+    event_type: String,
+    values: &[rmpv::Value],
+) -> Result<VllmEventMap, String> {
+    // Filter out explicit nils (same rationale as parse_block_stored_values).
+    let values: Vec<&rmpv::Value> = values.iter().filter(|v| !v.is_nil()).collect();
+    let len = values.len();
+    let mut p: usize = 0;
+
+    // --- block_hashes: array (required) ---
+    let block_hashes = if p < len && matches!(values[p], rmpv::Value::Array(_)) {
+        let v = flex_hashes_from_rmpv(values[p]);
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // --- medium: optional string ---
+    let medium = if p < len && matches!(values[p], rmpv::Value::String(_)) {
+        let v = if let rmpv::Value::String(s) = values[p] {
+            s.as_str().map(|x| x.to_string())
+        } else {
+            None
+        };
+        p += 1;
+        v
+    } else {
+        None
+    };
+
+    // --- group_idx: optional integer (last field) ---
+    let group_idx = if p < len && matches!(values[p], rmpv::Value::Integer(_)) {
+        u32_from_rmpv(values[p])
+    } else {
+        None
+    };
+
+    Ok(VllmEventMap::with_removed(
+        event_type,
+        block_hashes,
+        medium,
+        group_idx,
+    ))
+}
+
+// Extend VllmEventMap with a BlockRemoved-specific constructor.
+impl VllmEventMap {
+    fn with_removed(
+        event_type: String,
+        block_hashes: Option<Vec<FlexHash>>,
+        medium: Option<String>,
+        group_idx: Option<u32>,
+    ) -> Self {
+        VllmEventMap {
+            event_type,
+            block_hashes,
+            parent_block_hash: None,
+            token_ids: None,
+            block_size: None,
+            medium,
+            group_idx,
+            lora_id: None,
+            lora_name: None,
+            kv_cache_spec_kind: None,
+            kv_cache_spec_sliding_window: None,
+        }
+    }
 }
 
 /// Returns `true` if `kind` is a main attention type whose events should be
@@ -365,12 +715,15 @@ pub(crate) fn apply_zmq_event(
             let blocks: Vec<KvCacheStoredBlockData> = seq_hashes
                 .iter()
                 .filter_map(|h| {
-                    entry
-                        .lookup_cached_tokens_hash(h.0)
-                        .map(|tokens_hash| KvCacheStoredBlockData {
+                    entry.lookup_cached_tokens_hash(h.0).map(|tokens_hash| {
+                        // Evict cache entry after lookup to prevent unbounded
+                        // growth of non_hbm_cache over the service lifetime.
+                        entry.evict_cached_block(h.0);
+                        KvCacheStoredBlockData {
                             block_hash: h.0,
                             tokens_hash,
-                        })
+                        }
+                    })
                 })
                 .collect();
 
@@ -770,28 +1123,37 @@ mod tests {
     // VllmEventMap normalize — filtering by spec_kind
     // -----------------------------------------------------------------------
 
-    /// Helper: build a BlockStored msgpack map and deserialize + normalize.
+    /// Build a BlockStored msgpack array and deserialize + normalize.
+    ///
+    /// Constructs a realistic vLLM wire-format array (``omit_defaults=True``):
+    /// fields whose value is null are absent from the array, so the test
+    /// data includes enough typed placeholders (lora_id=0, medium="GPU",
+    /// lora_name="lora", group_idx=0) to keep the type-pattern parser
+    /// unambiguous.
     fn normalize_block_stored(
         kind: Option<&str>,
         token_ids: Vec<i64>,
         block_size: u32,
         block_hashes: Vec<u64>,
     ) -> VllmEvent {
-        let mut map = serde_json::Map::new();
-        map.insert("type".into(), "BlockStored".into());
-        map.insert(
-            "block_hashes".into(),
-            serde_json::to_value(&block_hashes).unwrap(),
-        );
-        map.insert(
-            "token_ids".into(),
-            serde_json::to_value(&token_ids).unwrap(),
-        );
-        map.insert("block_size".into(), serde_json::json!(block_size));
+        // vLLM array (parent_hash, extra_keys, sliding_window omitted):
+        //   [tag, block_hashes, token_ids, block_size,
+        //    lora_id, medium, lora_name, group_idx, kv_cache_spec_kind?]
+        let mut arr = serde_json::json!([
+            "BlockStored",
+            block_hashes,
+            token_ids,
+            block_size,
+            0,      // lora_id
+            "GPU",  // medium
+            "lora", // lora_name
+            0,      // group_idx
+        ]);
         if let Some(k) = kind {
-            map.insert("kv_cache_spec_kind".into(), k.into());
+            let a = arr.as_array_mut().unwrap();
+            a.push(serde_json::json!(k)); // kv_cache_spec_kind
         }
-        let packed = rmp_serde::to_vec(&map).unwrap();
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let parsed: VllmEventMap = from_slice(&packed).unwrap();
         parsed.normalize()
     }
@@ -833,24 +1195,92 @@ mod tests {
     }
 
     #[test]
-    fn test_vllm_block_removed_with_swa_is_filtered() {
-        let mut map = serde_json::Map::new();
-        map.insert("type".into(), "BlockRemoved".into());
-        map.insert("block_hashes".into(), serde_json::json!([100, 200]));
-        map.insert("kv_cache_spec_kind".into(), "SlidingWindow".into());
-        let packed = rmp_serde::to_vec(&map).unwrap();
+    fn test_vllm_array_format_block_stored_accepted() {
+        // Minimal realistic BlockStored: required fields + type anchors.
+        // parent_hash omitted, extra_keys/sliding_window omitted.
+        let arr = serde_json::json!([
+            "BlockStored",
+            [100, 200],
+            [10, 20, 30, 40, 50, 60, 70, 80],
+            4,
+            0,      // lora_id
+            "GPU",  // medium
+            "lora", // lora_name
+            0,      // group_idx
+        ]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let parsed: VllmEventMap = from_slice(&packed).unwrap();
-        assert!(matches!(parsed.normalize(), VllmEvent::Ignored));
+        match parsed.normalize() {
+            VllmEvent::BlockStored {
+                block_hashes,
+                block_size,
+                ..
+            } => {
+                assert_eq!(block_hashes, vec![100, 200]);
+                assert_eq!(block_size, 4);
+            }
+            _ => panic!("expected BlockStored from array format"),
+        }
+    }
+
+    #[test]
+    fn test_vllm_array_format_block_removed_accepted() {
+        // Minimal BlockRemoved: only block_hashes (medium omitted).
+        let arr = serde_json::json!(["BlockRemoved", [300, 400]]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
+        let parsed: VllmEventMap = from_slice(&packed).unwrap();
+        match parsed.normalize() {
+            VllmEvent::BlockRemoved { block_hashes, .. } => {
+                assert_eq!(block_hashes, vec![300, 400]);
+            }
+            _ => panic!("expected BlockRemoved from array format"),
+        }
+    }
+
+    #[test]
+    fn test_vllm_array_format_block_removed_with_medium() {
+        // BlockRemoved with medium field present (the case the old parser
+        // confused with parent_block_hash).
+        let arr = serde_json::json!(["BlockRemoved", [300, 400], "cpu"]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
+        let parsed: VllmEventMap = from_slice(&packed).unwrap();
+        match parsed.normalize() {
+            VllmEvent::BlockRemoved {
+                block_hashes,
+                medium,
+                ..
+            } => {
+                assert_eq!(block_hashes, vec![300, 400]);
+                assert_eq!(medium.unwrap(), "cpu");
+            }
+            _ => panic!("expected BlockRemoved from array format"),
+        }
+    }
+
+    #[test]
+    fn test_vllm_array_format_with_trailing_fields() {
+        // BlockStored with parent_hash, extra_keys, sliding_window omitted.
+        let arr = serde_json::json!([
+            "BlockStored",
+            [500],
+            [1, 2, 3, 4],
+            4,
+            0,      // lora_id
+            "GPU",  // medium
+            "lora", // lora_name
+            0,      // group_idx
+            "FullAttention",
+        ]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
+        let parsed: VllmEventMap = from_slice(&packed).unwrap();
+        let ev = parsed.normalize();
+        assert!(matches!(ev, VllmEvent::BlockStored { .. }));
     }
 
     #[test]
     fn test_vllm_all_blocks_cleared_always_accepted() {
-        // AllBlocksCleared should pass even with non-main spec_kind
-        // because it clears everything, not just one group.
-        let mut map = serde_json::Map::new();
-        map.insert("type".into(), "AllBlocksCleared".into());
-        map.insert("kv_cache_spec_kind".into(), "SlidingWindow".into());
-        let packed = rmp_serde::to_vec(&map).unwrap();
+        let arr = serde_json::json!(["AllBlocksCleared"]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let parsed: VllmEventMap = from_slice(&packed).unwrap();
         assert!(matches!(parsed.normalize(), VllmEvent::AllBlocksCleared));
     }
@@ -884,11 +1314,9 @@ mod tests {
 
     #[test]
     fn test_vllm_block_removed_extracts_hashes() {
-        let mut map = serde_json::Map::new();
-        map.insert("type".into(), "BlockRemoved".into());
-        map.insert("block_hashes".into(), serde_json::json!([0xDEAD, 0xBEEF]));
-        map.insert("medium".into(), "cpu".into());
-        let packed = rmp_serde::to_vec(&map).unwrap();
+        // BlockRemoved with medium: ["BlockRemoved", [hashes], "cpu"]
+        let arr = serde_json::json!(["BlockRemoved", [0xDEAD, 0xBEEF], "cpu"]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let parsed: VllmEventMap = from_slice(&packed).unwrap();
         match parsed.normalize() {
             VllmEvent::BlockRemoved {
@@ -913,22 +1341,25 @@ mod tests {
         token_ids: Vec<i64>,
         block_size: u32,
     ) -> Vec<u8> {
-        let mut event = serde_json::Map::new();
-        event.insert("type".into(), "BlockStored".into());
-        event.insert(
-            "block_hashes".into(),
-            serde_json::to_value(&block_hashes).unwrap(),
-        );
-        event.insert(
-            "token_ids".into(),
-            serde_json::to_value(&token_ids).unwrap(),
-        );
-        event.insert("block_size".into(), serde_json::json!(block_size));
+        // Realistic vLLM array (parent_hash, extra_keys, sliding_window omitted):
+        //   [tag, block_hashes, token_ids, block_size,
+        //    lora_id, medium, lora_name, group_idx, kv_cache_spec_kind?]
+        let mut inner = serde_json::json!([
+            "BlockStored",
+            block_hashes,
+            token_ids,
+            block_size,
+            0,      // lora_id
+            "GPU",  // medium
+            "lora", // lora_name
+            0,      // group_idx
+        ]);
         if let Some(k) = kind {
-            event.insert("kv_cache_spec_kind".into(), k.into());
+            let a = inner.as_array_mut().unwrap();
+            a.push(serde_json::json!(k)); // kv_cache_spec_kind
         }
-        // KVEventBatch: [ts: f64, events: [...], dp_rank: int|null]
-        let batch = serde_json::json!([1.0, [event], null]);
+        // KVEventBatch: [1.0, [event], null]
+        let batch = serde_json::json!([1.0, [inner], null]);
         rmp_serde::to_vec(&batch).unwrap()
     }
 
@@ -953,35 +1384,36 @@ mod tests {
 
     #[test]
     fn test_parse_vllm_bare_event() {
-        let mut event = serde_json::Map::new();
-        event.insert("type".into(), "BlockRemoved".into());
-        event.insert("block_hashes".into(), serde_json::json!([42]));
-        let packed = rmp_serde::to_vec(&event).unwrap();
-
+        let arr = serde_json::json!(["BlockRemoved", [42]]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let ev = parse_vllm_bare(&packed).unwrap();
         assert!(matches!(ev, VllmEvent::BlockRemoved { .. }));
     }
 
     #[test]
     fn test_parse_vllm_bare_filters_non_main() {
-        let mut event = serde_json::Map::new();
-        event.insert("type".into(), "BlockStored".into());
-        event.insert("block_hashes".into(), serde_json::json!([99]));
-        event.insert("token_ids".into(), serde_json::json!([1, 2]));
-        event.insert("block_size".into(), serde_json::json!(2));
-        event.insert("kv_cache_spec_kind".into(), "Mamba".into());
-        let packed = rmp_serde::to_vec(&event).unwrap();
-
+        // BlockStored with Mamba attention → should be filtered.
+        // Uses realistic field pattern: required fields + type anchors + spec_kind.
+        let arr = serde_json::json!([
+            "BlockStored",
+            [99],
+            [1, 2],
+            2,
+            0,       // lora_id
+            "GPU",   // medium
+            "lora",  // lora_name
+            0,       // group_idx
+            "Mamba", // kv_cache_spec_kind
+        ]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let ev = parse_vllm_bare(&packed).unwrap();
         assert!(matches!(ev, VllmEvent::Ignored));
     }
 
     #[test]
     fn test_parse_vllm_bare_unknown_type_is_ignored() {
-        let mut event = serde_json::Map::new();
-        event.insert("type".into(), "SomeFutureEvent".into());
-        let packed = rmp_serde::to_vec(&event).unwrap();
-
+        let arr = serde_json::json!(["SomeFutureEvent"]);
+        let packed = rmp_serde::to_vec(&arr).unwrap();
         let ev = parse_vllm_bare(&packed).unwrap();
         assert!(matches!(ev, VllmEvent::Ignored));
     }
@@ -995,12 +1427,12 @@ mod tests {
         use crate::hashing::compute_block_hash_for_seq;
         use crate::indexer::Indexer;
 
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let token_ids = vec![1i64, 2, 3, 4, 5, 6, 7, 8];
         let block_size = 4u32;
 
         // Pre-compute expected XXH3 hashes
-        let expected = compute_block_hash_for_seq(&token_ids, block_size);
+        let _expected = compute_block_hash_for_seq(&token_ids, block_size);
 
         let event = VllmEvent::BlockStored {
             block_hashes: vec![0xAAAA, 0xBBBB],
@@ -1048,7 +1480,7 @@ mod tests {
         }
 
         // Query via find_matches should match (tokens_hash == query hash)
-        let scores = entry.find_matches(&token_ids, block_size);
+        let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
         assert!(
             !scores.scores.is_empty(),
             "query should match stored blocks"
@@ -1063,7 +1495,7 @@ mod tests {
     fn test_non_hbm_event_cached_not_in_tree() {
         use crate::indexer::Indexer;
 
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let token_ids = vec![1i64, 2, 3, 4];
         let block_size = 4u32;
 
@@ -1095,7 +1527,7 @@ mod tests {
         assert!(entry.lookup_cached_tokens_hash(0xABCD).is_some());
 
         // Tree should NOT have the block (not inserted for non-HBM).
-        let scores = entry.find_matches(&token_ids, block_size);
+        let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
         assert!(
             scores.scores.is_empty(),
             "non-HBM events should not be inserted into tree"
@@ -1106,7 +1538,7 @@ mod tests {
     fn test_pool_backend_store_matches_cached_block() {
         use crate::indexer::Indexer;
 
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let token_ids = vec![1i64, 2, 3, 4];
         let block_size = 4u32;
 
@@ -1134,7 +1566,7 @@ mod tests {
         .unwrap();
 
         // Pre-compute expected XXH3 hash.
-        let expected_hashes = compute_block_hash_for_seq(&token_ids, block_size);
+        let _expected_hashes = compute_block_hash_for_seq(&token_ids, block_size);
 
         // Phase 2: pool backend confirms placement — insert into tree.
         let zmq_event = ZmqEventMap {
@@ -1166,7 +1598,7 @@ mod tests {
 
         // Tree should now have the block at the pool backend's worker key.
         let entry = indexer.get_or_create("test-model", "test-tenant");
-        let scores = entry.find_matches(&token_ids, block_size);
+        let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
         // The pool backend worker ("test-pool") should have a match.
         let pool_worker = WorkerKey {
             instance_id: "test-pool".into(),
@@ -1184,7 +1616,7 @@ mod tests {
     fn test_pool_backend_store_ignores_unknown_hash() {
         use crate::indexer::Indexer;
 
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let entry = indexer.get_or_create("test-model", "test-tenant");
 
         // Pool backend stores a block we never cached — should be silent no-op.
@@ -1230,7 +1662,7 @@ mod tests {
     fn test_pool_backend_remove_evicts_cache() {
         use crate::indexer::Indexer;
 
-        let indexer = Indexer::new();
+        let indexer = Indexer::new(ScoringConfig::default());
         let token_ids = vec![1i64, 2, 3, 4, 5, 6, 7, 8];
         let block_size = 4u32;
 
@@ -1319,9 +1751,20 @@ mod tests {
         )
         .unwrap();
 
-        // Cache entry 0xAAA should be evicted.
+        // Both cache entries should be evicted after pool store confirm
+        // (the store branch now evicts cache entries to prevent unbounded growth).
         assert!(entry.lookup_cached_tokens_hash(0xAAA).is_none());
-        // 0xBBB should still be cached.
-        assert!(entry.lookup_cached_tokens_hash(0xBBB).is_some());
+        assert!(entry.lookup_cached_tokens_hash(0xBBB).is_none());
+
+        // Tree should still have the pool worker's block for 0xBBB (only 0xAAA was removed).
+        let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+        let pool_worker = WorkerKey {
+            instance_id: "test-pool".into(),
+            backend_id: "test-pool".into(),
+            dp_rank: 0,
+            medium: StorageMedium::Cpu,
+        };
+        // After removing 0xAAA, only the 0xBBB block remains → still 1 match.
+        assert!(scores.scores.contains_key(&pool_worker));
     }
 }

@@ -57,10 +57,6 @@ impl ZmqSubscriber {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        // Validate up-front: try a one-shot connection to fail early on bad endpoints.
-        let ctx = zmq::Context::new();
-        Self::create_socket(&ctx, &endpoint)?;
-
         tracing::info!(
             %endpoint, %model_name, %tenant_id, %backend_id, dp_rank,
             block_size,
@@ -222,39 +218,33 @@ fn subscriber_loop(
             break;
         }
 
-        // Receive 3-part ZMQ message: [topic] [seq] [payload]
-        let topic = match socket.recv_msg(zmq::DONTWAIT) {
-            Ok(msg) => msg,
+        // Receive 3-part ZMQ message atomically: [topic] [seq] [payload].
+        // ZMQ PUB-SUB guarantees atomic delivery of multipart messages —
+        // recv_multipart avoids protocol desync where a partial read
+        // leaves leftover frames in the socket buffer.
+        let parts = match socket.recv_multipart(zmq::DONTWAIT) {
+            Ok(parts) => parts,
             Err(e) => {
                 if zmq_errno_reasonable(&e) {
                     continue;
                 }
-                tracing::error!(%backend_id, dp_rank, "ZMQ recv topic error: {e}");
+                tracing::error!(%backend_id, dp_rank, "ZMQ recv error: {e}");
                 break;
             }
         };
 
-        let seq_msg = match socket.recv_msg(0) {
-            Ok(msg) => msg,
-            Err(e) => {
-                tracing::error!(%backend_id, dp_rank, "ZMQ recv seq error: {e}");
-                break;
-            }
-        };
-
-        let payload_msg = match socket.recv_msg(0) {
-            Ok(msg) => msg,
-            Err(e) => {
-                tracing::error!(%backend_id, dp_rank, "ZMQ recv payload error: {e}");
-                break;
-            }
-        };
-
-        drop(topic);
-        drop(seq_msg);
+        if parts.len() < 3 {
+            tracing::warn!(
+                %backend_id, dp_rank,
+                part_count = parts.len(),
+                "ZMQ recv: expected 3-part message, got {} parts — skipping",
+                parts.len()
+            );
+            continue;
+        }
 
         process_payload(
-            &payload_msg,
+            &parts[2],
             &indexer,
             &model_name,
             &tenant_id,

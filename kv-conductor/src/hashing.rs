@@ -37,6 +37,10 @@ const PAR_BATCH_BLOCKS: usize = 1024;
 
 /// Compute block hashes for a sequence of tokens using a sliding window of
 /// `block_size` tokens. Each window produces one `LocalBlockHash`.
+///
+/// Tokens are converted from i64 to u32 per-chunk (not pre-allocated for the
+/// entire sequence), avoiding a 512KB+ intermediate allocation for large
+/// sequences (e.g. DeepSeek V4 128K tokens).
 pub fn compute_block_hash_for_seq(tokens: &[i64], block_size: u32) -> Vec<LocalBlockHash> {
     if block_size == 0 {
         return Vec::new();
@@ -45,43 +49,52 @@ pub fn compute_block_hash_for_seq(tokens: &[i64], block_size: u32) -> Vec<LocalB
     let stride = block_size as usize;
     let estimated_blocks = tokens.len().div_ceil(stride);
 
-    // Convert i64 tokens to u32 for hashing
-    let tokens_u32: Vec<u32> = tokens.iter().map(|t| *t as u32).collect();
-
     if estimated_blocks <= PAR_THRESHOLD {
-        hash_chunks_sequential(&tokens_u32, stride)
+        hash_chunks_sequential(tokens, stride, estimated_blocks)
     } else {
-        hash_chunks_parallel(&tokens_u32, stride)
+        hash_chunks_parallel(tokens, stride)
     }
 }
 
-/// Hash each chunk on a single thread.
+/// Hash each chunk on a single thread, converting i64→u32 per chunk.
 #[inline]
-fn hash_chunks_sequential(tokens_u32: &[u32], stride: usize) -> Vec<LocalBlockHash> {
-    let estimated_blocks = tokens_u32.len().div_ceil(stride);
+fn hash_chunks_sequential(
+    tokens: &[i64],
+    stride: usize,
+    estimated_blocks: usize,
+) -> Vec<LocalBlockHash> {
     let mut hashes = Vec::with_capacity(estimated_blocks);
-    for chunk in tokens_u32.chunks(stride) {
-        hashes.push(hash_u32_chunk(chunk));
+    for chunk in tokens.chunks(stride) {
+        hashes.push(hash_i64_chunk(chunk));
     }
     hashes
 }
 
 /// Hash chunks in parallel using rayon, processing blocks in batches.
-fn hash_chunks_parallel(tokens_u32: &[u32], stride: usize) -> Vec<LocalBlockHash> {
+/// Converts i64→u32 per chunk to avoid a full-sequence intermediate allocation.
+fn hash_chunks_parallel(tokens: &[i64], stride: usize) -> Vec<LocalBlockHash> {
     use rayon::prelude::*;
     let batch_elems = stride * PAR_BATCH_BLOCKS;
-    tokens_u32
+    tokens
         .par_chunks(batch_elems)
         .flat_map(|batch| {
             let b_stride = stride.min(batch.len());
             let count = batch.len().div_ceil(b_stride);
             let mut hashes = Vec::with_capacity(count);
             for chunk in batch.chunks(b_stride) {
-                hashes.push(hash_u32_chunk(chunk));
+                hashes.push(hash_i64_chunk(chunk));
             }
             hashes
         })
         .collect()
+}
+
+/// Hash a single chunk of i64 tokens: convert to u32, then hash as raw bytes.
+#[inline]
+fn hash_i64_chunk(chunk: &[i64]) -> LocalBlockHash {
+    // Per-chunk conversion avoids the 512KB+ allocation for full sequence.
+    let u32s: Vec<u32> = chunk.iter().map(|&t| t as u32).collect();
+    hash_u32_chunk(&u32s)
 }
 
 /// Hash a single chunk of u32 tokens as raw bytes (little-endian).
@@ -166,8 +179,7 @@ mod tests {
     fn test_sequential_and_parallel_produce_same_hashes() {
         let tokens: Vec<i64> = (0..2000).collect(); // 2000/4 = 500 blocks → parallel
         let h_auto = compute_block_hash_for_seq(&tokens, 4);
-        let h_seq =
-            hash_chunks_sequential(&tokens.iter().map(|t| *t as u32).collect::<Vec<_>>(), 4);
+        let h_seq = hash_chunks_sequential(&tokens, 4, tokens.len().div_ceil(4));
         assert_eq!(h_auto, h_seq);
     }
 

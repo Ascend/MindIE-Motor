@@ -109,6 +109,31 @@ impl StorageMedium {
 }
 
 // ---------------------------------------------------------------------------
+// Scoring configuration
+// ---------------------------------------------------------------------------
+
+/// Per-medium block match weights, configurable at startup.
+#[derive(Debug, Clone)]
+pub struct ScoringConfig {
+    /// Weight for each HBM (XPU) block matched.
+    pub hbm_weight: u32,
+    /// Weight for each CPU block matched.
+    pub cpu_weight: u32,
+    /// Weight for each disk block matched.
+    pub disk_weight: u32,
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            hbm_weight: 3,
+            cpu_weight: 2,
+            disk_weight: 1,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Identity types
 // ---------------------------------------------------------------------------
 
@@ -224,8 +249,6 @@ pub struct QueryByHashRequest {
 // ---------------------------------------------------------------------------
 
 /// Per-DP-rank KV match data.
-pub type DpScores = HashMap<String, u32>;
-
 /// Per-DP per-medium match detail.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct DpMediaDetail {
@@ -235,6 +258,25 @@ pub struct DpMediaDetail {
     pub cpu: u32,
     #[serde(rename = "DISK")]
     pub disk: u32,
+}
+
+/// Per-DP weighted score breakdown across storage media.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct DpScoring {
+    /// HBM matched blocks × 3
+    #[serde(rename = "XPU")]
+    pub xpu_score: u32,
+    /// CPU matched blocks × 2
+    #[serde(rename = "CPU")]
+    pub cpu_score: u32,
+    /// Disk matched blocks × 1
+    #[serde(rename = "DISK")]
+    pub disk_score: u32,
+    /// Total weighted score (xpu_score + cpu_score + disk_score)
+    pub total: u32,
+    /// Cached prefix length for this DP, in tokens.
+    /// The maximum of matched_tokens across all storage media for this DP.
+    pub matched_tokens: u32,
 }
 
 /// Per-instance match data returned in query response.
@@ -255,9 +297,11 @@ pub struct InstanceMatchData {
     /// Matched prefix tokens on disk (Mooncake DISK replica).
     #[serde(rename = "DISK")]
     pub disk: u32,
-    /// Per-DP-rank match depth, in tokens.
+    /// Per-DP-rank scoring breakdown across media.
     #[serde(rename = "DP")]
-    pub dp: DpScores,
+    pub dp: HashMap<DpRankStr, DpScoring>,
+    /// Sum of all DP total scores for this instance.
+    pub total_score: u32,
     /// Per-DP per-medium block counts (only when ``hit_detail`` is requested).
     #[serde(rename = "media_detail", skip_serializing_if = "Option::is_none")]
     pub media_detail: Option<HashMap<String, DpMediaDetail>>,
@@ -529,11 +573,31 @@ impl OverlapScores {
         self.scores.is_empty()
     }
 
+    /// Add points for a worker (HBM depth × 3, CPU block × 2, disk block × 1).
+    #[inline]
+    pub fn add_score(&mut self, worker: WorkerKey, points: u32) {
+        self.scores
+            .entry(worker)
+            .and_modify(|s| *s += points)
+            .or_insert(points);
+    }
+
+    /// Legacy max-based update, used internally by HBM tree traversal.
+    #[inline]
     pub fn update_score(&mut self, worker: WorkerKey, depth: u32) {
         self.scores
             .entry(worker)
             .and_modify(|s| *s = (*s).max(depth))
             .or_insert(depth);
+    }
+
+    /// Merge scores from another `OverlapScores` into this one.
+    /// Used by parallel flat lookup to combine per-thread results.
+    #[inline]
+    pub fn merge(&mut self, other: OverlapScores) {
+        for (worker, score) in other.scores {
+            self.add_score(worker, score);
+        }
     }
 }
 
@@ -638,8 +702,27 @@ mod tests {
         imd.xpu = 128;
         imd.cpu = 256;
         imd.disk = 0;
-        imd.dp.insert("0".into(), 128);
-        imd.dp.insert("1".into(), 256);
+        imd.dp.insert(
+            "0".into(),
+            DpScoring {
+                xpu_score: 128,
+                cpu_score: 0,
+                disk_score: 0,
+                total: 128,
+                matched_tokens: 128,
+            },
+        );
+        imd.dp.insert(
+            "1".into(),
+            DpScoring {
+                xpu_score: 0,
+                cpu_score: 256,
+                disk_score: 0,
+                total: 256,
+                matched_tokens: 256,
+            },
+        );
+        imd.total_score = 384;
 
         let json = serde_json::to_string(&imd).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -648,8 +731,13 @@ mod tests {
         assert_eq!(parsed["XPU"], 128);
         assert_eq!(parsed["CPU"], 256);
         assert_eq!(parsed["DISK"], 0);
-        assert_eq!(parsed["DP"]["0"], 128);
-        assert_eq!(parsed["DP"]["1"], 256);
+        assert_eq!(parsed["total_score"], 384);
+        assert_eq!(parsed["DP"]["0"]["XPU"], 128);
+        assert_eq!(parsed["DP"]["0"]["total"], 128);
+        assert_eq!(parsed["DP"]["0"]["matched_tokens"], 128);
+        assert_eq!(parsed["DP"]["1"]["CPU"], 256);
+        assert_eq!(parsed["DP"]["1"]["total"], 256);
+        assert_eq!(parsed["DP"]["1"]["matched_tokens"], 256);
     }
 
     // ── KvEventWirePayload normalization ────────────────────────────────

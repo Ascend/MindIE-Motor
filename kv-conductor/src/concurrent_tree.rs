@@ -34,7 +34,10 @@ pub struct Block {
     /// Child blocks keyed by their local block hash (token-content hash).
     pub children: FxHashMap<LocalBlockHash, SharedBlock>,
     /// Workers that have this block cached.
-    pub workers: FxHashSet<WorkerKey>,
+    /// Uses `Arc` copy-on-write: the query hot path (`find_matches`) only
+    /// bumps a reference count instead of cloning the entire set (including
+    /// all inner `String` fields). Mutations use `Arc::make_mut`.
+    pub workers: Arc<FxHashSet<WorkerKey>>,
     /// The sequence-level block hash for this node (None for root).
     pub block_hash: Option<SequenceBlockHash>,
 }
@@ -47,7 +50,7 @@ impl Block {
     pub fn with_hash(block_hash: SequenceBlockHash) -> Self {
         Self {
             children: FxHashMap::default(),
-            workers: FxHashSet::default(),
+            workers: Arc::new(FxHashSet::default()),
             block_hash: Some(block_hash),
         }
     }
@@ -56,7 +59,7 @@ impl Block {
     /// children to allow memory reclamation.
     #[inline]
     pub fn drop_worker(&mut self, worker: &WorkerKey) {
-        self.workers.remove(worker);
+        Arc::make_mut(&mut self.workers).remove(worker);
         if self.workers.is_empty() {
             self.children.clear();
         }
@@ -125,10 +128,11 @@ impl ConcurrentRadixTree {
             return scores;
         };
 
-        // Initialize active workers from first child
+        // Initialize active workers from first child.
+        // Arc clone is O(1) refcount bump instead of O(n) set clone.
         let mut active: FxHashSet<WorkerKey> = {
             let guard = first_child.read();
-            guard.workers.clone()
+            (*guard.workers).clone()
         };
 
         if active.is_empty() {
@@ -251,7 +255,7 @@ impl ConcurrentRadixTree {
 
                 // Insert worker into this block (deferred from previous iteration)
                 if needs_worker_insert {
-                    parent_mut.workers.insert(worker.clone());
+                    Arc::make_mut(&mut parent_mut.workers).insert(worker.clone());
                 }
                 needs_worker_insert = true;
 
@@ -267,7 +271,7 @@ impl ConcurrentRadixTree {
                         // Verify block_hash consistency (debug check)
                         let existing_guard = existing.read();
                         if existing_guard.block_hash != Some(seq_hash) {
-                            tracing::warn!(
+                            tracing::debug!(
                                 instance_id = %worker.instance_id,
                                 dp_rank = worker.dp_rank,
                                 ?seq_hash,
@@ -311,7 +315,7 @@ impl ConcurrentRadixTree {
 
         // Insert worker into the final block
         if needs_worker_insert {
-            current.write().workers.insert(worker.clone());
+            Arc::make_mut(&mut current.write().workers).insert(worker.clone());
         }
 
         tracing::trace!(final_lookup_len = lookup.len(), "apply_store finished");

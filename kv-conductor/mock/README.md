@@ -130,7 +130,9 @@ zmq-publisher-multi
 - **STORE / REMOVE / CLEAR** 事件，80%/15%/5% 比例
 - **Token 分布**：60% 高频词 (100-3000) + 30% 中频 (3000-25000) + 10% 低频 (25000-50000)
 - **容量增长**：每 2 分钟 +30%，模拟累积缓存
+- **vLLM array 格式**：默认使用 msgspec 的 array_like 编码（`["BlockStored", hashes, ...]`），`--mooncake-format` 切换为旧 map 格式
 - **多端口模式**：支持 `--multi-port` 双端口广播（XPU + CPU/DISK），使用 `medium_endpoints` 新协议注册，`cpu` 和 `disk` 共享端口时自动去重。通过 `--store-backend` 切换池化后端（Mooncake / Memcache / YuanRong）
+- **加权评分**：HBM ×3, CPU ×2, Disk ×1（可通过 `--hbm-weight/--cpu-weight/--disk-weight` 在 conductor 侧配置）
 
 ## CLI 命令参考
 

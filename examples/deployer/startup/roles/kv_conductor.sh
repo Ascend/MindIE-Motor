@@ -14,6 +14,12 @@ set_kv_conductor_env
 KV_CONDUCTOR_PORT=${KV_CONDUCTOR_PORT:-13333}
 KV_CONDUCTOR_HOST=${KV_CONDUCTOR_HOST:-0.0.0.0}
 
+# If KV_CONDUCTOR_PORT is a full URL (e.g. "tcp://10.98.27.88:13333"),
+# extract just the trailing port number for the --port argument.
+if [[ "$KV_CONDUCTOR_PORT" == *":"* ]]; then
+    KV_CONDUCTOR_PORT="${KV_CONDUCTOR_PORT##*:}"
+fi
+
 # Locate the kv-conductor binary: check common installation paths.
 KV_CONDUCTOR_BIN=""
 for candidate in /usr/local/bin/kv-conductor /opt/motor/bin/kv-conductor ./kv-conductor; do

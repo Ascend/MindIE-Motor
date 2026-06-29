@@ -18,8 +18,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use clap::Parser;
+use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::EnvFilter;
 
+use kv_conductor::protocols::ScoringConfig;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
 
@@ -28,13 +30,25 @@ use kv_conductor::server::{create_router, AppState};
 #[command(name = "kv-conductor")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
-    /// Host address to bind to
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Host address to bind to (IPv4/IPv6, dual-stack by default)
+    #[arg(long, default_value = "::")]
     host: String,
 
     /// Port to listen on
     #[arg(long, short, default_value = "13333")]
     port: u16,
+
+    /// Score per matched HBM/XPU block
+    #[arg(long, default_value = "3")]
+    hbm_weight: u32,
+
+    /// Score per matched CPU block
+    #[arg(long, default_value = "2")]
+    cpu_weight: u32,
+
+    /// Score per matched disk block
+    #[arg(long, default_value = "1")]
+    disk_weight: u32,
 }
 
 #[tokio::main]
@@ -45,6 +59,10 @@ async fn main() {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_timer(OffsetTime::new(
+            time::UtcOffset::from_hms(8, 0, 0).expect("invalid UTC+8 offset"),
+            time::format_description::well_known::Rfc3339,
+        ))
         .init();
 
     let cli = Cli::parse();
@@ -52,8 +70,20 @@ async fn main() {
     let host: IpAddr = cli.host.parse().expect("invalid host address");
     let addr = SocketAddr::new(host, cli.port);
 
-    let registry = Arc::new(WorkerRegistry::new());
-    let state = AppState { registry };
+    let scoring = ScoringConfig {
+        hbm_weight: cli.hbm_weight,
+        cpu_weight: cli.cpu_weight,
+        disk_weight: cli.disk_weight,
+    };
+    tracing::info!(
+        hbm_weight = scoring.hbm_weight,
+        cpu_weight = scoring.cpu_weight,
+        disk_weight = scoring.disk_weight,
+        "scoring config"
+    );
+
+    let registry = Arc::new(WorkerRegistry::new(scoring.clone()));
+    let state = AppState { registry, scoring };
     let router = create_router(state);
 
     tracing::info!("KV conductor starting on {}", addr);
