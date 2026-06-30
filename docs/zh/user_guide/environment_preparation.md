@@ -2,7 +2,7 @@
 
 ## 依赖说明
 
-MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署、服务暴露、健康探针与故障重启，从而保证服务的安全运行；同时依赖 MindCluster 提供昇腾集群调度能力，实现NPU 资源调度、故障自动恢复等功能。其部署示意图如[图1 K8s集群整体部署视图](#fig698114995216)所示，依赖的具体组件名称及功能说明如[表1 依赖列表](#table9819144513712)所示。
+MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署、服务暴露、健康探针与故障重启，从而保证服务的安全运行；同时依赖 MindCluster 提供昇腾集群调度能力，实现NPU 资源调度、故障自动恢复等功能。其部署示意图如[图1 K8s集群整体部署视图](#fig698114995216)所示，依赖的具体组件名称及功能说明如[表1 依赖列表](#table9819144513712)所示。
 
 **图 1**  K8s集群整体部署视图<a name="fig698114995216"></a>
 
@@ -23,13 +23,15 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
 |Ascend Docker Runtime|提供docker或containerd的昇腾容器化支持，自动挂载所需文件和设备依赖。|Y|Y|
 |Infer Operator|创建推理实例Workload与Service，提供推理实例的手动扩缩容能力。|Y|N|
 
-## Kubernetes安装与集群创建
+---
 
-### 安装方式一（Motor提供安装教程）
+## Kubernetes安装
 
-基于镜像源安装 Kubernetes。当前支持自动化脚本安装和手动安装两种方式，推荐使用自动化脚本进行安装。
+基于镜像源安装 Kubernetes。当前支持自动化脚本安装和手动安装两种方式，推荐使用自动化脚本进行安装。也可参考 [Kubernetes 官网](https://kubernetes.io/zh-cn/docs/setup/) 进行安装。
 
-#### 前置检查
+---
+
+### 前置检查
 
 1. 已预先安装docker。
 
@@ -95,7 +97,9 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     df -h
     ```
 
-#### (推荐)自动化脚本安装
+---
+
+### 自动安装（推荐）
 
 脚本默认安装 1.23.0 版本的 kubernetes、3.24.5 版本的 calico，该版本组合能够支持 motor 的正常部署。
 
@@ -108,11 +112,17 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     修改脚本配置文件env.conf，需要配置内容如下。
 
       ```bash
-      # 管理节点 IP
+      # 当前节点 IP
       HOST_IP="141.61.73.111"
 
-      # Calico 网卡自动探测正则表达式
-      IP_AUTODETECTION_IFACE="enp.*"
+    # Calico 网卡自动探测正则表达式
+    # 查询主网卡命令：ip route | grep default
+    #
+    # 原理说明：
+    # calico会运行在集群中的每一个服务器上（只在管理节点配置calico，该配置会应用于集群中的所有节点），因此，述表达式要保证calico能够在集群中的每台服务器都找到网卡：
+    # 如果整个集群所有节点的主网卡名称(通过ip route | grep default查找)前缀相同，例如：集群各节点主网卡名称分别为enp1（master）、enp2（worker1节点）、enp115235(worker节点2)，可以填写为enp.*。
+    # 如果各节点主网卡名称不一致，需用 | 把各节点的命名规则都写进表达式。例如：多数节点主网卡为 enp 开头，个别节点主网卡 virbr0 上，可填写为 enp.*|virbr0。
+      IP_AUTODETECTION_IFACE="xxx"
 
       # ---------- 网络代理（可选；脚本会先测直连、再测代理，哪条通用哪条） ----------
       HTTP_PROXY="http://90.255.12.94:6666"
@@ -139,9 +149,11 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
       source env.conf && sudo -E bash deploy_k8s.sh worker
       ```
 
-    安装完毕后，请参照「连接集群服务器」小节继续后续步骤。
+    安装完毕后，无需关注[手动安装]小节，直接跳转至「创建集群」章节。
 
-#### 手动安装
+---
+
+### 手动安装
 
 1. 获取kubernetes组件。
 
@@ -231,7 +243,7 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     >https://docker.aityp.com/s/registry.k8s.io
     >```
 
-3. 执行以下命令清空系统网络代理环境变量。Kubernetes核心组件（kubeadm/kubelet）需直接访问API Server等服务，网络代理会拦截或篡改这类请求，可能导致Kubernetes服务不可用（**计算节点执行将本步骤执行完毕即可，后续请跳转到「连接集群服务器」小节；管理节点继续向下执行**）。
+3. 执行以下命令清空系统网络代理环境变量。Kubernetes核心组件（kubeadm/kubelet）需直接访问API Server等服务，网络代理会拦截或篡改这类请求，可能导致Kubernetes服务不可用（**计算节点执行将本步骤执行完毕即可！！！后续请跳转至「创建集群」步骤；管理节点继续向下执行**）。
 
     ```bash
     rm -rf /var/lib/kubelet
@@ -331,7 +343,7 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
         >[!NOTE]说明
         >calico会运行在集群中的每一个服务器上（只在管理节点配置calico，该配置会应用于集群中的所有节点），因此，上述表达式要保证calico能够在集群中的每台服务器找到网卡：
         >
-        >如果整个集群所有节点的**主网卡名称(通过ip route | grep default查找)相同**，例如：集群各节点主网卡名称分别为enp1（master）、enp2（worker1节点）、enp115235(worker节点2)，可以填写为enp.*。
+        >如果整个集群所有节点的**主网卡名称(通过ip route | grep default查找)前缀相同**，例如：集群各节点主网卡名称分别为enp1（master）、enp2（worker1节点）、enp115235(worker节点2)，可以填写为enp.*。
         >
         > 如果**各节点主网卡名称不一致**，需用 `|` 把各节点的命名规则都写进表达式。例如：多数节点主网卡为 enp 开头，个别节点主网卡 virbr0 上，可填写为 `enp.*|virbr0`。
 
@@ -353,11 +365,9 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
 
         ![](../imgs/k8s_deploy_done.png)
 
-### 安装方式二（Kubernetes官方安装教程）
+---
 
-参考 [Kubernetes 官网](https://kubernetes.io/zh-cn/docs/setup/) 进行安装。
-
-### 连接集群服务器
+### 创建集群
 
 通过以下步骤将计算节点接入管理节点，从而形成集群。
 
@@ -399,6 +409,8 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     >[!NOTE]说明
     >重复执行步骤2、3，直到所有计算节点加入管理节点。
 
+---
+
 ## MindCluster组件安装
 
 集群管理组件依赖MindCluster中的Ascend Docker Runtime、Ascend Device Plugin、ClusterD、Volcano和Infer Operator组件。其中，**管理节点需要安装全部组件，计算节点仅需要构建Ascend Device Plugin的镜像**。推荐安装26.0.0及之后的版本。
@@ -415,6 +427,8 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     >![](../imgs/volcano.png)
 5. 请参考《MindCluster  集群调度用户指南》的[infer_Operator](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/07_infer_operator.md)章节安装Infer Operator。
 6. 请参考《MindCluster  集群调度用户指南》的[ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/06_clusterd.md)章节安装ClusterD。
+
+---
 
 ## 设置节点标签
 
@@ -442,11 +456,11 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     for i in $workers;
     do
       kubectl label nodes $i  node-role.kubernetes.io/worker=worker     --overwrite=true
-      kubectl label nodes $i  workerselector=dls-worker-node                 --overwrite=true
-      kubectl label nodes $i  host-arch=huawei-arm                                 --overwrite=true
-      kubectl label nodes $i  accelerator=huawei-Ascend910                   --overwrite=true
-      kubectl label nodes $i  accelerator-type=module-910b-8                --overwrite=true
-      kubectl label nodes $i  nodeDEnable=on                                          --overwrite=true
+      kubectl label nodes $i  workerselector=dls-worker-node            --overwrite=true
+      kubectl label nodes $i  host-arch=huawei-arm                      --overwrite=true
+      kubectl label nodes $i  accelerator=huawei-Ascend910              --overwrite=true
+      kubectl label nodes $i  accelerator-type=module-910b-8            --overwrite=true
+      kubectl label nodes $i  nodeDEnable=on                            --overwrite=true
     done
    ```
 
@@ -472,10 +486,10 @@ MindIE PyMotor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署
     for i in $workers;
     do
       kubectl label nodes $i  node-role.kubernetes.io/worker=worker    --overwrite=true
-      kubectl label nodes $i  workerselector=dls-worker-node                --overwrite=true
-      kubectl label nodes $i  host-arch=huawei-arm                                --overwrite=true
-      kubectl label nodes $i  accelerator=huawei-Ascend910                  --overwrite=true
-      kubectl label nodes $i  accelerator-type=module-a3-16                 --overwrite=true
-      kubectl label nodes $i  nodeDEnable=on                                        --overwrite=true
+      kubectl label nodes $i  workerselector=dls-worker-node           --overwrite=true
+      kubectl label nodes $i  host-arch=huawei-arm                     --overwrite=true
+      kubectl label nodes $i  accelerator=huawei-Ascend910             --overwrite=true
+      kubectl label nodes $i  accelerator-type=module-a3-16            --overwrite=true
+      kubectl label nodes $i  nodeDEnable=on                           --overwrite=true
     done
    ```
