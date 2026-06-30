@@ -25,6 +25,7 @@ from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapsho
 logger = get_logger(__name__)
 
 _VIRTUAL_REQUEST_TIMEOUT_SEC = 5.0
+_VIRTUAL_WARMUP_TIMEOUT_SEC = 180.0
 _AICORE_SAMPLE_WINDOW_SEC = 5.0
 VIRTUAL_REQUEST_ID_MARKER = "_virtual"
 
@@ -74,6 +75,7 @@ class SimInference:
         # add flag to control failure counting, initially false
         self._count_failure_flag = False
         self.sim_sleep = 5
+        self._virtual_warmup_done = False
 
         # Condition variable to control aicore usage check execution
         self._aicore_check_condition = threading.Condition()
@@ -190,8 +192,10 @@ class SimInference:
             thread = threading.Thread(target=_run_in_thread, daemon=True)
             thread.start()
             logger.info(
-                "Health check task started, virtual request interval is 5s by default "
-                "(20s when AICore peak >= 80%%), npu_usage_threshold=%s%%",
+                "Health check task started, first virtual request warmup timeout is %ss, "
+                "then interval is 5s by default (20s when AICore peak >= 80%%), "
+                "npu_usage_threshold=%s%%",
+                _VIRTUAL_WARMUP_TIMEOUT_SEC,
                 self.npu_usage_threshold,
             )
 
@@ -331,8 +335,32 @@ class SimInference:
             logger.error("Virtual request failed: %s", e)
             return False
 
+    async def _run_virtual_warmup(self) -> bool:
+        """Wait for the first successful virtual request before regular health checks."""
+        if self._virtual_warmup_done:
+            return True
+        if self._status != constants.NORMAL_STATUS:
+            return False
+
+        warmup_timeout = httpx.Timeout(_VIRTUAL_WARMUP_TIMEOUT_SEC)
+        logger.info(
+            "Virtual inference warmup in progress, request timeout is %s seconds",
+            _VIRTUAL_WARMUP_TIMEOUT_SEC,
+        )
+        if await self._send_virtual_request_safe(warmup_timeout):
+            self._virtual_warmup_done = True
+            logger.info("Virtual inference warmup completed successfully")
+            return True
+
+        self._virtual_warmup_done = True
+        logger.warning("Virtual inference warmup request failed, set abnormal status and stop health check")
+        self.set_abnormal_status()
+        return False
+
     async def health_check_loop(self):
         """Regular virtual inference loop; default 5s interval, 20s when AICore peak >= 80%."""
+        if not await self._run_virtual_warmup():
+            return
         self.sim_sleep = 5
         while self._status == constants.NORMAL_STATUS:
             try:
