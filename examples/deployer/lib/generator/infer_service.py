@@ -124,7 +124,7 @@ def _configure_coordinator_role(infer_doc, user_config):
         set_container_env(container, coordinator_env)
 
 
-def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, npu_key, role_name=None):
+def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name=None):
     hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
     pod_spec[C.NODE_SELECTOR] = pod_spec.get(C.NODE_SELECTOR, {})
     apply_node_selector_by_hardware(pod_spec, hardware_type)
@@ -135,7 +135,7 @@ def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, n
 
     if hardware_type == C.HARDWARE_TYPE_800I_A3 or hardware_type in C.HARDWARE_TYPE_950I_A5:
         # CRD uses StatefulSet; MindCluster sp-block differs from Deployment (see engine.py multi_deployment)
-        sp_block_num = int(deploy_config.get(npu_key, 1))
+        sp_block_num = int(deploy_config.get(pods_key, 1)) * int(deploy_config.get(npu_key, 1))
         apply_sp_block_annotation(template.setdefault(C.METADATA, {}), sp_block_num, hardware_type)
     if hardware_type in C.HARDWARE_TYPE_950I_A5:
         apply_a5_workload(template, deploy_config)
@@ -194,7 +194,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     weight_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     set_weight_mount(pod_spec, container, weight_path)
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
-    _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, npu_key, role_name)
+    _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name)
 
 
 def _set_role_primary_service_port(role, service_port):
