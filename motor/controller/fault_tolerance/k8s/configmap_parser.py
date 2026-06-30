@@ -54,14 +54,53 @@ def is_configmap_valid(config_data: dict) -> bool:
 
 
 def _parse_device_fault_code(fault_code_str: str) -> int:
-    """Parse device fault code from hex string."""
-    try:
-        if fault_code_str.startswith("0x"):
-            return int(fault_code_str, 16)
-        else:
-            return int(fault_code_str, 16)  # Assume hex format
-    except ValueError:
-        return 0x1001  # Default device fault code
+    """Parse device fault code from hex string.
+
+    Some ConfigMap producers emit comma-separated fault codes (e.g.
+    ``"8F180E00,110001024"``).  We take the first code that parses
+    successfully; if none do we fall back to the default.
+    """
+    if not fault_code_str or not isinstance(fault_code_str, str):
+        return 0x1001
+
+    # Handle comma-separated fault codes — take the first valid one
+    codes = [c.strip() for c in fault_code_str.split(",") if c.strip()]
+    for code in codes:
+        try:
+            return int(code, 16)
+        except ValueError:
+            continue
+
+    return 0x1001  # Default device fault code
+
+
+def _normalize_fault_level_string(raw_level: str) -> str:
+    """Normalize fault-level strings from both DeviceInfoCfg and SwitchInfoCfg
+    into a form recognised by :class:`OriginFaultLevel`.
+
+    MindCluster 26.0.0+ uses shortened SwitchInfoCfg ``FaultLevel`` values
+    (``"NotHandle"``, ``"Separate"``) that need mapping to the longer
+    ``OriginFaultLevel`` member names.
+    """
+    if not raw_level or not isinstance(raw_level, str):
+        return "NotHandleFault"
+
+    # Already a standard OriginFaultLevel value
+    known = {e.value for e in OriginFaultLevel}
+    if raw_level in known:
+        return raw_level
+
+    # MindCluster 26.0.0+ SwitchInfoCfg shortened forms
+    _switch_fault_level_map = {
+        "NotHandle": OriginFaultLevel.NOT_HANDLE_FAULT.value,
+        "Separate": OriginFaultLevel.SEPARATE_NPU.value,
+    }
+    mapped = _switch_fault_level_map.get(raw_level)
+    if mapped:
+        return mapped
+
+    logger.debug("Unknown fault level string '%s', falling back to NotHandleFault", raw_level)
+    return OriginFaultLevel.NOT_HANDLE_FAULT.value
 
 
 def _create_device_fault_info(fault_type_str: str, npu_name: str, fault_level_str: str, fault_code: int) -> FaultInfo:
@@ -69,9 +108,10 @@ def _create_device_fault_info(fault_type_str: str, npu_name: str, fault_level_st
     # Map fault type string to enum
     fault_type = map_fault_type(fault_type_str)
 
-    # Get original fault level
+    # Get original fault level (normalize shortened SwitchInfoCfg forms first)
+    normalized_level = _normalize_fault_level_string(fault_level_str)
     try:
-        origin_fault_level = OriginFaultLevel(fault_level_str)
+        origin_fault_level = OriginFaultLevel(normalized_level)
     except ValueError:
         origin_fault_level = OriginFaultLevel.NOT_HANDLE_FAULT
     # Map fault level string to enum
@@ -123,6 +163,24 @@ def _normalize_device_list_value(value: Any) -> list:
     return []
 
 
+def _resolve_device_list_key(device_list: dict, *key_candidates: str) -> list:
+    """Return the normalized value of the first key in *key_candidates* that
+    exists (with a truthy value) in *device_list*, or an empty list.
+
+    This bridges two naming conventions:
+      - old: ``huawei.com/Ascend910-Fault`` / ``huawei.com/Ascend910-NetworkUnhealthy``
+      - new: ``huawei.com/npu-Fault``     / ``huawei.com/npu-NetworkUnhealthy``
+    """
+    for key in key_candidates:
+        raw = device_list.get(key)
+        if raw:
+            normalized = _normalize_device_list_value(raw)
+            if normalized:
+                logger.debug("Resolved DeviceList key %s → %d entries", key, len(normalized))
+                return normalized
+    return []
+
+
 def process_device_info(device_info_json: str) -> list[FaultInfo]:
     """Process info from DeviceInfoCfg JSON string and return device fault info list."""
     device_fault_infos = []
@@ -140,8 +198,8 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
 
         logger.debug("Processing DeviceInfo - UpdateTime: %s", update_time)
 
-        # Process fault devices
-        fault_devices = _normalize_device_list_value(device_list.get("huawei.com/Ascend910-Fault", []))
+        # Process fault devices — try new key name first, then old
+        fault_devices = _resolve_device_list_key(device_list, "huawei.com/npu-Fault", "huawei.com/Ascend910-Fault")
         if fault_devices:
             logger.debug("Found %s detailed fault devices", len(fault_devices))
             for fault_device in fault_devices:
@@ -150,7 +208,9 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
                     device_fault_infos.append(fault_info)
 
         # Also process network-unhealthy devices (same serialization variants)
-        network_unhealthy = _normalize_device_list_value(device_list.get("huawei.com/Ascend910-NetworkUnhealthy", []))
+        network_unhealthy = _resolve_device_list_key(
+            device_list, "huawei.com/npu-NetworkUnhealthy", "huawei.com/Ascend910-NetworkUnhealthy"
+        )
         if network_unhealthy:
             logger.debug("Found %s network-unhealthy devices", len(network_unhealthy))
             for fault_device in network_unhealthy:
@@ -167,38 +227,52 @@ def process_device_info(device_info_json: str) -> list[FaultInfo]:
 
 
 def _parse_switch_fault_key(fault_key: str) -> tuple[int, int, int]:
-    """Parse fault key in format "[fault_code]_chip_id_port_id".
-    Returns:
-        Tuple of (fault_code, switch_chip_id, switch_port_id)
+    """Parse fault key and return (fault_code, switch_chip_id, switch_port_id).
+
+    Supports two formats:
+      - **old** (bracket): ``[0x2001,info]_1_2``  (fault_code part is bracketed)
+      - **new** (MindCluster 26.0.0+): ``0x2001_1_2``  (plain hex, underscore-delimited)
     """
     fault_code = 0x2001  # Default switch fault code
     switch_chip_id = 0
     switch_port_id = 0
 
-    if "_" in fault_key:
-        parts = fault_key.split("_")
-        if len(parts) >= 3:
-            fault_code_part = parts[0]
-            switch_chip_id = int(parts[1]) if parts[1].isdigit() else 0
-            switch_port_id = int(parts[2]) if parts[2].isdigit() else 0
+    if "_" not in fault_key:
+        return fault_code, switch_chip_id, switch_port_id
 
-            # Extract fault code from the bracketed part
-            if fault_code_part.startswith("[") and fault_code_part.endswith("]"):
-                code_info = fault_code_part[1:-1].split(",")[0].strip()
-                if code_info.startswith("0x"):
-                    try:
-                        fault_code = int(code_info, 16)
-                    except ValueError:
-                        fault_code = 0x2001
+    parts = fault_key.split("_")
+    if len(parts) < 3:
+        return fault_code, switch_chip_id, switch_port_id
+
+    fault_code_part = parts[0]
+    switch_chip_id = int(parts[1]) if parts[1].isdigit() else 0
+    switch_port_id = int(parts[2]) if parts[2].isdigit() else 0
+
+    # --- New format (MindCluster 26.0.0+): plain hex code, e.g. "0x2001" ---
+    if not fault_code_part.startswith("["):
+        try:
+            fault_code = int(fault_code_part, 16)
+            return fault_code, switch_chip_id, switch_port_id
+        except ValueError:
+            pass  # fall through to old-format attempt below
+
+    # --- Old format: "[0x2001,info]", possibly with commas ---
+    if fault_code_part.startswith("[") and fault_code_part.endswith("]"):
+        code_info = fault_code_part[1:-1].split(",")[0].strip()
+        try:
+            fault_code = int(code_info, 16)
+        except ValueError:
+            fault_code = 0x2001
 
     return fault_code, switch_chip_id, switch_port_id
 
 
 def _create_switch_fault_info(fault_level_mapped_str: str, fault_code: int) -> FaultInfo:
     """Create FaultInfo object for switch fault, returns FaultInfo object"""
-    # Get original fault level
+    # Get original fault level (normalize shortened SwitchInfoCfg forms first)
+    normalized_level = _normalize_fault_level_string(fault_level_mapped_str)
     try:
-        origin_fault_level = OriginFaultLevel(fault_level_mapped_str)
+        origin_fault_level = OriginFaultLevel(normalized_level)
     except ValueError:
         origin_fault_level = OriginFaultLevel.NOT_HANDLE_FAULT
     fault_level_mapped = map_fault_level(origin_fault_level)
@@ -290,11 +364,12 @@ def process_manually_separate_npu(manually_separate_npu: str) -> list[int]:
         npu_names = [name.strip() for name in manually_separate_npu.split(",") if name.strip()]
 
         for npu_name in npu_names:
-            # Extract rank number from NPU name
-            # Example: "Ascend910-0", "Ascend910-1", "Ascend910-2"
-            if npu_name.startswith("Ascend910-"):
+            # Extract rank number from NPU name.
+            # Examples: "Ascend910-0", "Ascend910-1" (old), "npu-0", "npu-1" (Atlas 950)
+            # General pattern: "<prefix>-<number>"
+            if "-" in npu_name:
                 try:
-                    rank_str = npu_name.split("-")[-1]
+                    rank_str = npu_name.rsplit("-", 1)[-1]
                     rank = int(rank_str)
                     separated_ranks.append(rank)
                     logger.debug("Added NPU rank %d for manual separation", rank)

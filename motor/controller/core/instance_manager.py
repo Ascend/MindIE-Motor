@@ -115,6 +115,8 @@ class InstanceManager(ThreadSafeSingleton):
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_INIT): InsStatus.INITIAL,
             (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT): InsStatus.DELETED,
             (InsStatus.ACTIVE, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
+            (InsStatus.INACTIVE, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
+            (InsStatus.INITIAL, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
             (InsStatus.PAUSED, InsConditionEvent.INSTANCE_PAUSED): InsStatus.PAUSED,
             (InsStatus.PAUSED, InsConditionEvent.INSTANCE_RESUMED): InsStatus.ACTIVE,
             (InsStatus.PAUSED, InsConditionEvent.INSTANCE_NORMAL): InsStatus.ACTIVE,
@@ -795,6 +797,11 @@ class InstanceManager(ThreadSafeSingleton):
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_have_one_endpoint_abnormal():
             event = InsConditionEvent.INSTANCE_ABNORMAL
+            to_state = self.transitions.get((from_state, event), None)
+        elif instance.is_any_endpoint_paused():
+            # Mixed PAUSED + NORMAL/INITIAL (no ABNORMAL): treat as PAUSED event.
+            # Prevents INACTIVE → INITIAL when PreStop PAUSED overwrites ABNORMAL in heartbeat.
+            event = InsConditionEvent.INSTANCE_PAUSED
             to_state = self.transitions.get((from_state, event), None)
         else:
             event = InsConditionEvent.INSTANCE_INIT

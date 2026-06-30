@@ -44,13 +44,14 @@ TEST_PORT = "8080"
 TEST_FAULT_CODES = [0x1234, 0x2000, 0x3000, 0x3001, 0x4000, 0x00F1FEF5]
 
 
-def FI(*, fault_type, npu_name, fault_code, fault_level):
+def FI(*, fault_type, npu_name, fault_code, fault_level, origin_fault_level=None):
     """Short constructor for reusable FaultInfo constants in tests."""
     return FaultInfo(
         fault_type=fault_type,
         npu_name=npu_name,
         fault_code=fault_code,
         fault_level=fault_level,
+        origin_fault_level=origin_fault_level,
     )
 
 
@@ -1680,6 +1681,74 @@ def test_handle_fault_info_pre_separate_stays_l6_no_active_instances(fault_manag
     node = fault_manager.nodes[node_name]
     stored = next(iter(node.hardware_fault_infos.values()))
     assert stored.fault_level == FaultLevel.L6, "PreSeparateNPU should stay L6 when no active instances on the node"
+
+
+# -- _handle_fault_info_update: same fault_code, different NPUs, different levels --
+
+
+def test_handle_fault_info_same_code_highest_level_wins(fault_manager):
+    """When multiple NPUs share the same fault_code but have different
+    fault_levels, the highest level should be used.
+
+    Reproduces: npu-4 (RestartNPU/L5) + npu-5/6/7 (NotHandleFault/L1)
+    sharing fault_code 0x8F184C16 → L5 must win.
+    """
+    node_name = "work16"
+    fault_manager.instances[3] = InstanceMetadata(instance_id=3)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={3},
+        instance_pod_ips={3: "10.0.0.16"},
+        instance_job_names={3: "mindie-motor-vllm-0-d0"},
+    )
+
+    fault_npu4 = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu-4",
+        fault_code=0x8F184C16,
+        fault_level=FaultLevel.L5,
+        origin_fault_level=OriginFaultLevel.RESTART_NPU,
+    )
+    fault_npu5 = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu-5",
+        fault_code=0x8F184C16,
+        fault_level=FaultLevel.L1,
+        origin_fault_level=OriginFaultLevel.NOT_HANDLE_FAULT,
+    )
+    fault_npu6 = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu-6",
+        fault_code=0x8F184C16,
+        fault_level=FaultLevel.L1,
+        origin_fault_level=OriginFaultLevel.NOT_HANDLE_FAULT,
+    )
+    fault_npu7 = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="npu-7",
+        fault_code=0x8F184C16,
+        fault_level=FaultLevel.L1,
+        origin_fault_level=OriginFaultLevel.NOT_HANDLE_FAULT,
+    )
+
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(_mk_active_instance(3, "mindie-motor-vllm-0-d0"))
+        fault_manager._handle_fault_info_update([fault_npu4, fault_npu5, fault_npu6, fault_npu7], node_name)
+
+    node = fault_manager.nodes[node_name]
+    # Deduplicated to 1 fault_code
+    assert len(node.hardware_fault_infos) == 1
+    stored = next(iter(node.hardware_fault_infos.values()))
+    # RestartNPU (L5) must win over NotHandleFault (L1)
+    assert stored.fault_level == FaultLevel.L5, (
+        f"Expected L5 (RestartNPU), got {stored.fault_level.name} "
+        f"({stored.origin_fault_level.value if stored.origin_fault_level else 'N/A'})"
+    )
+    # All 4 NPU names should be preserved
+    assert "npu-4" in stored.npu_name
+    assert "npu-5" in stored.npu_name
+    assert "npu-6" in stored.npu_name
+    assert "npu-7" in stored.npu_name
 
 
 # -- _refresh_instance_fault_level: PreSeparateNPU exclusion -----------------

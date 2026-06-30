@@ -12,7 +12,7 @@
 
 
 from motor.common.resources.instance import Instance, ReadOnlyInstance, ParallelConfig
-from motor.common.resources.endpoint import Endpoint
+from motor.common.resources.endpoint import Endpoint, EndpointStatus
 
 
 def test_instance_active() -> None:
@@ -341,3 +341,45 @@ def test_is_endpoints_enough_counts_all_endpoints() -> None:
     )
     # Both endpoints count (2 == dp_size=2), even with headless
     assert instance.is_endpoints_enough() is True
+
+
+def test_is_any_endpoint_paused() -> None:
+    """Test is_any_endpoint_paused() detects partial and full PAUSED states"""
+    parallel_config = ParallelConfig(dp_size=2, tp_size=2)
+    instance = Instance(
+        job_name="test_paused", model_name="test_model", id=1, role="prefill", parallel_config=parallel_config
+    )
+    instance.add_endpoints(
+        "10.0.0.1",
+        {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000", status=EndpointStatus.NORMAL)},
+    )
+    instance.add_endpoints(
+        "10.0.0.2",
+        {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000", status=EndpointStatus.PAUSED)},
+    )
+
+    # Partial PAUSED
+    assert instance.is_any_endpoint_paused() is True
+    assert instance.is_all_endpoints_paused() is False
+
+    # All PAUSED
+    for pod_endpoints in instance.endpoints.values():
+        for endpoint in pod_endpoints.values():
+            endpoint.status = EndpointStatus.PAUSED
+    assert instance.is_any_endpoint_paused() is True
+    assert instance.is_all_endpoints_paused() is True
+
+    # No PAUSED
+    for pod_endpoints in instance.endpoints.values():
+        for endpoint in pod_endpoints.values():
+            endpoint.status = EndpointStatus.NORMAL
+    assert instance.is_any_endpoint_paused() is False
+
+
+def test_is_any_endpoint_paused_empty_endpoints() -> None:
+    """Test is_any_endpoint_paused() returns False when no endpoints exist"""
+    parallel_config = ParallelConfig(dp_size=2, tp_size=2)
+    instance = Instance(
+        job_name="test_empty", model_name="test_model", id=1, role="prefill", parallel_config=parallel_config
+    )
+    assert instance.is_any_endpoint_paused() is False
