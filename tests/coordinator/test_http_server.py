@@ -14,9 +14,11 @@
 Basic functionality tests for Coordinator server
 Using FastAPI TestClient for testing
 """
+
+# pylint: disable=attribute-defined-outside-init,reimported
+
 import json
 import pytest
-from typing import Dict, Any
 from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -30,8 +32,10 @@ from motor.coordinator.api_server.inference_server import InferenceServer
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
 from motor.coordinator.domain import InstanceReadiness
-from motor.coordinator.domain.instance_manager import InstanceManager
-from motor.common.http.key_encryption import encrypt_api_key, set_default_key_encryption_by_name
+from motor.common.http.key_encryption import (
+    encrypt_api_key,
+    set_default_key_encryption_by_name,
+)
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.middleware.fastapi_middleware import (
     SimpleRateLimitMiddleware,
@@ -129,7 +133,9 @@ class _TestServerShell:
     def lifespan(self):
         return self._mgmt.lifespan
 
-    def setup_rate_limiting(self, rate_limit_config: RateLimitConfig | None = None) -> None:
+    def setup_rate_limiting(
+        self, rate_limit_config: RateLimitConfig | None = None
+    ) -> None:
         self._inf.setup_rate_limiting(rate_limit_config=rate_limit_config)
 
     def create_unified_app(
@@ -152,20 +158,26 @@ class _TestServerShell:
 
 class TestCoordinatorServer:
     """Mock test class for Coordinator server"""
-    
+
     def setup_method(self):
         """Setup test fixtures"""
         # Mock InstanceManager
-        self._im_patcher = patch('motor.coordinator.api_server.management_server.InstanceManager')
+        self._im_patcher = patch(
+            "motor.coordinator.api_server.management_server.InstanceManager"
+        )
         im_mock_cls = self._im_patcher.start()
         im_instance = MagicMock()
         im_instance.has_required_instances.return_value = True
-        im_instance.get_required_instances_status.return_value = InstanceReadiness.REQUIRED_MET
+        im_instance.get_required_instances_status.return_value = (
+            InstanceReadiness.REQUIRED_MET
+        )
         im_instance.refresh_instances = AsyncMock(return_value=None)
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(
+            request, config, scheduler=None, request_manager=None
+        ):
             """Mock handle_request that returns JSON response matching test expectations"""
             try:
                 # Try to get JSON from request (cached if already parsed)
@@ -174,10 +186,10 @@ class TestCoordinatorServer:
                 # Fallback: try to read body directly
                 try:
                     request_body = await request.body()
-                    body_json = json.loads(request_body.decode('utf-8'))
+                    body_json = json.loads(request_body.decode("utf-8"))
                 except Exception:
                     body_json = {}
-            
+
             # Extract input_data based on request type
             input_data = ""
             if "prompt" in body_json:
@@ -186,45 +198,46 @@ class TestCoordinatorServer:
             elif "messages" in body_json:
                 # For chat completions API, convert messages to JSON string
                 input_data = json.dumps(body_json["messages"], ensure_ascii=False)
-            
+
             # Determine if stream
             is_stream = body_json.get("stream", False)
             if isinstance(is_stream, str):
                 is_stream = is_stream.lower() in ("true", "1", "yes")
-            
+
             # Determine request_type based on endpoint
             request_type = "openai"
             if request.url.path.endswith("/completions"):
                 request_type = "completions"
             elif request.url.path.endswith("/chat/completions"):
                 request_type = "chat_completions"
-            
+
             # Generate request_id (simulate)
             import hashlib
+
             request_id = f"req-{hashlib.md5(str(body_json).encode()).hexdigest()[:8]}"
-            
+
             response_data = {
                 "request_id": request_id,
                 "status": "success",
                 "data": {
                     "input_data": input_data,
                     "is_stream": bool(is_stream),
-                    "request_type": request_type
-                }
+                    "request_type": request_type,
+                },
             }
-            
+
             return JSONResponse(content=response_data)
-        
+
         # Patch handle_request
         self._handle_request_patcher = patch(
-            'motor.coordinator.api_server.inference_server.handle_request',
-            side_effect=mock_handle_request
+            "motor.coordinator.api_server.inference_server.handle_request",
+            side_effect=mock_handle_request,
         )
         self._handle_request_patcher.start()
 
         # So that /v1/completions and /v1/chat/completions pass availability check (no 503)
         self._is_available_patcher = patch(
-            'motor.coordinator.api_server.inference_server.InferenceServer._is_available',
+            "motor.coordinator.api_server.inference_server.InferenceServer._is_available",
             new_callable=AsyncMock,
             return_value=True,
         )
@@ -235,18 +248,20 @@ class TestCoordinatorServer:
         coordinator_config.api_key_config.enable_api_key = True
         # Use PBKDF2 as the encryption algorithm to align with default/documentation
         coordinator_config.api_key_config.encryption_algorithm = "PBKDF2_SHA256"
-        
+
         # Encrypt the API keys using the configured encryption algorithm
         # This ensures the keys are stored in the same format as they would be in production
-        set_default_key_encryption_by_name(coordinator_config.api_key_config.encryption_algorithm)
+        set_default_key_encryption_by_name(
+            coordinator_config.api_key_config.encryption_algorithm
+        )
         plain_key1 = "sk-test123456789"
         plain_key2 = "sk-coordinator2024"
         encrypted_key1 = encrypt_api_key(plain_key1)
         encrypted_key2 = encrypt_api_key(plain_key2)
         coordinator_config.api_key_config.valid_keys = {encrypted_key1, encrypted_key2}
-        
+
         self.coordinator_config = coordinator_config
-        
+
         # Create test server shell (ManagementServer + InferenceServer)
         self.coordinator_server = _TestServerShell(config=coordinator_config)
         self.coordinator_server.setup_rate_limiting()
@@ -271,11 +286,11 @@ class TestCoordinatorServer:
     def teardown_method(self):
         """Teardown test fixtures"""
         try:
-            if hasattr(self, '_im_patcher'):
+            if hasattr(self, "_im_patcher"):
                 self._im_patcher.stop()
-            if hasattr(self, '_handle_request_patcher'):
+            if hasattr(self, "_handle_request_patcher"):
                 self._handle_request_patcher.stop()
-            if hasattr(self, '_is_available_patcher'):
+            if hasattr(self, "_is_available_patcher"):
                 self._is_available_patcher.stop()
         except Exception:
             pass
@@ -284,31 +299,41 @@ class TestCoordinatorServer:
         """Test liveness check endpoints"""
         # Test /liveness
         response = self.mgmt_client.get("/liveness")
-        assert response.status_code == 200, f"Liveness probe failed: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Liveness probe failed: {response.status_code}"
+        )
         data = response.json()
         assert data["status"] == "ok", f"Liveness probe status abnormal: {data}"
-        
+
         # Test /startup
         response = self.mgmt_client.get("/startup")
-        assert response.status_code == 200, f"Startup probe failed: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Startup probe failed: {response.status_code}"
+        )
         data = response.json()
         assert data["status"] == "ok", f"Startup probe status abnormal: {data}"
-        
+
         # Test /readiness
         response = self.mgmt_client.get("/readiness")
-        assert response.status_code == 200, f"Readiness check failed: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Readiness check failed: {response.status_code}"
+        )
         data = response.json()
         assert data["status"] == "ok", f"Readiness check status abnormal: {data}"
-        
+
         # Test /metrics
         response = self.mgmt_client.get("/metrics")
-        assert response.status_code == 200, f"Metrics endpoint failed: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Metrics endpoint failed: {response.status_code}"
+        )
         data = response.text
         assert data == "", "Metrics response should be empty"
 
         # Test /instance/metrics
         response = self.mgmt_client.get("/instance/metrics")
-        assert response.status_code == 200, f"Metrics endpoint failed: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Metrics endpoint failed: {response.status_code}"
+        )
         data = response.json()
         assert data == {}, "Instance metrics response should be empty"
 
@@ -331,7 +356,9 @@ class TestCoordinatorServer:
         assert data["message"] == "Coordinator is ok"
         assert data["ready"] is True
 
-    def test_readiness_endpoints_fail_when_enable_standby_is_master_but_instance_not_ready(self):
+    def test_readiness_endpoints_fail_when_enable_standby_is_master_but_instance_not_ready(
+        self,
+    ):
         """Test readiness when standby is master but instance manager not ready."""
         im = MagicMock()
         im.get_required_instances_status.return_value = InstanceReadiness.NONE
@@ -371,7 +398,9 @@ class TestCoordinatorServer:
             ),
         ):
             response = self.mgmt_client.get("/readiness")
-        assert response.status_code == 503, f"Readiness check failed: {response.status_code}"
+        assert response.status_code == 503, (
+            f"Readiness check failed: {response.status_code}"
+        )
         data = response.json()
         assert data["detail"] == "Coordinator is not master"
 
@@ -417,11 +446,11 @@ class TestCoordinatorServer:
 
         response = self.openai_client.get("/v1/models")
         assert response.status_code == 200
-        print(response.json()['data'][0])
+        print(response.json()["data"][0])
         assert response.json()["data"] is not None
         assert response.json()["data"][0]["p_instances_num"] == 0
         assert response.json()["data"][0]["d_instances_num"] == 0
-    
+
     def test_openai_completions_api(self):
         """Test OpenAI Completions API"""
         test_cases = [
@@ -431,8 +460,8 @@ class TestCoordinatorServer:
                     "model": "text-davinci-003",
                     "prompt": "Write a poem about spring",
                     "max_tokens": 100,
-                    "temperature": 0.7
-                }
+                    "temperature": 0.7,
+                },
             },
             {
                 "name": "Completion request with stop tokens",
@@ -441,40 +470,39 @@ class TestCoordinatorServer:
                     "prompt": "Differences between Python lists and tuples:",
                     "max_tokens": 200,
                     "temperature": 0.8,
-                    "stop": ["\n\n", "Summary"]
-                }
+                    "stop": ["\n\n", "Summary"],
+                },
             },
             {
                 "name": "Minimal parameter completion request",
-                "data": {
-                    "model": "text-davinci-003",
-                    "prompt": "Hello"
-                }
-            }
+                "data": {"model": "text-davinci-003", "prompt": "Hello"},
+            },
         ]
-        
+
         for test_case in test_cases:
             response = self.openai_client.post(
                 "/v1/completions",
                 json=test_case["data"],
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.valid_api_key}"
-                }
+                    "Authorization": f"Bearer {self.valid_api_key}",
+                },
             )
-            
-            assert response.status_code == 200, f"Completions API failed: {response.status_code}"
-            
+
+            assert response.status_code == 200, (
+                f"Completions API failed: {response.status_code}"
+            )
+
             data = response.json()
             assert "request_id" in data, "Response missing request_id"
             assert "status" in data, "Response missing status"
             assert "data" in data, "Response missing data field"
-            
+
             # Verify input data parsing
             assert "input_data" in data["data"], "Response data missing input_data"
             assert "is_stream" in data["data"], "Response data missing is_stream"
             assert "request_type" in data["data"], "Response data missing request_type"
-    
+
     def test_openai_chat_completions_api(self):
         """Test OpenAI Chat Completions API"""
         test_cases = [
@@ -483,36 +511,27 @@ class TestCoordinatorServer:
                 "data": {
                     "model": "gpt-3.5-turbo",
                     "messages": [
-                        {
-                            "role": "user",
-                            "content": "Hello, please introduce yourself"
-                        }
+                        {"role": "user", "content": "Hello, please introduce yourself"}
                     ],
                     "max_tokens": 100,
-                    "temperature": 0.7
-                }
+                    "temperature": 0.7,
+                },
             },
             {
                 "name": "Multi-turn conversation chat completion request",
                 "data": {
                     "model": "gpt-3.5-turbo",
                     "messages": [
-                        {
-                            "role": "user",
-                            "content": "What is machine learning?"
-                        },
+                        {"role": "user", "content": "What is machine learning?"},
                         {
                             "role": "assistant",
-                            "content": "Machine learning is a branch of artificial intelligence..."
+                            "content": "Machine learning is a branch of artificial intelligence...",
                         },
-                        {
-                            "role": "user",
-                            "content": "Can you give an example?"
-                        }
+                        {"role": "user", "content": "Can you give an example?"},
                     ],
                     "max_tokens": 200,
-                    "temperature": 0.8
-                }
+                    "temperature": 0.8,
+                },
             },
             {
                 "name": "Chat completion request with system message",
@@ -521,53 +540,50 @@ class TestCoordinatorServer:
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a professional Python programming assistant"
+                            "content": "You are a professional Python programming assistant",
                         },
                         {
                             "role": "user",
-                            "content": "Please write a Python implementation of quicksort"
-                        }
+                            "content": "Please write a Python implementation of quicksort",
+                        },
                     ],
                     "max_tokens": 500,
-                    "temperature": 0.5
-                }
+                    "temperature": 0.5,
+                },
             },
             {
                 "name": "Minimal parameter chat completion request",
                 "data": {
                     "model": "gpt-3.5-turbo",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Hello"
-                        }
-                    ]
-                }
-            }
+                    "messages": [{"role": "user", "content": "Hello"}],
+                },
+            },
         ]
-        
+
         for test_case in test_cases:
             response = self.openai_client.post(
                 "/v1/chat/completions",
                 json=test_case["data"],
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.valid_api_key}"
-                }
+                    "Authorization": f"Bearer {self.valid_api_key}",
+                },
             )
-            
-            assert response.status_code == 200, f"Chat Completions API failed: {response.status_code}"
-            
+
+            assert response.status_code == 200, (
+                f"Chat Completions API failed: {response.status_code}"
+            )
+
             data = response.json()
             assert "request_id" in data, "Response missing request_id"
             assert "status" in data, "Response missing status"
             assert "data" in data, "Response missing data field"
-            
+
             # Verify input data parsing
             assert "input_data" in data["data"], "Response data missing input_data"
             assert "is_stream" in data["data"], "Response data missing is_stream"
             assert "request_type" in data["data"], "Response data missing request_type"
-    
+
     def test_streaming_requests(self):
         """Test streaming requests"""
         # Test completion streaming request
@@ -576,51 +592,55 @@ class TestCoordinatorServer:
             "prompt": "Write a Python function to calculate the Fibonacci sequence",
             "max_tokens": 200,
             "temperature": 0.7,
-            "stream": True
+            "stream": True,
         }
-        
+
         response = self.openai_client.post(
             "/v1/completions",
             json=completion_stream_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 200, f"Streaming completion request failed: {response.status_code}"
-        
+
+        assert response.status_code == 200, (
+            f"Streaming completion request failed: {response.status_code}"
+        )
+
         data = response.json()
-        assert data["data"]["is_stream"] == True, "Stream flag not set correctly"
-        
+        assert data["data"]["is_stream"], "Stream flag not set correctly"
+
         # Test chat completion streaming request
         chat_stream_data = {
             "model": "gpt-3.5-turbo",
             "messages": [
                 {
                     "role": "user",
-                    "content": "Please explain the basic concepts of deep learning in detail"
+                    "content": "Please explain the basic concepts of deep learning in detail",
                 }
             ],
             "max_tokens": 300,
             "temperature": 0.7,
-            "stream": True
+            "stream": True,
         }
-        
+
         response = self.openai_client.post(
             "/v1/chat/completions",
             json=chat_stream_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 200, f"Streaming chat completion request failed: {response.status_code}"
-        
+
+        assert response.status_code == 200, (
+            f"Streaming chat completion request failed: {response.status_code}"
+        )
+
         data = response.json()
-        assert data["data"]["is_stream"] == True, "Stream flag not set correctly"
-    
+        assert data["data"]["is_stream"], "Stream flag not set correctly"
+
     def test_error_handling(self):
         """Test error handling"""
         # Test invalid JSON
@@ -629,13 +649,15 @@ class TestCoordinatorServer:
             content="invalid json",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
+
         # Should return 400, 500, or 422 error
-        assert response.status_code in [400, 422, 500], f"Invalid JSON handling exception: {response.status_code}"
-        
+        assert response.status_code in [400, 422, 500], (
+            f"Invalid JSON handling exception: {response.status_code}"
+        )
+
         # Test missing required fields
         invalid_data = {
             "prompt": "test"  # Missing model field
@@ -645,58 +667,59 @@ class TestCoordinatorServer:
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
+
         # Should return 400 or 422 error
-        assert response.status_code in [400, 422, 500], f"Missing field handling exception: {response.status_code}"
-        
+        assert response.status_code in [400, 422, 500], (
+            f"Missing field handling exception: {response.status_code}"
+        )
+
         # Test invalid chat completion request
         invalid_chat_data = {
             "model": "gpt-3.5-turbo",
-            "messages": "invalid messages"  # messages should be an array
+            "messages": "invalid messages",  # messages should be an array
         }
         response = self.openai_client.post(
             "/v1/chat/completions",
             json=invalid_chat_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        assert response.status_code in [400, 422, 500], f"Invalid chat completion handling exception: {response.status_code}"
-    
+        assert response.status_code in [400, 422, 500], (
+            f"Invalid chat completion handling exception: {response.status_code}"
+        )
+
     def test_rate_limiting(self):
         """Test rate limiting functionality"""
         # Send many requests to test rate limiting
-        rate_limited = False
-        
         for i in range(150):  # Exceed rate limit threshold
             test_data = {
                 "model": "gpt-3.5-turbo",
                 "messages": [
                     {
                         "role": "user",
-                        "content": f"This is the {i+1}th rate limiting test request"
+                        "content": f"This is the {i + 1}th rate limiting test request",
                     }
                 ],
-                "max_tokens": 10
+                "max_tokens": 10,
             }
-            
+
             response = self.openai_client.post(
                 "/v1/chat/completions",
                 json=test_data,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.valid_api_key}"
-                }
+                    "Authorization": f"Bearer {self.valid_api_key}",
+                },
             )
-            
+
             if response.status_code == 429:
-                rate_limited = True
                 break
-        
+
         # Note: Rate limiting may or may not trigger depending on configuration
         # This test just verifies the endpoint can handle many requests
         assert True, "Rate limiting test completed"
@@ -706,36 +729,36 @@ class TestCoordinatorServer:
         # Valid API Keys (from api_key_config.json)
         valid_api_keys = ["sk-test123456789", "sk-coordinator2024"]
         invalid_api_key = "sk-invalid-key"
-        
+
         # Test 1: Request without API Key should fail (401)
         test_data = {
             "model": "gpt-3.5-turbo",
             "messages": [{"role": "user", "content": "test"}],
-            "max_tokens": 10
+            "max_tokens": 10,
         }
 
         response = self.openai_client.post(
             "/v1/chat/completions",
             json=test_data,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
         assert response.status_code == 401, f"Expected 401, got: {response.status_code}"
         error_data = response.json()
         assert "detail" in error_data, "Error response missing detail field"
-        
+
         # Test 2: Invalid API Key should fail (403)
         response = self.openai_client.post(
             "/v1/chat/completions",
             json=test_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {invalid_api_key}"
-            }
+                "Authorization": f"Bearer {invalid_api_key}",
+            },
         )
         assert response.status_code == 403, f"Expected 403, got: {response.status_code}"
         error_data = response.json()
         assert "detail" in error_data, "Error response missing detail field"
-        
+
         # Test 3: Valid API Key should succeed (200)
         for valid_key in valid_api_keys:
             response = self.openai_client.post(
@@ -743,73 +766,81 @@ class TestCoordinatorServer:
                 json=test_data,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {valid_key}"
-                }
+                    "Authorization": f"Bearer {valid_key}",
+                },
             )
-            assert response.status_code == 200, f"Valid API Key request failed: {response.status_code}"
+            assert response.status_code == 200, (
+                f"Valid API Key request failed: {response.status_code}"
+            )
             data = response.json()
             assert "request_id" in data, "Response missing request_id"
-        
+
         # Test 4: API Key without Bearer prefix
         response = self.openai_client.post(
             "/v1/chat/completions",
             json=test_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": valid_api_keys[0]  # Without Bearer prefix
-            }
+                "Authorization": valid_api_keys[0],  # Without Bearer prefix
+            },
         )
         # Depending on implementation, may fail or succeed without prefix
-        assert response.status_code in [200, 401, 403], f"Unexpected status code: {response.status_code}"
-        
+        assert response.status_code in [200, 401, 403], (
+            f"Unexpected status code: {response.status_code}"
+        )
+
         # Test 5: Skip paths don't require API Key (/startup, /readiness, etc.)
         skip_paths = ["/startup", "/readiness", "/metrics"]
         for path in skip_paths:
             response = self.mgmt_client.get(f"{path}")
-            assert response.status_code == 200, f"Skip path {path} returned non-200 status code: {response.status_code}"
-        
+            assert response.status_code == 200, (
+                f"Skip path {path} returned non-200 status code: {response.status_code}"
+            )
+
         # Test 6: Completions API also requires API Key validation
         completion_data = {
             "model": "text-davinci-003",
             "prompt": "test",
-            "max_tokens": 10
+            "max_tokens": 10,
         }
-        
+
         # Without API Key
         response = self.openai_client.post(
             "/v1/completions",
             json=completion_data,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
         assert response.status_code == 401, f"Expected 401, got: {response.status_code}"
-        
+
         # Valid API Key
         response = self.openai_client.post(
             "/v1/completions",
             json=completion_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {valid_api_keys[0]}"
-            }
+                "Authorization": f"Bearer {valid_api_keys[0]}",
+            },
         )
-        assert response.status_code == 200, f"Completions API with valid API Key request failed: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Completions API with valid API Key request failed: {response.status_code}"
+        )
 
 
 class TestFastAPIMiddleware:
     """Test FastAPI middleware functionality"""
-    
+
     def setup_method(self):
         """Setup test fixtures"""
         from motor.coordinator.middleware.fastapi_middleware import (
             SimpleRateLimitMiddleware,
             SimpleRateLimitConfig,
             load_rate_limit_config,
-            create_simple_rate_limit_middleware
+            create_simple_rate_limit_middleware,
         )
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        
+
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
         self.SimpleRateLimitConfig = SimpleRateLimitConfig
@@ -817,7 +848,15 @@ class TestFastAPIMiddleware:
         self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
-    
+        self._report_alarms_patcher = patch(
+            "motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms",
+            return_value=True,
+        )
+        self._report_alarms_patcher.start()
+
+    def teardown_method(self):
+        self._report_alarms_patcher.stop()
+
     def test_simple_rate_limit_config(self):
         """Test SimpleRateLimitConfig dataclass"""
         config = self.SimpleRateLimitConfig()
@@ -827,15 +866,16 @@ class TestFastAPIMiddleware:
         assert config.scope == "per_ip", "Default scope should be per_ip"
         assert config.skip_paths is not None, "skip_paths should be initialized"
         assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
-    
+
     def test_load_rate_limit_config_default(self):
         """Test load_rate_limit_config with default values"""
         import os
+
         # Save original env if exists
         original_enabled = os.getenv("RATE_LIMIT_ENABLED")
         original_max = os.getenv("RATE_LIMIT_MAX_REQUESTS")
         original_window = os.getenv("RATE_LIMIT_WINDOW_SIZE")
-        
+
         try:
             # Remove env vars to test defaults
             if "RATE_LIMIT_ENABLED" in os.environ:
@@ -844,9 +884,9 @@ class TestFastAPIMiddleware:
                 del os.environ["RATE_LIMIT_MAX_REQUESTS"]
             if "RATE_LIMIT_WINDOW_SIZE" in os.environ:
                 del os.environ["RATE_LIMIT_WINDOW_SIZE"]
-            
+
             config = self.load_rate_limit_config()
-            assert config.enabled == True, "Should use default enabled=True"
+            assert config.enabled, "Should use default enabled=True"
             assert config.max_requests == 100, "Should use default max_requests=100"
             assert config.window_size == 60, "Should use default window_size=60"
         finally:
@@ -857,19 +897,18 @@ class TestFastAPIMiddleware:
                 os.environ["RATE_LIMIT_MAX_REQUESTS"] = original_max
             if original_window:
                 os.environ["RATE_LIMIT_WINDOW_SIZE"] = original_window
-    
+
     def test_load_rate_limit_config_from_env(self):
         """Test load_rate_limit_config from environment variables"""
         import os
-        import tempfile
-        
+
         # Save original env
         original_enabled = os.getenv("RATE_LIMIT_ENABLED")
         original_max = os.getenv("RATE_LIMIT_MAX_REQUESTS")
         original_window = os.getenv("RATE_LIMIT_WINDOW_SIZE")
         original_scope = os.getenv("RATE_LIMIT_SCOPE")
         original_skip_paths = os.getenv("RATE_LIMIT_SKIP_PATHS")
-        
+
         try:
             # Set env vars
             os.environ["RATE_LIMIT_ENABLED"] = "false"
@@ -877,9 +916,9 @@ class TestFastAPIMiddleware:
             os.environ["RATE_LIMIT_WINDOW_SIZE"] = "30"
             os.environ["RATE_LIMIT_SCOPE"] = "global"
             os.environ["RATE_LIMIT_SKIP_PATHS"] = "/liveness,/metrics"
-            
+
             config = self.load_rate_limit_config()
-            assert config.enabled == False, "Should load enabled from env"
+            assert not config.enabled, "Should load enabled from env"
             assert config.max_requests == 200, "Should load max_requests from env"
             assert config.window_size == 30, "Should load window_size from env"
             assert config.scope == "global", "Should load scope from env"
@@ -907,13 +946,13 @@ class TestFastAPIMiddleware:
                 os.environ["RATE_LIMIT_SKIP_PATHS"] = original_skip_paths
             elif "RATE_LIMIT_SKIP_PATHS" in os.environ:
                 del os.environ["RATE_LIMIT_SKIP_PATHS"]
-    
+
     def test_load_rate_limit_config_from_file(self):
         """Test load_rate_limit_config from file"""
         import os
         import json
         import tempfile
-        
+
         # Create temporary config file
         config_data = {
             "enabled": False,
@@ -921,133 +960,141 @@ class TestFastAPIMiddleware:
             "window_size": 45,
             "scope": "per_ip",
             "error_message": "Custom error message",
-            "error_status_code": 429
+            "error_status_code": 429,
         }
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             config_file = f.name
-        
+
         try:
             config = self.load_rate_limit_config(config_file=config_file)
-            assert config.enabled == False, "Should load enabled from file"
+            assert not config.enabled, "Should load enabled from file"
             assert config.max_requests == 300, "Should load max_requests from file"
             assert config.window_size == 45, "Should load window_size from file"
-            assert config.error_message == "Custom error message", "Should load error_message from file"
+            assert config.error_message == "Custom error message", (
+                "Should load error_message from file"
+            )
         finally:
             os.unlink(config_file)
-    
+
     def test_rate_limit_middleware_skip_paths(self):
         """Test rate limit middleware skip paths"""
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         @self.app.get("/liveness")
         async def liveness_endpoint():
             return {"status": "healthy"}
-        
+
         rate_limiter = self.SimpleRateLimiter(max_requests=1, window_size=60)
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=["/liveness"]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=["/liveness"]
         )
-        
+
         # Middleware itself is an ASGI app (inherits from BaseHTTPMiddleware)
         client = self.TestClient(middleware)
-        
+
         # /liveness should be skipped (not rate limited)
         for _ in range(5):
             response = client.get("/liveness")
-            assert response.status_code == 200, "Liveness endpoint should not be rate limited"
-        
+            assert response.status_code == 200, (
+                "Liveness endpoint should not be rate limited"
+            )
+
         # /test should be rate limited after first request
         response1 = client.get("/test")
         assert response1.status_code == 200, "First request should succeed"
-        
+
         response2 = client.get("/test")
         # May be rate limited depending on timing
         assert response2.status_code in [200, 429], "Second request may be rate limited"
-    
+
     def test_rate_limit_middleware_error_handling(self):
         """Test rate limit middleware error handling"""
         # Create a middleware that will raise an exception
         rate_limiter = MagicMock()
         rate_limiter.is_allowed = MagicMock(side_effect=Exception("Test error"))
-        
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=[]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=[]
         )
-        
+
         # Middleware itself is an ASGI app (inherits from BaseHTTPMiddleware)
         client = self.TestClient(middleware)
-        
+
         # Should allow request when error occurs
         response = client.get("/test")
         assert response.status_code == 200, "Should allow request when error occurs"
-        assert middleware.stats["allowed_requests"] > 0, "Should increment allowed_requests on error"
-    
+        assert middleware.stats["allowed_requests"] > 0, (
+            "Should increment allowed_requests on error"
+        )
+
     def test_create_simple_rate_limit_middleware(self):
         """Test create_simple_rate_limit_middleware function"""
         middleware = self.create_simple_rate_limit_middleware(
-            app=self.app,
-            max_requests=50,
-            window_size=30
+            app=self.app, max_requests=50, window_size=30
         )
-        
+
         assert middleware is not None, "Middleware should be created"
         assert middleware.rate_limiter.max_requests == 50, "Should set max_requests"
         assert middleware.rate_limiter.window_size == 30, "Should set window_size"
         assert middleware.skip_paths is not None, "Should set skip_paths"
-    
+
     def test_rate_limit_middleware_stats(self):
         """Test rate limit middleware statistics"""
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         rate_limiter = self.SimpleRateLimiter(max_requests=10, window_size=60)
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=[]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=[]
         )
-        
+
         # Middleware itself is an ASGI app (inherits from BaseHTTPMiddleware)
         client = self.TestClient(middleware)
-        
+
         # Make some requests
         for _ in range(5):
             client.get("/test")
-        
+
         assert middleware.stats["total_requests"] >= 5, "Should track total requests"
-        assert middleware.stats["allowed_requests"] >= 5, "Should track allowed requests"
+        assert middleware.stats["allowed_requests"] >= 5, (
+            "Should track allowed requests"
+        )
         assert "start_time" in middleware.stats, "Should track start time"
 
 
 class TestCoordinatorServerAdvanced:
     """Advanced functionality test class for Coordinator server"""
-    
+
     def setup_method(self):
         """Setup test fixtures"""
         # Mock InstanceManager
-        self._im_patcher = patch('motor.coordinator.api_server.management_server.InstanceManager')
+        self._im_patcher = patch(
+            "motor.coordinator.api_server.management_server.InstanceManager"
+        )
         im_mock_cls = self._im_patcher.start()
         im_instance = MagicMock()
         im_instance.has_required_instances.return_value = True
-        im_instance.get_required_instances_status.return_value = InstanceReadiness.REQUIRED_MET
+        im_instance.get_required_instances_status.return_value = (
+            InstanceReadiness.REQUIRED_MET
+        )
         im_instance.refresh_instances = AsyncMock(return_value=None)
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(
+            request, config, scheduler=None, request_manager=None
+        ):
             """Mock handle_request that returns JSON response matching test expectations"""
             try:
                 # Try to get JSON from request (cached if already parsed)
@@ -1056,10 +1103,10 @@ class TestCoordinatorServerAdvanced:
                 # Fallback: try to read body directly
                 try:
                     request_body = await request.body()
-                    body_json = json.loads(request_body.decode('utf-8'))
+                    body_json = json.loads(request_body.decode("utf-8"))
                 except Exception:
                     body_json = {}
-            
+
             # Extract input_data based on request type
             input_data = ""
             if "prompt" in body_json:
@@ -1068,44 +1115,45 @@ class TestCoordinatorServerAdvanced:
             elif "messages" in body_json:
                 # For chat completions API, convert messages to JSON string
                 input_data = json.dumps(body_json["messages"], ensure_ascii=False)
-            
+
             # Determine if stream
             is_stream = body_json.get("stream", False)
             if isinstance(is_stream, str):
                 is_stream = is_stream.lower() in ("true", "1", "yes")
-            
+
             # Determine request_type based on endpoint
             request_type = "openai"
             if request.url.path.endswith("/completions"):
                 request_type = "completions"
             elif request.url.path.endswith("/chat/completions"):
                 request_type = "chat_completions"
-            
+
             # Generate request_id (simulate)
             import hashlib
+
             request_id = f"req-{hashlib.md5(str(body_json).encode()).hexdigest()[:8]}"
-            
+
             response_data = {
                 "request_id": request_id,
                 "status": "success",
                 "data": {
                     "input_data": input_data,
                     "is_stream": bool(is_stream),
-                    "request_type": request_type
-                }
+                    "request_type": request_type,
+                },
             }
-            
+
             return JSONResponse(content=response_data)
-        
+
         # Patch handle_request
         self._handle_request_patcher = patch(
-            'motor.coordinator.api_server.inference_server.handle_request',
-            side_effect=mock_handle_request
+            "motor.coordinator.api_server.inference_server.handle_request",
+            side_effect=mock_handle_request,
         )
         self._handle_request_patcher.start()
 
         self._is_available_patcher = patch(
-            'motor.coordinator.api_server.inference_server.InferenceServer._is_available',
+            "motor.coordinator.api_server.inference_server.InferenceServer._is_available",
             new_callable=AsyncMock,
             return_value=True,
         )
@@ -1114,7 +1162,10 @@ class TestCoordinatorServerAdvanced:
         # Create unified configuration
         coordinator_config = CoordinatorConfig()
         coordinator_config.api_key_config.enable_api_key = True
-        coordinator_config.api_key_config.valid_keys = {"sk-test123456789", "sk-coordinator2024"}
+        coordinator_config.api_key_config.valid_keys = {
+            "sk-test123456789",
+            "sk-coordinator2024",
+        }
 
         # Create test server shell (ManagementServer + InferenceServer)
         self.coordinator_server = _TestServerShell(config=coordinator_config)
@@ -1134,11 +1185,11 @@ class TestCoordinatorServerAdvanced:
     def teardown_method(self):
         """Teardown test fixtures"""
         try:
-            if hasattr(self, '_im_patcher'):
+            if hasattr(self, "_im_patcher"):
                 self._im_patcher.stop()
-            if hasattr(self, '_handle_request_patcher'):
+            if hasattr(self, "_handle_request_patcher"):
                 self._handle_request_patcher.stop()
-            if hasattr(self, '_is_available_patcher'):
+            if hasattr(self, "_is_available_patcher"):
                 self._is_available_patcher.stop()
         except Exception:
             pass
@@ -1159,98 +1210,100 @@ class TestCoordinatorServerAdvanced:
                                 "id": 0,
                                 "ip": "192.168.1.1",
                                 "business_port": "8080",
-                                "mgmt_port": "18080"
+                                "mgmt_port": "18080",
                             }
                         }
-                    }
+                    },
                 }
-            ]
+            ],
         }
-        
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            json=valid_body
+
+        response = self.mgmt_client.post("/instances/refresh", json=valid_body)
+
+        assert response.status_code == 200, (
+            f"Refresh instances failed: {response.status_code}"
         )
-        
-        assert response.status_code == 200, f"Refresh instances failed: {response.status_code}"
         data = response.json()
         assert data["status"] == "success", f"Refresh instances status abnormal: {data}"
         assert "request_id" in data, "Response missing request_id"
         assert "data" in data, "Response missing data field"
-    
+
     def test_refresh_instances_empty_body(self):
         """Test refresh_instances with empty body"""
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            json={}
-        )
-        
+        response = self.mgmt_client.post("/instances/refresh", json={})
+
         # Should return 400 for empty body
-        assert response.status_code == 400, f"Expected 400 for empty body, got: {response.status_code}"
-    
+        assert response.status_code == 400, (
+            f"Expected 400 for empty body, got: {response.status_code}"
+        )
+
     def test_refresh_instances_invalid_json(self):
         """Test refresh_instances with invalid JSON"""
         response = self.mgmt_client.post(
             "/instances/refresh",
             content="invalid json",
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
-        
+
         # Should return 400 or 422 for invalid JSON
-        assert response.status_code in [400, 422, 500], f"Expected 400/422/500 for invalid JSON, got: {response.status_code}"
-    
+        assert response.status_code in [400, 422, 500], (
+            f"Expected 400/422/500 for invalid JSON, got: {response.status_code}"
+        )
+
     def test_refresh_instances_invalid_event_msg(self):
         """Test refresh_instances with invalid event message format"""
         invalid_body = {
             "event": "INVALID_EVENT",
-            "instances": "not a list"  # Invalid format
+            "instances": "not a list",  # Invalid format
         }
-        
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            json=invalid_body
-        )
-        
+
+        response = self.mgmt_client.post("/instances/refresh", json=invalid_body)
+
         # Should return 400 for invalid format
-        assert response.status_code == 400, f"Expected 400 for invalid format, got: {response.status_code}"
-    
+        assert response.status_code == 400, (
+            f"Expected 400 for invalid format, got: {response.status_code}"
+        )
+
     def test_refresh_instances_no_body(self):
         """Test refresh_instances with no body"""
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            content=None
-        )
-        
+        response = self.mgmt_client.post("/instances/refresh", content=None)
+
         # Should return 400 for no body
-        assert response.status_code == 400, f"Expected 400 for no body, got: {response.status_code}"
-    
+        assert response.status_code == 400, (
+            f"Expected 400 for no body, got: {response.status_code}"
+        )
+
     def test_create_unified_app(self):
         """Test create_unified_app method"""
         unified_app = self.coordinator_server.create_unified_app()
-        
+
         assert unified_app is not None, "Unified app should be created"
-        
+
         # Test that unified app has routes from both management and inference apps
         unified_client = TestClient(unified_app)
-        
+
         # Test management route
         response = unified_client.get("/liveness")
-        assert response.status_code == 200, "Liveness endpoint should be available in unified app"
-        
+        assert response.status_code == 200, (
+            "Liveness endpoint should be available in unified app"
+        )
+
         # Test inference route
         response = unified_client.post(
             "/v1/chat/completions",
             json={
                 "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": "test"}]
+                "messages": [{"role": "user", "content": "test"}],
             },
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        assert response.status_code == 200, "Chat completions endpoint should be available in unified app"
-    
+        assert response.status_code == 200, (
+            "Chat completions endpoint should be available in unified app"
+        )
+
     def test_create_unified_app_with_rate_limit_disabled(self):
         """Test create_unified_app with rate limit disabled"""
         # Create a config with rate limit disabled
@@ -1260,52 +1313,56 @@ class TestCoordinatorServerAdvanced:
         coordinator_server = _TestServerShell(config=coordinator_config)
         coordinator_server.instance_manager = MagicMock()
         unified_app = coordinator_server.create_unified_app()
-        assert unified_app is not None, "Unified app should be created even with rate limit disabled"
-    
+        assert unified_app is not None, (
+            "Unified app should be created even with rate limit disabled"
+        )
+
     def test_create_unified_app_with_custom_rate_limit_config(self):
         """Test create_unified_app with custom rate limit config"""
         from motor.config.coordinator import RateLimitConfig
-        
+
         custom_rate_limit_config = RateLimitConfig()
         custom_rate_limit_config.enable_rate_limit = True
         custom_rate_limit_config.max_requests = 50
         custom_rate_limit_config.window_size = 30
-        
+
         unified_app = self.coordinator_server.create_unified_app(
             rate_limit_config=custom_rate_limit_config
         )
-        
-        assert unified_app is not None, "Unified app should be created with custom rate limit config"
-    
+
+        assert unified_app is not None, (
+            "Unified app should be created with custom rate limit config"
+        )
+
     def test_copy_routes_skip_paths(self):
         """Test _copy_routes with skip paths"""
         from fastapi import FastAPI
-        
+
         src_app = FastAPI()
-        
+
         @src_app.get("/test")
         async def test():
             return {"status": "ok"}
-        
+
         @src_app.get("/docs")
         async def docs():
             return {"status": "docs"}
-        
+
         # Create dst_app with docs disabled to avoid FastAPI auto-generated docs
         dst_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-        
+
         self.coordinator_server._copy_routes(src_app, dst_app, skip_paths=["/docs"])
-        
+
         dst_client = TestClient(dst_app)
-        
+
         # /test should be copied
         response = dst_client.get("/test")
         assert response.status_code == 200, "/test route should be copied"
-        
+
         # /docs should be skipped (not copied from src_app, and FastAPI docs disabled)
         response = dst_client.get("/docs")
         assert response.status_code == 404, "/docs route should be skipped"
-    
+
     def test_validate_openai_request_invalid_model(self):
         """Test _validate_openai_request with missing model"""
         # This tests the validation logic indirectly through the endpoint
@@ -1313,120 +1370,127 @@ class TestCoordinatorServerAdvanced:
             "messages": [{"role": "user", "content": "test"}]
             # Missing model field
         }
-        
+
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 400, f"Expected 400 for missing model, got: {response.status_code}"
-    
+
+        assert response.status_code == 400, (
+            f"Expected 400 for missing model, got: {response.status_code}"
+        )
+
     def test_validate_openai_request_invalid_messages(self):
         """Test _validate_openai_request with invalid messages"""
         invalid_data = {
             "model": "gpt-3.5-turbo",
-            "messages": "not a list"  # Invalid format
+            "messages": "not a list",  # Invalid format
         }
-        
+
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 400, f"Expected 400 for invalid messages, got: {response.status_code}"
-    
+
+        assert response.status_code == 400, (
+            f"Expected 400 for invalid messages, got: {response.status_code}"
+        )
+
     def test_validate_openai_request_empty_messages(self):
         """Test _validate_openai_request with empty messages list"""
-        invalid_data = {
-            "model": "gpt-3.5-turbo",
-            "messages": []
-        }
-        
+        invalid_data = {"model": "gpt-3.5-turbo", "messages": []}
+
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 400, f"Expected 400 for empty messages, got: {response.status_code}"
-    
+
+        assert response.status_code == 400, (
+            f"Expected 400 for empty messages, got: {response.status_code}"
+        )
+
     def test_validate_openai_request_invalid_message_format(self):
         """Test _validate_openai_request with invalid message format"""
         invalid_data = {
             "model": "gpt-3.5-turbo",
             "messages": [
                 "not a dict"  # Invalid message format
-            ]
+            ],
         }
-        
+
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 400, f"Expected 400 for invalid message format, got: {response.status_code}"
-    
+
+        assert response.status_code == 400, (
+            f"Expected 400 for invalid message format, got: {response.status_code}"
+        )
+
     def test_validate_openai_request_missing_role_or_content(self):
         """Test _validate_openai_request with missing role or content"""
         invalid_data = {
             "model": "gpt-3.5-turbo",
             "messages": [
                 {"role": "user"}  # Missing content
-            ]
+            ],
         }
-        
+
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 400, f"Expected 400 for missing content, got: {response.status_code}"
-    
+
+        assert response.status_code == 400, (
+            f"Expected 400 for missing content, got: {response.status_code}"
+        )
+
     def test_validate_openai_request_invalid_role(self):
         """Test _validate_openai_request with invalid role"""
         invalid_data = {
             "model": "gpt-3.5-turbo",
-            "messages": [
-                {"role": "invalid_role", "content": "test"}
-            ]
+            "messages": [{"role": "invalid_role", "content": "test"}],
         }
-        
+
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
             json=invalid_data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 400, f"Expected 400 for invalid role, got: {response.status_code}"
-    
+
+        assert response.status_code == 400, (
+            f"Expected 400 for invalid role, got: {response.status_code}"
+        )
+
     def test_handle_openai_request_unavailable_instances(self):
         """Test _handle_openai_request when instances are unavailable (503)."""
         # Inference server uses _is_available() (SchedulerClient), not InstanceManager; force unavailable
@@ -1436,34 +1500,37 @@ class TestCoordinatorServerAdvanced:
             "/v1/chat/completions",
             json={
                 "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": "test"}]
+                "messages": [{"role": "user", "content": "test"}],
             },
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        assert response.status_code == 503, f"Expected 503 for unavailable instances, got: {response.status_code}"
-    
+        assert response.status_code == 503, (
+            f"Expected 503 for unavailable instances, got: {response.status_code}"
+        )
+
     def test_handle_openai_request_with_prompt(self):
         """Test _handle_openai_request with prompt field (completions API)"""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/completions",
-            json={
-                "model": "text-davinci-003",
-                "prompt": "Hello world"
-            },
+            json={"model": "text-davinci-003", "prompt": "Hello world"},
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 200, f"Completions API failed: {response.status_code}"
+
+        assert response.status_code == 200, (
+            f"Completions API failed: {response.status_code}"
+        )
         data = response.json()
-        assert data["data"]["input_data"] == "Hello world", "Prompt should be extracted correctly"
-    
+        assert data["data"]["input_data"] == "Hello world", (
+            "Prompt should be extracted correctly"
+        )
+
     def test_handle_openai_request_empty_input(self):
         """Test _handle_openai_request with empty input"""
         inference_client = TestClient(self.coordinator_server.inference_app)
@@ -1475,27 +1542,31 @@ class TestCoordinatorServerAdvanced:
             },
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
+
         # Should return 400 for missing required fields
-        assert response.status_code == 400, f"Expected 400 for missing prompt/messages, got: {response.status_code}"
-    
+        assert response.status_code == 400, (
+            f"Expected 400 for missing prompt/messages, got: {response.status_code}"
+        )
+
     def test_openai_is_stream(self):
         """Test _openai_is_stream method"""
         # Test with stream=True
-        assert self.coordinator_server._openai_is_stream({"stream": True}) == True
-        
+        assert self.coordinator_server._openai_is_stream({"stream": True})
+
         # Test with stream=False
-        assert self.coordinator_server._openai_is_stream({"stream": False}) == False
-        
+        assert not self.coordinator_server._openai_is_stream({"stream": False})
+
         # Test without stream field
-        assert self.coordinator_server._openai_is_stream({}) == False
-        
+        assert not self.coordinator_server._openai_is_stream({})
+
         # Test with stream as string
-        assert self.coordinator_server._openai_is_stream({"stream": "true"}) == True  # Truthy value
-    
+        assert self.coordinator_server._openai_is_stream(
+            {"stream": "true"}
+        )  # Truthy value
+
     def test_refresh_instances_with_complex_endpoints(self):
         """Test refresh_instances with complex endpoint structures"""
         complex_body = {
@@ -1512,37 +1583,36 @@ class TestCoordinatorServerAdvanced:
                                 "id": 0,
                                 "ip": "192.168.1.3",
                                 "business_port": "8080",
-                                "mgmt_port": "18080"
+                                "mgmt_port": "18080",
                             },
                             "1": {
                                 "id": 1,
                                 "ip": "192.168.1.3",
                                 "business_port": "8081",
-                                "mgmt_port": "18081"
-                            }
+                                "mgmt_port": "18081",
+                            },
                         },
                         "192.168.1.4": {
                             "2": {
                                 "id": 2,
                                 "ip": "192.168.1.4",
                                 "business_port": "9000",
-                                "mgmt_port": "19000"
+                                "mgmt_port": "19000",
                             }
-                        }
-                    }
+                        },
+                    },
                 }
-            ]
+            ],
         }
-        
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            json=complex_body
+
+        response = self.mgmt_client.post("/instances/refresh", json=complex_body)
+
+        assert response.status_code == 200, (
+            f"Refresh instances failed: {response.status_code}"
         )
-        
-        assert response.status_code == 200, f"Refresh instances failed: {response.status_code}"
         data = response.json()
         assert data["status"] == "success", f"Refresh instances status abnormal: {data}"
-    
+
     def test_refresh_instances_with_non_dict_endpoints(self):
         """Test refresh_instances with non-dict endpoints value"""
         invalid_body = {
@@ -1553,19 +1623,18 @@ class TestCoordinatorServerAdvanced:
                     "model_name": "test-model",
                     "id": 4,
                     "role": "prefill",
-                    "endpoints": "not a dict"  # Invalid endpoints format
+                    "endpoints": "not a dict",  # Invalid endpoints format
                 }
-            ]
+            ],
         }
-        
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            json=invalid_body
-        )
-        
+
+        response = self.mgmt_client.post("/instances/refresh", json=invalid_body)
+
         # Should return 400 for invalid format (endpoints must be a dict)
-        assert response.status_code == 400, f"Expected 400 for invalid endpoints format, got: {response.status_code}"
-    
+        assert response.status_code == 400, (
+            f"Expected 400 for invalid endpoints format, got: {response.status_code}"
+        )
+
     def test_refresh_instances_with_non_dict_endpoint_data(self):
         """Test refresh_instances with non-dict endpoint data"""
         invalid_body = {
@@ -1578,19 +1647,18 @@ class TestCoordinatorServerAdvanced:
                     "role": "prefill",
                     "endpoints": {
                         "192.168.1.5": "not a dict"  # Invalid endpoint data format
-                    }
+                    },
                 }
-            ]
+            ],
         }
-        
-        response = self.mgmt_client.post(
-            "/instances/refresh",
-            json=invalid_body
-        )
-        
+
+        response = self.mgmt_client.post("/instances/refresh", json=invalid_body)
+
         # Should return 400 for invalid format (endpoint data must be a dict)
-        assert response.status_code == 400, f"Expected 400 for invalid endpoint data format, got: {response.status_code}"
-    
+        assert response.status_code == 400, (
+            f"Expected 400 for invalid endpoint data format, got: {response.status_code}"
+        )
+
     def test_timeout_handler(self):
         """Test timeout handler decorator"""
         # This tests the timeout handler indirectly through endpoints
@@ -1600,68 +1668,75 @@ class TestCoordinatorServerAdvanced:
             "/v1/chat/completions",
             json={
                 "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": "test"}]
+                "messages": [{"role": "user", "content": "test"}],
             },
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
-        assert response.status_code == 200, "Timeout handler should not block normal requests"
-    
+
+        assert response.status_code == 200, (
+            "Timeout handler should not block normal requests"
+        )
+
     def test_verify_api_key_skip_paths(self):
         """Test verify_api_key with skip paths"""
         # Test that skip paths don't require API key
-        inference_client = TestClient(self.coordinator_server.inference_app)
-        
+        TestClient(self.coordinator_server.inference_app)
+
         # These paths should not require API key (tested indirectly through skip_paths)
         # The actual skip paths are configured in api_key_config
-    
+
     def test_lifespan_context_manager(self):
         """Test lifespan context manager"""
         # Test that the lifespan context manager can be entered and exited
         from fastapi import FastAPI
-        
+
         app = FastAPI(lifespan=self.coordinator_server.lifespan)
         client = TestClient(app)
-        
-        # The lifespan should work correctly
-        response = client.get("/")
-        # Should not raise errors
+
+        # The lifespan should work correctly (any HTTP status means the app responded)
+        client.get("/")
         assert True, "Lifespan context manager works correctly"
-    
+
     def test_setup_rate_limiting_with_disabled_config(self):
         """Test setup_rate_limiting with disabled config"""
         from motor.config.coordinator import RateLimitConfig
-        
+
         # Create a config with rate limit disabled
         disabled_config = RateLimitConfig()
         disabled_config.enable_rate_limit = False
-        
+
         coordinator_server = _TestServerShell(config=CoordinatorConfig())
         coordinator_server.instance_manager = MagicMock()
         coordinator_server.setup_rate_limiting(rate_limit_config=disabled_config)
         assert True, "Setup rate limiting with disabled config works correctly"
-    
+
     def test_setup_rate_limiting_with_exception(self):
         """Test setup_rate_limiting exception handling"""
         # Mock create_simple_rate_limit_middleware to raise exception
-        with patch('motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware') as mock_create:
+        with patch(
+            "motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware"
+        ) as mock_create:
             mock_create.side_effect = Exception("Test exception")
             coordinator_server = _TestServerShell(config=CoordinatorConfig())
             coordinator_server.instance_manager = MagicMock()
             coordinator_server.setup_rate_limiting()
             assert True, "Setup rate limiting handles exceptions correctly"
-    
+
     def test_create_unified_app_with_exception(self):
         """Test create_unified_app exception handling"""
         # Mock create_simple_rate_limit_middleware to raise exception
-        with patch('motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware') as mock_create:
+        with patch(
+            "motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware"
+        ) as mock_create:
             mock_create.side_effect = Exception("Test exception")
             unified_app = self.coordinator_server.create_unified_app()
-            assert unified_app is not None, "Unified app should be created even with exceptions"
-    
+            assert unified_app is not None, (
+                "Unified app should be created even with exceptions"
+            )
+
     def test_copy_routes_with_exception(self):
         """Test _copy_routes when a route has invalid shape (path/endpoint must be real to avoid re/str errors)."""
         from fastapi import FastAPI
@@ -1679,31 +1754,33 @@ class TestCoordinatorServerAdvanced:
         bad_route.path = "/bad"
         bad_route.methods = {"GET"}
         bad_route.endpoint = None  # endpoint None is skipped by _copy_routes (getattr(route, "endpoint", None))
-        with patch.object(src_app.router, 'routes', new=[bad_route]):
+        with patch.object(src_app.router, "routes", new=[bad_route]):
             self.coordinator_server._copy_routes(src_app, dst_app)
         assert True, "Copy routes handles exception-like route correctly"
-    
+
     def test_handle_openai_request_json_decode_error(self):
         """Test _handle_openai_request with JSON decode error"""
         inference_client = TestClient(self.coordinator_server.inference_app)
-        
+
         # Send invalid JSON
         response = inference_client.post(
             "/v1/chat/completions",
             content="invalid json",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.valid_api_key}"
-            }
+                "Authorization": f"Bearer {self.valid_api_key}",
+            },
         )
-        
+
         # Should return error status code
-        assert response.status_code in [400, 422, 500], f"Expected error for invalid JSON, got: {response.status_code}"
-    
+        assert response.status_code in [400, 422, 500], (
+            f"Expected error for invalid JSON, got: {response.status_code}"
+        )
+
     def test_handle_openai_request_general_exception(self):
         """Test _handle_openai_request when handle_request raises (expect 500; avoid 503 via _is_available True)."""
         with patch(
-            'motor.coordinator.api_server.inference_server.handle_request',
+            "motor.coordinator.api_server.inference_server.handle_request",
             new_callable=AsyncMock,
         ) as mock_handle:
             mock_handle.side_effect = Exception("Test exception")
@@ -1712,32 +1789,34 @@ class TestCoordinatorServerAdvanced:
                 "/v1/chat/completions",
                 json={
                     "model": "gpt-3.5-turbo",
-                    "messages": [{"role": "user", "content": "test"}]
+                    "messages": [{"role": "user", "content": "test"}],
                 },
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.valid_api_key}"
-                }
+                    "Authorization": f"Bearer {self.valid_api_key}",
+                },
             )
             # _is_available is still patched True in setup, so we reach handle_request; exception -> 500
-            assert response.status_code == 500, f"Expected 500 for exception, got: {response.status_code}"
+            assert response.status_code == 500, (
+                f"Expected 500 for exception, got: {response.status_code}"
+            )
 
 
 class TestFastAPIMiddlewareAdvanced:
     """Test FastAPI middleware advanced functionality"""
-    
+
     def setup_method(self):
         """Setup test fixtures"""
         from motor.coordinator.middleware.fastapi_middleware import (
             SimpleRateLimitMiddleware,
             SimpleRateLimitConfig,
             load_rate_limit_config,
-            create_simple_rate_limit_middleware
+            create_simple_rate_limit_middleware,
         )
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        
+
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
         self.SimpleRateLimitConfig = SimpleRateLimitConfig
@@ -1745,126 +1824,141 @@ class TestFastAPIMiddlewareAdvanced:
         self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
-    
+        self._report_alarms_patcher = patch(
+            "motor.coordinator.api_client.controller_api_client.ControllerApiClient.report_alarms",
+            return_value=True,
+        )
+        self._report_alarms_patcher.start()
+
+    def teardown_method(self):
+        self._report_alarms_patcher.stop()
+
     def test_rate_limit_middleware_extract_request_data(self):
         """Test _extract_request_data method"""
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         rate_limiter = self.SimpleRateLimiter(max_requests=10, window_size=60)
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=[]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=[]
         )
-        
+
         client = self.TestClient(middleware)
-        
+
         # Make a request to trigger _extract_request_data
         response = client.get("/test")
         assert response.status_code == 200, "Request should succeed"
         assert middleware.stats["total_requests"] > 0, "Should extract request data"
-    
+
     def test_rate_limit_middleware_create_rate_limit_headers(self):
         """Test _create_rate_limit_headers method"""
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         rate_limiter = self.SimpleRateLimiter(max_requests=10, window_size=60)
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=[]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=[]
         )
-        
+
         client = self.TestClient(middleware)
-        
+
         # Make a request to trigger header creation
         response = client.get("/test")
         assert response.status_code == 200, "Request should succeed"
         # Check if headers are present
-        assert "X-RateLimit-Remaining" in response.headers or "X-RateLimit-Limit" in response.headers, "Should create rate limit headers"
-    
+        assert (
+            "X-RateLimit-Remaining" in response.headers
+            or "X-RateLimit-Limit" in response.headers
+        ), "Should create rate limit headers"
+
     def test_rate_limit_middleware_dispatch_exception(self):
         """Test dispatch method exception handling"""
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         rate_limiter = MagicMock()
         rate_limiter.is_allowed = MagicMock(side_effect=Exception("Test error"))
-        
+
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=[]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=[]
         )
-        
+
         client = self.TestClient(middleware)
-        
+
         # Should allow request when error occurs
         response = client.get("/test")
         assert response.status_code == 200, "Should allow request when error occurs"
-        assert middleware.stats["allowed_requests"] > 0, "Should increment allowed_requests on error"
-    
+        assert middleware.stats["allowed_requests"] > 0, (
+            "Should increment allowed_requests on error"
+        )
+
     def test_rate_limit_middleware_should_skip_path(self):
         """Test _should_skip_path method"""
+
         @self.app.get("/test")
         async def test_endpoint():
             return {"status": "ok"}
-        
+
         @self.app.get("/liveness")
         async def liveness_endpoint():
             return {"status": "healthy"}
-        
+
         rate_limiter = self.SimpleRateLimiter(max_requests=1, window_size=60)
         middleware = self.SimpleRateLimitMiddleware(
-            app=self.app,
-            rate_limiter=rate_limiter,
-            skip_paths=["/liveness"]
+            app=self.app, rate_limiter=rate_limiter, skip_paths=["/liveness"]
         )
-        
+
         client = self.TestClient(middleware)
-        
+
         # /liveness should be skipped
         response1 = client.get("/liveness")
-        assert response1.status_code == 200, "Liveness endpoint should not be rate limited"
-        
+        assert response1.status_code == 200, (
+            "Liveness endpoint should not be rate limited"
+        )
+
         response2 = client.get("/liveness")
-        assert response2.status_code == 200, "Liveness endpoint should still not be rate limited"
-        
+        assert response2.status_code == 200, (
+            "Liveness endpoint should still not be rate limited"
+        )
+
         # /test should be rate limited
         response3 = client.get("/test")
         assert response3.status_code == 200, "First request should succeed"
-        
+
         # Second request may be rate limited
         response4 = client.get("/test")
         assert response4.status_code in [200, 429], "Second request may be rate limited"
-    
+
     def test_load_rate_limit_config_file_not_found(self):
         """Test load_rate_limit_config with non-existent file"""
         config = self.load_rate_limit_config(config_file="/nonexistent/config.json")
         assert config is not None, "Should return default config when file not found"
-        assert config.enabled == True, "Should use default enabled value"
-    
+        assert config.enabled, "Should use default enabled value"
+
     def test_load_rate_limit_config_invalid_json(self):
         """Test load_rate_limit_config with invalid JSON file"""
         import tempfile
         import os
-        
+
         # Create temporary file with invalid JSON
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("invalid json content")
             config_file = f.name
-        
+
         try:
             config = self.load_rate_limit_config(config_file=config_file)
-            assert config is not None, "Should return default config when JSON is invalid"
+            assert config is not None, (
+                "Should return default config when JSON is invalid"
+            )
         finally:
             os.unlink(config_file)
-    
+
     def test_simple_rate_limit_config_post_init(self):
         """Test SimpleRateLimitConfig __post_init__"""
         config = self.SimpleRateLimitConfig()
@@ -1872,16 +1966,18 @@ class TestFastAPIMiddlewareAdvanced:
         assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
         assert "/ready" in config.skip_paths, "/ready should be in skip_paths"
         assert "/metrics" in config.skip_paths, "/metrics should be in skip_paths"
-    
+
     def test_create_simple_rate_limit_middleware_defaults(self):
         """Test create_simple_rate_limit_middleware with default parameters"""
-        middleware = self.create_simple_rate_limit_middleware(
-            app=self.app
-        )
-        
+        middleware = self.create_simple_rate_limit_middleware(app=self.app)
+
         assert middleware is not None, "Middleware should be created"
-        assert middleware.rate_limiter.max_requests == 100, "Should use default max_requests"
-        assert middleware.rate_limiter.window_size == 60, "Should use default window_size"
+        assert middleware.rate_limiter.max_requests == 100, (
+            "Should use default max_requests"
+        )
+        assert middleware.rate_limiter.window_size == 60, (
+            "Should use default window_size"
+        )
 
 
 @pytest.mark.asyncio
@@ -1897,7 +1993,10 @@ async def test_run_combined_mode(monkeypatch):
         async def serve(self):
             return
 
-    monkeypatch.setattr("motor.coordinator.api_server.management_server.uvicorn.Server", lambda *a, **k: DummyServer())
+    monkeypatch.setattr(
+        "motor.coordinator.api_server.management_server.uvicorn.Server",
+        lambda *a, **k: DummyServer(),
+    )
 
     cfg = CoordinatorConfig()
     # Disable TLS for testing
@@ -1924,7 +2023,10 @@ async def test_run_split_mode(monkeypatch):
         async def serve(self):
             return
 
-    monkeypatch.setattr("motor.coordinator.api_server.management_server.uvicorn.Server", lambda *a, **k: DummyServer())
+    monkeypatch.setattr(
+        "motor.coordinator.api_server.management_server.uvicorn.Server",
+        lambda *a, **k: DummyServer(),
+    )
 
     cfg = CoordinatorConfig()
     # Disable TLS for testing
