@@ -158,6 +158,39 @@ async def test_send_virtual_request_async_success(mock_create_client, sim_infere
 
 @pytest.mark.asyncio
 @mock.patch('motor.common.http.http_client.AsyncSafeHTTPSClient.create_client')
+async def test_send_virtual_request_async_decode_without_metaserver(mock_create_client, mock_args, mock_tls_config):
+    """Decode virtual warmup must not inject metaserver for A5 handoff virtual inference."""
+    mock_health_config = mock.MagicMock()
+    mock_health_config.npu_usage_threshold = 3
+    mock_health_config.enable_virtual_inference = True
+    decode_sim_inference = SimInference(mock_args, mock_tls_config, mock_health_config, role=constants.DECODE_ROLE)
+
+    mock_client = mock.MagicMock()
+    mock_response = mock.MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {"choices": [{"text": "Hello"}]}
+    mock_client.post = mock.AsyncMock(return_value=mock_response)
+    mock_client.is_closed = False
+    mock_create_client.return_value = mock_client
+
+    timeout = httpx.Timeout(5.0)
+    await decode_sim_inference.send_virtual_request_async(timeout)
+
+    call_args = mock_client.post.call_args
+    assert call_args[1]["json"] == {
+        "model": "test-model",
+        "prompt": "1",
+        "max_tokens": 1,
+        "kv_transfer_params": {
+            "do_remote_decode": False,
+            "do_remote_prefill": True,
+            "do_virtual": True,
+        },
+    }
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.common.http.http_client.AsyncSafeHTTPSClient.create_client')
 async def test_send_virtual_request_async_http_error(mock_create_client, sim_inference):
     """Test virtual request sending with HTTP error"""
     # Mock HTTP error
