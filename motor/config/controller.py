@@ -123,6 +123,7 @@ class FaultToleranceConfig:
     # scale and recovery strategy configuration
     enable_scale_p2d: bool = True  # Enable/disable scale p2d strategy
     enable_token_reinference: bool = True  # Enable/disable token reinference strategy
+    scale_p2d_d_instance_reinit_wait_timeout: int = 60  # seconds to wait for D instance re-init before ScaleP2D
 
 
 @dataclass
@@ -293,6 +294,9 @@ class ControllerConfig:
         # Validate fault tolerance configuration
         if self.fault_tolerance_config.strategy_center_check_interval <= 0:
             errors.append("strategy_center_check_interval must be greater than 0")
+
+        if not (1 <= self.fault_tolerance_config.scale_p2d_d_instance_reinit_wait_timeout <= 600):
+            errors.append("scale_p2d_d_instance_reinit_wait_timeout must be in range 1-600")
 
         # Validate standby configuration
         if self.standby_config.master_standby_check_interval <= 0:

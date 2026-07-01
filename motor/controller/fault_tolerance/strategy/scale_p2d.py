@@ -65,11 +65,19 @@ class ScaleP2DStrategy(StrategyBase):
     """
 
     CHECK_D_INSTANCE_STATUS_INTERVAL = 3  # seconds between D-instance status polls
-    CHECK_D_INSTANCE_STATUS_TIMEOUT = 30  # seconds to wait for D-instance isolation
 
     def __init__(self) -> None:
         super().__init__()
         self.context: RecoveryContext | None = None
+        self.d_instance_reinit_wait_timeout = self._resolve_d_instance_reinit_wait_timeout()
+
+    @staticmethod
+    def _resolve_d_instance_reinit_wait_timeout() -> int:
+        # Local import to avoid circular dependency:
+        # fault_tolerance/__init__ → fault_manager → strategy/__init__ → scale_p2d
+        from motor.controller.fault_tolerance.fault_manager import FaultManager
+
+        return FaultManager().config.fault_tolerance_config.scale_p2d_d_instance_reinit_wait_timeout
 
     def execute(self, instance_id: int) -> None:
         """
@@ -318,14 +326,14 @@ class ScaleP2DStrategy(StrategyBase):
             "Checking D instance status before ScaleP2D. instance_id=%d, job_name=%s, timeout_s=%d",
             self.context.d_instance_id,
             self.context.d_instance_job_name,
-            self.CHECK_D_INSTANCE_STATUS_TIMEOUT,
+            self.d_instance_reinit_wait_timeout,
         )
 
         try:
             start_time = time.time()
             poll_count = 0
 
-            while time.time() - start_time < self.CHECK_D_INSTANCE_STATUS_TIMEOUT:
+            while time.time() - start_time < self.d_instance_reinit_wait_timeout:
                 if self.event.is_set():
                     self.context.last_error = "Strategy stopped during D instance status check"
                     logger.warning(
@@ -400,7 +408,7 @@ class ScaleP2DStrategy(StrategyBase):
 
             self.context.last_error = (
                 f"D instance {self.context.d_instance_job_name} did not become INACTIVE "
-                f"within {self.CHECK_D_INSTANCE_STATUS_TIMEOUT}s"
+                f"within {self.d_instance_reinit_wait_timeout}s"
             )
             logger.error(
                 "D instance status check timed out. instance_id=%d, job_name=%s, "
@@ -411,7 +419,7 @@ class ScaleP2DStrategy(StrategyBase):
                 self.context.d_instance_job_name,
                 d_instance.id,
                 d_instance.status.value,
-                self.CHECK_D_INSTANCE_STATUS_TIMEOUT,
+                self.d_instance_reinit_wait_timeout,
             )
             return False
 
