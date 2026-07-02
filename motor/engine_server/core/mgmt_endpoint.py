@@ -20,6 +20,7 @@ from prometheus_client import CollectorRegistry, multiprocess, make_asgi_app
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.routing import Mount
 
+from motor.common.resources.dispatch import infer_vllm_dispatch_profile_from_config
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
@@ -82,7 +83,13 @@ class MgmtEndpoint(Endpoint):
         # Headless follower nodes have no API server, disable virtual inference
         if getattr(args, 'headless', False) and hasattr(health_check_config, 'enable_virtual_inference'):
             health_check_config.enable_virtual_inference = False
-        self.sim_inference = SimInference(args, infer_tls_config, health_check_config, endpoint_config.role)
+        self.sim_inference = SimInference(
+            args,
+            infer_tls_config,
+            health_check_config,
+            endpoint_config.role,
+            dispatch_profile=infer_vllm_dispatch_profile_from_config(config),
+        )
 
         self._stop_event = threading.Event()
         self._server: uvicorn.Server | None = None

@@ -14,6 +14,7 @@ import time
 import importlib
 from typing import Optional
 import httpx
+from motor.common.resources.dispatch import DispatchProfile
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
@@ -38,13 +39,22 @@ def _is_virtual_metrics_request(req_state) -> bool:
 class SimInference:
     """Virtual inference utility class for sending virtual health check requests"""
 
-    def __init__(self, args, infer_tls_config, health_check_config=None, role=None):
+    def __init__(
+        self,
+        args,
+        infer_tls_config,
+        health_check_config=None,
+        role=None,
+        dispatch_profile: DispatchProfile | None = None,
+    ):
         """Initialize virtual inference utility
 
         Args:
             args: Command line arguments
             infer_tls_config: TLS configuration for inference service
             health_check_config: Health check configuration, including npu_usage_threshold and other parameters
+            role: Engine role (prefill/decode/union)
+            dispatch_profile: vLLM P/D coordination profile inferred from kv_transfer_config
         """
         self.args = args
         self.infer_tls_config = infer_tls_config
@@ -53,6 +63,7 @@ class SimInference:
         self._abnormal_status_lock = threading.Lock()
         self._is_abnormal = False
         self.role = role
+        self._dispatch_profile = dispatch_profile or DispatchProfile.UNKNOWN
 
         self.health_check_config = health_check_config or None
         # Get npu_usage_threshold with default value
@@ -288,8 +299,8 @@ class SimInference:
     async def send_virtual_request_async(self, timeout):
         # construct virtual request
         virtual_request = {"model": self.args.served_model_name[0], "prompt": "1", "max_tokens": 1}
-        if self.role == constants.DECODE_ROLE:
-            logger.debug("make virtual request for decode")
+        if self.role == constants.DECODE_ROLE and self._dispatch_profile == DispatchProfile.TRIGGER:
+            logger.debug("make virtual request for layerwise decode")
             virtual_request["kv_transfer_params"] = {
                 "do_remote_decode": False,
                 "do_remote_prefill": True,

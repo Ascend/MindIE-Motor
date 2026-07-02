@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import pytest
+from motor.common.resources.dispatch import DispatchProfile
 from motor.engine_server.core.sim_inference import (
     SimInference,
     _AICORE_SAMPLE_WINDOW_SEC,
@@ -158,12 +159,20 @@ async def test_send_virtual_request_async_success(mock_create_client, sim_infere
 
 @pytest.mark.asyncio
 @mock.patch('motor.common.http.http_client.AsyncSafeHTTPSClient.create_client')
-async def test_send_virtual_request_async_decode_without_metaserver(mock_create_client, mock_args, mock_tls_config):
-    """Decode virtual warmup must not inject metaserver for A5 handoff virtual inference."""
+async def test_send_virtual_request_async_decode_layerwise_includes_kv_params(
+    mock_create_client, mock_args, mock_tls_config
+):
+    """Layerwise decode virtual warmup injects trigger kv_transfer_params without metaserver."""
     mock_health_config = mock.MagicMock()
     mock_health_config.npu_usage_threshold = 3
     mock_health_config.enable_virtual_inference = True
-    decode_sim_inference = SimInference(mock_args, mock_tls_config, mock_health_config, role=constants.DECODE_ROLE)
+    decode_sim_inference = SimInference(
+        mock_args,
+        mock_tls_config,
+        mock_health_config,
+        role=constants.DECODE_ROLE,
+        dispatch_profile=DispatchProfile.TRIGGER,
+    )
 
     mock_client = mock.MagicMock()
     mock_response = mock.MagicMock()
@@ -187,6 +196,38 @@ async def test_send_virtual_request_async_decode_without_metaserver(mock_create_
             "do_virtual": True,
         },
     }
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.common.http.http_client.AsyncSafeHTTPSClient.create_client')
+async def test_send_virtual_request_async_decode_handoff_skips_kv_transfer_params(
+    mock_create_client, mock_args, mock_tls_config
+):
+    """Handoff decode virtual warmup must send a plain completion without kv_transfer_params."""
+    mock_health_config = mock.MagicMock()
+    mock_health_config.npu_usage_threshold = 3
+    mock_health_config.enable_virtual_inference = True
+    decode_sim_inference = SimInference(
+        mock_args,
+        mock_tls_config,
+        mock_health_config,
+        role=constants.DECODE_ROLE,
+        dispatch_profile=DispatchProfile.HANDOFF,
+    )
+
+    mock_client = mock.MagicMock()
+    mock_response = mock.MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {"choices": [{"text": "Hello"}]}
+    mock_client.post = mock.AsyncMock(return_value=mock_response)
+    mock_client.is_closed = False
+    mock_create_client.return_value = mock_client
+
+    timeout = httpx.Timeout(5.0)
+    await decode_sim_inference.send_virtual_request_async(timeout)
+
+    call_args = mock_client.post.call_args
+    assert call_args[1]["json"] == {"model": "test-model", "prompt": "1", "max_tokens": 1}
 
 
 @pytest.mark.asyncio

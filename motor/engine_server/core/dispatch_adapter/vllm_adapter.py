@@ -23,7 +23,7 @@ from motor.common.resources.dispatch import (
     DispatchProfile,
     MotorDispatch,
     PrefillResult,
-    classify_vllm_dispatch_profile,
+    infer_vllm_dispatch_profile_from_config,
 )
 from motor.engine_server.core.dispatch_adapter.base import (
     DispatchAdapter,
@@ -289,8 +289,4 @@ class VLLMDispatchAdapter(DispatchAdapter):
 
     @classmethod
     def _infer_dispatch_profile(cls, config) -> DispatchProfile:
-        endpoint_config = config.get_endpoint_config()
-        deploy_config = getattr(endpoint_config, "deploy_config", None)
-        engine_config = getattr(deploy_config, "engine_config", None)
-        explicit_profile = getattr(deploy_config, "dispatch_profile", None)
-        return classify_vllm_dispatch_profile(engine_config, explicit_profile=explicit_profile)
+        return infer_vllm_dispatch_profile_from_config(config)
