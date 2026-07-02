@@ -11,7 +11,6 @@ import argparse
 import configparser
 import os
 import subprocess
-import tempfile
 
 import lib.constant as C
 from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
@@ -176,36 +175,6 @@ def deploy_services_single_container(paths, user_config, dry_run=False):
         exec_all_kubectl_singer(deploy_config, paths["single_container_output_yaml"])
 
 
-def update_shell_add_kv_patch():
-    """patch for vllm 0.18.0"""
-
-    start_str = "# patch_begin"
-    end_str = "# patch_end"
-    multi_connector_path = "/usr/local/python3.11.10/lib/python3.11/site-packages\
-/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py"
-    patch_path = os.path.join(
-        tempfile.gettempdir(), "motor", "examples", "deployer", "patch", "kv_vllm_multi_connector.patch"
-    )
-
-    with open(C.BOOT_SHELL_PATH, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    if lines:
-        if lines[0].startswith(start_str):
-            return
-
-    new_patch_lines = [
-        f"{start_str}\nmd5sum {multi_connector_path}\n",
-        f"patch -p0 {multi_connector_path}  < {patch_path}\n",
-        f"md5sum {multi_connector_path}\n",
-        f"{end_str}\n",
-    ]
-
-    new_lines = new_patch_lines + lines
-
-    with open(C.BOOT_SHELL_PATH, 'w', encoding='utf-8') as f:
-        f.writelines(new_lines)
-
-
 def resolve_deploy_mode_for_services(deploy_config):
     return get_deploy_mode_from_config(deploy_config)
 
@@ -223,9 +192,6 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
         set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
     else:
         logger.info("dry-run: skip set_env_to_shell")
-
-    if k8s_utils.g_kv_pool_enabled and k8s_utils.g_kv_conductor_enabled:
-        update_shell_add_kv_patch()
 
     if deploy_mode_arg != C.DEPLOY_MODE_SINGLE_CONTAINER and not dry_run:
         validate_node_selectors(deploy_config)
