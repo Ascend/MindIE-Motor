@@ -133,7 +133,7 @@ def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, p
         if node_type:
             apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type)
 
-    if hardware_type == C.HARDWARE_TYPE_800I_A3 or hardware_type in C.HARDWARE_TYPE_950I_A5:
+    if hardware_type in C.HARDWARE_TYPE_A3 or hardware_type in C.HARDWARE_TYPE_950I_A5:
         # CRD uses StatefulSet; MindCluster sp-block differs from Deployment (see engine.py multi_deployment)
         sp_block_num = int(deploy_config.get(pods_key, 1)) * int(deploy_config.get(npu_key, 1))
         apply_sp_block_annotation(template.setdefault(C.METADATA, {}), sp_block_num, hardware_type)

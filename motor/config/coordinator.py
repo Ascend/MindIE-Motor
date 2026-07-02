@@ -464,21 +464,26 @@ class CoordinatorConfig:
                 "recompute_max_retry": ignore_removed_recompute_retry,
             }
 
-            # Enrich AIGW fields from user_config if present
-            if user_config_data and AIGW in cfg:
+            # Build AIGW model metadata from engine configs.
+            # This runs whenever engine sections are present, regardless of
+            # whether the user wrote an "aigw" key in motor_coordinator_config.
+            if user_config_data:
                 try:
-                    prefill = user_config_data[ConfigKey.MOTOR_ENGINE_PREFILL.value]
-                    decode = user_config_data[ConfigKey.MOTOR_ENGINE_DECODE.value]
-                    prefill_resolver = ConfigResolver(prefill)
-                    cfg[AIGW][AIGW_ID] = prefill_resolver.get_model_name("")
-                    cfg[AIGW][AIGW_OBJECT] = AIGW_OBJECT_MODEL
-                    cfg[AIGW][AIGW_OWNED_BY] = AIGW_OWNED_BY_MOTOR
-                    cfg[AIGW][AIGW_P_MAX_SEQLEN] = prefill[ENGINE_CONFIG][MAX_MODEL_LEN]
-                    cfg[AIGW][AIGW_D_MAX_SEQLEN] = decode[ENGINE_CONFIG][MAX_MODEL_LEN]
-                    cfg[AIGW].setdefault(SLO_TTFT, 1000)
-                    cfg[AIGW].setdefault(SLO_TPOT, 50)
+                    prefill = user_config_data.get(ConfigKey.MOTOR_ENGINE_PREFILL.value)
+                    decode = user_config_data.get(ConfigKey.MOTOR_ENGINE_DECODE.value)
+                    if prefill and decode:
+                        if AIGW not in cfg:
+                            cfg[AIGW] = {}
+                        prefill_resolver = ConfigResolver(prefill)
+                        cfg[AIGW][AIGW_ID] = prefill_resolver.get_model_name("")
+                        cfg[AIGW][AIGW_OBJECT] = AIGW_OBJECT_MODEL
+                        cfg[AIGW][AIGW_OWNED_BY] = AIGW_OWNED_BY_MOTOR
+                        cfg[AIGW][AIGW_P_MAX_SEQLEN] = prefill[ENGINE_CONFIG][MAX_MODEL_LEN]
+                        cfg[AIGW][AIGW_D_MAX_SEQLEN] = decode[ENGINE_CONFIG][MAX_MODEL_LEN]
+                        cfg[AIGW].setdefault(SLO_TTFT, 1000)
+                        cfg[AIGW].setdefault(SLO_TPOT, 50)
                 except Exception as e:
-                    logger.warning("Failed to enrich aigw from user_config: %s", e)
+                    logger.warning("Failed to build aigw model metadata: %s", e)
 
             # Update configuration sections if they exist in JSON
             config_mappings = [

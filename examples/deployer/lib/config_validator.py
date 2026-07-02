@@ -179,13 +179,13 @@ def _get_hardware_node_labels(hardware_type):
 
     Returns dict of label key-value pairs. Raises ValueError for unknown types.
     """
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
+    if hardware_type in C.HARDWARE_TYPE_A2:
         return {C.ACCELERATOR: C.ACCELERATOR_910, C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_910B}
-    if hardware_type == C.HARDWARE_TYPE_800I_A3:
+    if hardware_type in C.HARDWARE_TYPE_A3:
         return {C.ACCELERATOR: C.ACCELERATOR_910, C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_A3}
     if hardware_type in C.HARDWARE_TYPE_950I_A5:
         return {C.ACCELERATOR: C.ACCELERATOR_A5, C.ACCELERATOR_TYPE: hardware_type}
-    known = [C.HARDWARE_TYPE_800I_A2, C.HARDWARE_TYPE_800I_A3, *C.HARDWARE_TYPE_950I_A5]
+    known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
     raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
 
 

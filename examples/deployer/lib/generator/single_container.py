@@ -65,10 +65,10 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     set_container_npu(container, npu_num, deploy_config)
 
     hardware_type = deploy_config[C.HARDWARE_TYPE]
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
+    if hardware_type in C.HARDWARE_TYPE_A2:
         deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_910B
         del deployment_data[C.METADATA][C.ANNOTATIONS]
-    elif hardware_type == C.HARDWARE_TYPE_800I_A3:
+    elif hardware_type in C.HARDWARE_TYPE_A3:
         deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_A3
         deployment_data[C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
     elif hardware_type in C.HARDWARE_TYPE_950I_A5:

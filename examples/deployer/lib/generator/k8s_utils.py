@@ -275,7 +275,7 @@ def set_services_namespace(service_list, namespace):
 
 def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
     """Apply sp_block annotation based on hardware type"""
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
+    if hardware_type in C.HARDWARE_TYPE_A2:
         if C.ANNOTATIONS in metadata:
             del metadata[C.ANNOTATIONS]
         return
@@ -285,7 +285,7 @@ def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
 
 def modify_sp_block_num(data, pd_flag, config):
     hardware_type = config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
+    if hardware_type in C.HARDWARE_TYPE_A2:
         if C.ANNOTATIONS in data[C.METADATA]:
             del data[C.METADATA][C.ANNOTATIONS]
         return
