@@ -17,7 +17,6 @@ set -e
 # Redirect all output to PID 1's stdout so kubectl logs / log_monitor.py can capture it
 exec >> /proc/1/fd/1 2>&1
 
-echo "==================== PRESTOP HOOK START ===================="
 echo "[prestop] Timestamp: $(date -Iseconds)"
 echo "[prestop] CONFIGMAP_PATH: ${CONFIGMAP_PATH}"
 echo "[prestop] Args: $@"
@@ -36,7 +35,6 @@ exit_code=$?
 
 echo "[prestop] Exit code: ${exit_code}"
 echo "[prestop] Timestamp: $(date -Iseconds)"
-echo "==================== PRESTOP HOOK END ===================="
 
 # Kill NM via SIGTERM — it has a signal handler that stops Daemon (engines),
 # HeartbeatManager (threads), and uvicorn server gracefully.

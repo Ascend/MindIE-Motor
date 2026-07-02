@@ -10,6 +10,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import ipaddress
 import json
 import logging
 import os
@@ -17,8 +18,6 @@ import sys
 from enum import Enum
 
 import httpx
-
-from motor.common.utils.net import format_address
 
 MOTOR_DEPLOY_CONFIG = "motor_deploy_config"
 TLS_CONFIG = "tls_config"
@@ -52,6 +51,15 @@ DEFAULT_PORTS = {
 
 # HTTP request timeout
 TIMEOUT = 600
+
+
+def format_address(host, port):
+    try:
+        if isinstance(ipaddress.ip_address(host.strip("[]")), ipaddress.IPv6Address):
+            return f"[{host.strip('[]')}]:{port}"
+    except ValueError:
+        pass
+    return f"{host}:{port}"
 
 
 def get_val_by_key_path(config, key_path):

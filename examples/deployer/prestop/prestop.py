@@ -21,6 +21,7 @@ Flow:
 Config is read from CONFIG_PATH or CONFIGMAP_PATH env var (same pattern as probe.py).
 """
 
+import ipaddress
 import json
 import logging
 import os
@@ -28,8 +29,6 @@ import re
 import subprocess
 import sys
 import time
-
-from motor.common.utils.net import format_address
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -39,6 +38,15 @@ DEFAULT_NM_PORT = 1026
 DEFAULT_MAX_WAIT_SECONDS = 15
 DEFAULT_POLL_INTERVAL = 3
 HTTP_TIMEOUT = 10.0
+
+
+def format_address(host, port):
+    try:
+        if isinstance(ipaddress.ip_address(host.strip("[]")), ipaddress.IPv6Address):
+            return f"[{host.strip('[]')}]:{port}"
+    except ValueError:
+        pass
+    return f"{host}:{port}"
 
 
 def get_val_by_key_path(config, key_path):
