@@ -270,9 +270,15 @@ class InstanceAssembler(ThreadSafeSingleton):
                 for job_name, metadata_data in instances_data.items():
                     try:
                         metadata = AssembleInstanceMetadata.model_validate(metadata_data)
+                        # After Controller restart, all subsequent registrations from pods
+                        # will be reregister (not register). Mark restored instances as
+                        # reregister so pods can rejoin assembly without being rejected.
+                        metadata.is_reregister = True
                         self.instances[job_name] = metadata
                         logger.info(
-                            "Restored instance assembler state for %s (v%d)", job_name, persistent_state.version
+                            "Restored instance assembler state for %s (v%d, is_reregister=True)",
+                            job_name,
+                            persistent_state.version,
                         )
                         valid_instances += 1
                     except Exception as e:
@@ -324,6 +330,13 @@ class InstanceAssembler(ThreadSafeSingleton):
                 logger.info("New instance %s(id:%d) created and added.", msg.job_name, instance.id)
             elif status == RegisterStatus.ASSEMBLING:
                 metadata = self.instances[msg.job_name]
+                if metadata.is_reregister:
+                    logger.warning(
+                        "Instance %s is being assembled via reregister, rejecting register from %s",
+                        msg.job_name,
+                        msg.pod_ip,
+                    )
+                    return -1
                 with metadata.lock:
                     metadata.register_timestamp = time.time()
 
@@ -395,9 +408,15 @@ class InstanceAssembler(ThreadSafeSingleton):
                 logger.info("New instance %s(id:%d) created and added by re-registration.", msg.job_name, instance.id)
             elif status == RegisterStatus.ASSEMBLING:
                 metadata = self.instances[msg.job_name]
+                if not metadata.is_reregister:
+                    logger.warning(
+                        "Instance %s is being assembled via register, rejecting reregister from %s",
+                        msg.job_name,
+                        msg.pod_ip,
+                    )
+                    return -1
                 with metadata.lock:
                     metadata.register_timestamp = time.time()
-                    metadata.is_reregister = True
 
             # recover ins_id_cnt
             self.ins_id_cnt = max(self.ins_id_cnt, msg.instance_id + 1)

@@ -988,7 +988,7 @@ def test_restore_data_with_type_conversion():
         assert metadata.instance.id == 208  # string "208" converted to int 208
         assert metadata.register_status == RegisterStatus.ASSEMBLED  # string "ASSEMBLED" converted to enum
         assert metadata.start_command_send_times == 0  # string "0" converted to int 0
-        assert metadata.is_reregister is False  # string "False" converted to bool False
+        assert metadata.is_reregister is True  # restore_data overrides to True for Controller restart recovery
 
 
 def test_restore_data_with_invalid_enum_value():
@@ -2529,3 +2529,262 @@ def test_send_start_command_uses_snapshot_dp_master_ip(instance_assembler, test_
 
         master_ips = {call.args[1].master_dp_ip for call in mock_send.call_args_list}
         assert master_ips == {"10.0.0.99"}
+
+
+# ===== Register/Reregister Isolation Tests =====
+
+
+def test_register_rejected_when_reregister_assembling(instance_assembler, test_config):
+    """register should be rejected when an ASSEMBLING instance was created by reregister.
+
+    Scenario: one pod already called reregister (creating an ASSEMBLING instance with
+    is_reregister=True), then another pod calls register. The register should be
+    rejected because register and reregister pods must not be assembled together.
+    """
+    job_name = "test_register_rejected"
+
+    # First, create an ASSEMBLING instance via reregister
+    reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg, 0)
+    rereg_msg = create_reregister_msg(
+        job_name, test_config['pod_ip1'], instance_id=10, config=test_config, endpoints=endpoints
+    )
+    result = instance_assembler.reregister(rereg_msg)
+    assert result == 0
+    assert job_name in instance_assembler.instances
+    assert instance_assembler.instances[job_name].is_reregister is True
+
+    # Now try to register a second pod — should be rejected
+    msg = create_register_msg(
+        job_name,
+        test_config['pod_ip2'],
+        test_config,
+        ranktable=build_pod_ranktable(
+            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
+        ),
+    )
+    result = instance_assembler.register(msg)
+    assert result == -1
+
+    # Verify the instance is still there with only one pod
+    assert job_name in instance_assembler.instances
+    metadata = instance_assembler.instances[job_name]
+    assert metadata.is_reregister is True
+    assert len(metadata.instance.endpoints) == 1  # Only the reregister pod
+
+
+def test_reregister_rejected_when_register_assembling(instance_assembler, test_config):
+    """reregister should be rejected when an ASSEMBLING instance was created by register.
+
+    Scenario: one pod already called register (creating an ASSEMBLING instance with
+    is_reregister=False), then another pod calls reregister (e.g. because it got 503
+    and thinks Controller restarted). The reregister should be rejected because
+    register and reregister pods must not be assembled together.
+    """
+    job_name = "test_reregister_rejected"
+
+    # First, create an ASSEMBLING instance via register
+    msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    result = instance_assembler.register(msg)
+    assert result == 0
+    assert job_name in instance_assembler.instances
+    assert instance_assembler.instances[job_name].is_reregister is False
+
+    # Now try to reregister a second pod — should be rejected
+    reg_msg2 = create_register_msg(
+        job_name,
+        test_config['pod_ip2'],
+        test_config,
+        ranktable=build_pod_ranktable(
+            pod_ip=test_config['pod_ip2'], pod_device_num=2 * test_config['tp'], rank_offset=2 * test_config['tp']
+        ),
+    )
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg2, 2)
+    rereg_msg = create_reregister_msg(
+        job_name, test_config['pod_ip2'], instance_id=0, config=test_config, endpoints=endpoints
+    )
+    result = instance_assembler.reregister(rereg_msg)
+    assert result == -1
+
+    # Verify the instance is still there with only one pod
+    assert job_name in instance_assembler.instances
+    metadata = instance_assembler.instances[job_name]
+    assert metadata.is_reregister is False
+    assert len(metadata.instance.endpoints) == 1  # Only the register pod
+
+
+def test_register_rejected_when_reregister_assembling_new_instance(instance_assembler, test_config):
+    """register creates a new instance ID when rejected by reregister assembly.
+
+    When register is rejected due to an ongoing reregister assembly, the register
+    pod should receive -1. When the reregister assembly completes or times out,
+    a subsequent register for the same job_name should be able to create a fresh
+    instance.
+    """
+    job_name = "test_register_after_reject"
+
+    # Create an ASSEMBLING instance via reregister
+    reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    endpoints = instance_assembler._build_multi_endpoints(reg_msg, 0)
+    rereg_msg = create_reregister_msg(
+        job_name, test_config['pod_ip1'], instance_id=10, config=test_config, endpoints=endpoints
+    )
+    result = instance_assembler.reregister(rereg_msg)
+    assert result == 0
+
+    # register from another pod should be rejected
+    msg = create_register_msg(job_name, test_config['pod_ip2'], test_config)
+    result = instance_assembler.register(msg)
+    assert result == -1
+
+    # Remove the reregister instance (simulating timeout/cleanup)
+    del instance_assembler.instances[job_name]
+
+    # Now register should succeed — fresh instance, new ID
+    msg2 = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    result = instance_assembler.register(msg2)
+    assert result == 0
+    assert job_name in instance_assembler.instances
+    # ins_id_cnt was 10+1 from reregister, then incremented by this register
+    assert instance_assembler.instances[job_name].is_reregister is False
+
+
+# ===== Controller Restart Recovery Tests =====
+
+
+def test_restore_data_sets_is_reregister_true(instance_assembler, test_config):
+    """After Controller restart, restore_data marks all instances as is_reregister=True.
+
+    Before restart, the instance was created by register (is_reregister=False).
+    After restart, all pods will call reregister to rejoin, so restored instances
+    must have is_reregister=True to avoid being rejected by the reregister check.
+    """
+    job_name = "test_restore_sets_reregister"
+
+    # Create an instance via register (is_reregister=False)
+    metadata = create_assembled_instance(instance_assembler, job_name, test_config)
+    assert metadata.is_reregister is False
+
+    # Enable persistence and mock restore
+    instance_assembler.etcd_config.enable_etcd_persistence = True
+
+    with patch.object(instance_assembler.etcd_client, 'restore_data') as mock_restore:
+        metadata_data = metadata.model_dump(mode='json')
+        assembler_data = {
+            "ins_id_cnt": instance_assembler.ins_id_cnt,
+            "instances": {job_name: metadata_data},
+        }
+        state = PersistentState(data=assembler_data, version=1, timestamp=time.time(), checksum="")
+        state.checksum = state.calculate_checksum()
+        mock_restore.return_value = {"state": state}
+
+        # Simulate Controller restart: create new assembler, restore
+        with patch('threading.Thread'), patch('motor.controller.core.instance_assembler.EtcdClient'):
+            new_config = ControllerConfig()
+            new_config.etcd_config.enable_etcd_persistence = True
+            new_config.instance_config.instance_assemble_timeout = 1.0
+            new_config.instance_config.instance_assembler_check_interval = 0.1
+            new_config.instance_config.instance_assembler_cmd_send_interval = 0.1
+            new_config.instance_config.send_cmd_retry_times = 3
+            new_assembler = InstanceAssembler(new_config)
+
+            # Restore data — should mark is_reregister=True
+            restore_result = new_assembler.restore_data()
+            assert restore_result is True
+
+            # Verify restored instance has is_reregister=True
+            assert job_name in new_assembler.instances
+            restored_metadata = new_assembler.instances[job_name]
+            assert restored_metadata.is_reregister is True
+
+
+def test_reregister_succeeds_after_controller_restart(instance_assembler, test_config):
+    """Controller restart: restore + reregister + assemble completes successfully.
+
+    Full recovery path:
+    1. Pre-restart: instance created by register, ASSEMBLING (1 pod, not enough)
+    2. Controller restarts → restore_data → is_reregister=True
+    3. Pod calls reregister → accepted (is_reregister matches)
+    4. A second pod also calls reregister → instance completes assembly
+    """
+    job_name = "test_reregister_after_restart"
+
+    # Step 1: Pre-restart — one pod registered via register, instance is ASSEMBLING
+    msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+    result = instance_assembler.register(msg)
+    assert result == 0
+    assert instance_assembler.instances[job_name].is_reregister is False
+
+    # Persist the ASSEMBLING instance (not yet assembled)
+    metadata = instance_assembler.instances[job_name]
+    instance_assembler.etcd_config.enable_etcd_persistence = True
+
+    with patch.object(instance_assembler.etcd_client, 'restore_data') as mock_restore:
+        metadata_data = metadata.model_dump(mode='json')
+        assembler_data = {
+            "ins_id_cnt": instance_assembler.ins_id_cnt,
+            "instances": {job_name: metadata_data},
+        }
+        state = PersistentState(data=assembler_data, version=1, timestamp=time.time(), checksum="")
+        state.checksum = state.calculate_checksum()
+        mock_restore.return_value = {"state": state}
+
+        # Step 2: Simulate Controller restart — new assembler, restore data
+        with patch('threading.Thread'), patch('motor.controller.core.instance_assembler.EtcdClient'):
+            new_config = ControllerConfig()
+            new_config.etcd_config.enable_etcd_persistence = True
+            new_config.instance_config.instance_assemble_timeout = 1.0
+            new_config.instance_config.instance_assembler_check_interval = 0.1
+            new_config.instance_config.instance_assembler_cmd_send_interval = 0.1
+            new_config.instance_config.send_cmd_retry_times = 3
+            new_assembler = InstanceAssembler(new_config)
+
+            assert new_assembler.restore_data() is True
+            assert new_assembler.instances[job_name].is_reregister is True
+
+            # Step 3: Pod 1 calls reregister → should succeed (returns 0, not -1)
+            reg_msg = create_register_msg(job_name, test_config['pod_ip1'], test_config)
+            endpoints = new_assembler._build_multi_endpoints(reg_msg, 0)
+            rereg_msg1 = create_reregister_msg(
+                job_name,
+                test_config['pod_ip1'],
+                instance_id=1,
+                config=test_config,
+                endpoints=endpoints,
+            )
+            result1 = new_assembler.reregister(rereg_msg1)
+            assert result1 == 0
+
+            # Step 4: Pod 2 calls reregister → instance gets enough endpoints → assembly completes
+            reg_msg2 = create_register_msg(
+                job_name,
+                test_config['pod_ip2'],
+                test_config,
+                ranktable=build_pod_ranktable(
+                    pod_ip=test_config['pod_ip2'],
+                    pod_device_num=2 * test_config['tp'],
+                    rank_offset=2 * test_config['tp'],
+                ),
+            )
+            endpoints2 = new_assembler._build_multi_endpoints(reg_msg2, 2)
+            rereg_msg2 = create_reregister_msg(
+                job_name,
+                test_config['pod_ip2'],
+                instance_id=1,
+                config=test_config,
+                endpoints=endpoints2,
+            )
+            result2 = new_assembler.reregister(rereg_msg2)
+            assert result2 == 0
+
+            # Assembly should complete (instance moved to InstanceManager)
+            metadata_after = new_assembler.instances[job_name]
+            with patch.object(new_assembler, '_filter_abnormal_endpoints'):
+                new_assembler._assemble_instance(metadata_after)
+
+            # For reregister, instance is popped from assembler after assembly
+            assert job_name not in new_assembler.instances
+
+            # Verify instance is in InstanceManager
+            im = InstanceManager()
+            assert im.has_instance_by_job_name(job_name)
