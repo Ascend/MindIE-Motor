@@ -17,11 +17,18 @@ from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.executor.multiproc_executor import MultiprocExecutor
 
 from motor.common.logger import get_logger
+from motor.common.logger import attach_to_vllm_logger
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.engine import Engine
 from motor.engine_server.core.vllm.vllm_openai_compat import cli_env_setup
 
 logger = get_logger(__name__)
+
+# Ensure vLLM logs are captured to the shared file handler (combined log).
+# _ensure_shared_handlers may have already done this; calling again is safe
+# (idempotent) and covers the case where handlers were built before vLLM
+# finished configuring its logger.
+attach_to_vllm_logger()
 
 vllm_version = md.version("vllm")
 logger.info("vLLM version: %s", vllm_version)

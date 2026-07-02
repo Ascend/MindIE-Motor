@@ -16,11 +16,11 @@ from dataclasses import dataclass
 @dataclass
 class LoggingConfig:
     """Logging configuration class used by various components"""
+
     log_level: str = 'INFO'  # Logging level: DEBUG, INFO, WARNING, ERROR
     log_max_line_length: int = 8192
     log_format: str = (
-        '(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s '
-        '[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s'
+        '(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s [%(name)s][%(fileinfo)s:%(lineno)d] %(message)s'
     )
     log_date_format: str = '%m-%d %H:%M:%S'
     # Persistent log configuration
@@ -31,3 +31,4 @@ class LoggingConfig:
     log_compress_level: int = 6  # Compression level, 1-9, where 1 is fastest and 9 is slowest
     log_max_total_size: int = 200  # Maximum total size of all log files in MB, default 100MB
     log_cleanup_interval: int = 1800  # Cleanup log gz interval in seconds, default 1800s=30min
+    log_collector_enabled: bool = True  # Merge all process logs into a single combined.log via ZMQ collector

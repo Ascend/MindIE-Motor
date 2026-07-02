@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import atexit
 import logging
 import multiprocessing
 import os
@@ -15,8 +16,77 @@ import sys
 from pathlib import Path
 
 from motor.common.logger.formatter import ColoredFormatter, NewLineFormatter
+from motor.common.logger.log_collector import LogCollector
 from motor.common.logger.logger_handler import CompressedRotatingFileHandler
+from motor.common.logger.zmq_handler import ZmqPushHandler
 from motor.config.log_config import LoggingConfig
+
+
+# Module-level LogCollector singleton — one per pod.
+_collector: LogCollector | None = None
+
+# Track the file handler currently attached to the vLLM root logger so that
+# reconfiguration can replace it cleanly.
+_vllm_attached_handler: logging.Handler | None = None
+
+
+def _start_collector_if_needed(module_log_dir: str, config: LoggingConfig) -> None:
+    """Start or restart the LogCollector for the current process.
+
+    If a collector is already running it is stopped first so that
+    ``reconfigure_logging`` picks up updated rotation/compression settings.
+    """
+    global _collector
+    if os.environ.get("MOTOR_LOG_COLLECTOR_ADDRESS"):
+        return  # Another process in this pod already started the collector.
+
+    if _collector is not None:
+        _collector.stop()
+        _collector = None
+
+    combined_log = os.path.join(module_log_dir, f"{hostname}.log")
+    _collector = LogCollector(combined_log, config)
+    _collector.start()
+
+
+def _stop_collector() -> None:
+    """Stop the LogCollector and clean up resources.  Registered via atexit."""
+    global _collector
+    if _collector is not None:
+        _collector.stop()
+        _collector = None
+
+
+atexit.register(_stop_collector)
+
+
+def attach_to_vllm_logger() -> None:
+    """Attach the file handler from shared handlers to the vLLM root logger.
+
+    Idempotent — safe to call multiple times (e.g. from
+    ``_ensure_shared_handlers`` and later from vLLM engine startup).
+    Handles ``reconfigure_logging`` correctly by tracking and replacing the
+    previously-attached handler.
+    """
+    global _vllm_attached_handler
+    if not _shared_handlers:
+        return
+    vllm_logger = logging.getLogger("vllm")
+
+    # Remove a previously-attached handler so that reconfigure_logging does
+    # not leave stale handlers on the vLLM logger.
+    if _vllm_attached_handler is not None and _vllm_attached_handler in vllm_logger.handlers:
+        vllm_logger.removeHandler(_vllm_attached_handler)
+        _vllm_attached_handler = None
+
+    # Attach the file handler (ZmqPushHandler or CompressedRotatingFileHandler).
+    for handler in _shared_handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            continue
+        if handler not in vllm_logger.handlers:
+            vllm_logger.addHandler(handler)
+            _vllm_attached_handler = handler
+            break
 
 
 # Set to track modules that have requested loggers
@@ -198,20 +268,24 @@ def _ensure_shared_handlers(config: LoggingConfig, log_dir: str | None) -> list[
                 )
         if os.path.exists(module_log_dir):
             try:
-                log_file = os.path.join(module_log_dir, f"{hostname}_{os.getpid()}.log")
-
-                rotate_handler = CompressedRotatingFileHandler(
-                    filename=log_file,
-                    maxBytes=config.log_rotation_size * 1024 * 1024,
-                    backupCount=config.log_rotation_count,
-                    compress=config.log_compress,
-                    compress_level=config.log_compress_level,
-                    max_total_size=config.log_max_total_size * 1024 * 1024,
-                    cleanup_interval=config.log_cleanup_interval,
-                )
-                rotate_handler.addFilter(process_filter)
-                rotate_handler.setFormatter(_build_formatter(config, color=False))
-                handlers.append(rotate_handler)
+                if config.log_collector_enabled:
+                    _start_collector_if_needed(module_log_dir, config)
+                    file_handler = ZmqPushHandler()
+                else:
+                    _stop_collector()
+                    log_file = os.path.join(module_log_dir, f"{hostname}_{os.getpid()}.log")
+                    file_handler = CompressedRotatingFileHandler(
+                        filename=log_file,
+                        maxBytes=config.log_rotation_size * 1024 * 1024,
+                        backupCount=config.log_rotation_count,
+                        compress=config.log_compress,
+                        compress_level=config.log_compress_level,
+                        max_total_size=config.log_max_total_size * 1024 * 1024,
+                        cleanup_interval=config.log_cleanup_interval,
+                    )
+                file_handler.addFilter(process_filter)
+                file_handler.setFormatter(_build_formatter(config, color=False))
+                handlers.append(file_handler)
             except Exception:
                 console_handler.emit(
                     logging.LogRecord(
@@ -226,6 +300,11 @@ def _ensure_shared_handlers(config: LoggingConfig, log_dir: str | None) -> list[
                 )
 
     _shared_handlers = handlers
+
+    # If vLLM has already been imported, route its logs to the shared file
+    # handler as well.
+    attach_to_vllm_logger()
+
     return handlers
 
 
