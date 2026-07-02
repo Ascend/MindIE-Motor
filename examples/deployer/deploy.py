@@ -15,7 +15,7 @@ import tempfile
 
 import lib.constant as C
 from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
-from lib.update_config_whitelist import validate_update_config_whitelist
+from lib.update_config_whitelist import apply_whitelist_update
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
     get_baseline_config_from_configmap,
@@ -77,7 +77,7 @@ def handle_update_config(user_config):
         )
 
     validate_deploy_mode_consistency(deploy_config, baseline_deploy)
-    validate_update_config_whitelist(user_config, baseline_config)
+    user_config = apply_whitelist_update(user_config, baseline_config)
 
     effective_mode = resolve_deploy_mode_for_services(baseline_deploy)
     create_motor_config_configmap(

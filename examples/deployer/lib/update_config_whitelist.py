@@ -7,6 +7,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+import copy
 from collections.abc import Mapping, Sequence
 
 from lib.utils import logger
@@ -15,8 +16,8 @@ UPDATE_CONFIG_WHITELIST = {
     "motor_deploy_config": {
         "tls_config": {
             "north_tls_config": [
-                "enable_tls", 
-                "ca_file", 
+                "enable_tls",
+                "ca_file",
                 "cert_file",
                 "key_file",
                 "passwd_file",
@@ -24,11 +25,7 @@ UPDATE_CONFIG_WHITELIST = {
             ],
         },
     },
-    "north_config": [
-        "name",
-        "ip",
-        "port"
-    ],
+    "north_config": ["name", "ip", "port"],
     "motor_controller_config": {
         "logging_config": [
             "log_level",
@@ -145,13 +142,101 @@ def _collect_changed_paths(current_value, baseline_value, path=""):
     return []
 
 
-def validate_update_config_whitelist(user_config, baseline_config):
+def _parse_path_token(token):
+    """Parse a path token into (key, index_or_None).
+
+    Handles both plain keys (e.g. 'enable_tls') and indexed keys (e.g. 'north_tls_config[0]').
+
+    Raises ValueError if the token has malformed bracket syntax or a non-integer index.
+    """
+    if "[" in token:
+        if not token.endswith("]"):
+            raise ValueError(f"Malformed path token '{token}': missing closing bracket ']'")
+        key, bracket_part = token.split("[", 1)
+        index_str = bracket_part.rstrip("]")
+        if not index_str.isdigit():
+            raise ValueError(f"Malformed path token '{token}': '{index_str}' is not a valid integer index")
+        return key, int(index_str)
+    return token, None
+
+
+def _navigate(obj, token):
+    """Navigate one level deeper into obj using a parsed path token.
+
+    Returns the value at the given token, or None if the key/index doesn't exist.
+    """
+    try:
+        key, index = _parse_path_token(token)
+        if index is None:
+            return obj[key]
+        return obj[key][index]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _get_value_at_path(obj, path):
+    """Get the value at a dot-separated path (with optional list indices) from a nested dict/list.
+
+    Returns None if any segment of the path doesn't exist in obj.
+    """
+    current = obj
+    for token in path.split("."):
+        current = _navigate(current, token)
+        if current is None:
+            return None
+    return current
+
+
+def _set_value_at_path(obj, path, value):
+    """Set the value at a dot-separated path (with optional list indices) in a nested dict/list."""
+    current = obj
+    tokens = path.split(".")
+    for i, token in enumerate(tokens):
+        key, index = _parse_path_token(token)
+        if i == len(tokens) - 1:
+            if index is None:
+                current[key] = value
+            else:
+                current[key][index] = value
+        else:
+            current = _navigate(current, token)
+
+
+def apply_whitelist_update(user_config, baseline_config):
+    """Apply only whitelisted config changes from user_config onto baseline_config.
+
+    Non-whitelisted changes are logged as warnings and silently ignored.
+    Returns a new config dict with only whitelisted changes applied.
+    """
     changed_paths = _collect_changed_paths(user_config, baseline_config)
-    illegal_paths = sorted(path for path in changed_paths if not _path_is_whitelisted(path))
-    if illegal_paths:
-        illegal_path_str = ", ".join(illegal_paths)
-        logger.error(
-            "The following config items are not allowed to be updated by --update_config: %s",
-            illegal_path_str,
+    whitelisted_paths = []
+    non_whitelisted_paths = []
+
+    for path in changed_paths:
+        if _path_is_whitelisted(path):
+            whitelisted_paths.append(path)
+        else:
+            non_whitelisted_paths.append(path)
+
+    if non_whitelisted_paths:
+        logger.warning(
+            "The following config items are not in the update whitelist and have been ignored: %s",
+            ", ".join(sorted(non_whitelisted_paths)),
         )
-        raise ValueError("Found non-whitelisted config updates in user_config.")
+
+    # Start from baseline and apply only whitelisted changes
+    result = copy.deepcopy(baseline_config)
+    for path in whitelisted_paths:
+        value = _get_value_at_path(user_config, path)
+        if value is None:
+            logger.warning("Skipping whitelisted path '%s': not found in user_config", path)
+            continue
+    for path in whitelisted_paths:
+        try:
+            value = _get_value_at_path(user_config, path)
+        except (KeyError, IndexError, TypeError):
+            logger.warning("Skipping whitelisted path '%s': not found in user_config", path)
+            continue
+        _set_value_at_path(result, path, value)
+
+    return result
