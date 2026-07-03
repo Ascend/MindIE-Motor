@@ -1754,14 +1754,16 @@ def test_handle_fault_info_same_code_highest_level_wins(fault_manager):
 # -- _refresh_instance_fault_level: PreSeparateNPU exclusion -----------------
 
 
-def test_refresh_pre_separate_l6_excluded_when_no_active_instances(
+def test_refresh_pre_separate_l6_included_when_instances_inactive(
     fault_manager_with_instances,
 ):
-    """PreSeparateNPU L6 on a node with no active instances should NOT
-    raise the instance's fault level (excluded from computation).
+    """PreSeparateNPU L6 on a node with INACTIVE instances should be
+    included in instance fault level — the fault killed the instance,
+    L6 must trigger ScaleP2D so the instance can be rescheduled.
     """
     manager = fault_manager_with_instances
     node = manager.nodes["node_0"]
+    # node_0.instance_ids = {1} — instance is still on this node
     node.hardware_fault_infos = {
         FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
     }
@@ -1776,12 +1778,13 @@ def test_refresh_pre_separate_l6_excluded_when_no_active_instances(
 
             manager._refresh_instance_fault_level(1)
 
-    # Instance should be HEALTHY — PreSeparateNPU L6 excluded
+    # Instance should get L6 — PreSeparateNPU L6 with instances still on node
+    # means the fault killed them, ScaleP2D must be triggered
     ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.HEALTHY, (
-        "PreSeparateNPU L6 without active business should not affect instance fault level"
+    assert ins_meta.fault_level == FaultLevel.L6, (
+        "PreSeparateNPU L6 with inactive instances on node should trigger ScaleP2D"
     )
-    assert ins_meta.fault_code == 0x0
+    assert ins_meta.fault_code == FAULT_PRE_SEPARATE_L6.fault_code
 
 
 def test_refresh_pre_separate_l2_included_when_active_instances(
@@ -1823,9 +1826,10 @@ def test_refresh_pre_separate_l2_included_when_active_instances(
 def test_reevaluate_pre_separate_l2_to_l6_when_instance_leaves(
     fault_manager_with_instances,
 ):
-    """When all instances leave a node, PreSeparateNPU should be re-evaluated
-    from L2 to L6.  The L6 fault should then be excluded from the instance's
-    fault level (no active business).
+    """When all instances on a node become INACTIVE, PreSeparateNPU should be
+    re-evaluated from L2 to L6.  The L6 fault should now be included in the
+    instance's fault level — the instance is still on this node, meaning the
+    fault killed it.  ScaleP2D must be triggered.
     """
     manager = fault_manager_with_instances
     pre_sep_l2 = FaultInfo(
@@ -1852,21 +1856,24 @@ def test_reevaluate_pre_separate_l2_to_l6_when_instance_leaves(
     # Fault on node should have been re-evaluated to L6
     stored = node.hardware_fault_infos[0x00F1FEF5]
     assert stored.fault_level == FaultLevel.L6, (
-        "PreSeparateNPU should escalate to L6 after all instances leave the node"
+        "PreSeparateNPU should escalate to L6 when all instances become inactive"
     )
-    # Instance fault level should be HEALTHY (L6 excluded — no business)
+    # Instance fault level should be L6 — included because instance is still
+    # on this node (was killed by the fault, must trigger ScaleP2D)
     ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.HEALTHY
+    assert ins_meta.fault_level == FaultLevel.L6
+    assert ins_meta.fault_code == 0x00F1FEF5
 
 
 # -- PreSeparateNPU L6 coexisting with other faults ---------------------------
 
 
-def test_refresh_pre_separate_l6_excluded_but_other_l3_fault_still_counts(
+def test_refresh_pre_separate_l6_included_not_masked_by_l3(
     fault_manager_with_instances,
 ):
-    """When a node has PreSeparateNPU L6 (no active instances) AND another
-    node has L3 fault, the instance should get L3 (not L6, not HEALTHY).
+    """When a node has PreSeparateNPU L6 (instances inactive but still on node)
+    AND another node has L3 fault, the instance should get L6 — PreSeparateNPU
+    L6 is now included and L6 > L3.
     """
     manager = fault_manager_with_instances
 
@@ -1890,20 +1897,18 @@ def test_refresh_pre_separate_l6_excluded_but_other_l3_fault_still_counts(
             manager._refresh_instance_fault_level(1)
 
     ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L3, (
-        "PreSeparateNPU L6 should be excluded but L3 from another node still counts"
-    )
-    assert ins_meta.fault_code == FAULT_NODE_L3.fault_code
+    assert ins_meta.fault_level == FaultLevel.L6, "PreSeparateNPU L6 with instances on node should be included; L6 > L3"
+    assert ins_meta.fault_code == FAULT_PRE_SEPARATE_L6.fault_code
 
 
-# -- ScaleP2D not triggered for PreSeparateNPU L6 without business ------------
+# -- ScaleP2D triggered for PreSeparateNPU L6 when instances on node ----------
 
 
-def test_pre_separate_l6_no_active_instances_no_scale_p2d(
+def test_pre_separate_l6_inactive_instances_triggers_scale_p2d(
     fault_manager_with_instances,
 ):
-    """PreSeparateNPU L6 without active instances should NOT trigger
-    ScaleP2D strategy dispatch.
+    """PreSeparateNPU L6 with inactive instances still on the node SHOULD
+    trigger ScaleP2D — the fault killed the instance, it must be rescheduled.
     """
     manager = fault_manager_with_instances
     manager.config.fault_tolerance_config.enable_scale_p2d = True
@@ -1921,10 +1926,191 @@ def test_pre_separate_l6_no_active_instances_no_scale_p2d(
             mock_fm_im = MagicMock()
             mock_fm_im_class.return_value = mock_fm_im
 
+            # First refresh fault level → L6 (included because node has instances)
+            manager._refresh_instance_fault_level(1)
+            # Then process strategy → should trigger ScaleP2D
             manager._process_instance_strategy(1)
 
     ins_meta = manager.instances[1]
-    assert ins_meta.strategy is None, "PreSeparateNPU L6 without active business should not trigger ScaleP2D"
+    assert ins_meta.fault_level == FaultLevel.L6, (
+        "PreSeparateNPU L6 with instances on node should set instance fault to L6"
+    )
+    assert ins_meta.strategy is not None, "PreSeparateNPU L6 with inactive instances should trigger ScaleP2D"
+
+
+# =============================================================================
+# 10. ManuallySeparateNPU tests — no downgrade, L6 always triggers separation
+# =============================================================================
+
+FAULT_MANUALLY_SEPARATE_L6 = FaultInfo(
+    fault_category=FaultCategory.HARDWARE,
+    fault_type=HardwareFaultType.CARD_NETWORK_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x00F1FEF6,
+    fault_level=FaultLevel.L6,
+    origin_fault_level=OriginFaultLevel.MANUALLY_SEPARATE_NPU,
+)
+
+
+# -- _handle_fault_info_update: ManuallySeparateNPU never downgraded ---------
+
+
+def test_handle_fault_info_manually_separate_not_downgraded_with_active_instances(fault_manager):
+    """ManuallySeparateNPU should stay at L6 even when the node has ACTIVE instances.
+    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded to L2.
+    """
+    node_name = "node_a"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "decode-1"},
+    )
+
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
+        fault_manager._handle_fault_info_update([FAULT_MANUALLY_SEPARATE_L6], node_name)
+
+    node = fault_manager.nodes[node_name]
+    assert len(node.hardware_fault_infos) == 1
+    stored = next(iter(node.hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L6, (
+        "ManuallySeparateNPU should stay L6 even when active instances exist on the node"
+    )
+    assert stored.origin_fault_level == OriginFaultLevel.MANUALLY_SEPARATE_NPU
+
+
+def test_handle_fault_info_manually_separate_stays_l6_no_active_instances(fault_manager):
+    """ManuallySeparateNPU stays L6 when the node has no active instances."""
+    node_name = "node_b"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.2"},
+        instance_job_names={1: "decode-1"},
+    )
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(inst)
+        fault_manager._handle_fault_info_update([FAULT_MANUALLY_SEPARATE_L6], node_name)
+
+    node = fault_manager.nodes[node_name]
+    stored = next(iter(node.hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L6, (
+        "ManuallySeparateNPU should stay L6 when no active instances on the node"
+    )
+
+
+# -- _refresh_instance_fault_level: ManuallySeparateNPU L6 triggers separation
+
+
+def test_refresh_manually_separate_l6_triggers_separation(
+    fault_manager_with_instances,
+):
+    """ManuallySeparateNPU L6 should ALWAYS affect instance fault level
+    and trigger separation, even when instances are inactive.
+    This is the key difference from PreSeparateNPU L6 (which is excluded).
+    """
+    manager = fault_manager_with_instances
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {
+        FAULT_MANUALLY_SEPARATE_L6.fault_code: FAULT_MANUALLY_SEPARATE_L6,
+    }
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.status = InsStatus.INACTIVE
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(inst)
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._refresh_instance_fault_level(1)
+
+    # Instance should get L6 — ManuallySeparateNPU L6 is NOT excluded
+    ins_meta = manager.instances[1]
+    assert ins_meta.fault_level == FaultLevel.L6, (
+        "ManuallySeparateNPU L6 should affect instance fault level regardless of active instances"
+    )
+    assert ins_meta.fault_code == 0x00F1FEF6
+
+
+def test_refresh_manually_separate_l6_with_active_instances(
+    fault_manager_with_instances,
+):
+    """ManuallySeparateNPU L6 should affect instance fault level even when
+    instances are ACTIVE (never downgraded, always L6 → triggers separation).
+    """
+    manager = fault_manager_with_instances
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {
+        FAULT_MANUALLY_SEPARATE_L6.fault_code: FAULT_MANUALLY_SEPARATE_L6,
+    }
+
+    with patch(_CORE_IM) as mock_core_im_class:
+        mock_core_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
+        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
+            mock_fm_im = MagicMock()
+            mock_fm_im_class.return_value = mock_fm_im
+
+            manager._refresh_instance_fault_level(1)
+
+    ins_meta = manager.instances[1]
+    assert ins_meta.fault_level == FaultLevel.L6, (
+        "ManuallySeparateNPU L6 with active instances should still set instance fault level to L6"
+    )
+    assert ins_meta.fault_code == 0x00F1FEF6
+
+
+# -- ManuallySeparateNPU vs PreSeparateNPU: L6 exclusion contrast --------------
+
+
+def test_manually_separate_l6_not_excluded_by_affects_instance():
+    """The _affects_instance filter should return True for ManuallySeparateNPU L6
+    (not PreSeparateNPU → first check returns True immediately).
+
+    For PreSeparateNPU L6: included when instance still on node (len > 0),
+    excluded when instance has left the node (len == 0).
+    """
+
+    # Reconstruct the filter logic from _refresh_instance_fault_level
+    def _affects_instance(fi: FaultInfo, node: NodeMetadata) -> bool:
+        if fi.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
+            return True
+        if fi.fault_level != FaultLevel.L6:
+            return True
+        return len(node.instance_ids) > 0
+
+    # Node with instances still on it
+    node_with_instances = NodeMetadata(
+        node_name="node_a",
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "decode-1"},
+    )
+    # Node with no instances (instance moved away)
+    node_no_instances = NodeMetadata(
+        node_name="node_b",
+        instance_ids=set(),
+    )
+
+    # ManuallySeparateNPU is NOT PreSeparateNPU → filter returns True
+    assert _affects_instance(FAULT_MANUALLY_SEPARATE_L6, node_with_instances) is True, (
+        "ManuallySeparateNPU L6 should always be included"
+    )
+
+    # PreSeparateNPU L6: included when instance still on node
+    assert _affects_instance(FAULT_PRE_SEPARATE_L6, node_with_instances) is True, (
+        "PreSeparateNPU L6 should be included when instances remain on node"
+    )
+    # PreSeparateNPU L6: excluded when no instances on node (already moved)
+    assert _affects_instance(FAULT_PRE_SEPARATE_L6, node_no_instances) is False, (
+        "PreSeparateNPU L6 should be excluded when instance has left the node"
+    )
 
 
 # -- Multi-instance: one active, one inactive --------------------------------

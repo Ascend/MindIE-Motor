@@ -407,19 +407,26 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                             node.node_name,
                         )
 
-            # Exclude PreSeparateNPU L6 faults on nodes with no active
-            # business.  Those are purely node-level concerns (the NPU is
-            # already isolated, no instance is running there) and should not
-            # trigger instance separation or ScaleP2D.
-            def _affects_instance(fi: FaultInfo) -> bool:
+            # PreSeparateNPU L6 faults on nodes with no remaining instances
+            # are purely node-level concerns (the NPU is already isolated,
+            # instance has left this node) and should not trigger instance
+            # separation or ScaleP2D.
+            #
+            # When instances remain on the node (even if INACTIVE), the
+            # fault killed them — PreSeparateNPU L6 must be included to
+            # trigger ScaleP2D so the instance can be rescheduled.
+            def _affects_instance(fi: FaultInfo, node: NodeMetadata) -> bool:
                 if fi.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
                     return True
                 if fi.fault_level != FaultLevel.L6:
                     return True  # L2 downgrade → business is running, include it
-                return False  # L6 without active business → exclude
+                return len(node.instance_ids) > 0  # include when instance still on node
 
             all_hw_faults = [
-                fi for node in instance_nodes for fi in node.hardware_fault_infos.values() if _affects_instance(fi)
+                fi
+                for node in instance_nodes
+                for fi in node.hardware_fault_infos.values()
+                if _affects_instance(fi, node)
             ]
             all_sw_faults = [fi for node in instance_nodes for fi in node.software_fault_infos.values()]
 

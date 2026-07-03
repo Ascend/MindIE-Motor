@@ -470,6 +470,13 @@ def test_map_fault_level_pre_separate_npu_static():
     assert map_fault_level(OriginFaultLevel.PRE_SEPARATE_NPU) == FaultLevel.L6
 
 
+def test_map_fault_level_manually_separate_npu_static():
+    """ManuallySeparateNPU statically maps to L6 — no runtime downgrade.
+    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded to L2.
+    """
+    assert map_fault_level(OriginFaultLevel.MANUALLY_SEPARATE_NPU) == FaultLevel.L6
+
+
 def test_process_device_info_with_sub_health_fault_level():
     """Device info with 'SubHealthFault' level should parse to L1."""
     device_info_dict = {
@@ -520,6 +527,34 @@ def test_process_device_info_with_pre_separate_npu_level():
     assert result[0].fault_level == FaultLevel.L6
     assert result[0].origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU
     assert result[0].fault_code == 0x00F1FEF5
+
+
+def test_process_device_info_with_manually_separate_npu_level():
+    """Device info with 'ManuallySeparateNPU' level should statically parse to L6.
+    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded at runtime.
+    """
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": [
+                    {
+                        "fault_type": "CardNetworkUnhealthy",
+                        "npu_name": "Ascend910-0",
+                        "fault_level": "ManuallySeparateNPU",
+                        "fault_code": "0x00F1FEF6",
+                    },
+                ]
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 1
+    # Static mapping: ManuallySeparateNPU → L6
+    assert result[0].fault_level == FaultLevel.L6
+    assert result[0].origin_fault_level == OriginFaultLevel.MANUALLY_SEPARATE_NPU
+    assert result[0].fault_code == 0x00F1FEF6
 
 
 def test_process_switch_info_with_sub_health_fault_level():
