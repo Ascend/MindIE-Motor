@@ -18,7 +18,7 @@ from typing import Any
 from motor.common.standby.standby_manager import CONTROLLER_REPORT_EVENT_KEY, StandbyManager
 from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
-from motor.common.logger import get_logger
+from motor.common.logger import get_logger, reconfigure_logging
 from motor.config.controller import ControllerConfig
 from motor.common.utils.port_allocator import apply_controller_ports, run_port_setup_or_exit
 from motor.controller.api_server import ControllerAPI
@@ -271,6 +271,8 @@ def main() -> None:
         # Read from environment variable
         config = ControllerConfig.from_json()
         logger.info("Using configuration from environment variable USER_CONFIG_PATH")
+
+    reconfigure_logging(config.logging_config)
 
     run_port_setup_or_exit(apply_controller_ports, config)
 

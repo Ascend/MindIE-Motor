@@ -27,13 +27,13 @@ async def main() -> None:
         logger.info("Starting Motor Coordinator Daemon...")
 
         config = CoordinatorConfig.from_json()
+        reconfigure_logging(config.logging_config)
         run_port_setup_or_exit(apply_coordinator_ports, config)
         if config.config_path:
             logger.info("Loaded configuration from: %s", config.config_path)
         else:
             logger.info("Using default configuration (no config file specified)")
 
-        reconfigure_logging(config.logging_config)
         log_configuration_summary(config)
 
         daemon = CoordinatorDaemon(config)

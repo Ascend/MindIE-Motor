@@ -17,7 +17,7 @@ from typing import Optional, Any
 from enum import Enum
 from dataclasses import dataclass, field, asdict, is_dataclass
 
-from motor.common.logger import reconfigure_logging, get_logger
+from motor.common.logger import get_logger
 from motor.common.utils.env import Env
 from motor.common.http.key_encryption import set_default_key_encryption_by_name
 from motor.config.etcd import EtcdConfig
@@ -522,8 +522,6 @@ class CoordinatorConfig:
 
             # Re-validate configuration after applying values from JSON
             config.validate_config()
-
-            reconfigure_logging(config.logging_config)
 
             finalize_json_config_load(
                 config_path,

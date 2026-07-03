@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
-from motor.common.logger import get_logger, reconfigure_logging
+from motor.common.logger import get_logger
 from motor.common.utils.env import Env
 from motor.config.etcd import EtcdConfig
 from motor.config.port_allocator_config import PortAllocatorConfig
@@ -235,8 +235,6 @@ class ControllerConfig:
                 config.last_modified = None
 
             apply_standby_persistence_rule(config)
-
-            reconfigure_logging(config.logging_config)
 
             finalize_json_config_load(
                 config_path,
