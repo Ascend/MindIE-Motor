@@ -7,12 +7,18 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
+# pylint: disable=cyclic-import
+from __future__ import annotations
+
 import argparse
 import configparser
 import os
 import subprocess
+import sys
 
 import lib.constant as C
+from lib.tui.step import start_monitor
 from lib.utils import logger, read_json, set_env_to_shell, get_deploy_paths
 from lib.update_config_whitelist import apply_whitelist_update
 from lib.generator import k8s_utils
@@ -49,7 +55,6 @@ from lib.config_validator import (
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
 )
-from lib.step import start_monitor
 
 
 def handle_update_config(user_config):
@@ -290,12 +295,20 @@ def parse_arguments():
     parser.add_argument(
         "--nostep",
         action="store_true",
-        help="The service startup progress bar is not displayed",
+        help="Do not display the service startup progress bar after deployment",
     )
     return parser.parse_args()
 
 
 def calculate_pod_count(deploy_config):
+    deploy_mode = resolve_deploy_mode_for_services(deploy_config)
+
+    # Single-container mode: one Deployment, one pod (unless hybrid count is set)
+    if deploy_mode == C.DEPLOY_MODE_SINGLE_CONTAINER:
+        if C.HYBRID_INSTANCES_NUM in deploy_config and C.SINGLE_HYBRID_INSTANCE_POD_NUM in deploy_config:
+            return deploy_config[C.HYBRID_INSTANCES_NUM] * deploy_config[C.SINGLE_HYBRID_INSTANCE_POD_NUM]
+        return 1
+
     if C.P_INSTANCES_NUM in deploy_config and C.SINGER_P_INSTANCES_NUM in deploy_config:
         p_pod_cnt = deploy_config[C.P_INSTANCES_NUM] * deploy_config[C.SINGER_P_INSTANCES_NUM]
     else:
@@ -318,7 +331,21 @@ def calculate_pod_count(deploy_config):
     return e_pod_cnt + p_pod_cnt + d_pod_cnt + u_pod_cnt
 
 
+def _launch_tui(user_config: dict, log_running: bool = False, deployed: bool | None = None) -> None:
+    """Launch the interactive TUI, deriving state from *user_config*."""
+    from lib.tui import run_interactive_session
+
+    deploy_config = user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
+    name_space = deploy_config.get(C.CONFIG_JOB_ID, "")
+    pod_cnt = calculate_pod_count(deploy_config) if deploy_config else 0
+    if deployed is None:
+        deployed = bool(deploy_config)
+
+    run_interactive_session(name_space, pod_cnt, user_config, log_running=log_running, deployed=deployed)
+
+
 def start_monitoring(user_config):
+    """Start tqdm-based pod startup progress monitoring (non-TUI path)."""
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     name_space = deploy_config[C.CONFIG_JOB_ID]
     pod_cnt = calculate_pod_count(deploy_config)
@@ -327,6 +354,15 @@ def start_monitoring(user_config):
 
 def main():
     args = parse_arguments()
+
+    # No configuration at all → launch TUI directly (undeployed mode)
+    no_config = not (args.config_dir or args.user_config_path or args.env_config_path)
+    if no_config:
+        if sys.stdout.isatty():
+            _launch_tui({}, log_running=False, deployed=False)
+            return
+        logger.error("No configuration provided. Use --config_dir <dir> or run in a terminal for interactive mode.")
+        sys.exit(1)
 
     user_config_path, env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
@@ -349,8 +385,11 @@ def main():
         return
 
     deploy_services(user_config, env_config_path, dry_run=args.dry_run, auto_log_collect=args.auto_log_collect)
+    logger.info("Deploy complete.")
 
-    if not args.nostep:
+    deploy_config = user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
+    deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
+    if not args.dry_run and not args.nostep and deploy_mode_arg != C.DEPLOY_MODE_SINGLE_CONTAINER:
         start_monitoring(user_config)
 
 
