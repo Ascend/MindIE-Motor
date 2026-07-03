@@ -180,6 +180,17 @@ class AttemptContext:
             logger.error(f"Unregister error {e=}")
             pass
 
+    def register_decode_canceller(self):
+        if not self.decode_resource:
+            return
+        pool = HTTPClientPool()
+        d_key = pool._get_pool_key(
+            self.decode_resource.endpoint.ip,
+            self.decode_resource.endpoint.business_port,
+            self.config.infer_tls_config,
+        )
+        pool.register_canceller(d_key, self.pair_id, self.cancel)
+
 
 class PDDispatchSession:
     def __init__(self, root_request_id: str) -> None:

@@ -20,18 +20,28 @@ import json
 import pytest
 
 from motor.common.resources.dispatch import MOTOR_DISPATCH_KEY
-from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload, WorkloadAction
+from motor.common.resources.endpoint import (
+    Endpoint,
+    EndpointStatus,
+    Workload,
+    WorkloadAction,
+)
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import PDRole, Instance, InsStatus, ParallelConfig
 from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain import InstanceReadiness, ScheduledResource
 from motor.coordinator.models.request import ReqState, RequestInfo
-from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter as SeparateCDPRouter
+from motor.coordinator.router.strategies.unified_pd import (
+    UnifiedPDRouter as SeparateCDPRouter,
+)
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.scheduler.scheduler import Scheduler
 from motor.coordinator.domain.request_manager import RequestManager
-from tests.coordinator.router.mock_openai_request import MockStreamResponse, create_mock_request_info
+from tests.coordinator.router.mock_openai_request import (
+    MockStreamResponse,
+    create_mock_request_info,
+)
 import motor.coordinator.router.dispatch as router
 
 TracerManager()
@@ -283,7 +293,13 @@ class MockAsyncClient:
         return httpx.Response(
             status_code=status.HTTP_200_OK,
             json={
-                "choices": [{"delta": {"content": "decoded chunk"}, "index": 0, "finish_reason": None}],
+                "choices": [
+                    {
+                        "delta": {"content": "decoded chunk"},
+                        "index": 0,
+                        "finish_reason": None,
+                    }
+                ],
                 "id": "chatcmpl-123",
             },
             request=request,
@@ -431,7 +447,10 @@ class TestRouterCDPSeparation:
         router_obj = SeparateCDPRouter(
             req_info,
             CoordinatorConfig(),
-            scheduler=Scheduler(instance_provider=InstanceManager(CoordinatorConfig()), config=CoordinatorConfig()),
+            scheduler=Scheduler(
+                instance_provider=InstanceManager(CoordinatorConfig()),
+                config=CoordinatorConfig(),
+            ),
             request_manager=_request_manager,
         )
         _patch_unified_pd_clients(monkeypatch, router_obj, p_client, d_client)
@@ -442,11 +461,23 @@ class TestRouterCDPSeparation:
         host = "127.0.0.1"
         # Create proper instances for separate P/D flow
         mock_instance_p = self.create_mock_instance(0, PDRole.ROLE_P)
-        mock_endpoint_p = Endpoint(id=0, ip=host, business_port="8000", mgmt_port="8000", status=EndpointStatus.NORMAL)
+        mock_endpoint_p = Endpoint(
+            id=0,
+            ip=host,
+            business_port="8000",
+            mgmt_port="8000",
+            status=EndpointStatus.NORMAL,
+        )
         mock_instance_p.endpoints = {host: {0: mock_endpoint_p}}
 
         mock_instance_d = self.create_mock_instance(1, PDRole.ROLE_D)
-        mock_endpoint_d = Endpoint(id=1, ip=host, business_port="8001", mgmt_port="8001", status=EndpointStatus.NORMAL)
+        mock_endpoint_d = Endpoint(
+            id=1,
+            ip=host,
+            business_port="8001",
+            mgmt_port="8001",
+            status=EndpointStatus.NORMAL,
+        )
         mock_instance_d.endpoints = {host: {1: mock_endpoint_d}}
 
         # Mock functions (Scheduler uses get_required_instances_status for readiness)
@@ -479,15 +510,27 @@ class TestRouterCDPSeparation:
 
         async def mock_select_and_allocate(self, role, req_info, *, target_instance_id=None):
             if role == PDRole.ROLE_P:
-                return mock_instance_p, mock_endpoint_p, Workload(active_kv_cache=1, active_tokens=1)
+                return (
+                    mock_instance_p,
+                    mock_endpoint_p,
+                    Workload(active_kv_cache=1, active_tokens=1),
+                )
             if role == PDRole.ROLE_D:
-                return mock_instance_d, mock_endpoint_d, Workload(active_kv_cache=0, active_tokens=1)
+                return (
+                    mock_instance_d,
+                    mock_endpoint_d,
+                    Workload(active_kv_cache=0, active_tokens=1),
+                )
             return None
 
         async def mock_update_workload(self, params):
             return True
 
-        monkeypatch.setattr(InstanceManager, "get_required_instances_status", mock_get_required_instances_status)
+        monkeypatch.setattr(
+            InstanceManager,
+            "get_required_instances_status",
+            mock_get_required_instances_status,
+        )
         monkeypatch.setattr(InstanceManager, "has_required_instances", mock_has_required_instances)
         monkeypatch.setattr(InstanceManager, "get_available_instances", mock_get_available_instances)
         monkeypatch.setattr(Scheduler, "select_instance_and_endpoint", mock_select_instance_and_endpoint)
@@ -636,7 +679,7 @@ class TestRouterCDPSeparation:
         release_d_tokens = 0
         original_release = SeparateCDPRouter._release_attempt_resource
 
-        async def mock_release_attempt_resource(self, resource, attempt_seq, action, attempt=None):
+        async def mock_release_attempt_resource(self, resource, attempt_seq, action, attempt=None, **kwargs):
             nonlocal release_p_tokens, release_p_kv, release_d_tokens
             if resource.instance.role == PDRole.ROLE_P:
                 if action == WorkloadAction.RELEASE_TOKENS:
@@ -646,9 +689,13 @@ class TestRouterCDPSeparation:
             elif resource.instance.role == PDRole.ROLE_D:
                 if action == WorkloadAction.RELEASE_TOKENS:
                     release_d_tokens += 1
-            await original_release(self, resource, attempt_seq, action, attempt)
+            await original_release(self, resource, attempt_seq, action, attempt, **kwargs)
 
-        monkeypatch.setattr(SeparateCDPRouter, "_release_attempt_resource", mock_release_attempt_resource)
+        monkeypatch.setattr(
+            SeparateCDPRouter,
+            "_release_attempt_resource",
+            mock_release_attempt_resource,
+        )
 
         cdp_router = self._make_router(req_info, monkeypatch, p_client, d_client)
         response = await cdp_router.handle_request()
@@ -664,7 +711,11 @@ class TestRouterCDPSeparation:
 
     @pytest.mark.asyncio
     async def test_engine_server_decode_continuous_5xx_status_code(
-        self, client, monkeypatch: MonkeyPatch, setup_cdp_separation, caplog: pytest.LogCaptureFixture
+        self,
+        client,
+        monkeypatch: MonkeyPatch,
+        setup_cdp_separation,
+        caplog: pytest.LogCaptureFixture,
     ):
         """Decode keeps getting 5XX with the same message: retries exhaust, error chunk returned;
         identical-error logs: one ERROR + (max_retry-1) WARNING dedup lines.
@@ -675,7 +726,10 @@ class TestRouterCDPSeparation:
             stream_exc=httpx.HTTPStatusError(
                 message=error_message,
                 request=MagicMock(),
-                response=httpx.Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, text=error_message),
+                response=httpx.Response(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    text=error_message,
+                ),
             )
         )
         p_client = _UnifiedPDPrefillClient()
@@ -684,12 +738,16 @@ class TestRouterCDPSeparation:
         exec_release = 0
         original_release = SeparateCDPRouter._release_attempt_resource
 
-        async def mock_release_attempt_resource(self, resource, attempt_seq, action, attempt=None):
+        async def mock_release_attempt_resource(self, resource, attempt_seq, action, attempt=None, **kwargs):
             nonlocal exec_release
             exec_release += 1
-            await original_release(self, resource, attempt_seq, action, attempt)
+            await original_release(self, resource, attempt_seq, action, attempt, **kwargs)
 
-        monkeypatch.setattr(SeparateCDPRouter, "_release_attempt_resource", mock_release_attempt_resource)
+        monkeypatch.setattr(
+            SeparateCDPRouter,
+            "_release_attempt_resource",
+            mock_release_attempt_resource,
+        )
 
         cdp_router = self._make_router(req_info, monkeypatch, p_client, d_client)
         response = await cdp_router.handle_request()
@@ -866,7 +924,11 @@ class TestRouterCDPSeparation:
         def mock_get_required_instances_status(self):
             return InstanceReadiness.ONLY_PREFILL  # not ready -> fallback to SINGLE_NODE
 
-        monkeypatch.setattr(InstanceManager, "get_required_instances_status", mock_get_required_instances_status)
+        monkeypatch.setattr(
+            InstanceManager,
+            "get_required_instances_status",
+            mock_get_required_instances_status,
+        )
 
         def mock_has_required_instances(self):
             return False
@@ -1053,7 +1115,7 @@ class TestRouterCDPSeparation:
         cdp_router = self._make_router(req_info, monkeypatch, p_client, d_client)
 
         response = await cdp_router.handle_request()
-        response_json = response.body.decode() if hasattr(response.body, 'decode') else response.body
+        response_json = response.body.decode() if hasattr(response.body, "decode") else response.body
         response_data = json.loads(response_json)
 
         assert response_data["choices"][0]["message"]["content"] == "partial "
