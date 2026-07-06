@@ -27,7 +27,8 @@ pyMotor开启日志持久化需修改user_config.json配置文件后，通过dep
       "log_rotation_count": 10,
       "log_compress": false,
       "log_compress_level": 6,
-      "log_max_total_size": 200
+      "log_max_total_size": 200,
+      "third_party_log_levels": {"default": "WARNING"}
     }
   }
 }
@@ -46,8 +47,26 @@ logging_config配置项说明：
 - `log_compress`：是否开启日志压缩，默认为false。开启后轮转的日志文件会进行压缩，为`.gz`格式
 - `log_compress_level`：日志压缩等级，默认6。取值范围1-9，数字越大压缩效果越好，但压缩速度越慢
 - `log_max_total_size`：单组件单线程日志文件最大总大小，默认200，单位为MB，超过此大小历史日志文件会进行删除
+- `third_party_log_levels`：三方库日志级别控制，默认 `{"default": "WARNING"}`。`"default"` 键为未显式指定的三方库 logger 应用默认级别（`DEBUG`/`INFO`/`WARNING`/`ERROR`）；可通过 `"<logger_name>": "<level>"` 对特定库单独覆盖，配置为 `null` 时退化为默认行为。
+
+可单独配置的三方库 logger 常见清单：
+
+| logger 名 | 对应库 | 说明 |
+|-----------|--------|------|
+| `httpx` | httpx | HTTP 客户端 |
+| `httpcore` | httpcore | HTTP 核心传输层 |
+| `urllib3` | urllib3 | HTTP 连接池 |
+| `uvicorn.error` | uvicorn | ASGI 服务器错误日志 |
+| `uvicorn.access` | uvicorn | ASGI 服务器访问日志（推荐设为 WARNING 以上） |
+| `fastapi` | FastAPI | Web 框架 |
+| `grpc` | grpcio | gRPC 框架 |
+| `asyncio` | asyncio | 异步 IO |
+
+> 以上为项目中常见的三方库 logger。`_suppress_noisy_third_party_loggers()` 会遍历运行时**所有已注册的非 motor logger**，不只是上表所列。新增三方依赖后无需修改配置即可自动覆盖。
 
 当log_max_total_size和log_rotation_count同时配置时，达到任意一个条件时进行日志轮转和日志删除。
+
+> **注意**：`third_party_log_levels` 不受 motor 自身 `log_level` 的影响——即使 motor 处于 DEBUG 模式，三方库日志默认仍为 WARNING，避免日志刷屏。配置文件热重载（watchdog）时也会同步更新三方库级别。
 
 ### 部署服务
 

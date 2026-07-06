@@ -10,7 +10,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -32,3 +32,10 @@ class LoggingConfig:
     log_max_total_size: int = 200  # Maximum total size of all log files in MB, default 100MB
     log_cleanup_interval: int = 1800  # Cleanup log gz interval in seconds, default 1800s=30min
     log_collector_enabled: bool = True  # Merge all process logs into a single combined.log via ZMQ collector
+    # Third-party logger level overrides. Takes effect regardless of motor log_level.
+    # Defaults to {"default": "WARNING"} → all third-party loggers are set to WARNING.
+    # dict → "default" key is the fallback level for all third-party loggers;
+    #        specific logger name keys override "default".
+    # None → resolved at runtime as {"default": "WARNING"}.
+    # Example: {"default": "WARNING", "httpx": "ERROR"}
+    third_party_log_levels: dict[str, str] | None = field(default_factory=lambda: {"default": "WARNING"})

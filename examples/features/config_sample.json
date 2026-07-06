@@ -66,7 +66,8 @@
       "log_compress": false,
       "log_compress_level": 6,
       "log_max_total_size": 200,
-      "log_cleanup_interval": 1800
+      "log_cleanup_interval": 1800,
+      "third_party_log_levels": {"default": "WARNING"}
     },
     "api_config": {
       "controller_api_host": "127.0.0.1",
@@ -128,7 +129,8 @@
       "log_compress": false,
       "log_compress_level": 6,
       "log_max_total_size": 200,
-      "log_cleanup_interval": 1800
+      "log_cleanup_interval": 1800,
+      "third_party_log_levels": {"default": "WARNING"}
     },
     "prometheus_metrics_config": {
       "reuse_time": 3,

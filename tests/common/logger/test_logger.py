@@ -162,22 +162,21 @@ class TestThirdPartySuppression:
 
         assert propagated_into_bucket is False
 
-    def test_suppress_noisy_libs_only_at_info(self, reset_singletons):
-        """Point-kill fires only when log_level == INFO."""
+    def test_suppress_noisy_libs_at_all_levels(self, reset_singletons):
+        """Point-kill fires regardless of motor log_level (default WARNING)."""
         for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
-            # Reset to a known non-WARNING level so we can detect changes.
             logging.getLogger(name).setLevel(logging.NOTSET)
 
-        _suppress_noisy_third_party_loggers("INFO")
+        _suppress_noisy_third_party_loggers(LoggingConfig(log_level="INFO"))
         for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
             assert logging.getLogger(name).level == logging.WARNING
 
-        # Re-arm as if user had set DEBUG: reconfigure should NOT forcibly warn them.
+        # DEBUG should also suppress to WARNING (default via None → {"default": "WARNING"}).
         for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
             logging.getLogger(name).setLevel(logging.NOTSET)
-        _suppress_noisy_third_party_loggers("DEBUG")
+        _suppress_noisy_third_party_loggers(LoggingConfig(log_level="DEBUG"))
         for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
-            assert logging.getLogger(name).level == logging.NOTSET
+            assert logging.getLogger(name).level == logging.WARNING
 
     def test_reconfigure_updates_buckets_and_resuppresses(self, reset_singletons, monkeypatch):
         """reconfigure_logging must move buckets to the new level and re-apply suppression."""
@@ -205,3 +204,57 @@ class TestThirdPartySuppression:
         assert motor_handlers.isdisjoint(root_handlers)
         # Buckets follow the new level.
         assert logging.getLogger("api_server").level == logging.DEBUG
+
+    def test_default_key_applies_to_all_third_party(self, reset_singletons):
+        """``{"default": "ERROR"}`` forces all known third-party loggers to ERROR."""
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        _suppress_noisy_third_party_loggers(
+            LoggingConfig(log_level="INFO", third_party_log_levels={"default": "ERROR"})
+        )
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            assert logging.getLogger(name).level == logging.ERROR
+
+    def test_default_with_specific_override(self, reset_singletons):
+        """Specific logger key overrides ``"default"``."""
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        _suppress_noisy_third_party_loggers(
+            LoggingConfig(
+                log_level="INFO",
+                third_party_log_levels={
+                    "default": "WARNING",
+                    "httpx": "ERROR",
+                    "uvicorn.error": "DEBUG",
+                },
+            )
+        )
+        assert logging.getLogger("httpx").level == logging.ERROR
+        assert logging.getLogger("httpcore").level == logging.WARNING  # from default
+        assert logging.getLogger("urllib3").level == logging.WARNING  # from default
+        assert logging.getLogger("uvicorn.error").level == logging.DEBUG
+
+    def test_default_behavior_unchanged_when_none(self, reset_singletons):
+        """When ``third_party_log_levels`` is None, all discovered third-party loggers → WARNING."""
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        _suppress_noisy_third_party_loggers(LoggingConfig(log_level="INFO", third_party_log_levels=None))
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            assert logging.getLogger(name).level == logging.WARNING
+
+    def test_third_party_log_levels_applied_when_motor_debug(self, reset_singletons):
+        """When motor log_level is DEBUG, third_party_log_levels still takes effect."""
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        _suppress_noisy_third_party_loggers(
+            LoggingConfig(
+                log_level="DEBUG",
+                third_party_log_levels={"default": "ERROR"},
+            )
+        )
+        for name in ("httpx", "httpcore", "urllib3", "uvicorn.error"):
+            assert logging.getLogger(name).level == logging.ERROR

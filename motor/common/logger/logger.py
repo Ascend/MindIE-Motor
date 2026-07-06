@@ -104,7 +104,8 @@ _TOPLEVEL_COMPONENTS = frozenset({"engine_server", "node_manager", "config"})
 _SECONDLEVEL_COMPONENTS = frozenset({"controller", "coordinator", "common"})
 
 # Third-party loggers that bypass the root WARNING safety net (own handler / own level).
-# Suppressed only when motor log_level == INFO; DEBUG reopens them (follow vLLM design).
+# Always included in _get_third_party_logger_names() so they are covered even when the
+# library has not yet instantiated the logger at suppression time.
 _NOISY_THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "urllib3", "uvicorn.error")
 
 # Process-wide shared handler singletons. These are attached to every motor bucket logger
@@ -372,17 +373,76 @@ def get_logger(name: str = __name__, level: int | None = None):
     return logger
 
 
-def _suppress_noisy_third_party_loggers(log_level: str) -> None:
-    """Point-kill third-party loggers that bypass Python's default root WARNING.
+def _get_third_party_logger_names() -> set[str]:
+    """Return all currently registered non-motor logger names.
 
-    Mirrors vLLM's approach: when motor is at INFO, force these specific loggers
-    to WARNING so their verbose output stays out of the motor log stream. DEBUG
-    mode reopens them so users can inspect what those libraries are doing.
+    Walks ``logging.root.manager.loggerDict`` and filters out motor-internal
+    loggers.  Also ensures the known noisy set is included so that loggers
+    not yet instantiated are covered when a universal default is requested.
     """
-    if log_level.upper() != "INFO":
-        return
-    for name in _NOISY_THIRD_PARTY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    names: set[str] = set()
+    manager = getattr(logging.root, 'manager', None)
+    logger_dict: dict = getattr(manager, 'loggerDict', {}) if manager is not None else {}
+    for logger_name in list(logger_dict):
+        if not logger_name.startswith("motor.") and logger_name not in _motor_buckets:
+            names.add(logger_name)
+    names.update(_NOISY_THIRD_PARTY_LOGGERS)
+    return names
+
+
+def _resolve_log_level(level_str: str) -> int:
+    """Convert a level string to a ``logging`` level constant.
+
+    Logs a warning and falls back to WARNING on unrecognized strings.
+    """
+    level = getattr(logging, level_str.upper(), None)
+    if level is None:
+        _module_logger().warning(
+            "Unknown log level '%s', falling back to WARNING",
+            level_str,
+        )
+        return logging.WARNING
+    return level
+
+
+def _suppress_noisy_third_party_loggers(config: LoggingConfig) -> None:
+    """Apply configured log levels to third-party loggers.
+
+    Third-party loggers are always set to the configured levels,
+    defaulting to WARNING regardless of motor's own log_level.
+
+    Resolution order (finer overrides coarser):
+
+    1. ``third_party_log_levels`` is **None** or absent → fall back to
+       ``{"default": "WARNING"}`` (all third-party loggers to WARNING).
+    2. ``third_party_log_levels`` is a dict → the ``"default"`` key (if
+       present) is the fallback level; specific logger-name keys override
+       ``"default"``.
+    """
+    third_party = config.third_party_log_levels
+
+    if third_party is None:
+        third_party = {"default": "WARNING"}
+
+    # Resolve fallback level when "default" key is missing.
+    default_level_str = third_party.get("default", "WARNING")
+
+    for name in _get_third_party_logger_names():
+        if name in third_party:
+            level_str = third_party[name]
+        else:
+            level_str = default_level_str
+
+        if not isinstance(level_str, str):
+            _module_logger().warning(
+                "Invalid third-party log level for '%s': %r (expected a string), skipping",
+                name,
+                level_str,
+            )
+            continue
+
+        resolved = _resolve_log_level(level_str)
+        logging.getLogger(name).setLevel(resolved)
 
 
 def reconfigure_logging(log_config: LoggingConfig) -> None:
@@ -394,8 +454,8 @@ def reconfigure_logging(log_config: LoggingConfig) -> None:
     - Shared motor handlers are (re)created and attached to every previously seen
       motor bucket logger. Root logger is left untouched at Python's WARNING default.
     - The level of every motor bucket logger is updated to the new level.
-    - Third-party loggers that bypass root WARNING are point-killed when motor
-      is at INFO.
+    - Third-party loggers are always set to configured levels (default WARNING)
+      regardless of motor's own log_level.
     """
     # Check if we're running in pytest (to avoid breaking caplog)
     is_pytest = os.environ.get('PYTEST_CURRENT_TEST') is not None
@@ -420,6 +480,6 @@ def reconfigure_logging(log_config: LoggingConfig) -> None:
             bucket.addHandler(handler)
         bucket.setLevel(new_level)
 
-    _suppress_noisy_third_party_loggers(log_config.log_level)
+    _suppress_noisy_third_party_loggers(log_config)
 
     _module_logger().info("Logging reconfigured with level: %s", log_config.log_level)
