@@ -40,3 +40,8 @@ class IConfig(ABC):
     @abstractmethod
     def get_endpoint_config(self) -> EndpointConfig | None:
         pass
+
+    @abstractmethod
+    def get_cli_args(self) -> list[str]:
+        """Return the CLI argument list suitable for native engine launch (vllm serve / sglang.launch_server)."""
+        pass

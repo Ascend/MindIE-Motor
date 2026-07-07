@@ -84,6 +84,10 @@ class SGLangConfig(IConfig):
     def get_endpoint_config(self) -> EndpointConfig:
         return self.endpoint_config
 
+    def get_cli_args(self) -> list[str]:
+        """Return CLI args for native 'sglang.launch_server' command."""
+        return self._get_param_list()
+
     def _flatten_config(self) -> dict[str, Any]:
         """Flatten deploy_config to sglang CLI key-value dict (keys with hyphens)."""
         flattened = {}

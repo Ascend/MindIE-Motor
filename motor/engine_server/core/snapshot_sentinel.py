@@ -78,7 +78,7 @@ class SnapshotSentinel(threading.Thread):
                     timeout=self._health_timeout,
                 ) as client:
                     resp = client.do_get("health")
-                    if resp.content.decode("utf-8").lower() == "true":
+                    if resp.content.decode("utf-8").lower() != 'false':
                         return
                     retries += 1
             except Exception as e:

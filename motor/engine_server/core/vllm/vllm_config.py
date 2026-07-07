@@ -100,6 +100,10 @@ class VLLMConfig(IConfig):
     def get_endpoint_config(self) -> EndpointConfig:
         return self.endpoint_config
 
+    def get_cli_args(self) -> list[str]:
+        """Return CLI args for native 'vllm serve' command."""
+        return self._get_param_list()
+
     def _process_kv_transfer_config(self):
         role = self.endpoint_config.role
         if role == constants.UNION_ROLE:

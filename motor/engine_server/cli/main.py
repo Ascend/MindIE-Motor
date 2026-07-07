@@ -8,9 +8,19 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import shlex
+import signal
+import subprocess
 import sys
 
 from motor.common.utils.process_utils import set_process_title
+
+
+# Set this to ``True`` to enable native CLI launch mode.
+# When enabled, the engine (vLLM / SGLang) is launched
+# via its native CLI command (e.g. ``vllm serve ...``) in a subprocess
+# instead of the default invasive in-process launch.
+NATIVE_LAUNCH_ENABLED = False
 
 
 def _dp_rank_from_argv() -> int:
@@ -41,6 +51,58 @@ from motor.engine_server.utils.prometheus import setup_multiprocess_prometheus
 logger = get_logger(__name__)
 
 
+def _log_safe_cmd(cmd: list[str]) -> str:
+    """Format a command list for logging, escaping arguments that contain spaces."""
+    return " ".join(shlex.quote(a) if " " in a else a for a in cmd)
+
+
+def _build_native_launch_cmd(config) -> list[str]:
+    """Build the native CLI command for the engine from the parsed config.
+
+    Returns a list suitable for ``subprocess.Popen``, e.g.
+    ``["vllm", "serve", "--model", "...", "--host", "0.0.0.0", ...]``.
+
+    Security:
+        * ``engine_type`` is validated against a strict whitelist.
+        * ``subprocess.Popen`` is called with a list (no ``shell=True``) so
+          argument values (including JSON) are passed as literals.
+    """
+    engine_type = config.get_endpoint_config().engine_type
+    cli_args = config.get_cli_args()
+
+    if engine_type == "vllm":
+        return ["vllm", "serve"] + cli_args
+    elif engine_type == "sglang":
+        return ["python3", "-m", "sglang.launch_server"] + cli_args
+    else:
+        raise ValueError(
+            f"Unsupported engine type for native launch: {engine_type}. Supported types are: vllm, sglang."
+        )
+
+
+def _run_native(config) -> None:
+    """Launch the engine via native CLI command in a subprocess."""
+    cmd = _build_native_launch_cmd(config)
+    logger.info("Launching engine via native command: %s", _log_safe_cmd(cmd))
+
+    with subprocess.Popen(cmd) as process:
+
+        def _signal_handler(signum, frame):
+            logger.info("Received signal %s, forwarding SIGTERM to native engine process", signum)
+            process.send_signal(signal.SIGTERM)
+
+        old_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
+        old_sigint = signal.signal(signal.SIGINT, _signal_handler)
+
+        try:
+            process.wait()
+        finally:
+            signal.signal(signal.SIGTERM, old_sigterm)
+            signal.signal(signal.SIGINT, old_sigint)
+
+    logger.info("Native engine process exited with code %s", process.returncode)
+
+
 def main():
     # Execute setup_multiprocess_prometheus before importing Endpoint to ensure
     # PROMETHEUS_MULTIPROC_DIR is detected when Prometheus low-level code creates ValueClass.
@@ -53,6 +115,24 @@ def main():
     config_factory = ConfigFactory(endpoint_config=endpoint_config)
     config = config_factory.parse()
     logger.info("successfully parsed %s engine configuration", endpoint_config.engine_type)
+
+    if NATIVE_LAUNCH_ENABLED:
+        logger.info(
+            "Native launch mode enabled (%s), launching engine via CLI subprocess.",
+            NATIVE_LAUNCH_ENABLED,
+        )
+        if endpoint_config.snapshot_metadata is not None:
+            logger.warning(
+                "Snapshot metadata is provided, but native launch mode is enabled. "
+                "Snapshot sentinel will not be started, and snapshot saving may not work as expected."
+            )
+        mgmt_endpoint: MgmtEndpoint = MgmtEndpoint(config)
+        try:
+            mgmt_endpoint.run()
+            _run_native(config)
+        finally:
+            mgmt_endpoint.shutdown()
+        return
 
     snapshot_sentinel = None
     if endpoint_config.snapshot_metadata is not None:
