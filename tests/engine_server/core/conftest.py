@@ -41,4 +41,22 @@ def _install_vllm_mocks() -> None:
     sys.modules["vllm.utils.argparse_utils"] = MagicMock()
 
 
+def _install_prometheus_mocks() -> None:
+    if "prometheus_client" in sys.modules:
+        return
+
+    mock_prometheus = MagicMock()
+    mock_prometheus.CONTENT_TYPE_LATEST = "text/plain"
+    mock_prometheus.CollectorRegistry = MagicMock
+    mock_prometheus.multiprocess = MagicMock()
+    mock_prometheus.multiprocess.MultiProcessCollector = MagicMock()
+    mock_prometheus.make_asgi_app = MagicMock()
+    sys.modules["prometheus_client"] = mock_prometheus
+
+    mock_instrumentator_mod = MagicMock()
+    mock_instrumentator_mod.Instrumentator = MagicMock()
+    sys.modules["prometheus_fastapi_instrumentator"] = mock_instrumentator_mod
+
+
 _install_vllm_mocks()
+_install_prometheus_mocks()

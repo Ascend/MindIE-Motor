@@ -21,7 +21,7 @@ import pytest
 from motor.common.resources.dispatch import DispatchProfile
 from motor.engine_server.core.sim_inference import (
     SimInference,
-    _AICORE_SAMPLE_WINDOW_SEC,
+    _AI_CUBE_SAMPLE_WINDOW_SEC,
     _VIRTUAL_WARMUP_TIMEOUT_SEC,
     _is_virtual_metrics_request,
 )
@@ -272,9 +272,10 @@ async def test_send_virtual_request_async_request_error(mock_create_client, sim_
         await sim_inference.send_virtual_request_async(timeout)
 
 
+@mock.patch('motor.engine_server.core.sim_inference.is_ai_cube_usage_watch_supported', return_value=True)
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.create_task')
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
-def test_start_health_check(mock_thread, mock_create_task, sim_inference):
+def test_start_health_check(mock_thread, mock_create_task, _mock_hdk_supported, sim_inference):
     """Test health check task startup functionality"""
     # Mock create_task return value
     mock_task = mock.MagicMock()
@@ -290,6 +291,28 @@ def test_start_health_check(mock_thread, mock_create_task, sim_inference):
 
     # Verify thread was created and started
     assert mock_thread.call_count == 2
+
+
+@mock.patch('motor.engine_server.core.sim_inference.is_ai_cube_usage_watch_supported', return_value=False)
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+def test_start_health_check_disables_when_hdk_unsupported(mock_thread, _mock_hdk_supported, sim_inference):
+    """HDK without -s u support should disable virtual inference without starting threads."""
+    sim_inference.start_health_check()
+
+    mock_thread.assert_not_called()
+    assert sim_inference.enable_virtual_inference is False
+
+
+@mock.patch('motor.engine_server.core.sim_inference.is_ai_cube_usage_watch_supported', return_value=False)
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+def test_start_health_check_skips_patch_when_hdk_unsupported(mock_thread, _mock_hdk_supported, sim_inference):
+    """HDK precheck failure should not patch vLLM metrics."""
+    with mock.patch.object(sim_inference, "patch_vllm_metrics") as mock_patch:
+        sim_inference.start_health_check()
+
+    mock_patch.assert_not_called()
+    mock_thread.assert_not_called()
+    assert sim_inference.enable_virtual_inference is False
 
 
 def test_stop_health_check(sim_inference):
@@ -382,15 +405,15 @@ async def test_health_check_loop_abnormal(mock_sleep, mock_send_request, mock_th
 
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    # Mock failed request sending and low AICore usage
-    async def set_low_aicore_and_fail(timeout):
+    # Mock failed request sending and low AI Cube usage
+    async def set_low_ai_cube_and_fail(timeout):
         with sim_inference._shared_data_lock:
-            sim_inference._max_aicore_usage = 2  # < 10%
-            sim_inference._aicore_usage_available = True
-            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+            sim_inference._max_ai_cube_usage = 2  # < 10%
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
         raise RuntimeError("Request failed")
 
-    mock_send_request.side_effect = set_low_aicore_and_fail
+    mock_send_request.side_effect = set_low_ai_cube_and_fail
 
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
@@ -417,13 +440,13 @@ async def test_health_check_loop_reset_abnormal(mock_sleep, mock_send_request, m
 
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    async def set_normal_aicore_on_virtual_request(timeout):
+    async def set_normal_ai_cube_on_virtual_request(timeout):
         with sim_inference._shared_data_lock:
-            sim_inference._max_aicore_usage = 15  # > 10%
-            sim_inference._aicore_usage_available = True
-            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+            sim_inference._max_ai_cube_usage = 15  # > 10%
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
 
-    mock_send_request.side_effect = set_normal_aicore_on_virtual_request
+    mock_send_request.side_effect = set_normal_ai_cube_on_virtual_request
 
     # Mock sleep to raise exception to end loop
     mock_sleep.side_effect = asyncio.CancelledError
@@ -442,20 +465,20 @@ def _mock_health_check_loop_thread(mock_thread, sim_inference=None):
     mock_thread.return_value = mock_thread_instance
     mock_thread_instance.is_alive.return_value = False
     if sim_inference is not None:
-        return _patch_parallel_aicore_wait(sim_inference)
+        return _patch_parallel_ai_cube_wait(sim_inference)
     return None
 
 
-def _patch_parallel_aicore_wait(sim_inference, sample_finished=True):
+def _patch_parallel_ai_cube_wait(sim_inference, sample_finished=True):
     sim_inference._virtual_warmup_done = True
 
     def sample_wait(timeout=None):
         if sample_finished:
             with sim_inference._shared_data_lock:
-                sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+                sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
         return sample_finished
 
-    sim_inference._aicore_sample_done.wait = sample_wait
+    sim_inference._ai_cube_sample_done.wait = sample_wait
 
     async def fake_to_thread(func, /, *args, **kwargs):
         return func(*args, **kwargs)
@@ -473,35 +496,35 @@ def _patched_health_check_loop(mock_thread, sim_inference):
             yield
 
 
-@mock.patch('motor.engine_server.core.sim_inference.get_aicore_usage')
-def test_sample_aicore_usage_stops_after_first_error(mock_get_aicore, sim_inference):
+@mock.patch('motor.engine_server.core.sim_inference.get_ai_cube_usage')
+def test_sample_ai_cube_usage_stops_after_first_error(mock_get_ai_cube, sim_inference):
     """A failed npu-smi read should not retry for the entire sample window."""
-    mock_get_aicore.side_effect = RuntimeError("AI Core usage not found in npu-smi watch output (timeout)")
+    mock_get_ai_cube.side_effect = RuntimeError("AI Cube usage not found in npu-smi watch output (timeout)")
 
-    result, available = sim_inference._sample_aicore_usage()
+    result, available = sim_inference._sample_ai_cube_usage()
 
     assert result == 0
     assert available is False
-    mock_get_aicore.assert_called_once()
+    mock_get_ai_cube.assert_called_once()
 
 
 @mock.patch('motor.engine_server.core.sim_inference.time.sleep')
-@mock.patch('motor.engine_server.core.sim_inference.get_aicore_usage')
-def test_sample_aicore_usage_reports_zero_when_idle(mock_get_aicore, _mock_sleep, sim_inference):
+@mock.patch('motor.engine_server.core.sim_inference.get_ai_cube_usage')
+def test_sample_ai_cube_usage_reports_zero_when_idle(mock_get_ai_cube, _mock_sleep, sim_inference):
     """A successful npu-smi read of 0% should be treated as available."""
-    mock_get_aicore.return_value = 0
+    mock_get_ai_cube.return_value = 0
 
-    result, available = sim_inference._sample_aicore_usage()
+    result, available = sim_inference._sample_ai_cube_usage()
 
     assert result == 0
     assert available is True
-    assert mock_get_aicore.call_count >= 1
+    assert mock_get_ai_cube.call_count >= 1
 
 
 @pytest.mark.asyncio
 @mock.patch.object(SimInference, 'send_virtual_request_async')
 async def test_health_check_loop_does_not_block_beyond_sample_window(mock_send_request, sim_inference):
-    """Virtual inference should wait at most the bounded AICore sample window."""
+    """Virtual inference should wait at most the bounded AI Cube sample window."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     sim_inference._virtual_warmup_done = True
     mock_send_request.return_value = None
@@ -513,7 +536,7 @@ async def test_health_check_loop_does_not_block_beyond_sample_window(mock_send_r
         observed_timeout = timeout
         return False
 
-    sim_inference._aicore_sample_done.wait = sample_wait
+    sim_inference._ai_cube_sample_done.wait = sample_wait
 
     async def fake_to_thread(func, /, *args, **kwargs):
         return func(*args, **kwargs)
@@ -529,56 +552,56 @@ async def test_health_check_loop_does_not_block_beyond_sample_window(mock_send_r
 
     elapsed = time.monotonic() - start
     assert elapsed < 1.0
-    assert observed_timeout == _AICORE_SAMPLE_WINDOW_SEC
+    assert observed_timeout == _AI_CUBE_SAMPLE_WINDOW_SEC
 
 
-def test_read_aicore_sample_ignores_stale_generation(sim_inference):
+def test_read_ai_cube_sample_ignores_stale_generation(sim_inference):
     """Stale worker results must not be read after a newer sample was requested."""
     with sim_inference._shared_data_lock:
-        sim_inference._max_aicore_usage = 42
-        sim_inference._aicore_usage_available = True
-        sim_inference._aicore_completed_generation = 1
+        sim_inference._max_ai_cube_usage = 42
+        sim_inference._ai_cube_usage_available = True
+        sim_inference._ai_cube_completed_generation = 1
 
-    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
+    max_usage, available = sim_inference._read_ai_cube_sample(generation=2, sample_finished=True)
 
     assert max_usage == 0
     assert available is False
 
 
-def test_read_aicore_sample_available_with_partial_sample(sim_inference):
+def test_read_ai_cube_sample_available_with_partial_sample(sim_inference):
     """Partial successful samples should be readable before the sample window finishes."""
     with sim_inference._shared_data_lock:
-        sim_inference._max_aicore_usage = 15
-        sim_inference._aicore_usage_available = True
-        sim_inference._aicore_completed_generation = 2
+        sim_inference._max_ai_cube_usage = 15
+        sim_inference._ai_cube_usage_available = True
+        sim_inference._ai_cube_completed_generation = 2
 
-    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=False)
+    max_usage, available = sim_inference._read_ai_cube_sample(generation=2, sample_finished=False)
 
     assert max_usage == 15
     assert available is True
 
 
-def test_read_aicore_sample_unavailable_when_window_timeout_without_data(sim_inference):
+def test_read_ai_cube_sample_unavailable_when_window_timeout_without_data(sim_inference):
     """Finished sample window with no successful reads should remain unavailable."""
     with sim_inference._shared_data_lock:
-        sim_inference._max_aicore_usage = 0
-        sim_inference._aicore_usage_available = False
-        sim_inference._aicore_completed_generation = 2
+        sim_inference._max_ai_cube_usage = 0
+        sim_inference._ai_cube_usage_available = False
+        sim_inference._ai_cube_completed_generation = 2
 
-    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=True)
+    max_usage, available = sim_inference._read_ai_cube_sample(generation=2, sample_finished=True)
 
     assert max_usage == 0
     assert available is False
 
 
-def test_read_aicore_sample_returns_zero_when_waiting_for_data(sim_inference):
+def test_read_ai_cube_sample_returns_zero_when_waiting_for_data(sim_inference):
     """Waiting for first sample must not expose stale peak usage when unavailable."""
     with sim_inference._shared_data_lock:
-        sim_inference._max_aicore_usage = 42
-        sim_inference._aicore_usage_available = False
-        sim_inference._aicore_completed_generation = 2
+        sim_inference._max_ai_cube_usage = 42
+        sim_inference._ai_cube_usage_available = False
+        sim_inference._ai_cube_completed_generation = 2
 
-    max_usage, available = sim_inference._read_aicore_sample(generation=2, sample_finished=False)
+    max_usage, available = sim_inference._read_ai_cube_sample(generation=2, sample_finished=False)
 
     assert max_usage == 0
     assert available is False
@@ -637,7 +660,7 @@ async def test_health_check_loop_stops_after_warmup_failure(mock_thread, sim_inf
 
     with mock.patch.object(
         SimInference,
-        '_trigger_aicore_sample',
+        '_trigger_ai_cube_sample',
         return_value=1,
     ) as mock_trigger:
         sim_inference._virtual_warmup_done = False
@@ -648,13 +671,13 @@ async def test_health_check_loop_stops_after_warmup_failure(mock_thread, sim_inf
 
 
 @pytest.mark.asyncio
-async def test_run_virtual_warmup_does_not_trigger_aicore_sampling(sim_inference):
-    """Warmup must not trigger AICore sampling before the first successful request."""
+async def test_run_virtual_warmup_does_not_trigger_ai_cube_sampling(sim_inference):
+    """Warmup must not trigger AI Cube sampling before the first successful request."""
     sim_inference.set_status(constants.NORMAL_STATUS)
 
     with mock.patch.object(
         SimInference,
-        '_trigger_aicore_sample',
+        '_trigger_ai_cube_sample',
         autospec=True,
     ) as mock_trigger:
         sim_inference._send_virtual_request_safe = mock.AsyncMock(return_value=True)
@@ -667,8 +690,8 @@ async def test_run_virtual_warmup_does_not_trigger_aicore_sampling(sim_inference
 @pytest.mark.asyncio
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_triggers_aicore_after_warmup(mock_sleep, mock_thread, sim_inference):
-    """Normal health check loop should trigger AICore sampling after warmup completes."""
+async def test_health_check_loop_triggers_ai_cube_after_warmup(mock_sleep, mock_thread, sim_inference):
+    """Normal health check loop should trigger AI Cube sampling after warmup completes."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     sim_inference._virtual_warmup_done = True
     _mock_health_check_loop_thread(mock_thread, sim_inference)
@@ -676,7 +699,7 @@ async def test_health_check_loop_triggers_aicore_after_warmup(mock_sleep, mock_t
     with mock.patch.object(SimInference, 'send_virtual_request_async', return_value=None):
         with mock.patch.object(
             SimInference,
-            '_trigger_aicore_sample',
+            '_trigger_ai_cube_sample',
             return_value=1,
         ) as mock_trigger:
             mock_sleep.side_effect = asyncio.CancelledError
@@ -689,7 +712,7 @@ async def test_health_check_loop_triggers_aicore_after_warmup(mock_sleep, mock_t
 
 @pytest.mark.asyncio
 async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inference):
-    """HTTP and AICore sampling should overlap within a single health-check cycle."""
+    """HTTP and AI Cube sampling should overlap within a single health-check cycle."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     sim_inference._virtual_warmup_done = True
 
@@ -710,7 +733,7 @@ async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inferenc
                     break
                 await asyncio.sleep(0.005)
             else:
-                pytest.fail("AICore wait was never scheduled concurrently with HTTP")
+                pytest.fail("AI Cube wait was never scheduled concurrently with HTTP")
 
             await asyncio.sleep(0.2)
         finally:
@@ -729,7 +752,7 @@ async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inferenc
         return await slow_virtual_request(sim_inference, timeout)
 
     sim_inference._send_virtual_request_safe = bound_slow_virtual_request
-    sim_inference._aicore_sample_done.wait = sample_wait_while_http_in_flight
+    sim_inference._ai_cube_sample_done.wait = sample_wait_while_http_in_flight
 
     real_sleep = asyncio.sleep
 
@@ -750,8 +773,8 @@ async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inferenc
     elapsed = time.monotonic() - start
     windows = dict(activity_log)
     assert {"http_start", "http_end", "wait_start", "wait_end"} <= windows.keys()
-    assert windows["wait_start"] < windows["http_end"], "AICore wait must start before HTTP finishes"
-    assert windows["http_start"] < windows["wait_end"], "HTTP must start before AICore wait finishes"
+    assert windows["wait_start"] < windows["http_end"], "AI Cube wait must start before HTTP finishes"
+    assert windows["http_start"] < windows["wait_end"], "HTTP must start before AI Cube wait finishes"
     assert elapsed < 0.35, "Serial execution would exceed the parallel time bound"
 
 
@@ -759,10 +782,10 @@ async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inferenc
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch.object(SimInference, 'send_virtual_request_async')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_skip_failure_count_when_aicore_unavailable(
+async def test_health_check_loop_skip_failure_count_when_ai_cube_unavailable(
     mock_sleep, mock_send_request, mock_thread, sim_inference
 ):
-    """Virtual request failure should not count when AICore sampling is unavailable."""
+    """Virtual request failure should not count when AI Cube sampling is unavailable."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     sim_inference._count_failure_flag = True
     sim_inference._max_failure_count = 1
@@ -782,18 +805,18 @@ async def test_health_check_loop_skip_failure_count_when_aicore_unavailable(
 @pytest.mark.asyncio
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_high_aicore_extends_sleep(mock_sleep, mock_thread, sim_inference):
-    """AICore >= 80% should extend virtual inference sleep to 20 seconds."""
+async def test_health_check_loop_high_ai_cube_extends_sleep(mock_sleep, mock_thread, sim_inference):
+    """AI Cube >= 80% should extend virtual inference sleep to 20 seconds."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    async def set_high_aicore_usage(timeout):
+    async def set_high_ai_cube_usage(timeout):
         with sim_inference._shared_data_lock:
-            sim_inference._max_aicore_usage = 85
-            sim_inference._aicore_usage_available = True
-            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+            sim_inference._max_ai_cube_usage = 85
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
 
-    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_high_aicore_usage):
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_high_ai_cube_usage):
         mock_sleep.side_effect = asyncio.CancelledError
         with _patched_health_check_loop(mock_thread, sim_inference):
             with pytest.raises(asyncio.CancelledError):
@@ -805,18 +828,18 @@ async def test_health_check_loop_high_aicore_extends_sleep(mock_sleep, mock_thre
 @pytest.mark.asyncio
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_low_aicore_keeps_default_sleep(mock_sleep, mock_thread, sim_inference):
-    """AICore < 80% should keep virtual inference sleep at 5 seconds."""
+async def test_health_check_loop_low_ai_cube_keeps_default_sleep(mock_sleep, mock_thread, sim_inference):
+    """AI Cube < 80% should keep virtual inference sleep at 5 seconds."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    async def set_low_aicore_usage(timeout):
+    async def set_low_ai_cube_usage(timeout):
         with sim_inference._shared_data_lock:
-            sim_inference._max_aicore_usage = 50
-            sim_inference._aicore_usage_available = True
-            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+            sim_inference._max_ai_cube_usage = 50
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
 
-    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_low_aicore_usage):
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_low_ai_cube_usage):
         mock_sleep.side_effect = asyncio.CancelledError
         with _patched_health_check_loop(mock_thread, sim_inference):
             with pytest.raises(asyncio.CancelledError):
@@ -828,24 +851,24 @@ async def test_health_check_loop_low_aicore_keeps_default_sleep(mock_sleep, mock
 @pytest.mark.asyncio
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_aicore_sleep_keeps_extended_after_moderate_load(
+async def test_health_check_loop_ai_cube_sleep_keeps_extended_after_moderate_load(
     mock_sleep, mock_thread, sim_inference
 ):
-    """After high AICore, sleep stays at 20s when usage is between threshold and 80%."""
+    """After high AI Cube, sleep stays at 20s when usage is between threshold and 80%."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     iteration = 0
 
-    async def set_aicore_usage_by_iteration(timeout):
+    async def set_ai_cube_usage_by_iteration(timeout):
         nonlocal iteration
         iteration += 1
         with sim_inference._shared_data_lock:
-            sim_inference._max_aicore_usage = 85 if iteration == 1 else 50
-            sim_inference._aicore_usage_available = True
-            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+            sim_inference._max_ai_cube_usage = 85 if iteration == 1 else 50
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
 
-    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_aicore_usage_by_iteration):
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_ai_cube_usage_by_iteration):
         mock_sleep.side_effect = [None, asyncio.CancelledError]
         with _patched_health_check_loop(mock_thread, sim_inference):
             with pytest.raises(asyncio.CancelledError):
@@ -857,22 +880,22 @@ async def test_health_check_loop_aicore_sleep_keeps_extended_after_moderate_load
 @pytest.mark.asyncio
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_aicore_sleep_reverts_below_threshold(mock_sleep, mock_thread, sim_inference):
-    """After high AICore, sleep reverts to 5s when usage drops below npu_usage_threshold."""
+async def test_health_check_loop_ai_cube_sleep_reverts_below_threshold(mock_sleep, mock_thread, sim_inference):
+    """After high AI Cube, sleep reverts to 5s when usage drops below npu_usage_threshold."""
     sim_inference.set_status(constants.NORMAL_STATUS)
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     iteration = 0
 
-    async def set_aicore_usage_by_iteration(timeout):
+    async def set_ai_cube_usage_by_iteration(timeout):
         nonlocal iteration
         iteration += 1
         with sim_inference._shared_data_lock:
-            sim_inference._max_aicore_usage = 85 if iteration == 1 else 1
-            sim_inference._aicore_usage_available = True
-            sim_inference._aicore_completed_generation = sim_inference._aicore_requested_generation
+            sim_inference._max_ai_cube_usage = 85 if iteration == 1 else 1
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
 
-    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_aicore_usage_by_iteration):
+    with mock.patch.object(SimInference, 'send_virtual_request_async', side_effect=set_ai_cube_usage_by_iteration):
         mock_sleep.side_effect = [None, asyncio.CancelledError]
         with _patched_health_check_loop(mock_thread, sim_inference):
             with pytest.raises(asyncio.CancelledError):

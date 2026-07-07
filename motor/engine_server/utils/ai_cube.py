@@ -13,12 +13,18 @@ import select
 import subprocess
 import time
 
+from motor.common.logger import get_logger
+
+logger = get_logger(__name__)
+
 # `npu-smi info watch` streams repeatedly; only wait for the first data row.
 _WATCH_READ_TIMEOUT_SEC = 5
+_WATCH_HELP_TIMEOUT_SEC = 5
+_AI_CUBE_USAGE_HELP_MARKER = "u - AI Cube Usage"
 
 
 def _parse_usage_from_line(line: str) -> int | None:
-    """Return AI Core(%) from a watch data row, or None for header/blank lines."""
+    """Return usage percent from a watch data row, or None for header/blank lines."""
     stripped = line.strip()
     if not stripped or stripped.startswith("NpuID"):
         return None
@@ -31,7 +37,7 @@ def _parse_usage_from_line(line: str) -> int | None:
         return None
 
 
-def _read_first_aicore_usage_from_watch(proc: subprocess.Popen) -> int:
+def _read_first_ai_cube_usage_from_watch(proc: subprocess.Popen) -> int:
     """Read stdout line-by-line until the first data row appears, then stop."""
     if proc.stdout is None:
         raise RuntimeError("npu-smi watch stdout pipe is not available")
@@ -50,7 +56,7 @@ def _read_first_aicore_usage_from_watch(proc: subprocess.Popen) -> int:
         if usage is not None:
             return usage
 
-    raise RuntimeError("AI Core usage not found in npu-smi watch output (timeout)")
+    raise RuntimeError("AI Cube usage not found in npu-smi watch output (timeout)")
 
 
 def _stop_watch_process(proc: subprocess.Popen) -> None:
@@ -59,14 +65,47 @@ def _stop_watch_process(proc: subprocess.Popen) -> None:
     proc.communicate()
 
 
-def get_aicore_usage():
-    """
-    Get AICore usage rate.
+def is_ai_cube_usage_watch_supported() -> bool:
+    """Return whether the current HDK supports `npu-smi info watch -s u` (AI Cube Usage)."""
+    cmd = ["npu-smi", "info", "watch", "-h"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_WATCH_HELP_TIMEOUT_SEC,
+            check=False,
+        )
+    except OSError:
+        logger.warning("npu-smi is not available when checking AI Cube Usage watch support")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("npu-smi info watch -h timed out when checking AI Cube Usage watch support")
+        return False
 
-    `npu-smi info watch -s a` prints continuously. Parse the first data row
+    if result.returncode != 0:
+        logger.warning(
+            "npu-smi info watch -h failed with exit code %s when checking AI Cube Usage watch support",
+            result.returncode,
+        )
+        return False
+
+    combined = (result.stdout or "") + (result.stderr or "")
+    if _AI_CUBE_USAGE_HELP_MARKER in combined:
+        return True
+
+    logger.warning("HDK does not support npu-smi info watch -s u (AI Cube Usage)")
+    return False
+
+
+def get_ai_cube_usage():
+    """
+    Get AI Cube usage rate.
+
+    `npu-smi info watch -s u` prints continuously. Parse the first data row
     (e.g. ``0  0  0`` after the header) and terminate the process immediately.
     """
-    cmd = ["npu-smi", "info", "watch", "-s", "a"]
+    cmd = ["npu-smi", "info", "watch", "-s", "u"]
     try:
         with subprocess.Popen(
             cmd,
@@ -76,7 +115,7 @@ def get_aicore_usage():
             start_new_session=True,
         ) as proc:
             try:
-                return _read_first_aicore_usage_from_watch(proc)
+                return _read_first_ai_cube_usage_from_watch(proc)
             finally:
                 _stop_watch_process(proc)
     except OSError as e:

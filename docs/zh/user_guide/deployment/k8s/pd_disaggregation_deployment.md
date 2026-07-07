@@ -350,7 +350,7 @@ examples/
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | enable_virtual_inference | bool | `false` | 虚推总开关，设为 `true` 启用周期性健康探测 |
-| npu_usage_threshold | int | `3` | AICore 使用率阈值（%），用于异常判定与间隔恢复 |
+| npu_usage_threshold | int | `3` | AI Cube 利用率阈值（%），用于异常判定与间隔恢复 |
 | max_failure_count | int | `6` | 连续虚推失败次数上限，达到后 `/status` 返回 abnormal |
 | health_collector_timeout | int | `2` | 推理面 `/health` 探测超时（秒） |
 

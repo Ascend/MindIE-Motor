@@ -601,12 +601,12 @@ vLLM 内置识别的 `kv_connector` 白名单见 [PD 分离特性说明](../../.
 
 ### 6.2 health_check_config（虚推健康探测）
 
-虚推由 Engine Server 周期性向推理面发送轻量请求，结合 NPU AICore 使用率判断引擎是否健康。机制说明见 [Engine Server 组件文档](../../../developer_guide/components/engine_server.md#虚推虚拟推理健康探测)。
+虚推由 Engine Server 周期性向推理面发送轻量请求，结合 NPU AI Cube 利用率判断引擎是否健康。机制说明见 [Engine Server 组件文档](../../../developer_guide/components/engine_server.md#虚推虚拟推理健康探测)。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | enable_virtual_inference | bool | `false` | 虚推总开关。为 `true` 时，在推理面 `/health` 正常后启动周期性虚推 |
-| npu_usage_threshold | int | `3` | AICore 使用率阈值（%）。虚推仅在 `0 < npu_usage_threshold <= 100` 时启动；低于该阈值且虚推失败时累计失败次数 |
+| npu_usage_threshold | int | `3` | AI Cube 利用率阈值（%）。虚推仅在 `0 < npu_usage_threshold <= 100` 时启动；低于该阈值且虚推失败时累计失败次数 |
 | max_failure_count | int | `6` | 连续虚推失败次数上限（在累计条件满足后），达到后 Engine Server `/status` 返回 abnormal |
 | health_collector_timeout | int | `2` | 推理面 `GET /health` 探测超时（秒）；虚推启动的前置条件 |
 

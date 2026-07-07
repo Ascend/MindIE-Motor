@@ -22,6 +22,8 @@ Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参�
 
 虚推用于在业务低负载时主动探测推理引擎是否可用，配置项位于 `user_config` 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 **`health_check_config`**，参数说明见 [配置参考第 6 节](../../user_guide/deployment/k8s/config_reference.md#6-motor_engine_prefill_config--motor_engine_decode_configpd-引擎)。
 
+**版本要求**：虚推仅支持 **HDK 26.0.RC1** 及以后版本。
+
 **启用条件**（须同时满足）：
 
 1. `health_check_config.enable_virtual_inference` 为 `true`
@@ -32,15 +34,17 @@ Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参�
 
 **虚推请求**：向推理面 `POST /v1/completions`，请求体为 `prompt: "1"`、`max_tokens: 1`。Decode 角色额外携带 `kv_transfer_params.do_virtual: true` 及 PD 分离相关字段。
 
+**NPU 负载采样**：使用 `npu-smi info watch -s u` 采集 **AI Cube 利用率**（AI Cube Usage）。启动虚推前会通过 `npu-smi info watch -h` 检查 help 是否包含 `u - AI Cube Usage`；若当前 HDK 不支持该指标，Engine Server 会自动关闭虚推。
+
 **动态探测间隔**：
 
-| AICore 峰值（约 3 秒采样窗口） | 下一轮间隔 |
-|-------------------------------|------------|
+| AI Cube 利用率峰值（约 3 秒采样窗口） | 下一轮间隔 |
+|--------------------------------------|------------|
 | ≥ 80% | 20 秒 |
 | < `npu_usage_threshold` | 5 秒（默认） |
 | `[npu_usage_threshold, 80%)` | 保持当前间隔不变 |
 
-**异常判定**：当 AICore 峰值低于 `npu_usage_threshold` 且虚推请求失败时，累计连续失败次数；达到 `max_failure_count` 后，`GET /status` 返回 `abnormal`。Node Manager 的 `HeartbeatManager` 连续 5 次收到 abnormal 后触发自杀重调度。
+**异常判定**：当 AI Cube 利用率峰值低于 `npu_usage_threshold` 且虚推请求失败时，累计连续失败次数；达到 `max_failure_count` 后，`GET /status` 返回 `abnormal`。Node Manager 的 `HeartbeatManager` 连续 5 次收到 abnormal 后触发自杀重调度。
 
 **vLLM 指标过滤（v0.18+）**：启用虚推时，Engine Server 会 patch vLLM `OutputProcessor._update_stats_from_finished`，在写入 per-request 指标前跳过 `external_req_id` 含 `_virtual` 后缀的虚推请求（对应虚推 `X-Request-Id: {timestamp}_virtual`）。仅过滤 `request_success_total` 等 per-request 指标；`prompt_tokens` / `generation_tokens` 等 iteration 级 counter 仍会累计。
 

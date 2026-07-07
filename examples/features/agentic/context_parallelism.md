@@ -8,7 +8,7 @@
 - **跨节点 PCP**：PCP rank 分布在多个节点的 NPU 上，PyMotor 自动化处理节点注册、主从分配、通信地址注入等全流程。
 
 > 关于 vLLM Ascend 跨节点 PCP 的底层原理与参数说明，请参考 vLLM 社区文档：
-> 👉 **[长序列上下文并行的多节点部署](https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/latest/tutorials/features/long_sequence_context_parallel_multi_node.html)**
+> 👉 **[长序列上下文并行的多节点部署](https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/v0.18.0/tutorials/features/long_sequence_context_parallel_multi_node.html)**
 
 ## 跨节点 PCP 在 PyMotor 中的使用
 
@@ -66,7 +66,7 @@
 
 ### 从节点 SimInference 处理
 
-跨节点 PCP 的从节点不启动 API 服务器（headless 模式），MgmtEndpoint 的 `/status` 健康检查通过 NPU AICore 使用率监控实现，虚拟推理请求自动禁用。
+跨节点 PCP 的从节点不启动 API 服务器（headless 模式），MgmtEndpoint 的 `/status` 健康检查通过 AI Cube 利用率监控实现，虚拟推理请求自动禁用。
 
 ### 调度模式（Coordinator 侧）
 
@@ -94,4 +94,4 @@
 
 CLI 参数与 `engine_config` 键名的完整映射关系详见：
 
-👉 **[CLI 参数与 engine_config 映射指南](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/user_guide/cli_to_engine_config_guide.md)**
+👉 **[CLI 参数与 engine_config 映射指南](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/user_guide/operations/cli_to_engine_config_guide.md)**

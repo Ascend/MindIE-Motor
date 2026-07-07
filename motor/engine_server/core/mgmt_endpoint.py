@@ -83,6 +83,13 @@ class MgmtEndpoint(Endpoint):
         # Headless follower nodes have no API server, disable virtual inference
         if getattr(args, 'headless', False) and hasattr(health_check_config, 'enable_virtual_inference'):
             health_check_config.enable_virtual_inference = False
+        # Only DP0 performs virtual inference
+        if endpoint_config.dp_rank != 0 and hasattr(health_check_config, 'enable_virtual_inference'):
+            health_check_config.enable_virtual_inference = False
+            logger.info(
+                "Virtual inference is disabled on DP rank %s (only DP0 performs virtual inference)",
+                endpoint_config.dp_rank,
+            )
         self.sim_inference = SimInference(
             args,
             infer_tls_config,
