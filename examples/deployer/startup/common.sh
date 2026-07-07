@@ -248,7 +248,7 @@ set_a5_engine_env() {
     fi
 
     export PATH="$PATH:/usr/local/go/bin"
-    export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/lib64:${LD_LIBRARY_PATH:-}"
     export ASCEND_LOCAL_COMM_RES_PATH="${ASCEND_LOCAL_COMM_RES_PATH:-/etc/hixlep}"
 }
 

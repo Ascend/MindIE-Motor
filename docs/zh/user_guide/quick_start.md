@@ -61,7 +61,7 @@
      vim ../infer_engines/vllm/user_config.json
      ```
 
-   user_config.json文件**完整示例**如下（可直接复制使用，4项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./deployment/k8s/config_reference.md)。）：
+   user_config.json文件**完整示例**如下（可直接复制使用，5项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./deployment/k8s/config_reference.md)。）：
 
       ```json
       {
@@ -76,7 +76,7 @@
           "image_name": "xxxxxxx 镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
           "job_id": "mindie-motor",
           "hardware_type": "xxxxxx 硬件类型。A2：800I_A2 A3：800I_A3",
-          "weight_mount_path": "/mnt/weight/"
+          "weight_mount_path": "xxxxxx 权重文件路径。例如：/mnt/weight/qwen3_8B"
         },
         "motor_controller_config": {},
         "motor_coordinator_config": {},
