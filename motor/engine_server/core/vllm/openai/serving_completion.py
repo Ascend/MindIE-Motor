@@ -22,15 +22,16 @@
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.openai.completion.serving import OpenAIServingCompletion as VllmOpenAIServingCompletion
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest, CompletionResponse
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 
-from motor.engine_server.core.vllm.vllm_openai_compat import kwargs_matching_signature
+from motor.engine_server.core.vllm.vllm_openai_compat import (
+    RequestLogger,
+    kwargs_matching_signature,
+    openai_http_response_from_generator,
+)
 
 
 class OpenAIServingCompletion:
@@ -62,10 +63,4 @@ class OpenAIServingCompletion:
 
     async def handle_request(self, request: CompletionRequest, raw_request: Request):
         generator = await self._vllm_serving_completion.create_completion(request, raw_request)
-
-        if isinstance(generator, ErrorResponse):
-            return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
-        elif isinstance(generator, CompletionResponse):
-            return JSONResponse(content=generator.model_dump())
-
-        return StreamingResponse(content=generator, media_type="text/event-stream")
+        return openai_http_response_from_generator(generator, CompletionResponse)

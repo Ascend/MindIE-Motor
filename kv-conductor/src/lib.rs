@@ -22,7 +22,6 @@ pub mod events;
 pub mod hashing;
 pub mod indexer;
 pub mod protocols;
-pub mod radix_tree;
 pub mod registry;
 pub mod server;
 
@@ -35,11 +34,10 @@ pub use error::KvConductorError;
 pub use hashing::compute_block_hash_for_seq;
 pub use indexer::Indexer;
 pub use protocols::{
-    DpRank, ErrorResponse, EventsResponse, HbmIpIndex, InstanceId, InstanceMatchData, KvCacheEvent,
-    KvCacheEventData, KvCacheStoreData, KvCacheStoredBlockData, KvEventBatch, KvEventWirePayload,
-    LocalBlockHash, OverlapScores, QueryByHashRequest, QueryRequest, QueryResponse,
-    RegisterRequest, SequenceBlockHash, StatusResponse, StorageMedium, UnregisterRequest,
-    WorkerKey,
+    DpRank, HbmIpIndex, InstanceId, InstanceMatchData, KvCacheEvent, KvCacheEventData,
+    KvCacheStoreData, KvCacheStoredBlockData, KvEventBatch, KvEventWirePayload, LocalBlockHash,
+    OverlapScores, QueryByHashRequest, QueryRequest, QueryResponse, RegisterRequest,
+    SequenceBlockHash, StorageMedium, UnregisterRequest, WorkerKey,
 };
 pub use registry::WorkerRegistry;
 pub use server::create_router;

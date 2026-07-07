@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Patch only when the installed vLLM base version matches
-TARGET_VLLM_VERSIONS = ("0.20.2", "0.21.0", "0.22.1")
+TARGET_VLLM_VERSIONS = ("0.20.2", "0.21.0", "0.22.1", "0.23.0")
 
 # Patch list
 PATCH_SPECS = [

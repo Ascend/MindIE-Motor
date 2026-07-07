@@ -43,7 +43,4 @@ pub enum KvConductorError {
 
     #[error("internal error: {0}")]
     Internal(String),
-
-    #[error("replay in progress — rejecting query to avoid incomplete results")]
-    ReplayInProgress,
 }

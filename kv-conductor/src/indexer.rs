@@ -114,20 +114,7 @@ impl IndexerEntry {
         let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
         let hash_us = t_hash.elapsed().as_micros();
 
-        let mut scores = OverlapScores::new();
-
-        // --- HBM: prefix-chain tree ---
-        let hbm_scores = self.hbm_tree.find_matches(&block_hashes);
-        for (worker, depth) in hbm_scores.scores {
-            scores.add_score(worker, depth * cfg.hbm_weight);
-        }
-
-        // --- CPU + Disk: flat lookup (parallel for large hash sets) ---
-        if block_hashes.len() > FLAT_PAR_THRESHOLD {
-            self.flat_lookup_parallel(&block_hashes, cfg, &mut scores);
-        } else {
-            self.flat_lookup_sequential(&block_hashes, cfg, &mut scores);
-        }
+        let scores = self.find_matches_by_hash(&block_hashes, cfg);
 
         tracing::debug!(
             num_tokens = token_ids.len(),
@@ -145,7 +132,7 @@ impl IndexerEntry {
         block_hashes: &[LocalBlockHash],
         cfg: &ScoringConfig,
     ) -> OverlapScores {
-        let mut scores = OverlapScores::new();
+        let mut scores = OverlapScores::default();
 
         let hbm_scores = self.hbm_tree.find_matches(block_hashes);
         for (worker, depth) in hbm_scores.scores {
@@ -205,7 +192,7 @@ impl IndexerEntry {
             || {
                 block_hashes
                     .par_iter()
-                    .fold(OverlapScores::new, |mut acc, hash| {
+                    .fold(OverlapScores::default, |mut acc, hash| {
                         if let Some(workers) = cpu.get(hash) {
                             for w in workers {
                                 acc.add_score(w.clone(), cfg.cpu_weight);
@@ -213,7 +200,7 @@ impl IndexerEntry {
                         }
                         acc
                     })
-                    .reduce(OverlapScores::new, |mut a, b| {
+                    .reduce(OverlapScores::default, |mut a, b| {
                         a.merge(b);
                         a
                     })
@@ -221,7 +208,7 @@ impl IndexerEntry {
             || {
                 block_hashes
                     .par_iter()
-                    .fold(OverlapScores::new, |mut acc, hash| {
+                    .fold(OverlapScores::default, |mut acc, hash| {
                         if let Some(workers) = disk.get(hash) {
                             for w in workers {
                                 acc.add_score(w.clone(), cfg.disk_weight);
@@ -229,7 +216,7 @@ impl IndexerEntry {
                         }
                         acc
                     })
-                    .reduce(OverlapScores::new, |mut a, b| {
+                    .reduce(OverlapScores::default, |mut a, b| {
                         a.merge(b);
                         a
                     })
@@ -436,7 +423,7 @@ impl IndexerEntry {
                     StorageMedium::Xpu | StorageMedium::Unknown => {
                         let mut lookups = self.lookups.write();
                         let lookup = lookups.entry(worker.clone()).or_default();
-                        self.hbm_tree.clear_worker(worker, lookup);
+                        self.hbm_tree.remove_worker(worker, lookup);
                         self.maybe_sweep_hbm();
                     }
                     StorageMedium::Cpu => {
@@ -447,25 +434,6 @@ impl IndexerEntry {
                     }
                 }
                 Ok(())
-            }
-        }
-    }
-
-    /// Remove a worker entirely from this indexer entry.
-    pub fn remove_worker(&self, worker: &WorkerKey) {
-        match worker.medium {
-            StorageMedium::Xpu | StorageMedium::Unknown => {
-                let mut lookups = self.lookups.write();
-                if let Some(lookup) = lookups.get_mut(worker) {
-                    self.hbm_tree.remove_worker_from_tree(worker, lookup);
-                }
-                lookups.remove(worker);
-            }
-            StorageMedium::Cpu => {
-                Self::flat_clear(&self.cpu_blocks, &self.cpu_lookups, worker);
-            }
-            StorageMedium::Disk => {
-                Self::flat_clear(&self.disk_blocks, &self.disk_lookups, worker);
             }
         }
     }
@@ -483,7 +451,7 @@ impl IndexerEntry {
                 .collect();
             for wk in &matching {
                 if let Some(lookup) = lookups.get_mut(wk) {
-                    self.hbm_tree.remove_worker_from_tree(wk, lookup);
+                    self.hbm_tree.remove_worker(wk, lookup);
                 }
                 lookups.remove(wk);
             }
@@ -610,7 +578,6 @@ impl Indexer {
         tenant_id: &str,
         token_ids: &[i64],
         block_size: u32,
-        hit_detail: bool,
     ) -> Result<QueryResponse, KvConductorError> {
         let t0 = std::time::Instant::now();
 
@@ -624,7 +591,7 @@ impl Indexer {
         let overlap = entry.find_matches(token_ids, block_size, &self.scoring);
         let t_tree = t0.elapsed();
 
-        let resp = self.build_response(overlap, tenant_id, block_size, hit_detail);
+        let resp = self.build_response(overlap, model_name, tenant_id, block_size);
         let total = t0.elapsed();
 
         tracing::debug!(
@@ -654,20 +621,20 @@ impl Indexer {
         let overlap = entry.find_matches_by_hash(block_hashes, &self.scoring);
         // Default to 1 token per hash (no scaling) since we don't know the
         // original block_size from the hash alone.
-        self.build_response(overlap, tenant_id, 1, false)
+        self.build_response(overlap, model_name, tenant_id, 1)
     }
 
     /// Build a `QueryResponse` from weighted overlap scores.
     fn build_response(
         &self,
         overlap: OverlapScores,
+        model_name: &str,
         tenant_id: &str,
         block_size: u32,
-        hit_detail: bool,
     ) -> Result<QueryResponse, KvConductorError> {
         if overlap.is_empty() {
             return Err(KvConductorError::NoWorkers {
-                model_name: String::new(),
+                model_name: model_name.to_string(),
                 tenant_id: tenant_id.to_string(),
             });
         }
@@ -678,58 +645,39 @@ impl Indexer {
             let dp_rank_str = worker.dp_rank.to_string();
 
             // Derive per-medium block count from the score and weight.
-            let (weight, matched_blocks) = match worker.medium {
-                StorageMedium::Xpu | StorageMedium::Unknown => {
-                    (self.scoring.hbm_weight, score / self.scoring.hbm_weight)
-                }
-                StorageMedium::Cpu => (self.scoring.cpu_weight, score / self.scoring.cpu_weight),
-                StorageMedium::Disk => (self.scoring.disk_weight, score / self.scoring.disk_weight),
+            let matched_blocks = match worker.medium {
+                StorageMedium::Xpu | StorageMedium::Unknown => score / self.scoring.hbm_weight,
+                StorageMedium::Cpu => score / self.scoring.cpu_weight,
+                StorageMedium::Disk => score / self.scoring.disk_weight,
             };
             let matched_tokens = matched_blocks * block_size;
-            let _ = weight;
 
             let imd = instance_data.entry(worker.instance_id.clone()).or_default();
 
-            // Per-instance legacy tokens (for backward compat)
             imd.longest_matched = imd.longest_matched.max(matched_tokens);
 
-            match worker.medium {
-                StorageMedium::Xpu | StorageMedium::Unknown => {
-                    imd.xpu = imd.xpu.max(matched_tokens);
-                }
-                StorageMedium::Cpu => imd.cpu = imd.cpu.max(matched_tokens),
-                StorageMedium::Disk => imd.disk = imd.disk.max(matched_tokens),
-            }
-
-            // Per-DP scoring breakdown
-            let dp_score = imd.dp.entry(dp_rank_str.clone()).or_default();
+            let dp_score = imd.dp.entry(dp_rank_str).or_default();
             match worker.medium {
                 StorageMedium::Xpu | StorageMedium::Unknown => {
                     dp_score.xpu_score = dp_score.xpu_score.max(score);
+                    dp_score.xpu_blocks = dp_score.xpu_blocks.max(matched_blocks);
                 }
-                StorageMedium::Cpu => dp_score.cpu_score = dp_score.cpu_score.max(score),
-                StorageMedium::Disk => dp_score.disk_score = dp_score.disk_score.max(score),
+                StorageMedium::Cpu => {
+                    dp_score.cpu_score = dp_score.cpu_score.max(score);
+                    dp_score.cpu_blocks = dp_score.cpu_blocks.max(matched_blocks);
+                }
+                StorageMedium::Disk => {
+                    dp_score.disk_score = dp_score.disk_score.max(score);
+                    dp_score.disk_blocks = dp_score.disk_blocks.max(matched_blocks);
+                }
             }
             dp_score.matched_tokens = dp_score.matched_tokens.max(matched_tokens);
             dp_score.total = dp_score.xpu_score + dp_score.cpu_score + dp_score.disk_score;
+        }
 
-            // Instance total score (sum across DPs)
+        // Compute total_score once per instance after all DPs have been populated.
+        for imd in instance_data.values_mut() {
             imd.total_score = imd.dp.values().map(|s| s.total).sum();
-
-            if hit_detail {
-                let detail = imd
-                    .media_detail
-                    .get_or_insert_with(HashMap::new)
-                    .entry(dp_rank_str.clone())
-                    .or_default();
-                match worker.medium {
-                    StorageMedium::Xpu | StorageMedium::Unknown => {
-                        detail.xpu = detail.xpu.max(matched_blocks);
-                    }
-                    StorageMedium::Cpu => detail.cpu = detail.cpu.max(matched_blocks),
-                    StorageMedium::Disk => detail.disk = detail.disk.max(matched_blocks),
-                }
-            }
         }
 
         let mut response = QueryResponse::default();
@@ -808,15 +756,15 @@ mod tests {
         entry.apply_event(&wk_xpu, &store).unwrap();
 
         // Query with the same tokens
-        let resp = indexer
-            .query("model-a", "tenant-1", &tokens, 4, false)
-            .unwrap();
+        let resp = indexer.query("model-a", "tenant-1", &tokens, 4).unwrap();
         let tenant = &resp.tenants["tenant-1"];
         let imd = &tenant["inst-1"];
-        assert!(imd.xpu > 0, "should have XPU match");
-        assert_eq!(imd.cpu, 0);
-        assert_eq!(imd.disk, 0);
-        assert_eq!(imd.longest_matched, imd.xpu);
+        let dp0 = &imd.dp["0"];
+        assert!(dp0.xpu_blocks > 0, "should have XPU match");
+        assert_eq!(dp0.cpu_blocks, 0);
+        assert_eq!(dp0.disk_blocks, 0);
+        assert!(dp0.matched_tokens > 0);
+        assert_eq!(imd.longest_matched, dp0.matched_tokens);
     }
 
     #[test]
@@ -873,26 +821,34 @@ mod tests {
             .unwrap();
 
         // Query with tokens_a — should match inst-1 (XPU) only
-        let resp = indexer.query("model-b", "t1", &tokens_a, 4, false).unwrap();
+        let resp = indexer.query("model-b", "t1", &tokens_a, 4).unwrap();
         let tenant = &resp.tenants["t1"];
 
         let imd1 = &tenant["inst-1"];
-        assert!(imd1.xpu > 0, "inst-1 should have XPU match for tokens_a");
-        assert_eq!(imd1.cpu, 0, "inst-1 should have no CPU match");
+        let dp0 = &imd1.dp["0"];
+        assert!(
+            dp0.xpu_blocks > 0,
+            "inst-1 should have XPU match for tokens_a"
+        );
+        assert_eq!(dp0.cpu_blocks, 0, "inst-1 should have no CPU match");
 
         // Query with tokens_b — should match inst-2 (CPU) only
-        let resp = indexer.query("model-b", "t1", &tokens_b, 4, false).unwrap();
+        let resp = indexer.query("model-b", "t1", &tokens_b, 4).unwrap();
         let tenant = &resp.tenants["t1"];
 
         let imd2 = &tenant["inst-2"];
-        assert_eq!(imd2.xpu, 0, "inst-2 should have no XPU match");
-        assert!(imd2.cpu > 0, "inst-2 should have CPU match for tokens_b");
+        let dp2 = &imd2.dp["0"];
+        assert_eq!(dp2.xpu_blocks, 0, "inst-2 should have no XPU match");
+        assert!(
+            dp2.cpu_blocks > 0,
+            "inst-2 should have CPU match for tokens_b"
+        );
     }
 
     #[test]
     fn test_no_indexer_error() {
         let indexer = Indexer::new(ScoringConfig::default());
-        let err = indexer.query("no-such-model", "default", &[1, 2, 3, 4], 4, false);
+        let err = indexer.query("no-such-model", "default", &[1, 2, 3, 4], 4);
         assert!(err.is_err());
         assert!(matches!(
             err.unwrap_err(),

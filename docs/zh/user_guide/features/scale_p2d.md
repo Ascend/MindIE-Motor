@@ -39,7 +39,7 @@ ScaleP2D 恢复大致分为四步：
 | 步骤 | 说明 |
 |------|------|
 | 1. 加载 D 实例 | 统计 D 实例上 L3+ 故障节点数（缺失元数据视同故障），计算需腾出的节点数 `num_required_node` |
-| 2. 检查 D 隔离状态 | D 仍为 `initial` / `active` 时不执行抢占；`inactive` 等可抢占状态最多等待 30s |
+| 2. 等待 D 自恢复 | 在 `scale_p2d_d_instance_reinit_wait_timeout` 内轮询 D 实例状态；若恢复为 `initial` / `active` 则取消 ScaleP2D；超时后若仍为 `inactive` 等可抢占状态则继续 |
 | 3. 选择 P 实例 | 在可用 P 容量内选取待停止的 P 实例（可用节点 = `nodes_per_P × (P_count - 1)`） |
 | 4. 停止 P 实例 | 对选中 P 实例的所有 NodeManager 下发 `stop`，由 CRD 强制回收 Pod 并释放节点 |
 
@@ -55,6 +55,7 @@ ScaleP2D 恢复大致分为四步：
 |--------|------|------|
 | `enable_fault_tolerance` | bool | 须 `true` 才启动 FaultManager |
 | `enable_scale_p2d` | bool | 是否启用 ScaleP2D（用户侧默认 `false`） |
+| `scale_p2d_d_instance_reinit_wait_timeout` | int | ScaleP2D 执行抢占前，等待 D 实例自恢复（重初始化）的最长时间（秒）。等待期间若 D 实例恢复为 `initial` / `active`，则不再执行 ScaleP2D；超时后若 D 实例仍处于 `inactive` 等可抢占状态，则继续后续 P 实例选择流程。默认：`60` |
 | `strategy_center_check_interval` | int | 策略中心轮询间隔（秒） |
 
 ```json
@@ -62,6 +63,7 @@ ScaleP2D 恢复大致分为四步：
   "fault_tolerance_config": {
     "enable_fault_tolerance": true,
     "enable_scale_p2d": true,
+    "scale_p2d_d_instance_reinit_wait_timeout": 60,
     "strategy_center_check_interval": 1
   }
 }

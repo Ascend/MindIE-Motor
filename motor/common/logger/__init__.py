@@ -9,6 +9,7 @@
 #  See the Mulan PSL v2 for more details.
 
 __all__ = [
+    "attach_to_vllm_logger",
     "CompressedRotatingFileHandler",
     "get_logger",
     "reconfigure_logging",
@@ -23,6 +24,7 @@ __all__ = [
 from .formatter import ColoredFormatter, NewLineFormatter
 from .logger_handler import CompressedRotatingFileHandler
 from .logger import (
+    attach_to_vllm_logger,
     get_logger,
     reconfigure_logging,
     ProcessContextFilter,

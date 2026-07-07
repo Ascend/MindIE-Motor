@@ -21,8 +21,36 @@
 | `--env_config_path` | `--env` | 环境配置文件路径，与 `--config` 必须同时指定 |
 | `--update_config` | - | 仅更新 ConfigMap，不重新部署 |
 | `--update_instance_num` | - | 根据配置扩缩容实例数量 |
+| `--dry-run` | - | 仅生成 YAML 文件，不执行 kubectl apply |
+| `--auto_log_collect` | - | 部署完成后自动启动日志采集 |
+| `--nostep` | - | 部署完成后不显示服务启动进度条 |
 
 ### 使用方式
+
+#### 方式零：交互式 TUI 模式
+
+```bash
+python deploy.py
+```
+
+**不带任何参数**启动 `deploy.py` 会进入交互式终端 UI（TUI），提供可视化的服务管理界面：
+
+| 操作 | 按键 | 说明 |
+|------|------|------|
+| 部署服务 | `R` | 输入配置目录路径，执行部署 |
+| 显示启动进度 | `P` | 打开/关闭内嵌进度条，实时查看各 Engine Pod 启动状态 |
+| 日志采集 | `L` | 启动/重启日志采集 |
+| 更新配置 | `U` | 更新集群 ConfigMap |
+| 删除服务 | `D` | 输入 namespace 并确认后删除所有服务 |
+| 退出 | `Q` | 退出 TUI |
+
+**交互方式：**
+
+- `↑` `↓` 或 vim 风格 `j` `k` 导航菜单
+- `Enter` 选中当前高亮项
+- 也可直接按菜单项的字母键（`[R]` `[P]` `[L]` `[U]` `[D]` `[Q]`）快速触发
+
+> 已部署状态下，进度监控（`P`）会自动发现 Running 的 vLLM Pod，通过尾随 `kubectl logs` 解析启动日志，在菜单下方绘制每个 Pod 的实时进度条，并展示 Pod 就绪状态（`kubectl get pods`）。
 
 #### 方式一：指定配置目录（推荐）
 
@@ -126,4 +154,4 @@ examples/infer_engines/
 
 CLI 参数与 `engine_config` 键名的完整映射关系详见：
 
-👉 **[CLI 参数与 engine_config 映射指南](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/user_guide/operations/cli_to_engine_config_guide.md)**
+👉 **[CLI 参数与 engine_config 映射指南](../../docs/zh/user_guide/operations/cli_to_engine_config_guide.md)**

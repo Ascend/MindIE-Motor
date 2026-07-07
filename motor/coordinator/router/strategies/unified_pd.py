@@ -11,9 +11,9 @@
 import asyncio
 import time
 from contextlib import aclosing
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
-import anyio
 import httpx
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -22,6 +22,7 @@ import motor.common.utils.error as cancel_error
 from motor.common.resources.dispatch import (
     DispatchPlan,
     DispatchStopReason,
+    dispatch_plans_from_capabilities,
     MOTOR_DISPATCH_KEY,
     MOTOR_PREFILL_RESULT_KEY,
     PrefillResult,
@@ -30,7 +31,11 @@ from motor.common.resources.dispatch import (
 from motor.common.resources.endpoint import WorkloadAction
 from motor.common.resources.instance import PDRole
 from motor.config.coordinator import CoordinatorConfig
-from motor.coordinator.domain import ScheduledResource, SchedulingFacade, UpdateWorkloadParams
+from motor.coordinator.domain import (
+    ScheduledResource,
+    SchedulingFacade,
+    UpdateWorkloadParams,
+)
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.router.dispatch_session import (
@@ -41,7 +46,10 @@ from motor.coordinator.router.dispatch_session import (
 from motor.coordinator.router.dispatch_capability import select_dispatch_plan_for_pair
 from motor.coordinator.router.stop_client import DispatchStopClient
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
-from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
+from motor.coordinator.router.rescheduler.rescheduler import (
+    Rescheduler,
+    RetryRequestPlan,
+)
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.precision_sample.request import inject_logprobs
 from motor.coordinator.router.precision_sample import response as sampling_resp
@@ -60,6 +68,44 @@ from motor.coordinator.router.adapters.stream import (
 )
 
 
+@dataclass(frozen=True)
+class ReleaseWorkItem:
+    stage: str
+    params: UpdateWorkloadParams
+    attempt_seq: int
+    role: PDRole
+    action: WorkloadAction
+    attempt: AttemptContext | None = None
+
+
+@dataclass(frozen=True)
+class ReleaseTaskContext:
+    stage: str
+    req_id: str
+    attempt_seq: int
+    instance_id: int
+    endpoint_id: int
+    role: PDRole
+    action: WorkloadAction
+
+
+ReleaseKey = tuple[str, int, PDRole, WorkloadAction]
+
+
+@dataclass
+class _ReleaseTaskRecord:
+    """Bookkeeping for a single in-flight background release task.
+
+    Consolidates what used to be four parallel dicts keyed by the task: the dedup
+    key, the logging context, and the work item (populated once the release payload
+    has been computed inside the task).
+    """
+
+    key: ReleaseKey
+    context: ReleaseTaskContext
+    item: ReleaseWorkItem | None = None
+
+
 class UnifiedPDRouter(BaseRouter):
     """Unified P/D pair router behind feature flag.
 
@@ -68,6 +114,10 @@ class UnifiedPDRouter(BaseRouter):
     """
 
     _DISPATCH_MODE = "pd_pair"
+
+    # Background workload-release RPC retry policy.
+    _RELEASE_RPC_ATTEMPTS = 3
+    _RELEASE_RPC_BACKOFF_BASE_S = 0.05
 
     def __init__(
         self,
@@ -79,7 +129,12 @@ class UnifiedPDRouter(BaseRouter):
         sampling_manager=None,
     ):
         super().__init__(
-            req_info, config, scheduler, request_manager, workload_action_handler, sampling_manager=sampling_manager
+            req_info,
+            config,
+            scheduler,
+            request_manager,
+            workload_action_handler,
+            sampling_manager=sampling_manager,
         )
         self.rescheduler = Rescheduler(
             config.exception_config.reschedule_enabled,
@@ -89,6 +144,10 @@ class UnifiedPDRouter(BaseRouter):
         self._stream_commit_controller: StreamCommitController | None = None
         self._stream_body_sent = False
         self._active_retry_plan: RetryRequestPlan | None = None
+        # Task -> its bookkeeping record (dedup key, logging context, computed work item).
+        self._release_records: dict[asyncio.Task[bool], _ReleaseTaskRecord] = {}
+        # Dedup reverse index: release key -> the single in-flight task for that key.
+        self._release_inflight: dict[ReleaseKey, asyncio.Task[bool]] = {}
 
     def _capture_prompt_tokens_details(self, body: dict[str, Any]) -> None:
         candidates = [body]
@@ -176,16 +235,24 @@ class UnifiedPDRouter(BaseRouter):
                         dispatch_plan = self._select_dispatch_plan(attempt)
                         if attempt_index > 0:
                             self.logger.warning(
-                                f"Rescheduling[{attempt_index}/{max_retry}]: P=[{attempt.prefill_resource.endpoint.ip} "
-                                f"{attempt.prefill_resource.instance.job_name}] "
-                                f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
+                                f"Rescheduling[{attempt_index}/{max_retry}]: "
+                                f"P=[{self._resource_label(attempt.prefill_resource)}] "
+                                f"D=[{self._resource_label(attempt.decode_resource)}]"
                             )
                         attempt.transition(AttemptState.DISPATCHING)
                         async with aclosing(self._run_stream_attempt(attempt, dispatch_plan)) as attempt_stream:
                             async for chunk in attempt_stream:
                                 attempt.transition(AttemptState.FIRST_VISIBLE)
                                 yield chunk
-                        await self._release_attempt(attempt)
+                        await self._release_attempt(attempt, wait=False)
+                        try:
+                            await self._drain_release_tasks()
+                        except asyncio.CancelledError:
+                            self.logger.warning(
+                                "Unified PD stream cancelled while draining release tasks req_id=%s attempt=%s",
+                                self.req_info.req_id,
+                                attempt.attempt_seq,
+                            )
                         attempt.transition(AttemptState.DONE)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
                         return
@@ -204,7 +271,10 @@ class UnifiedPDRouter(BaseRouter):
                     finally:
                         if attempt is not None:
                             attempt.unregister_canceller()
-                            if attempt.state not in (AttemptState.DONE, AttemptState.STOPPED):
+                            if attempt.state not in (
+                                AttemptState.DONE,
+                                AttemptState.STOPPED,
+                            ):
                                 await self._stop_attempt(attempt, cleanup_reason)
 
     async def _generate_response(self) -> JSONResponse:
@@ -223,9 +293,9 @@ class UnifiedPDRouter(BaseRouter):
                         if attempt_index > 0:
                             self.rescheduler.retry_count = attempt_index
                             self.logger.warning(
-                                f"Rescheduling[{attempt_index}/{max_retry}]: P=[{attempt.prefill_resource.endpoint.ip} "
-                                f"{attempt.prefill_resource.instance.job_name}] "
-                                f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}]"
+                                f"Rescheduling[{attempt_index}/{max_retry}]: "
+                                f"P=[{self._resource_label(attempt.prefill_resource)}] "
+                                f"D=[{self._resource_label(attempt.decode_resource)}]"
                             )
                         attempt.transition(AttemptState.DISPATCHING)
                         body = await self._run_nonstream_attempt(attempt, dispatch_plan)
@@ -272,10 +342,9 @@ class UnifiedPDRouter(BaseRouter):
 
         if attempt:
             error_msg = str(
-                f"{label}: P=[{attempt.prefill_resource.endpoint.ip} "
-                f"{attempt.prefill_resource.instance.job_name}] "
-                f"D=[{attempt.decode_resource.endpoint.ip} {attempt.decode_resource.instance.job_name}] "
-                f"because of {reason_str}, {retry=}"
+                f"{label}: P=[{self._resource_label(attempt.prefill_resource)}] "
+                f"D=[{self._resource_label(attempt.decode_resource)}] because of "
+                f"{reason_str}, {retry=}"
             )
             trace_obj.set_trace_error_message(error_msg)
             self.logger.warning("%s", error_msg)
@@ -299,15 +368,22 @@ class UnifiedPDRouter(BaseRouter):
             return DispatchStopReason.CLIENT_DISCONNECT
         return DispatchStopReason.OTHER
 
+    @staticmethod
+    def _resource_label(resource: ScheduledResource | None) -> str:
+        if resource is None:
+            return "pending"
+        return f"{resource.endpoint.ip} {resource.instance.job_name}"
+
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
-        # Homogeneous cluster: every prefill is dispatch-compatible with every decode, so a P/D pair
-        # is just two independent single-role allocations. Each leg goes through select_and_allocate
-        # and gets the scheduler's authoritative fresh-load arbitration (plus KV affinity on the
-        # prefill leg); if the decode allocation fails after prefill committed, the prefill leg is
-        # released below. (Heterogeneous P/D compatibility, when needed, is modeled above the
-        # instance layer, not here.)
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
+
+        # Handoff connectors (CPCD-style) do not need a concrete decode endpoint while prefill runs.
+        # Allocate D after prefill completes so long prompts do not reserve stale decode workload for
+        # the entire prefill window. Concurrent connectors still allocate both legs up front.
+        if self._should_defer_decode_allocation(p_resource):
+            return session.new_attempt(p_resource, None, self.config)
+
         try:
             d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt_seq)
         except Exception as e:
@@ -321,6 +397,15 @@ class UnifiedPDRouter(BaseRouter):
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_KV)
             raise
         return session.new_attempt(p_resource, d_resource, self.config)
+
+    @staticmethod
+    def _should_defer_decode_allocation(
+        prefill_resource: ScheduledResource | None,
+    ) -> bool:
+        if prefill_resource is None:
+            return False
+        plans = dispatch_plans_from_capabilities(getattr(prefill_resource.instance, "dispatch_capabilities", None))
+        return DispatchPlan.PREFILL_HANDOFF_DECODE in plans and DispatchPlan.CONCURRENT_ENGINE_SYNC not in plans
 
     async def _run_stream_attempt(
         self, attempt: AttemptContext, dispatch_plan: DispatchPlan
@@ -347,7 +432,10 @@ class UnifiedPDRouter(BaseRouter):
 
             async def prefill_task():
                 response = await self.forward_request(
-                    p_api, p_req, p_client, self.config.exception_config.first_token_timeout
+                    p_api,
+                    p_req,
+                    p_client,
+                    self.config.exception_config.first_token_timeout,
                 )
                 self._record_prefill_complete(response.json())
                 self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
@@ -362,6 +450,7 @@ class UnifiedPDRouter(BaseRouter):
                     stream_adapter_state,
                     sampling_state=sampling_state,
                     prefill_task=p_task,
+                    release_prefill_on_stream=True,
                 )
             ) as decode_stream:
                 async for chunk in decode_stream:
@@ -377,6 +466,7 @@ class UnifiedPDRouter(BaseRouter):
         *,
         sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
+        release_prefill_on_stream: bool = False,
     ) -> AsyncGenerator[str, None]:
         queue = asyncio.Queue(maxsize=1)
         terminal = asyncio.get_running_loop().create_future()
@@ -396,6 +486,7 @@ class UnifiedPDRouter(BaseRouter):
                 stream_adapter_state,
                 sampling_state=sampling_state,
                 prefill_task=prefill_task,
+                release_prefill_on_stream=release_prefill_on_stream,
             )
         ) as queue_stream:
             async for chunk in queue_stream:
@@ -441,8 +532,10 @@ class UnifiedPDRouter(BaseRouter):
         *,
         sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
+        release_prefill_on_stream: bool = False,
     ) -> AsyncGenerator[str, None]:
         queue_task: asyncio.Task | None = None
+        prefill_kv_release_submitted = False
         try:
             while True:
                 # Atomic non-blocking drain: get_nowait() either returns a queued chunk or raises,
@@ -474,6 +567,8 @@ class UnifiedPDRouter(BaseRouter):
                             await asyncio.gather(queue_task, return_exceptions=True)
                             await attempt.cancel(repr(error))
                             raise
+                        if release_prefill_on_stream:
+                            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                         prefill_task = None
 
                     if queue_task in done:
@@ -494,6 +589,8 @@ class UnifiedPDRouter(BaseRouter):
                         except BaseException as error:
                             await attempt.cancel(repr(error))
                             raise
+                        if release_prefill_on_stream:
+                            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                         prefill_task = None
                     if sampling_state is not None:
                         value = self._collect_logprobs_from_stream_chunk(value, sampling_state)
@@ -507,6 +604,9 @@ class UnifiedPDRouter(BaseRouter):
                         )
                     else:
                         value = self._merge_prompt_tokens_details_into_stream_chunk(value)
+                    if release_prefill_on_stream and not prefill_kv_release_submitted:
+                        self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_KV)
+                        prefill_kv_release_submitted = True
                     yield value
                 elif key == "done":
                     if prefill_task is not None:
@@ -518,6 +618,8 @@ class UnifiedPDRouter(BaseRouter):
                         except BaseException as error:
                             await attempt.cancel(repr(error))
                             raise
+                        if release_prefill_on_stream:
+                            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                         prefill_task = None
                     self.req_info.update_state(ReqState.DECODE_END)
                     if sampling_state is not None:
@@ -551,13 +653,21 @@ class UnifiedPDRouter(BaseRouter):
 
             async def prefill_task():
                 response = await self.forward_request(
-                    p_api, p_req, p_client, self.config.exception_config.first_token_timeout
+                    p_api,
+                    p_req,
+                    p_client,
+                    self.config.exception_config.first_token_timeout,
                 )
                 self._record_prefill_complete(response.json())
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
             return await self._await_nonstream_decode(
-                attempt, d_api, d_req, d_client, sampling_state=sampling_state, prefill_task=p_task
+                attempt,
+                d_api,
+                d_req,
+                d_client,
+                sampling_state=sampling_state,
+                prefill_task=p_task,
             )
 
     async def _await_nonstream_decode(
@@ -580,20 +690,35 @@ class UnifiedPDRouter(BaseRouter):
                 return None, e
 
         d_task = attempt.register_decode_task(asyncio.create_task(decode_task()))
-        response, error = await d_task
-        if error:
-            await attempt.cancel(repr(error))
-            await self._release_attempt(attempt)
-            raise error
         try:
+            while True:
+                waitables = [d_task]
+                if prefill_task is not None:
+                    waitables.append(prefill_task)
+                done, _ = await asyncio.wait(waitables, return_when=asyncio.FIRST_COMPLETED)
+                if prefill_task is not None and prefill_task in done:
+                    await prefill_task
+                    self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
+                    prefill_task = None
+                if d_task in done:
+                    break
+
+            response, error = await d_task
+            if error:
+                await attempt.cancel(repr(error))
+                await self._release_attempt(attempt, wait=False)
+                await self._drain_release_tasks()
+                raise error
             if prefill_task is not None:
                 await prefill_task
+                self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
             self.req_info.update_state(ReqState.DECODE_END)
             if sampling_state is not None:
                 response = self._collect_logprobs_from_nonstream_body(response, sampling_state)
                 await self._maybe_submit_sample(attempt, sampling_state)
                 self._strip_logprobs_for_client(response, sampling_state)
-            await self._release_attempt(attempt)
+            await self._release_attempt(attempt, wait=False)
+            await self._drain_release_tasks()
             return response
         except (asyncio.CancelledError, Exception) as e:
             self.logger.warning(
@@ -603,19 +728,30 @@ class UnifiedPDRouter(BaseRouter):
                 e,
             )
             await attempt.cancel(repr(e))
-            await self._release_attempt(attempt)
+            await self._release_attempt(attempt, wait=False)
+            await self._drain_release_tasks()
             raise
 
     async def _run_handoff_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
         stream_adapter_state = {}
         sampling_state = self._init_sampling_state()
-        async with (
-            self._client_for(attempt.prefill_resource) as p_client,
-            self._client_for(attempt.decode_resource) as d_client,
-        ):
+        async with self._client_for(attempt.prefill_resource) as p_client:
             prefill_result = await self._await_handoff_prefill(attempt, p_client)
-            d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+
+        self._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        late_decode = await self._ensure_handoff_decode_resource(attempt)
+        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+        prefill_kv_released = False
+        async with self._client_for(attempt.decode_resource) as d_client:
+            if late_decode:
+                # Client is now in the pool; the canceller can bind to it.
+                attempt.register_decode_canceller()
             async with aclosing(
                 self._run_stream_decode_phase(
                     attempt,
@@ -627,18 +763,73 @@ class UnifiedPDRouter(BaseRouter):
                 )
             ) as decode_stream:
                 async for chunk in decode_stream:
+                    if not prefill_kv_released and chunk:
+                        self._submit_release_attempt_resource_background(
+                            attempt.prefill_resource,
+                            attempt.attempt_seq,
+                            WorkloadAction.RELEASE_KV,
+                            attempt,
+                        )
+                        prefill_kv_released = True
                     yield chunk
 
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
         sampling_state = self._init_sampling_state()
-        async with (
-            self._client_for(attempt.prefill_resource) as p_client,
-            self._client_for(attempt.decode_resource) as d_client,
-        ):
+        async with self._client_for(attempt.prefill_resource) as p_client:
             prefill_result = await self._await_handoff_prefill(attempt, p_client)
-            d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+
+        self._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        late_decode = await self._ensure_handoff_decode_resource(attempt)
+        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+        async with self._client_for(attempt.decode_resource) as d_client:
+            if late_decode:
+                # Client is now in the pool; the canceller can bind to it.
+                attempt.register_decode_canceller()
             return await self._await_nonstream_decode(attempt, d_api, d_req, d_client, sampling_state=sampling_state)
+
+    async def _ensure_handoff_decode_resource(self, attempt: AttemptContext) -> bool:
+        """Lazily allocate the decode leg for a handoff attempt.
+
+        Returns True when the decode resource was allocated by this call. In that case the
+        caller must register the decode canceller *after* opening the decode client, because
+        the canceller can only bind once the client exists in the pool (see the callers).
+        """
+        if attempt.decode_resource is not None:
+            return False
+        start = time.perf_counter()
+        d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt.attempt_seq)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        self.logger.info(
+            "Scheduling latency stage=late_select_d elapsed_ms=%.2f instance_id=%s endpoint_id=%s req_id=%s",
+            elapsed_ms,
+            d_resource.instance.id,
+            d_resource.endpoint.id,
+            self.req_info.req_id,
+        )
+        attempt.decode_resource = d_resource
+        try:
+            dispatch_plan = select_dispatch_plan_for_pair(
+                prefill=attempt.prefill_resource,
+                decode=attempt.decode_resource,
+            )
+            if dispatch_plan != DispatchPlan.PREFILL_HANDOFF_DECODE:
+                raise RuntimeError(f"Late decode allocation selected unsupported plan: {dispatch_plan}")
+        except Exception:
+            await self._release_attempt_resource(
+                d_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+            )
+            attempt.decode_resource = None
+            raise
+        return True
 
     async def _await_handoff_prefill(self, attempt: AttemptContext, p_client) -> PrefillResult:
         async def prefill_task():
@@ -650,11 +841,15 @@ class UnifiedPDRouter(BaseRouter):
         return await p_task
 
     def _request_for_attempt(
-        self, attempt: AttemptContext, role: PDRole, *, prefill_result: PrefillResult | None = None
+        self,
+        attempt: AttemptContext,
+        role: PDRole,
+        *,
+        prefill_result: PrefillResult | None = None,
     ) -> (dict[str, Any], str):
         api = self.req_info.entry_api
         req = self.req_info.req_data.copy()
-        stream = self.req_info.req_data.get('stream', False)
+        stream = self.req_info.req_data.get("stream", False)
         req["request_id"] = f"{attempt.root_request_id}#a{attempt.attempt_seq}"
         if role == PDRole.ROLE_P:
             req["stream"] = False
@@ -707,6 +902,10 @@ class UnifiedPDRouter(BaseRouter):
             raise RuntimeError(f"Unexpected PrefillResult status: {prefill_result.status}")
 
     def _select_dispatch_plan(self, attempt: AttemptContext) -> DispatchPlan:
+        if attempt.decode_resource is None:
+            if self._should_defer_decode_allocation(attempt.prefill_resource):
+                return DispatchPlan.PREFILL_HANDOFF_DECODE
+            raise RuntimeError("Decode resource is required before selecting a concurrent P/D dispatch plan")
         return select_dispatch_plan_for_pair(
             prefill=attempt.prefill_resource,
             decode=attempt.decode_resource,
@@ -738,18 +937,40 @@ class UnifiedPDRouter(BaseRouter):
                 f"Request {self.req_info.req_id} already allocated for attempt {attempt_seq} role {role}"
             )
 
-    async def _release_attempt(self, attempt: AttemptContext) -> None:
+    async def _release_attempt(self, attempt: AttemptContext, *, wait: bool = True) -> None:
         if attempt.prefill_resource:
             await self._release_attempt_resource(
-                attempt.prefill_resource, attempt.attempt_seq, WorkloadAction.RELEASE_TOKENS, attempt
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+                wait=wait,
             )
             await self._release_attempt_resource(
-                attempt.prefill_resource, attempt.attempt_seq, WorkloadAction.RELEASE_KV, attempt
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_KV,
+                attempt,
+                wait=wait,
             )
         if attempt.decode_resource:
             await self._release_attempt_resource(
-                attempt.decode_resource, attempt.attempt_seq, WorkloadAction.RELEASE_TOKENS, attempt
+                attempt.decode_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+                wait=wait,
             )
+
+    def _submit_prefill_release_background(self, attempt: AttemptContext, action: WorkloadAction) -> None:
+        if attempt.prefill_resource is None:
+            return
+        self._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            action,
+            attempt,
+        )
 
     async def _release_attempt_resource(
         self,
@@ -757,9 +978,116 @@ class UnifiedPDRouter(BaseRouter):
         attempt_seq: int,
         action: WorkloadAction,
         attempt: AttemptContext | None = None,
+        *,
+        wait: bool = True,
     ) -> bool:
-        if attempt is not None and self._release_already_marked(attempt, resource, action):
+        task = self._enqueue_release_attempt_resource(resource, attempt_seq, action, attempt=attempt, wait=wait)
+        if task is None:
             return False
+        if not wait:
+            return True
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                self._cleanup_release_task(task)
+
+    def _submit_release_attempt_resource_background(
+        self,
+        resource: ScheduledResource,
+        attempt_seq: int,
+        action: WorkloadAction,
+        attempt: AttemptContext | None = None,
+    ) -> None:
+        self._enqueue_release_attempt_resource(resource, attempt_seq, action, attempt=attempt, wait=False)
+
+    def _enqueue_release_attempt_resource(
+        self,
+        resource: ScheduledResource,
+        attempt_seq: int,
+        action: WorkloadAction,
+        *,
+        attempt: AttemptContext | None = None,
+        wait: bool,
+    ) -> asyncio.Task[bool] | None:
+        if attempt is not None and self._release_already_marked(attempt, PDRole(resource.instance.role), action):
+            return None
+        key = self._release_key(resource, attempt_seq, action)
+        inflight = self._release_inflight.get(key)
+        if inflight is not None:
+            self.logger.debug(
+                "Release workload already in-flight stage=%s req_id=%s attempt_seq=%s role=%s action=%s wait=%s",
+                self._release_stage(resource, action),
+                self.req_info.req_id,
+                attempt_seq,
+                key[2].value,
+                action.value,
+                wait,
+            )
+            return inflight
+        context = self._release_task_context(resource, attempt_seq, action)
+        task = asyncio.create_task(
+            self._release_attempt_resource_task(resource, attempt_seq, action, attempt, task_context=context),
+            name=(f"unified-pd-release-{self._release_stage(resource, action)}-{self.req_info.req_id}-a{attempt_seq}"),
+        )
+        self._track_release_task(task, key=key, context=context)
+        self.logger.debug(
+            "Release workload enqueued stage=%s instance_id=%s endpoint_id=%s role=%s action=%s req_id=%s wait=%s",
+            context.stage,
+            context.instance_id,
+            context.endpoint_id,
+            context.role.value,
+            context.action.value,
+            context.req_id,
+            wait,
+        )
+        return task
+
+    async def _release_attempt_resource_task(
+        self,
+        resource: ScheduledResource,
+        attempt_seq: int,
+        action: WorkloadAction,
+        attempt: AttemptContext | None = None,
+        task_context: ReleaseTaskContext | None = None,
+    ) -> bool:
+        try:
+            if attempt is not None and self._release_already_marked(attempt, PDRole(resource.instance.role), action):
+                self.logger.debug(
+                    "Release workload task skipped already_released stage=%s req_id=%s attempt_seq=%s action=%s",
+                    self._release_stage(resource, action),
+                    self.req_info.req_id,
+                    attempt_seq,
+                    action.value,
+                )
+                return True
+            item = await self._prepare_release_work_item(resource, attempt_seq, action, attempt=attempt)
+            if item is None:
+                self.logger.debug(
+                    "Release workload task skipped no_workload_change stage=%s req_id=%s attempt_seq=%s action=%s",
+                    self._release_stage(resource, action),
+                    self.req_info.req_id,
+                    attempt_seq,
+                    action.value,
+                )
+                return True
+            current_task = asyncio.current_task()
+            record = self._release_records.get(current_task) if current_task is not None else None
+            if record is not None:
+                record.item = item
+            return await self._send_release_work_item(item)
+        except Exception as exc:
+            self._log_release_task_result_error(None, "raised", exc, context=task_context)
+            return False
+
+    async def _prepare_release_work_item(
+        self,
+        resource: ScheduledResource,
+        attempt_seq: int,
+        action: WorkloadAction,
+        *,
+        attempt: AttemptContext | None = None,
+    ) -> ReleaseWorkItem | None:
         workload_change, role = await self._workload_action_handler.compute_and_update(
             resource,
             self.req_info.req_id,
@@ -768,7 +1096,7 @@ class UnifiedPDRouter(BaseRouter):
             attempt_seq=attempt_seq,
         )
         if workload_change is None or role is None:
-            return False
+            return None
         params = UpdateWorkloadParams(
             instance_id=resource.instance.id,
             endpoint_id=resource.endpoint.id,
@@ -777,11 +1105,231 @@ class UnifiedPDRouter(BaseRouter):
             workload_action=action,
             workload_change=workload_change,
         )
-        with anyio.CancelScope(shield=True):
-            ok = await self._scheduler.update_workload(params)
-        if attempt is not None:
-            self._mark_released(attempt, resource, action)
-        return ok
+        return ReleaseWorkItem(
+            stage=self._release_stage(resource, action),
+            params=params,
+            attempt_seq=attempt_seq,
+            role=role,
+            action=action,
+            attempt=attempt,
+        )
+
+    def _track_release_task(
+        self,
+        task: asyncio.Task[bool],
+        *,
+        key: ReleaseKey,
+        context: ReleaseTaskContext,
+    ) -> None:
+        self._release_inflight[key] = task
+        self._release_records[task] = _ReleaseTaskRecord(key=key, context=context)
+
+    def _cleanup_release_task(self, task: asyncio.Task[bool]) -> ReleaseWorkItem | None:
+        record = self._release_records.pop(task, None)
+        key = record.key if record is not None else None
+        if key is not None and self._release_inflight.get(key) is task:
+            self._release_inflight.pop(key, None)
+        return record.item if record is not None else None
+
+    def _release_task_context(
+        self,
+        resource: ScheduledResource,
+        attempt_seq: int,
+        action: WorkloadAction,
+    ) -> ReleaseTaskContext:
+        return ReleaseTaskContext(
+            stage=self._release_stage(resource, action),
+            req_id=self.req_info.req_id,
+            attempt_seq=attempt_seq,
+            instance_id=resource.instance.id,
+            endpoint_id=resource.endpoint.id,
+            role=PDRole(resource.instance.role),
+            action=action,
+        )
+
+    async def _send_release_work_item(self, item: ReleaseWorkItem) -> bool:
+        start = time.perf_counter()
+        attempts = self._RELEASE_RPC_ATTEMPTS
+        for retry in range(attempts):
+            try:
+                ok = await self._scheduler.update_workload(item.params)
+            except asyncio.CancelledError:
+                self.logger.warning(
+                    "Release workload task cancelled stage=%s req_id=%s role=%s action=%s retry=%d",
+                    item.stage,
+                    item.params.req_id,
+                    item.role.value,
+                    item.action.value,
+                    retry,
+                )
+                raise
+            except Exception as exc:
+                ok = False
+                self.logger.warning(
+                    "Release workload RPC raised stage=%s req_id=%s role=%s action=%s retry=%d error=%s",
+                    item.stage,
+                    item.params.req_id,
+                    item.role.value,
+                    item.action.value,
+                    retry,
+                    exc,
+                )
+            if ok:
+                if item.attempt is not None:
+                    self._mark_released(item.attempt, item.role, item.action)
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                self.logger.info(
+                    "Release workload succeeded stage=%s elapsed_ms=%.2f instance_id=%s endpoint_id=%s role=%s action=%s retry=%d",
+                    item.stage,
+                    elapsed_ms,
+                    item.params.instance_id,
+                    item.params.endpoint_id,
+                    item.role.value,
+                    item.action.value,
+                    retry,
+                )
+                return True
+            if retry < attempts - 1:
+                await asyncio.sleep(self._RELEASE_RPC_BACKOFF_BASE_S * (retry + 1))
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        self.logger.error(
+            "Release workload failed stage=%s elapsed_ms=%.2f instance_id=%s endpoint_id=%s role=%s action=%s req_id=%s",
+            item.stage,
+            elapsed_ms,
+            item.params.instance_id,
+            item.params.endpoint_id,
+            item.role.value,
+            item.action.value,
+            item.params.req_id,
+        )
+        return False
+
+    async def _drain_release_tasks(self) -> None:
+        while self._release_records:
+            tasks = list(self._release_records)
+            gather_task = asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                results = await asyncio.shield(gather_task)
+            except asyncio.CancelledError:
+                # The shielded gather keeps running. Finalize it from a callback so a repeated
+                # cancellation of this drain coroutine cannot cancel the gather or leak records.
+                self._finalize_release_gather_when_done(tasks, gather_task)
+                raise
+            self._handle_release_task_results(tasks, results)
+
+    def _finalize_release_gather_when_done(
+        self,
+        tasks: list[asyncio.Task[bool]],
+        gather_task: asyncio.Future,
+    ) -> None:
+        if gather_task.done():
+            self._finalize_release_gather(tasks, gather_task)
+            return
+        gather_task.add_done_callback(
+            lambda done_task, release_tasks=tasks: self._finalize_release_gather(release_tasks, done_task)
+        )
+
+    def _finalize_release_gather(self, tasks: list[asyncio.Task[bool]], gather_task: asyncio.Future) -> None:
+        try:
+            results = gather_task.result()
+        except asyncio.CancelledError as exc:
+            self.logger.warning(
+                "Release drain gather cancelled before background tasks settled req_id=%s pending=%d",
+                self.req_info.req_id,
+                len(tasks),
+            )
+            self._handle_release_task_results(tasks, [exc for _ in tasks])
+        except BaseException as exc:
+            self.logger.error(
+                "Release drain gather failed req_id=%s pending=%d error=%s",
+                self.req_info.req_id,
+                len(tasks),
+                exc,
+            )
+            self._handle_release_task_results(tasks, [exc for _ in tasks])
+        else:
+            self._handle_release_task_results(tasks, results)
+
+    def _handle_release_task_results(self, tasks: list[asyncio.Task[bool]], results: list[Any]) -> None:
+        for task, result in zip(tasks, results, strict=False):
+            record = self._release_records.get(task)
+            if record is None:
+                continue
+            item = record.item if record is not None else None
+            context = record.context if record is not None else None
+            if isinstance(result, asyncio.CancelledError):
+                self._log_release_task_result_error(item, "cancelled", result, context=context)
+            elif isinstance(result, BaseException):
+                self._log_release_task_result_error(item, "raised", result, context=context)
+            elif result is False:
+                self._log_release_task_result_error(item, "failed", context=context)
+            self._cleanup_release_task(task)
+
+    def _log_release_task_result_error(
+        self,
+        item: ReleaseWorkItem | None,
+        status: str,
+        error: BaseException | None = None,
+        *,
+        context: ReleaseTaskContext | None = None,
+    ) -> None:
+        if item is None:
+            if context is not None:
+                self.logger.error(
+                    "Release workload background task %s stage=%s req_id=%s attempt_seq=%s instance_id=%s "
+                    "endpoint_id=%s role=%s action=%s error=%s",
+                    status,
+                    context.stage,
+                    context.req_id,
+                    context.attempt_seq,
+                    context.instance_id,
+                    context.endpoint_id,
+                    context.role.value,
+                    context.action.value,
+                    error,
+                )
+                return
+            self.logger.error(
+                "Release workload background task %s req_id=%s error=%s",
+                status,
+                self.req_info.req_id,
+                error,
+            )
+            return
+        self.logger.error(
+            "Release workload background task %s stage=%s req_id=%s attempt_seq=%s instance_id=%s endpoint_id=%s "
+            "role=%s action=%s error=%s",
+            status,
+            item.stage,
+            item.params.req_id,
+            item.attempt_seq,
+            item.params.instance_id,
+            item.params.endpoint_id,
+            item.role.value,
+            item.action.value,
+            error,
+        )
+
+    def _release_key(self, resource: ScheduledResource, attempt_seq: int, action: WorkloadAction) -> ReleaseKey:
+        return (
+            self.req_info.req_id,
+            attempt_seq,
+            PDRole(resource.instance.role),
+            action,
+        )
+
+    @staticmethod
+    def _release_stage(resource: ScheduledResource, action: WorkloadAction) -> str:
+        role = PDRole(resource.instance.role)
+        if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
+            return "release_p_tokens"
+        if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_KV:
+            return "release_p_kv"
+        if role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_TOKENS:
+            return "release_d_tokens"
+        if role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_KV:
+            return "release_d_kv"
+        return f"release_{role.value}_{action.value.lower()}"
 
     async def _stop_attempt(self, attempt: AttemptContext | None, reason: DispatchStopReason) -> None:
         if attempt is None:
@@ -801,7 +1349,16 @@ class UnifiedPDRouter(BaseRouter):
                 tasks.append(client.stop(attempt.decode_resource, attempt, reason))
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            await self._release_attempt(attempt)
+            await self._release_attempt(attempt, wait=False)
+            try:
+                await self._drain_release_tasks()
+            except asyncio.CancelledError:
+                self.logger.warning(
+                    "Unified PD stop cancelled while draining release tasks req_id=%s attempt=%s reason=%s",
+                    self.req_info.req_id,
+                    attempt.attempt_seq,
+                    reason.value,
+                )
             attempt.transition(AttemptState.STOPPED)
 
     def _client_for(self, resource: ScheduledResource):
@@ -810,8 +1367,7 @@ class UnifiedPDRouter(BaseRouter):
         return self._manage_client_context(resource)
 
     @staticmethod
-    def _release_already_marked(attempt: AttemptContext, resource: ScheduledResource, action: WorkloadAction) -> bool:
-        role = PDRole(resource.instance.role)
+    def _release_already_marked(attempt: AttemptContext, role: PDRole, action: WorkloadAction) -> bool:
         flags = attempt.release_flags
         if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
             return flags.prefill_tokens
@@ -824,8 +1380,7 @@ class UnifiedPDRouter(BaseRouter):
         return False
 
     @staticmethod
-    def _mark_released(attempt: AttemptContext, resource: ScheduledResource, action: WorkloadAction) -> None:
-        role = PDRole(resource.instance.role)
+    def _mark_released(attempt: AttemptContext, role: PDRole, action: WorkloadAction) -> None:
         flags = attempt.release_flags
         if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
             flags.prefill_tokens = True

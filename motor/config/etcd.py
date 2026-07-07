@@ -10,7 +10,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -21,6 +21,7 @@ class EtcdConfig:
     etcd_host: str = 'etcd.default.svc.cluster.local'
     etcd_port: int = 2379
     etcd_timeout: int = 5
+    etcd_lb_policy: str = 'round_robin'
 
     # ETCD persistence configuration
     enable_etcd_persistence: bool = False  # Enable/disable ETCD persistence and restoration

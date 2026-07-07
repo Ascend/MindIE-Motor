@@ -2,6 +2,7 @@
 # coding=utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 import getpass
+import ipaddress
 import json
 import shutil
 import subprocess
@@ -16,8 +17,6 @@ from ssl import create_default_context, Purpose
 from dataclasses import dataclass
 import urllib3
 
-from motor.common.utils.net import format_address
-
 # Configure log format and level
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +28,15 @@ logging.basicConfig(
 
 TEST_METRIC_NAME = "request_success_total"
 _DEPLOY_NOSTEP_SUPPORTED = None
+
+
+def format_address(host, port):
+    try:
+        if isinstance(ipaddress.ip_address(host.strip("[]")), ipaddress.IPv6Address):
+            return f"[{host.strip('[]')}]:{port}"
+    except ValueError:
+        pass
+    return f"{host}:{port}"
 
 
 @dataclass
@@ -289,9 +297,7 @@ def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) ->
         host_port = format_address(coordinator_ip, params.coordinator_manage_port)
         logging.info(f"Fetch coordinator ip successfully: {host_port}")
         http_prefix = "https" if params.with_cert else "http"
-        response = http_pool_manager.request(
-            "GET", f"{http_prefix}://{coordinator_ip}:{params.coordinator_manage_port}/metrics"
-        )
+        response = http_pool_manager.request("GET", f"{http_prefix}://{host_port}/metrics")
         if response.status >= 400:
             logging.info(
                 f"Response from Coordinator metrics failed, status is {response.status}, "

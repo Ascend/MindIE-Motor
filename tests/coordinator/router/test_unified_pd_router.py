@@ -15,13 +15,13 @@ from motor.common.resources.dispatch import (
     MOTOR_DISPATCH_KEY,
     MOTOR_PREFILL_RESULT_KEY,
 )
-from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
+from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, InsStatus, ParallelConfig, PDRole
 from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
-from motor.coordinator.router.dispatch_session import AttemptState
+from motor.coordinator.router.dispatch_session import AttemptContext, AttemptState, PDDispatchSession
 from motor.coordinator.router.dispatch_capability import (
     DispatchPlanNotSupported,
     select_dispatch_plan_for_pair,
@@ -522,13 +522,33 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
     )
     handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
     scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    events = []
+    select_and_allocate = scheduler.select_and_allocate
+
+    async def _select_and_allocate(role, req_info, **kwargs):
+        events.append(("select", PDRole(role)))
+        return await select_and_allocate(role, req_info, **kwargs)
+
+    async def _update_workload(params):
+        events.append(("release", PDRole(params.role), params.workload_action))
+        return True
+
+    scheduler.select_and_allocate = AsyncMock(side_effect=_select_and_allocate)
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
     router = UnifiedPDRouter(
         req_info,
         _config(),
         scheduler=scheduler,
         request_manager=RequestManager(_config()),
     )
-    p_client = _PrefillResultClient("prefill")
+
+    class _RecordingPrefillClient(_PrefillResultClient):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            response = await super().post(path, json=json, headers=headers, timeout=timeout)
+            events.append(("prefill_result",))
+            return response
+
+    p_client = _RecordingPrefillClient("prefill")
     d_client = _Client("decode")
 
     @asynccontextmanager
@@ -553,9 +573,64 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
     assert prefill_result["handoff_mode"] == "handoff"
     assert prefill_result["payload"] == {"opaque": "kv"}
     assert scheduler.update_workload.await_count == 3
+    assert [event for event in events if event[0] == "select"] == [
+        ("select", PDRole.ROLE_P),
+        ("select", PDRole.ROLE_D),
+    ]
+    assert events.index(("prefill_result",)) < events.index(("select", PDRole.ROLE_D))
+    assert ("release", PDRole.ROLE_P, WorkloadAction.RELEASE_TOKENS) in events
     assert ReqState.PREFILL_END in req_info.status
     assert req_info.status[ReqState.P_ALLOCATED] <= req_info.status[ReqState.PREFILL_END]
     assert req_info.status[ReqState.PREFILL_END] <= req_info.status[ReqState.DECODE_END]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_registers_decode_canceller_after_client_open(monkeypatch):
+    # Regression: the late-allocated decode canceller must be registered only after the
+    # decode client is opened, because HTTPClientPool.register_canceller is a no-op until
+    # the client exists in the pool.
+    req_info = RequestInfo(
+        req_id="root-handoff-canceller-order",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+
+    events = []
+    original_register = AttemptContext.register_decode_canceller
+
+    def _register_decode_canceller(self):
+        events.append("register_decode_canceller")
+        return original_register(self)
+
+    monkeypatch.setattr(AttemptContext, "register_decode_canceller", _register_decode_canceller)
+
+    p_client = _PrefillResultClient("prefill")
+    d_client = _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            events.append("decode_client_open")
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    await router.handle_request()
+
+    assert events.count("register_decode_canceller") == 1
+    assert events.index("decode_client_open") < events.index("register_decode_canceller")
 
 
 @pytest.mark.asyncio
@@ -742,6 +817,618 @@ async def test_unified_pd_rejects_pair_without_shared_connector_capability(monke
 
 
 @pytest.mark.asyncio
+async def test_unified_pd_release_rpc_survives_waiter_cancellation():
+    req_info = RequestInfo(
+        req_id="root-release-shield",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    update_started = asyncio.Event()
+    allow_update = asyncio.Event()
+    update_done = asyncio.Event()
+
+    async def _update_workload(params):
+        update_started.set()
+        await allow_update.wait()
+        update_done.set()
+        return True
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        release_task = asyncio.create_task(
+            router._release_attempt_resource(
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+            )
+        )
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+        release_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await release_task
+
+        duplicate = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+            wait=False,
+        )
+        assert duplicate is True
+        assert scheduler.update_workload.await_count == 1
+
+        allow_update.set()
+        await asyncio.wait_for(update_done.wait(), timeout=1)
+        await router._drain_release_tasks()
+        assert attempt.release_flags.prefill_tokens
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_release_inflight_deduplicates_same_action():
+    req_info = RequestInfo(
+        req_id="root-release-dedupe",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    update_started = asyncio.Event()
+    allow_update = asyncio.Event()
+
+    async def _update_workload(params):
+        update_started.set()
+        await allow_update.wait()
+        return True
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        first = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+            wait=False,
+        )
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+        second = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+            wait=False,
+        )
+
+        assert first is True
+        assert second is True
+        assert scheduler.update_workload.await_count == 1
+
+        allow_update.set()
+        await router._drain_release_tasks()
+
+        assert scheduler.update_workload.await_count == 1
+        assert attempt.release_flags.prefill_tokens
+        assert not router._release_inflight
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_background_release_uses_single_tracked_task():
+    req_info = RequestInfo(
+        req_id="root-release-background-single-task",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    update_started = asyncio.Event()
+    allow_update = asyncio.Event()
+
+    async def _update_workload(params):
+        update_started.set()
+        await allow_update.wait()
+        return True
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        router._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+
+        assert len(router._release_records) == 1
+        assert sum(record.item is not None for record in router._release_records.values()) == 1
+        assert scheduler.update_workload.await_count == 1
+
+        router._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        assert len(router._release_records) == 1
+        assert scheduler.update_workload.await_count == 1
+
+        allow_update.set()
+        await router._drain_release_tasks()
+
+        assert not router._release_records
+        assert not router._release_inflight
+        assert attempt.release_flags.prefill_tokens
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_release_failure_keeps_local_release_and_is_drained(caplog):
+    req_info = RequestInfo(
+        req_id="root-release-failure",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    scheduler.update_workload = AsyncMock(return_value=False)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        original = await request_manager.get_req_attempt_workload(
+            req_info.req_id,
+            attempt.attempt_seq,
+            PDRole.ROLE_P,
+        )
+        assert original is not None
+        original_active_kv_cache = original.active_kv_cache
+
+        submitted = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_KV,
+            attempt,
+            wait=False,
+        )
+        assert submitted is True
+        await router._drain_release_tasks()
+
+        current = await request_manager.get_req_attempt_workload(
+            req_info.req_id,
+            attempt.attempt_seq,
+            PDRole.ROLE_P,
+        )
+        assert current is not None
+        assert current.active_kv_cache < original_active_kv_cache
+        assert not attempt.release_flags.prefill_kv
+        assert scheduler.update_workload.await_count == 3
+        assert "Release workload background task failed" in caplog.text
+        assert "Release workload rolled back locally" not in caplog.text
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_release_cancel_propagates_and_cleans_tracking(caplog):
+    req_info = RequestInfo(
+        req_id="root-release-cancel-propagates",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+
+    async def _cancelled_update(_params):
+        raise asyncio.CancelledError
+
+    scheduler.update_workload = AsyncMock(side_effect=_cancelled_update)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        with pytest.raises(asyncio.CancelledError):
+            await router._release_attempt_resource(
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+            )
+
+        assert scheduler.update_workload.await_count == 1
+        assert not attempt.release_flags.prefill_tokens
+        assert not router._release_records
+        assert not router._release_inflight
+        assert "Release workload task cancelled stage=release_p_tokens" in caplog.text
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_background_release_cancel_is_logged_and_drained(caplog):
+    req_info = RequestInfo(
+        req_id="root-release-background-cancel",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+
+    async def _cancelled_update(_params):
+        raise asyncio.CancelledError
+
+    scheduler.update_workload = AsyncMock(side_effect=_cancelled_update)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        submitted = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+            wait=False,
+        )
+        assert submitted is True
+
+        await router._drain_release_tasks()
+
+        assert scheduler.update_workload.await_count == 1
+        assert not attempt.release_flags.prefill_tokens
+        assert not router._release_records
+        assert not router._release_inflight
+        assert "Release workload background task cancelled stage=release_p_tokens" in caplog.text
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_drain_double_cancel_keeps_release_cleanup():
+    req_info = RequestInfo(
+        req_id="root-release-drain-double-cancel",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    update_started = asyncio.Event()
+    allow_update = asyncio.Event()
+    update_done = asyncio.Event()
+
+    async def _update_workload(_params):
+        update_started.set()
+        await allow_update.wait()
+        update_done.set()
+        return True
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        submitted = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+            wait=False,
+        )
+        assert submitted is True
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+
+        drain_task = asyncio.create_task(router._drain_release_tasks())
+        await asyncio.sleep(0)
+        drain_task.cancel()
+        drain_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await drain_task
+
+        assert router._release_records
+
+        allow_update.set()
+        await asyncio.wait_for(update_done.wait(), timeout=1)
+        for _ in range(20):
+            if not router._release_records:
+                break
+            await asyncio.sleep(0)
+
+        assert scheduler.update_workload.await_count == 1
+        assert attempt.release_flags.prefill_tokens
+        assert not router._release_records
+        assert not router._release_inflight
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_concurrent_stream_tail_release_survives_iterator_cancellation(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-stream-tail-cancel",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler()
+    release_started = asyncio.Event()
+    allow_release = asyncio.Event()
+
+    async def _update_workload(params):
+        release_started.set()
+        await allow_release.wait()
+        return True
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _Client("prefill")
+    d_client = _StreamClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    chunks = []
+    first_chunk_seen = asyncio.Event()
+
+    async def _consume_response():
+        chunks.append(await anext(response.body_iterator))
+        first_chunk_seen.set()
+        await anext(response.body_iterator)
+
+    consumer_task = asyncio.create_task(_consume_response())
+    await asyncio.wait_for(first_chunk_seen.wait(), timeout=1)
+    assert chunks == [b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n']
+    await asyncio.wait_for(release_started.wait(), timeout=1)
+    for _ in range(20):
+        if len(router._release_records) == 3:
+            break
+        await asyncio.sleep(0)
+    assert len(router._release_records) == 3
+
+    consumer_task.cancel()
+    allow_release.set()
+    with pytest.raises((asyncio.CancelledError, StopAsyncIteration)):
+        await consumer_task
+
+    await router._drain_release_tasks()
+
+    assert scheduler.update_workload.await_count == 3
+    assert not router._release_records
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_stream_yields_before_prefill_kv_release_finishes(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-handoff-kv-background",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    kv_release_compute_started = asyncio.Event()
+    allow_kv_release_compute = asyncio.Event()
+    allow_kv_release = asyncio.Event()
+    kv_release_done = asyncio.Event()
+
+    async def _update_workload(params):
+        if params.role == PDRole.ROLE_P and params.workload_action == WorkloadAction.RELEASE_KV:
+            await allow_kv_release.wait()
+            kv_release_done.set()
+        return True
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    compute_and_update = router._workload_action_handler.compute_and_update
+
+    async def _compute_and_update(resource, req_id, action, req_info_arg, **kwargs):
+        if resource.instance.role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_KV:
+            kv_release_compute_started.set()
+            await allow_kv_release_compute.wait()
+        return await compute_and_update(resource, req_id, action, req_info_arg, **kwargs)
+
+    monkeypatch.setattr(router._workload_action_handler, "compute_and_update", _compute_and_update)
+    p_client = _PrefillResultClient("prefill")
+    d_client = _StreamClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    first_chunk = await asyncio.wait_for(anext(response.body_iterator), timeout=1)
+
+    assert first_chunk == b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n'
+    await asyncio.wait_for(kv_release_compute_started.wait(), timeout=1)
+    assert not kv_release_done.is_set()
+
+    allow_kv_release_compute.set()
+    allow_kv_release.set()
+    await asyncio.wait_for(kv_release_done.wait(), timeout=1)
+    await response.body_iterator.aclose()
+    await router._drain_release_tasks()
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_stream_yields_before_prefill_token_release_finishes(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-handoff-token-background",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    token_release_compute_started = asyncio.Event()
+    allow_token_release_compute = asyncio.Event()
+    token_release_started = asyncio.Event()
+    allow_token_release = asyncio.Event()
+    token_release_done = asyncio.Event()
+    d_selected = asyncio.Event()
+    select_and_allocate = scheduler.select_and_allocate
+
+    async def _select_and_allocate(role, req_info, **kwargs):
+        result = await select_and_allocate(role, req_info, **kwargs)
+        if role == PDRole.ROLE_D:
+            d_selected.set()
+        return result
+
+    async def _update_workload(params):
+        if params.role == PDRole.ROLE_P and params.workload_action == WorkloadAction.RELEASE_TOKENS:
+            token_release_started.set()
+            await allow_token_release.wait()
+            token_release_done.set()
+        return True
+
+    scheduler.select_and_allocate = AsyncMock(side_effect=_select_and_allocate)
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    compute_and_update = router._workload_action_handler.compute_and_update
+
+    async def _compute_and_update(resource, req_id, action, req_info_arg, **kwargs):
+        if resource.instance.role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
+            token_release_compute_started.set()
+            await allow_token_release_compute.wait()
+        return await compute_and_update(resource, req_id, action, req_info_arg, **kwargs)
+
+    monkeypatch.setattr(router._workload_action_handler, "compute_and_update", _compute_and_update)
+    p_client = _PrefillResultClient("prefill")
+    d_client = _StreamClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    first_chunk_task = asyncio.create_task(anext(response.body_iterator))
+
+    await asyncio.wait_for(token_release_compute_started.wait(), timeout=1)
+    await asyncio.wait_for(d_selected.wait(), timeout=1)
+    assert not token_release_started.is_set()
+    assert not token_release_done.is_set()
+
+    allow_token_release_compute.set()
+    await asyncio.wait_for(token_release_started.wait(), timeout=1)
+    allow_token_release.set()
+    first_chunk = await asyncio.wait_for(first_chunk_task, timeout=1)
+    assert first_chunk == b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n'
+    await asyncio.wait_for(token_release_done.wait(), timeout=1)
+    await response.body_iterator.aclose()
+    await router._drain_release_tasks()
+
+
+@pytest.mark.asyncio
 async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
     monkeypatch,
 ):
@@ -781,6 +1468,141 @@ async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
     assert p_client.requests[0][MOTOR_DISPATCH_KEY]["pair_id"] == d_client.requests[0][MOTOR_DISPATCH_KEY]["pair_id"]
     assert scheduler.update_workload.await_count == 3
     assert ReqState.PREFILL_END in req_info.status
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_concurrent_stream_prefill_release_does_not_block_first_chunk(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-concurrent-prefill-release-background",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_token_compute_started = asyncio.Event()
+    p_kv_compute_started = asyncio.Event()
+    allow_p_release_compute = asyncio.Event()
+    p_token_rpc_done = asyncio.Event()
+    p_kv_rpc_done = asyncio.Event()
+    compute_and_update = router._workload_action_handler.compute_and_update
+
+    async def _compute_and_update(resource, req_id, action, req_info_arg, **kwargs):
+        if resource.instance.role == PDRole.ROLE_P and action in {
+            WorkloadAction.RELEASE_TOKENS,
+            WorkloadAction.RELEASE_KV,
+        }:
+            if action == WorkloadAction.RELEASE_TOKENS:
+                p_token_compute_started.set()
+            else:
+                p_kv_compute_started.set()
+            await allow_p_release_compute.wait()
+        return await compute_and_update(resource, req_id, action, req_info_arg, **kwargs)
+
+    async def _update_workload(params):
+        if params.role == PDRole.ROLE_P and params.workload_action == WorkloadAction.RELEASE_TOKENS:
+            p_token_rpc_done.set()
+        if params.role == PDRole.ROLE_P and params.workload_action == WorkloadAction.RELEASE_KV:
+            p_kv_rpc_done.set()
+        return True
+
+    monkeypatch.setattr(router._workload_action_handler, "compute_and_update", _compute_and_update)
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    p_client = _Client("prefill")
+    d_client = _StreamClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    first_chunk = await asyncio.wait_for(anext(response.body_iterator), timeout=1)
+
+    assert first_chunk == b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n'
+    await asyncio.wait_for(p_token_compute_started.wait(), timeout=1)
+    await asyncio.wait_for(p_kv_compute_started.wait(), timeout=1)
+    assert not p_token_rpc_done.is_set()
+    assert not p_kv_rpc_done.is_set()
+
+    allow_p_release_compute.set()
+    await response.body_iterator.aclose()
+    await router._drain_release_tasks()
+    await asyncio.wait_for(p_token_rpc_done.wait(), timeout=1)
+    await asyncio.wait_for(p_kv_rpc_done.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_concurrent_nonstream_releases_prefill_tokens_before_decode_finishes(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-concurrent-nonstream-prefill-release",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/chat/completions",
+        entry_api="v1/chat/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    allow_decode = asyncio.Event()
+    p_token_compute_started = asyncio.Event()
+    allow_p_release_compute = asyncio.Event()
+    compute_and_update = router._workload_action_handler.compute_and_update
+
+    class _DelayedDecodeClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            await allow_decode.wait()
+            request = httpx.Request("POST", path, headers=headers or {}, json=json)
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+                request=request,
+            )
+
+    async def _compute_and_update(resource, req_id, action, req_info_arg, **kwargs):
+        if resource.instance.role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
+            p_token_compute_started.set()
+            await allow_p_release_compute.wait()
+        return await compute_and_update(resource, req_id, action, req_info_arg, **kwargs)
+
+    monkeypatch.setattr(router._workload_action_handler, "compute_and_update", _compute_and_update)
+    p_client = _Client("prefill")
+    d_client = _DelayedDecodeClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response_task = asyncio.create_task(router.handle_request())
+    await asyncio.wait_for(p_token_compute_started.wait(), timeout=1)
+    assert not response_task.done()
+
+    allow_p_release_compute.set()
+    allow_decode.set()
+    response = await asyncio.wait_for(response_task, timeout=1)
+
+    assert json.loads(response.body)["choices"][0]["message"]["content"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -857,6 +1679,51 @@ async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monke
         task.get_name() == "unified-pd-queue-root-stream-disconnect-a1" and not task.done()
         for task in asyncio.all_tasks()
     )
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stop_attempt_drains_release_failures(monkeypatch, caplog):
+    req_info = RequestInfo(
+        req_id="root-stop-drain-release-failure",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    scheduler.update_workload = AsyncMock(return_value=False)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    async def _stop(self, resource, attempt, reason, timeout=1.0):
+        return None
+
+    monkeypatch.setattr(
+        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
+        _stop,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+
+        await router._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
+
+        assert attempt.state == AttemptState.STOPPED
+        assert scheduler.update_workload.await_count == 9
+        assert "Release workload background task failed stage=release_p_tokens" in caplog.text
+        assert "Release workload background task failed stage=release_p_kv" in caplog.text
+        assert "Release workload background task failed stage=release_d_tokens" in caplog.text
+        assert not router._release_records
+        assert not router._release_inflight
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
 
 
 @pytest.mark.asyncio
@@ -1304,6 +2171,7 @@ async def test_unified_pd_stream_error_after_visible_chunk_without_replay_does_n
     assert "ReadError" in error_chunk
     assert len(d_client.requests) == 1
     assert len(stop_calls) == 2
+    await router._drain_release_tasks()
     assert scheduler.update_workload.await_count == 3
 
 

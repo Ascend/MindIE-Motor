@@ -23,7 +23,7 @@ from motor.common.resources.dispatch import (
     DispatchProfile,
     MotorDispatch,
     PrefillResult,
-    classify_vllm_dispatch_profile,
+    infer_vllm_dispatch_profile_from_config,
 )
 from motor.engine_server.core.dispatch_adapter.base import (
     DispatchAdapter,
@@ -58,16 +58,31 @@ class VLLMDispatchAdapter(DispatchAdapter):
     async def _adapt_engine_body(self, body: dict[str, Any], dispatch: MotorDispatch) -> dict[str, Any]:
         body["request_id"] = dispatch.engine_request_id
         if dispatch.role == "decode":
-            prefill = dispatch.endpoints.prefill
-            if prefill is not None and "kv_transfer_params" not in body:
-                body["kv_transfer_params"] = {
-                    "do_remote_decode": False,
-                    "do_remote_prefill": True,
-                    "metaserver": f"{prefill.url.rstrip('/')}/v1/metaserver",
-                }
+            # In handoff the decode kv_transfer_params is the KV bootstrap threaded
+            # in from the prefill result (_consume_prefill_result). The metaserver
+            # callback is exclusive to the trigger profile, so a handoff connector
+            # (e.g. MooncakeConnectorV1) must never be handed a metaserver URL -- it
+            # expects remote_block_ids/remote_host/remote_port instead.
+            if not self._uses_handoff(dispatch):
+                prefill = dispatch.endpoints.prefill
+                if prefill is not None and "kv_transfer_params" not in body:
+                    body["kv_transfer_params"] = {
+                        "do_remote_decode": False,
+                        "do_remote_prefill": True,
+                        "metaserver": f"{prefill.url.rstrip('/')}/v1/metaserver",
+                    }
         elif dispatch.role == "prefill":
             body.setdefault("return_token_ids", True)
             self._apply_prefill_generation_params(body)
+            if self._uses_handoff(dispatch):
+                # Tell the producer engine to generate KV for a remote decode so its
+                # response carries the kv_transfer_params bootstrap. Without this the
+                # connector's request_finished returns no bootstrap and PD silently
+                # degrades. Mirrors the vLLM-ascend native proxy build_prefill_request.
+                body.setdefault(
+                    "kv_transfer_params",
+                    {"do_remote_decode": True, "do_remote_prefill": False},
+                )
         return body
 
     async def maybe_prepare_response(
@@ -169,6 +184,12 @@ class VLLMDispatchAdapter(DispatchAdapter):
         if not isinstance(body, dict):
             return response
         if context.dispatch is not None and context.dispatch.role == "prefill" and self._uses_handoff(context.dispatch):
+            # The decode leg consumes ``payload`` directly as its ``kv_transfer_params``
+            # (see ``_consume_prefill_result``), and the engine connector reads the KV
+            # bootstrap fields (do_remote_prefill, remote_block_ids, remote_host, ...) at
+            # the top level of ``kv_transfer_params``.
+            kv_transfer_params = body.get("kv_transfer_params")
+            usage = body.get("usage")
             prefill_result = PrefillResult(
                 root_request_id=context.dispatch.root_request_id,
                 engine_request_id=context.dispatch.engine_request_id,
@@ -176,7 +197,11 @@ class VLLMDispatchAdapter(DispatchAdapter):
                 attempt_seq=context.dispatch.attempt_seq,
                 status="completed",
                 handoff_mode="handoff",
-                payload=body,
+                payload=kv_transfer_params if isinstance(kv_transfer_params, dict) else {},
+                # Preserve the prefill usage separately so the coordinator can still
+                # capture prompt_tokens_details (cached tokens) -- payload now carries
+                # only the KV bootstrap and no longer the full response body.
+                usage=usage if isinstance(usage, dict) else None,
             )
             return JSONResponse(
                 content=prefill_result.model_dump(mode="json"),
@@ -264,8 +289,4 @@ class VLLMDispatchAdapter(DispatchAdapter):
 
     @classmethod
     def _infer_dispatch_profile(cls, config) -> DispatchProfile:
-        endpoint_config = config.get_endpoint_config()
-        deploy_config = getattr(endpoint_config, "deploy_config", None)
-        engine_config = getattr(deploy_config, "engine_config", None)
-        explicit_profile = getattr(deploy_config, "dispatch_profile", None)
-        return classify_vllm_dispatch_profile(engine_config, explicit_profile=explicit_profile)
+        return infer_vllm_dispatch_profile_from_config(config)

@@ -18,9 +18,11 @@ import threading
 import time
 import types
 import pytest
+from motor.common.resources.dispatch import DispatchProfile
 from motor.engine_server.core.sim_inference import (
     SimInference,
     _AICORE_SAMPLE_WINDOW_SEC,
+    _VIRTUAL_WARMUP_TIMEOUT_SEC,
     _is_virtual_metrics_request,
 )
 from motor.engine_server.constants import constants
@@ -153,6 +155,79 @@ async def test_send_virtual_request_async_success(mock_create_client, sim_infere
     assert call_args[1]["headers"]['Content-Type'] == 'application/json'
     assert 'X-Request-Id' in call_args[1]["headers"]
     assert call_args[1]["timeout"] == timeout
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.common.http.http_client.AsyncSafeHTTPSClient.create_client')
+async def test_send_virtual_request_async_decode_layerwise_includes_kv_params(
+    mock_create_client, mock_args, mock_tls_config
+):
+    """Layerwise decode virtual warmup injects trigger kv_transfer_params without metaserver."""
+    mock_health_config = mock.MagicMock()
+    mock_health_config.npu_usage_threshold = 3
+    mock_health_config.enable_virtual_inference = True
+    decode_sim_inference = SimInference(
+        mock_args,
+        mock_tls_config,
+        mock_health_config,
+        role=constants.DECODE_ROLE,
+        dispatch_profile=DispatchProfile.TRIGGER,
+    )
+
+    mock_client = mock.MagicMock()
+    mock_response = mock.MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {"choices": [{"text": "Hello"}]}
+    mock_client.post = mock.AsyncMock(return_value=mock_response)
+    mock_client.is_closed = False
+    mock_create_client.return_value = mock_client
+
+    timeout = httpx.Timeout(5.0)
+    await decode_sim_inference.send_virtual_request_async(timeout)
+
+    call_args = mock_client.post.call_args
+    assert call_args[1]["json"] == {
+        "model": "test-model",
+        "prompt": "1",
+        "max_tokens": 1,
+        "kv_transfer_params": {
+            "do_remote_decode": False,
+            "do_remote_prefill": True,
+            "do_virtual": True,
+        },
+    }
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.common.http.http_client.AsyncSafeHTTPSClient.create_client')
+async def test_send_virtual_request_async_decode_handoff_skips_kv_transfer_params(
+    mock_create_client, mock_args, mock_tls_config
+):
+    """Handoff decode virtual warmup must send a plain completion without kv_transfer_params."""
+    mock_health_config = mock.MagicMock()
+    mock_health_config.npu_usage_threshold = 3
+    mock_health_config.enable_virtual_inference = True
+    decode_sim_inference = SimInference(
+        mock_args,
+        mock_tls_config,
+        mock_health_config,
+        role=constants.DECODE_ROLE,
+        dispatch_profile=DispatchProfile.HANDOFF,
+    )
+
+    mock_client = mock.MagicMock()
+    mock_response = mock.MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {"choices": [{"text": "Hello"}]}
+    mock_client.post = mock.AsyncMock(return_value=mock_response)
+    mock_client.is_closed = False
+    mock_create_client.return_value = mock_client
+
+    timeout = httpx.Timeout(5.0)
+    await decode_sim_inference.send_virtual_request_async(timeout)
+
+    call_args = mock_client.post.call_args
+    assert call_args[1]["json"] == {"model": "test-model", "prompt": "1", "max_tokens": 1}
 
 
 @pytest.mark.asyncio
@@ -372,6 +447,8 @@ def _mock_health_check_loop_thread(mock_thread, sim_inference=None):
 
 
 def _patch_parallel_aicore_wait(sim_inference, sample_finished=True):
+    sim_inference._virtual_warmup_done = True
+
     def sample_wait(timeout=None):
         if sample_finished:
             with sim_inference._shared_data_lock:
@@ -426,6 +503,7 @@ def test_sample_aicore_usage_reports_zero_when_idle(mock_get_aicore, _mock_sleep
 async def test_health_check_loop_does_not_block_beyond_sample_window(mock_send_request, sim_inference):
     """Virtual inference should wait at most the bounded AICore sample window."""
     sim_inference.set_status(constants.NORMAL_STATUS)
+    sim_inference._virtual_warmup_done = True
     mock_send_request.return_value = None
 
     observed_timeout = None
@@ -507,9 +585,113 @@ def test_read_aicore_sample_returns_zero_when_waiting_for_data(sim_inference):
 
 
 @pytest.mark.asyncio
+async def test_run_virtual_warmup_uses_3min_timeout(sim_inference):
+    """Warmup should send the first virtual request with a 3 minute timeout."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    observed_timeouts = []
+
+    async def capture_timeout(timeout):
+        observed_timeouts.append(timeout)
+        return True
+
+    sim_inference._send_virtual_request_safe = capture_timeout
+
+    result = await sim_inference._run_virtual_warmup()
+
+    assert result is True
+    assert sim_inference._virtual_warmup_done is True
+    assert len(observed_timeouts) == 1
+    assert observed_timeouts[0].read == _VIRTUAL_WARMUP_TIMEOUT_SEC
+
+
+@pytest.mark.asyncio
+async def test_run_virtual_warmup_marks_abnormal_on_failure(sim_inference):
+    """Warmup failure should mark abnormal and stop before the regular loop."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    call_count = {"count": 0}
+
+    async def fail_once(_timeout):
+        call_count["count"] += 1
+        return False
+
+    sim_inference._send_virtual_request_safe = fail_once
+
+    result = await sim_inference._run_virtual_warmup()
+
+    assert result is False
+    assert call_count["count"] == 1
+    assert sim_inference._virtual_warmup_done is True
+    assert sim_inference.is_abnormal()
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+async def test_health_check_loop_stops_after_warmup_failure(mock_thread, sim_inference):
+    """Failed warmup should mark abnormal and not start the regular health check loop."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+
+    async def fail_warmup(_timeout):
+        return False
+
+    sim_inference._send_virtual_request_safe = fail_warmup
+
+    with mock.patch.object(
+        SimInference,
+        '_trigger_aicore_sample',
+        return_value=1,
+    ) as mock_trigger:
+        sim_inference._virtual_warmup_done = False
+        await sim_inference.health_check_loop()
+
+    assert sim_inference.is_abnormal()
+    mock_trigger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_virtual_warmup_does_not_trigger_aicore_sampling(sim_inference):
+    """Warmup must not trigger AICore sampling before the first successful request."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+
+    with mock.patch.object(
+        SimInference,
+        '_trigger_aicore_sample',
+        autospec=True,
+    ) as mock_trigger:
+        sim_inference._send_virtual_request_safe = mock.AsyncMock(return_value=True)
+        result = await sim_inference._run_virtual_warmup()
+
+    assert result is True
+    mock_trigger.assert_not_called()
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_triggers_aicore_after_warmup(mock_sleep, mock_thread, sim_inference):
+    """Normal health check loop should trigger AICore sampling after warmup completes."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    sim_inference._virtual_warmup_done = True
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    with mock.patch.object(SimInference, 'send_virtual_request_async', return_value=None):
+        with mock.patch.object(
+            SimInference,
+            '_trigger_aicore_sample',
+            return_value=1,
+        ) as mock_trigger:
+            mock_sleep.side_effect = asyncio.CancelledError
+            with _patched_health_check_loop(mock_thread, sim_inference):
+                with pytest.raises(asyncio.CancelledError):
+                    await sim_inference.health_check_loop()
+
+    mock_trigger.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_health_check_loop_runs_http_and_sampling_in_parallel(sim_inference):
     """HTTP and AICore sampling should overlap within a single health-check cycle."""
     sim_inference.set_status(constants.NORMAL_STATUS)
+    sim_inference._virtual_warmup_done = True
 
     activity_log = []
     sample_wait_scheduled = threading.Event()

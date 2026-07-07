@@ -111,7 +111,7 @@ impl ConcurrentRadixTree {
     /// matching prefix for each worker.
     pub fn find_matches(&self, sequence: &[LocalBlockHash]) -> OverlapScores {
         let t0 = std::time::Instant::now();
-        let mut scores = OverlapScores::new();
+        let mut scores = OverlapScores::default();
 
         if sequence.is_empty() {
             return scores;
@@ -142,11 +142,6 @@ impl ConcurrentRadixTree {
         let mut current = first_child;
         let mut matched_depth = 1u32;
 
-        // Pre-allocate dropout buffer reused across levels (avoid per-level alloc).
-        // Capacity = max expected: all active workers could drop out, plus allowance
-        // for transient stale child entries (child may have more workers than active).
-        let mut dropouts: Vec<WorkerKey> = Vec::with_capacity(active.len() + 16);
-
         // Traverse remaining levels with read locks
         for item in sequence.iter().skip(1) {
             let next_block = {
@@ -158,11 +153,10 @@ impl ConcurrentRadixTree {
                 break;
             };
 
-            // Short-circuit: if only 1 worker remains, skip the costly
-            // retain+collect — just check whether this single worker is
-            // in the child's set.
+            // Short-circuit: if only 1 worker remains, just check whether
+            // this single worker is in the child's set.
             if active.len() == 1 {
-                let w = active.iter().next().unwrap().clone();
+                let w = active.iter().next().cloned().unwrap();
                 let in_child = {
                     let guard = block.read();
                     guard.workers.contains(&w)
@@ -179,21 +173,17 @@ impl ConcurrentRadixTree {
             }
 
             // Reconcile: remove workers that don't have this child block.
-            // Reuse pre-allocated dropout buffer.
-            {
-                let guard = block.read();
-                dropouts.clear();
-                dropouts.extend(
-                    active
-                        .iter()
-                        .filter(|w| !guard.workers.contains(w))
-                        .cloned(),
-                );
-                for w in dropouts.drain(..) {
-                    active.remove(&w);
-                    scores.update_score(w, matched_depth);
+            // Use retain to avoid a second Vec allocation.
+            let guard = block.read();
+            active.retain(|w| {
+                if guard.workers.contains(w) {
+                    true
+                } else {
+                    scores.update_score(w.clone(), matched_depth);
+                    false
                 }
-            }
+            });
+            drop(guard);
 
             if active.is_empty() {
                 break;
@@ -235,13 +225,25 @@ impl ConcurrentRadixTree {
         // Find the parent block
         let mut current: SharedBlock = match store_data.parent_hash {
             Some(parent) => {
-                let parent_key = SequenceBlockHash(parent.try_into().unwrap());
-                lookup
+                let parent_key = SequenceBlockHash(parent);
+                let block = lookup
                     .get(&parent_key)
                     .cloned()
-                    .ok_or(KvConductorError::ParentBlockNotFound)?
+                    .ok_or(KvConductorError::ParentBlockNotFound)?;
+                tracing::trace!(
+                    ?parent_key,
+                    num_blocks = store_data.blocks.len(),
+                    "chaining to parent block via parent_hash"
+                );
+                block
             }
-            None => Arc::clone(&self.root),
+            None => {
+                tracing::trace!(
+                    num_blocks = store_data.blocks.len(),
+                    "starting new chain from root"
+                );
+                Arc::clone(&self.root)
+            }
         };
 
         let mut needs_worker_insert = false;
@@ -351,16 +353,8 @@ impl ConcurrentRadixTree {
         Ok(())
     }
 
-    /// Clear all blocks for a worker (keeps the worker entry empty).
-    pub fn clear_worker(&self, worker: &WorkerKey, lookup: &mut WorkerLookup) {
-        for (_, block) in lookup.iter() {
-            block.write().drop_worker(worker);
-        }
-        lookup.clear();
-    }
-
     /// Remove a worker entirely, cleaning up all tree references.
-    pub fn remove_worker_from_tree(&self, worker: &WorkerKey, lookup: &mut WorkerLookup) {
+    pub fn remove_worker(&self, worker: &WorkerKey, lookup: &mut WorkerLookup) {
         for (_, block) in lookup.iter() {
             block.write().drop_worker(worker);
         }
@@ -406,20 +400,6 @@ impl ConcurrentRadixTree {
 
         pruned
     }
-
-    // -----------------------------------------------------------------------
-    // Introspection
-    // -----------------------------------------------------------------------
-
-    /// Get the root block reference (for testing/dumping).
-    pub fn root(&self) -> &SharedBlock {
-        &self.root
-    }
-
-    /// Count total blocks in a lookup table.
-    pub fn count_blocks(lookup: &WorkerLookup) -> usize {
-        lookup.len()
-    }
 }
 
 #[cfg(test)]
@@ -435,7 +415,7 @@ mod tests {
         }
     }
 
-    fn make_store(parent_hash: Option<i64>, blocks: Vec<(u64, u64)>) -> KvCacheStoreData {
+    fn make_store(parent_hash: Option<u64>, blocks: Vec<(u64, u64)>) -> KvCacheStoreData {
         KvCacheStoreData {
             parent_hash,
             start_position: None,
@@ -523,7 +503,7 @@ mod tests {
         )
         .unwrap();
 
-        tree.clear_worker(&w1, &mut lookup);
+        tree.remove_worker(&w1, &mut lookup);
 
         assert!(lookup.is_empty());
         let scores = tree.find_matches(&[LocalBlockHash(1)]);

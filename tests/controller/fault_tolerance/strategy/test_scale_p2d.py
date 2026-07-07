@@ -240,14 +240,14 @@ def test_check_d_instance_status_accepts_inactive(bind_context):
     d_inst = _decode_instance(status=InsStatus.INACTIVE)
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
         mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
-        with patch.object(ScaleP2DStrategy, "CHECK_D_INSTANCE_STATUS_TIMEOUT", 0):
+        with patch.object(bind_context, "d_instance_reinit_wait_timeout", 0):
             assert bind_context._check_d_instance_status() is True
 
 
 def test_check_d_instance_status_rejects_when_no_instance_by_job_name(bind_context):
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
         mock_im_cls.return_value.get_instance_by_job_name.return_value = None
-        with patch.object(ScaleP2DStrategy, "CHECK_D_INSTANCE_STATUS_TIMEOUT", 0):
+        with patch.object(bind_context, "d_instance_reinit_wait_timeout", 0):
             assert bind_context._check_d_instance_status() is False
 
     assert "not found for job_name" in bind_context.context.last_error
@@ -272,7 +272,7 @@ def test_check_d_instance_status_times_out_while_active(bind_context):
     d_inst = _decode_instance(status=InsStatus.ACTIVE)
     with patch("motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager") as mock_im_cls:
         mock_im_cls.return_value.get_instance_by_job_name.return_value = d_inst
-        with patch.object(ScaleP2DStrategy, "CHECK_D_INSTANCE_STATUS_TIMEOUT", 0):
+        with patch.object(bind_context, "d_instance_reinit_wait_timeout", 0):
             assert bind_context._check_d_instance_status() is False
 
     assert "did not become INACTIVE" in bind_context.context.last_error

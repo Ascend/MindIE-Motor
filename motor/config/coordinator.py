@@ -17,7 +17,7 @@ from typing import Optional, Any
 from enum import Enum
 from dataclasses import dataclass, field, asdict, is_dataclass
 
-from motor.common.logger import reconfigure_logging, get_logger
+from motor.common.logger import get_logger
 from motor.common.utils.env import Env
 from motor.common.http.key_encryption import set_default_key_encryption_by_name
 from motor.config.etcd import EtcdConfig
@@ -42,7 +42,7 @@ from motor.config.config_utils import (
     INFER_TLS_CONFIG,
     ETCD_TLS_CONFIG,
 )
-from motor.config.resolver import ConfigResolver
+from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.port_allocator_config import PortAllocatorConfig
 
 FILE_ENCODING = "utf-8"
@@ -185,9 +185,6 @@ class KvConductorConfig:
     """Per-DP replay endpoint pattern, e.g. "tcp://*:6667".
     vLLM's ZMQ ROUTER for re-broadcasting buffered KV events on
     conductor restart recovery. Resolved via IP + dp_rank like other endpoints."""
-
-    hit_detail: bool = True
-    """Include per-DP per-medium block counts in query responses (``media_detail`` field)."""
 
     re_register_interval_sec: int = 0
     """Interval in seconds for periodic KV instance re-registration.
@@ -539,21 +536,26 @@ class CoordinatorConfig:
                 "recompute_max_retry": ignore_removed_recompute_retry,
             }
 
-            # Enrich AIGW fields from user_config if present
-            if user_config_data and AIGW in cfg:
+            # Build AIGW model metadata from engine configs.
+            # This runs whenever engine sections are present, regardless of
+            # whether the user wrote an "aigw" key in motor_coordinator_config.
+            if user_config_data:
                 try:
-                    prefill = user_config_data[ConfigKey.MOTOR_ENGINE_PREFILL.value]
-                    decode = user_config_data[ConfigKey.MOTOR_ENGINE_DECODE.value]
-                    prefill_resolver = ConfigResolver(prefill)
-                    cfg[AIGW][AIGW_ID] = prefill_resolver.get_model_name("")
-                    cfg[AIGW][AIGW_OBJECT] = AIGW_OBJECT_MODEL
-                    cfg[AIGW][AIGW_OWNED_BY] = AIGW_OWNED_BY_MOTOR
-                    cfg[AIGW][AIGW_P_MAX_SEQLEN] = prefill[ENGINE_CONFIG][MAX_MODEL_LEN]
-                    cfg[AIGW][AIGW_D_MAX_SEQLEN] = decode[ENGINE_CONFIG][MAX_MODEL_LEN]
-                    cfg[AIGW].setdefault(SLO_TTFT, 1000)
-                    cfg[AIGW].setdefault(SLO_TPOT, 50)
+                    prefill = user_config_data.get(ConfigKey.MOTOR_ENGINE_PREFILL.value)
+                    decode = user_config_data.get(ConfigKey.MOTOR_ENGINE_DECODE.value)
+                    if prefill and decode:
+                        if AIGW not in cfg:
+                            cfg[AIGW] = {}
+                        prefill_resolver = ConfigResolver(prefill)
+                        cfg[AIGW][AIGW_ID] = prefill_resolver.get_model_name("")
+                        cfg[AIGW][AIGW_OBJECT] = AIGW_OBJECT_MODEL
+                        cfg[AIGW][AIGW_OWNED_BY] = AIGW_OWNED_BY_MOTOR
+                        cfg[AIGW][AIGW_P_MAX_SEQLEN] = normalize_keys(prefill[ENGINE_CONFIG])[MAX_MODEL_LEN]
+                        cfg[AIGW][AIGW_D_MAX_SEQLEN] = normalize_keys(decode[ENGINE_CONFIG])[MAX_MODEL_LEN]
+                        cfg[AIGW].setdefault(SLO_TTFT, 1000)
+                        cfg[AIGW].setdefault(SLO_TPOT, 50)
                 except Exception as e:
-                    logger.warning("Failed to enrich aigw from user_config: %s", e)
+                    logger.warning("Failed to build aigw model metadata: %s", e)
 
             # Update configuration sections if they exist in JSON
             config_mappings = [
@@ -592,8 +594,6 @@ class CoordinatorConfig:
 
             # Re-validate configuration after applying values from JSON
             config.validate_config()
-
-            reconfigure_logging(config.logging_config)
 
             finalize_json_config_load(
                 config_path,

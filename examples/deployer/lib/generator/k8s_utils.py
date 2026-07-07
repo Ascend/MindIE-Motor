@@ -275,7 +275,7 @@ def set_services_namespace(service_list, namespace):
 
 def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
     """Apply sp_block annotation based on hardware type"""
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
+    if hardware_type in C.HARDWARE_TYPE_A2:
         if C.ANNOTATIONS in metadata:
             del metadata[C.ANNOTATIONS]
         return
@@ -285,9 +285,9 @@ def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
 
 def modify_sp_block_num(data, pd_flag, config):
     hardware_type = config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
-        if C.ANNOTATIONS in data[C.METADATA]:
-            del data[C.METADATA][C.ANNOTATIONS]
+    if hardware_type in C.HARDWARE_TYPE_A2:
+        if C.ANNOTATIONS in data[C.SPEC][C.TEMPLATE][C.METADATA]:
+            del data[C.SPEC][C.TEMPLATE][C.METADATA][C.ANNOTATIONS]
         return
     if pd_flag == C.NODE_TYPE_E:
         sp_block_num = int(config[C.SINGER_E_INSTANCES_NUM]) * int(config[C.E_POD_NPU_NUM])
@@ -299,7 +299,7 @@ def modify_sp_block_num(data, pd_flag, config):
         sp_block_num = int(config[C.SINGLE_HYBRID_INSTANCE_POD_NUM]) * int(config[C.HYBRID_POD_NPU_NUM])
     else:
         return
-    apply_sp_block_annotation(data[C.METADATA], sp_block_num, hardware_type)
+    apply_sp_block_annotation(data[C.SPEC][C.TEMPLATE][C.METADATA], sp_block_num, hardware_type)
 
 
 def _user_config_path_for_configmap(user_config=None, effective_deploy_mode=None):

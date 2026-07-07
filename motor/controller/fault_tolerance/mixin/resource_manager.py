@@ -419,9 +419,11 @@ class _ResourceManagerMixin:
             code = int(info.fault_code)
             grouped.setdefault(code, []).append(info)
 
-        # Log unique fault codes with aggregated NPU names
+        # Log unique fault codes with aggregated NPU names.
+        # Use the highest fault_level among entries sharing the same fault_code
+        # so that a severe fault on one NPU is not masked by milder faults on others.
         for idx, (code, infos) in enumerate(grouped.items(), start=1):
-            representative = infos[0]
+            representative = max(infos, key=lambda i: i.fault_level.value)
             npu_names = [i.npu_name for i in infos if i.npu_name]
             if npu_names:
                 if len(npu_names) == 1:
@@ -461,7 +463,7 @@ class _ResourceManagerMixin:
 
             node_metadata.hardware_fault_infos.clear()
             for code, infos in grouped.items():
-                info = infos[0]
+                info = max(infos, key=lambda i: i.fault_level.value)
                 info.fault_category = FaultCategory.HARDWARE
 
                 # Dynamically adjust PreSeparateNPU fault level based on

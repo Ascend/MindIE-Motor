@@ -306,8 +306,12 @@ spec:
       workload:
         apiVersion: apps/v1
         kind: StatefulSet
+      metadata:
+        labels:
+          infer.huawei.com/gang-schedule: 'true'
       spec:
         replicas: 2
+        podManagementPolicy: Parallel
         selector:
           matchLabels:
             app: mindie-server
@@ -425,8 +429,12 @@ spec:
       workload:
         apiVersion: apps/v1
         kind: StatefulSet
+      metadata:
+        labels:
+          infer.huawei.com/gang-schedule: 'true'
       spec:
         replicas: 2
+        podManagementPolicy: Parallel
         selector:
           matchLabels:
             app: mindie-server
@@ -544,8 +552,12 @@ spec:
       workload:
         apiVersion: apps/v1
         kind: StatefulSet
+      metadata:
+        labels:
+          infer.huawei.com/gang-schedule: 'true'
       spec:
         replicas: 2
+        podManagementPolicy: Parallel
         selector:
           matchLabels:
             app: mindie-server
@@ -663,8 +675,12 @@ spec:
       workload:
         apiVersion: apps/v1
         kind: StatefulSet
+      metadata:
+        labels:
+          infer.huawei.com/gang-schedule: 'true'
       spec:
         replicas: 2
+        podManagementPolicy: Parallel
         selector:
           matchLabels:
             app: mindie-server

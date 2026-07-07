@@ -17,6 +17,7 @@ import shutil
 import logging
 import subprocess
 from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any
 from enum import Enum
 
@@ -115,6 +116,24 @@ def retry_command(cmd_args):
     raise ValueError(f"Command failed after {MAX_RETRIES} attempts: {cmd_args}")
 
 
+def _query_device_ip(device_id):
+    """Query single device IP via hccn_tool (runs in parallel per device)."""
+    ret_ip = retry_command(["hccn_tool", "-i", str(device_id), "-ip", "-g"])
+    logging.info("device_id: %s, device_ip_info: %s", device_id, str(ret_ip))
+    device_ip = ret_ip[0].split(":")[1].replace('\n', '').replace(' ', '')
+    return device_id, device_ip
+
+
+def _query_device_sdid(device_id):
+    """Query single device super device ID via npu-smi (runs in parallel per device)."""
+    card_id = int(device_id) // 2
+    chip_id = int(device_id) % 2
+    ret_sdid = retry_command(["npu-smi", "info", "-t", "spod-info", "-i", str(card_id), "-c", str(chip_id)])
+    logging.info("device_id: %s, super_device_id: %s", device_id, str(ret_sdid))
+    device_sdid = ret_sdid[0].split(":")[1].replace('\n', '').replace(' ', '')
+    return device_id, device_sdid
+
+
 def main():
     logging.info("start %s", __file__)
     args = parse_args()
@@ -134,16 +153,22 @@ def main():
 
     device_ips: Dict[Any, Any] = {}
     device_sdids: Dict[Any, Any] = {}
-    for device_id in visible_devices:
-        ret_ip = retry_command(["hccn_tool", "-i", str(device_id), "-ip", "-g"])
-        logging.info("device_id: %s, device_ip_info: %s", device_id, str(ret_ip))
-        device_ips[device_id] = ret_ip[0].split(":")[1].replace('\n', '').replace(' ', '')
-        if hardware_type == HardwareType.A3:
-            card_id = int(device_id) // 2
-            chip_id = int(device_id) % 2
-            ret_sdid = retry_command(["npu-smi", "info", "-t", "spod-info", "-i", str(card_id), "-c", str(chip_id)])
-            logging.info("device_id: %s, super_device_id: %s", device_id, str(ret_sdid))
-            device_sdids[device_id] = ret_sdid[0].split(":")[1].replace('\n', '').replace(' ', '')
+    max_workers = min(len(visible_devices), 16)
+
+    # Phase 1: query device IPs in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        ip_futures = {executor.submit(_query_device_ip, d): d for d in visible_devices}
+        for future in as_completed(ip_futures):
+            device_id, device_ip = future.result()
+            device_ips[device_id] = device_ip
+
+    # Phase 2: query super device IDs in parallel (A3 only)
+    if hardware_type == HardwareType.A3:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            sdid_futures = {executor.submit(_query_device_sdid, d): d for d in visible_devices}
+            for future in as_completed(sdid_futures):
+                device_id, device_sdid = future.result()
+                device_sdids[device_id] = device_sdid
 
     hccn_table = {'version': '1.0', 'server_count': '1', SERVER_LIST: []}
     device_list = []

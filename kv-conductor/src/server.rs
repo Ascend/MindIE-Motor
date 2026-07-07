@@ -173,10 +173,6 @@ async fn query_handler(
                 tenant_id: {}
             })),
         ),
-        Err(KvConductorError::ReplayInProgress) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "replay in progress, retry later"})),
-        ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -221,10 +217,6 @@ async fn query_by_hash_handler(
             Json(serde_json::json!({
                 tenant_id: {}
             })),
-        ),
-        Err(KvConductorError::ReplayInProgress) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "replay in progress, retry later"})),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

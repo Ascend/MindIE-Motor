@@ -70,6 +70,28 @@ def classify_vllm_dispatch_profile(
     return _classify_vllm_kv_transfer_config(kv_transfer_config)
 
 
+def infer_vllm_dispatch_profile_from_config(config: Any) -> DispatchProfile:
+    """Resolve vLLM dispatch profile from an engine-server IConfig-like object."""
+    get_endpoint_config = getattr(config, "get_endpoint_config", None)
+    if get_endpoint_config is None:
+        return DispatchProfile.UNKNOWN
+
+    endpoint_config = get_endpoint_config()
+    if endpoint_config is None:
+        return DispatchProfile.UNKNOWN
+
+    if _normalized(getattr(endpoint_config, "engine_type", None)) != "vllm":
+        return DispatchProfile.UNKNOWN
+
+    deploy_config = getattr(endpoint_config, "deploy_config", None)
+    if deploy_config is None:
+        return DispatchProfile.UNKNOWN
+
+    engine_config = getattr(deploy_config, "engine_config", None)
+    explicit_profile = getattr(deploy_config, "dispatch_profile", None)
+    return classify_vllm_dispatch_profile(engine_config, explicit_profile=explicit_profile)
+
+
 def dispatch_capabilities_for_profile(profile: DispatchProfile) -> list[str]:
     if profile == DispatchProfile.HANDOFF:
         return [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
@@ -277,6 +299,13 @@ class PrefillResult(BaseModel):
     status: PrefillStatus = Field(..., description="Whether prefill was prepared, completed, or skipped")
     handoff_mode: PrefillMode = Field(..., description="Trigger, handoff, or bootstrap coordination mode")
     payload: dict = Field(default_factory=dict, description="Engine-specific prefill handoff data, e.g. KV handles")
+    usage: dict | None = Field(
+        default=None,
+        description=(
+            "Prefill usage block (carries prompt_tokens_details for cached-token reporting); "
+            "kept separate from payload because payload is consumed verbatim as kv_transfer_params"
+        ),
+    )
     expires_at_ms: int | None = Field(
         default=None,
         ge=0,

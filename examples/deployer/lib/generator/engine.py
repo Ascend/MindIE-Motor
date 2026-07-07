@@ -110,7 +110,7 @@ def build_engine_env_items(role, deploy_config, job_name, include_kv_pool=False)
     if k8s_utils.g_mf_store_enabled:
         ascend_mf_store_url = f"tcp://{k8s_utils.g_mf_store_service}:{C.DEFAULT_MF_STORE_PORT}"
         hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
-        ascend_mf_transfer_protocol = "device_rdma" if hardware_type == C.HARDWARE_TYPE_800I_A2 else "sdma"
+        ascend_mf_transfer_protocol = "device_rdma" if hardware_type in C.HARDWARE_TYPE_A2 else "sdma"
         env_items.extend(
             [
                 {C.NAME: C.ENV_ASCEND_MF_STORE_URL, C.VALUE: ascend_mf_store_url},
@@ -185,9 +185,9 @@ def set_engine_npu(container, deploy_config, node_type):
 
 
 def apply_node_selector_by_hardware(pod_spec, hardware_type):
-    if hardware_type == C.HARDWARE_TYPE_800I_A2:
+    if hardware_type in C.HARDWARE_TYPE_A2:
         pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_910B
-    elif hardware_type == C.HARDWARE_TYPE_800I_A3:
+    elif hardware_type in C.HARDWARE_TYPE_A3:
         pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_A3
     elif hardware_type in C.HARDWARE_TYPE_950I_A5:
         pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = hardware_type

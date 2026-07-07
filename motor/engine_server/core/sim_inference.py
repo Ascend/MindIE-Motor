@@ -14,6 +14,7 @@ import time
 import importlib
 from typing import Optional
 import httpx
+from motor.common.resources.dispatch import DispatchProfile
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
@@ -25,6 +26,7 @@ from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapsho
 logger = get_logger(__name__)
 
 _VIRTUAL_REQUEST_TIMEOUT_SEC = 5.0
+_VIRTUAL_WARMUP_TIMEOUT_SEC = 180.0
 _AICORE_SAMPLE_WINDOW_SEC = 5.0
 VIRTUAL_REQUEST_ID_MARKER = "_virtual"
 
@@ -37,13 +39,22 @@ def _is_virtual_metrics_request(req_state) -> bool:
 class SimInference:
     """Virtual inference utility class for sending virtual health check requests"""
 
-    def __init__(self, args, infer_tls_config, health_check_config=None, role=None):
+    def __init__(
+        self,
+        args,
+        infer_tls_config,
+        health_check_config=None,
+        role=None,
+        dispatch_profile: DispatchProfile | None = None,
+    ):
         """Initialize virtual inference utility
 
         Args:
             args: Command line arguments
             infer_tls_config: TLS configuration for inference service
             health_check_config: Health check configuration, including npu_usage_threshold and other parameters
+            role: Engine role (prefill/decode/union)
+            dispatch_profile: vLLM P/D coordination profile inferred from kv_transfer_config
         """
         self.args = args
         self.infer_tls_config = infer_tls_config
@@ -52,6 +63,7 @@ class SimInference:
         self._abnormal_status_lock = threading.Lock()
         self._is_abnormal = False
         self.role = role
+        self._dispatch_profile = dispatch_profile or DispatchProfile.UNKNOWN
 
         self.health_check_config = health_check_config or None
         # Get npu_usage_threshold with default value
@@ -74,6 +86,7 @@ class SimInference:
         # add flag to control failure counting, initially false
         self._count_failure_flag = False
         self.sim_sleep = 5
+        self._virtual_warmup_done = False
 
         # Condition variable to control aicore usage check execution
         self._aicore_check_condition = threading.Condition()
@@ -190,8 +203,10 @@ class SimInference:
             thread = threading.Thread(target=_run_in_thread, daemon=True)
             thread.start()
             logger.info(
-                "Health check task started, virtual request interval is 5s by default "
-                "(20s when AICore peak >= 80%%), npu_usage_threshold=%s%%",
+                "Health check task started, first virtual request warmup timeout is %ss, "
+                "then interval is 5s by default (20s when AICore peak >= 80%%), "
+                "npu_usage_threshold=%s%%",
+                _VIRTUAL_WARMUP_TIMEOUT_SEC,
                 self.npu_usage_threshold,
             )
 
@@ -284,12 +299,11 @@ class SimInference:
     async def send_virtual_request_async(self, timeout):
         # construct virtual request
         virtual_request = {"model": self.args.served_model_name[0], "prompt": "1", "max_tokens": 1}
-        if self.role == constants.DECODE_ROLE:
-            logger.debug("make virtual request for decode")
+        if self.role == constants.DECODE_ROLE and self._dispatch_profile == DispatchProfile.TRIGGER:
+            logger.debug("make virtual request for layerwise decode")
             virtual_request["kv_transfer_params"] = {
                 "do_remote_decode": False,
                 "do_remote_prefill": True,
-                "metaserver": f"http://{format_address(self.args.host, self.args.port)}/v1/metaserver",
                 "do_virtual": True,
             }
 
@@ -331,8 +345,32 @@ class SimInference:
             logger.error("Virtual request failed: %s", e)
             return False
 
+    async def _run_virtual_warmup(self) -> bool:
+        """Wait for the first successful virtual request before regular health checks."""
+        if self._virtual_warmup_done:
+            return True
+        if self._status != constants.NORMAL_STATUS:
+            return False
+
+        warmup_timeout = httpx.Timeout(_VIRTUAL_WARMUP_TIMEOUT_SEC)
+        logger.info(
+            "Virtual inference warmup in progress, request timeout is %s seconds",
+            _VIRTUAL_WARMUP_TIMEOUT_SEC,
+        )
+        if await self._send_virtual_request_safe(warmup_timeout):
+            self._virtual_warmup_done = True
+            logger.info("Virtual inference warmup completed successfully")
+            return True
+
+        self._virtual_warmup_done = True
+        logger.warning("Virtual inference warmup request failed, set abnormal status and stop health check")
+        self.set_abnormal_status()
+        return False
+
     async def health_check_loop(self):
         """Regular virtual inference loop; default 5s interval, 20s when AICore peak >= 80%."""
+        if not await self._run_virtual_warmup():
+            return
         self.sim_sleep = 5
         while self._status == constants.NORMAL_STATUS:
             try:

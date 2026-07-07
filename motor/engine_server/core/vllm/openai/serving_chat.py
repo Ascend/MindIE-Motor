@@ -18,22 +18,21 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the respective licenses for more details.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat as VllmOpenAIServingChat
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.chat_utils import ChatTemplateContentFormatOption
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse
 
-from motor.engine_server.core.vllm.vllm_openai_compat import kwargs_matching_signature
+from motor.engine_server.core.vllm.vllm_openai_compat import (
+    RequestLogger,
+    kwargs_matching_signature,
+    openai_http_response_from_generator,
+)
 
 
 class OpenAIServingChat:
@@ -87,13 +86,4 @@ class OpenAIServingChat:
 
     async def handle_request(self, request: ChatCompletionRequest, raw_request: Request):
         generator = await self._vllm_serving_chat.create_chat_completion(request, raw_request)
-
-        if isinstance(generator, ErrorResponse):
-            return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
-
-        elif isinstance(generator, ChatCompletionResponse):
-            return JSONResponse(
-                content=generator.model_dump(),
-            )
-
-        return StreamingResponse(content=generator, media_type="text/event-stream")
+        return openai_http_response_from_generator(generator, ChatCompletionResponse)

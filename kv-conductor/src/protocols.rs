@@ -154,11 +154,6 @@ pub struct WorkerKey {
     pub medium: StorageMedium,
 }
 
-/// For wire/serialization, we often need the instance_id as a string key.
-/// WorkerKey can be used internally but for serde maps with string keys we
-/// use the pattern: instance_id (string) -> { dp_rank_str -> value }.
-pub type DpRankStr = String;
-
 // ---------------------------------------------------------------------------
 // Registration types (matching Python ConductorApiClient)
 // ---------------------------------------------------------------------------
@@ -222,9 +217,6 @@ pub struct QueryRequest {
     pub token_ids: Vec<i64>,
     #[serde(default = "default_tenant")]
     pub tenant_id: String,
-    /// When true, include per-DP per-medium block detail in the response.
-    #[serde(default)]
-    pub hit_detail: bool,
 }
 
 /// POST /query_by_hash request body — query using pre-computed block hashes
@@ -248,18 +240,6 @@ pub struct QueryByHashRequest {
 //   rsp[tenant_id][instance_id]["DP"][dp_rank_str]   (in tokens)
 // ---------------------------------------------------------------------------
 
-/// Per-DP-rank KV match data.
-/// Per-DP per-medium match detail.
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct DpMediaDetail {
-    #[serde(rename = "XPU")]
-    pub xpu: u32,
-    #[serde(rename = "CPU")]
-    pub cpu: u32,
-    #[serde(rename = "DISK")]
-    pub disk: u32,
-}
-
 /// Per-DP weighted score breakdown across storage media.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct DpScoring {
@@ -274,37 +254,29 @@ pub struct DpScoring {
     pub disk_score: u32,
     /// Total weighted score (xpu_score + cpu_score + disk_score)
     pub total: u32,
-    /// Cached prefix length for this DP, in tokens.
-    /// The maximum of matched_tokens across all storage media for this DP.
+    /// Cached prefix length for this DP, in tokens (blocks × block_size).
     pub matched_tokens: u32,
+    /// HBM raw block count.
+    #[serde(rename = "XPU_blk")]
+    pub xpu_blocks: u32,
+    /// CPU raw block count.
+    #[serde(rename = "CPU_blk")]
+    pub cpu_blocks: u32,
+    /// Disk raw block count.
+    #[serde(rename = "DISK_blk")]
+    pub disk_blocks: u32,
 }
 
 /// Per-instance match data returned in query response.
-///
-/// Follows RFC #1527 query response shape: per-tier XPU/CPU/DISK plus
-/// per-DP-rank breakdown.  When ``hit_detail`` is set in the request,
-/// ``media_detail`` is populated with per-DP per-medium blocks.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct InstanceMatchData {
-    /// Longest continuous prefix match across all tiers and DP ranks, in tokens.
+    /// Longest continuous prefix match across all DP ranks, in tokens.
     pub longest_matched: u32,
-    /// Matched prefix tokens on GPU/NPU HBM (engine events).
-    #[serde(rename = "XPU")]
-    pub xpu: u32,
-    /// Matched prefix tokens on host DDR (Mooncake MEMORY replica).
-    #[serde(rename = "CPU")]
-    pub cpu: u32,
-    /// Matched prefix tokens on disk (Mooncake DISK replica).
-    #[serde(rename = "DISK")]
-    pub disk: u32,
     /// Per-DP-rank scoring breakdown across media.
     #[serde(rename = "DP")]
-    pub dp: HashMap<DpRankStr, DpScoring>,
+    pub dp: HashMap<String, DpScoring>,
     /// Sum of all DP total scores for this instance.
     pub total_score: u32,
-    /// Per-DP per-medium block counts (only when ``hit_detail`` is requested).
-    #[serde(rename = "media_detail", skip_serializing_if = "Option::is_none")]
-    pub media_detail: Option<HashMap<String, DpMediaDetail>>,
 }
 
 /// Full query response: { tenant_id: { instance_id: InstanceMatchData } }
@@ -410,7 +382,6 @@ impl KvEventWirePayload {
             "KvEventWirePayload::normalize"
         );
         let seq_hashes = self.collect_seq_hashes();
-        let _tokens_hashes: Vec<u64> = self.blocks.iter().map(|b| b.tokens_hash).collect();
 
         let data = match event_type {
             "stored" => {
@@ -432,7 +403,7 @@ impl KvEventWirePayload {
                     None // Mooncake events have no parent
                 };
                 KvCacheEventData::Stored(KvCacheStoreData {
-                    parent_hash,
+                    parent_hash: parent_hash.map(|h| h as u64),
                     start_position: None,
                     blocks,
                 })
@@ -447,7 +418,7 @@ impl KvEventWirePayload {
             _ => {
                 if !self.blocks.is_empty() {
                     KvCacheEventData::Stored(KvCacheStoreData {
-                        parent_hash: self.parent_hash,
+                        parent_hash: self.parent_hash.map(|h| h as u64),
                         start_position: None,
                         blocks: self.blocks.clone(),
                     })
@@ -512,7 +483,7 @@ pub enum KvCacheEventData {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KvCacheStoreData {
     /// Parent sequence hash (None for root-level blocks).
-    pub parent_hash: Option<i64>,
+    pub parent_hash: Option<u64>,
     /// Absolute position of the first block (for positional replay, optional).
     pub start_position: Option<u32>,
     /// Stored block data.
@@ -529,29 +500,6 @@ pub struct KvCacheStoredBlockData {
 }
 
 // ---------------------------------------------------------------------------
-// Generic API response helpers
-// ---------------------------------------------------------------------------
-
-/// Simple status response for register/unregister/health endpoints.
-#[derive(Debug, Clone, Serialize)]
-pub struct StatusResponse {
-    pub status: String,
-}
-
-/// Error response body.
-#[derive(Debug, Clone, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
-/// Response for POST /events.
-#[derive(Debug, Clone, Serialize)]
-pub struct EventsResponse {
-    pub status: String,
-    pub events_applied: usize,
-}
-
-// ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
 
@@ -563,12 +511,6 @@ pub struct OverlapScores {
 }
 
 impl OverlapScores {
-    pub fn new() -> Self {
-        Self {
-            scores: FxHashMap::default(),
-        }
-    }
-
     pub fn is_empty(&self) -> bool {
         self.scores.is_empty()
     }
@@ -699,45 +641,48 @@ mod tests {
     fn test_instance_match_data_serialization() {
         let mut imd = InstanceMatchData::default();
         imd.longest_matched = 256;
-        imd.xpu = 128;
-        imd.cpu = 256;
-        imd.disk = 0;
         imd.dp.insert(
             "0".into(),
             DpScoring {
-                xpu_score: 128,
+                xpu_score: 6,
                 cpu_score: 0,
                 disk_score: 0,
-                total: 128,
-                matched_tokens: 128,
+                total: 6,
+                matched_tokens: 768,
+                xpu_blocks: 6,
+                cpu_blocks: 0,
+                disk_blocks: 0,
             },
         );
         imd.dp.insert(
             "1".into(),
             DpScoring {
                 xpu_score: 0,
-                cpu_score: 256,
+                cpu_score: 8,
                 disk_score: 0,
-                total: 256,
-                matched_tokens: 256,
+                total: 8,
+                matched_tokens: 1024,
+                xpu_blocks: 0,
+                cpu_blocks: 4,
+                disk_blocks: 0,
             },
         );
-        imd.total_score = 384;
+        imd.total_score = 14;
 
         let json = serde_json::to_string(&imd).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["longest_matched"], 256);
-        assert_eq!(parsed["XPU"], 128);
-        assert_eq!(parsed["CPU"], 256);
-        assert_eq!(parsed["DISK"], 0);
-        assert_eq!(parsed["total_score"], 384);
-        assert_eq!(parsed["DP"]["0"]["XPU"], 128);
-        assert_eq!(parsed["DP"]["0"]["total"], 128);
-        assert_eq!(parsed["DP"]["0"]["matched_tokens"], 128);
-        assert_eq!(parsed["DP"]["1"]["CPU"], 256);
-        assert_eq!(parsed["DP"]["1"]["total"], 256);
-        assert_eq!(parsed["DP"]["1"]["matched_tokens"], 256);
+        assert_eq!(parsed["total_score"], 14);
+        assert_eq!(parsed["DP"]["0"]["XPU"], 6);
+        assert_eq!(parsed["DP"]["0"]["total"], 6);
+        assert_eq!(parsed["DP"]["0"]["matched_tokens"], 768);
+        assert_eq!(parsed["DP"]["0"]["XPU_blk"], 6);
+        assert!(parsed["DP"]["0"]["CPU_blk"].as_u64().unwrap() == 0);
+        assert_eq!(parsed["DP"]["1"]["CPU"], 8);
+        assert_eq!(parsed["DP"]["1"]["total"], 8);
+        assert_eq!(parsed["DP"]["1"]["matched_tokens"], 1024);
+        assert_eq!(parsed["DP"]["1"]["CPU_blk"], 4);
     }
 
     // ── KvEventWirePayload normalization ────────────────────────────────

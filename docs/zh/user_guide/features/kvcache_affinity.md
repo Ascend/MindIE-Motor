@@ -165,7 +165,6 @@ Coordinator 的 `motor_coordinator_config.scheduler_config` 中通过 `kv_conduc
 | `kv_conductor_config.cpu_endpoint` | 子配置 | Per-DP CPU/DDR 端口模式（YuanRong 等多介质后端） |
 | `kv_conductor_config.disk_endpoint` | 子配置 | Per-DP DISK/SSD 端口模式（YuanRong 等多介质后端） |
 | `kv_conductor_config.replay_endpoint` | 子配置 | Per-DP replay 端口模式，conductor 重启恢复时回放缓冲的 KV 事件 |
-| `kv_conductor_config.hit_detail` | 子配置 | 是否在查询响应中包含 per-DP per-介质命中块数（`true`/`false`，默认 `true`） |
 | `kv_conductor_config.re_register_interval_sec` | 子配置 | 周期性重注册间隔（秒）。0 或负数禁用定时重注册（默认 0） |
 | `kv-events-config` | `engine_config` | vLLM KV 事件发布配置（引擎侧，publisher 设置） |
 | `kv-transfer-config` | `engine_config` | KV 传输配置（Mooncake / AscendStore connector） |

@@ -1,13 +1,94 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 #
 # MindIE is licensed under both the Mulan PSL v2 and the Apache License, Version 2.0.
+# Portions derived from vLLM are licensed under the Apache License, Version 2.0.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 """Helpers to support multiple vLLM OpenAI serving API shapes (with/without OpenAIServingRender)."""
 
 from __future__ import annotations
 
 import inspect
+from importlib import import_module
 from typing import Any, Callable
+
+
+def _import_vllm_attr(candidates: tuple[tuple[str, str], ...], unavailable: Any) -> Any:
+    for module_path, attr_name in candidates:
+        try:
+            return getattr(import_module(module_path), attr_name)
+        except ImportError:
+            continue
+    return unavailable
+
+
+class _UnavailableRequestLogger:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("vLLM RequestLogger is not available in this environment")
+
+
+def _unavailable_cli_env_setup() -> None:
+    raise RuntimeError("vLLM cli_env_setup is not available in this environment")
+
+
+def _unavailable_process_lora_modules(*args: Any, **kwargs: Any) -> Any:
+    raise RuntimeError("vLLM process_lora_modules is not available in this environment")
+
+
+RequestLogger = _import_vllm_attr(
+    (
+        ("vllm.entrypoints.serve.utils.request_logger", "RequestLogger"),
+        ("vllm.entrypoints.logger", "RequestLogger"),
+    ),
+    _UnavailableRequestLogger,
+)
+process_lora_modules = _import_vllm_attr(
+    (
+        ("vllm.entrypoints.serve.utils.api_utils", "process_lora_modules"),
+        ("vllm.entrypoints.utils", "process_lora_modules"),
+    ),
+    _unavailable_process_lora_modules,
+)
+cli_env_setup = _import_vllm_attr(
+    (
+        ("vllm.entrypoints.serve.utils.api_utils", "cli_env_setup"),
+        ("vllm.entrypoints.utils", "cli_env_setup"),
+    ),
+    _unavailable_cli_env_setup,
+)
+
+__all__ = [
+    "RequestLogger",
+    "process_lora_modules",
+    "cli_env_setup",
+    "kwargs_matching_signature",
+    "openai_http_response_from_generator",
+    "vllm_openai_chat_needs_render",
+    "build_openai_serving_render_kwargs",
+    "create_openai_serving_render",
+]
+
+
+def openai_http_response_from_generator(
+    generator: Any,
+    json_response_type: type | tuple[type, ...],
+) -> Any:
+    """Map vLLM OpenAI serving output to a FastAPI HTTP response."""
+    from fastapi.responses import JSONResponse, StreamingResponse
+    from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(
+            content=generator.model_dump(),
+            status_code=generator.error.code,
+        )
+
+    response_types = json_response_type if isinstance(json_response_type, tuple) else (json_response_type,)
+    if isinstance(generator, response_types):
+        return JSONResponse(content=generator.model_dump())
+
+    return StreamingResponse(content=generator, media_type="text/event-stream")
 
 
 def kwargs_matching_signature(fn: Callable[..., Any], kwargs: dict[str, Any]) -> dict[str, Any]:

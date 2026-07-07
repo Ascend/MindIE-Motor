@@ -92,6 +92,7 @@ def generate_tokens_for_publisher(dp_rank, block_size, block_index):
     block gets a distinct sequence, no cycling, no cross-DP collisions.
     """
     from token_pool import generate_tokens
+
     return generate_tokens(dp_rank, block_size, block_index)
 
 
@@ -147,6 +148,11 @@ class MockZmqPublisher:
 
         # Deterministic RNG per publisher
         self._rng = random.Random(dp_rank * 12345 + port * 67890)  # nosec B311
+
+        # Track last published block hash for cross-event parent chaining.
+        # When set, the next vLLM BlockStored event will carry this as
+        # parent_block_hash so blocks form a contiguous prefix chain.
+        self._last_published_block_hash: int | None = None
 
         # --- Virtual KV cache ---
         # Pool publishers do not maintain their own cache — they only drain the
@@ -408,6 +414,7 @@ class MockZmqPublisher:
         old_count = len(self._active_blocks)
         self._active_blocks.clear()
         self._next_seq = 1
+        self._last_published_block_hash = None  # chain broken
 
         with self._lock:
             self._event_id += 1
@@ -490,22 +497,35 @@ class MockZmqPublisher:
                 eid = self._event_id
 
             if self.vllm_format:
-                event = [
-                    "BlockStored",
-                    hashes,
-                    all_tokens,
-                    self.block_size,
-                    0,       # lora_id
-                    "GPU",   # medium
-                    0,       # group_idx
-                    "FullAttention",
-                ]
+                if self._last_published_block_hash is not None:
+                    event = [
+                        "BlockStored",
+                        hashes,
+                        self._last_published_block_hash,  # parent = prev batch's last hash
+                        all_tokens,
+                        self.block_size,
+                        0,  # lora_id
+                        "GPU",  # medium
+                        0,  # group_idx
+                        "FullAttention",
+                    ]
+                else:
+                    event = [
+                        "BlockStored",
+                        hashes,
+                        all_tokens,
+                        self.block_size,
+                        0,  # lora_id
+                        "GPU",  # medium
+                        0,  # group_idx
+                        "FullAttention",
+                    ]
+                # Track last hash of this batch for cross-batch chaining.
+                if hashes:
+                    self._last_published_block_hash = hashes[-1]
                 ts = time.time()
             else:
-                blocks_data = [
-                    {"block_hash": th, "tokens_hash": th}
-                    for _, th, _ in chunk
-                ]
+                blocks_data = [{"block_hash": th, "tokens_hash": th} for _, th, _ in chunk]
                 event = {
                     "event_id": eid,
                     "event_type": "stored",
@@ -524,6 +544,10 @@ class MockZmqPublisher:
             self._socket.send(b"0", zmq.SNDMORE)
             self._socket.send(payload)
             total_published += len(hashes)
+
+        # After initial burst, stop cross-event chaining so runtime stores
+        # (which are interleaved with removes) don't reference evicted parents.
+        self._last_published_block_hash = None
 
         fmt_note = " (vLLM)" if self.vllm_format else ""
         print(

@@ -7,6 +7,10 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
+# pylint: disable=cyclic-import
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -38,7 +42,7 @@ def write_yaml(data, output_file, single_doc=True):
     """Write to YAML file"""
     logger.info(f"Writing YAML to {output_file}")
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    
+
     with open(output_file, 'w', encoding='utf-8') as f:
         if single_doc:
             ym.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False, width=float("inf"))
@@ -59,7 +63,7 @@ def load_yaml(input_yaml, single_doc):
 def exec_cmd(command):
     """Execute command"""
     logger.info(f"Executing command: {command}")
-    os.popen(command).read()
+    os.popen(command).read()  # nosec B605
 
 
 def safe_exec_cmd(command):
@@ -74,14 +78,14 @@ def safe_exec_cmd(command):
 def shell_escape(value):
     if not isinstance(value, str):
         return str(value)
-    
+
     value = value.replace('\\', '\\\\')
     value = value.replace('"', '\\"')
     value = value.replace('`', '\\`')
     value = value.replace('\n', '\\n')
     value = value.replace('\r', '\\r')
     value = value.replace('\t', '\\t')
-    
+
     return value
 
 
@@ -91,7 +95,7 @@ def update_shell_safely(script_path, env_config, component_key="", function_name
     if component_key and component_key in env_config:
         all_env_vars.update(env_config[component_key])
 
-    with open(script_path, 'r') as f:
+    with open(script_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
     start_idx, end_idx = -1, -1
@@ -108,21 +112,21 @@ def update_shell_safely(script_path, env_config, component_key="", function_name
             f'    export {key}="{shell_escape(value)}"\n' if isinstance(value, str) else f'    export {key}={value}\n'
             for key, value in all_env_vars.items()
         ],
-        "}\n"
+        "}\n",
     ]
 
     if start_idx != -1 and end_idx != -1:
-        new_lines = lines[:start_idx] + new_function_lines + lines[end_idx + 1:]
+        new_lines = lines[:start_idx] + new_function_lines + lines[end_idx + 1 :]
     else:
         new_lines = new_function_lines + lines
 
-    with open(script_path, 'w') as f:
+    with open(script_path, 'w', encoding='utf-8') as f:
         f.writelines(new_lines)
 
 
 def generate_unique_id():
     timestamp = str(int(time.time() * 1000))
-    random_part = str(uuid.uuid4()).split('-')[0]
+    random_part = str(uuid.uuid4()).split('-', maxsplit=1)[0]
     return f"{timestamp}{random_part}"
 
 
@@ -190,7 +194,7 @@ def obtain_engine_e_instance_total(deploy_config):
 def modify_log_mount(deployment_data, user_config, app_type):
     host_log_dir = "/root/ascend/log"
     temp_app_config = None
-    
+
     if app_type == "mindie-motor-controller":
         temp_app_config = get_json_by_path(user_config, C.MOTOR_CONTROLLER_CONFIG)
     elif app_type == "mindie-motor-coordinator":
@@ -200,7 +204,7 @@ def modify_log_mount(deployment_data, user_config, app_type):
 
     if temp_app_config:
         host_log_dir = get_json_by_path(temp_app_config, "logging_config.host_log_dir", host_log_dir)
-    
+
     for volume in deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]["volumes"]:
         if volume["name"] == C.LOG_PATH:
             volume["hostPath"]["path"] = host_log_dir
@@ -256,9 +260,7 @@ def set_env_to_shell(user_config, env_config_path, deploy_mode):
         update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, union_env_key, "set_union_env")
         update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
         update_shell_safely(C.MF_STORE_SHELL_PATH, env_config, "motor_mf_store_env", "set_mf_store_env")
-        update_shell_safely(
-            C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_kv_conductor_env", "set_kv_conductor_env"
-        )
+        update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
     else:
         update_shell_safely(C.CONTROLLER_SHELL_PATH, env_config, "motor_controller_env", "set_controller_env")
         update_shell_safely(C.COORDINATOR_SHELL_PATH, env_config, "motor_coordinator_env", "set_coordinator_env")
@@ -268,13 +270,12 @@ def set_env_to_shell(user_config, env_config_path, deploy_mode):
         update_shell_safely(C.ENGINE_SHELL_PATH, env_config, union_env_key, "set_union_env")
         update_shell_safely(C.KV_POOL_SHELL_PATH, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
         update_shell_safely(C.MF_STORE_SHELL_PATH, env_config, "motor_mf_store_env", "set_mf_store_env")
-        update_shell_safely(
-            C.KV_CONDUCTOR_SHELL_PATH, env_config, "motor_kv_conductor_env", "set_kv_conductor_env"
-        )
+        update_shell_safely(C.KV_CONDUCTOR_SHELL_PATH, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
 
 
 def get_deploy_paths():
     from lib.generator import k8s_utils
+
     return {
         "controller_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'controller_template.yaml'),
         "controller_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_controller.yaml'),
@@ -291,5 +292,5 @@ def get_deploy_paths():
         "single_container_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'single_container_template.yaml'),
         "single_container_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_single_container.yaml'),
         "mf_store_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'mf_store_template.yaml'),
-        "mf_store_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_mf_store.yaml')
+        "mf_store_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_mf_store.yaml'),
     }

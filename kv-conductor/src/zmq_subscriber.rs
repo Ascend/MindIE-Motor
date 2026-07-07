@@ -12,9 +12,10 @@
 //!
 //! Connects to engine-side ZMQ PUB sockets, receives multi-part msgpack
 //! messages, and delegates event parsing and application to the [`events`]
-//! module.  Supports Mooncake Master (legacy) and vLLM engine (native
+//! module.  Supports Mooncake Master (pool backend) and vLLM engine (native
 //! msgspec) event formats.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::backend::MatchMode;
 use crate::error::KvConductorError;
-use crate::events::{self, ZmqBatchMap, ZmqEventMap};
+use crate::events::{self, ZmqEventMap};
 use crate::indexer::Indexer;
 use crate::protocols::StorageMedium;
 
@@ -37,6 +38,8 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// as msgpack, normalizes events, and applies them to the indexer.
 pub struct ZmqSubscriber {
     cancel: CancellationToken,
+    /// Set to `true` when the subscriber loop exits.
+    stopped: Arc<AtomicBool>,
 }
 
 impl ZmqSubscriber {
@@ -56,11 +59,13 @@ impl ZmqSubscriber {
     ) -> Result<Self, KvConductorError> {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = stopped.clone();
 
         tracing::info!(
             %endpoint, %model_name, %tenant_id, %backend_id, dp_rank,
             block_size,
-            "ZMQ subscriber starting with reconnect"
+            "ZMQ subscriber starting"
         );
 
         tokio::task::spawn_blocking(move || {
@@ -77,14 +82,29 @@ impl ZmqSubscriber {
                 hbm_ip_index,
                 cancel_clone,
             );
+            stopped_clone.store(true, Ordering::Release);
         });
 
-        Ok(Self { cancel })
+        Ok(Self { cancel, stopped })
     }
 
-    /// Shut down the subscriber gracefully.
-    pub fn shutdown(&self) {
+    /// Cancel the subscriber and wait for its background task to exit.
+    ///
+    /// Sets the cancellation token, then polls `stopped` until the
+    /// `spawn_blocking` loop acknowledges completion (5 s timeout).
+    pub async fn shutdown(&self) {
         self.cancel.cancel();
+        let start = std::time::Instant::now();
+        loop {
+            if self.stopped.load(Ordering::Acquire) {
+                return;
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                tracing::warn!("subscriber shutdown timed out");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Create and configure a ZMQ SUB socket connected to `endpoint`.
@@ -115,6 +135,10 @@ impl ZmqSubscriber {
 impl Drop for ZmqSubscriber {
     fn drop(&mut self) {
         self.cancel.cancel();
+        // Don't block in Drop — the spawned task will notice the cancel
+        // and set `stopped` on its own.  If the subscriber was removed
+        // from the registry without awaiting `shutdown()`, the task
+        // still cleans up eventually.
     }
 }
 
@@ -249,6 +273,7 @@ fn subscriber_loop(
             &model_name,
             &tenant_id,
             &backend_id,
+            _block_size,
             dp_rank,
             &default_media,
             match_mode,
@@ -268,6 +293,7 @@ fn process_payload(
     model_name: &str,
     tenant_id: &str,
     backend_id: &str,
+    block_size: u32,
     dp_rank: u32,
     default_media: &[StorageMedium],
     match_mode: MatchMode,
@@ -287,7 +313,7 @@ fn process_payload(
         "ZMQ payload received"
     );
 
-    // Format 1 — vLLM msgspec batch: [ts: f64, events: [...], dp_rank]
+    // Format 1 — vLLM msgspec batch: [ts, events: [...], dp_rank]
     if let Some((vllm_events, bdp)) = events::parse_vllm_batch(payload_bytes) {
         *batch_count += 1;
         for vllm_event in &vllm_events {
@@ -303,112 +329,73 @@ fn process_payload(
                 default_media,
                 match_mode,
                 hbm_ip_index,
+                block_size,
             ) {
                 *parse_errors += 1;
                 tracing::warn!(%backend_id, dp_rank, "vLLM event apply error: {e}");
             }
         }
-    }
-    // Format 2 — vLLM bare event
-    else if let Some(vllm_event) = events::parse_vllm_bare(payload_bytes) {
-        *event_count += 1;
-        if let Err(e) = events::apply_vllm_event(
-            indexer,
-            &vllm_event,
-            model_name,
-            tenant_id,
-            backend_id,
-            dp_rank,
-            dp_rank,
-            default_media,
-            match_mode,
-            hbm_ip_index,
-        ) {
-            *parse_errors += 1;
-            tracing::warn!(%backend_id, dp_rank, "vLLM event apply error: {e}");
-        }
-    }
-    // Format 3 — Mooncake map batch
-    else if let Ok(batch) = rmp_serde::from_slice::<ZmqBatchMap>(payload_bytes) {
-        let bdp = batch.dp_rank.unwrap_or(0);
-        *batch_count += 1;
-        for zmq_event in &batch.events {
-            *event_count += 1;
-            if let Err(e) = events::apply_zmq_event(
-                indexer,
-                zmq_event,
-                model_name,
-                tenant_id,
-                backend_id,
-                bdp,
-                dp_rank,
-                default_media,
-                match_mode,
-                hbm_ip_index,
-            ) {
-                *parse_errors += 1;
-                tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
-            }
-        }
-    }
-    // Format 2 — Mooncake legacy array batch
-    else if let Ok((_timestamp, events_vec, bdp)) =
-        rmp_serde::from_slice::<(i64, Vec<ZmqEventMap>, u32)>(payload_bytes)
-    {
-        *batch_count += 1;
-        for zmq_event in &events_vec {
-            *event_count += 1;
-            if let Err(e) = events::apply_zmq_event(
-                indexer,
-                zmq_event,
-                model_name,
-                tenant_id,
-                backend_id,
-                bdp,
-                dp_rank,
-                default_media,
-                match_mode,
-                hbm_ip_index,
-            ) {
-                *parse_errors += 1;
-                tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
-            }
-        }
-    }
-    // Format 3 — Bare Mooncake event
-    else if let Ok(zmq_event) = rmp_serde::from_slice::<ZmqEventMap>(payload_bytes) {
-        let bdp = zmq_event.dp_rank.unwrap_or(dp_rank);
-        *event_count += 1;
-        if let Err(e) = events::apply_zmq_event(
-            indexer,
-            &zmq_event,
-            model_name,
-            tenant_id,
-            backend_id,
-            bdp,
-            dp_rank,
-            default_media,
-            match_mode,
-            hbm_ip_index,
-        ) {
-            *parse_errors += 1;
-            tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
-        }
-    }
-    // Parse failed
-    else {
-        *parse_errors += 1;
-        let preview: String = payload_bytes
-            .iter()
-            .take(32)
-            .map(|b| format!("{:02x}", b))
-            .collect();
-        tracing::warn!(
+    } else {
+        tracing::trace!(
             %backend_id, dp_rank,
-            payload_len = payload_bytes.len(),
-            preview = %preview,
-            "msgpack parse error: unknown format"
+            "vLLM batch parse failed, trying Mooncake format"
         );
+        // Format 2 — Mooncake pool backend batch: (timestamp_ms, events_vec, dp_rank)
+        if let Ok((_timestamp, events_vec, bdp)) =
+            rmp_serde::from_slice::<(i64, Vec<ZmqEventMap>, u32)>(payload_bytes)
+        {
+            *batch_count += 1;
+            tracing::trace!(
+                %backend_id, dp_rank, bdp,
+                num_events = events_vec.len(),
+                "ZMQ Mooncake batch parsed"
+            );
+            for zmq_event in &events_vec {
+                *event_count += 1;
+                if let Err(e) = events::apply_zmq_event(
+                    indexer,
+                    zmq_event,
+                    model_name,
+                    tenant_id,
+                    backend_id,
+                    bdp,
+                    dp_rank,
+                    default_media,
+                    match_mode,
+                    hbm_ip_index,
+                ) {
+                    *parse_errors += 1;
+                    tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
+                }
+            }
+        }
+        // Both formats rejected
+        else {
+            *parse_errors += 1;
+            let preview: String = payload_bytes
+                .iter()
+                .take(32)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // Decode the msgpack type marker for diagnostics.
+            let type_hint = match payload_bytes.first().copied() {
+                Some(0x93) => "3-element fixarray",
+                Some(0x92) => "2-element fixarray",
+                Some(0x91) => "1-element fixarray",
+                Some(0x80..=0x8f) => "fixmap",
+                Some(0xdc) | Some(0xdd) => "array",
+                Some(0xde) | Some(0xdf) => "map",
+                _ => "unknown",
+            };
+            tracing::warn!(
+                %backend_id, dp_rank,
+                payload_len = payload_bytes.len(),
+                type_hint,
+                preview = %preview,
+                "msgpack parse error: payload matches neither vLLM nor Mooncake batch format"
+            );
+        }
     }
 }
 
@@ -494,7 +481,7 @@ pub fn replay_events(
 
         let payload_bytes: &[u8] = &payload_msg;
 
-        // Same order as subscriber_loop: vLLM first, then Mooncake fallbacks.
+        // Same order as subscriber_loop: vLLM first, then Mooncake.
         if let Some((vllm_events, bdp)) = events::parse_vllm_batch(payload_bytes) {
             batch_count += 1;
             for vllm_event in &vllm_events {
@@ -510,45 +497,9 @@ pub fn replay_events(
                     &[],
                     MatchMode::None,
                     &None,
+                    _block_size,
                 ) {
                     tracing::warn!(%replay_endpoint, "replay vLLM event apply error: {e}");
-                }
-            }
-        } else if let Some(vllm_event) = events::parse_vllm_bare(payload_bytes) {
-            event_count += 1;
-            if let Err(e) = events::apply_vllm_event(
-                indexer,
-                &vllm_event,
-                model_name,
-                tenant_id,
-                backend_id,
-                0,
-                0,
-                &[],
-                MatchMode::None,
-                &None,
-            ) {
-                tracing::warn!(%replay_endpoint, "replay vLLM event apply error: {e}");
-            }
-        } else if let Ok(batch) = rmp_serde::from_slice::<ZmqBatchMap>(payload_bytes) {
-            let bdp = batch.dp_rank.unwrap_or(0);
-            batch_count += 1;
-            for zmq_event in &batch.events {
-                event_count += 1;
-                if let Err(e) = events::apply_zmq_event(
-                    indexer,
-                    zmq_event,
-                    model_name,
-                    tenant_id,
-                    backend_id,
-                    bdp,
-                    bdp,
-                    &[],
-                    MatchMode::None,
-                    &None,
-                ) {
-                    tracing::warn!(%replay_endpoint, event_id = zmq_event.event_id,
-                                   "replay apply error: {e}");
                 }
             }
         } else if let Ok((_ts, events_vec, bdp)) =
@@ -572,24 +523,6 @@ pub fn replay_events(
                     tracing::warn!(%replay_endpoint, event_id = zmq_event.event_id,
                                    "replay apply error: {e}");
                 }
-            }
-        } else if let Ok(zmq_event) = rmp_serde::from_slice::<ZmqEventMap>(payload_bytes) {
-            let bdp = zmq_event.dp_rank.unwrap_or(0);
-            event_count += 1;
-            if let Err(e) = events::apply_zmq_event(
-                indexer,
-                &zmq_event,
-                model_name,
-                tenant_id,
-                backend_id,
-                bdp,
-                bdp,
-                &[],
-                MatchMode::None,
-                &None,
-            ) {
-                tracing::warn!(%replay_endpoint, event_id = zmq_event.event_id,
-                               "replay apply error: {e}");
             }
         } else {
             tracing::warn!(%replay_endpoint, "replay msgpack parse error: unknown format");

@@ -126,7 +126,12 @@ SECURITY_CONTEXT = "securityContext"
 PRIVILEGED = "privileged"
 
 HARDWARE_TYPE_800I_A2 = "800I_A2"
+HARDWARE_TYPE_800T_A2 = "800T_A2"
 HARDWARE_TYPE_800I_A3 = "800I_A3"
+HARDWARE_TYPE_800T_A3 = "800T_A3"
+# Group by chip generation — both 800I and 800T variants share the same accelerator labels
+HARDWARE_TYPE_A2 = {HARDWARE_TYPE_800I_A2, HARDWARE_TYPE_800T_A2}
+HARDWARE_TYPE_A3 = {HARDWARE_TYPE_800I_A3, HARDWARE_TYPE_800T_A3}
 HARDWARE_TYPE_950I_A5 = [
     "350-Atlas-8",
     "350-Atlas-16",
@@ -213,3 +218,76 @@ JOB_NAME = "job-name"
 ROLES = "roles"
 SERVICES = "services"
 KIND_KEY = "kind"
+
+# ---------------------------------------------------------------------------
+# TUI ANSI style constants
+# ---------------------------------------------------------------------------
+
+
+class Style:
+    """ANSI escape sequences for TUI colors, formatting, and box-drawing."""
+
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    BLINK = '\033[5m'
+    REVERSE = '\033[7m'
+
+    # 8-bit foreground colours
+    CYAN = '\033[38;5;51m'
+    GREEN = '\033[38;5;82m'
+    YELLOW = '\033[38;5;226m'
+    RED = '\033[38;5;196m'
+    WHITE = '\033[38;5;15m'
+    GRAY = '\033[38;5;245m'
+    BLUE = '\033[38;5;39m'
+    ORANGE = '\033[38;5;214m'
+    MAGENTA = '\033[38;5;201m'
+    BLACK = '\033[38;5;16m'
+
+    # 8-bit background colours
+    BG_GREEN = '\033[48;5;22m'
+    BG_YELLOW = '\033[48;5;58m'
+    BG_RED = '\033[48;5;52m'
+    BG_BLUE = '\033[48;5;24m'
+    BG_SELECTED = '\033[48;5;236m'
+
+    # Box-drawing glyphs (single)
+    H = '─'
+    V = '│'
+    TL = '┌'
+    TR = '┐'
+    BL = '└'
+    BR = '┘'
+    LT = '├'
+    RT = '┤'
+
+    # Box-drawing glyphs (double)
+    DH = '═'
+    DV = '║'
+    DTL = '╔'
+    DTR = '╗'
+    DBL = '╚'
+    DBR = '╝'
+    DLT = '╠'
+    DRT = '╣'
+
+
+# ---------------------------------------------------------------------------
+# TUI timing & sizing constants
+# ---------------------------------------------------------------------------
+
+# Poll interval for key input (seconds)
+KEY_POLL_INTERVAL = 0.1
+# How often to check for pods during waiting phase (seconds)
+POD_WAIT_INTERVAL = 2
+# How long status messages stay visible (seconds)
+STATUS_DURATION = 1.5
+# How long confirmation prompts stay active (seconds)
+CONFIRM_DURATION = 3.0
+# How long the menu-item flash lasts after activation (seconds)
+FLASH_DURATION = 1.2
+# Minimum box width
+MIN_BOX_WIDTH = 88
+# Maximum box width
+MAX_BOX_WIDTH = 140

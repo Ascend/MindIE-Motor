@@ -256,8 +256,7 @@ cmd_query_tokens() {
         \"model\": \"${model}\",
         \"block_size\": ${bs},
         \"token_ids\": [${tlist}],
-        \"tenant_id\": \"${tenant}\",
-        \"hit_detail\": true
+        \"tenant_id\": \"${tenant}\"
     }")
     code=$(echo "$resp" | tail -1)
     body=$(echo "$resp" | sed '$d')
@@ -279,48 +278,34 @@ for tenant_id, instances in d.items():
     if not instances:
         print('  (no matches)'); continue
     print(f'  tenant: {tenant_id}')
-    header = f'  {\"instance\":<30s} {\"score\":>6s} {\"XPU\":>6s} {\"CPU\":>6s} {\"DISK\":>6s} {\"blocks\":>8s} {\"tokens\":>8s}'
+    header = f'  {\"instance\":<30s} {\"score\":>6s} {\"XPU\":>8s} {\"CPU\":>8s} {\"DISK\":>8s} {\"match_tok\":>10s}'
     print(header)
-    print(f'  {\"-\"*30} {\"-\"*6} {\"-\"*6} {\"-\"*6} {\"-\"*6} {\"-\"*8} {\"-\"*8}')
+    print(f'  {\"-\"*30} {\"-\"*6} {\"-\"*8} {\"-\"*8} {\"-\"*8} {\"-\"*10}')
     for inst_id, imd in sorted(instances.items()):
-        # Legacy per-medium tokens
-        xpu_t = imd.get('XPU', 0)
-        cpu_t = imd.get('CPU', 0)
-        disk_t = imd.get('DISK', 0)
         best_t = imd.get('longest_matched', 0)
         total_score = imd.get('total_score', 0)
-        # Show instance-level summary
-        parts = []
-        if xpu_t: parts.append(f'{xpu_t//bs}blk')
-        if cpu_t: parts.append(f'{cpu_t//bs}blk')
-        if disk_t: parts.append(f'{disk_t//bs}blk')
-        blk_str = '/'.join(parts) if parts else '0blk'
-        best_blk = best_t // bs if bs else 0
-        print(f'  {inst_id:<30s} {total_score:>6d} {xpu_t//bs:>6d} {cpu_t//bs:>6d} {disk_t//bs:>6d} {best_blk:>8d} {best_t:>8d}')
-        # Per-DP scoring breakdown
+        # Per-DP scoring breakdown with blocks
         dps = imd.get('DP', {})
         if dps:
             for rank, ds in sorted(dps.items()):
-                x_s = ds.get('XPU', 0) if isinstance(ds, dict) else 0
-                c_s = ds.get('CPU', 0) if isinstance(ds, dict) else 0
-                d_s = ds.get('DISK', 0) if isinstance(ds, dict) else 0
-                total = ds.get('total', 0) if isinstance(ds, dict) else ds
-                if isinstance(ds, dict) and (x_s or c_s or d_s):
-                    print(f'  {\"  dp=\"+rank:<30s} {total:>6d} {x_s:>6d} {c_s:>6d} {d_s:>6d} {\"\":>8s} {\"\":>8s}')
-        # media_detail (blocks, for hit_detail)
-        md = imd.get('media_detail')
-        if md:
-            print(f'  {\"  per-DP blocks:\":<30s}')
-            for rank, media in sorted(md.items()):
-                xpu_b = media.get('XPU', 0)
-                cpu_b = media.get('CPU', 0)
-                disk_b = media.get('DISK', 0)
-                parts = []
-                if xpu_b: parts.append(f'XPU={xpu_b}')
-                if cpu_b: parts.append(f'CPU={cpu_b}')
-                if disk_b: parts.append(f'DISK={disk_b}')
-                if parts:
-                    print(f'  {\"  dp=\"+rank:<30s} {\", \".join(parts)}')
+                if not isinstance(ds, dict):
+                    continue
+                x_s = ds.get('XPU', 0)
+                c_s = ds.get('CPU', 0)
+                d_s = ds.get('DISK', 0)
+                total = ds.get('total', 0)
+                mt = ds.get('matched_tokens', 0)
+                xpu_b = ds.get('XPU_blk', 0)
+                cpu_b = ds.get('CPU_blk', 0)
+                disk_b = ds.get('DISK_blk', 0)
+                blk_parts = []
+                if xpu_b: blk_parts.append(f'XPU={xpu_b * bs}t({xpu_b}blk)')
+                if cpu_b: blk_parts.append(f'CPU={cpu_b * bs}t({cpu_b}blk)')
+                if disk_b: blk_parts.append(f'DISK={disk_b * bs}t({disk_b}blk)')
+                blk_str = ' '.join(blk_parts) if blk_parts else '-'
+                label = inst_id if rank == sorted(dps.keys())[0] else ''
+                print(f'  {label:<30s} {total_score if label else \"\":>6}  {x_s:>4}/{xpu_b}blk {c_s:>4}/{cpu_b}blk {d_s:>4}/{disk_b}blk {mt:>8}t  {blk_str}')
+                total_score = ''  # only show once
     print()
 " 2>/dev/null || echo "$json"
 }
@@ -419,7 +404,6 @@ for i in range(count):
         data = json.dumps({
             'model': model, 'block_size': block_size,
             'token_ids': tokens[:$tokens_per], 'tenant_id': tenant,
-            'hit_detail': True,
         }).encode()
 
     t0 = time.time()
@@ -439,28 +423,21 @@ for i in range(count):
                 score = imd.get('total_score', 0)
                 if score > best_score:
                     best_score = score; worker = inst_id
-                # Per-DP scoring: DP now contains {XPU, CPU, DISK, total}
+                # Per-DP scoring: DP contains {XPU, CPU, DISK, total, XPU_blk, CPU_blk, DISK_blk, matched_tokens}
                 for rank, ds in imd.get('DP', {}).items():
                     key = f'{inst_id}/dp={rank}'
                     if isinstance(ds, dict):
                         s = ds.get('total', 0)
-                        x_s = ds.get('XPU', 0)
-                        c_s = ds.get('CPU', 0)
-                        d_s = ds.get('DISK', 0)
+                        xpu_b = ds.get('XPU_blk', 0)
+                        cpu_b = ds.get('CPU_blk', 0)
+                        disk_b = ds.get('DISK_blk', 0)
                         block_hits_by_worker[key] = block_hits_by_worker.get(key, 0) + s
+                        if i < 3 and (xpu_b or cpu_b or disk_b):
+                            print(f'        dp={rank} XPU={xpu_b} CPU={cpu_b} DISK={disk_b} blocks', flush=True)
                     else:
                         # Legacy format: plain integer (backward compat)
                         bk = ds // block_size if block_size else 0
                         block_hits_by_worker[key] = block_hits_by_worker.get(key, 0) + bk
-                md = imd.get('media_detail')
-                if md:
-                    for rank, media in md.items():
-                        xpu_b = media.get('XPU', 0)
-                        cpu_b = media.get('CPU', 0)
-                        disk_b = media.get('DISK', 0)
-                        if xpu_b or cpu_b or disk_b:
-                            print(f'        dp={rank} XPU={xpu_b} CPU={cpu_b} DISK={disk_b} blocks', flush=True)
-                # Legacy: longest_matched for backward compat display
                 b = imd.get('longest_matched', 0) // block_size if block_size else 0
                 if b > matched:
                     matched = b

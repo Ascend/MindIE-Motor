@@ -24,10 +24,19 @@ def _install_vllm_mocks() -> None:
     mock_vllm.entrypoints.openai.cli_args = MagicMock()
     mock_vllm.entrypoints.openai.cli_args.make_arg_parser = MagicMock()
     mock_vllm.entrypoints.openai.cli_args.validate_parsed_serve_args = MagicMock()
+    mock_request_logger_mod = MagicMock()
+    mock_request_logger_mod.RequestLogger = MagicMock()
+    mock_api_utils_mod = MagicMock()
+    mock_api_utils_mod.process_lora_modules = MagicMock()
+    mock_api_utils_mod.cli_env_setup = MagicMock()
     sys.modules["vllm"] = mock_vllm
     sys.modules["vllm.entrypoints"] = mock_vllm.entrypoints
     sys.modules["vllm.entrypoints.openai"] = mock_vllm.entrypoints.openai
     sys.modules["vllm.entrypoints.openai.cli_args"] = mock_vllm.entrypoints.openai.cli_args
+    sys.modules["vllm.entrypoints.serve"] = MagicMock()
+    sys.modules["vllm.entrypoints.serve.utils"] = MagicMock()
+    sys.modules["vllm.entrypoints.serve.utils.request_logger"] = mock_request_logger_mod
+    sys.modules["vllm.entrypoints.serve.utils.api_utils"] = mock_api_utils_mod
     sys.modules["vllm.utils"] = MagicMock()
     sys.modules["vllm.utils.argparse_utils"] = MagicMock()
 

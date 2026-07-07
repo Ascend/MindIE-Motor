@@ -6,8 +6,6 @@ metadata:
     app: mindie-server
     ring-controller.atlas: ascend-910b
     job-name: xxxx
-  annotations:
-    sp-block: "xxxx"
   namespace: mindie
 spec:
   replicas: 2
@@ -16,6 +14,8 @@ spec:
       app: mindie-server
   template:
     metadata:
+      annotations:
+        sp-block: "xxxx"
       labels:
         fault-scheduling: grace
         fault-retry-times: "10000"

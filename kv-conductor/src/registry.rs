@@ -246,7 +246,7 @@ impl WorkerRegistry {
                     .collect();
                 for key in matching {
                     if let Some(subscriber) = subs.remove(&key) {
-                        subscriber.shutdown();
+                        subscriber.shutdown().await;
                     }
                 }
                 drop(subs);
@@ -419,7 +419,7 @@ impl WorkerRegistry {
                 .collect();
             for key in matching_keys {
                 if let Some(subscriber) = subs.remove(&key) {
-                    subscriber.shutdown();
+                    subscriber.shutdown().await;
                     tracing::info!(
                         instance_id = %req.instance_id,
                         dp_rank = req.dp_rank,
@@ -464,20 +464,8 @@ impl WorkerRegistry {
 
     /// Query KV cache overlap for a token sequence.
     pub async fn query(&self, req: &QueryRequest) -> Result<QueryResponse, KvConductorError> {
-        if self
-            .replay_in_progress
-            .load(std::sync::atomic::Ordering::Acquire)
-            > 0
-        {
-            return Err(KvConductorError::ReplayInProgress);
-        }
-        self.indexer.query(
-            &req.model,
-            &req.tenant_id,
-            &req.token_ids,
-            req.block_size,
-            req.hit_detail,
-        )
+        self.indexer
+            .query(&req.model, &req.tenant_id, &req.token_ids, req.block_size)
     }
 
     /// Query KV cache overlap using pre-computed block hashes.
@@ -485,13 +473,6 @@ impl WorkerRegistry {
         &self,
         req: &QueryByHashRequest,
     ) -> Result<QueryResponse, KvConductorError> {
-        if self
-            .replay_in_progress
-            .load(std::sync::atomic::Ordering::Acquire)
-            > 0
-        {
-            return Err(KvConductorError::ReplayInProgress);
-        }
         let hashes: Vec<LocalBlockHash> = req
             .block_hashes
             .iter()

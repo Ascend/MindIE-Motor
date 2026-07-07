@@ -13,11 +13,7 @@ import time
 import sys
 
 from motor.common.utils.process_utils import set_process_title
-
-set_process_title("NodeManager")
-
-# ruff: noqa: E402
-from motor.common.logger import get_logger
+from motor.common.logger import get_logger, reconfigure_logging
 from motor.node_manager.api_server.node_manager_api import NodeManagerAPI
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.utils.port_allocator import apply_node_manager_ports, run_port_setup_or_exit
@@ -27,6 +23,8 @@ from motor.node_manager.core.heartbeat_manager import HeartbeatManager
 from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.utils.env import Env
+
+set_process_title("NodeManager")
 
 logger = get_logger(__name__)
 
@@ -66,6 +64,7 @@ def init_all_modules(config_path: str | None = None) -> None:
     global config
     if config is None:
         config = NodeManagerConfig.from_json(config_path)
+        reconfigure_logging(config.logging_config)
         run_port_setup_or_exit(apply_node_manager_ports, config)
 
     modules.append(config)

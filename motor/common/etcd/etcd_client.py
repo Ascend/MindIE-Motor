@@ -57,6 +57,16 @@ class EtcdClient:
         self._lock = threading.Lock()
 
         try:
+            channel_options = [
+                (
+                    'grpc.service_config',
+                    json.dumps(
+                        {
+                            "loadBalancingPolicy": etcd_config.etcd_lb_policy,
+                        }
+                    ),
+                ),
+            ]
             if self.tls_config and self.tls_config.enable_tls:
                 with open(self.tls_config.ca_file, RB) as f:
                     root_cert = f.read()
@@ -67,9 +77,9 @@ class EtcdClient:
                 creds = grpc.ssl_channel_credentials(
                     root_certificates=root_cert, private_key=private_key, certificate_chain=cert_chain
                 )
-                self.channel = grpc.secure_channel(format_address(self.host, self.port), creds)
+                self.channel = grpc.secure_channel(format_address(self.host, self.port), creds, options=channel_options)
             else:
-                self.channel = grpc.insecure_channel(format_address(self.host, self.port))
+                self.channel = grpc.insecure_channel(format_address(self.host, self.port), options=channel_options)
 
             self.kv_stub = rpc_pb2_grpc.KVStub(self.channel)
             self.lease_stub = rpc_pb2_grpc.LeaseStub(self.channel)

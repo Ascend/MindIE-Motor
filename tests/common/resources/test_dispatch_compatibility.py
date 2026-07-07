@@ -8,14 +8,17 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Unit tests for the O(P+D) dispatch-compatibility helpers in motor.common.resources.dispatch."""
+"""Unit tests for dispatch helpers in motor.common.resources.dispatch."""
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from motor.common.resources.dispatch import (
     DispatchPlan,
+    DispatchProfile,
     dispatch_plan_union,
     has_compatible_dispatch_pair,
+    infer_vllm_dispatch_profile_from_config,
     shared_dispatch_plans,
 )
 
@@ -60,3 +63,52 @@ def test_has_compatible_dispatch_pair_matches_pairwise_definition():
     ]
     for prefill, decode in cases:
         assert has_compatible_dispatch_pair(prefill, decode) == _pairwise_compatible(prefill, decode)
+
+
+class _EngineConfig:
+    def __init__(self, configs):
+        self.configs = configs
+
+    def get(self, key, default=None):
+        return self.configs.get(key, default)
+
+
+class _Config:
+    def __init__(self, engine_type="vllm", engine_config=None, dispatch_profile=None):
+        self._endpoint_config = SimpleNamespace(
+            engine_type=engine_type,
+            deploy_config=SimpleNamespace(
+                engine_config=_EngineConfig(engine_config or {}),
+                dispatch_profile=dispatch_profile,
+            ),
+        )
+
+    def get_endpoint_config(self):
+        return self._endpoint_config
+
+
+def test_infer_vllm_dispatch_profile_from_config_layerwise():
+    config = _Config(
+        engine_config={
+            "kv_transfer_config": {
+                "kv_connector": "MooncakeLayerwiseConnector",
+            }
+        }
+    )
+    assert infer_vllm_dispatch_profile_from_config(config) == DispatchProfile.TRIGGER
+
+
+def test_infer_vllm_dispatch_profile_from_config_handoff():
+    config = _Config(
+        engine_config={
+            "kv_transfer_config": {
+                "kv_connector": "MooncakeHybridConnector",
+            }
+        }
+    )
+    assert infer_vllm_dispatch_profile_from_config(config) == DispatchProfile.HANDOFF
+
+
+def test_infer_vllm_dispatch_profile_from_config_non_vllm_engine():
+    config = _Config(engine_type="sglang")
+    assert infer_vllm_dispatch_profile_from_config(config) == DispatchProfile.UNKNOWN

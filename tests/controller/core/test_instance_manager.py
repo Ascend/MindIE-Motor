@@ -558,6 +558,81 @@ def test_state_transitions(instance_manager, test_config):
     assert instance.status == InsStatus.INACTIVE
 
 
+def test_inactive_with_mixed_paused_normal_goes_to_paused(instance_manager):
+    """INACTIVE + mixed PAUSED/NORMAL (no ABNORMAL) → PAUSED, NOT INITIAL"""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(201, "test_mixed", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.INACTIVE)
+
+    # Mixed: pod-0 PAUSED, pod-1 NORMAL — no ABNORMAL
+    for ep_id, ep in instance.endpoints["192.168.1.1"].items():
+        ep.status = EndpointStatus.PAUSED
+    for ep_id, ep in instance.endpoints["192.168.1.2"].items():
+        ep.status = EndpointStatus.NORMAL
+
+    result = manager._handle_state_transition(instance)
+    assert result is True
+    assert instance.status == InsStatus.PAUSED, (
+        f"Expected PAUSED but got {instance.status} — mixed PAUSED+NORMAL must not fallthrough to INITIAL"
+    )
+
+
+def test_inactive_with_all_paused_goes_to_paused(instance_manager):
+    """INACTIVE + all endpoints PAUSED → PAUSED"""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(202, "test_all_paused", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.INACTIVE)
+
+    # All PAUSED
+    for pod_endpoints in instance.endpoints.values():
+        for ep in pod_endpoints.values():
+            ep.status = EndpointStatus.PAUSED
+
+    result = manager._handle_state_transition(instance)
+    assert result is True
+    assert instance.status == InsStatus.PAUSED
+
+
+def test_abnormal_priority_over_paused(instance_manager):
+    """ABNORMAL has higher priority than PAUSED: mixed ABNORMAL+PAUSED stays INACTIVE"""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(203, "test_priority", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.INACTIVE)
+
+    # Mixed: pod-0 PAUSED, pod-1 ABNORMAL
+    for ep_id, ep in instance.endpoints["192.168.1.1"].items():
+        ep.status = EndpointStatus.PAUSED
+    for ep_id, ep in instance.endpoints["192.168.1.2"].items():
+        ep.status = EndpointStatus.ABNORMAL
+
+    result = manager._handle_state_transition(instance)
+    assert result is True
+    assert instance.status == InsStatus.INACTIVE, (
+        f"Expected INACTIVE but got {instance.status} — ABNORMAL must take priority over PAUSED"
+    )
+
+
+def test_initial_with_paused(instance_manager):
+    """INITIAL + mixed PAUSED/NORMAL → PAUSED"""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(204, "test_init_paused", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.INITIAL)
+
+    # Mixed: pod-0 PAUSED, pod-1 NORMAL
+    for ep_id, ep in instance.endpoints["192.168.1.1"].items():
+        ep.status = EndpointStatus.PAUSED
+    for ep_id, ep in instance.endpoints["192.168.1.2"].items():
+        ep.status = EndpointStatus.NORMAL
+
+    result = manager._handle_state_transition(instance)
+    assert result is True
+    assert instance.status == InsStatus.PAUSED
+
+
 def test_separate_instance(instance_manager):
     """Test separating instances"""
     # Enable persistence for this test

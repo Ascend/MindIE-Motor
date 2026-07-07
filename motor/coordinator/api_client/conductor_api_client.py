@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import time
 from typing import Any
 
 from motor.common.logger import get_logger
@@ -115,7 +116,7 @@ class ConductorApiClient:
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
-            with SafeHTTPSClient(timeout=2, **client_args) as client:
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/register", register_data)
                 cls._pool_registered = True
                 logger.info("Pool registered: backend=%s endpoint=%s", store_backend, reg.pool_endpoint)
@@ -148,7 +149,7 @@ class ConductorApiClient:
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
-            with SafeHTTPSClient(timeout=2, **client_args) as client:
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/register", register_data)
                 mode = "ZMQ+HTTP" if xpu_url else "HTTP-only"
                 logger.info(
@@ -188,7 +189,7 @@ class ConductorApiClient:
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
-            with SafeHTTPSClient(timeout=2, **client_args) as client:
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/register", register_data)
                 mode = "ZMQ+HTTP" if has_endpoints else "HTTP-only"
                 logger.info(
@@ -256,7 +257,7 @@ class ConductorApiClient:
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
-            with SafeHTTPSClient(timeout=2, **client_args) as client:
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/register", register_data)
                 logger.info("Register success! role=%s conductor_id=%s", instance.role, instance_id)
         except Exception as e:
@@ -286,7 +287,7 @@ class ConductorApiClient:
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
-            with SafeHTTPSClient(timeout=2, **client_args) as client:
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/unregister", register_data)
                 logger.info(
                     "UnRegister success! role=%s conductor_id=%s",
@@ -300,15 +301,39 @@ class ConductorApiClient:
             )
         logger.info(f"unregister_data : {register_data}")
 
+    # ── Circuit breaker for /query ──────────────────────────────────
+    _query_failures: int = 0
+    _query_cool_until: float = 0.0
+    _QUERY_CB_THRESHOLD: int = 3  # consecutive failures to trip
+    _QUERY_CB_COOLDOWN: float = 30.0  # seconds to stay open
+
     @classmethod
     def query_conductor(cls, instances: list[Instance], encoded_ids: list[int]) -> dict[str, Any]:
-        """Query KV conductor for prefix cache overlap scores."""
+        """Query KV conductor for prefix cache overlap scores.
+
+        Circuit breaker: after ``_QUERY_CB_THRESHOLD`` consecutive failures,
+        skip queries for ``_QUERY_CB_COOLDOWN`` seconds.
+        """
+        # ── Circuit open? ──────────────────────────────────────────
+        if cls._query_failures >= cls._QUERY_CB_THRESHOLD:
+            if time.time() < cls._query_cool_until:
+                logger.debug(
+                    "query conductor circuit open (failures=%d, cool until=%.0f)",
+                    cls._query_failures,
+                    cls._query_cool_until,
+                )
+                return {}
+            # Cooldown expired — half-open, try one request
+            logger.info(
+                "query conductor circuit half-open, retrying (failures=%d)",
+                cls._query_failures,
+            )
+
         reg = cls._kv_reg()
         query_data: dict = {
             "model": instances[0].model_name,
             "block_size": reg.block_size,
             "token_ids": encoded_ids,
-            "hit_detail": reg.hit_detail,
         }
         if TENANT_ID != "default":
             query_data["tenant_id"] = TENANT_ID
@@ -318,20 +343,31 @@ class ConductorApiClient:
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
 
         try:
-            with SafeHTTPSClient(timeout=0.5, **client_args) as client:
+            with SafeHTTPSClient(timeout=3, **client_args) as client:
                 response = client.post("/query", query_data)
-                cls._log_hit_summary(response)
+                cls._log_hit_summary(response, reg.block_size)
+                cls._query_failures = 0  # reset on success
                 return response
         except Exception as e:
-            logger.error(
-                "Exception occurred while querying conductor at %s: %s",
-                client_args.get('address', 'unknown'),
-                e,
-            )
+            cls._query_failures += 1
+            if cls._query_failures >= cls._QUERY_CB_THRESHOLD:
+                cls._query_cool_until = time.time() + cls._QUERY_CB_COOLDOWN
+                logger.warning(
+                    "query conductor circuit OPEN (failures=%d, cool for %.0fs): %s",
+                    cls._query_failures,
+                    cls._QUERY_CB_COOLDOWN,
+                    e,
+                )
+            else:
+                logger.error(
+                    "Exception occurred while querying conductor at %s: %s",
+                    client_args.get('address', 'unknown'),
+                    e,
+                )
         return {}
 
     @classmethod
-    def _log_hit_summary(cls, response: dict[str, Any]) -> None:
+    def _log_hit_summary(cls, response: dict[str, Any], block_size: int = 128) -> None:
         """Log a concise per-instance hit summary from the query response."""
         if not isinstance(response, dict):
             return
@@ -341,43 +377,57 @@ class ConductorApiClient:
             for inst_id, imd in instances.items():
                 if not isinstance(imd, dict):
                     continue
-                longest = imd.get("longest_matched", 0)
-                xpu = imd.get("XPU", 0)
-                cpu = imd.get("CPU", 0)
-                disk = imd.get("DISK", 0)
+                longest = imd.get("longest_matched", 0)  # tokens (blocks × block_size)
                 dp = imd.get("DP", {})
-                media = imd.get("media_detail")
-                parts = [f"best={longest}", f"XPU={xpu}", f"CPU={cpu}", f"DISK={disk}"]
+                total_score = imd.get("total_score", 0)
+
+                # Aggregate per-DP hit info for the log line.
+                any_hit = False
+                dp_parts = []
+                media_parts = []
                 if isinstance(dp, dict):
-                    # dp values may be DpScoring dicts (new) or plain ints (old); unify to a
-                    # token count for logging.
-                    dp_items = sorted(dp.items())
-                    dp_parts = []
-                    for k, v in dp_items:
+                    for rank, v in sorted(dp.items()):
                         if isinstance(v, dict):
-                            dp_parts.append(f"{k}:{v.get('matched_tokens', v)}")
+                            mt = v.get("matched_tokens", 0)
+                            s = v.get("total", 0)
+                            xpu_blk = v.get("XPU_blk", 0)
+                            cpu_blk = v.get("CPU_blk", 0)
+                            disk_blk = v.get("DISK_blk", 0)
+                            dp_parts.append(f"{rank}:{mt}t/{s}pts")
+                            if xpu_blk or cpu_blk or disk_blk:
+                                any_hit = True
+                            media_fmt = cls._fmt_medium(xpu_blk, cpu_blk, disk_blk, block_size)
+                            if media_fmt:
+                                media_parts.append(f"  conductor media: {tenant_id}/{inst_id} dp={rank} {media_fmt}")
                         else:
-                            dp_parts.append(f"{k}:{v}")
-                    parts.append(f"DP={{{','.join(dp_parts)}}}")
-                hit = any(v > 0 for v in (xpu, cpu, disk))
+                            dp_parts.append(f"{rank}:{v}t")
+
+                parts = [
+                    f"matched={longest}t",
+                    f"score={total_score}",
+                    f"DP={{{','.join(dp_parts)}}}",
+                ]
                 logger.info(
                     "conductor hit: %s/%s %s %s",
                     tenant_id,
                     inst_id,
-                    "HIT" if hit else "MISS",
+                    "HIT" if any_hit else "MISS",
                     " ".join(parts),
                 )
-                if isinstance(media, dict):
-                    for rank, m in sorted(media.items()):
-                        logger.info(
-                            "conductor media: %s/%s dp=%s XPU=%s CPU=%s DISK=%s",
-                            tenant_id,
-                            inst_id,
-                            rank,
-                            m.get("XPU", 0),
-                            m.get("CPU", 0),
-                            m.get("DISK", 0),
-                        )
+                for mp in media_parts:
+                    logger.info(mp)
+
+    @staticmethod
+    def _fmt_medium(xpu_blk: int, cpu_blk: int, disk_blk: int, block_size: int) -> str:
+        """Format per-medium hit as e.g. ``XPU=768t(6blk) CPU=0t DISK=0t``."""
+        parts = []
+        for label, blk in [("XPU", xpu_blk), ("CPU", cpu_blk), ("DISK", disk_blk)]:
+            if blk:
+                tok = blk * block_size
+                parts.append(f"{label}={tok}t({blk}blk)")
+            else:
+                parts.append(f"{label}=0t")
+        return " ".join(parts)
 
     @classmethod
     def _build_register_payload(cls, instance: Instance, endpoint: Endpoint) -> dict[str, Any]:
@@ -424,7 +474,7 @@ class ConductorApiClient:
         reg = cls._kv_reg()
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
 
-        with SafeHTTPSClient(timeout=2, **client_args) as client:
+        with SafeHTTPSClient(timeout=15, **client_args) as client:
             # ── kv-conductor flavour (preferred) ─────────────────────
             try:
                 response = client.get("/workers")

@@ -94,7 +94,8 @@
       "configmap_prefix": "mindx-dl-deviceinfo-",
       "k8s_cert_path": "",
       "enable_scale_p2d": false,
-      "enable_token_reinference": true
+      "enable_token_reinference": true,
+      "scale_p2d_d_instance_reinit_wait_timeout": 60
     },
     "observability_config": {
       "observability_enable": false,

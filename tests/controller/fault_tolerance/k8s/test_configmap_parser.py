@@ -21,6 +21,10 @@ from unittest.mock import patch
 from motor.controller.fault_tolerance.k8s.configmap_parser import (
     is_configmap_valid,
     _parse_json_string,
+    _parse_device_fault_code,
+    _normalize_fault_level_string,
+    _resolve_device_list_key,
+    _parse_switch_fault_key,
     process_device_info,
     process_switch_info,
     process_manually_separate_npu,
@@ -466,6 +470,13 @@ def test_map_fault_level_pre_separate_npu_static():
     assert map_fault_level(OriginFaultLevel.PRE_SEPARATE_NPU) == FaultLevel.L6
 
 
+def test_map_fault_level_manually_separate_npu_static():
+    """ManuallySeparateNPU statically maps to L6 — no runtime downgrade.
+    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded to L2.
+    """
+    assert map_fault_level(OriginFaultLevel.MANUALLY_SEPARATE_NPU) == FaultLevel.L6
+
+
 def test_process_device_info_with_sub_health_fault_level():
     """Device info with 'SubHealthFault' level should parse to L1."""
     device_info_dict = {
@@ -518,6 +529,34 @@ def test_process_device_info_with_pre_separate_npu_level():
     assert result[0].fault_code == 0x00F1FEF5
 
 
+def test_process_device_info_with_manually_separate_npu_level():
+    """Device info with 'ManuallySeparateNPU' level should statically parse to L6.
+    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded at runtime.
+    """
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": [
+                    {
+                        "fault_type": "CardNetworkUnhealthy",
+                        "npu_name": "Ascend910-0",
+                        "fault_level": "ManuallySeparateNPU",
+                        "fault_code": "0x00F1FEF6",
+                    },
+                ]
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 1
+    # Static mapping: ManuallySeparateNPU → L6
+    assert result[0].fault_level == FaultLevel.L6
+    assert result[0].origin_fault_level == OriginFaultLevel.MANUALLY_SEPARATE_NPU
+    assert result[0].fault_code == 0x00F1FEF6
+
+
 def test_process_switch_info_with_sub_health_fault_level():
     """Switch info with SubHealthFault level should map to L1."""
     switch_info_dict = {
@@ -540,3 +579,478 @@ def test_map_fault_level_unknown_string_returns_healthy():
     """Unrecognized fault level string should default to HEALTHY (0)."""
     assert map_fault_level("NonExistentFaultLevel") == FaultLevel.HEALTHY
     assert map_fault_level("") == FaultLevel.HEALTHY
+
+
+# =============================================================================
+# 7. Comma-separated fault code parsing tests
+# =============================================================================
+
+
+def test_parse_device_fault_code_single_hex():
+    """Single hex fault code should be parsed as-is."""
+    assert _parse_device_fault_code("0x1001") == 0x1001
+    assert _parse_device_fault_code("80F38003") == 0x80F38003
+    assert _parse_device_fault_code("110001024") == 0x110001024
+
+
+def test_parse_device_fault_code_comma_separated():
+    """Comma-separated fault codes — first valid one wins."""
+    # "8F180E00,110001024" → parse "8F180E00" first, return it
+    assert _parse_device_fault_code("8F180E00,110001024") == 0x8F180E00
+    # "110001024" alone
+    assert _parse_device_fault_code("110001024") == 0x110001024
+
+
+def test_parse_device_fault_code_comma_separated_with_spaces():
+    """Comma-separated codes with whitespace around them."""
+    assert _parse_device_fault_code("8F180E00 , 110001024") == 0x8F180E00
+
+
+def test_parse_device_fault_code_all_invalid():
+    """If all codes in the comma list are invalid, return default."""
+    assert _parse_device_fault_code("not_hex,also_bad") == 0x1001
+
+
+def test_parse_device_fault_code_empty_and_none():
+    """Empty or None input returns default fault code."""
+    assert _parse_device_fault_code("") == 0x1001
+    assert _parse_device_fault_code(None) == 0x1001
+
+
+# =============================================================================
+# 8. _resolve_device_list_key tests
+# =============================================================================
+
+
+def test_resolve_device_list_key_new_name():
+    """Should resolve via the new key name (huawei.com/npu-Fault)."""
+    device_list = {
+        "huawei.com/npu-Fault": [
+            {"fault_type": "CardUnhealthy", "npu_name": "npu-0", "fault_level": "RestartNPU", "fault_code": "0xB001"}
+        ]
+    }
+    result = _resolve_device_list_key(device_list, "huawei.com/npu-Fault", "huawei.com/Ascend910-Fault")
+    assert len(result) == 1
+    assert result[0]["npu_name"] == "npu-0"
+
+
+def test_resolve_device_list_key_old_name_fallback():
+    """Should fall back to old key when new key is missing."""
+    device_list = {
+        "huawei.com/Ascend910-Fault": [
+            {
+                "fault_type": "CardUnhealthy",
+                "npu_name": "Ascend910-0",
+                "fault_level": "RestartNPU",
+                "fault_code": "0xB001",
+            }
+        ]
+    }
+    result = _resolve_device_list_key(device_list, "huawei.com/npu-Fault", "huawei.com/Ascend910-Fault")
+    assert len(result) == 1
+    assert result[0]["npu_name"] == "Ascend910-0"
+
+
+def test_resolve_device_list_key_new_preferred_over_old():
+    """When both keys exist, the new key should take precedence."""
+    device_list = {
+        "huawei.com/npu-Fault": [
+            {"fault_type": "CardUnhealthy", "npu_name": "npu-0", "fault_level": "RestartNPU", "fault_code": "0xB001"}
+        ],
+        "huawei.com/Ascend910-Fault": [
+            {
+                "fault_type": "CardNetworkUnhealthy",
+                "npu_name": "Ascend910-1",
+                "fault_level": "RestartRequest",
+                "fault_code": "0xA001",
+            }
+        ],
+    }
+    result = _resolve_device_list_key(device_list, "huawei.com/npu-Fault", "huawei.com/Ascend910-Fault")
+    assert len(result) == 1
+    assert result[0]["npu_name"] == "npu-0"  # new key wins
+
+
+def test_resolve_device_list_key_nonexistent():
+    """Returns empty list when no candidate key exists."""
+    device_list = {"other_key": []}
+    result = _resolve_device_list_key(device_list, "huawei.com/npu-Fault", "huawei.com/Ascend910-Fault")
+    assert result == []
+
+
+def test_resolve_device_list_key_json_string_format():
+    """Should handle nested JSON-string format via _normalize_device_list_value."""
+    fault_list = [
+        {"fault_type": "CardUnhealthy", "npu_name": "npu-3", "fault_level": "SeparateNPU", "fault_code": "0xC001"}
+    ]
+    device_list = {"huawei.com/npu-Fault": json.dumps(fault_list)}
+    result = _resolve_device_list_key(device_list, "huawei.com/npu-Fault", "huawei.com/Ascend910-Fault")
+    assert len(result) == 1
+    assert result[0]["npu_name"] == "npu-3"
+
+
+# =============================================================================
+# 9. process_device_info with new naming convention (npu-*) tests
+# =============================================================================
+
+
+def test_process_device_info_with_new_key_naming():
+    """process_device_info should parse fault devices using huawei.com/npu-Fault key."""
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/npu-Fault": [
+                    {
+                        "fault_type": "CardUnhealthy",
+                        "npu_name": "npu-0",
+                        "fault_level": "NotHandleFault",
+                        "fault_code": "110001024",
+                    },
+                    {
+                        "fault_type": "CardUnhealthy",
+                        "npu_name": "npu-1",
+                        "fault_level": "NotHandleFault",
+                        "fault_code": "8F180E00,110001024",
+                    },
+                ]
+            }
+        },
+        "UpdateTime": 1782697438,
+        "SuperPodID": -1,
+        "ServerIndex": 15,
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 2
+    assert result[0].npu_name == "npu-0"
+    assert result[0].fault_code == 0x110001024
+    assert result[0].fault_level == FaultLevel.L1  # NotHandleFault → L1
+    assert result[0].fault_type == HardwareFaultType.CARD_UNHEALTHY
+
+    assert result[1].npu_name == "npu-1"
+    assert result[1].fault_code == 0x8F180E00  # first of comma-separated
+    assert result[1].fault_level == FaultLevel.L1
+    assert result[1].fault_type == HardwareFaultType.CARD_UNHEALTHY
+
+
+def test_process_device_info_with_new_network_unhealthy_key():
+    """process_device_info should parse network-unhealthy devices using huawei.com/npu-NetworkUnhealthy key."""
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/npu-NetworkUnhealthy": [
+                    {
+                        "fault_type": "CardNetworkUnhealthy",
+                        "npu_name": "npu-5",
+                        "fault_level": "NotHandleFault",
+                        "fault_code": "81078607",
+                    },
+                ]
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 1
+    assert result[0].npu_name == "npu-5"
+    assert result[0].fault_code == 0x81078607
+    assert result[0].fault_type == HardwareFaultType.CARD_NETWORK_UNHEALTHY
+    assert result[0].fault_level == FaultLevel.L1
+
+
+def test_process_device_info_new_key_json_string_format():
+    """New key with nested JSON-string format (the actual ConfigMap format)."""
+    fault_list = [
+        {
+            "fault_type": "CardUnhealthy",
+            "npu_name": "npu-0",
+            "fault_level": "NotHandleFault",
+            "fault_code": "110001024",
+        },
+        {
+            "fault_type": "CardUnhealthy",
+            "npu_name": "npu-1",
+            "fault_level": "NotHandleFault",
+            "fault_code": "8F180E00,110001024",
+        },
+        {
+            "fault_type": "CardNetworkUnhealthy",
+            "npu_name": "npu-5",
+            "fault_level": "NotHandleFault",
+            "fault_code": "81078607",
+        },
+    ]
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/npu": "",
+                "huawei.com/npu-Fault": json.dumps(fault_list),
+                "huawei.com/npu-NetworkUnhealthy": "",
+                "huawei.com/npu-Recovering": "",
+                "huawei.com/npu-Unhealthy": "",
+            }
+        },
+        "UpdateTime": 1782697438,
+        "SuperPodID": -1,
+        "ServerIndex": 15,
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    # All 3 fault devices should be parsed from npu-Fault (nested JSON string)
+    # npu-NetworkUnhealthy is empty string → skipped
+    assert len(result) == 3
+    npu_names = [f.npu_name for f in result]
+    assert "npu-0" in npu_names
+    assert "npu-1" in npu_names
+    assert "npu-5" in npu_names
+
+    # npu-1 has comma-separated fault code → first one wins
+    npu1 = next(f for f in result if f.npu_name == "npu-1")
+    assert npu1.fault_code == 0x8F180E00
+
+
+def test_process_device_info_new_fault_and_old_network_unhealthy():
+    """Mixed naming: new fault key + old network-unhealthy key → both parsed."""
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/npu-Fault": [
+                    {
+                        "fault_type": "CardUnhealthy",
+                        "npu_name": "npu-0",
+                        "fault_level": "SeparateNPU",
+                        "fault_code": "0x00F1FEF5",
+                    },
+                ],
+                "huawei.com/Ascend910-NetworkUnhealthy": [
+                    {
+                        "fault_type": "CardNetworkUnhealthy",
+                        "npu_name": "Ascend910-3",
+                        "fault_level": "FreeRestartNPU",
+                        "fault_code": "0xC001",
+                    },
+                ],
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 2
+    assert result[0].npu_name == "npu-0"
+    assert result[0].fault_level == FaultLevel.L6  # SeparateNPU → L6
+    assert result[1].npu_name == "Ascend910-3"
+    assert result[1].fault_level == FaultLevel.L4  # FreeRestartNPU → L4
+
+
+def test_process_device_info_old_keys_still_work():
+    """Old key names (Ascend910-*) must still be parsed — backward compatibility."""
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910-Fault": [
+                    {
+                        "fault_type": "CardUnhealthy",
+                        "npu_name": "Ascend910-0",
+                        "fault_level": "RestartBusiness",
+                        "fault_code": "0x1001",
+                    },
+                ],
+                "huawei.com/Ascend910-NetworkUnhealthy": [
+                    {
+                        "fault_type": "CardNetworkUnhealthy",
+                        "npu_name": "Ascend910-5",
+                        "fault_level": "RestartRequest",
+                        "fault_code": "0xA001",
+                    },
+                ],
+            }
+        },
+    }
+    device_info_json = json.dumps(device_info_dict)
+    result = process_device_info(device_info_json)
+
+    assert len(result) == 2
+    assert result[0].npu_name == "Ascend910-0"
+    assert result[0].fault_level == FaultLevel.L3
+    assert result[1].npu_name == "Ascend910-5"
+    assert result[1].fault_type == HardwareFaultType.CARD_NETWORK_UNHEALTHY
+
+
+# =============================================================================
+# 10. _normalize_fault_level_string tests (MindCluster 26.0.0+ SwitchInfoCfg values)
+# =============================================================================
+
+
+def test_normalize_fault_level_string_standard_values():
+    """Standard OriginFaultLevel values should pass through unchanged."""
+    assert _normalize_fault_level_string("NotHandleFault") == "NotHandleFault"
+    assert _normalize_fault_level_string("SubHealthFault") == "SubHealthFault"
+    assert _normalize_fault_level_string("RestartRequest") == "RestartRequest"
+    assert _normalize_fault_level_string("RestartBusiness") == "RestartBusiness"
+    assert _normalize_fault_level_string("FreeRestartNPU") == "FreeRestartNPU"
+    assert _normalize_fault_level_string("RestartNPU") == "RestartNPU"
+    assert _normalize_fault_level_string("SeparateNPU") == "SeparateNPU"
+    assert _normalize_fault_level_string("PreSeparateNPU") == "PreSeparateNPU"
+
+
+def test_normalize_fault_level_string_shortened_switch_values():
+    """MindCluster 26.0.0+ SwitchInfoCfg shortened values."""
+    # NotHandle → NotHandleFault (L1)
+    assert _normalize_fault_level_string("NotHandle") == "NotHandleFault"
+    # Separate → SeparateNPU (L6)
+    assert _normalize_fault_level_string("Separate") == "SeparateNPU"
+
+
+def test_normalize_fault_level_string_empty_and_unknown():
+    """Empty or unknown values fall back to NotHandleFault."""
+    assert _normalize_fault_level_string("") == "NotHandleFault"
+    assert _normalize_fault_level_string("UnknownLevel") == "NotHandleFault"
+
+
+# =============================================================================
+# 11. _parse_switch_fault_key — new key format (MindCluster 26.0.0+)
+# =============================================================================
+
+
+def test_parse_switch_fault_key_old_bracket_format():
+    """Old format: [0x2001,info]_1_2."""
+    code, chip, port = _parse_switch_fault_key("[0x2001,info]_1_2")
+    assert code == 0x2001
+    assert chip == 1
+    assert port == 2
+
+
+def test_parse_switch_fault_key_new_plain_format():
+    """New format (MindCluster 26.0.0+): 0x2001_1_2."""
+    code, chip, port = _parse_switch_fault_key("0x2001_1_2")
+    assert code == 0x2001
+    assert chip == 1
+    assert port == 2
+
+
+def test_parse_switch_fault_key_new_format_non_hex_code():
+    """New format with non-0x-prefixed hex code."""
+    code, chip, port = _parse_switch_fault_key("80F38003_3_5")
+    assert code == 0x80F38003
+    assert chip == 3
+    assert port == 5
+
+
+def test_parse_switch_fault_key_new_format_invalid_code():
+    """New format with invalid hex falls back to default."""
+    code, chip, port = _parse_switch_fault_key("not_hex_1_2")
+    assert code == 0x2001  # default
+
+
+def test_parse_switch_fault_key_no_underscores():
+    """Malformed key with no underscores returns defaults."""
+    code, chip, port = _parse_switch_fault_key("nounderscores")
+    assert code == 0x2001
+    assert chip == 0
+    assert port == 0
+
+
+# =============================================================================
+# 12. process_switch_info with new FaultLevel and key format (MindCluster 26.0.0+)
+# =============================================================================
+
+
+def test_process_switch_info_new_fault_level_not_handle():
+    """SwitchInfoCfg with FaultLevel='NotHandle' should map to L1."""
+    switch_info_dict = {
+        "FaultLevel": "NotHandle",
+        "UpdateTime": 1234567890,
+        "FaultTimeAndLevelMap": {
+            "0x2001_1_2": {"fault_time": 1234567890, "fault_level": "NotHandle"},
+        },
+    }
+    switch_info_json = json.dumps(switch_info_dict)
+    result = process_switch_info(switch_info_json)
+
+    assert len(result) == 1
+    assert result[0].fault_code == 0x2001
+    assert result[0].fault_level == FaultLevel.L1  # NotHandle → NotHandleFault → L1
+    assert result[0].origin_fault_level == OriginFaultLevel.NOT_HANDLE_FAULT
+
+
+def test_process_switch_info_new_fault_level_separate():
+    """SwitchInfoCfg with FaultLevel='Separate' should map to L6."""
+    switch_info_dict = {
+        "FaultLevel": "Separate",
+        "FaultTimeAndLevelMap": {
+            "0xA001_0_3": {"fault_time": 1234567890, "fault_level": "Separate"},
+        },
+    }
+    switch_info_json = json.dumps(switch_info_dict)
+    result = process_switch_info(switch_info_json)
+
+    assert len(result) == 1
+    assert result[0].fault_code == 0xA001
+    assert result[0].fault_level == FaultLevel.L6  # Separate → SeparateNPU → L6
+    assert result[0].origin_fault_level == OriginFaultLevel.SEPARATE_NPU
+
+
+def test_process_switch_info_new_key_format():
+    """SwitchInfoCfg with new plain key format (no brackets)."""
+    switch_info_dict = {
+        "FaultTimeAndLevelMap": {
+            "0x08520003_1_2": {"fault_time": 1234567890, "fault_level": "SubHealthFault"},
+            "0x2002_3_4": {"fault_time": 1234567891, "fault_level": "RestartRequest"},
+        },
+    }
+    switch_info_json = json.dumps(switch_info_dict)
+    result = process_switch_info(switch_info_json)
+
+    assert len(result) == 2
+    codes = {f.fault_code for f in result}
+    assert 0x08520003 in codes
+    assert 0x2002 in codes
+
+    f1 = next(f for f in result if f.fault_code == 0x08520003)
+    assert f1.fault_level == FaultLevel.L1  # SubHealthFault → L1
+    f2 = next(f for f in result if f.fault_code == 0x2002)
+    assert f2.fault_level == FaultLevel.L2  # RestartRequest → L2
+
+
+def test_process_switch_info_mixed_old_and_new_key_formats():
+    """SwitchInfoCfg with both old bracket and new plain key formats."""
+    switch_info_dict = {
+        "FaultTimeAndLevelMap": {
+            "[0x2001,info]_1_2": {"fault_time": 1234567890, "fault_level": "L2"},
+            "0x2002_3_4": {"fault_time": 1234567891, "fault_level": "L3"},
+        },
+    }
+    switch_info_json = json.dumps(switch_info_dict)
+    result = process_switch_info(switch_info_json)
+
+    assert len(result) == 2
+
+
+# =============================================================================
+# 13. process_manually_separate_npu — npu-N format (Atlas 950)
+# =============================================================================
+
+
+def test_process_manually_separate_npu_npu_format():
+    """Atlas 950 uses 'npu-0,npu-1' format instead of 'Ascend910-0'."""
+    config = "npu-0,npu-2,npu-5"
+    result = process_manually_separate_npu(config)
+    assert result == [0, 2, 5]
+
+
+def test_process_manually_separate_npu_mixed_old_new_format():
+    """Mixed Ascend910-N and npu-N format should both parse."""
+    config = "Ascend910-0,npu-3,Ascend910-7"
+    result = process_manually_separate_npu(config)
+    assert result == [0, 3, 7]
+
+
+def test_process_manually_separate_npu_ascend_format_still_works():
+    """Old Ascend910-N format must still work."""
+    config = "Ascend910-0,Ascend910-2,Ascend910-5"
+    result = process_manually_separate_npu(config)
+    assert result == [0, 2, 5]

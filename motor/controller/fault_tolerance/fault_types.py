@@ -60,6 +60,7 @@ class OriginFaultLevel(str, Enum):
     RESTART_NPU = "RestartNPU"
     SEPARATE_NPU = "SeparateNPU"
     PRE_SEPARATE_NPU = "PreSeparateNPU"
+    MANUALLY_SEPARATE_NPU = "ManuallySeparateNPU"
 
 
 class FaultLevel(int, Enum):
@@ -187,11 +188,14 @@ def map_fault_level(fault_level_str: str) -> FaultLevel:
     - L3: OriginFaultLevel.RESTART_BUSINESS
     - L4: OriginFaultLevel.FREE_RESTART_NPU
     - L5: OriginFaultLevel.RESTART_NPU
-    - L6: OriginFaultLevel.SEPARATE_NPU, OriginFaultLevel.PRE_SEPARATE_NPU
+    - L6: OriginFaultLevel.SEPARATE_NPU, OriginFaultLevel.PRE_SEPARATE_NPU,
+      OriginFaultLevel.MANUALLY_SEPARATE_NPU
 
     Note: OriginFaultLevel.PRE_SEPARATE_NPU is statically mapped to L6 here,
     but at runtime the FaultManager may downgrade it to L2 when the affected
     node still hosts INITIAL/ACTIVE instances (see _handle_fault_info_update).
+    OriginFaultLevel.MANUALLY_SEPARATE_NPU is never downgraded — it always
+    remains at L6 and will trigger scale_p2d.
     """
     fault_level_mapping = {
         OriginFaultLevel.NOT_HANDLE_FAULT: FaultLevel.L1,
@@ -202,6 +206,7 @@ def map_fault_level(fault_level_str: str) -> FaultLevel:
         OriginFaultLevel.RESTART_NPU: FaultLevel.L5,
         OriginFaultLevel.SEPARATE_NPU: FaultLevel.L6,
         OriginFaultLevel.PRE_SEPARATE_NPU: FaultLevel.L6,
+        OriginFaultLevel.MANUALLY_SEPARATE_NPU: FaultLevel.L6,
     }
 
     return fault_level_mapping.get(fault_level_str, FaultLevel.HEALTHY)

@@ -375,6 +375,15 @@ class Instance(BaseModel):
                         return False
             return True
 
+    def is_any_endpoint_paused(self) -> bool:
+        """Check if at least one endpoint is PAUSED (partial PreStop scenario)."""
+        with self._lock:
+            for pod_endpoints in self.endpoints.values():
+                for endpoint in pod_endpoints.values():
+                    if endpoint.status == EndpointStatus.PAUSED:
+                        return True
+            return False
+
     def is_ip_in_endpoints(self, ip: str) -> bool:
         with self._lock:
             return ip in self.endpoints
