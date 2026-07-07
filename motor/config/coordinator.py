@@ -41,7 +41,7 @@ from motor.config.config_utils import (
     INFER_TLS_CONFIG,
     ETCD_TLS_CONFIG,
 )
-from motor.config.resolver import ConfigResolver
+from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.port_allocator_config import PortAllocatorConfig
 
 FILE_ENCODING = "utf-8"
@@ -478,8 +478,22 @@ class CoordinatorConfig:
                         cfg[AIGW][AIGW_ID] = prefill_resolver.get_model_name("")
                         cfg[AIGW][AIGW_OBJECT] = AIGW_OBJECT_MODEL
                         cfg[AIGW][AIGW_OWNED_BY] = AIGW_OWNED_BY_MOTOR
-                        cfg[AIGW][AIGW_P_MAX_SEQLEN] = prefill[ENGINE_CONFIG][MAX_MODEL_LEN]
-                        cfg[AIGW][AIGW_D_MAX_SEQLEN] = decode[ENGINE_CONFIG][MAX_MODEL_LEN]
+                        prefill_engine = normalize_keys(prefill[ENGINE_CONFIG])
+                        decode_engine = normalize_keys(decode[ENGINE_CONFIG])
+
+                        if MAX_MODEL_LEN not in prefill_engine:
+                            raise KeyError(
+                                f"'{MAX_MODEL_LEN}' not found in prefill engine_config. "
+                                f"Available keys: {sorted(prefill_engine.keys())}"
+                            )
+                        if MAX_MODEL_LEN not in decode_engine:
+                            raise KeyError(
+                                f"'{MAX_MODEL_LEN}' not found in decode engine_config. "
+                                f"Available keys: {sorted(decode_engine.keys())}"
+                            )
+
+                        cfg[AIGW][AIGW_P_MAX_SEQLEN] = prefill_engine[MAX_MODEL_LEN]
+                        cfg[AIGW][AIGW_D_MAX_SEQLEN] = decode_engine[MAX_MODEL_LEN]
                         cfg[AIGW].setdefault(SLO_TTFT, 1000)
                         cfg[AIGW].setdefault(SLO_TPOT, 50)
                 except Exception as e:
