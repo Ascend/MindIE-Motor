@@ -83,10 +83,48 @@ class TestThirdPartySuppression:
 
     @pytest.fixture
     def reset_singletons(self):
+        def snapshot_loggers():
+            loggers = {"": logging.getLogger()}
+            for name, logger in logging.Logger.manager.loggerDict.items():
+                if isinstance(logger, logging.Logger):
+                    loggers[name] = logger
+            return {
+                name: {
+                    "level": logger.level,
+                    "propagate": logger.propagate,
+                    "disabled": logger.disabled,
+                    "handlers": list(logger.handlers),
+                    "filters": list(logger.filters),
+                }
+                for name, logger in loggers.items()
+            }
+
+        def restore_logger_state(snapshot):
+            current_names = {""}
+            current_names.update(
+                name for name, logger in logging.Logger.manager.loggerDict.items() if isinstance(logger, logging.Logger)
+            )
+            for name in current_names:
+                logger = logging.getLogger(name)
+                state = snapshot.get(name)
+                if state is None:
+                    logger.handlers = []
+                    logger.filters = []
+                    logger.setLevel(logging.NOTSET)
+                    logger.propagate = True
+                    logger.disabled = False
+                    continue
+                logger.handlers = list(state["handlers"])
+                logger.filters = list(state["filters"])
+                logger.setLevel(state["level"])
+                logger.propagate = state["propagate"]
+                logger.disabled = state["disabled"]
+
+        logger_snapshot = snapshot_loggers()
         original_handlers = list(logger_module._shared_handlers)
         original_buckets = set(logger_module._motor_buckets)
+        original_logged_modules = set(logger_module._logged_modules)
         original_root_handlers = list(logging.getLogger().handlers)
-        original_root_level = logging.getLogger().level
         logger_module._shared_handlers = []
         logger_module._motor_buckets = set()
         # Detach any handlers that earlier cases (or the real bootstrap) put on root.
@@ -100,9 +138,11 @@ class TestThirdPartySuppression:
                     logging.getLogger(bucket_name).removeHandler(h)
             logger_module._shared_handlers = original_handlers
             logger_module._motor_buckets = original_buckets
+            logger_module._logged_modules = original_logged_modules
+            restore_logger_state(logger_snapshot)
             for h in original_root_handlers:
-                logging.getLogger().addHandler(h)
-            logging.getLogger().setLevel(original_root_level)
+                if h not in logging.getLogger().handlers:
+                    logging.getLogger().addHandler(h)
 
     def test_get_logger_does_not_attach_to_root(self, reset_singletons, capsys):
         """get_logger must wire motor buckets; root must not carry motor handlers."""

@@ -17,6 +17,7 @@ import pytest
 from motor.config.coordinator import TokenSamplingConfig
 from motor.coordinator.router.precision_sample.request import (
     inject_logprobs,
+    logger as request_logger,
 )
 
 
@@ -35,7 +36,7 @@ class TestInjectCompletion:
     @pytest.mark.parametrize("bad", [None, 0, False])
     def test_invalid_client_value_is_overridden(self, bad, caplog) -> None:
         req = {"prompt": "Hello", "logprobs": bad, "request_id": "r1"}
-        with caplog.at_level(logging.INFO, logger="motor.coordinator.router.precision_sample.request"):
+        with caplog.at_level(logging.INFO, logger=request_logger.name):
             inject_logprobs(req, _cfg(3), req_id="r1")
         assert req["logprobs"] == 3
         assert req["return_token_ids"] is True
@@ -43,7 +44,7 @@ class TestInjectCompletion:
 
     def test_consistent_client_value_no_override_log(self, caplog) -> None:
         req = {"prompt": "Hello", "logprobs": 3, "request_id": "r1"}
-        with caplog.at_level(logging.INFO, logger="motor.coordinator.router.precision_sample.request"):
+        with caplog.at_level(logging.INFO, logger=request_logger.name):
             inject_logprobs(req, _cfg(3), req_id="r1")
         assert req["logprobs"] == 3
         # Same value → no override INFO; the function still emits DEBUG.
@@ -51,7 +52,7 @@ class TestInjectCompletion:
 
     def test_request_id_in_log(self, caplog) -> None:
         req = {"prompt": "Hello", "logprobs": None, "request_id": "r42"}
-        with caplog.at_level(logging.INFO, logger="motor.coordinator.router.precision_sample.request"):
+        with caplog.at_level(logging.INFO, logger=request_logger.name):
             inject_logprobs(req, _cfg(2), req_id="r42")
         assert any("req_id=r42" in r.message for r in caplog.records)
 
@@ -84,7 +85,7 @@ class TestInjectChat:
             "top_logprobs": bad_top,
             "request_id": "r1",
         }
-        with caplog.at_level(logging.INFO, logger="motor.coordinator.router.precision_sample.request"):
+        with caplog.at_level(logging.INFO, logger=request_logger.name):
             inject_logprobs(req, _cfg(3), req_id="r1")
         assert req["logprobs"] is True
         assert req["top_logprobs"] == 3
@@ -97,7 +98,7 @@ class TestInjectChat:
             "logprobs": True,
             "top_logprobs": 4,
         }
-        with caplog.at_level(logging.INFO, logger="motor.coordinator.router.precision_sample.request"):
+        with caplog.at_level(logging.INFO, logger=request_logger.name):
             inject_logprobs(req, _cfg(4), req_id="r1")
         assert req["logprobs"] is True
         assert req["top_logprobs"] == 4
