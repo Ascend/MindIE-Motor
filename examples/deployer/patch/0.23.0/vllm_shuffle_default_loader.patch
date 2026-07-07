@@ -1,12 +1,39 @@
 --- a/default_loader.py
 +++ b/default_loader.py
-@@ -262,6 +262,9 @@ class DefaultModelLoader(BaseModelLoader):
+@@ -4,7 +4,7 @@ import dataclasses
+ import glob
+ import os
+ import time
+-from collections.abc import Generator, Iterable
++from collections.abc import Callable, Generator, Iterable
+ from typing import cast
+
+ import torch
+@@ -68,6 +68,9 @@ class DefaultModelLoader(BaseModelLoader):
+         allow_patterns_overrides: list[str] | None = None
+         """If defined, weights will load exclusively using these patterns."""
+
++        weight_filter: Callable[[str], bool] | None = None
++        """If defined, called with each weight name; skip the weight if True."""
++
+     counter_before_loading_weights: float = 0.0
+     counter_after_loading_weights: float = 0.0
+
+@@ -262,6 +265,10 @@ class DefaultModelLoader(BaseModelLoader):
                          safetensors_prefetch_block_size=(
                              self.load_config.safetensors_prefetch_block_size
                          ),
 +                        shuffle_safetensors_files=(
 +                            self.load_config.shuffle_safetensors_files
 +                        ),
++                        weight_filter=source.weight_filter,
                      )
          else:
              if extra_config.get("enable_multithread_load"):
+@@ -296,6 +303,7 @@ class DefaultModelLoader(BaseModelLoader):
+             prefix="",
+             fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
+             allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
++            weight_filter=getattr(model, "weight_name_filter", None),
+         )
+         yield from self._get_weights_iterator(primary_weights)

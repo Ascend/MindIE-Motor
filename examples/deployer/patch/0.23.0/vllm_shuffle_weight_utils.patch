@@ -8,15 +8,25 @@
  import os
  import tempfile
  import threading
-@@ -898,6 +899,7 @@ def safetensors_weights_iterator(
+@@ -898,12 +899,17 @@ def safetensors_weights_iterator(
      *,
      safetensors_prefetch_num_threads: int = DEFAULT_SAFETENSORS_PREFETCH_NUM_THREADS,
      safetensors_prefetch_block_size: int = DEFAULT_SAFETENSORS_PREFETCH_BLOCK_SIZE,
 +    shuffle_safetensors_files: bool = False,
++    weight_filter: "Callable[[str], bool] | None" = None,
  ) -> Generator[tuple[str, torch.Tensor], None, None]:
      """Iterate over the weights in the model safetensor files.
 
-@@ -911,6 +913,13 @@ def safetensors_weights_iterator(
+     When *local_expert_ids* is provided, expert weights not belonging to
+     this rank are skipped **before** reading from disk, which drastically
+     reduces storage I/O for MoE models under EP.
++
++    When *weight_filter* is provided, it is called with each weight name
++    and the weight is skipped (before reading) if the callable returns True.
+     """
+     loading_desc = "Loading safetensors checkpoint shards"
+     if safetensors_load_strategy == "eager":
+@@ -911,6 +917,14 @@ def safetensors_weights_iterator(
 
      sorted_files = sorted(hf_weights_files, key=_natural_sort_key)
 
@@ -27,6 +37,24 @@
 +            rank = 0
 +        rng = random.Random(42 + rank)
 +        rng.shuffle(sorted_files)
++
      fs_type = _get_fs_type(sorted_files)
      is_net_fs = fs_type in ("nfs", "nfs4", "lustre")
      total_bytes = _get_checkpoints_size_bytes(sorted_files)
+@@ -1005,6 +1019,8 @@ def safetensors_weights_iterator(
+                 for name in f.keys():  # noqa: SIM118
+                     if should_skip_weight(name, local_expert_ids):
+                         continue
++                    if weight_filter is not None and weight_filter(name):
++                        continue
+                     state_dict[name] = f.get_tensor(name)
+
+                 # update with leftover tensor data from previous iteration, if any
+@@ -1023,6 +1039,8 @@ def safetensors_weights_iterator(
+                 for name in f.keys():  # noqa: SIM118
+                     if should_skip_weight(name, local_expert_ids):
+                         continue
++                    if weight_filter is not None and weight_filter(name):
++                        continue
+                     param = f.get_tensor(name)
+                     yield name, param

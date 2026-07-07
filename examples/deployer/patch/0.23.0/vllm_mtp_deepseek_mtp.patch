@@ -1,0 +1,43 @@
+--- a/deepseek_mtp.py
++++ b/deepseek_mtp.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import re
+ import typing
+ from collections.abc import Callable, Iterable
+
+@@ -200,6 +201,17 @@ class DeepSeekMultiTokenPredictor(nn.Module):
+         return logits
+
+
++def _is_mtp_weight(name: str, mtp_start_layer_idx: int) -> bool:
++    """Return True if *name* belongs to an MTP layer."""
++    m = re.search(r"model\.layers\.(\d+)\.", name)
++    if m and int(m.group(1)) >= mtp_start_layer_idx:
++        return True
++    # Shared embed_tokens may be referenced by the first MTP layer
++    if "embed_tokens" in name and "model.layers" not in name:
++        return True
++    return False
++
++
+ @support_torch_compile
+ class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts):
+     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+@@ -212,6 +224,15 @@ class DeepSeekMTP(nn.Module, DeepseekV2MixtureOfExperts):
+         # Set MoE hyperparameters
+         self.set_moe_parameters()
+
++        # Build a weight-name filter so that tensors belonging to non-MTP
++        # layers are skipped *before* the disk read inside the safetensors
++        # iterator.  For a typical DeepSeek V3 checkpoint this avoids reading
++        # ~620 GB of main-model tensor data during the drafter load.
++        mtp_start = self.config.num_hidden_layers
++        self.weight_name_filter = lambda name: not _is_mtp_weight(
++            name, mtp_start
++        )
++
+     def set_moe_parameters(self):
+         self.expert_weights = []
+         self.num_moe_layers = self.config.num_nextn_predict_layers

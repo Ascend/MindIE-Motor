@@ -27,9 +27,10 @@ TARGET_VLLM_VERSIONS = ("0.20.2", "0.21.0", "0.22.1", "0.23.0")
 
 # Patch list
 PATCH_SPECS = [
-    ("config/load.py", "vllm_shuffle_load_config.patch"),
-    ("model_executor/model_loader/default_loader.py", "vllm_shuffle_default_loader.patch"),
-    ("model_executor/model_loader/weight_utils.py", "vllm_shuffle_weight_utils.patch"),
+    ("config/load.py", "vllm_shuffle_load_config.patch", "shuffle_safetensors_files"),
+    ("model_executor/model_loader/default_loader.py", "vllm_shuffle_default_loader.patch", "shuffle_safetensors_files"),
+    ("model_executor/model_loader/weight_utils.py", "vllm_shuffle_weight_utils.patch", "shuffle_safetensors_files"),
+    ("model_executor/models/deepseek_mtp.py", "vllm_mtp_deepseek_mtp.patch", "weight_name_filter"),
 ]
 
 
@@ -43,12 +44,12 @@ def should_apply_patch() -> bool:
     return True
 
 
-def is_shuffle_patched(path: str) -> bool:
+def is_shuffle_patched(path: str, marker: str) -> bool:
     """Return True if the target file is already patched and remains valid Python."""
     try:
         with open(path, encoding="utf-8") as f:
             content = f.read()
-        if "shuffle_safetensors_files" not in content:
+        if marker not in content:
             return False
         ast.parse(content)
         return True
@@ -56,7 +57,7 @@ def is_shuffle_patched(path: str) -> bool:
         return False
 
 
-def apply_patch(target_file: str, patch_file: str) -> bool:
+def apply_patch(target_file: str, patch_file: str, marker: str) -> bool:
     """Apply a patch to a single vLLM source file; skip if already patched."""
     patch_bin = shutil.which("patch")
     if not patch_bin:
@@ -72,7 +73,7 @@ def apply_patch(target_file: str, patch_file: str) -> bool:
     if result.returncode == 0:
         logger.info("Patch applied successfully to %s", target_file)
         return True
-    if is_shuffle_patched(target_file):
+    if is_shuffle_patched(target_file, marker):
         logger.info("Already patched: %s", target_file)
         return True
     logger.error("Failed to apply patch to %s\n%s", target_file, result.stderr.strip())
@@ -89,8 +90,11 @@ def main() -> int:
     patch_dir = os.path.join(script_dir, version)
     vllm_root = vllm.__path__[0]
     failed = 0
-    for rel_path, patch_name in PATCH_SPECS:
-        if not apply_patch(os.path.join(vllm_root, rel_path), os.path.join(patch_dir, patch_name)):
+    for rel_path, patch_name, marker in PATCH_SPECS:
+        patch_path = os.path.join(patch_dir, patch_name)
+        if not os.path.isfile(patch_path):
+            continue
+        if not apply_patch(os.path.join(vllm_root, rel_path), patch_path, marker):
             failed += 1
     return 1 if failed else 0
 
