@@ -128,7 +128,7 @@ ProcessNameFilter = ProcessContextFilter
 
 
 class MaxLengthFormatter(logging.Formatter):
-    """Wrap a formatter and cap output line length."""
+    """Wrap a formatter and cap total formatted output length."""
 
     def __init__(self, inner: logging.Formatter, max_length: int):
         super().__init__()
@@ -137,7 +137,6 @@ class MaxLengthFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         msg = self.inner.format(record)
-        msg = repr(msg)[1:-1]
         if len(msg) > self.max_length:
             return msg[: self.max_length] + '...'
         return msg

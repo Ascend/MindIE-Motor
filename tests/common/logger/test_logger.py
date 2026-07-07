@@ -1,12 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 import logging
+import sys
 
 import pytest
 
 from motor.common.logger import logger as logger_module
 from motor.common.logger.formatter import ColoredFormatter, NewLineFormatter
 from motor.common.logger.logger import (
+    MaxLengthFormatter,
     _resolve_logger_name,
     _suppress_noisy_third_party_loggers,
     get_logger,
@@ -71,6 +73,52 @@ class TestLogFormatter:
         fmt = LoggingConfig().log_format
         assert "%(processName)s pid=%(process)d)" in fmt
         assert "[%(name)s][%(fileinfo)s:%(lineno)d]" in fmt
+
+    def test_max_length_formatter_keeps_multiline_traceback(self):
+        config = LoggingConfig()
+
+        def _capture_exc_info():
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                return sys.exc_info()
+            raise AssertionError("expected ValueError")
+
+        exc_info = _capture_exc_info()
+
+        record = logging.LogRecord(
+            name="engine_server",
+            level=logging.ERROR,
+            pathname="/app/motor/engine_server/cli/dispatch.py",
+            lineno=223,
+            msg="Error occurred",
+            args=(),
+            exc_info=exc_info,
+        )
+        record.filename = "dispatch.py"
+        record.processName = "MainProcess"
+        record.process = 47
+
+        formatter = MaxLengthFormatter(
+            NewLineFormatter(config.log_format, datefmt=config.log_date_format),
+            config.log_max_line_length,
+        )
+        output = formatter.format(record)
+
+        assert "\\r\\n" not in output
+        assert "Traceback (most recent call last):" in output
+        assert output.count("\n") >= 2
+        assert output.count("(MainProcess pid=47) ERROR ") >= 2
+
+    def test_max_length_formatter_truncates_long_output(self, record):
+        config = LoggingConfig()
+        formatter = MaxLengthFormatter(
+            NewLineFormatter(config.log_format, datefmt=config.log_date_format),
+            max_length=80,
+        )
+        output = formatter.format(record)
+        assert len(output) == 83
+        assert output.endswith("...")
 
 
 class TestThirdPartySuppression:
