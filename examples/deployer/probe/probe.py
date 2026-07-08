@@ -31,8 +31,10 @@ KEY_FILE = "key_file"
 class ConfigKey(Enum):
     MOTOR_CONTROLLER = "motor_controller_config"
     MOTOR_COORDINATOR = "motor_coordinator_config"
-    MOTOR_NODEMANAGER = "motor_nodemanger_config"
     MOTOR_KV_POOL = "kv_cache_pool_config"
+    MOTOR_NODEMANAGER_UNION = "motor_engine_union_config.motor_nodemanger_config"
+    MOTOR_NODEMANAGER_PREFILL = "motor_engine_prefill_config.motor_nodemanger_config"
+    MOTOR_NODEMANAGER_DECODE = "motor_engine_decode_config.motor_nodemanger_config"
 
 
 # Set up logging
@@ -47,6 +49,17 @@ DEFAULT_PORTS = {
     'controller': 1026,
     'coordinator': 1026,
     'node_manager': 1026,
+}
+
+
+ENGINE_ROLES = ("union", "prefill", "decode")
+
+ROLE_CONFIG_PATHS = {
+    "controller": ConfigKey.MOTOR_CONTROLLER.value,
+    "coordinator": ConfigKey.MOTOR_COORDINATOR.value,
+    "union": ConfigKey.MOTOR_NODEMANAGER_UNION.value,
+    "prefill": ConfigKey.MOTOR_NODEMANAGER_PREFILL.value,
+    "decode": ConfigKey.MOTOR_NODEMANAGER_DECODE.value,
 }
 
 # HTTP request timeout
@@ -132,13 +145,13 @@ def get_config(role):
         logger.error("Invalid config format in %s, expected JSON object", user_config_path)
         return -1
 
-    role_key = {
-        "controller": ConfigKey.MOTOR_CONTROLLER.value,
-        "coordinator": ConfigKey.MOTOR_COORDINATOR.value,
-        "node_manager": ConfigKey.MOTOR_NODEMANAGER.value,
-    }.get(role)
+    role_key = ROLE_CONFIG_PATHS.get(role)
+    if not role_key:
+        logger.error("Invalid role: %s, must be one of %s", role, list(ROLE_CONFIG_PATHS))
+        return -1
 
-    role_config = user_config.get(role_key)
+    role_config = get_val_by_key_path(user_config, role_key)
+
     if isinstance(role_config, dict):
         config = dict(role_config)
     else:
@@ -209,7 +222,7 @@ def main():
     """
     if len(sys.argv) != 3:
         logger.error("Usage: python probe.py <role> <probe_type>")
-        logger.error("  role: 'controller', 'coordinator', 'prefill', 'decode', or 'union'")
+        logger.error("  role: %s", list(ROLE_CONFIG_PATHS))
         logger.error("  probe_type: 'startup', 'readiness', or 'liveness'")
         sys.exit(1)
 
@@ -217,18 +230,13 @@ def main():
     probe_type = sys.argv[2]
 
     # Validate role
-    if role not in ['controller', 'coordinator', 'prefill', 'decode', 'union']:
-        logger.error(
-            "Invalid role: %s. Must be one of ['controller', 'coordinator', 'prefill', 'decode', 'union']", role
-        )
+    if role not in ROLE_CONFIG_PATHS:
+        logger.error("Invalid role: %s. Must be one of %s", role, list(ROLE_CONFIG_PATHS))
         sys.exit(1)
-
-    if role in ('prefill', 'decode', 'union'):
-        role = 'node_manager'
 
     # Validate probe_type
     if probe_type not in PROBE_URLS:
-        logger.error("Invalid probe type: %s. Must be one of %s", probe_type, list(PROBE_URLS.keys()))
+        logger.error("Invalid probe type: %s. Must be one of %s", probe_type, list(PROBE_URLS))
         sys.exit(1)
 
     # Get pod IP from environment
@@ -242,6 +250,9 @@ def main():
     if config == -1:
         logger.error("Failed to get config")
         sys.exit(1)
+
+    if role in ENGINE_ROLES:
+        role = 'node_manager'
 
     port_key = f'api_config.{role}_api_port'
 

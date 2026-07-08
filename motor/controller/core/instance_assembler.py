@@ -346,7 +346,14 @@ class InstanceAssembler(ThreadSafeSingleton):
 
         if msg.is_master:
             with metadata.lock:
-                if metadata.snapshot_dp_master_ip and metadata.snapshot_dp_master_ip != msg.pod_ip:
+                # Only keep the existing master when its node is still registered (a genuine
+                # concurrent conflict). If the old master was killed/filtered, let the new
+                # is_master take over instead of dispatching a dead pod as master_dp_ip.
+                if (
+                    metadata.snapshot_dp_master_ip
+                    and metadata.snapshot_dp_master_ip != msg.pod_ip
+                    and metadata.instance.has_node_mgr(metadata.snapshot_dp_master_ip)
+                ):
                     logger.warning(
                         "Instance %s already has snapshot_dp_master_ip=%s, ignoring conflicting is_master from %s",
                         msg.job_name,
@@ -780,6 +787,20 @@ class InstanceAssembler(ThreadSafeSingleton):
 
         # Filter abnormal endpoints before assembling
         self._filter_abnormal_endpoints(metadata.instance)
+        # Drop stale snapshot master: if the recorded is_master node was killed
+        # (filtered out above), never dispatch a dead pod as master_dp_ip.
+        # Cold start never sets this field, so the lock-free guard makes this a no-op there.
+        if metadata.snapshot_dp_master_ip:
+            with metadata.lock:
+                if metadata.snapshot_dp_master_ip and not metadata.instance.has_node_mgr(
+                    metadata.snapshot_dp_master_ip
+                ):
+                    logger.warning(
+                        "Clearing stale snapshot_dp_master_ip=%s for instance %s: node manager no longer registered",
+                        metadata.snapshot_dp_master_ip,
+                        job_name,
+                    )
+                    metadata.snapshot_dp_master_ip = None
         # Cross-node PCP: when nnodes > 1, each DP group needs nnodes nodes.
         # Total expected nodes = dp_size * nnodes (multi-endpoint) or world_size / device_num (single).
         nnodes = metadata.nnodes

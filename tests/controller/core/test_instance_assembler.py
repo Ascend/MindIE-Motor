@@ -2788,3 +2788,46 @@ def test_reregister_succeeds_after_controller_restart(instance_assembler, test_c
             # Verify instance is in InstanceManager
             im = InstanceManager()
             assert im.has_instance_by_job_name(job_name)
+
+
+def test_register_keeps_master_when_existing_master_node_alive(instance_assembler, test_config):
+    """A conflicting is_master is ignored while the recorded master node is still registered."""
+    job_name = "test_snapshot_master_keep"
+    master_msg = create_register_msg(job_name, "10.0.0.1", test_config, is_master=True)
+    assert instance_assembler.register(master_msg) == 0
+
+    conflicting_msg = create_register_msg(job_name, "10.0.0.2", test_config, is_master=True)
+    assert instance_assembler.register(conflicting_msg) == 0
+
+    metadata = instance_assembler.instances[job_name]
+    assert metadata.snapshot_dp_master_ip == "10.0.0.1"
+
+
+def test_register_new_master_overrides_stale_snapshot_dp_master_ip(instance_assembler, test_config):
+    """A new is_master overrides a stale snapshot_dp_master_ip whose node is no longer registered."""
+    job_name = "test_snapshot_master_override"
+    slave_msg = create_register_msg(job_name, "10.0.0.2", test_config, is_master=False)
+    assert instance_assembler.register(slave_msg) == 0
+
+    metadata = instance_assembler.instances[job_name]
+    metadata.snapshot_dp_master_ip = "10.0.0.99"  # stale master whose node is gone
+
+    master_msg = create_register_msg(job_name, "10.0.0.1", test_config, is_master=True)
+    assert instance_assembler.register(master_msg) == 0
+
+    assert metadata.snapshot_dp_master_ip == "10.0.0.1"
+
+
+def test_assemble_clears_stale_snapshot_dp_master_ip(instance_assembler, test_config):
+    """Assembly clears snapshot_dp_master_ip when the recorded master node was filtered out."""
+    job_name = "test_snapshot_master_stale_clear"
+    msg = create_register_msg(job_name, "10.0.0.2", test_config, is_master=False)
+    assert instance_assembler.register(msg) == 0
+
+    metadata = instance_assembler.instances[job_name]
+    metadata.snapshot_dp_master_ip = "10.0.0.99"  # node no longer registered
+
+    with patch.object(instance_assembler, "_filter_abnormal_endpoints"):
+        instance_assembler._assemble_instance(metadata)
+
+    assert metadata.snapshot_dp_master_ip is None
