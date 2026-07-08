@@ -85,21 +85,6 @@ repos:
           - "--verbose"
           - "-i"
 
-  # Markdown documentation lint — catch issues locally before pushing to PR
-  - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.44.0
-    hooks:
-      - id: markdownlint
-        args:
-          - "--config"
-          - "pre-commit/.markdownlint.yaml"
-        exclude: >
-          (?x)^(
-            .pytest_cache/|
-            \.claude/|
-            \.gitcode/
-          )
-
   # ======== Local custom hooks ========
   - repo: local
     hooks:
