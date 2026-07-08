@@ -1,0 +1,31 @@
+# markdownlint configuration for MindIE-PyMotor
+# See: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# Default: all rules enabled. Disable / relax rules below.
+
+default: true
+
+# MD013/line-length: relax for docs with long links / tables
+MD013:
+  line_length: 200
+  heading_line_length: 120
+  code_block_line_length: 120
+  tables: false
+
+# MD024/no-duplicate-heading: allow sibling headings with same content
+MD024:
+  siblings_only: true
+
+# MD033/no-inline-html: allow limited inline HTML (used in some docs)
+MD033: false
+
+# MD041/first-line-heading: skip for files that aren't standalone pages
+MD041: false
+
+# MD046/code-block-style: enforce fenced code blocks
+MD046:
+  style: fenced
+
+# MD048/code-fence-style: enforce backtick fences
+MD048:
+  style: backtick

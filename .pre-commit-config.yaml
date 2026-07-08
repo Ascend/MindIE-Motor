@@ -85,9 +85,66 @@ repos:
           - "--verbose"
           - "-i"
 
-  # Log quality: basic checks on motor/ production code (incremental; warnings do not block by default)
+  # Markdown documentation lint — catch issues locally before pushing to PR
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.44.0
+    hooks:
+      - id: markdownlint
+        args:
+          - "--config"
+          - "pre-commit/.markdownlint.yaml"
+        exclude: >
+          (?x)^(
+            .pytest_cache/|
+            \.claude/|
+            \.gitcode/
+          )
+
+  # ======== Local custom hooks ========
   - repo: local
     hooks:
+      # --- Header check & cleanup ---
+      # Removes useless coding/shebang lines; ensures Mulan PSL v2 license block is present.
+      # Excludes pre-commit/ (hook scripts must be executable → need shebang).
+      - id: check-header
+        name: header check & cleanup
+        entry: pre-commit/check_header.py
+        language: python
+        types: [python]
+        exclude: >
+          (?x)^(
+            pre-commit/|
+            build/|
+            .*_pb2\.py$|
+            .*_pb2_grpc\.py$|
+            .*_grpc\.py$|
+            .*\.egg-info/|
+            .*__pycache__/
+          )
+        pass_filenames: true
+
+      # --- Modern Python typing ---
+      # Detects Optional[X], Dict[K,V], List[X], Tuple[X], Set[X], FrozenSet[X],
+      # Type[X], Union[X,Y] and auto-rewrites to Python 3.10+ native syntax.
+      # Excludes deployer/ (out of scope).
+      - id: check-modern-typing
+        name: modern python typing check
+        entry: pre-commit/check_modern_typing.py
+        language: python
+        types: [python]
+        exclude: >
+          (?x)^(
+            deployer/|
+            build/|
+            .*_pb2\.py$|
+            .*_pb2_grpc\.py$|
+            .*_grpc\.py$|
+            .*\.egg-info/|
+            .*__pycache__/
+          )
+        pass_filenames: true
+
+      # Log quality: basic checks on motor/ production code (incremental; warnings do not block by default)
       - id: log-quality-basic
         name: log quality basic check
         entry: pre-commit/check_log_quality.py --incremental
