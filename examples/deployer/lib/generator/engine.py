@@ -185,12 +185,8 @@ def set_engine_npu(container, deploy_config, node_type):
 
 
 def apply_node_selector_by_hardware(pod_spec, hardware_type):
-    if hardware_type in C.HARDWARE_TYPE_A2:
-        pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_910B
-    elif hardware_type in C.HARDWARE_TYPE_A3:
-        pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_A3
-    elif hardware_type in C.HARDWARE_TYPE_950I_A5:
-        pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = hardware_type
+    pod_spec[C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = k8s_utils.get_accelerator_type_from_cluster()
+    if hardware_type in C.HARDWARE_TYPE_950I_A5:
         pod_spec[C.NODE_SELECTOR][C.ACCELERATOR] = C.ACCELERATOR_A5
 
 

@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 import json
 import os
+import shutil
 import subprocess
 
 import lib.constant as C
@@ -194,12 +195,51 @@ def init_service_domain_name(paths, deploy_config):
     set_mf_store_service(f"{mf_store_name}.{deploy_config[C.CONFIG_JOB_ID]}.svc.cluster.local")
 
 
-def run_cmd_get_output(args):
+def run_cmd_get_output(args, timeout=60):
     """Run command and return stdout. args: list of command and arguments. Raises on non-zero return code."""
-    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        cmd = " ".join(args)
+        raise RuntimeError(f"Command timed out after {timeout}s: {cmd}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"Command failed (exit {result.returncode}): {result.stderr or result.stdout}")
     return result.stdout.strip()
+
+
+_g_accelerator_type_cache = {}
+
+
+def _get_kubectl_path():
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        raise RuntimeError("kubectl not found in PATH")
+    return kubectl
+
+
+def get_accelerator_type_from_cluster():
+    """Resolve accelerator-type from the first cluster node that has the label via kubectl."""
+    if C.ACCELERATOR_TYPE in _g_accelerator_type_cache:
+        return _g_accelerator_type_cache[C.ACCELERATOR_TYPE]
+
+    kubectl = _get_kubectl_path()
+    out = run_cmd_get_output([kubectl, "get", "nodes", "-o", "json"])
+    nodes = json.loads(out).get("items", [])
+
+    for node in nodes:
+        labels = node.get("metadata", {}).get("labels", {})
+        accelerator_type = labels.get(C.ACCELERATOR_TYPE)
+        if accelerator_type:
+            logger.info(
+                "Resolved %s=%s from node %s",
+                C.ACCELERATOR_TYPE,
+                accelerator_type,
+                node.get("metadata", {}).get("name", "<unknown>"),
+            )
+            _g_accelerator_type_cache[C.ACCELERATOR_TYPE] = accelerator_type
+            return accelerator_type
+
+    raise RuntimeError(f"No node in cluster has label {C.ACCELERATOR_TYPE}")
 
 
 def get_baseline_config_from_configmap(job_id):

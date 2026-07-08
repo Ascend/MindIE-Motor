@@ -15,7 +15,7 @@ import subprocess
 import lib.constant as C
 from lib.utils import logger, load_yaml
 from lib.generator.infer_service import get_infer_role, _find_infer_service_set_doc
-from lib.generator.k8s_utils import get_deploy_mode_from_config
+from lib.generator.k8s_utils import get_accelerator_type_from_cluster, get_deploy_mode_from_config
 
 
 PD_SEPARATION_DEPLOY_KEYS = {
@@ -179,12 +179,16 @@ def _get_hardware_node_labels(hardware_type):
 
     Returns dict of label key-value pairs. Raises ValueError for unknown types.
     """
-    if hardware_type in C.HARDWARE_TYPE_A2:
-        return {C.ACCELERATOR: C.ACCELERATOR_910, C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_910B}
-    if hardware_type in C.HARDWARE_TYPE_A3:
-        return {C.ACCELERATOR: C.ACCELERATOR_910, C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_A3}
+    if hardware_type in C.HARDWARE_TYPE_A2 or hardware_type in C.HARDWARE_TYPE_A3:
+        return {
+            C.ACCELERATOR: C.ACCELERATOR_910,
+            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(),
+        }
     if hardware_type in C.HARDWARE_TYPE_950I_A5:
-        return {C.ACCELERATOR: C.ACCELERATOR_A5, C.ACCELERATOR_TYPE: hardware_type}
+        return {
+            C.ACCELERATOR: C.ACCELERATOR_A5,
+            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(),
+        }
     known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
     raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
 

@@ -118,7 +118,15 @@ def test_validate_pd_hybrid_config_rejects_mixed_schema(mutate):
         validate_pd_hybrid_config(user_config)
 
 
-def test_generate_yaml_engine_creates_hybrid_workload(tmp_path):
+def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
+    cluster_accelerator_type = "module-a3-16"
+    k8s_utils._g_accelerator_type_cache.clear()
+    monkeypatch.setattr(
+        k8s_utils,
+        "get_accelerator_type_from_cluster",
+        lambda: cluster_accelerator_type,
+    )
+
     user_config = make_pd_hybrid_user_config()
     input_yaml = DEPLOYER_ROOT / "yaml_template" / "engine_template.yaml"
     output_base = tmp_path / "mindie_server"
@@ -134,10 +142,13 @@ def test_generate_yaml_engine_creates_hybrid_workload(tmp_path):
 
     container = data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV] if C.VALUE in item}
+    node_selector = data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR]
     assert env[C.ENV_ROLE] == C.ROLE_UNION
     assert data[C.SPEC][C.REPLICAS] == 1
     assert container[C.RESOURCES][C.REQUESTS][C.ASCEND_910_NPU_NUM] == 4
     assert container[C.RESOURCES][C.LIMITS][C.ASCEND_910_NPU_NUM] == 4
+    assert node_selector[C.ACCELERATOR_TYPE] == cluster_accelerator_type
+    assert node_selector[C.ACCELERATOR_TYPE] != C.ACCELERATOR_TYPE_910B
 
 
 def test_deploy_services_dry_run_uses_infer_service_set_for_hybrid(tmp_path, monkeypatch):
