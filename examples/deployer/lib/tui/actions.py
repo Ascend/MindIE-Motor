@@ -18,6 +18,7 @@ from __future__ import annotations
 import configparser
 import io
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -74,32 +75,12 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         current = self._pod_progress.get_all()
         current_set = set(current.keys())
 
-        # Map role-prefix → pod_name for newly discovered pods
-        new_by_prefix: dict[str, str] = {}
-        for p in new_pods:
-            prefix = self._pod_prefix(p)
-            # If multiple pods share a prefix (shouldn't happen), keep first
-            new_by_prefix.setdefault(prefix, p)
+        new_pods_set = set(new_pods)
 
-        # Detect replacements: same prefix, different pod name
-        replaced: set[str] = set()
-        for old_name in list(current_set):
-            old_prefix = self._pod_prefix(old_name)
-            new_name = new_by_prefix.get(old_prefix)
-            if new_name and new_name != old_name:
-                # Pod was restarted — replace the old entry
-                self._pod_progress.remove(old_name)
-                current_set.discard(old_name)
-                self._set_status(
-                    f"{C.Style.YELLOW}Pod restarted: {old_name} → {new_name}{C.Style.RESET}",
-                    2.0,
-                )
-                replaced.add(old_name)
-
-        # Start monitoring for genuinely new pods
+        # Start monitoring for genuinely new pods (not yet tracked)
         added = 0
         for pod_name in new_pods:
-            if pod_name not in current_set and pod_name not in replaced:
+            if pod_name not in current_set:
                 self._pod_progress.register(pod_name)
                 t = threading.Thread(
                     target=self._progress_monitor.shell_pull_log,
@@ -114,6 +95,31 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
                 f"{C.Style.GREEN}+{added} new pod(s) discovered{C.Style.RESET}",
                 2.0,
             )
+
+        # Detect real pod restarts: old pod no longer exists, but a new pod
+        # with the same role prefix has appeared in its place
+        new_by_prefix: dict[str, list[str]] = {}
+        for p in new_pods:
+            prefix = self._pod_prefix(p)
+            new_by_prefix.setdefault(prefix, []).append(p)
+
+        for old_name in list(current_set):
+            if old_name in new_pods_set:
+                continue  # still alive, no restart
+            old_prefix = self._pod_prefix(old_name)
+            candidates = new_by_prefix.get(old_prefix, [])
+            if len(candidates) == 1:
+                self._pod_progress.remove(old_name)
+                current_set.discard(old_name)
+                self._set_status(
+                    f"{C.Style.YELLOW}Pod restarted: {old_name} → {candidates[0]}{C.Style.RESET}",
+                    2.0,
+                )
+            elif len(candidates) > 1:
+                # Multiple pods replaced at once (e.g. rolling update) —
+                # still clean up the stale entry but don't try to map 1:1
+                self._pod_progress.remove(old_name)
+                current_set.discard(old_name)
 
     # ------------------------------------------------------------------
     # Pod status watcher ("kubectl get pods" overview)
@@ -202,7 +208,11 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             self._start_progress_monitor()
 
     def _start_progress_monitor(self) -> None:
-        """Discover pods and start per-pod log monitor threads."""
+        """Discover pods and start per-pod log monitor threads.
+
+        Does a single non-blocking scan; * _rescan_pods* (called every 5 s
+        from the main loop) picks up pods that appear later.
+        """
         from .step import VLLMProgressMonitor, shell_get_pod  # pylint: disable=import-outside-toplevel
 
         if self._ctx is None:
@@ -214,18 +224,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         self._cleanup_monitors()
         self._cancel_event.clear()
 
-        # Wait briefly for pods
-        list_pod = None
-        self._set_status(
-            f"{C.Style.DIM}Scanning for pods in {self.namespace}...{C.Style.RESET}",
-            duration=5,
-        )
-        deadline = time.monotonic() + C.POD_WAIT_INTERVAL * 2
-        while self._running and time.monotonic() < deadline:
-            list_pod = shell_get_pod(self.namespace)
-            if list_pod and len(list_pod) >= self.pod_cnt:
-                break
-            time.sleep(0.5)
+        list_pod = shell_get_pod(self.namespace)
 
         if not list_pod:
             self._set_status(
@@ -529,7 +528,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
 
         config_dir = self._read_line(
             f"{C.Style.BOLD}Config dir:{C.Style.RESET} {C.Style.DIM}(e.g. ../infer_engines/vllm){C.Style.RESET}",
-            default="",
+            default=self._last_config_dir,
         )
         self._status_msg = None
 
@@ -607,6 +606,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
         self.pod_cnt = deploy_mod.calculate_pod_count(deploy_config)
         self.user_config = user_config
         self._deployed = True
+        self._last_config_dir = config_dir
         self._menu_selected = 0
 
         # Save log lines and immediately write them below the current box so
@@ -644,7 +644,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
 
         config_dir = self._read_line(
             f"{C.Style.BOLD}Config dir:{C.Style.RESET} {C.Style.DIM}(e.g. ../infer_engines/vllm){C.Style.RESET}",
-            default="",
+            default=self._last_config_dir,
         )
         self._status_msg = None
 
@@ -668,6 +668,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             self._set_status(f"{C.Style.RED}✗ Update failed: {e}{C.Style.RESET}", 3.0)
             return
 
+        self._last_config_dir = config_dir
         self._set_status(
             f"{C.Style.BOLD}{C.Style.GREEN}✓{C.Style.RESET}  {C.Style.GREEN}Config updated.{C.Style.RESET}",
             2.0,
@@ -761,6 +762,9 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             ) as proc:
                 output_lines: list[str] = []
                 output_row = getattr(self, '_last_box_end_row', 10) + 1
+                # Fit output in the space between box and terminal bottom
+                term_h = shutil.get_terminal_size().lines
+                max_display = max(5, min(50, term_h - output_row - 4))
 
                 user_cancelled = False
                 while self._running:
@@ -784,18 +788,36 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
                         continue
 
                     text = line.rstrip('\n')
-                    output_lines.append(text)
-                    visible = output_lines[-3:]
+                    # delete.sh countdown: printf "\r\033[K..." produces
+                    # \r (consumed by Python as line terminator → empty line)
+                    # then \033[K... (on the next readline).
+                    # The FIRST \033[K after normal output starts a new line;
+                    # subsequent \033[K overwrite that same line.
+                    if not text:
+                        continue
+                    if text.startswith('\033[K'):
+                        clean = text[3:]  # strip the \033[K prefix
+                        if output_lines and self._in_delete_countdown:
+                            output_lines[-1] = clean
+                        else:
+                            output_lines.append(clean)
+                            self._in_delete_countdown = True
+                    else:
+                        output_lines.append(text)
+                        self._in_delete_countdown = False
+                    # Show tail that fits in the output window — all lines, scroll naturally
+                    visible = output_lines[-max_display:]
                     for i, vline in enumerate(visible):
+                        trimmed = vline[: self.width - 4]
                         ctx.write_at(
                             output_row + i,
                             1,
-                            f"  {C.Style.DIM}{vline[: self.width - 4]}{C.Style.RESET}\033[K",
+                            f"  {C.Style.DIM}{trimmed}{C.Style.RESET}\033[K",
                         )
                     ctx.move_to(output_row + len(visible), 1)
 
-                # Clear output area
-                for i in range(4):
+                # Clear all visible output lines
+                for i in range(max_display + 1):
                     ctx.write_at(output_row + i, 1, '\033[K')
                 rc = -1 if user_cancelled else proc.returncode
         except Exception as e:

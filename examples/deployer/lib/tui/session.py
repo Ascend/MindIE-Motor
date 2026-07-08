@@ -73,6 +73,12 @@ class DeployInteractiveSession(_DeployActionsMixin):
         self._progress_active: bool = False
         self._deploy_log_lines: list[str] = []
 
+        # Cache last-used config path for deploy / update_config prompts
+        self._last_config_dir: str = ""
+
+        # Track delete countdown state for correct line overwrite
+        self._in_delete_countdown: bool = False
+
         # Pod status overview (kubectl get pods)
         self._pod_status: dict[str, str] = {}  # pod_name → (ready, status) str
         self._pod_status_lock = threading.Lock()
@@ -195,6 +201,7 @@ class DeployInteractiveSession(_DeployActionsMixin):
         self._flash_item = None
         self._flash_expiry = 0.0
         _repoll_deadline = 0.0
+        _progress_retry_deadline = 0.0
 
         while self._running:
             now = time.monotonic()
@@ -202,6 +209,19 @@ class DeployInteractiveSession(_DeployActionsMixin):
             # Pod status watcher — always on when deployed
             if self._deployed and self._pod_watcher_thread is None:
                 self._start_pod_watcher()
+
+            # Auto-start progress monitoring (except single-container mode)
+            dep_cfg = self.user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
+            is_single = dep_cfg.get(C.DEPLOY_MODE_CONFIG_KEY, "") == C.DEPLOY_MODE_SINGLE_CONTAINER
+            if (
+                self._deployed
+                and not self._progress_active
+                and not is_single
+                and self.pod_cnt > 0
+                and now >= _progress_retry_deadline
+            ):
+                self._start_progress_monitor()
+                _progress_retry_deadline = now + 15
 
             # Periodic re-scan for pods that appeared after initial discovery
             if self._progress_active and hasattr(self, '_progress_monitor') and now >= _repoll_deadline:
@@ -216,10 +236,6 @@ class DeployInteractiveSession(_DeployActionsMixin):
                     else f"{C.Style.DIM}○ Stopped{C.Style.RESET}"
                 )
                 log_action = "Restart log collection" if self._log_running else "Start log collection"
-
-                dep_cfg = self.user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
-                deploy_mode = dep_cfg.get(C.DEPLOY_MODE_CONFIG_KEY, "")
-                is_single = deploy_mode == C.DEPLOY_MODE_SINGLE_CONTAINER
 
                 if is_single:
                     total_pods = self.pod_cnt
@@ -331,36 +347,17 @@ class DeployInteractiveSession(_DeployActionsMixin):
                     max_name = max((len(n) for n in pods.keys()), default=20)
                     label_w = min(max_name, max(10, usable - 10), 25)
                     bar_w = max(8, usable - label_w)
-                    collected_errors: list[tuple[str, int, str]] = []  # (pod, lno, msg)
                     for pod_name in sorted(pods.keys()):
                         ps = pods[pod_name]
-                        err_lines: list = ps.get("error_lines", [])
-                        err_cnt = ps["error_count"]
-                        elapsed = now - ps.get("started_at", now)
                         line = format_progress_bar(
                             ps["progress"],
                             pod_name[:label_w].ljust(label_w),
                             bar_w,
                             line_cnt=ps["line_index"],
-                            err_cnt=err_cnt,
-                            elapsed=elapsed,
+                            err_cnt=ps["error_count"],
+                            elapsed=now - ps.get("started_at", now),
                         )
                         body.append(line)
-                        # Per-pod error detail lines (last 2, indented)
-                        for lno, msg in err_lines[-2:]:
-                            snippet = msg[: self.width - 22]
-                            body.append(f"    {C.Style.RED}L{lno}{C.Style.RESET} {C.Style.DIM}{snippet}{C.Style.RESET}")
-                        for lno, msg in err_lines[-3:]:
-                            collected_errors.append((pod_name[:label_w], lno, msg))
-                    # Summary errors section below all progress bars
-                    if collected_errors:
-                        body.append("")
-                        body.append(f"  {C.Style.DIM}── All Errors ──{C.Style.RESET}")
-                        for pod, lno, msg in collected_errors[-12:]:
-                            snippet = msg[: self.width - 20]
-                            body.append(
-                                f"  {C.Style.RED}{pod}:{lno}{C.Style.RESET} {C.Style.DIM}{snippet}{C.Style.RESET}"
-                            )
                 else:
                     body.append(f"  {C.Style.DIM}Waiting for pods...{C.Style.RESET}")
                 body.append("")
