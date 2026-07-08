@@ -309,6 +309,7 @@ class UnifiedPDRouter(BaseRouter):
                             raise error
 
         error_message = "Unified PD request ended without response"
+        trace_obj.set_trace_prompt(self.req_info.req_data)
         trace_obj.set_trace_error_message(error_message)
         raise RuntimeError(error_message)
 
@@ -321,6 +322,7 @@ class UnifiedPDRouter(BaseRouter):
         allow_retry: bool = True,
     ) -> (Exception, bool):
         trace_obj = self.req_info.trace_obj
+        trace_obj.set_trace_prompt(self.req_info.req_data)
         trace_obj.set_trace_exception(error)
         max_retry = max(self.config.exception_config.transport_retry_limit, 1)
 
@@ -1481,10 +1483,12 @@ class UnifiedPDRouter(BaseRouter):
                 self.req_info.p_instance_id = schedule_resource.instance.id
             return resp_json
         except asyncio.CancelledError:
+            self.req_info.trace_obj.set_trace_prompt(self.req_info.req_data)
             self.logger.info("Metaserver request was cancelled")
             self.req_info.cancel_scope()
             raise
         except Exception:
+            self.req_info.trace_obj.set_trace_prompt(self.req_info.req_data)
             self.req_info.cancel_scope()
             self.req_info.update_state(ReqState.EXCEPTION)
             raise

@@ -105,6 +105,8 @@ def update_token_id_cache(request_info: dict, chunk_json: dict) -> None:
     - Root ``prompt_token_ids``: set ``cached_prompt_token_ids`` once (first non-null list).
     - ``choices[0].prompt_token_ids`` (Completion stream): promoted when root is absent.
     - ``choices[0].token_ids``: extend ``cached_output_token_ids`` when a list.
+    - ``choices[0].delta.content`` (Chat) or ``choices[0].text`` (Completion):
+      accumulate chunks for content-free output structure summarization.
     """
     pti = chunk_json.get(OpenAIField.PROMPT_TOKEN_IDS)
     if pti is None:
@@ -121,6 +123,15 @@ def update_token_id_cache(request_info: dict, chunk_json: dict) -> None:
     token_ids = c0.get(OpenAIField.TOKEN_IDS)
     if isinstance(token_ids, list):
         request_info.setdefault("cached_output_token_ids", []).extend(token_ids)
+    # Accumulate output text: Chat API uses delta.content, Completion uses text.
+    chunk_text = None
+    delta = c0.get(OpenAIField.DELTA)
+    if isinstance(delta, dict):
+        chunk_text = delta.get(OpenAIField.CONTENT)
+    if chunk_text is None:
+        chunk_text = c0.get(OpenAIField.TEXT)
+    if isinstance(chunk_text, str) and chunk_text:
+        request_info.setdefault("cached_output_text_chunks", []).append(chunk_text)
 
 
 def strip_stream_chunk_bytes_for_client(

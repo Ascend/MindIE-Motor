@@ -1,11 +1,10 @@
 from unittest.mock import patch, MagicMock
+import json
 from pydantic.dataclasses import dataclass
 
 from opentelemetry import trace as trace_api
 from opentelemetry.context import Context
 from opentelemetry.trace import Span, StatusCode
-from opentelemetry.trace.status import StatusCode
-from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.environment_variables import OTEL_EXPORTER_OTLP_TRACES_PROTOCOL
 import pytest
 
@@ -16,6 +15,7 @@ HTTP_ENV = "http/protobuf"
 GRPC_CONFIG = "grpc://127.0.0.1:4317"
 GRPC_ENV = "grpc"
 INVLID_ENV = "invalid"
+
 
 @dataclass
 class TracerConfig:
@@ -35,12 +35,8 @@ class ConfigWithTracer:
 @patch.dict('os.environ', {OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: HTTP_ENV})
 @patch("motor.config.coordinator.CoordinatorConfig")
 def test_tracer_manager_update_config(mock_coordinator_config):
-    mock_coordinator_config.return_value = ConfigWithTracer(
-        tracer_config = TracerConfig(
-            endpoint = HTTP_CONFIG
-        )
-    )
-    
+    mock_coordinator_config.return_value = ConfigWithTracer(tracer_config=TracerConfig(endpoint=HTTP_CONFIG))
+
     tm = TracerManager()
     tm.update_config(mock_coordinator_config())
 
@@ -84,10 +80,7 @@ def test_get_span_exporter_invalid_protocol():
 
 def test_tracer_manager_extract_trace_context():
     tm = TracerManager()
-    headers = {
-        "traceparent": "00-0af7651916cd43dd8448ebd08f9ca98e-0100000000000000-01",
-        "tracestate": "foo=bar"
-    }
+    headers = {"traceparent": "00-0af7651916cd43dd8448ebd08f9ca98e-0100000000000000-01", "tracestate": "foo=bar"}
     context = tm.extract_trace_context(headers)
     assert isinstance(context, Context)
 
@@ -101,14 +94,35 @@ def test_tracer_manager_contains_trace_headers():
 
 def test_trace_obj_set_trace_attribute():
     span = MagicMock(Span)
-    trace_obj = TraceObj(span = span)
+    trace_obj = TraceObj(span=span)
     trace_obj.set_trace_attribute("key", "value")
     span.set_attribute.assert_called_once_with("key", "value")
 
 
+def test_trace_obj_set_trace_prompt_records_structure_without_content():
+    span = MagicMock(Span)
+    trace_obj = TraceObj(span=span)
+
+    trace_obj.set_trace_prompt(
+        {
+            "model": "qwen",
+            "messages": [{"role": "user", "content": "plain secret request"}],
+            "max_tokens": 8,
+        }
+    )
+
+    span.set_attribute.assert_called_once()
+    key, value = span.set_attribute.call_args.args
+    structure = json.loads(value)
+    assert key == "request.structure"
+    assert "plain secret request" not in value
+    assert "qwen" not in value
+    assert structure["fields"]["messages"]["items"][0]["fields"]["content"] == {"type": "str", "length": 20}
+
+
 def test_trace_obj_add_trace_event():
     span = MagicMock(Span)
-    trace_obj = TraceObj(span = span)
+    trace_obj = TraceObj(span=span)
     trace_obj.add_trace_event("event_name", {"attr": "value"}, 123456789)
     span.add_event.assert_called_once_with("event_name", {"attr": "value"}, 123456789)
 
@@ -122,7 +136,7 @@ def test_trace_obj_get_trace_headers_dict():
 
 def test_trace_obj_set_trace_exception():
     span = MagicMock(Span)
-    trace_obj = TraceObj(span = span)
+    trace_obj = TraceObj(span=span)
     exc = Exception("test")
     trace_obj.set_trace_exception(exc)
     span.record_exception.assert_called_once_with(exc)
@@ -230,11 +244,11 @@ def test_traceobj_get_trace_headers_dict_with_empty():
 
 def test_trace_obj_set_trace_status():
     span = MagicMock(Span)
-    trace_obj = TraceObj(span = span)
+    trace_obj = TraceObj(span=span)
     exc = Exception("test")
     trace_obj.set_trace_status(exc)
     span.set_status.assert_called_once()
-    args, _  = span.set_status.call_args
+    args, _ = span.set_status.call_args
     status = args[0]
     assert status.status_code == StatusCode.ERROR
     assert "Exception: test" in status.description

@@ -31,6 +31,7 @@ from opentelemetry.util import types
 
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.logger import get_logger
+from motor.common.http.security_utils import build_safe_body_structure
 from motor.config.coordinator import CoordinatorConfig
 
 logger = get_logger(__name__)
@@ -237,6 +238,23 @@ class TraceObj:
         self.set_trace_attribute("TOKEN_COUNT", f"{self.count_token}")
         return f"Tracer: TTFT: {ttft_str}ms, TTOT: {ttot_str}ms, count_token: {self.count_token}"
 
+    def set_trace_prompt(self, req_data: dict, is_meta: bool = False) -> None:
+        """
+        Record the request structure on the trace span without user content.
+
+        Args:
+            req_data: The original request body dict (contains messages/prompt).
+            is_meta: If True, record on ``meta_span`` instead of ``span``.
+        """
+        import json
+
+        structure = build_safe_body_structure(req_data)
+        self.set_trace_attribute(
+            "request.structure",
+            json.dumps(structure, ensure_ascii=False),
+            is_meta,
+        )
+
     def set_trace_error_message(self, error_log: str, is_meta: bool = False) -> str:
         """
         Sets a readable error message on the trace span and returns the formatted log.
@@ -250,6 +268,26 @@ class TraceObj:
         self.set_trace_attribute("error.message", formatted_error_message, is_meta)
         self.add_trace_event("Error message", attributes={"error.message": formatted_error_message}, is_meta=is_meta)
         return formatted_error_message
+
+    def set_trace_timeout(self, timeout_type: str, elapsed_ms: float, is_meta: bool = False) -> None:
+        """Record a timeout event on the current trace span.
+
+        Args:
+            timeout_type: One of ``"first_token_timeout"``, ``"infer_timeout"``,
+                          or ``"request_timeout"``.
+            elapsed_ms: Time elapsed before the timeout fired, in milliseconds.
+            is_meta: If True, record on ``meta_span`` instead of ``span``.
+        """
+        self.set_trace_attribute("timeout.type", timeout_type, is_meta)
+        self.set_trace_attribute("timeout.elapsed_ms", str(int(elapsed_ms)), is_meta)
+        self.add_trace_event(
+            "Request timeout",
+            attributes={
+                "timeout.type": timeout_type,
+                "timeout.elapsed_ms": str(int(elapsed_ms)),
+            },
+            is_meta=is_meta,
+        )
 
     def set_trace_attribute(self, key: str, value: types.AttributeValue, is_meta: bool = False) -> None:
         """

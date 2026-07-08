@@ -43,7 +43,7 @@ from motor.coordinator.router.upstream_error import (
 from motor.common.http.security_utils import (
     sanitize_error_message,
     filter_sensitive_headers,
-    filter_sensitive_body,
+    build_safe_body_structure,
     validate_and_sanitize_path,
 )
 from motor.common.logger import get_logger
@@ -233,7 +233,7 @@ async def __create_request_info(
     if not request_json:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")
     filtered_headers = filter_sensitive_headers(raw_request.headers)
-    filtered_body = filter_sensitive_body(request_json)
+    filtered_body = build_safe_body_structure(request_json)
     logger.debug("Got request headers: %s, body: %s", filtered_headers, filtered_body)
     req_id = await request_manager.generate_request_id()
     req_len = len(request_body)

@@ -11,12 +11,16 @@
 from typing import Dict, AsyncGenerator, Any, Iterator
 import asyncio
 import contextlib
+import json
+import time
 from contextlib import aclosing
 import httpx
 from fastapi.responses import JSONResponse, Response
 from fastapi import HTTPException
+from starlette import status
 
 from motor.common.http.http_client import HTTPClientPool
+from motor.common.http.security_utils import sanitize_error_message
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import ReqState
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
@@ -260,6 +264,30 @@ class PDHybridRouter(BaseRouter):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise error
                     self._uncancel_current_task()
+                except httpx.TimeoutException as e:
+                    elapsed_ms = (time.time() - self.req_info.status[ReqState.ARRIVE]) * 1000
+                    trace_obj.set_trace_timeout("first_token_timeout", elapsed_ms)
+                    trace_obj.set_trace_error_message(f"Hybrid stream timeout: {e}")
+                    trace_obj.set_trace_prompt(req_data)
+                    trace_obj.set_trace_exception(e)
+                    trace_obj.set_trace_status(e)
+                    self.req_info.update_state(ReqState.TIMEOUT)
+                    self.logger.error(
+                        "Hybrid stream timeout (attempt %d/%d) after %.0fms: %s",
+                        attempt + 1,
+                        max_retry,
+                        elapsed_ms,
+                        str(e),
+                    )
+                    if self.first_chunk_sent or self._stream_commit_controller.ready_to_commit:
+                        yield self._generate_streaming_error_chunk(e)
+                        return
+                    if attempt < max_retry - 1:
+                        wait_time = self.config.exception_config.retry_delay * (2**attempt)
+                        self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    raise
                 except Exception as e:
                     if isinstance(e, HTTPException):
                         transport_retryable = False
@@ -278,6 +306,7 @@ class PDHybridRouter(BaseRouter):
                     if not retry:
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}")
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}", is_meta=True)
+                        trace_obj.set_trace_prompt(req_data)
                         trace_obj.set_trace_status(e)
                         trace_obj.set_trace_exception(e, is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
@@ -338,6 +367,29 @@ class PDHybridRouter(BaseRouter):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise e
                     self._uncancel_current_task()
+                except httpx.TimeoutException as e:
+                    elapsed_ms = (time.time() - self.req_info.status[ReqState.ARRIVE]) * 1000
+                    trace_obj.set_trace_timeout("infer_timeout", elapsed_ms)
+                    trace_obj.set_trace_error_message(f"Hybrid non-streaming timeout: {e}")
+                    trace_obj.set_trace_prompt(req_data)
+                    trace_obj.set_trace_exception(e)
+                    trace_obj.set_trace_status(e)
+                    self.req_info.update_state(ReqState.TIMEOUT)
+                    self.logger.error(
+                        "Hybrid non-streaming timeout (attempt %d/%d) after %.0fms: %s",
+                        attempt + 1,
+                        max_retries,
+                        elapsed_ms,
+                        str(e),
+                    )
+                    if attempt < max_retries - 1:
+                        wait_time = self.config.exception_config.retry_delay * (2**attempt)
+                        self.logger.info("Retrying non-streaming request in %.2f seconds...", wait_time)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    self.logger.error("All retries failed for non-streaming decode request (timeout).")
+                    self.req_info.update_state(ReqState.TIMEOUT)
+                    raise e
                 except Exception as e:
                     self.logger.error(
                         "Error in post (attempt %d/%d): %s",
@@ -350,6 +402,7 @@ class PDHybridRouter(BaseRouter):
                     trace_obj.set_trace_exception(e, is_meta=True)
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}")
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}", is_meta=True)
+                    trace_obj.set_trace_prompt(req_data)
                     if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) and not is_retryable_upstream_error(e):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise
@@ -361,3 +414,34 @@ class PDHybridRouter(BaseRouter):
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying non-streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
+
+    @staticmethod
+    def _generate_streaming_error_chunk(error: Exception) -> bytes:
+        """Build an SSE ``data:`` error chunk from *error* for mid-stream failure reporting."""
+        if isinstance(error, UpstreamHTTPError) and error.body:
+            try:
+                payload = json.loads(error.body)
+                encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+                return b"data: " + encoded + b"\n\n"
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+
+        if isinstance(error, UpstreamHTTPError):
+            code = error.status_code
+        elif isinstance(error, httpx.TimeoutException):
+            code = status.HTTP_504_GATEWAY_TIMEOUT
+        elif isinstance(error, httpx.RequestError):
+            code = status.HTTP_502_BAD_GATEWAY
+        elif isinstance(error, HTTPException):
+            code = error.status_code
+        else:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        payload = {
+            "error": {
+                "message": sanitize_error_message(str(error)),
+                "type": type(error).__name__,
+                "code": code,
+            }
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        return b"data: " + encoded + b"\n\n"

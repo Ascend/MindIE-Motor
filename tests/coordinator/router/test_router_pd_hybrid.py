@@ -15,6 +15,7 @@ import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import httpx
 from pytest import MonkeyPatch
 from fastapi import FastAPI, status, Request
 from fastapi.testclient import TestClient
@@ -739,6 +740,19 @@ class TestPDHybridTracer:
         assert event_names.count("Scheduled Resource ok") == 1
 
 
+class _RaisesOnStreamPull:
+    """Minimal async iterable that raises on the first ``async for`` pull."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> bytes:
+        raise self._error
+
+
 def _make_cancel_test_config(
     monkeypatch: MonkeyPatch,
     *,
@@ -1168,6 +1182,35 @@ class TestPDHybridCancelReschedule:
         await asyncio.wait_for(response(self._asgi_scope(), receive, send), timeout=5)
 
         assert calls == ["v1/completions"]
+
+    @pytest.mark.asyncio
+    async def test_stream_precommit_timeout_returns_transport_error_without_hanging(
+        self, monkeypatch: MonkeyPatch, hybrid_pool
+    ):
+        """First-token timeout before commit must raise, not yield an SSE error chunk."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=1, reschedule_enabled=False)
+        messages: list[dict] = []
+
+        def mock_forward(self, api, req_data, client, timeout, *, on_response_ready=None):
+            return _RaisesOnStreamPull(httpx.ReadTimeout("timed out waiting for first token"))
+
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def send(message):
+            messages.append(message)
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hello", "stream": True, "max_tokens": 50},
+        )
+
+        response = await router_obj.handle_request()
+        await asyncio.wait_for(response(self._asgi_scope(), receive, send), timeout=5)
+
+        assert [message["status"] for message in messages if message["type"] == "http.response.start"] == [504]
+        assert router_obj.req_info.state == ReqState.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_stream_retry_validation_error_is_not_retried(self, monkeypatch: MonkeyPatch, hybrid_pool):

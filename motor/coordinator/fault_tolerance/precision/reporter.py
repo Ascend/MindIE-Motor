@@ -16,6 +16,10 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from opentelemetry import context as otel_context
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.trace.status import Status, StatusCode
+
 from motor.common.logger import get_logger
 from motor.common.utils.consecutive_counter import ConsecutiveCounter
 from motor.coordinator.fault_tolerance.alarm.base import AlarmAction, AlarmContext
@@ -97,6 +101,14 @@ class PrecisionReporter:
                     key[1],
                     streak.consecutive,
                 )
+                # Create a precision-anomaly span under the originating request's trace.
+                self._trace_precision_anomaly(
+                    sample=sample,
+                    key=key,
+                    result=result,
+                    consecutive=streak.consecutive,
+                    threshold_hit=streak.threshold_hit,
+                )
             else:
                 logger.debug(
                     "PrecisionReporter: check ok pd_group=(%s,%s), streak reset",
@@ -153,6 +165,67 @@ class PrecisionReporter:
         return PrecisionStreakResult(
             consecutive=self._local_counter.get_count(key),
         )
+
+    @staticmethod
+    def _trace_precision_anomaly(
+        *,
+        sample: DecodeSample,
+        key: PDGroupKey,
+        result: Any,
+        consecutive: int,
+        threshold_hit: bool,
+    ) -> None:
+        """Create a child span under the originating request's trace to record a
+        precision anomaly detection event.
+
+        When *sample* carries W3C trace headers, they are used to establish
+        parent context so the anomaly span appears under the original inference
+        trace in Tempo/Grafana.  When no external trace context is available
+        (e.g. the client did not send a ``traceparent`` header), the current
+        OTEL context is used as a fallback so the span is still recorded.
+        """
+        from motor.coordinator.tracer.tracing import TracerManager
+
+        tracer = TracerManager().tracer
+        if not tracer:
+            return
+
+        if sample.trace_headers:
+            propagator = TraceContextTextMapPropagator()
+            parent_ctx = propagator.extract(sample.trace_headers)
+        else:
+            # No external trace context (e.g. no W3C traceparent header from
+            # the client) — fall back to the current OTEL context so the
+            # anomaly span is still recorded.
+            parent_ctx = otel_context.get_current()
+
+        span_name = "PrecisionAnomaly"
+        with tracer.start_as_current_span(span_name, context=parent_ctx) as span:
+            span.set_attribute("precision.has_issue", True)
+            span.set_attribute("precision.issue_type", getattr(result, "issue_type", 0) or 0)
+            span.set_attribute("precision.p_instance_id", str(key[0]) if key[0] is not None else "")
+            span.set_attribute("precision.d_instance_id", str(key[1]))
+            span.set_attribute("precision.req_id", sample.req_id)
+            span.set_attribute("precision.consecutive_count", consecutive)
+            span.set_attribute("precision.threshold_hit", threshold_hit)
+            span.set_attribute("precision.prompt_token_count", len(sample.prompt_token_ids))
+            span.set_attribute("precision.output_token_count", len(sample.output_token_ids))
+            if sample.request_structure:
+                span.set_attribute("precision.request_structure", sample.request_structure)
+            if sample.output_structure:
+                span.set_attribute("precision.output_structure", sample.output_structure)
+            # Precision anomaly is always an error condition — mark the span
+            # accordingly so Tempo/Grafana can filter/alert on error spans.
+            span.set_status(Status(StatusCode.ERROR, "Precision anomaly detected"))
+            span.add_event(
+                "Precision anomaly detected",
+                attributes={
+                    "precision.has_issue": True,
+                    "precision.issue_type": getattr(result, "issue_type", 0) or 0,
+                    "precision.consecutive_count": consecutive,
+                    "precision.threshold_hit": threshold_hit,
+                },
+            )
 
     async def _run_action(
         self,

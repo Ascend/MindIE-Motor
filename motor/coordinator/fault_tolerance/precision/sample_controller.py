@@ -33,7 +33,7 @@ PDGroupKey = tuple[int | None, int]
 
 @dataclass
 class DecodeSample:
-    """One decode sample: prompt/output token ids and per-token logprobs."""
+    """One decode sample: token ids for checking plus safe structures for tracing."""
 
     p_instance_id: int | None
     d_instance_id: int
@@ -46,6 +46,13 @@ class DecodeSample:
     # Per-position top-k logprobs for msprobe (Chat only). Aligned with
     # ``output_token_ids``; ``logprobs_count == 1`` yields single-key dicts.
     topk_logprobs: list[dict[int, float]] = field(default_factory=list)
+    # W3C traceparent/tracestate headers from the request that generated this
+    # sample, so PrecisionReporter can create a child span under the original
+    # trace when reporting anomalies.
+    trace_headers: dict[str, str] = field(default_factory=dict)
+    # Content-free request/output summaries for trace attributes.
+    request_structure: str = ""
+    output_structure: str = ""
 
 
 class SampleController:

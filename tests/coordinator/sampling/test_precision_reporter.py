@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -178,6 +178,43 @@ def test_no_top_level_controller_client_import_in_precision_alarm_module() -> No
     import motor.coordinator.fault_tolerance.alarm.precision_alarm as pa_mod
 
     assert "ControllerApiClient" not in pa_mod.__dict__
+
+
+def test_precision_anomaly_trace_uses_safe_structure_not_token_ids_or_text() -> None:
+    span = MagicMock()
+    span_cm = MagicMock()
+    span_cm.__enter__.return_value = span
+    tracer = MagicMock()
+    tracer.start_as_current_span.return_value = span_cm
+
+    sample = _sample(
+        prompt_token_ids=[101, 102],
+        output_token_ids=[201],
+        request_structure='{"type": "dict"}',
+        output_structure='{"type": "stream_text", "length": 12}',
+    )
+
+    with patch("motor.coordinator.tracer.tracing.TracerManager") as tracer_manager:
+        tracer_manager.return_value.tracer = tracer
+        from motor.coordinator.fault_tolerance.precision.reporter import PrecisionReporter
+
+        PrecisionReporter._trace_precision_anomaly(
+            sample=sample,
+            key=(sample.p_instance_id, sample.d_instance_id),
+            result=CheckResult(has_issue=True, issue_type=7),
+            consecutive=3,
+            threshold_hit=False,
+        )
+
+    attrs = {call.args[0]: call.args[1] for call in span.set_attribute.call_args_list}
+    assert attrs["precision.prompt_token_count"] == 2
+    assert attrs["precision.output_token_count"] == 1
+    assert attrs["precision.request_structure"] == '{"type": "dict"}'
+    assert attrs["precision.output_structure"] == '{"type": "stream_text", "length": 12}'
+    assert "precision.prompt_token_ids" not in attrs
+    assert "precision.output_token_ids" not in attrs
+    assert "precision.prompt_text" not in attrs
+    assert "precision.output_text" not in attrs
 
 
 @pytest.mark.asyncio

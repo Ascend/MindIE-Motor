@@ -38,6 +38,10 @@ def inject_logprobs(
     Force-overwrites any pre-existing ``logprobs`` / ``top_logprobs`` field on
     the request so a client-supplied ``null/0/false`` value cannot silently
     disable sampling. ``return_token_ids`` is also force-set to ``True``.
+    ``return_tokens_as_token_ids`` is also force-set to ``True`` so vLLM
+    emits top-logprob keys as ``"token_id:<int>"`` strings (parseable
+    back to ints by ``response._parse_logprob_token_id``). Negligible
+    overhead (single bool in the request body).
 
     When a pre-existing logprobs value is replaced, emits one INFO line tagged
     ``PrecisionSample: inject_logprobs`` so ops can see what was sent to the
@@ -55,11 +59,13 @@ def inject_logprobs(
     if is_chat:
         req_data["top_logprobs"] = lp_count
     req_data["return_token_ids"] = True
+    req_data["return_tokens_as_token_ids"] = True
 
     if old_logprobs != new_logprobs:
         logger.info(
             "PrecisionSample: inject_logprobs overridden api=%s req_id=%s "
-            "client_logprobs=%r->%r top_logprobs=%r->%r return_token_ids=true",
+            "client_logprobs=%r->%r top_logprobs=%r->%r "
+            "return_token_ids=true return_tokens_as_token_ids=true",
             api_kind,
             req_id or "-",
             old_logprobs,
@@ -69,7 +75,8 @@ def inject_logprobs(
         )
     else:
         logger.debug(
-            "PrecisionSample: inject_logprobs set api=%s req_id=%s logprobs=%r top_logprobs=%r return_token_ids=true",
+            "PrecisionSample: inject_logprobs set api=%s req_id=%s logprobs=%r top_logprobs=%r "
+            "return_token_ids=true return_tokens_as_token_ids=true",
             api_kind,
             req_id or "-",
             new_logprobs,

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import motor.coordinator.router.precision_sample.sample_builder as sample_builder_mod
@@ -43,6 +44,27 @@ def test_build_decode_sample_passes_topk_logprobs_through() -> None:
     assert sample.topk_logprobs == [{201: -0.1}, {202: -0.2}, {203: -0.3}]
     assert len(sample.topk_logprobs) == len(sample.output_token_ids)
     assert sample.extra["model"] == "m"
+
+
+def test_build_decode_sample_uses_safe_structures_instead_of_text() -> None:
+    bds = _import_build_decode_sample()
+    request_info = {
+        "cached_prompt_token_ids": [101, 102],
+        "cached_output_token_ids": [201],
+        "cached_logprobs": [-0.1],
+        "cached_output_text_chunks": ["secret answer"],
+    }
+    sample = bds(
+        p_instance_id=1,
+        d_instance_id=2,
+        request_info=request_info,
+        req_id="req-structure",
+        request_structure='{"type": "dict"}',
+    )
+
+    assert sample.request_structure == '{"type": "dict"}'
+    assert "secret answer" not in sample.output_structure
+    assert json.loads(sample.output_structure) == {"type": "stream_text", "chunks": 1, "length": 13}
 
 
 def test_build_decode_sample_warns_on_length_mismatch(caplog) -> None:

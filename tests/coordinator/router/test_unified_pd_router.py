@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -435,6 +435,7 @@ async def test_unified_pd_decode_failure_stops_both_legs(monkeypatch):
         entry_api="v1/completions",
         req_len=10,
     )
+    req_info.trace_obj.set_trace_prompt = MagicMock()
     scheduler = _Scheduler()
     router = UnifiedPDRouter(
         req_info,
@@ -467,6 +468,7 @@ async def test_unified_pd_decode_failure_stops_both_legs(monkeypatch):
         await router.handle_request()
 
     assert len(stop_calls) == 2
+    req_info.trace_obj.set_trace_prompt.assert_called_with(req_info.req_data)
     assert {call[0] for call in stop_calls} == {PDRole.ROLE_P, PDRole.ROLE_D}
     assert all(call[1] == 1 for call in stop_calls)
     assert scheduler.update_workload.await_count == 3

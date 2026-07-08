@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from motor.common.logger import get_logger
@@ -30,6 +31,8 @@ def build_decode_sample(
     req_id: str,
     model: str = "",
     d_infer_base_url: str = "",
+    trace_headers: dict[str, str] | None = None,
+    request_structure: str = "",
 ) -> DecodeSample:
     """Construct a DecodeSample from request_info and context.
 
@@ -41,6 +44,7 @@ def build_decode_sample(
         req_id: Unique request id.
         model: Model name from the original request data.
         d_infer_base_url: Base URL of the D engine this request was forwarded to.
+        request_structure: Content-free request structure summary for tracing.
 
     Returns:
         A DecodeSample ready for submit_sample().
@@ -70,6 +74,9 @@ def build_decode_sample(
         req_id=req_id,
         extra=extra,
         topk_logprobs=topk_logprobs,
+        trace_headers=trace_headers or {},
+        request_structure=request_structure,
+        output_structure=_build_output_structure(request_info),
     )
 
 
@@ -94,3 +101,16 @@ def _log_sample_submission(sample: DecodeSample) -> None:
             sample.req_id,
             n_tokens,
         )
+
+
+def _build_output_structure(request_info: dict) -> str:
+    """Return content-free output shape captured during precision sampling."""
+    output_text_chunks: list[str] = request_info.get("cached_output_text_chunks") or []
+    return json.dumps(
+        {
+            "type": "stream_text",
+            "chunks": len(output_text_chunks),
+            "length": sum(len(chunk) for chunk in output_text_chunks),
+        },
+        ensure_ascii=False,
+    )

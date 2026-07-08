@@ -11,6 +11,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -26,7 +27,7 @@ from motor.common.resources.endpoint import WorkloadAction
 from motor.common.resources.instance import PDRole
 from motor.common.http.http_client import HTTPClientPool
 from motor.common.logger import get_logger
-from motor.common.http.security_utils import filter_sensitive_headers, filter_sensitive_body
+from motor.common.http.security_utils import filter_sensitive_headers, build_safe_body_structure
 from motor.common.utils.net import format_address
 import motor.common.utils.error as cancel_error
 from motor.config.coordinator import CoordinatorConfig
@@ -408,12 +409,14 @@ class BaseRouter(ABC):
         trace_obj.set_trace_attribute("server.path", api, self.is_meta)
         headers.update(trace_obj.get_trace_headers_dict(self.is_meta))
 
+        filtered_headers = filter_sensitive_headers(headers)
+        safe_body_structure = build_safe_body_structure(req_data)
         self.logger.debug(
             "Forward stream request base_url: %s, api: %s, headers: %s, body: %s, timeout: %s",
             client.base_url,
             api,
-            headers,
-            req_data,
+            filtered_headers,
+            safe_body_structure,
             timeout,
         )
 
@@ -494,7 +497,7 @@ class BaseRouter(ABC):
         headers.update(trace_obj.get_trace_headers_dict(self.is_meta))
 
         filtered_headers = filter_sensitive_headers(headers)
-        filtered_body = filter_sensitive_body(req_data)
+        filtered_body = build_safe_body_structure(req_data)
         self.logger.debug(
             "Forward request base_url: %s, api: %s, headers: %s, body: %s, timeout: %s",
             client.base_url,
@@ -735,13 +738,17 @@ class BaseRouter(ABC):
             d_url = ""
             if decode_resource is not None:
                 d_url = self._infer_base_url_for_resource(decode_resource)
+            req_data = self.req_info.req_data
+            request_structure = json.dumps(build_safe_body_structure(req_data), ensure_ascii=False)
             sample = build_decode_sample(
                 p_instance_id,
                 d_instance_id,
                 request_info,
                 self.req_info.req_id,
-                model=self.req_info.req_data.get("model", "") or "",
+                model=req_data.get("model", "") or "",
                 d_infer_base_url=d_url,
+                trace_headers=self.req_info.trace_obj.get_trace_headers_dict(),
+                request_structure=request_structure,
             )
             _log_sample_submission(sample)
             await self._sampling_manager.submit_sample(sample)
