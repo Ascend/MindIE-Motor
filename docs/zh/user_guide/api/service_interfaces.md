@@ -9,17 +9,9 @@
 **接口格式**
 
 请求类型：**POST**
-URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/chat/completions`
+> URL：`http(s)://{IP}:{Port}/v1/chat/completions`
 
-  >[!NOTE]说明
-  >
-  > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认`127.0.0.1`），参考`deployer/user_config.json`取值或实际运行时节点IP。
-  > - `{推理端口}`：内部端口取值来自于配置项`api_config.coordinator_api_infer_port`（默认 `1025`），对外绑定端口由部署配置`deployer/deployment/coordinator_init.yaml`的`spec.ports[].nodePort`指定（默认 `31015`）。
-
-请求头：
-
-- 必选：`Content-Type: application/json`
-- 可选：`{api_key_config.header_name}: {api_key_config.key_prefix}{API_KEY}`（默认 `Authorization: Bearer {API_KEY}`）
+IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
 
 **请求参数**
 
@@ -55,7 +47,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/chat/completions`
 - 流式使用样例：
 
   ```bash
-  curl -N -X POST "http://{CoordinatorIP}:{推理端口}/v1/chat/completions" \
+  curl -N -X POST "http://{IP}:{Port}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer {API_KEY}" \
     -d '{
@@ -70,7 +62,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/chat/completions`
 - 非流式使用样例：
 
   ```bash
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/chat/completions" \
+  curl -X POST "http://{IP}:{Port}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer {API_KEY}" \
     -d '{
@@ -155,6 +147,120 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/chat/completions`
 
 ---
 
+## OpenAI Completion 接口
+
+**接口功能**
+
+OpenAI Completion 兼容接口，支持文本补全与结果采样。
+
+**接口格式**
+
+请求类型：**POST**
+> URL：`http(s)://{IP}:{Port}/v1/completions`
+
+IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+
+**请求参数**
+
+| 参数名 | 类型 | 说明 |
+|---|---|---|
+| model | string | 必选；模型名称。 |
+| prompt | string/array | 必选；提示词。 |
+| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
+
+其余OpenAI兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用字段说明同上，若后端不支持部分字段将被忽略或降级处理。
+
+**使用样例**
+
+- 流式使用样例：
+
+  ```bash
+  curl -N -X POST "http://{IP}:{Port}/v1/completions" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer {API_KEY}" \
+    -d '{
+      "model": "qwen3",
+      "prompt": "Hello!",
+      "stream": true
+    }'
+  ```
+
+- 非流式使用样例：
+
+  ```bash
+  curl -X POST "http://{IP}:{Port}/v1/completions" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer {API_KEY}" \
+    -d '{
+      "model": "qwen3",
+      "prompt": "Hi!",
+      "max_tokens": 64,
+      "temperature": 0.7
+    }'
+  ```
+
+**响应示例**
+
+- 流式响应样例：
+
+  ```text
+  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Hey there! ","finish_reason":null}]}
+
+  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Lovely to hear from you—","finish_reason":null}]}
+
+  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"what would you like to do today?","finish_reason":null}]}
+
+  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"","finish_reason":"stop"}]}
+
+  data: [DONE]
+  ```
+
+- 非流式响应样例（非流式）：
+
+  ```JSON
+  {
+    "id": "cmpl-xxx-0",
+    "object": "text_completion",
+    "created": 1765856304,
+    "model": "qwen3",
+    "choices": [
+      { "index": 0, "text": "Hey there! Lovely to hear from you—what would you like to do today?", "finish_reason": "stop" }
+    ]
+  }
+  ```
+
+**输出说明**
+
+- 流式响应参数说明：
+
+  流式响应为SSE事件流，每行以`data:` 开头，`data: [DONE]`表示结束。`data:`后的JSON结构如下：
+
+  | 参数名 | 类型 | 说明 |
+  |---|---|---|
+  | id | string | 本次请求ID。 |
+  | object | string | 返回对象类型：`text_completion`。 |
+  | created | integer | 创建时间戳（秒）。 |
+  | model | string | 模型名称。 |
+  | choices | array | 增量结果列表。 |
+  | choices[].index | integer | 序号。 |
+  | choices[].text | string | 生成增量文本。 |
+  | choices[].finish_reason | string/null | 结束原因，未结束时为`null`。 |
+
+- 非流式响应参数说明：
+
+  | 参数名 | 类型 | 说明 |
+  |---|---|---|
+  | id | string | 本次请求ID。 |
+  | object | string | 返回对象类型：`text_completion`。 |
+  | created | integer | 创建时间戳（秒）。 |
+  | model | string | 模型名称。 |
+  | choices | array | 生成结果列表。 |
+  | choices[].index | integer | 序号。 |
+  | choices[].text | string | 生成文本。 |
+  | choices[].finish_reason | string/null | 结束原因，如`stop`、`length`等。 |
+
+---
+
 ## Anthropic Messages 接口
 
 **接口功能**
@@ -164,17 +270,9 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/chat/completions`
 **接口格式**
 
 请求类型：**POST**
-URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages`
+> URL：`http(s)://{IP}:{Port}/v1/messages`
 
-  >[!NOTE]说明
-  >
-  > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{推理端口}`：内部端口取值来自于配置项 `api_config.coordinator_api_infer_port`（默认 `1025`），对外绑定端口由部署配置 `deployer/deployment/coordinator_init.yaml` 的 `spec.ports[].nodePort` 指定（默认 `31015`）。
-
-请求头：
-
-- 必选：`Content-Type: application/json`
-- 可选：`{api_key_config.header_name}: {api_key_config.key_prefix}{API_KEY}`（默认 `Authorization: Bearer {API_KEY}`）；也支持标准 Anthropic 格式 `x-api-key: {API_KEY}`
+IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
 
 **请求参数**
 
@@ -197,7 +295,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages`
 - 基本文本对话（非流式）：
 
   ```bash
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/messages" \
+  curl -X POST "http://{IP}:{Port}/v1/messages" \
     -H "Content-Type: application/json" \
     -H "x-api-key: {API_KEY}" \
     -d '{
@@ -212,7 +310,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages`
 - 流式对话：
 
   ```bash
-  curl -N -X POST "http://{CoordinatorIP}:{推理端口}/v1/messages" \
+  curl -N -X POST "http://{IP}:{Port}/v1/messages" \
     -H "Content-Type: application/json" \
     -H "x-api-key: {API_KEY}" \
     -d '{
@@ -228,7 +326,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages`
 - 带系统提示词：
 
   ```bash
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/messages" \
+  curl -X POST "http://{IP}:{Port}/v1/messages" \
     -H "Content-Type: application/json" \
     -H "x-api-key: {API_KEY}" \
     -d '{
@@ -244,7 +342,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages`
 - 带工具调用：
 
   ```bash
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/messages" \
+  curl -X POST "http://{IP}:{Port}/v1/messages" \
     -H "Content-Type: application/json" \
     -H "x-api-key: {API_KEY}" \
     -d '{
@@ -346,9 +444,9 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages`
 **接口格式**
 
 请求类型：**POST**
-URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages/count_tokens`
+> URL：`http(s)://{IP}:{Port}/v1/messages/count_tokens`
 
-请求头：与 `/v1/messages` 一致。
+IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
 
 **请求参数**
 
@@ -363,7 +461,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/messages/count_tokens`
 **使用样例**
 
 ```bash
-curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/messages/count_tokens" \
+curl -X POST "http://{IP}:{Port}/v1/messages/count_tokens" \
   -H "Content-Type: application/json" \
   -H "x-api-key: {API_KEY}" \
   -d '{
@@ -393,288 +491,6 @@ curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/messages/count_tokens" \
 | context_management | object | 上下文管理信息。 |
 | context_management.original_input_tokens | integer | 原始输入 Token 数量。 |
 
----
-
-## OpenAI Completion 接口
-
-**接口功能**
-
-OpenAI Completion 兼容接口，支持文本补全与结果采样。
-
-**接口格式**
-
-请求类型：**POST**
-URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/completions`
-
-  >[!NOTE]说明
-  >
-  > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{推理端口}`：内部端口取值来自于配置项 `api_config.coordinator_api_infer_port`（默认 `1025`），对外绑定端口由部署配置 `deployer/deployment/coordinator_init.yaml` 的 `spec.ports[].nodePort` 指定（默认 `31015`）。
-
-请求头：
-
-- 必选：`Content-Type: application/json`
-- 可选：`{api_key_config.header_name}: {api_key_config.key_prefix}{API_KEY}`（默认 `Authorization: Bearer {API_KEY}`）
-
-**请求参数**
-
-| 参数名 | 类型 | 说明 |
-|---|---|---|
-| model | string | 必选；模型名称。 |
-| prompt | string/array | 必选；提示词。 |
-| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
-
-其余OpenAI兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用字段说明同上，若后端不支持部分字段将被忽略或降级处理。
-
-**使用样例**
-
-- 流式使用样例：
-
-  ```bash
-  curl -N -X POST "http://{CoordinatorIP}:{推理端口}/v1/completions" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer {API_KEY}" \
-    -d '{
-      "model": "qwen3",
-      "prompt": "Hello!",
-      "stream": true
-    }'
-  ```
-
-- 非流式使用样例：
-
-  ```bash
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/completions" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer {API_KEY}" \
-    -d '{
-      "model": "qwen3",
-      "prompt": "Hi!",
-      "max_tokens": 64,
-      "temperature": 0.7
-    }'
-  ```
-
-**响应示例**
-
-- 流式响应样例：
-
-  ```text
-  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Hey there! ","finish_reason":null}]}
-
-  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"Lovely to hear from you—","finish_reason":null}]}
-
-  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"what would you like to do today?","finish_reason":null}]}
-
-  data: {"id":"cmpl-xxx-0","object":"text_completion","created":1765856304,"model":"qwen3","choices":[{"index":0,"text":"","finish_reason":"stop"}]}
-
-  data: [DONE]
-  ```
-
-- 非流式响应样例（非流式）：
-
-  ```JSON
-  {
-    "id": "cmpl-xxx-0",
-    "object": "text_completion",
-    "created": 1765856304,
-    "model": "qwen3",
-    "choices": [
-      { "index": 0, "text": "Hey there! Lovely to hear from you—what would you like to do today?", "finish_reason": "stop" }
-    ]
-  }
-  ```
-
-**输出说明**
-
-- 流式响应参数说明：
-
-  流式响应为SSE事件流，每行以`data:` 开头，`data: [DONE]`表示结束。`data:`后的JSON结构如下：
-
-  | 参数名 | 类型 | 说明 |
-  |---|---|---|
-  | id | string | 本次请求ID。 |
-  | object | string | 返回对象类型：`text_completion`。 |
-  | created | integer | 创建时间戳（秒）。 |
-  | model | string | 模型名称。 |
-  | choices | array | 增量结果列表。 |
-  | choices[].index | integer | 序号。 |
-  | choices[].text | string | 生成增量文本。 |
-  | choices[].finish_reason | string/null | 结束原因，未结束时为`null`。 |
-
-- 非流式响应参数说明：
-
-  | 参数名 | 类型 | 说明 |
-  |---|---|---|
-  | id | string | 本次请求ID。 |
-  | object | string | 返回对象类型：`text_completion`。 |
-  | created | integer | 创建时间戳（秒）。 |
-  | model | string | 模型名称。 |
-  | choices | array | 生成结果列表。 |
-  | choices[].index | integer | 序号。 |
-  | choices[].text | string | 生成文本。 |
-  | choices[].finish_reason | string/null | 结束原因，如`stop`、`length`等。 |
-
----
-
-## MetaServer转发接口（内部接口）
-
-**接口功能**
-
-仅在PD/CDP分离部署场景使用，用于D节点将请求转发至P节点。
-
-**接口格式**
-
-请求类型：**POST**
-URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/metaserver`
-
-  >[!NOTE]说明
-  >
-  > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{推理端口}`：内部端口取值来自于配置项 `api_config.coordinator_api_infer_port`（默认 `1025`），对外绑定端口由部署配置 `deployer/deployment/coordinator_init.yaml` 的 `spec.ports[].nodePort` 指定（默认 `31015`）。
-
-请求头：
-
-- 必选：`Content-Type: application/json`
-- 可选：无
-
-**请求参数**
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `model` | string | 必选；模型名称，透传至目标节点。 |
-| `messages` | array | 与 `prompt` 二选一；Chat输入。 |
-| `prompt` | string | 与 `messages` 二选一；Completion 输入。 |
-| `stream` | boolean | 可选；是否流式返回，透传至目标节点。 |
-| `kv_transfer_params` | object | 必选；转发控制参数。 |
-| `kv_transfer_params.request_id` | string | 必选；请求标识，用于跨节点跟踪与关联。 |
-| `kv_transfer_params.do_remote_decode` | boolean | 可选；是否在目标节点执行 Decode。 |
-| `kv_transfer_params.do_remote_prefill` | boolean | 可选；是否在目标节点执行 Prefill。 |
-| `kv_transfer_params.remote_engine_id` | string | 必选；目标节点引擎 ID。 |
-| `kv_transfer_params.remote_host` | string | 必选；目标节点地址（IP 或域名）。 |
-| `kv_transfer_params.remote_port` | string | 必选；目标节点端口。 |
-
-**使用样例**
-
-- CDP分离场景，D节点触发P节点Prefill：
-
-  ```json
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/metaserver" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3",
-    "messages": [
-      { "role": "user", "content": "Hello!" }
-    ],
-    "stream": false,
-    "kv_transfer_params": {
-      "request_id": "req-id",
-      "do_remote_decode": false,
-      "do_remote_prefill": true,
-      "remote_engine_id": "engine-p-0",
-      "remote_host": "10.0.0.12",
-      "remote_port": "1000"
-    }
-  }'
-  ```
-
-- PD分离场景，P节点触发D节点Decode：
-
-  ```json
-  curl -X POST "http://{CoordinatorIP}:{推理端口}/v1/metaserver" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "model": "qwen3",
-      "messages": [
-        { "role": "user", "content": "Hello!" }
-      ],
-      "stream": false,
-      "kv_transfer_params": {
-        "request_id": "req-id",
-        "do_remote_decode": true,
-        "do_remote_prefill": false,
-        "remote_engine_id": "engine-d-0",
-        "remote_host": "10.0.0.21",
-        "remote_port": "1001"
-      }
-    }'
-  ```
-
-**响应示例**
-
-- CDP分离场景，透传P节点响应内容：
-
-  ```JSON
-  {
-    "id": "chatcmpl-xxx12",
-    "object": "chat.completion",
-    "created": 1738828800,
-    "model": "qwen3",
-    "choices": [
-      {
-        "index": 0,
-        "message": {
-          "role": "assistant",
-          "content": "Hello! How can I help you?"
-        },
-        "finish_reason": "stop"
-      }
-    ],
-    "usage": {
-      "prompt_tokens": 6,
-      "completion_tokens": 7,
-      "total_tokens": 13
-    }
-  }
-  ```
-
-- PD分离场景，透传D节点响应内容：
-
-  ```JSON
-  {
-    "id": "chatcmpl-xxx",
-    "object": "chat.completion",
-    "created": 1738828800,
-    "model": "qwen3",
-    "choices": [
-      {
-        "index": 0,
-        "message": {
-          "role": "assistant",
-          "content": "Hello! How can I help you?"
-        },
-        "finish_reason": "stop"
-      }
-    ],
-    "usage": {
-      "prompt_tokens": 8,
-      "completion_tokens": 9,
-      "total_tokens": 17
-    }
-  }
-  ```
-
-**输出说明**
-该示例为非流式 `chat.completion`的输出说明：
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `id` | string | 响应 ID。 |
-| `object` | string | 响应对象类型，示例为 `chat.completion`。 |
-| `created` | integer | 响应创建时间（Unix 时间戳）。 |
-| `model` | string | 实际使用的模型名称。 |
-| `choices` | array | 生成结果列表。 |
-| `choices[].index` | integer | 结果序号。 |
-| `choices[].message.role` | string | 角色，示例为 `assistant`。 |
-| `choices[].message.content` | string | 生成内容。 |
-| `choices[].finish_reason` | string | 结束原因，如 `stop`、`length` 等。 |
-| `usage` | object | Token 统计信息。 |
-| `usage.prompt_tokens` | integer | 输入 Token 数量。 |
-| `usage.completion_tokens` | integer | 输出 Token 数量。 |
-| `usage.total_tokens` | integer | 总 Token 数量。 |
-
----
-
 ## 模型列表查询接口
 
 **接口功能**
@@ -684,12 +500,9 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/metaserver`
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/models`
+> URL：`http(s)://{IP}:{Port}/v1/models`
 
-  >[!NOTE]说明
-  >
-  > - `{CoordinatorIP}`：Coordinator 服务部署机器的 IP 或域名，取值来自配置 `api_config.coordinator_api_host`（默认 `127.0.0.1`），参考 `deployer/user_config.json` 取值或实际运行时节点IP。
-  > - `{推理端口}`：内部端口取值来自于配置项 `api_config.coordinator_api_infer_port`（默认 `1025`），对外绑定端口由部署配置 `deployer/deployment/coordinator_init.yaml` 的 `spec.ports[].nodePort` 指定（默认 `31015`）。
+IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
 
 **请求参数**
 
@@ -698,7 +511,7 @@ URL：`http(s)://{CoordinatorIP}:{推理端口}/v1/models`
 **使用样例**
 
 ```bash
-curl -X GET "http://{CoordinatorIP}:{推理端口}/v1/models"
+curl -X GET "http://{IP}:{Port}/v1/models"
 ```
 
 **响应示例**

@@ -1,4 +1,4 @@
-# Observability 接口
+# 观测接口
 
 ## 接口说明
 
@@ -13,8 +13,8 @@ Observability 查询接口使用独立端口：
 
 >[!NOTE]说明
 >
-> - `{ControllerIP}`：Controller 服务部署机器的 IP 或域名。
-> - `{Observability端口}`：配置项 `api_config.observability_api_port`。
+> - `{IP}`：Controller 服务部署机器的 IP 或域名。
+> - `{Port}`：配置项 `api_config.observability_api_port`。
 > - 主备模式下，仅主 Controller 对外提供 Observability 查询能力；备 Controller 收到查询请求时返回内部错误。
 > - 当 `observability_config.observability_enable=false` 时，查询类接口返回内部错误，错误信息为 `Observability is not enabled.`。
 
@@ -29,7 +29,9 @@ Observability 查询接口使用独立端口：
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{ControllerIP}:{Observability端口}/observability/inventory`
+> URL：`http(s)://{IP}:{Port}/observability/inventory`
+
+IP与端口参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)
 
 **请求参数**
 
@@ -38,7 +40,7 @@ URL：`http(s)://{ControllerIP}:{Observability端口}/observability/inventory`
 **使用样例**
 
 ```bash
-curl -X GET "http://{ControllerIP}:{Observability端口}/observability/inventory"
+curl -X GET "http://{IP}:{Port}/observability/inventory"
 ```
 
 **响应示例**
@@ -224,7 +226,9 @@ curl -X GET "http://{ControllerIP}:{Observability端口}/observability/inventory
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{ControllerIP}:{Observability端口}/observability/metrics`
+> URL：`http(s)://{IP}:{Port}/observability/metrics`
+
+IP与端口参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)
 
 **请求参数**
 
@@ -233,7 +237,7 @@ URL：`http(s)://{ControllerIP}:{Observability端口}/observability/metrics`
 **使用样例**
 
 ```bash
-curl -X GET "http://{ControllerIP}:{Observability端口}/observability/metrics"
+curl -X GET "http://{IP}:{Port}/observability/metrics"
 ```
 
 **响应示例**
@@ -268,7 +272,9 @@ curl -X GET "http://{ControllerIP}:{Observability端口}/observability/metrics"
 **接口格式**
 
 请求类型：**GET**
-URL：`http(s)://{ControllerIP}:{Observability端口}/observability/alarms`
+> URL：`http(s)://{IP}:{Port}/observability/alarms`
+
+IP与端口参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)
 
 **请求参数**
 
@@ -279,7 +285,7 @@ URL：`http(s)://{ControllerIP}:{Observability端口}/observability/alarms`
 **使用样例**
 
 ```bash
-curl -X GET "http://{ControllerIP}:{Observability端口}/observability/alarms?source_id={source_id}"
+curl -X GET "http://{IP}:{Port}/observability/alarms?source_id={source_id}"
 ```
 
 **响应示例**
