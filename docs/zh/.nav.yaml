@@ -23,6 +23,7 @@ nav:
           - 主备倒换: user_guide/features/standby.md
           - 链路追踪: user_guide/features/tracing.md
           - ScaleP2D 故障恢复: user_guide/features/scale_p2d.md
+          - 容器快照: user_guide/features/container_snapshot.md
       - 运维工具:
           - 日志配置: user_guide/operations/log_config_guide.md
           - 命令行转换工具: user_guide/operations/cli_to_engine_config_guide.md
