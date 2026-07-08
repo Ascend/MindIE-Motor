@@ -199,11 +199,16 @@ class ScaleP2DStrategy(StrategyBase):
             if not self._check_d_instance_status():
                 return False
 
-            # Step 3: pick Prefill instances to stop.
+            # Step 3: re-count faulty nodes with the latest FaultManager snapshot
+            # after the wait window, so multi-node failures arriving late are included.
+            if not self._refresh_faulty_node_count_before_kill():
+                return False
+
+            # Step 4: pick Prefill instances to stop.
             if not self._select_p_instances_to_kill():
                 return False
 
-            # Step 4: stop Prefill instances and release nodes.
+            # Step 5: stop Prefill instances and release nodes.
             if not self._kill_and_release_p_instances():
                 return False
 
@@ -310,6 +315,73 @@ class ScaleP2DStrategy(StrategyBase):
                 len(node_managers),
             )
             return len(node_managers)
+
+    def _refresh_faulty_node_count_before_kill(self) -> bool:
+        """
+        Re-count faulty Decode nodes immediately before Prefill selection.
+
+        The initial count in _get_d_instance() may be stale when multiple nodes
+        fail within the D-instance isolation wait window. Refresh here so the
+        protect-D decision uses the latest hardware fault snapshot.
+        """
+        previous_required_node = self.context.num_required_node
+
+        try:
+            d_instance = InstanceManager().get_instance_by_job_name(self.context.d_instance_job_name)
+            if d_instance is None:
+                self.context.last_error = (
+                    f"D instance not found for job_name {self.context.d_instance_job_name} before Prefill selection"
+                )
+                logger.error(
+                    "Failed to refresh faulty node count. instance_id=%d, job_name=%s, reason=instance_not_found",
+                    self.context.d_instance_id,
+                    self.context.d_instance_job_name,
+                )
+                return False
+
+            self.context.d_instance = d_instance
+            self.context.d_instance_id = d_instance.id
+            self.context.num_node_per_instance_D = len(d_instance.get_node_managers())
+            self.context.num_required_node = self._get_faulty_node_count(d_instance)
+
+            if self.context.num_required_node == 0:
+                self.context.last_error = "No faulty Decode nodes remain, ScaleP2D preemption not needed"
+                logger.info(
+                    "ScaleP2D preemption skipped after refresh. instance_id=%d, job_name=%s, reason=no_faulty_nodes",
+                    self.context.d_instance_id,
+                    self.context.d_instance_job_name,
+                )
+                return False
+
+            if self.context.num_required_node != previous_required_node:
+                logger.info(
+                    "Faulty node count updated after wait window. instance_id=%d, job_name=%s, "
+                    "previous_required_nodes=%d, current_required_nodes=%d, d_node_count=%d",
+                    self.context.d_instance_id,
+                    self.context.d_instance_job_name,
+                    previous_required_node,
+                    self.context.num_required_node,
+                    self.context.num_node_per_instance_D,
+                )
+            else:
+                logger.info(
+                    "Faulty node count unchanged after wait window. instance_id=%d, job_name=%s, "
+                    "required_nodes=%d, d_node_count=%d",
+                    self.context.d_instance_id,
+                    self.context.d_instance_job_name,
+                    self.context.num_required_node,
+                    self.context.num_node_per_instance_D,
+                )
+
+            return True
+
+        except Exception as e:
+            logger.exception(
+                "Failed to refresh faulty node count before ScaleP2D preemption. instance_id=%d",
+                self.context.d_instance_id,
+            )
+            self.context.last_error = f"Failed to refresh faulty node count: {e}"
+            return False
 
     def _check_d_instance_status(self) -> bool:
         """
