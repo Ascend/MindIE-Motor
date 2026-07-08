@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -11,7 +10,7 @@
 
 import importlib
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 @patch("motor.common.utils.process_utils.set_process_title")
@@ -40,9 +39,11 @@ def test_main_runs_without_resetting_process_title(
     mock_endpoint_config = MagicMock()
     mock_endpoint_config.dp_rank = 2
     mock_endpoint_config.engine_type = "vllm"
+    mock_endpoint_config.snapshot_metadata = None
     mock_init_endpoint_config.return_value = mock_endpoint_config
 
-    mock_config_factory_cls.return_value.parse.return_value = MagicMock()
+    mock_parsed_config = MagicMock()
+    mock_config_factory_cls.return_value.parse.return_value = mock_parsed_config
     mock_infer_instance = MagicMock()
     mock_mgmt_instance = MagicMock()
     mock_endpoint_factory_cls.return_value.get_infer_endpoint.return_value = mock_infer_instance
@@ -50,7 +51,7 @@ def test_main_runs_without_resetting_process_title(
     fake_infer_mod = MagicMock()
     fake_infer_mod.InferEndpoint = MagicMock(return_value=mock_infer_instance)
     fake_mgmt_mod = MagicMock()
-    fake_mgmt_mod.MgmtEndpoint = MagicMock(return_value=mock_mgmt_instance)
+    fake_mgmt_mod.MgmtEndpoint.return_value = mock_mgmt_instance
 
     with patch.dict(
         sys.modules,
@@ -64,3 +65,10 @@ def test_main_runs_without_resetting_process_title(
         es_main.main()
 
     mock_init_endpoint_config.assert_called_once()
+    fake_mgmt_mod.MgmtEndpoint.assert_called_once_with(mock_endpoint_config)
+    mock_mgmt_instance.run.assert_called_once()
+    mock_config_factory_cls.return_value.parse.assert_called_once()
+    mock_mgmt_instance.attach_engine.assert_called_once_with(mock_parsed_config)
+    assert mock_mgmt_instance.method_calls.index(call.run()) < mock_mgmt_instance.method_calls.index(
+        call.attach_engine(mock_parsed_config)
+    )

@@ -153,6 +153,18 @@ class TestHeartBeatManager:
         assert heart_beat_manager._endpoints[0].id == 1
         assert heart_beat_manager._endpoints[1].id == 2
 
+    def test_update_endpoint_resets_grace_period(self, heart_beat_manager, sample_start_cmd_msg):
+        """update_endpoint should restart grace period for engine cold start"""
+        heart_beat_manager._thread_started = True
+        heart_beat_manager._is_within_grace_period = False
+        heart_beat_manager._engine_status_thread_start_time = time.time() - 300
+
+        before = heart_beat_manager._engine_status_thread_start_time
+        heart_beat_manager.update_endpoint(sample_start_cmd_msg)
+
+        assert heart_beat_manager._is_within_grace_period is True
+        assert heart_beat_manager._engine_status_thread_start_time > before
+
     @patch('motor.node_manager.core.heartbeat_manager.EngineServerApiClient.query_status')
     def test_get_engine_server_status_success(self, mock_query_status, heart_beat_manager, sample_endpoints):
         """test get engine server status success"""

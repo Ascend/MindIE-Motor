@@ -12,12 +12,14 @@ import asyncio
 import threading
 import time
 import importlib
+from copy import copy
 from typing import Optional
 import httpx
-from motor.common.resources.dispatch import DispatchProfile
+from motor.common.resources.dispatch import DispatchProfile, infer_vllm_dispatch_profile_from_config
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
+from motor.engine_server.core.config import IConfig
 from motor.engine_server.utils.ai_cube import get_ai_cube_usage, is_ai_cube_usage_watch_supported
 from motor.engine_server.constants import constants
 from motor.engine_server.utils.ip import build_endpoint
@@ -100,6 +102,35 @@ class SimInference:
         # init http client
         self._client = None
         self._client_address = format_address(self.args.host, self.args.port)
+
+    @staticmethod
+    def _resolve_health_check_config(endpoint_config, args):
+        """Apply runtime overrides for virtual inference on a copied HealthCheckConfig."""
+        health_check_config = copy(endpoint_config.deploy_config.health_check_config)
+
+        if getattr(args, "headless", False):
+            health_check_config.enable_virtual_inference = False
+        if endpoint_config.dp_rank != 0:
+            health_check_config.enable_virtual_inference = False
+            logger.info(
+                "Virtual inference is disabled on DP rank %s (only DP0 performs virtual inference)",
+                endpoint_config.dp_rank,
+            )
+        return health_check_config
+
+    @classmethod
+    def from_config(cls, engine_config: IConfig) -> "SimInference":
+        endpoint_config = engine_config.get_endpoint_config()
+        args = engine_config.get_args()
+        infer_tls_config = endpoint_config.deploy_config.infer_tls_config
+        health_check_config = cls._resolve_health_check_config(endpoint_config, args)
+        return cls(
+            args,
+            infer_tls_config,
+            health_check_config,
+            endpoint_config.role,
+            dispatch_profile=infer_vllm_dispatch_profile_from_config(engine_config),
+        )
 
     @staticmethod
     def generate_request_id() -> str:

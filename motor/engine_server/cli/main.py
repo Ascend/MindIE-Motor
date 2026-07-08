@@ -112,9 +112,15 @@ def main():
     from motor.engine_server.core.mgmt_endpoint import MgmtEndpoint
 
     endpoint_config = EndpointConfig.init_endpoint_config()
+
+    mgmt_endpoint: MgmtEndpoint = MgmtEndpoint(endpoint_config)
+    mgmt_endpoint.run()
+
     config_factory = ConfigFactory(endpoint_config=endpoint_config)
     config = config_factory.parse()
     logger.info("successfully parsed %s engine configuration", endpoint_config.engine_type)
+
+    mgmt_endpoint.attach_engine(config)
 
     if NATIVE_LAUNCH_ENABLED:
         logger.info(
@@ -126,9 +132,7 @@ def main():
                 "Snapshot metadata is provided, but native launch mode is enabled. "
                 "Snapshot sentinel will not be started, and snapshot saving may not work as expected."
             )
-        mgmt_endpoint: MgmtEndpoint = MgmtEndpoint(config)
         try:
-            mgmt_endpoint.run()
             _run_native(config)
         finally:
             mgmt_endpoint.shutdown()
@@ -145,10 +149,7 @@ def main():
             "to save the device-side snapshot once the inference service is ready."
         )
 
-    mgmt_endpoint: MgmtEndpoint = MgmtEndpoint(config)
     infer_endpoint: InferEndpoint = EndpointFactory().get_infer_endpoint(config)
-
-    mgmt_endpoint.run()
     infer_endpoint.run()
     infer_endpoint.wait()
 

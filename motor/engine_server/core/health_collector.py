@@ -8,18 +8,17 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from motor.engine_server.core.config import IConfig
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
+from motor.config.endpoint import EndpointConfig
 from motor.engine_server.utils.ip import build_endpoint
 
 logger = get_logger(__name__)
 
 
 class HealthCollector:
-    def __init__(self, config: IConfig):
-        endpoint_config = config.get_endpoint_config()
+    def __init__(self, endpoint_config: EndpointConfig):
         self.host = endpoint_config.host
         self.port = endpoint_config.port
         self.infer_tls_config = endpoint_config.deploy_config.infer_tls_config

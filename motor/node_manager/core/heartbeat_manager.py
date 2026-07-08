@@ -109,6 +109,9 @@ class HeartbeatManager(ThreadSafeSingleton):
         # Reset suicide flag when endpoints are updated
         with self._suicide_lock:
             self._should_suicide = False
+        self._is_within_grace_period = True
+        if self._thread_started:
+            self._engine_status_thread_start_time = time.time()
 
     def should_suicide(self) -> bool:
         """
