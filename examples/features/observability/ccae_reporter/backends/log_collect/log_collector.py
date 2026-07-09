@@ -20,7 +20,7 @@ from ccae_reporter.backends.log_collect.log_processor import LogDataProcessor
 from ccae_reporter.backends.log_collect.data_class import LogFile
 
 
-DEFAULT_COLLECT_PATH = os.getenv("MOTOR_LOG_PATH")
+DEFAULT_COLLECT_PATH = os.getenv("MOTOR_LOG_PATH", "/root/ascend/log")
 
 MONITOR_INTERVAL_MILLION_SECONDS = 3
 # {pod_name}_{pid}.log
@@ -36,7 +36,7 @@ class CollectHandler(FileSystemEventHandler):
     def on_created(self, event):
         try:
             if self._check_valid_file(event):
-                self.logger.info(f"[CCAE Reporter] File %s is created" % event.src_path)
+                self.logger.info("[CCAE Reporter] File %s is created" % event.src_path)
                 self.log_processor.watch_files[event.src_path] = LogFile(file_path=event.src_path)
                 self.log_processor.modified_log_files.add(event.src_path)
         except Exception as e:
@@ -45,7 +45,7 @@ class CollectHandler(FileSystemEventHandler):
     def on_modified(self, event):
         try:
             if self._check_valid_file(event):
-                self.logger.debug(f"[CCAE Reporter] File %s is modified", event.src_path)  # 文件内容更新频率高
+                self.logger.debug("[CCAE Reporter] File %s is modified", event.src_path)  # 文件内容更新频率高
                 if event.src_path not in self.log_processor.watch_files:
                     self.log_processor.watch_files[event.src_path] = LogFile(file_path=event.src_path)
                 self.log_processor.modified_log_files.add(event.src_path)
@@ -64,7 +64,7 @@ class CollectHandler(FileSystemEventHandler):
     def on_moved(self, event):
         try:
             if self._check_valid_file(event):
-                self.logger.info(f"[CCAE Reporter] File %s is changed to %s" % (event.src_path, event.dest_path))
+                self.logger.info("[CCAE Reporter] File %s is changed to %s" % (event.src_path, event.dest_path))
                 src_log_file = self.log_processor.watch_files.pop(event.src_path, LogFile(file_path=event.dest_path))
                 src_log_file.file_path = event.dest_path
                 src_log_file.last_read_position = 0  # 文件轮转后，更新读取位置
@@ -77,17 +77,17 @@ class CollectHandler(FileSystemEventHandler):
     def _check_valid_file(self, event):
         if event.is_directory:
             return False
-        
+
         filename = os.path.basename(event.src_path)
-        
+
         pattern = LOG_PATTERNS
         if self.identity:
             identity_escaped = re.escape(self.identity.lower())
             pattern = f"^.*-({identity_escaped})-[a-zA-Z0-9]+-[a-zA-Z0-9]+_[0-9]+\\.log$"
-            
+
         if not bool(re.match(pattern, filename, re.IGNORECASE)):
             return False
-            
+
         return PathCheck.check_path_full(event.src_path)
 
 
@@ -96,7 +96,7 @@ class Collector:
         self.logger = Log(__name__).getlog()
 
         if not os.path.exists(collect_path):
-            raise RuntimeError(f"[CCAE Reporter] The log monitor path %s is not exists" % collect_path)
+            raise RuntimeError("[CCAE Reporter] The log monitor path %s is not exists" % collect_path)
 
         host_name = os.getenv("HOST_NAME", "")
         parts = host_name.split("-")
@@ -106,8 +106,8 @@ class Collector:
             self.log_path = os.path.join(collect_path, host_name)
         if not os.path.exists(self.log_path):
             os.makedirs(self.log_path, exist_ok=True)
-            self.logger.info(f"[CCAE Reporter] Create log monitor path %s" % self.log_path)
-        self.logger.info(f"[CCAE Reporter] Log monitor path is %s" % self.log_path)
+            self.logger.info("[CCAE Reporter] Create log monitor path %s" % self.log_path)
+        self.logger.info("[CCAE Reporter] Log monitor path is %s" % self.log_path)
 
         self.collect_handler = CollectHandler(identity)
         self.collect_observer = Observer()

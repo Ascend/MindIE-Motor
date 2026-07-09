@@ -13,6 +13,9 @@
 import unittest
 from unittest.mock import Mock, patch
 import json
+import os
+import tempfile
+from pathlib import Path
 import pytest
 from copy import deepcopy
 
@@ -24,8 +27,17 @@ from motor.coordinator.scheduler.policy.utils import (
     exchange_arguments,
     exchange_tool_content,
     exchange_tools,
+    content_parts_to_string,
+    preprocess_messages_for_standard,
+    preprocess_messages_for_dsv4,
 )
 from motor.common.resources.endpoint import Endpoint, Workload
+from motor.common.utils.singleton import ThreadSafeSingleton
+
+
+def _reset_tokenizer_manager_singleton() -> None:
+    """Drop any cached TokenizerManager singleton so each test gets a fresh one."""
+    ThreadSafeSingleton._instances.pop(TokenizerManager, None)
 
 
 def _make_endpoint(ep_id: int, active_tokens: float = 0.0, active_kv_cache: float = 0.0) -> Endpoint:
@@ -337,6 +349,171 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result[1].id, 0)  # endpoint with the longer cached prefix
 
+    def test_select_instance(self):
+        """Test _select_instance function"""
+        result = self.policy._select_instance()
+        self.assertIsNone(result)
+
+    def test_select_endpoint(self):
+        """Test _select_endpoint function"""
+        mock_instance = Mock()
+        result = self.policy._select_endpoint(mock_instance)
+        self.assertIsNone(result)
+
+
+class TestKvCacheAffinityTokenizationUtils(unittest.TestCase):
+    def test_content_parts_to_string_extracts_refusal_and_thinking(self):
+        content = [
+            {"type": "text", "text": "hello"},
+            {"type": "refusal", "refusal": "I'm sorry"},
+            {"type": "thinking", "thinking": "step1"},
+            {"type": "thinking", "reasoning_content": "step2"},
+            {"type": "image_url", "image_url": {"url": "x"}},
+        ]
+        s = content_parts_to_string(content)
+        self.assertEqual(
+            s,
+            "hello\nI'm sorry\nstep1\nstep2\n[Unsupported image_url]",
+        )
+
+    def test_preprocess_messages_for_standard_flattens_and_copies(self):
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "refusal", "refusal": "no"}]},
+        ]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertIsNot(processed, messages)
+        self.assertEqual(processed[0]["content"], "hi")
+        self.assertEqual(processed[1]["content"], "no")
+        # Original input must remain unchanged (deepcopy semantics).
+        self.assertIsInstance(messages[0]["content"], list)
+
+    def test_preprocess_messages_for_dsv4_flattens_messages_and_sorts_tools(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "foo", "arguments": "{\"a\": 1}"},
+                    }
+                ],
+            }
+        ]
+        tools = [
+            {
+                "type": "function",
+                "function": {"parameters": {}, "description": "d", "name": "foo"},
+            }
+        ]
+        processed_messages, processed_tools = preprocess_messages_for_dsv4(messages, tools)
+        self.assertEqual(processed_messages[0]["content"], "ok")
+        self.assertIsInstance(processed_messages[0]["tool_calls"][0]["function"]["arguments"], dict)
+        # Tools should be a copy and function keys should be sorted by priority (name, description, parameters).
+        self.assertIsNot(processed_tools, tools)
+        self.assertEqual(list(processed_tools[0]["function"].keys()), ["name", "description", "parameters"])
+
+
+class TestTokenizerManagerDsv4(unittest.TestCase):
+    def _make_manager(self, tokenizer: Mock, *, is_dsv4: bool) -> TokenizerManager:
+        # Bypass singleton init (which tries to load real tokenizers / config).
+        manager = TokenizerManager.__new__(TokenizerManager)
+        manager.tokenizer = tokenizer
+        manager._is_dsv4 = is_dsv4
+        manager.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
+        return manager
+
+    def test_build_dsv4_chat_template_kwargs(self):
+        build = TokenizerManager._build_dsv4_chat_template_kwargs
+
+        self.assertEqual(build(None), {"tokenize": True, "drop_thinking": True})
+
+        req_data = {"reasoning_effort": "none"}
+        self.assertEqual(
+            build(req_data),
+            {"tokenize": True, "drop_thinking": True, "reasoning_effort": "none", "enable_thinking": False},
+        )
+
+        req_data = {"reasoning_effort": "medium", "chat_template_kwargs": {"foo": 1}}
+        self.assertEqual(
+            build(req_data),
+            {
+                "tokenize": True,
+                "drop_thinking": True,
+                "reasoning_effort": "medium",
+                "foo": 1,
+                "enable_thinking": True,
+            },
+        )
+
+        # If caller already supplied enable_thinking, we must not override it.
+        req_data = {
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+        self.assertEqual(
+            build(req_data),
+            {"tokenize": True, "drop_thinking": True, "reasoning_effort": "none", "enable_thinking": True},
+        )
+
+    def test_apply_chat_template_dsv4_passes_preprocessed_inputs_and_kwargs(self):
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.return_value = [1, 2, 3]
+        manager = self._make_manager(tokenizer, is_dsv4=True)
+
+        messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        tools = [{"type": "function", "function": {"parameters": {}, "description": "d", "name": "foo"}}]
+        req_data = {"reasoning_effort": "none"}
+
+        out = manager._apply_chat_template_dsv4(messages, tools, req_data)
+        self.assertEqual(out, [1, 2, 3])
+
+        _args, kwargs = tokenizer.apply_chat_template.call_args
+        self.assertEqual(kwargs["reasoning_effort"], "none")
+        self.assertEqual(kwargs["enable_thinking"], False)
+        self.assertEqual(kwargs["tokenize"], True)
+        self.assertEqual(kwargs["drop_thinking"], True)
+        # Messages content should be flattened to string before reaching tokenizer.
+        self.assertEqual(_args[0][0]["content"], "hi")
+        # Tools should be forwarded (and preprocessed) as well.
+        self.assertEqual(kwargs["tools"][0]["function"]["name"], "foo")
+
+    def test_apply_chat_template_dsv4_encodes_string_result(self):
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.return_value = "PROMPT"
+        tokenizer.encode.return_value = [9, 9]
+        manager = self._make_manager(tokenizer, is_dsv4=True)
+
+        out = manager._apply_chat_template_dsv4([{"role": "user", "content": "hi"}], None, None)
+        self.assertEqual(out, [9, 9])
+        tokenizer.encode.assert_called_once_with("PROMPT", add_special_tokens=False)
+
+    def test_apply_chat_template_dsv4_primary_failure_fail_closed(self):
+        tokenizer = Mock()
+        tokenizer.apply_chat_template.side_effect = RuntimeError("boom")
+        manager = self._make_manager(tokenizer, is_dsv4=True)
+
+        out = manager.apply_chat_template([{"role": "user", "content": "hi"}], None, None)
+        self.assertEqual(out, [])
+        self.assertEqual(tokenizer.apply_chat_template.call_count, 1)
+
+    def test_is_deepseek_v4_model_detects_from_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg = tmp_path / "config.json"
+
+            cfg.write_text(json.dumps({"model_type": "deepseek_v4"}), encoding="utf-8")
+            self.assertTrue(TokenizerManager._is_deepseek_v4_model(str(tmp_path)))
+
+            cfg.write_text(json.dumps({"architectures": ["DeepseekV4ForCausalLM"]}), encoding="utf-8")
+            self.assertTrue(TokenizerManager._is_deepseek_v4_model(str(tmp_path)))
+
+        with tempfile.TemporaryDirectory() as tmp2:
+            # No config.json
+            self.assertFalse(TokenizerManager._is_deepseek_v4_model(tmp2))
+
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_load_aware_no_instance_data(self, mock_tokenizer_manager, mock_query_conductor):
@@ -596,17 +773,6 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         self.assertEqual(ids2, [7, 8, 9])
         mock_tokenizer.encode.assert_called_once()
 
-    def test_select_instance(self):
-        """Test _select_instance function"""
-        result = self.policy._select_instance()
-        self.assertIsNone(result)
-
-    def test_select_endpoint(self):
-        """Test _select_endpoint function"""
-        mock_instance = Mock()
-        result = self.policy._select_endpoint(mock_instance)
-        self.assertIsNone(result)
-
 
 class TestKvAffinityFallbackConsolidation(unittest.TestCase):
     """Consolidated kv_cache_affinity -> load_balance -> round_robin fallback chain (#5)."""
@@ -735,6 +901,12 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
 class TestTokenizerManagerFunction(unittest.TestCase):
     """Test TokenizerManager class"""
 
+    def setUp(self):
+        _reset_tokenizer_manager_singleton()
+
+    def tearDown(self):
+        _reset_tokenizer_manager_singleton()
+
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.CoordinatorConfig')
     @patch('transformers.AutoTokenizer')
     def test_init_with_model_path(self, mock_auto_tokenizer, mock_config_class):
@@ -784,15 +956,38 @@ class TestTokenizerManagerFunction(unittest.TestCase):
         # verification result
         self.assertEqual(result, [])
 
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.CoordinatorConfig')
+    @patch('transformers.AutoTokenizer')
+    def test_dsv4_tokenizer_only_for_vllm_engine(self, mock_auto_tokenizer, mock_config_class):
+        """DeepSeek V4 vLLM tokenizer must only be used when engine_type=vllm."""
+        mock_config = Mock()
+        mock_config.prefill_kv_event_config.conductor_service = "test_service"
+        mock_config.prefill_kv_event_config.model_path = "/path/to/model"
+        mock_config.prefill_kv_event_config.engine_type = "sglang"
+        mock_config.tracer_config.endpoint = ""
+        mock_config_class.return_value = mock_config
+
+        # If the code accidentally tries to import vllm.tokenizers.deepseek_v4 on sglang,
+        # environments without vllm installed would crash. We assert we fall back to transformers.
+        with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+            mock_tokenizer = Mock()
+            mock_auto_tokenizer.from_pretrained.return_value = mock_tokenizer
+            manager = TokenizerManager(mock_config)
+
+        self.assertIs(manager.tokenizer, mock_tokenizer)
+        self.assertFalse(manager._is_dsv4)
+        mock_auto_tokenizer.from_pretrained.assert_called_once()
+
 
 class TestTokenizerManagerInitialize(unittest.TestCase):
     """Test TokenizerManager class"""
 
     def setUp(self):
         """Test setting"""
-        # Clear singleton instance
-        if hasattr(TokenizerManager, '_instance'):
-            delattr(TokenizerManager, '_instance')
+        _reset_tokenizer_manager_singleton()
+
+    def tearDown(self):
+        _reset_tokenizer_manager_singleton()
 
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.CoordinatorConfig')
     def test_init_with_empty_conductor_service(self, mock_config_class):
@@ -1091,13 +1286,6 @@ class TestPreprocessInput:
 # -----------------------------------------------------------------------------
 # Tools-aware tokenize: standard / non-standard / fallback paths
 # -----------------------------------------------------------------------------
-
-
-def _reset_tokenizer_manager_singleton() -> None:
-    """Drop any cached TokenizerManager singleton so each test gets a fresh one."""
-    from motor.common.utils.singleton import ThreadSafeSingleton
-
-    ThreadSafeSingleton._instances.pop(TokenizerManager, None)
 
 
 def _build_tokenizer_manager(

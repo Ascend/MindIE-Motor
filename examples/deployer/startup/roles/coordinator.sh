@@ -17,6 +17,9 @@ fi
 set_coordinator_env
 setup_motor_log_path
 
+ set_cann_env
+ setup_jemalloc
+
 # not necessary if no ccae
 python3 -m ccae_reporter.run Coordinator &
 

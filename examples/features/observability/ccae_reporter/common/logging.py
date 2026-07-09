@@ -13,7 +13,6 @@ import stat
 import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
-from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -27,7 +26,7 @@ TRUE_STR = "true"
 
 
 def is_true_value(value):
-    return value == TRUE_STR or value == "1"
+    return value in (TRUE_STR, "1")
 
 
 def recursive_chmod(cur_path, mode=0o750):
@@ -55,23 +54,33 @@ class Singleton(type):
 
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+            cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
 
 
 class NoNewlineFormatter(logging.Formatter):
     def format(self, record):
         special_chars = [
-            '\n', '\r', '\f', '\t', '\v', '\b',
-            '\u000A', '\u000D', '\u000C',
-            '\u000B', '\u0008', '\u007F',
-            '\u0009', '    ',
+            '\n',
+            '\r',
+            '\f',
+            '\t',
+            '\v',
+            '\b',
+            '\u000a',
+            '\u000d',
+            '\u000c',
+            '\u000b',
+            '\u0008',
+            '\u007f',
+            '\u0009',
+            '    ',
         ]
         for c in special_chars:
             record.msg = str(record.msg).replace(c, ' ')
         if record.levelname == "WARNING":
             record.levelname = "WARN"
-        return super(NoNewlineFormatter, self).format(record)
+        return super().format(record)
 
     def formatTime(self, record, datefmt=None):
         timezone_offset = time.timezone
@@ -97,25 +106,21 @@ def _create_log_file(log_file):
     else:
         clean_path = os.path.normpath(log_file)
         if os.path.islink(clean_path):
-            err_msg = f"Check log file path failed because it's a symbolic."
+            err_msg = "Check log file path failed because it's a symbolic."
             raise ValueError(err_msg)
         if len(clean_path) > 1024:
-            err_msg = f"Path of log file is too long, it should not exceed 1024 character."
+            err_msg = "Path of log file is too long, it should not exceed 1024 character."
             raise ValueError(err_msg)
     os.chmod(log_file, mode)
 
 
 def init_logger() -> LogParams:
     log_params = LogParams()
-    # set log path
+    # set log path; keep LogParams default when MOTOR_LOG_PATH is unset
     root_log_path = os.getenv("MOTOR_LOG_PATH")
-    if not root_log_path:
+    if root_log_path:
         log_params.path = root_log_path
-    log_params.rotate_options = {
-            FILE_SIZE: 20 * 1024 * 1024,
-            FILE_COUNT: 10,
-            FILE_PER_PROCESS: 10
-        }
+    log_params.rotate_options = {FILE_SIZE: 20 * 1024 * 1024, FILE_COUNT: 10, FILE_PER_PROCESS: 10}
     return log_params
 
 
@@ -125,14 +130,14 @@ def _filter_files(directory, prefix, max_num):
     delete_file_num = file_num - max_num
     if delete_file_num <= 0:
         return
-    
+
     files_with_mtime = []
     for f in all_files:
         try:
             file_path = os.path.join(directory, f)
             if not os.path.isfile(file_path):
                 continue
-                
+
             mtime = os.path.getmtime(file_path)
             files_with_mtime.append((f, mtime))
         except FileNotFoundError:
@@ -144,7 +149,7 @@ def _filter_files(directory, prefix, max_num):
             raise PermissionError(f"Permission denied to access file: {f}") from e
         except Exception as e:
             raise RuntimeError(f"Failed to get modification time for file {f}: {e}") from e
-    
+
     sorted_files = sorted(files_with_mtime, key=lambda x: x[1])
 
     files_to_delete = sorted_files[:delete_file_num]
@@ -161,8 +166,9 @@ def _close_logger(parent_directory: str, base_filename, ts):
 
 
 class CustomRotatingFileHandler(RotatingFileHandler):
-    def __init__(self, filename, file_per_process, mode="a", maxBytes=0, backupCount=0,
-                 encoding=None, delay=False, errors=None):
+    def __init__(
+        self, filename, file_per_process, mode="a", maxBytes=0, backupCount=0, encoding=None, delay=False, errors=None
+    ):
         super().__init__(filename, mode, maxBytes, backupCount, encoding, delay, errors)
         self.file_per_process = file_per_process
         self.backupCount = backupCount - 1
@@ -231,7 +237,7 @@ class Log(metaclass=Singleton):
             'WARN': logging.WARNING,
             'ERROR': logging.ERROR,
             'CRITICAL': logging.CRITICAL,
-            UNSET_LOGGER: logging.CRITICAL + 1
+            UNSET_LOGGER: logging.CRITICAL + 1,
         }
         # 根据配置的日志级别设置日志记录器的级别
         self._logger.setLevel(levels.get(self.log_level.upper(), logging.INFO))
@@ -243,9 +249,7 @@ class Log(metaclass=Singleton):
                 '[%(filename)s:%(lineno)s] %(message)s'
             )
         else:
-            file_logging_format = NoNewlineFormatter(
-                '[%(asctime)s] [%(levelname)s] %(message)s'
-            )
+            file_logging_format = NoNewlineFormatter('[%(asctime)s] [%(levelname)s] %(message)s')
 
         # 输出日志文件
         if log_params.to_file and self.log_level.upper() != UNSET_LOGGER:
@@ -261,11 +265,13 @@ class Log(metaclass=Singleton):
                 _create_log_file(self.log_file)
                 os.chmod(self.log_file, 0o640)
 
-            file_handler = CustomRotatingFileHandler(filename=self.log_file,
-                                                     file_per_process=self.rotate_options.get(FILE_PER_PROCESS),
-                                                     mode='a',
-                                                     maxBytes=self.rotate_options.get(FILE_SIZE),
-                                                     backupCount=self.rotate_options.get(FILE_COUNT, 64))
+            file_handler = CustomRotatingFileHandler(
+                filename=self.log_file,
+                file_per_process=self.rotate_options.get(FILE_PER_PROCESS),
+                mode='a',
+                maxBytes=self.rotate_options.get(FILE_SIZE),
+                backupCount=self.rotate_options.get(FILE_COUNT, 64),
+            )
             file_handler.setLevel(levels.get(self.log_level.upper(), logging.INFO))
             file_handler.setFormatter(file_logging_format)
 

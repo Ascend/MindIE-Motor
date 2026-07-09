@@ -6,8 +6,10 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import json
 import os
 import threading
+from pathlib import Path
 
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint
@@ -27,7 +29,11 @@ from motor.coordinator.api_client.conductor_api_client import (
     conductor_instance_id,
 )
 from motor.common.utils.singleton import ThreadSafeSingleton
-from motor.coordinator.scheduler.policy.utils import preprocess_input
+from motor.coordinator.scheduler.policy.utils import (
+    preprocess_input,
+    preprocess_messages_for_dsv4,
+    preprocess_messages_for_standard,
+)
 
 
 logger = get_logger(__name__)
@@ -189,7 +195,7 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         messages = req_info.req_data.get(OpenAIField.MESSAGES, None)
         tools = req_info.req_data.get(OpenAIField.TOOLS, None)
         if messages is not None:
-            encoded_ids = TokenizerManager().apply_chat_template(messages, tools)
+            encoded_ids = TokenizerManager().apply_chat_template(messages, tools, req_data=req_info.req_data)
         else:
             prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
             if prompt is not None:
@@ -439,23 +445,43 @@ class TokenizerManager(ThreadSafeSingleton):
         self.endpoint = config.tracer_config.endpoint
 
         self.tokenizer = None
+        self._is_dsv4 = False
 
-        if config.prefill_kv_event_config.conductor_service == "":
+        kv_config = config.prefill_kv_event_config
+        if kv_config.conductor_service == "":
             logger.info("conductor_service is empty. disable TokenizerManager!")
             return
 
-        model_path = config.prefill_kv_event_config.model_path
+        model_path = kv_config.model_path
         if model_path:
             os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
-            from transformers import AutoTokenizer
+            engine_type = str(getattr(kv_config, "engine_type", "vllm") or "vllm").strip().lower()
+            is_vllm_engine = engine_type == "vllm"
 
-            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+            if is_vllm_engine and self._is_deepseek_v4_model(model_path):
+                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
 
-        logger.info(f"TokenizerManager init.(model_path:{model_path})")
+                self.tokenizer = DeepseekV4Tokenizer.from_pretrained(model_path, trust_remote_code=True)
+                self._is_dsv4 = True
+            else:
+                from transformers import AutoTokenizer
+
+                self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+        logger.info(
+            "TokenizerManager init.(model_path:%s, is_dsv4:%s)",
+            model_path,
+            self._is_dsv4,
+        )
 
         self.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
 
-    def apply_chat_template(self, messages: list, tools: list | None = None) -> list[int]:
+    def apply_chat_template(
+        self,
+        messages: list,
+        tools: list | None = None,
+        req_data: dict | None = None,
+    ) -> list[int]:
         """Render messages (and optional tools) into token ids for KV-cache affinity.
 
         The output token sequence is the *same* one vLLM/SGLang sees during
@@ -467,10 +493,23 @@ class TokenizerManager(ThreadSafeSingleton):
             return []
 
         try:
+            if self._is_dsv4:
+                return self._apply_chat_template_dsv4(messages, tools, req_data)
             if self.openai_standard != "STANDARD":
                 return self._apply_chat_template_with_preprocess(messages, tools)
             return self._apply_chat_template_standard(messages, tools)
         except Exception as e:
+            if self._is_dsv4:
+                logger.error(
+                    "kv_affinity dsv4 tokenize failed on primary path; "
+                    "no separate fallback available, returning [] so scheduler "
+                    "falls back to LoadBalance. "
+                    "msgs=%d tools=%d err=%s",
+                    len(messages or []),
+                    len(tools or []),
+                    e,
+                )
+                return []
             logger.warning(
                 "kv_affinity primary tokenize path failed: %s; trying tools-aware fallback (msgs=%d, tools=%d)",
                 e,
@@ -489,6 +528,69 @@ class TokenizerManager(ThreadSafeSingleton):
         result = self.tokenizer.encode(prompt)
         return result
 
+    @staticmethod
+    def _read_model_config_dict(model_path: str) -> dict | None:
+        """Read ``config.json`` locally without invoking ``AutoConfig``."""
+        try:
+            config_file = Path(model_path) / "config.json"
+            if not config_file.is_file():
+                return None
+            with open(config_file, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception as e:  # pragma: no cover - best-effort read
+            logger.debug("Could not read config.json from %s: %s", model_path, e)
+            return None
+
+    @staticmethod
+    def _is_deepseek_v4_model(model_path: str) -> bool:
+        """Detect DeepSeek V4 from ``config.json`` without ``AutoConfig``.
+
+        Transformers may not register ``deepseek_v4`` yet; vLLM loads the
+        tokenizer via ``PreTrainedTokenizerFast`` plus custom ``encode_messages``.
+        """
+        config_dict = TokenizerManager._read_model_config_dict(model_path)
+        if not config_dict:
+            return False
+        if config_dict.get("model_type") == "deepseek_v4":
+            return True
+        architectures = config_dict.get("architectures") or []
+        return "DeepseekV4ForCausalLM" in architectures
+
+    @staticmethod
+    def _build_dsv4_chat_template_kwargs(req_data: dict | None) -> dict:
+        """Mirror vLLM ChatCompletionRequest.build_chat_params for DeepSeek V4."""
+        kwargs: dict = {"tokenize": True, "drop_thinking": True}
+        if not req_data:
+            return kwargs
+
+        reasoning_effort = req_data.get("reasoning_effort")
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        chat_template_kwargs = req_data.get("chat_template_kwargs") or {}
+        if isinstance(chat_template_kwargs, dict):
+            kwargs.update(chat_template_kwargs)
+
+        if reasoning_effort is not None and "enable_thinking" not in kwargs:
+            kwargs["enable_thinking"] = reasoning_effort != "none"
+
+        return kwargs
+
+    def _apply_chat_template_dsv4(
+        self,
+        messages: list,
+        tools: list | None = None,
+        req_data: dict | None = None,
+    ) -> list[int]:
+        """DeepSeek V4 path: use vLLM's custom encode_messages-based template."""
+        messages, tools = preprocess_messages_for_dsv4(messages, tools)
+        kwargs = self._build_dsv4_chat_template_kwargs(req_data)
+        result = self.tokenizer.apply_chat_template(messages, tools=tools, **kwargs)
+        if isinstance(result, list):
+            return result
+        return self.tokenizer.encode(result, add_special_tokens=False)
+
     def _apply_chat_template_standard(self, messages: list, tools: list | None = None) -> list[int]:
         """Standard OpenAI-compatible model path.
 
@@ -496,6 +598,7 @@ class TokenizerManager(ThreadSafeSingleton):
         ``add_generation_prompt=True`` and ``tokenize=True`` so the resulting
         token ids are byte-equivalent to what vLLM/SGLang prefill receives.
         """
+        messages = preprocess_messages_for_standard(messages)
         return self.tokenizer.apply_chat_template(
             conversation=messages,
             tools=tools,
@@ -511,6 +614,7 @@ class TokenizerManager(ThreadSafeSingleton):
         or reordering done by ``preprocess_input``).
         """
         messages_copy, tools_copy = preprocess_input(messages, tools)
+        messages_copy = preprocess_messages_for_standard(messages_copy)
 
         prompt = self.tokenizer.apply_chat_template(
             conversation=messages_copy,

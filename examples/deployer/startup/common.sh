@@ -194,7 +194,7 @@ else
 fi
 
 set_cann_env() {
-    export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common"
+    export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/local/lib"
     source "$CANN_INSTALL_PATH/ascend-toolkit/set_env.sh"
     source "$CANN_INSTALL_PATH/nnal/atb/set_env.sh"
 }
