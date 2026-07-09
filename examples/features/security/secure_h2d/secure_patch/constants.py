@@ -1,0 +1,34 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+VERSION = 1
+
+OP_KEY_REQ = 1
+RSP_KEY_REQ = 2
+OP_KEY_UPDATE_REQ = 3
+RSP_KEY_UPDATE_REQ = 4
+
+KEY_TYPE_H2D = 1
+KEY_TYPE_D2H = 2
+DEVICE_OP_KEY_TYPE = 1
+
+ALG_AES_CTR_128 = 1
+ALG_AES_GCM_128 = 2
+
+MODE_LOAD_KEY = 0
+MODE_DEVICE_ENCRYPT = 1
+MODE_DEVICE_DECRYPT = 2
+
+HOST_CTR_ENCRYPT = 1
+HOST_CTR_DECRYPT = 2
+HOST_GCM_ENCRYPT = 1
+HOST_GCM_DECRYPT = 0
+
+GCM_TAG_BYTES = 16
+AES128_KEY_BYTES = 16

@@ -27,7 +27,6 @@ logging.basicConfig(
 )
 
 TEST_METRIC_NAME = "request_success_total"
-_DEPLOY_NOSTEP_SUPPORTED = None
 
 
 def format_address(host, port):
@@ -64,36 +63,6 @@ def resolve_model_name(engine_section, default="Unknown"):
         return name
     model_config = engine_section.get("model_config", {})
     return model_config.get("model_name", default)
-
-
-def deploy_supports_nostep():
-    """Return True when local deploy.py accepts --nostep (for backward compatibility)."""
-    global _DEPLOY_NOSTEP_SUPPORTED
-    if _DEPLOY_NOSTEP_SUPPORTED is not None:
-        return _DEPLOY_NOSTEP_SUPPORTED
-    result = subprocess.run(
-        [shutil.which("python3"), "deploy.py", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    help_text = f"{result.stdout or ''}{result.stderr or ''}"
-    _DEPLOY_NOSTEP_SUPPORTED = "--nostep" in help_text
-    if _DEPLOY_NOSTEP_SUPPORTED:
-        logging.info("deploy.py supports --nostep; ras_monitor will skip startup progress bar when calling deploy")
-    else:
-        logging.warning(
-            "deploy.py does not support --nostep (older version); "
-            "startup progress bar may appear when deploy is invoked"
-        )
-    return _DEPLOY_NOSTEP_SUPPORTED
-
-
-def build_deploy_cmd(boot_args, *extra_args):
-    cmd = ["python3", "deploy.py"] + list(boot_args) + list(extra_args)
-    if deploy_supports_nostep() and "--nostep" not in cmd:
-        cmd.append("--nostep")
-    return cmd
 
 
 def kubectl_get_pods_info():
@@ -342,7 +311,7 @@ def restart_service(namespace: str, boot_args):
         time.sleep(10)
 
     # restart service
-    subprocess.run(build_deploy_cmd(boot_args), check=False)
+    subprocess.run(["python3", "deploy.py"] + boot_args + ["--nostep"], check=False)
     if is_mindie_service_detected(namespace):
         logging.info("Restart service successfully!")
 
@@ -404,7 +373,7 @@ def main():
         f"{params.coordinator_manage_port}"
     )
 
-    test_deploy = subprocess.run(build_deploy_cmd(boot_args, "--dry-run"), check=False)
+    test_deploy = subprocess.run(["python3", "deploy.py"] + boot_args + ["--dry-run", "--nostep"], check=False)
     if test_deploy.returncode:
         logging.error(f"Deploy config failed! Please check boot_args: {boot_args}")
         sys.exit(1)
