@@ -14,6 +14,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Awaitable, Callable
 
 import msgspec
@@ -71,12 +72,27 @@ OnInstanceRefreshedCallback = Callable[[list[tuple[str, str]]], Awaitable[None]]
 _AFFINITY_CANDIDATE_TOPK = 3
 
 
+class SchedulerRequestFailureReason(str, Enum):
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    DISCONNECTED = "disconnected"
+    TRANSPORT_ERROR = "transport_error"
+    NO_RESPONSE = "no_response"
+
+
+@dataclass(frozen=True)
+class SchedulerRequestResult:
+    response: SchedulerResponse | None = None
+    failure_reason: SchedulerRequestFailureReason | None = None
+    error: str | None = None
+
+
 def _collect_active_endpoints_from_cache(
     cache: "_SchedulerInstanceCache",
 ) -> list[tuple[str, str]]:
     """
     Extract status=normal (ip, business_port) from SchedulerInstanceCache.
-    Filter logic aligned with BaseRouter._select_endpoint_from_instance.
+    Keeps endpoints whose status is normal.
     """
     endpoints: list[tuple[str, str]] = []
     for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
@@ -207,8 +223,6 @@ class _SchedulerTransport:
         self._pending_requests: dict[str, tuple[asyncio.Event | None, float] | None] = {}
         self._pending_responses: dict[str, SchedulerResponse] = {}
         self._request_lock = asyncio.Lock()
-        self._encode_lock = asyncio.Lock()
-        self._decode_lock = asyncio.Lock()
         self._receive_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
@@ -241,9 +255,13 @@ class _SchedulerTransport:
         await self._close_connection()
 
     async def send_request(self, request: SchedulerRequest) -> SchedulerResponse | None:
+        result = await self.send_request_result(request)
+        return result.response
+
+    async def send_request_result(self, request: SchedulerRequest) -> SchedulerRequestResult:
         if not self.connected or not self._socket:
             logger.error("Scheduler transport not connected")
-            return None
+            return SchedulerRequestResult(failure_reason=SchedulerRequestFailureReason.DISCONNECTED)
         event = asyncio.Event()
         request_timestamp = time.time()
         async with self._request_lock:
@@ -255,8 +273,9 @@ class _SchedulerTransport:
             log_req_id,
         )
         try:
-            async with self._encode_lock:
-                serialized = self._serializer.serialize_request(request)
+            # serialize_request is synchronous (msgspec, no await), so the single event loop already
+            # runs it atomically; a lock around no-await code is never contended. Same for decode below.
+            serialized = self._serializer.serialize_request(request)
             await self._socket.send_multipart(pack_send_frames([b""], serialized))
             try:
                 await asyncio.wait_for(event.wait(), timeout=self._timeout)
@@ -274,7 +293,7 @@ class _SchedulerTransport:
                             None,
                             request_timestamp,
                         )
-                return None
+                return SchedulerRequestResult(failure_reason=SchedulerRequestFailureReason.TIMEOUT)
             async with self._request_lock:
                 pending_info = self._pending_requests.get(request.request_id)
                 if pending_info:
@@ -296,7 +315,9 @@ class _SchedulerTransport:
                     log_req_id,
                     elapsed_ms,
                 )
-                return response
+                if response is None:
+                    return SchedulerRequestResult(failure_reason=SchedulerRequestFailureReason.NO_RESPONSE)
+                return SchedulerRequestResult(response=response)
         except asyncio.CancelledError:
             logger.warning(
                 "Scheduler request cancelled request_type=%s req_id=%s",
@@ -306,7 +327,7 @@ class _SchedulerTransport:
             async with self._request_lock:
                 self._pending_requests.pop(request.request_id, None)
                 self._pending_responses.pop(request.request_id, None)
-            return None
+            return SchedulerRequestResult(failure_reason=SchedulerRequestFailureReason.CANCELLED)
         except Exception as e:
             elapsed_ms = (time.time() - request_timestamp) * 1000
             logger.error(
@@ -320,7 +341,12 @@ class _SchedulerTransport:
             async with self._request_lock:
                 self._pending_requests.pop(request.request_id, None)
                 self._pending_responses.pop(request.request_id, None)
-            return None
+            reason = (
+                SchedulerRequestFailureReason.DISCONNECTED
+                if isinstance(e, zmq.ZMQError) or not self.connected or not self._socket
+                else SchedulerRequestFailureReason.TRANSPORT_ERROR
+            )
+            return SchedulerRequestResult(failure_reason=reason, error=str(e))
 
     async def _close_connection(self) -> None:
         async with self._connect_lock:
@@ -349,8 +375,8 @@ class _SchedulerTransport:
                     )
                     if len(parts) < 2:
                         continue
-                    async with self._decode_lock:
-                        response = self._serializer.deserialize_response(unpack_recv_payload(parts))
+                    # deserialize_response is synchronous; no decode lock needed (see send path).
+                    response = self._serializer.deserialize_response(unpack_recv_payload(parts))
                     async with self._request_lock:
                         pending_info = self._pending_requests.get(response.request_id)
                         if pending_info is None:
@@ -545,6 +571,13 @@ class AsyncSchedulerClient:
         self.timeout = config.timeout
         self._client_index = max(0, config.client_index)
         self._client_count = max(1, config.client_count)
+        # Per-request ids: one-time full-uuid prefix + monotonic counter, avoiding a uuid4() per call.
+        # Correctness only needs client-local uniqueness -- the transport matches replies in its own
+        # _pending_requests dict keyed by request_id, on its own DEALER socket; the scheduler only
+        # echoes it back. The full 128-bit prefix keeps ids effectively globally unique anyway, so
+        # cross-process log/trace correlation stays unambiguous.
+        self._request_id_prefix = uuid.uuid4().hex
+        self._request_seq = 0
         self._endpoint_instance_score_weight = max(0.0, config.endpoint_instance_score_weight)
         mode = str(config.kv_affinity_mode or KV_AFFINITY_MODE_UNIFIED).lower()
         if mode not in KV_AFFINITY_MODES:
@@ -616,13 +649,18 @@ class AsyncSchedulerClient:
             # Always close transport so ZMQ context is terminated even if above steps raise.
             await self._transport.disconnect()
 
-    async def select_instance_and_endpoint(self, req_info: RequestInfo, role: PDRole | None = None):
-        """Select instance and endpoint from cache or GET_AVAILABLE_INSTANCES. Returns (Instance, Endpoint) or None."""
-        candidates = await self._select_endpoint_candidates(req_info, role, top_k=1)
-        if not candidates:
-            return None
-        instance, endpoint, _ = candidates[0]
-        return (instance, endpoint)
+    async def _send_request_result(self, request: SchedulerRequest) -> SchedulerRequestResult:
+        if hasattr(type(self._transport), "send_request_result"):
+            return await self._transport.send_request_result(request)
+        response = await self._transport.send_request(request)
+        if response is None:
+            return SchedulerRequestResult(failure_reason=SchedulerRequestFailureReason.NO_RESPONSE)
+        return SchedulerRequestResult(response=response)
+
+    def _next_request_id(self) -> str:
+        """Cheap monotonic request id (client-local uniqueness is all the transport needs)."""
+        self._request_seq += 1
+        return f"{self._request_id_prefix}-{self._request_seq}"
 
     async def _select_endpoint_candidates(
         self,
@@ -673,7 +711,7 @@ class AsyncSchedulerClient:
             )
         return candidates, candidate_policy
 
-    async def _refresh_cache_from_workload_reader(self) -> None:
+    async def _refresh_cache_from_workload_reader(self, role: PDRole | None = None) -> None:
         """Patch live workload into the local cache and pull a fresh instance list on
         heartbeat-stale or instance-version change.
 
@@ -682,7 +720,7 @@ class AsyncSchedulerClient:
         """
         if not self._workload_reader:
             return
-        current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(self._cache)
+        current_version, heartbeat_stale = self._workload_reader.read_and_patch_cache(self._cache, role=role)
         if heartbeat_stale:
             await self._pull_instances_and_notify(current_version, "stale heartbeat")
         elif current_version is not None:
@@ -717,7 +755,7 @@ class AsyncSchedulerClient:
         """Select instance locally + ALLOCATE_ONLY RPC. Allocation workload is decided here (RR=zero, LB=demand)."""
         role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
 
-        await self._refresh_cache_from_workload_reader()
+        await self._refresh_cache_from_workload_reader(role)
 
         # Set in the kv_cache_affinity unified branch below: forward every endpoint's
         # affinity-discounted prefill cost so the scheduler re-ranks globally by fresh load.
@@ -804,8 +842,11 @@ class AsyncSchedulerClient:
             else calculate_demand_workload(role, req_info)
         )
 
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         workload_sequence = self._workload_reader.last_sequence if self._workload_reader is not None else None
+        role_workload_sequence = (
+            self._workload_reader.last_sequence_for_role(role) if self._workload_reader is not None else None
+        )
         req_data = {
             "instance_id": instance.id,
             "endpoint_id": endpoint.id,
@@ -813,8 +854,12 @@ class AsyncSchedulerClient:
             "role": role_str,
             "req_id": req_info.req_id,
             "workload_sequence": workload_sequence,
+            "role_workload_sequence": role_workload_sequence,
             "instance_version": self._last_instance_version,
-            "workload": workload.model_dump(mode="json"),
+            # Workload demand as two raw floats: avoids a pydantic dump here and a model_validate on
+            # the scheduler. RR sends 0.0/0.0 (Workload() has no demand) rather than a dumped model.
+            "workload_active_tokens": workload.active_tokens,
+            "workload_active_kv_cache": workload.active_kv_cache,
             "candidate_policy": candidate_policy,
         }
         if global_affinity:
@@ -896,7 +941,7 @@ class AsyncSchedulerClient:
         if not self._transport.connected:
             logger.warning("confirm_sample: scheduler transport not connected")
             return False
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.CONFIRM_SAMPLE,
             request_id=request_id,
@@ -925,7 +970,7 @@ class AsyncSchedulerClient:
         if not self._transport.connected:
             logger.warning("record_precision_result: scheduler transport not connected")
             return None
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.RECORD_PRECISION_RESULT,
             request_id=request_id,
@@ -963,7 +1008,7 @@ class AsyncSchedulerClient:
         if not self._transport.connected:
             logger.warning("finish_precision_action: scheduler transport not connected")
             return False
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.FINISH_PRECISION_ACTION,
             request_id=request_id,
@@ -988,7 +1033,7 @@ class AsyncSchedulerClient:
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         role_str = params.role.value if hasattr(params.role, "value") else str(params.role)
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.UPDATE_WORKLOAD,
             request_id=request_id,
@@ -999,10 +1044,12 @@ class AsyncSchedulerClient:
                 "req_id": params.req_id,
                 "workload_action": params.workload_action.value,
                 "workload_change": params.workload_change,
+                "operation_id": params.operation_id,
             },
         )
 
-        response = await self._transport.send_request(request)
+        result = await self._send_request_result(request)
+        response = result.response
 
         if response and response.response_type == SchedulerResponseType.SUCCESS:
             success = (response.data or {}).get("success", False)
@@ -1029,17 +1076,20 @@ class AsyncSchedulerClient:
             )
         else:
             logger.error(
-                "Update workload got no response (timeout or connection): "
-                "instance_id=%s endpoint_id=%s role=%s req_id=%s",
+                "Update workload got no response reason=%s error=%s: "
+                "instance_id=%s endpoint_id=%s role=%s req_id=%s action=%s",
+                (result.failure_reason or SchedulerRequestFailureReason.NO_RESPONSE).value,
+                result.error,
                 params.instance_id,
                 params.endpoint_id,
                 role_str,
                 params.req_id,
+                params.workload_action.value,
             )
         return False
 
     async def get_available_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.GET_AVAILABLE_INSTANCES,
             request_id=request_id,
@@ -1195,7 +1245,7 @@ class AsyncSchedulerClient:
         return {}, {}
 
     async def refresh_instances(self, event_type, instances: list[Instance]) -> None:
-        request_id = str(uuid.uuid4())
+        request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.REFRESH_INSTANCES,
             request_id=request_id,
@@ -1305,16 +1355,6 @@ class AsyncSchedulerClient:
 
         task = asyncio.create_task(self._transport.send_request(request))
         task.add_done_callback(_on_cb_send_done)
-
-    def _select_endpoint_candidates_from_list(
-        self,
-        instances: list[Instance],
-        role: PDRole,
-        req_info: RequestInfo,
-        top_k: int = 1,
-    ) -> list[tuple[Instance, Endpoint, float]]:
-        candidates, _ = self._select_endpoint_candidates_from_list_with_policy(instances, role, req_info, top_k)
-        return candidates
 
     def _select_endpoint_candidates_from_list_with_policy(
         self,

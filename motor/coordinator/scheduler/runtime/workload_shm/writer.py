@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -11,6 +10,7 @@
 WorkloadSharedMemoryWriter: Scheduler-side writer for workload shared memory.
 """
 
+import inspect
 import struct
 from multiprocessing import shared_memory
 
@@ -30,12 +30,18 @@ from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     DEFAULT_WORKLOAD_SHM_MAX_ENTRIES,
     pack_header,
     pack_entry,
-    total_size,
     WorkloadShmHeader,
     WorkloadShmEntry,
 )
 
 logger = get_logger(__name__)
+
+
+_ROLE_SEQUENCE_FIELDS = {
+    PDRole.ROLE_P: "prefill",
+    PDRole.ROLE_D: "decode",
+    PDRole.ROLE_U: "hybrid",
+}
 
 
 def _pdrole_to_shm_role(role: PDRole) -> int:
@@ -101,6 +107,11 @@ class WorkloadSharedMemoryWriter:
         self._buf = memoryview(shm.buf)
         self._slot_map: dict[tuple[int, int], int] = {}
         self._sequence = 0
+        self._role_sequences: dict[str, int] = {
+            "prefill": 0,
+            "decode": 0,
+            "hybrid": 0,
+        }
         self._entry_count = 0
         self._instance_version = 0
         self._heartbeat_sequence = 0
@@ -120,6 +131,13 @@ class WorkloadSharedMemoryWriter:
         """Current workload sequence. Even values are stable; odd values mean write in progress."""
         return self._sequence
 
+    def role_sequence(self, role: PDRole) -> int | None:
+        """Current stable workload sequence for a role, or None when the role uses global fallback."""
+        role_key = _ROLE_SEQUENCE_FIELDS.get(role)
+        if role_key is None:
+            return None
+        return self._role_sequences[role_key]
+
     def release(self) -> None:
         """Release buffer reference before owner closes SharedMemory. Prevents BufferError (exported pointers)."""
         self._buf = None
@@ -128,15 +146,11 @@ class WorkloadSharedMemoryWriter:
     def write_heartbeat(self) -> None:
         """Write only heartbeat_sequence (called periodically by Scheduler). Infer treats no-change as stale."""
         self._heartbeat_sequence = (self._heartbeat_sequence + 1) % (1 << 64)
-        self._buf[HEARTBEAT_OFFSET: HEARTBEAT_OFFSET + 8] = struct.pack(
-            "<Q", self._heartbeat_sequence
-        )
+        self._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8] = struct.pack("<Q", self._heartbeat_sequence)
 
     def write_snapshot(self) -> None:
         """Full snapshot: rebuild slot_map and write all entries. Bumps instance_version."""
-        entries, self._slot_map = _collect_entries_and_slot_map(
-            self._im, self._max_entries
-        )
+        entries, self._slot_map = _collect_entries_and_slot_map(self._im, self._max_entries)
         self._entry_count = len(entries)
         self._begin_write()
         for slot, (iid, eid, role, tokens, kv) in enumerate(entries):
@@ -150,16 +164,22 @@ class WorkloadSharedMemoryWriter:
                     active_kv_cache=kv,
                 ),
             )
+        self._bump_all_role_sequences()
         self._instance_version += 1
         self._end_write()
 
-    async def write_single_entry(self, instance_id: int, endpoint_id: int) -> None:
-        """Incremental write: only update the changed slot (~1-5 µs)."""
+    def write_single_entry_from_workload(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        role: PDRole,
+        workload,
+    ) -> None:
+        """Incremental write for a known endpoint workload (~1-5 µs)."""
         slot = self._slot_map.get((instance_id, endpoint_id))
         if slot is None:
             self.write_snapshot()
             return
-        role, workload = await self._im.get_endpoint_workload(instance_id, endpoint_id)
         if role is None or workload is None:
             return
         shm_role = _pdrole_to_shm_role(role)
@@ -174,7 +194,37 @@ class WorkloadSharedMemoryWriter:
                 active_kv_cache=workload.active_kv_cache,
             ),
         )
+        self._bump_role_sequence(role)
         self._end_write()
+
+    def write_single_entry_sync(self, instance_id: int, endpoint_id: int) -> None:
+        """Incremental write: only update the changed slot (~1-5 µs)."""
+        role, workload = self._im.get_endpoint_workload_sync(instance_id, endpoint_id)
+        self.write_single_entry_from_workload(instance_id, endpoint_id, role, workload)
+
+    async def write_single_entry(self, instance_id: int, endpoint_id: int) -> None:
+        """Async compatibility wrapper for incremental writes."""
+        if self._slot_map.get((instance_id, endpoint_id)) is None:
+            self.write_snapshot()
+            return
+        if hasattr(self._im, "get_endpoint_workload"):
+            result = self._im.get_endpoint_workload(instance_id, endpoint_id)
+            if inspect.isawaitable(result):
+                result = await result
+            role, workload = result
+            self.write_single_entry_from_workload(instance_id, endpoint_id, role, workload)
+            return
+        self.write_single_entry_sync(instance_id, endpoint_id)
+
+    def _bump_all_role_sequences(self) -> None:
+        for role_key in self._role_sequences:
+            self._role_sequences[role_key] = (self._role_sequences[role_key] + 1) % (1 << 64)
+
+    def _bump_role_sequence(self, role: PDRole) -> None:
+        role_key = _ROLE_SEQUENCE_FIELDS.get(role)
+        if role_key is None:
+            return
+        self._role_sequences[role_key] = (self._role_sequences[role_key] + 1) % (1 << 64)
 
     def _begin_write(self) -> None:
         """Mark workload shm as being updated (odd sequence)."""
@@ -197,7 +247,7 @@ class WorkloadSharedMemoryWriter:
         try:
             current_in_buf = struct.unpack(
                 "<Q",
-                bytes(self._buf[HEARTBEAT_OFFSET: HEARTBEAT_OFFSET + 8]),
+                bytes(self._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8]),
             )[0]
             self._heartbeat_sequence = max(self._heartbeat_sequence, current_in_buf)
         except (ValueError, IndexError):
@@ -211,6 +261,9 @@ class WorkloadSharedMemoryWriter:
                 max_entries=self._max_entries,
                 instance_version=self._instance_version,
                 heartbeat_sequence=self._heartbeat_sequence,
+                prefill_sequence=self._role_sequences["prefill"],
+                decode_sequence=self._role_sequences["decode"],
+                hybrid_sequence=self._role_sequences["hybrid"],
             )
         )
         self._buf[:HEADER_SIZE] = header
@@ -219,4 +272,4 @@ class WorkloadSharedMemoryWriter:
         """Write single entry at slot offset."""
         offset = HEADER_SIZE + slot * ENTRY_SIZE
         data = pack_entry(entry)
-        self._buf[offset: offset + ENTRY_SIZE] = data
+        self._buf[offset : offset + ENTRY_SIZE] = data

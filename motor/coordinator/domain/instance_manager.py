@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -137,37 +136,70 @@ class InstanceManager:
             unavail_items = list(self._unavailable_pool.items())
         return dict(avail_items), dict(unavail_items)
 
-    async def update_instance_workload(self, instance_id: int, endpoint_id: int, workload_change: Workload) -> None:
-        """Update workload of instance and its endpoint in pool (ids only). O(1) lookup via _endpoint_id_cache."""
-        async with self._lock:
-            instance = self._available_pool.get(instance_id)
-            if instance is None:
-                logger.warning("Instance ID %s not found in available pool while updating workload", instance_id)
-                return
-            ep_cache = self._endpoint_id_cache.get(instance_id)
-            if ep_cache is None:
-                ep_cache = {}
-                for pod_eps in (instance.endpoints or {}).values():
-                    for ep in (pod_eps or {}).values():
-                        ep_cache[ep.id] = ep
-                self._endpoint_id_cache[instance_id] = ep_cache
-            endpoint = ep_cache.get(endpoint_id)
-            if endpoint is None:
-                logger.warning(
-                    "Endpoint ID %s not found in instance ID %s while updating workload",
-                    endpoint_id,
-                    instance_id,
-                )
-                return
-            wlock = self._workload_locks.setdefault(instance_id, asyncio.Lock())
-        async with wlock:
-            instance.gathered_workload += workload_change
-            endpoint.workload += workload_change
+    def update_instance_workload_sync(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        workload_change: Workload,
+    ) -> tuple[PDRole | None, Workload | None]:
+        """Synchronously update workload and return the endpoint's new workload."""
+        instance = self._available_pool.get(instance_id)
+        if instance is None:
+            logger.warning("Instance ID %s not found in available pool while updating workload", instance_id)
+            return (None, None)
+        ep_cache = self._endpoint_id_cache.get(instance_id)
+        if ep_cache is None:
+            ep_cache = {}
+            for pod_eps in (instance.endpoints or {}).values():
+                for ep in (pod_eps or {}).values():
+                    ep_cache[ep.id] = ep
+            self._endpoint_id_cache[instance_id] = ep_cache
+        endpoint = ep_cache.get(endpoint_id)
+        if endpoint is None:
+            logger.warning(
+                "Endpoint ID %s not found in instance ID %s while updating workload",
+                endpoint_id,
+                instance_id,
+            )
+            return (None, None)
+        instance.gathered_workload += workload_change
+        endpoint.workload += workload_change
         logger.debug(
             "Updated workload instance_id=%s endpoint_id=%s",
             instance_id,
             endpoint_id,
         )
+        role = _role_to_pdrole(instance.role) if instance.role else PDRole.ROLE_U
+        return (role, endpoint.workload)
+
+    async def update_instance_workload(self, instance_id: int, endpoint_id: int, workload_change: Workload) -> None:
+        """Update workload of instance and its endpoint in pool (ids only). O(1) lookup via _endpoint_id_cache."""
+        self.update_instance_workload_sync(instance_id, endpoint_id, workload_change)
+
+    def get_endpoint_workload_sync(self, instance_id: int, endpoint_id: int) -> tuple[PDRole | None, Workload | None]:
+        """
+        Get role and workload for endpoint by instance_id and endpoint_id.
+        Used by WorkloadSharedMemoryWriter.write_single_entry for incremental write.
+
+        Returns:
+            (role, workload): (instance.role, endpoint.workload) if found;
+            (None, None) if instance or endpoint does not exist.
+        """
+        instance = self._available_pool.get(instance_id)
+        if instance is None:
+            return (None, None)
+        ep_cache = self._endpoint_id_cache.get(instance_id)
+        if ep_cache is None:
+            ep_cache = {}
+            for pod_eps in (instance.endpoints or {}).values():
+                for ep in (pod_eps or {}).values():
+                    ep_cache[ep.id] = ep
+            self._endpoint_id_cache[instance_id] = ep_cache
+        endpoint = ep_cache.get(endpoint_id)
+        if endpoint is None:
+            return (None, None)
+        role = _role_to_pdrole(instance.role) if instance.role else PDRole.ROLE_U
+        return (role, endpoint.workload)
 
     async def get_endpoint_workload(self, instance_id: int, endpoint_id: int) -> tuple[PDRole | None, Workload | None]:
         """
@@ -178,22 +210,7 @@ class InstanceManager:
             (role, workload): (instance.role, endpoint.workload) if found;
             (None, None) if instance or endpoint does not exist.
         """
-        async with self._lock:
-            instance = self._available_pool.get(instance_id)
-            if instance is None:
-                return (None, None)
-            ep_cache = self._endpoint_id_cache.get(instance_id)
-            if ep_cache is None:
-                ep_cache = {}
-                for pod_eps in (instance.endpoints or {}).values():
-                    for ep in (pod_eps or {}).values():
-                        ep_cache[ep.id] = ep
-                self._endpoint_id_cache[instance_id] = ep_cache
-            endpoint = ep_cache.get(endpoint_id)
-            if endpoint is None:
-                return (None, None)
-            role = _role_to_pdrole(instance.role) if instance.role else PDRole.ROLE_U
-            return (role, endpoint.workload)
+        return self.get_endpoint_workload_sync(instance_id, endpoint_id)
 
     async def has_instance_endpoint(self, instance_id: int, endpoint_id: int) -> bool:
         """Check if (instance_id, endpoint_id) exists in available pool. For ALLOCATE_ONLY validation."""

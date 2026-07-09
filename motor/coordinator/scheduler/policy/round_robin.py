@@ -29,7 +29,6 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
 
     def __init__(self, instance_provider: InstanceProvider):
         super().__init__(instance_provider=instance_provider)
-        self._instance_provider = instance_provider
         self._instance_rr_counters: dict[PDRole | None, int] = {}
         self._endpoint_rr_counters: dict[int | str, int] = {}
         self._instance_lock = Lock()

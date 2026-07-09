@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -156,15 +155,6 @@ class BaseRouter(ABC):
             type=type(e).__name__,
             message=str(e),
         )
-
-    @staticmethod
-    def _select_endpoint_from_instance(instance: Instance) -> Endpoint | None:
-        if instance and instance.endpoints:
-            for endpoint in instance.get_all_endpoints():
-                status_val = endpoint.status.value if hasattr(endpoint.status, "value") else str(endpoint.status)
-                if status_val == "normal":
-                    return endpoint
-        return None
 
     @staticmethod
     def _apply_prefill_params(

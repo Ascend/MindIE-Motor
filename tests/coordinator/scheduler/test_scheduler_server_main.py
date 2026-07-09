@@ -9,11 +9,17 @@
 # See the Mulan PSL v2 license for more details.
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload, WorkloadAction
+from motor.common.resources.endpoint import (
+    Endpoint,
+    EndpointStatus,
+    Workload,
+    WorkloadAction,
+)
 from motor.common.resources.http_msg_spec import EventType
 from motor.common.resources.instance import Instance, InsStatus, PDRole, ParallelConfig
 from motor.config.coordinator import CoordinatorConfig, SchedulerType
@@ -46,17 +52,34 @@ from motor.coordinator.scheduler.scheduler import Scheduler
 class _DummyWorkloadWriter:
     """Minimal workload-writer stub reused across dispatcher tests."""
 
-    def __init__(self, sequence: int = 0, instance_version: int = 1):
+    def __init__(
+        self,
+        sequence: int = 0,
+        instance_version: int = 1,
+        role_sequences: dict[PDRole, int] | None = None,
+    ):
         self.sequence = sequence
         self.instance_version = instance_version
+        self._role_sequences = role_sequences
         self.writes: list[tuple[int, int]] = []
         self.snapshots: int = 0
         self.heartbeats: int = 0
         self.shm_name = "test_shm"
 
+    def role_sequence(self, role: PDRole) -> int | None:
+        if self._role_sequences is None:
+            return None
+        return self._role_sequences.get(role)
+
     async def write_single_entry(self, instance_id: int, endpoint_id: int) -> None:
+        self.write_single_entry_sync(instance_id, endpoint_id)
+
+    def write_single_entry_sync(self, instance_id: int, endpoint_id: int) -> None:
         self.sequence += 2
         self.writes.append((instance_id, endpoint_id))
+
+    def write_single_entry_from_workload(self, instance_id, endpoint_id, role, workload) -> None:
+        self.write_single_entry_sync(instance_id, endpoint_id)
 
     def write_snapshot(self) -> None:
         self.snapshots += 1
@@ -333,6 +356,134 @@ class TestHandleUpdateWorkload:
         assert response.data["success"] is True
         assert (2, 20) in writer.writes
 
+    @pytest.mark.asyncio
+    async def test_operation_id_commits_update_workload_once(self, caplog):
+        caplog.set_level(logging.INFO)
+        writer = _DummyWorkloadWriter()
+        dispatcher, instance_manager, scheduler, _ = _make_dispatcher(workload_writer=writer)
+        inst = _make_instance(3, (30,))
+        await instance_manager.refresh_instances(EventType.ADD, [inst])
+
+        data = {
+            "instance_id": 3,
+            "endpoint_id": 30,
+            "role": PDRole.ROLE_P.value,
+            "req_id": "r7",
+            "operation_id": "op-r7-release-tokens",
+            "workload_action": WorkloadAction.RELEASE_TOKENS.value,
+            "workload_change": Workload(active_tokens=-3).model_dump(mode="json"),
+        }
+
+        first = await dispatcher.dispatch(
+            SchedulerRequest(
+                request_type=SchedulerRequestType.UPDATE_WORKLOAD,
+                request_id="req-7a",
+                data=data,
+            )
+        )
+        second = await dispatcher.dispatch(
+            SchedulerRequest(
+                request_type=SchedulerRequestType.UPDATE_WORKLOAD,
+                request_id="req-7b",
+                data=dict(data),
+            )
+        )
+
+        assert first.response_type == SchedulerResponseType.SUCCESS
+        assert first.data["success"] is True
+        assert "idempotent" not in first.data
+        assert second.response_type == SchedulerResponseType.SUCCESS
+        assert second.data["success"] is True
+        assert second.data["idempotent"] is True
+        assert "UPDATE_WORKLOAD idempotent replay" in caplog.text
+        assert "operation_id=op-r7-release-tokens" in caplog.text
+        assert "scheduler_request_id=req-7b" in caplog.text
+        _role, workload = await instance_manager.get_endpoint_workload(3, 30)
+        assert workload.active_tokens == -3
+        assert writer.writes == [(3, 30), (3, 30)]
+
+    def test_committed_operation_store_is_bounded_fifo(self):
+        """Retry-dedup store keeps memory bounded by evicting the oldest id once the cap is hit."""
+        dispatcher, *_ = _make_dispatcher()
+        with patch(
+            "motor.coordinator.scheduler.runtime.scheduler_server._MAX_COMMITTED_UPDATE_WORKLOAD_OPERATIONS",
+            3,
+        ):
+            for i in range(5):
+                dispatcher._remember_committed_operation(f"op-{i}")
+
+        store = dispatcher._committed_update_workload_operations
+        assert len(store) == 3
+        assert list(store) == [
+            "op-2",
+            "op-3",
+            "op-4",
+        ]  # oldest (op-0, op-1) evicted first
+        assert "op-0" not in store  # an evicted retry would be applied again
+        assert "op-4" in store  # a recent retry is still de-duplicated
+
+    @pytest.mark.asyncio
+    async def test_no_sync_policy_writes_absolute_not_delta(self):
+        """A policy without update_workload_sync must publish the ledger absolute, not the delta."""
+        dispatcher, instance_manager, _scheduler, _ = _make_dispatcher(scheduler_type=SchedulerType.ROUND_ROBIN)
+        inst = _make_instance(3, (30,))
+        await instance_manager.refresh_instances(EventType.ADD, [inst])
+        # The endpoint's authoritative absolute load is 7 active tokens.
+        await instance_manager.update_instance_workload(3, 30, Workload(active_tokens=7))
+
+        class _RecordingWriter:
+            def __init__(self, im):
+                self._im = im
+                self.written: list[tuple[int, int, float | None]] = []
+
+            def role_sequence(self, role):
+                return None
+
+            def write_single_entry_from_workload(self, instance_id, endpoint_id, role, workload):
+                self.written.append(
+                    (
+                        instance_id,
+                        endpoint_id,
+                        None if workload is None else workload.active_tokens,
+                    )
+                )
+
+            def write_single_entry_sync(self, instance_id, endpoint_id):
+                _role, workload = self._im.get_endpoint_workload_sync(instance_id, endpoint_id)
+                self.written.append(
+                    (
+                        instance_id,
+                        endpoint_id,
+                        None if workload is None else workload.active_tokens,
+                    )
+                )
+
+            def write_snapshot(self):
+                pass
+
+        writer = _RecordingWriter(instance_manager)
+        dispatcher._workload_writer = writer
+
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.UPDATE_WORKLOAD,
+            request_id="req-nosync",
+            data={
+                "instance_id": 3,
+                "endpoint_id": 30,
+                "role": PDRole.ROLE_P.value,
+                "req_id": "r-nosync",
+                "workload_action": WorkloadAction.RELEASE_TOKENS.value,
+                "workload_change": Workload(active_tokens=-3).model_dump(mode="json"),
+            },
+        )
+
+        response = await dispatcher.dispatch(request)
+
+        assert response.response_type == SchedulerResponseType.SUCCESS
+        assert response.data["success"] is True
+        # Must be the ledger absolute (7), never the delta (-3).
+        assert writer.written == [(3, 30, 7.0)]
+
 
 class TestHandleGetAvailableInstances:
     @pytest.mark.asyncio
@@ -595,8 +746,8 @@ class TestHandleAllocateOnlyEdgeCases:
         inst = _make_instance(1, (10,), PDRole.ROLE_P)
         await instance_manager.refresh_instances(EventType.ADD, [inst])
 
-        # Force update_workload to return False
-        scheduler.update_workload = AsyncMock(return_value=False)
+        # Force the synchronous commit path to return False.
+        scheduler.update_workload_sync = MagicMock(return_value=(False, None, None))
 
         request = SchedulerRequest(
             request_type=SchedulerRequestType.ALLOCATE_ONLY,
@@ -689,32 +840,50 @@ class TestExtractAllocateCandidates:
 class TestCanUseWorkerTop1FastPath:
     def test_no_workload_writer_returns_false(self):
         dispatcher, *_ = _make_dispatcher(workload_writer=None)
-        assert dispatcher._can_use_worker_top1_fast_path(0, 1) is False
+        assert dispatcher._can_use_worker_top1_fast_path(0, None, 1, PDRole.ROLE_P) is False
 
     def test_none_sequence_returns_false(self):
         writer = _DummyWorkloadWriter(sequence=5, instance_version=3)
         dispatcher, *_ = _make_dispatcher(workload_writer=writer)
-        assert dispatcher._can_use_worker_top1_fast_path(None, 3) is False
+        assert dispatcher._can_use_worker_top1_fast_path(None, None, 3, PDRole.ROLE_P) is False
 
     def test_none_version_returns_false(self):
         writer = _DummyWorkloadWriter(sequence=5, instance_version=3)
         dispatcher, *_ = _make_dispatcher(workload_writer=writer)
-        assert dispatcher._can_use_worker_top1_fast_path(5, None) is False
+        assert dispatcher._can_use_worker_top1_fast_path(5, None, None, PDRole.ROLE_P) is False
 
     def test_matching_sequence_and_version_returns_true(self):
         writer = _DummyWorkloadWriter(sequence=5, instance_version=3)
         dispatcher, *_ = _make_dispatcher(workload_writer=writer)
-        assert dispatcher._can_use_worker_top1_fast_path(5, 3) is True
+        assert dispatcher._can_use_worker_top1_fast_path(5, None, 3, PDRole.ROLE_P) is True
 
     def test_mismatched_sequence_returns_false(self):
         writer = _DummyWorkloadWriter(sequence=5, instance_version=3)
         dispatcher, *_ = _make_dispatcher(workload_writer=writer)
-        assert dispatcher._can_use_worker_top1_fast_path(4, 3) is False
+        assert dispatcher._can_use_worker_top1_fast_path(4, None, 3, PDRole.ROLE_P) is False
 
     def test_mismatched_version_returns_false(self):
         writer = _DummyWorkloadWriter(sequence=5, instance_version=3)
         dispatcher, *_ = _make_dispatcher(workload_writer=writer)
-        assert dispatcher._can_use_worker_top1_fast_path(5, 2) is False
+        assert dispatcher._can_use_worker_top1_fast_path(5, None, 2, PDRole.ROLE_P) is False
+
+    def test_matching_role_sequence_ignores_global_sequence_mismatch(self):
+        writer = _DummyWorkloadWriter(
+            sequence=99,
+            instance_version=3,
+            role_sequences={PDRole.ROLE_P: 7, PDRole.ROLE_D: 11},
+        )
+        dispatcher, *_ = _make_dispatcher(workload_writer=writer)
+        assert dispatcher._can_use_worker_top1_fast_path(5, 7, 3, PDRole.ROLE_P) is True
+
+    def test_mismatched_role_sequence_returns_false(self):
+        writer = _DummyWorkloadWriter(
+            sequence=5,
+            instance_version=3,
+            role_sequences={PDRole.ROLE_P: 7, PDRole.ROLE_D: 11},
+        )
+        dispatcher, *_ = _make_dispatcher(workload_writer=writer)
+        assert dispatcher._can_use_worker_top1_fast_path(5, 11, 3, PDRole.ROLE_P) is False
 
 
 class TestShouldScanGlobalLoadBalance:
@@ -847,7 +1016,9 @@ class TestAsyncSchedulerServerStop:
         mock_writer = MagicMock()
         mock_shm = MagicMock()
         mock_pub = MagicMock()
+        mock_disconnect = AsyncMock()
         mock_transport = AsyncMock()
+        mock_transport.disconnect = mock_disconnect
         mock_context = MagicMock()
 
         server._workload_writer = mock_writer
@@ -862,7 +1033,7 @@ class TestAsyncSchedulerServerStop:
         mock_shm.close.assert_called_once()
         mock_shm.unlink.assert_called_once()
         mock_pub.close.assert_called_once()
-        mock_transport.disconnect.assert_called_once()
+        mock_disconnect.assert_called_once()
         mock_context.term.assert_called_once()
         assert server._workload_writer is None
         assert server._workload_shm is None
@@ -926,7 +1097,9 @@ class TestAsyncSchedulerServerPublishInstanceChanged:
 
     @pytest.mark.asyncio
     async def test_sends_topic_and_version(self):
-        from motor.coordinator.scheduler.runtime.zmq_protocol import INSTANCE_CHANGE_TOPIC
+        from motor.coordinator.scheduler.runtime.zmq_protocol import (
+            INSTANCE_CHANGE_TOPIC,
+        )
 
         server = _make_server()
         mock_pub = AsyncMock()

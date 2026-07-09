@@ -110,6 +110,7 @@ class UpdateWorkloadParams:
     req_id: str
     workload_action: WorkloadAction
     workload_change: Workload
+    operation_id: str | None = None
 
 
 class SchedulingFacade(Protocol):

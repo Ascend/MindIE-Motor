@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -14,7 +13,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from motor.coordinator.scheduler.runtime.workload_shm.reader import (
     WorkloadSharedMemoryReader,
@@ -25,10 +23,14 @@ from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     ROLE_PREFILL,
     ROLE_DECODE,
     ROLE_HYBRID,
+    SCHEMA_VERSION,
     HEADER_SIZE,
     ENTRY_SIZE,
     MAGIC,
-    HEARTBEAT_STALE_SEC,
+    WorkloadShmHeader,
+    WorkloadShmEntry,
+    pack_header,
+    pack_entry,
 )
 
 
@@ -86,7 +88,10 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
     @patch("motor.coordinator.scheduler.runtime.workload_shm.reader.unpack_entry")
     @patch("motor.coordinator.scheduler.runtime.workload_shm.reader.unpack_header")
     def test_read_and_patch_cache_stale_heartbeat(
-        self, mock_unpack_header, mock_unpack_entry, mock_time,
+        self,
+        mock_unpack_header,
+        mock_unpack_entry,
+        mock_time,
     ):
         """Heartbeat stale when heartbeat_sequence unchanged for longer than HEARTBEAT_STALE_SEC."""
         buf = self._make_buf(0)
@@ -118,6 +123,138 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
         self.reader._buf = None
         result = self.reader.read_and_patch_cache(MagicMock())
         self.assertEqual(result, (None, False))
+
+    def test_read_and_patch_cache_records_role_sequences(self):
+        """Reader exposes per-role workload sequences from the stable shm header."""
+        buf = self._make_buf(0)
+        header = WorkloadShmHeader(
+            magic=MAGIC,
+            schema_version=SCHEMA_VERSION,
+            sequence=8,
+            entry_count=0,
+            max_entries=10,
+            instance_version=3,
+            heartbeat_sequence=1,
+            prefill_sequence=4,
+            decode_sequence=6,
+            hybrid_sequence=2,
+        )
+        buf[:HEADER_SIZE] = pack_header(header)
+        self.reader._buf = memoryview(buf)
+
+        result = self.reader.read_and_patch_cache(MagicMock())
+
+        self.assertEqual(result, (3, False))
+        self.assertEqual(self.reader.last_sequence, 8)
+        self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_P), 4)
+        self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_D), 6)
+        self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_U), 2)
+
+    def test_legacy_schema_uses_global_sequence_fallback(self):
+        """Legacy schema headers must not expose role sequences from old padding bytes."""
+        buf = self._make_buf(0)
+        header = WorkloadShmHeader(
+            magic=MAGIC,
+            schema_version=1,
+            sequence=8,
+            entry_count=0,
+            max_entries=10,
+            instance_version=3,
+            heartbeat_sequence=1,
+            prefill_sequence=4,
+            decode_sequence=6,
+            hybrid_sequence=2,
+        )
+        buf[:HEADER_SIZE] = pack_header(header)
+        self.reader._buf = memoryview(buf)
+        self.reader._last_role_sequences[PDRole.ROLE_D] = 99
+
+        result = self.reader.read_and_patch_cache(MagicMock(), role=PDRole.ROLE_D)
+
+        self.assertEqual(result, (3, False))
+        self.assertEqual(self.reader.last_sequence, 8)
+        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_P))
+        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_D))
+        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_U))
+
+    def test_role_patch_only_updates_matching_entries_and_sequence(self):
+        """Role-scoped patching must not mark other role caches as current."""
+        buf = self._make_buf(2)
+        header = WorkloadShmHeader(
+            magic=MAGIC,
+            schema_version=SCHEMA_VERSION,
+            sequence=8,
+            entry_count=2,
+            max_entries=10,
+            instance_version=3,
+            heartbeat_sequence=1,
+            prefill_sequence=4,
+            decode_sequence=6,
+            hybrid_sequence=2,
+        )
+        buf[:HEADER_SIZE] = pack_header(header)
+        buf[HEADER_SIZE : HEADER_SIZE + ENTRY_SIZE] = pack_entry(
+            WorkloadShmEntry(
+                instance_id=1,
+                endpoint_id=10,
+                role=ROLE_PREFILL,
+                active_tokens=11.0,
+                active_kv_cache=12.0,
+            )
+        )
+        buf[HEADER_SIZE + ENTRY_SIZE : HEADER_SIZE + 2 * ENTRY_SIZE] = pack_entry(
+            WorkloadShmEntry(
+                instance_id=2,
+                endpoint_id=20,
+                role=ROLE_DECODE,
+                active_tokens=21.0,
+                active_kv_cache=22.0,
+            )
+        )
+        self.reader._buf = memoryview(buf)
+        mock_cache = MagicMock()
+
+        result = self.reader.read_and_patch_cache(mock_cache, role=PDRole.ROLE_D)
+
+        self.assertEqual(result, (3, False))
+        mock_cache.patch_workload_from_shm.assert_called_once_with(
+            2,
+            20,
+            PDRole.ROLE_D,
+            21.0,
+            22.0,
+        )
+        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_P))
+        self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_D), 6)
+        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_U))
+
+    @patch("motor.coordinator.scheduler.runtime.workload_shm.reader.unpack_entry")
+    def test_role_sequence_unchanged_skips_entry_scan(self, mock_unpack_entry):
+        """When the selected role sequence is unchanged, no entries are unpacked or patched."""
+        buf = self._make_buf(3)
+        header = WorkloadShmHeader(
+            magic=MAGIC,
+            schema_version=SCHEMA_VERSION,
+            sequence=10,
+            entry_count=3,
+            max_entries=10,
+            instance_version=3,
+            heartbeat_sequence=1,
+            prefill_sequence=4,
+            decode_sequence=6,
+            hybrid_sequence=2,
+        )
+        buf[:HEADER_SIZE] = pack_header(header)
+        self.reader._buf = memoryview(buf)
+        self.reader._last_role_sequences[PDRole.ROLE_D] = 6
+        mock_cache = MagicMock()
+
+        result = self.reader.read_and_patch_cache(mock_cache, role=PDRole.ROLE_D)
+
+        self.assertEqual(result, (3, False))
+        mock_unpack_entry.assert_not_called()
+        mock_cache.patch_workload_from_shm.assert_not_called()
+        self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_D), 6)
 
     @patch("motor.coordinator.scheduler.runtime.workload_shm.reader.unpack_header")
     def test_read_and_patch_cache_bad_magic(self, mock_unpack_header):

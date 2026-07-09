@@ -16,6 +16,7 @@ Uses zmq.asyncio for fully async ZMQ I/O and avoids main-loop serialization bott
 import asyncio
 import os
 import time
+from collections import OrderedDict
 from typing import Awaitable, Callable
 
 import zmq.asyncio
@@ -86,6 +87,15 @@ def _create_workload_shared_memory(shared_memory_mod, shm_name: str, shm_size: i
 # Hot-path scheduling log sampling: ~1% of requests to reduce I/O and CPU at high QPS
 _SCHEDULING_LOG_SAMPLE_RATE = 100
 
+# Upper bound on remembered UPDATE_WORKLOAD operation_ids used for retry de-duplication.
+# The store is a sliding window: once full, the oldest entry is evicted (FIFO), so memory is
+# capped at roughly _MAX * ~200 bytes instead of growing without bound. The cap must exceed the
+# number of distinct operations that can occur between an original request and its retry
+# (~ retry_timeout * peak_throughput); a retry whose id has already been evicted would be applied
+# a second time. No in-repo producer sets operation_id yet, so this stays empty until the
+# idempotency path is wired up.
+_MAX_COMMITTED_UPDATE_WORKLOAD_OPERATIONS = 100_000
+
 # Display string for unknown/hybrid role in logs
 _ROLE_DISPLAY_HYBRID = "hybrid"
 
@@ -94,6 +104,10 @@ _KEY_INSTANCE = "instance"
 _KEY_ENDPOINT = "endpoint"
 _KEY_SELECTED_SCORE = "selected_score"
 _KEY_WORKLOAD_SEQUENCE = "workload_sequence"
+_KEY_ROLE_WORKLOAD_SEQUENCE = "role_workload_sequence"
+# Allocation demand sent as two raw floats (keys must match the client literals in scheduler_client).
+_KEY_WORKLOAD_ACTIVE_TOKENS = "workload_active_tokens"
+_KEY_WORKLOAD_ACTIVE_KV_CACHE = "workload_active_kv_cache"
 _KEY_INSTANCE_VERSION = "instance_version"
 _KEY_FAST_PATH = "fast_path"
 _KEY_CANDIDATE_POLICY = "candidate_policy"
@@ -185,6 +199,8 @@ class _SchedulerRequestDispatcher:
         self._pub_socket = pub_socket
         self._recovery_timers: dict[int, asyncio.Task] = {}
         self._workload_commit_lock = asyncio.Lock()
+        # Bounded FIFO of committed operation_ids for retry de-dup (oldest evicted when full).
+        self._committed_update_workload_operations: "OrderedDict[str, None]" = OrderedDict()
         self._endpoint_instance_score_weight = max(
             0.0,
             getattr(config.scheduler_config, "endpoint_instance_score_weight", 0.05),
@@ -222,6 +238,7 @@ class _SchedulerRequestDispatcher:
         endpoint_id = request.data.get("endpoint_id")
         role_str = request.data.get("role")
         req_id = request.data.get("req_id")
+        operation_id = request.data.get("operation_id")
         workload_action_str = request.data.get("workload_action")
         workload_change_data = request.data.get("workload_change")
 
@@ -254,16 +271,65 @@ class _SchedulerRequestDispatcher:
             req_id=req_id or "",
             workload_action=workload_action,
             workload_change=workload_change,
+            operation_id=str(operation_id) if operation_id else None,
         )
-        async with self._workload_commit_lock:
-            success = await self._scheduler.update_workload(params)
-            if success and self._workload_writer:
-                await self._workload_writer.write_single_entry(int(instance_id), int(endpoint_id))
+        if params.operation_id and params.operation_id in self._committed_update_workload_operations:
+            if self._workload_writer:
+                self._workload_writer.write_single_entry_sync(int(instance_id), int(endpoint_id))
+            logger.info(
+                "UPDATE_WORKLOAD idempotent replay operation_id=%s instance_id=%s endpoint_id=%s "
+                "req_id=%s action=%s scheduler_request_id=%s",
+                params.operation_id,
+                instance_id,
+                endpoint_id,
+                req_id or "",
+                workload_action.value,
+                request.request_id,
+            )
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={"success": True, "idempotent": True},
+            )
+        success, updated_role, updated_workload = self._scheduler.update_workload_sync(params)
+        if success and params.operation_id:
+            self._remember_committed_operation(params.operation_id)
+        if success:
+            self._write_workload_entry(int(instance_id), int(endpoint_id), updated_role, updated_workload)
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
             data={"success": success},
         )
+
+    def _write_workload_entry(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        role: PDRole | None,
+        workload: Workload | None,
+    ) -> None:
+        """Publish an endpoint's committed workload to SHM.
+
+        A None workload means the scheduling policy does not track workload (no update_workload_sync),
+        so re-read the authoritative absolute from the ledger instead of writing the caller's delta
+        as if it were the endpoint total.
+        """
+        if not self._workload_writer:
+            return
+        if workload is not None:
+            self._workload_writer.write_single_entry_from_workload(instance_id, endpoint_id, role, workload)
+        else:
+            self._workload_writer.write_single_entry_sync(instance_id, endpoint_id)
+
+    def _remember_committed_operation(self, operation_id: str) -> None:
+        """Record a committed operation_id for retry de-dup, evicting the oldest once the cap is hit."""
+        ops = self._committed_update_workload_operations
+        if operation_id in ops:
+            return
+        ops[operation_id] = None
+        if len(ops) > _MAX_COMMITTED_UPDATE_WORKLOAD_OPERATIONS:
+            ops.popitem(last=False)
 
     def _handle_get_available_instances(self, request: SchedulerRequest) -> SchedulerResponse:
         role_str = request.data.get("role")
@@ -507,8 +573,11 @@ class _SchedulerRequestDispatcher:
         endpoint_id = request.data.get("endpoint_id")
         req_id = request.data.get("req_id", "")
         workload_data = request.data.get("workload")
+        workload_active_tokens = request.data.get(_KEY_WORKLOAD_ACTIVE_TOKENS)
+        workload_active_kv_cache = request.data.get(_KEY_WORKLOAD_ACTIVE_KV_CACHE)
         role_str = request.data.get("role")
         worker_workload_sequence = self._parse_optional_int(request.data.get(_KEY_WORKLOAD_SEQUENCE))
+        worker_role_workload_sequence = self._parse_optional_int(request.data.get(_KEY_ROLE_WORKLOAD_SEQUENCE))
         worker_instance_version = self._parse_optional_int(request.data.get(_KEY_INSTANCE_VERSION))
         candidate_policy = request.data.get(_KEY_CANDIDATE_POLICY)
         worker_load_weight = self._parse_optional_float(request.data.get(_KEY_LOAD_WEIGHT))
@@ -520,14 +589,21 @@ class _SchedulerRequestDispatcher:
                 request_id=request.request_id,
                 error="Missing instance_id or endpoint_id in request data",
             )
-        if not workload_data:
+        if workload_active_tokens is None and workload_active_kv_cache is None and not workload_data:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
                 request_id=request.request_id,
                 error="Missing workload in request data",
             )
         try:
-            workload = Workload.model_validate(workload_data)
+            if workload_active_tokens is not None or workload_active_kv_cache is not None:
+                workload = Workload(
+                    active_tokens=float(workload_active_tokens or 0.0),
+                    active_kv_cache=float(workload_active_kv_cache or 0.0),
+                )
+            else:
+                # Legacy wire format: full Workload dict from an older client.
+                workload = Workload.model_validate(workload_data)
         except Exception as e:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
@@ -554,58 +630,59 @@ class _SchedulerRequestDispatcher:
         # kv_cache_affinity unified mode: every endpoint with its affinity-discounted prefill cost,
         # for a global re-rank by the scheduler's fresh load. Empty for other policies/modes.
         affinity_candidates = self._extract_affinity_candidates(request.data)
-        async with self._workload_commit_lock:
-            fast_path = self._can_use_worker_top1_fast_path(
-                worker_workload_sequence,
-                worker_instance_version,
+        fast_path = self._can_use_worker_top1_fast_path(
+            worker_workload_sequence,
+            worker_role_workload_sequence,
+            worker_instance_version,
+            role,
+        )
+        selected = (
+            self._select_valid_candidate(selected_candidate, role)
+            if fast_path
+            else self._select_authoritative_allocate_candidate(
+                selected_candidate,
+                selected_candidates,
+                role,
+                candidate_policy,
+                affinity_candidates,
+                worker_prefill_load_scale,
+                worker_load_weight,
             )
-            selected = (
-                self._select_valid_candidate(selected_candidate, role)
-                if fast_path
-                else self._select_authoritative_allocate_candidate(
-                    selected_candidate,
-                    selected_candidates,
-                    role,
-                    candidate_policy,
-                    affinity_candidates,
-                    worker_prefill_load_scale,
-                    worker_load_weight,
-                )
+        )
+        if fast_path and selected is None:
+            selected = self._select_authoritative_allocate_candidate(
+                selected_candidate,
+                selected_candidates,
+                role,
+                candidate_policy,
+                affinity_candidates,
+                worker_prefill_load_scale,
+                worker_load_weight,
             )
-            if fast_path and selected is None:
-                selected = self._select_authoritative_allocate_candidate(
-                    selected_candidate,
-                    selected_candidates,
-                    role,
-                    candidate_policy,
-                    affinity_candidates,
-                    worker_prefill_load_scale,
-                    worker_load_weight,
-                )
-                fast_path = False
-            if selected is None:
-                logger.warning(
-                    "ALLOCATE_ONLY endpoint unavailable req_id=%s candidate=%s",
-                    req_id,
-                    selected_candidate,
-                )
-                return SchedulerResponse(
-                    response_type=SchedulerResponseType.SUCCESS,
-                    request_id=request.request_id,
-                    data={_KEY_INSTANCE: None, _KEY_ENDPOINT: None},
-                )
-            instance, endpoint, selected_score = selected
-            params = UpdateWorkloadParams(
-                instance_id=instance.id,
-                endpoint_id=endpoint.id,
-                role=role,
-                req_id=req_id,
-                workload_action=WorkloadAction.ALLOCATION,
-                workload_change=workload,
+            fast_path = False
+        if selected is None:
+            logger.warning(
+                "ALLOCATE_ONLY endpoint unavailable req_id=%s candidate=%s",
+                req_id,
+                selected_candidate,
             )
-            success = await self._scheduler.update_workload(params)
-            if success and self._workload_writer:
-                await self._workload_writer.write_single_entry(instance.id, endpoint.id)
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={_KEY_INSTANCE: None, _KEY_ENDPOINT: None},
+            )
+        instance, endpoint, selected_score = selected
+        params = UpdateWorkloadParams(
+            instance_id=instance.id,
+            endpoint_id=endpoint.id,
+            role=role,
+            req_id=req_id,
+            workload_action=WorkloadAction.ALLOCATION,
+            workload_change=workload,
+        )
+        success, updated_role, updated_workload = self._scheduler.update_workload_sync(params)
+        if success:
+            self._write_workload_entry(instance.id, endpoint.id, updated_role, updated_workload)
 
         if not success:
             return SchedulerResponse(
@@ -951,11 +1028,24 @@ class _SchedulerRequestDispatcher:
     def _can_use_worker_top1_fast_path(
         self,
         worker_workload_sequence: int | None,
+        worker_role_workload_sequence: int | None,
         worker_instance_version: int | None,
+        role: PDRole | None,
     ) -> bool:
         """Return True when worker selected from the exact SchedulerServer workload view."""
         if not self._workload_writer:
             return False
+        scheduler_role_sequence = (
+            self._workload_writer.role_sequence(role)
+            if role is not None and hasattr(self._workload_writer, "role_sequence")
+            else None
+        )
+        if scheduler_role_sequence is not None and worker_role_workload_sequence is not None:
+            return (
+                worker_instance_version is not None
+                and worker_role_workload_sequence == scheduler_role_sequence
+                and worker_instance_version == self._workload_writer.instance_version
+            )
         return (
             worker_workload_sequence is not None
             and worker_instance_version is not None

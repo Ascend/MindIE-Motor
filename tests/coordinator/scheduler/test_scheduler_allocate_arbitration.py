@@ -1,4 +1,13 @@
-# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """Tests for SchedulerServer allocate-only candidate arbitration."""
 
 import pytest
@@ -22,14 +31,26 @@ from motor.coordinator.scheduler.scheduler import Scheduler
 class _DummyWorkloadWriter:
     """Minimal workload writer stub for dispatcher allocation tests."""
 
-    def __init__(self):
+    def __init__(self, role_sequences: dict[PDRole, int] | None = None):
         self.sequence = 0
         self.instance_version = 1
+        self._role_sequences = role_sequences
         self.writes: list[tuple[int, int]] = []
 
+    def role_sequence(self, role: PDRole) -> int | None:
+        if self._role_sequences is None:
+            return None
+        return self._role_sequences.get(role)
+
     async def write_single_entry(self, instance_id: int, endpoint_id: int) -> None:
+        self.write_single_entry_sync(instance_id, endpoint_id)
+
+    def write_single_entry_sync(self, instance_id: int, endpoint_id: int) -> None:
         self.sequence += 2
         self.writes.append((instance_id, endpoint_id))
+
+    def write_single_entry_from_workload(self, instance_id, endpoint_id, role, workload) -> None:
+        self.write_single_entry_sync(instance_id, endpoint_id)
 
 
 def _make_prefill_instance(
@@ -109,6 +130,52 @@ async def test_allocate_only_commits_best_authoritative_candidate():
     assert stale_workload.active_tokens == 20
     assert workload_writer.writes == [(2, 20)]
     assert response.data["fast_path"] is False
+
+
+@pytest.mark.asyncio
+async def test_allocate_only_accepts_scalar_workload_fields():
+    """New wire format: demand sent as raw floats must commit the same as the legacy workload dict."""
+    config = CoordinatorConfig()
+    config.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+    config.scheduler_config.endpoint_instance_score_weight = 0.0
+    instance_manager = InstanceManager(config)
+
+    inst_a = _make_prefill_instance(1, (10, 11))
+    inst_b = _make_prefill_instance(2, (20, 21))
+    await instance_manager.refresh_instances(EventType.ADD, [inst_a, inst_b])
+    await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=20))
+    await instance_manager.update_instance_workload(1, 11, Workload(active_tokens=30))
+    await instance_manager.update_instance_workload(2, 20, Workload(active_tokens=1))
+    await instance_manager.update_instance_workload(2, 21, Workload(active_tokens=40))
+
+    scheduler = Scheduler(instance_provider=instance_manager, config=config)
+    workload_writer = _DummyWorkloadWriter()
+    dispatcher = _SchedulerRequestDispatcher(
+        instance_manager,
+        scheduler,
+        config,
+        workload_writer=workload_writer,
+    )
+    request = SchedulerRequest(
+        request_type=SchedulerRequestType.ALLOCATE_ONLY,
+        request_id="alloc-scalar",
+        data={
+            "instance_id": 1,
+            "endpoint_id": 10,
+            "role": PDRole.ROLE_P.value,
+            "req_id": "req-scalar",
+            "workload_active_tokens": 3.0,
+            "workload_active_kv_cache": 0.0,
+        },
+    )
+
+    response = await dispatcher.dispatch(request)
+
+    assert response.response_type == SchedulerResponseType.SUCCESS
+    assert response.data["instance"]["id"] == 2
+    assert response.data["endpoint"]["id"] == 20
+    _, selected_workload = await instance_manager.get_endpoint_workload(2, 20)
+    assert selected_workload.active_tokens == 4
 
 
 @pytest.mark.asyncio
@@ -544,6 +611,52 @@ async def test_allocate_only_fast_path_accepts_worker_top1_when_sequence_matches
     assert selected_role == PDRole.ROLE_P
     assert selected_workload.active_tokens == 23
     assert untouched_workload.active_tokens == 1
+
+
+@pytest.mark.asyncio
+async def test_allocate_only_fast_path_uses_role_sequence_when_global_sequence_mismatch():
+    """A decode workload bump should not invalidate a matching prefill role sequence."""
+    config = CoordinatorConfig()
+    config.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+    config.scheduler_config.endpoint_instance_score_weight = 0.0
+    instance_manager = InstanceManager(config)
+
+    inst_a = _make_prefill_instance(1, (10, 11))
+    inst_b = _make_prefill_instance(2, (20, 21))
+    await instance_manager.refresh_instances(EventType.ADD, [inst_a, inst_b])
+    await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=20))
+    await instance_manager.update_instance_workload(2, 20, Workload(active_tokens=1))
+
+    scheduler = Scheduler(instance_provider=instance_manager, config=config)
+    workload_writer = _DummyWorkloadWriter(role_sequences={PDRole.ROLE_P: 7, PDRole.ROLE_D: 11})
+    workload_writer.sequence = 99
+    dispatcher = _SchedulerRequestDispatcher(
+        instance_manager,
+        scheduler,
+        config,
+        workload_writer=workload_writer,
+    )
+    request = SchedulerRequest(
+        request_type=SchedulerRequestType.ALLOCATE_ONLY,
+        request_id="alloc-role-fast",
+        data={
+            "instance_id": 1,
+            "endpoint_id": 10,
+            "role": PDRole.ROLE_P.value,
+            "req_id": "req-role-fast",
+            "workload_sequence": 5,
+            "role_workload_sequence": 7,
+            "instance_version": workload_writer.instance_version,
+            "workload": Workload(active_tokens=3).model_dump(mode="json"),
+        },
+    )
+
+    response = await dispatcher.dispatch(request)
+
+    assert response.response_type == SchedulerResponseType.SUCCESS
+    assert response.data["fast_path"] is True
+    assert response.data["instance"]["id"] == 1
+    assert response.data["endpoint"]["id"] == 10
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -28,6 +27,8 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
+    SchedulerRequestFailureReason,
+    SchedulerRequestResult,
     _SchedulerInstanceCache,
     _collect_active_endpoints_from_cache,
 )
@@ -36,6 +37,11 @@ from motor.coordinator.scheduler.runtime.scheduler_client import (
 # ========================================================================
 # Helper factories  (real pydantic objects, aligned with conftest.py)
 # ========================================================================
+
+
+def _endpoint_workload(ep: Endpoint) -> Workload:
+    """Return endpoint workload without triggering pydantic FieldInfo pylint false positives."""
+    return getattr(ep, "workload")
 
 
 def _make_endpoint(
@@ -231,8 +237,9 @@ class TestSchedulerInstanceCache:
             active_kv_cache=3.0,
         )
 
-        assert ep.workload.active_tokens == 5.0
-        assert ep.workload.active_kv_cache == 3.0
+        workload = _endpoint_workload(ep)
+        assert workload.active_tokens == 5.0
+        assert workload.active_kv_cache == 3.0
         assert inst.gathered_workload.active_tokens == 5.0
         assert inst.gathered_workload.active_kv_cache == 3.0
 
@@ -262,8 +269,9 @@ class TestSchedulerInstanceCache:
             active_kv_cache=20.0,
         )
 
-        assert ep.workload.active_tokens == 0.0
-        assert ep.workload.active_kv_cache == 0.0
+        workload = _endpoint_workload(ep)
+        assert workload.active_tokens == 0.0
+        assert workload.active_kv_cache == 0.0
 
     @pytest.mark.asyncio
     async def test_patch_workload_from_shm_wrong_role_noop(self):
@@ -281,8 +289,9 @@ class TestSchedulerInstanceCache:
             active_kv_cache=3.0,
         )
 
-        assert ep.workload.active_tokens == 0.0
-        assert ep.workload.active_kv_cache == 0.0
+        workload = _endpoint_workload(ep)
+        assert workload.active_tokens == 0.0
+        assert workload.active_kv_cache == 0.0
 
 
 # ========================================================================
@@ -394,18 +403,18 @@ class TestAsyncSchedulerClient:
         await self.client.connect()
         assert self.client.connected is True
 
-        async def _disconnect_and_clear():
+        async def _set_transport_disconnected():
             self.mock_transport.connected = False
 
-        self.mock_transport.disconnect = _disconnect_and_clear
+        self.mock_transport.disconnect = AsyncMock(side_effect=_set_transport_disconnected)
         await self.client.disconnect()
         assert self.client.connected is False
 
-    # -- test_select_instance_and_endpoint_fallback_to_cache -----------------
+    # -- test_select_endpoint_candidates_fallback --------------------------------
 
     @pytest.mark.asyncio
-    async def test_select_instance_and_endpoint_fallback_to_cache(self):
-        """When cache miss and transport fails, returns None gracefully."""
+    async def test_select_endpoint_candidates_returns_empty_on_transport_failure(self):
+        """When cache miss and transport fails, candidate selection returns empty."""
         self.mock_cache.get_instances.return_value = []
         self.mock_transport.send_request = AsyncMock(return_value=None)  # transport fails
 
@@ -413,11 +422,11 @@ class TestAsyncSchedulerClient:
         mock_req_info.req_id = "req-fallback"
         mock_req_info.req_len = 50
 
-        result = await self.client.select_instance_and_endpoint(
+        result = await self.client._select_endpoint_candidates(
             mock_req_info,
             PDRole.ROLE_P,
         )
-        assert result is None
+        assert result == []
 
     # -- test_select_and_allocate -------------------------------------------
 
@@ -446,8 +455,7 @@ class TestAsyncSchedulerClient:
             mock_req_info,
         )
 
-        # select_and_allocate internally calls select_instance_and_endpoint first;
-        # if no cache/transport data, result may be None — that's valid behavior
+        # Without cached instances or a successful GET_AVAILABLE_INSTANCES, selection may be None.
         assert result is None or (isinstance(result, tuple) and len(result) == 3)
 
     @pytest.mark.asyncio
@@ -470,33 +478,28 @@ class TestAsyncSchedulerClient:
     @pytest.mark.asyncio
     async def test_select_and_allocate_transport_failure(self):
         """select_and_allocate returns None when transport.send_request fails."""
-        # Cache has instance but transport fails for the ALLOCATE RPC
         mock_inst = Mock(spec=Instance)
         mock_inst.id = 1
-        mock_inst.get_all_endpoints = Mock(return_value=[Mock(spec=Endpoint)])
-        self.mock_cache.get_instances.return_value = [mock_inst]
         mock_ep = Mock(spec=Endpoint)
         mock_ep.id = 10
-        mock_ep.ip = "127.0.0.1"
-        mock_ep.business_port = "8080"
 
-        if hasattr(self.client, "_select_instance_and_endpoint_from_list"):
-            with patch.object(
-                self.client,
-                "_select_instance_and_endpoint_from_list",
-                return_value=(mock_inst, mock_ep),
-            ):
-                self.mock_transport.send_request = AsyncMock(return_value=None)
+        with patch.object(
+            self.client,
+            "_select_endpoint_candidates_with_policy",
+            return_value=([(mock_inst, mock_ep, 0.0)], "round_robin"),
+        ):
+            self.mock_transport.send_request = AsyncMock(return_value=None)
 
-                mock_req_info = Mock(spec=RequestInfo)
-                mock_req_info.req_id = "req-fail"
-                mock_req_info.req_len = 100
+            mock_req_info = Mock(spec=RequestInfo)
+            mock_req_info.req_id = "req-fail"
+            mock_req_info.req_len = 100
+            mock_req_info.kv_affinity_debug = None
 
-                result = await self.client.select_and_allocate(
-                    PDRole.ROLE_P,
-                    mock_req_info,
-                )
-                assert result is None
+            result = await self.client.select_and_allocate(
+                PDRole.ROLE_P,
+                mock_req_info,
+            )
+            assert result is None
 
     # -- test_update_workload -----------------------------------------------
 
@@ -515,10 +518,13 @@ class TestAsyncSchedulerClient:
             req_id="req-upd",
             workload_action=WorkloadAction.ALLOCATION,
             workload_change=Workload(active_tokens=5.0, active_kv_cache=3.0),
+            operation_id="op-update-workload",
         )
 
         result = await self.client.update_workload(params)
         assert result is True
+        sent_request = self.mock_transport.send_request.await_args.args[0]
+        assert sent_request.data["operation_id"] == "op-update-workload"
 
     # -- test_update_workload_transport_failure -----------------------------
 
@@ -881,6 +887,36 @@ class TestAsyncSchedulerClient:
 
         result = await self.client.update_workload(params)
         assert result is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            SchedulerRequestFailureReason.TIMEOUT,
+            SchedulerRequestFailureReason.CANCELLED,
+            SchedulerRequestFailureReason.DISCONNECTED,
+        ],
+    )
+    async def test_update_workload_logs_classified_no_response_reason(self, reason, caplog):
+        """update_workload logs the specific scheduler transport failure reason."""
+        self.client._send_request_result = AsyncMock(
+            return_value=SchedulerRequestResult(failure_reason=reason, error="classified-error")
+        )
+
+        params = UpdateWorkloadParams(
+            instance_id=1,
+            endpoint_id=1,
+            role=PDRole.ROLE_P,
+            req_id=f"req-{reason.value}",
+            workload_action=WorkloadAction.RELEASE_TOKENS,
+            workload_change=Workload(),
+        )
+
+        result = await self.client.update_workload(params)
+
+        assert result is False
+        assert f"reason={reason.value}" in caplog.text
+        assert "classified-error" in caplog.text
 
     # -- test_client_not_connected_operations --------------------------------
 

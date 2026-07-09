@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -16,18 +15,17 @@ from multiprocessing import shared_memory
 from typing import Any
 
 from motor.common.resources.instance import PDRole
-from motor.common.resources.endpoint import Workload
 from motor.common.logger import get_logger
 from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     MAGIC,
     HEADER_SIZE,
     ENTRY_SIZE,
     HEARTBEAT_STALE_SEC,
+    SCHEMA_VERSION,
     unpack_header,
     unpack_entry,
     ROLE_PREFILL,
     ROLE_DECODE,
-    ROLE_HYBRID,
     ROLE_ENCODE,
 )
 
@@ -57,6 +55,7 @@ class WorkloadSharedMemoryReader:
         self._shm: shared_memory.SharedMemory | None = None
         self._buf: memoryview | None = None
         self._last_sequence: int | None = None
+        self._last_role_sequences: dict[PDRole, int] = {}
         self._last_heartbeat_value: int = 0
         self._last_heartbeat_time: float = 0.0
 
@@ -64,6 +63,10 @@ class WorkloadSharedMemoryReader:
     def last_sequence(self) -> int | None:
         """Last stable workload sequence read from shared memory."""
         return self._last_sequence
+
+    def last_sequence_for_role(self, role: PDRole) -> int | None:
+        """Last stable workload sequence read for a role."""
+        return self._last_role_sequences.get(role)
 
     def attach(self) -> None:
         """Attach to existing shared memory."""
@@ -81,11 +84,13 @@ class WorkloadSharedMemoryReader:
                 logger.warning("WorkloadSharedMemoryReader detach error: %s", e)
             self._shm = None
 
-    def read_and_patch_cache(self, cache: Any) -> tuple[int | None, bool]:
+    def read_and_patch_cache(self, cache: Any, role: PDRole | None = None) -> tuple[int | None, bool]:
         """
         Read shared memory and patch cache workload.
         Returns (instance_version, heartbeat_stale).
         When heartbeat_stale is True, Scheduler likely restarted; caller should get_available_instances.
+        When role is P/D/U, only that role's entries are patched, and unchanged role sequence skips
+        entry scanning entirely. Unsupported roles use the full-cache fallback.
         """
         if not self._buf:
             return (None, False)
@@ -97,16 +102,15 @@ class WorkloadSharedMemoryReader:
                     return (None, False)
                 if header.sequence % 2 == 1:
                     continue
+                if self._role_cache_is_current(header, role):
+                    header_after = unpack_header(self._buf)
+                    if self._headers_match(header, header_after):
+                        snapshot = (header_after, None)
+                        break
 
                 entries = [unpack_entry(self._buf, slot) for slot in range(header.entry_count)]
                 header_after = unpack_header(self._buf)
-                if (
-                    header_after.magic == MAGIC
-                    and header_after.sequence == header.sequence
-                    and header_after.sequence % 2 == 0
-                    and header_after.entry_count == header.entry_count
-                    and header_after.instance_version == header.instance_version
-                ):
+                if self._headers_match(header, header_after):
                     snapshot = (header_after, entries)
                     break
             if snapshot is None:
@@ -115,8 +119,9 @@ class WorkloadSharedMemoryReader:
 
             heartbeat_stale = self._update_heartbeat_and_check_stale(header)
 
-            self._patch_entries(cache, entries)
-            self._last_sequence = header.sequence
+            if entries is not None:
+                self._patch_entries(cache, entries, role=role)
+                self._record_patched_sequences(header, role)
             return (header.instance_version, heartbeat_stale)
         except Exception as e:
             logger.debug("WorkloadSharedMemoryReader read error: %s", e)
@@ -149,16 +154,73 @@ class WorkloadSharedMemoryReader:
         if header.heartbeat_sequence != self._last_heartbeat_value:
             self._last_heartbeat_value = header.heartbeat_sequence
             self._last_heartbeat_time = now
+        return self._last_heartbeat_time > 0 and (now - self._last_heartbeat_time) > HEARTBEAT_STALE_SEC
+
+    @staticmethod
+    def _headers_match(header: Any, header_after: Any) -> bool:
+        base_match = (
+            header_after.magic == MAGIC
+            and header_after.schema_version == header.schema_version
+            and header_after.sequence == header.sequence
+            and header_after.sequence % 2 == 0
+            and header_after.entry_count == header.entry_count
+            and header_after.instance_version == header.instance_version
+        )
+        if not base_match:
+            return False
+        if not WorkloadSharedMemoryReader._role_sequences_supported(header):
+            return True
         return (
-            self._last_heartbeat_time > 0
-            and (now - self._last_heartbeat_time) > HEARTBEAT_STALE_SEC
+            header_after.prefill_sequence == header.prefill_sequence
+            and header_after.decode_sequence == header.decode_sequence
+            and header_after.hybrid_sequence == header.hybrid_sequence
         )
 
     @staticmethod
-    def _patch_entries(cache: Any, entries: list[Any]) -> None:
+    def _role_sequences_supported(header: Any) -> bool:
+        return getattr(header, "schema_version", 0) >= SCHEMA_VERSION
+
+    @staticmethod
+    def _role_sequence_from_header(header: Any, role: PDRole | None) -> int | None:
+        if not WorkloadSharedMemoryReader._role_sequences_supported(header):
+            return None
+        if role == PDRole.ROLE_P:
+            return header.prefill_sequence
+        if role == PDRole.ROLE_D:
+            return header.decode_sequence
+        if role == PDRole.ROLE_U:
+            return header.hybrid_sequence
+        return None
+
+    def _role_cache_is_current(self, header: Any, role: PDRole | None) -> bool:
+        role_sequence = self._role_sequence_from_header(header, role)
+        return role_sequence is not None and self._last_role_sequences.get(role) == role_sequence
+
+    def _record_patched_sequences(self, header: Any, role: PDRole | None) -> None:
+        role_sequence = self._role_sequence_from_header(header, role)
+        if role_sequence is not None:
+            self._last_role_sequences[role] = role_sequence
+            return
+        if self._role_sequences_supported(header):
+            self._patch_all_role_sequences(header)
+        else:
+            self._last_role_sequences = {}
+        self._last_sequence = header.sequence
+
+    def _patch_all_role_sequences(self, header: Any) -> None:
+        self._last_role_sequences = {
+            PDRole.ROLE_P: header.prefill_sequence,
+            PDRole.ROLE_D: header.decode_sequence,
+            PDRole.ROLE_U: header.hybrid_sequence,
+        }
+
+    @staticmethod
+    def _patch_entries(cache: Any, entries: list[Any], *, role: PDRole | None = None) -> None:
         """Patch workload cache from shm entries."""
         for entry in entries:
             pdrole = _shm_role_to_pdrole(entry.role)
+            if role in {PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U} and pdrole != role:
+                continue
             cache.patch_workload_from_shm(
                 entry.instance_id,
                 entry.endpoint_id,

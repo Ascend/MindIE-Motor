@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -16,7 +15,6 @@ import struct
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from motor.coordinator.scheduler.runtime.workload_shm.writer import (
     WorkloadSharedMemoryWriter,
@@ -30,9 +28,7 @@ from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     HEADER_SIZE,
     ENTRY_SIZE,
     HEARTBEAT_OFFSET,
-    MAGIC,
     WorkloadShmEntry,
-    WorkloadShmHeader,
     pack_entry,
     unpack_header,
 )
@@ -42,6 +38,7 @@ from motor.common.resources.instance import PDRole
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_mock_shm(buf_size=None):
     """Create a mock SharedMemory whose .buf is a real bytearray (memoryview-compatible)."""
@@ -56,6 +53,7 @@ def _make_mock_shm(buf_size=None):
 # ===================================================================
 # TestPdRoleToShmRole
 # ===================================================================
+
 
 class TestPdRoleToShmRole(unittest.TestCase):
     """Test _pdrole_to_shm_role mapping function."""
@@ -76,6 +74,7 @@ class TestPdRoleToShmRole(unittest.TestCase):
 # ===================================================================
 # TestCollectEntriesAndSlotMap
 # ===================================================================
+
 
 class TestCollectEntriesAndSlotMap(unittest.TestCase):
     """Test _collect_entries_and_slot_map helper."""
@@ -133,13 +132,16 @@ class TestCollectEntriesAndSlotMap(unittest.TestCase):
         self.assertEqual(slot_map, {(1, 10): 0, (2, 20): 1, (3, 30): 2})
 
         self.assertEqual(
-            entries[0], (1, 10, ROLE_PREFILL, 100.0, 200.0),
+            entries[0],
+            (1, 10, ROLE_PREFILL, 100.0, 200.0),
         )
         self.assertEqual(
-            entries[1], (2, 20, ROLE_DECODE, 300.0, 400.0),
+            entries[1],
+            (2, 20, ROLE_DECODE, 300.0, 400.0),
         )
         self.assertEqual(
-            entries[2], (3, 30, ROLE_HYBRID, 500.0, 600.0),
+            entries[2],
+            (3, 30, ROLE_HYBRID, 500.0, 600.0),
         )
 
     # ---------------------------------------------------------------
@@ -165,6 +167,7 @@ class TestCollectEntriesAndSlotMap(unittest.TestCase):
 # TestWorkloadSharedMemoryWriter
 # ===================================================================
 
+
 class TestWorkloadSharedMemoryWriter(unittest.TestCase):
     """Test WorkloadSharedMemoryWriter."""
 
@@ -183,13 +186,20 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         self.assertEqual(writer.instance_version, 0)
 
         with patch(
-            "motor.coordinator.scheduler.runtime.workload_shm.writer."
-            "_collect_entries_and_slot_map",
+            "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map",
             return_value=([], {}),
         ):
             writer.write_snapshot()
 
         self.assertEqual(writer.instance_version, 1)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 1)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 1)
+
+        header = unpack_header(writer._buf)
+        self.assertEqual(header.prefill_sequence, 1)
+        self.assertEqual(header.decode_sequence, 1)
+        self.assertEqual(header.hybrid_sequence, 1)
 
     # ---------------------------------------------------------------
     def test_release(self):
@@ -218,7 +228,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
 
         written = struct.unpack(
             "<Q",
-            bytes(writer._buf[HEARTBEAT_OFFSET: HEARTBEAT_OFFSET + 8]),
+            bytes(writer._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8]),
         )[0]
         self.assertEqual(written, 1)
 
@@ -263,6 +273,32 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
 
         # Header should be rewritten
         mock_wh.assert_called()
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
+
+    # ---------------------------------------------------------------
+    def test_write_single_entry_bumps_only_matching_role_sequence(self):
+        """A decode workload update should not invalidate prefill fast-path sequence."""
+        shm = _make_mock_shm()
+        im = MagicMock()
+        writer = WorkloadSharedMemoryWriter(shm, im)
+        writer._slot_map = {(2, 2): 0}
+        writer._entry_count = 1
+        mock_workload = MagicMock()
+        mock_workload.active_tokens = 10.0
+        mock_workload.active_kv_cache = 20.0
+        im.get_endpoint_workload = AsyncMock(return_value=(PDRole.ROLE_D, mock_workload))
+
+        asyncio.run(writer.write_single_entry(2, 2))
+
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 0)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 1)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
+        header = unpack_header(writer._buf)
+        self.assertEqual(header.prefill_sequence, 0)
+        self.assertEqual(header.decode_sequence, 1)
+        self.assertEqual(header.hybrid_sequence, 0)
 
     # ---------------------------------------------------------------
     def test_write_single_entry_missing_slot(self):
@@ -288,8 +324,9 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
 
         # Pre-populate buffer with a heartbeat value larger than internal
         larger_heartbeat = 42
-        writer._buf[HEARTBEAT_OFFSET:HEARTBEAT_OFFSET + 8] = struct.pack(
-            "<Q", larger_heartbeat,
+        writer._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8] = struct.pack(
+            "<Q",
+            larger_heartbeat,
         )
 
         writer._write_header()
@@ -300,7 +337,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         # The written header should also contain the larger value
         current = struct.unpack(
             "<Q",
-            bytes(writer._buf[HEARTBEAT_OFFSET:HEARTBEAT_OFFSET + 8]),
+            bytes(writer._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8]),
         )[0]
         self.assertEqual(current, larger_heartbeat)
 
@@ -322,14 +359,14 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         writer._write_entry_at_slot(3, entry)
 
         offset = HEADER_SIZE + 3 * ENTRY_SIZE
-        actual = bytes(writer._buf[offset:offset + ENTRY_SIZE])
+        actual = bytes(writer._buf[offset : offset + ENTRY_SIZE])
         self.assertEqual(actual, expected_data)
 
         # Other slots remain zeroed
         for slot in (0, 1, 2, 4):
             off = HEADER_SIZE + slot * ENTRY_SIZE
             self.assertEqual(
-                bytes(writer._buf[off:off + ENTRY_SIZE]),
+                bytes(writer._buf[off : off + ENTRY_SIZE]),
                 b"\x00" * ENTRY_SIZE,
                 msg=f"Slot {slot} should be untouched",
             )

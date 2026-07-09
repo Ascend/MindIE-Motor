@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -11,9 +10,9 @@ import os
 import threading
 
 from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
+from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
-from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
+from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy, WorkloadLedgerMixin
 from motor.config.coordinator import (
     CoordinatorConfig,
     KV_AFFINITY_MODE_LOAD_GATED,
@@ -37,7 +36,7 @@ logger = get_logger(__name__)
 _DEFAULT_LOAD_GATE_TOPN = 2
 
 
-class KvCacheAffinityPolicy(BaseSchedulingPolicy):
+class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
     """
     KvCache Affinity Scheduler Policy implementation.
     Selects instances and endpoints in a kvcache-affinity fashion.
@@ -45,7 +44,6 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
 
     def __init__(self, instance_provider: InstanceProvider):
         super().__init__(instance_provider=instance_provider)
-        self._instance_provider = instance_provider
 
         logger.info("KvCacheAffinityPolicy started.")
 
@@ -420,39 +418,6 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 
         return LoadBalancePolicy.select_endpoint_from_list(instances, role)
-
-    async def update_workload(
-        self,
-        instance_id: int,
-        endpoint_id: int,
-        req_id: str,
-        workload_action: WorkloadAction,
-        workload_change: Workload,
-    ) -> bool:
-        """
-        Update workload after KV-affinity selection.
-
-        KV-affinity decides where prefill should land, but the central workload ledger is still
-        needed by decode/fallback load-balance paths and by worker SHM synchronization.
-        """
-        if hasattr(self._instance_provider, "update_instance_workload"):
-            await self._instance_provider.update_instance_workload(instance_id, endpoint_id, workload_change)
-        else:
-            raise RuntimeError("InstanceProvider must support update_instance_workload for KvCacheAffinityPolicy")
-
-        if req_id:
-            logger.debug(
-                f"Request {req_id} updated workload: instance_id={instance_id}, "
-                f"endpoint_id={endpoint_id}, action={workload_action.value}, "
-                f"change={workload_change}"
-            )
-        else:
-            logger.debug(
-                f"Updated workload: instance_id={instance_id}, "
-                f"endpoint_id={endpoint_id}, action={workload_action.value}, "
-                f"change={workload_change}"
-            )
-        return True
 
 
 class TokenizerManager(ThreadSafeSingleton):

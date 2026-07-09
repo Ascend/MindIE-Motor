@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -12,11 +11,72 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint
+from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.coordinator.domain import InstanceProvider
 from motor.common.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class WorkloadLedgerMixin:
+    """Shared workload ledger updates for load-aware scheduling policies."""
+
+    def update_workload_sync(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        req_id: str,
+        workload_action: WorkloadAction,
+        workload_change: Workload,
+    ) -> tuple[PDRole | None, Workload | None]:
+        """
+        Update workload information for load-aware scheduling (by id only).
+
+        Returns:
+            (role, workload) for the updated endpoint, or (None, None) if not found
+        """
+        policy_name = type(self).__name__
+        if hasattr(self._instance_provider, "update_instance_workload_sync"):
+            role, workload = self._instance_provider.update_instance_workload_sync(
+                instance_id,
+                endpoint_id,
+                workload_change,
+            )
+        else:
+            raise RuntimeError(f"InstanceProvider must support update_instance_workload_sync for {policy_name}")
+
+        if req_id:
+            logger.debug(
+                f"Request {req_id} updated workload: instance_id={instance_id}, "
+                f"endpoint_id={endpoint_id}, action={workload_action.value}, "
+                f"change={workload_change}"
+            )
+        else:
+            logger.debug(
+                f"Updated workload: instance_id={instance_id}, "
+                f"endpoint_id={endpoint_id}, action={workload_action.value}, "
+                f"change={workload_change}"
+            )
+
+        return (role, workload)
+
+    async def update_workload(
+        self,
+        instance_id: int,
+        endpoint_id: int,
+        req_id: str,
+        workload_action: WorkloadAction,
+        workload_change: Workload,
+    ) -> bool:
+        """Apply a workload delta through the instance provider ledger."""
+        policy_name = type(self).__name__
+        if hasattr(self._instance_provider, "update_instance_workload_sync"):
+            self.update_workload_sync(instance_id, endpoint_id, req_id, workload_action, workload_change)
+        elif hasattr(self._instance_provider, "update_instance_workload"):
+            await self._instance_provider.update_instance_workload(instance_id, endpoint_id, workload_change)
+        else:
+            raise RuntimeError(f"InstanceProvider must support update_instance_workload for {policy_name}")
+        return True
 
 
 class BaseSchedulingPolicy(ABC):

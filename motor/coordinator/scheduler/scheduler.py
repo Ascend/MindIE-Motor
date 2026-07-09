@@ -21,7 +21,6 @@ from motor.coordinator.domain import (
     UpdateWorkloadParams,
     readiness_from_instances,
 )
-from motor.common.resources.http_msg_spec import EventType
 from motor.common.logger import get_logger
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
 from motor.coordinator.scheduler.policy.factory import SchedulingPolicyFactory
@@ -171,10 +170,31 @@ class Scheduler:
             workload_action=WorkloadAction.ALLOCATION,
             workload_change=workload,
         )
-        success = await self.update_workload(params)
+        success = self.update_workload_sync(params)[0]
         if not success:
             return None
         return (instance, endpoint, workload)
+
+    def update_workload_sync(self, params: UpdateWorkloadParams) -> tuple[bool, PDRole | None, Workload | None]:
+        """
+        Synchronous workload update for Scheduler-process critical sections.
+        Returns (success, role, updated_endpoint_workload). A None workload means the policy does not
+        track workload; the caller must re-read the authoritative absolute rather than treat
+        params.workload_change (a delta) as the endpoint total.
+        """
+        if hasattr(self._scheduling_policy, "update_workload_sync"):
+            role, workload = self._scheduling_policy.update_workload_sync(
+                params.instance_id,
+                params.endpoint_id,
+                params.req_id,
+                params.workload_action,
+                params.workload_change,
+            )
+            return (role is not None and workload is not None, role, workload)
+        # Policy has no update_workload_sync (e.g. round-robin): the ledger is untouched, so we have
+        # no absolute to return. Signal that with None -- returning workload_change would write a
+        # delta into SHM as if it were the endpoint total.
+        return (True, params.role, None)
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
         """
@@ -235,16 +255,6 @@ class Scheduler:
         if readiness != InstanceReadiness.NONE:
             return readiness
         return await asyncio.to_thread(self._instance_provider.get_required_instances_status)
-
-    async def get_all_instances(
-        self,
-    ) -> tuple[dict[int, Instance], dict[int, Instance]]:
-        """Return (available, unavailable) instance dicts from in-process InstanceManager."""
-        return await self._instance_provider.get_all_instances()
-
-    async def refresh_instances(self, event_type: EventType, instances: list[Instance]) -> bool:
-        """Refresh instance list (delegate to in-process InstanceManager). Returns True if pools changed."""
-        return await self._instance_provider.refresh_instances(event_type, instances)
 
     def _sample_exit_lock(self, key: tuple[int | None, int]) -> asyncio.Lock:
         if key not in self._sample_exit_locks:

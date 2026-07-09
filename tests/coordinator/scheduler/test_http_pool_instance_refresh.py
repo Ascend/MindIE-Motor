@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -156,7 +155,9 @@ class TestSchedulerClientEndpointTopK:
             api="/test/api",
         )
 
-        candidates = client._select_endpoint_candidates_from_list([inst1, inst2], PDRole.ROLE_P, req_info, top_k=2)
+        candidates, _ = client._select_endpoint_candidates_from_list_with_policy(
+            [inst1, inst2], PDRole.ROLE_P, req_info, top_k=2
+        )
 
         assert [(inst.id, ep.id) for inst, ep, _ in candidates] == [(2, 20), (1, 10)]
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -25,7 +24,7 @@ from dataclasses import dataclass
 MAGIC = 0x574B4C44
 
 # Schema version for layout compatibility
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Role mapping: prefill=0, decode=1, hybrid=2, encode=3
 ROLE_PREFILL = 0
@@ -36,9 +35,10 @@ ROLE_ENCODE = 3
 # Header: 64 bytes
 # magic 4B, schema 2B, padding 2B, sequence 8B (seqlock), entry_count 4B, max_entries 4B,
 # instance_version 8B (bumped when instance/endpoint set changes),
-# heartbeat_sequence 8B (Scheduler bumps ~1/s), reserved 24B
+# heartbeat_sequence 8B (Scheduler bumps ~1/s),
+# prefill_sequence 8B, decode_sequence 8B, hybrid_sequence 8B
 HEADER_SIZE = 64
-HEADER_FMT = "<I H H q I I Q Q 24x"  # little-endian
+HEADER_FMT = "<I H H q I I Q Q Q Q Q"  # little-endian
 HEARTBEAT_OFFSET = 32  # bytes 32-40: heartbeat_sequence (Q)
 HEARTBEAT_STALE_SEC = 5.0  # If heartbeat unchanged for this long, Infer treats shm as stale
 
@@ -73,16 +73,28 @@ class WorkloadShmHeader:
     max_entries: int
     instance_version: int = 0
     heartbeat_sequence: int = 0
+    prefill_sequence: int = 0
+    decode_sequence: int = 0
+    hybrid_sequence: int = 0
 
 
 def pack_header(header: WorkloadShmHeader) -> bytes:
-    """Pack header into 64 bytes. instance_version/heartbeat_sequence in 0..2^64-1 (unsigned)."""
+    """Pack header into 64 bytes. Unsigned sequence fields are normalized to uint64."""
     instance_version = header.instance_version
     heartbeat_sequence = header.heartbeat_sequence
+    prefill_sequence = header.prefill_sequence
+    decode_sequence = header.decode_sequence
+    hybrid_sequence = header.hybrid_sequence
     if instance_version < 0 or instance_version > (1 << 64) - 1:
         instance_version = instance_version % (1 << 64)
     if heartbeat_sequence < 0 or heartbeat_sequence > (1 << 64) - 1:
         heartbeat_sequence = heartbeat_sequence % (1 << 64)
+    if prefill_sequence < 0 or prefill_sequence > (1 << 64) - 1:
+        prefill_sequence = prefill_sequence % (1 << 64)
+    if decode_sequence < 0 or decode_sequence > (1 << 64) - 1:
+        decode_sequence = decode_sequence % (1 << 64)
+    if hybrid_sequence < 0 or hybrid_sequence > (1 << 64) - 1:
+        hybrid_sequence = hybrid_sequence % (1 << 64)
     return struct.pack(
         HEADER_FMT,
         header.magic,
@@ -93,6 +105,9 @@ def pack_header(header: WorkloadShmHeader) -> bytes:
         header.max_entries,
         instance_version,
         heartbeat_sequence,
+        prefill_sequence,
+        decode_sequence,
+        hybrid_sequence,
     )
 
 
@@ -109,6 +124,9 @@ def unpack_header(buf: memoryview) -> WorkloadShmHeader:
         max_entries=t[5],
         instance_version=t[6],
         heartbeat_sequence=t[7],
+        prefill_sequence=t[8],
+        decode_sequence=t[9],
+        hybrid_sequence=t[10],
     )
 
 
@@ -129,7 +147,7 @@ def unpack_entry(buf: memoryview, slot: int) -> WorkloadShmEntry:
     offset = HEADER_SIZE + slot * ENTRY_SIZE
     if offset + ENTRY_SIZE > len(buf):
         raise ValueError(f"Entry slot {slot} out of range")
-    t = struct.unpack(ENTRY_FMT, buf[offset: offset + ENTRY_SIZE])
+    t = struct.unpack(ENTRY_FMT, buf[offset : offset + ENTRY_SIZE])
     return WorkloadShmEntry(
         instance_id=t[0],
         endpoint_id=t[1],
