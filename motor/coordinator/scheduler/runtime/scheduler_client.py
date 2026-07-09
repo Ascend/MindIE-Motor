@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -17,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+import msgspec
 import zmq
 
 from motor.common.resources.dispatch import (
@@ -35,6 +35,7 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
     SchedulerRequestType,
     SchedulerResponseType,
     INSTANCE_CHANGE_TOPIC,
+    CIRCUIT_BREAKER_TOPIC,
     CANDIDATE_POLICY_LOAD_BALANCE,
     CANDIDATE_POLICY_ROUND_ROBIN,
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
@@ -384,6 +385,10 @@ class _SchedulerTransport:
 # Callback when instance list change is received from Scheduler PUB; arg: instance_version (int | None)
 OnInstanceChangeNotify = Callable[[int | None], Awaitable[None]]
 
+# Callback when circuit breaker state change is received from Scheduler PUB
+OnCircuitBreakerChangeNotify = Callable[[int, str], Awaitable[None]]
+# args: instance_id, state ("open"|"closed")
+
 # ZMQ PUB does not queue; SUB must be ready before PUB sends. Short delay after connect.
 _INSTANCE_PUB_SUB_SETTLE_MS = 150
 # Roles that should use kv_cache_affinity scheduling.
@@ -402,9 +407,11 @@ class _InstancePushSubscriber:
         self,
         sub_address: str,
         on_instance_change: OnInstanceChangeNotify,
+        on_circuit_breaker_change: OnCircuitBreakerChangeNotify | None = None,
     ) -> None:
         self._sub_address = sub_address
         self._on_instance_change = on_instance_change
+        self._on_circuit_breaker_change = on_circuit_breaker_change
         self._context: zmq.asyncio.Context | None = None
         self._socket: zmq.asyncio.Socket | None = None
         self._stop_event = asyncio.Event()
@@ -462,6 +469,13 @@ class _InstancePushSubscriber:
                     if topic == INSTANCE_CHANGE_TOPIC:
                         version = self._parse_int_frame(frames, 1)
                         await self._on_instance_change(version)
+                    elif topic == CIRCUIT_BREAKER_TOPIC and self._on_circuit_breaker_change:
+                        payload = self._parse_msgpack_frame(frames, 1)
+                        if payload and isinstance(payload, dict):
+                            await self._on_circuit_breaker_change(
+                                int(payload.get("instance_id", 0)),
+                                str(payload.get("state", "")),
+                            )
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -481,6 +495,16 @@ class _InstancePushSubscriber:
         try:
             return int(frames[index].decode())
         except (ValueError, UnicodeDecodeError):
+            return None
+
+    @staticmethod
+    def _parse_msgpack_frame(frames: list[bytes], index: int) -> dict | None:
+        """Parse msgpack-encoded dict from a multipart frame."""
+        if len(frames) <= index:
+            return None
+        try:
+            return msgspec.msgpack.decode(frames[index])
+        except Exception:
             return None
 
 
@@ -546,12 +570,14 @@ class AsyncSchedulerClient:
         self._workload_reader = None
         self._last_instance_version: int | None = None
         self._on_instance_refreshed = config.on_instance_refreshed
+        self._cb_blocked_instances: set[int] = set()
 
         instance_pub = (config.instance_pub_address or "").strip()
         self._push_subscriber = (
             _InstancePushSubscriber(
                 instance_pub,
                 self._on_instance_change_notify,
+                self._on_circuit_breaker_change,
             )
             if instance_pub
             else None
@@ -712,6 +738,7 @@ class AsyncSchedulerClient:
                 instance,
                 scheduler_type=self._scheduler_type or "round_robin",
                 endpoint_rr_counters=self._endpoint_rr_counters,
+                is_blocked=self.is_instance_blocked,
             )
             if endpoint is None:
                 logger.warning(
@@ -1126,6 +1153,17 @@ class AsyncSchedulerClient:
             decode = self._cache.get_instances(PDRole.ROLE_D)
         return has_compatible_dispatch_pair(prefill, decode)
 
+    async def get_unblocked_instances(self, role: PDRole) -> list[int]:
+        """Return instance IDs of the given role that are NOT blocked by circuit breaker."""
+        cached = self._cache.get_instances(role)
+        if not cached:
+            try:
+                await self.get_available_instances(None)
+            except Exception as e:
+                logger.debug("get_unblocked_instances: warm-up fetch failed: %s", e)
+            cached = self._cache.get_instances(role)
+        return [inst.id for inst in cached if inst.id not in self._cb_blocked_instances]
+
     async def has_required_instances(self) -> InstanceReadiness:
         """Return InstanceReadiness from cache; warm-up fetch if needed."""
 
@@ -1182,12 +1220,91 @@ class AsyncSchedulerClient:
             await self.get_available_instances(None)
             if version is not None:
                 self._last_instance_version = version
+            # Remove stale entries for instances that no longer exist in the pool
+            # (covers DEL events where no explicit "closed" message is published).
+            current_ids = {
+                inst.id
+                for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U)
+                for inst in self._cache.get_instances(role)
+            }
+            self._cb_blocked_instances &= current_ids
             if self._on_instance_refreshed:
                 active_endpoints = _collect_active_endpoints_from_cache(self._cache)
                 if active_endpoints:
                     await self._on_instance_refreshed(active_endpoints)
         except Exception as e:
             logger.warning("Instance change notify refresh failed: %s", e)
+
+    async def _on_circuit_breaker_change(self, instance_id: int, state: str) -> None:
+        """Update local CB blocked-instance cache when PUB notifies state change."""
+        if state == "open":
+            self._cb_blocked_instances.add(instance_id)
+            logger.warning(
+                "Circuit breaker OPEN: instance_id=%d",
+                instance_id,
+            )
+        elif state == "closed":
+            self._cb_blocked_instances.discard(instance_id)
+            logger.info(
+                "Circuit breaker CLOSED: instance_id=%d",
+                instance_id,
+            )
+
+    def is_instance_blocked(self, instance_id: int) -> bool:
+        """Check whether a specific instance is currently blocked by circuit breaker.
+
+        Lock-free read of the local cache: may return a slightly stale value if
+        ``_on_circuit_breaker_change`` is modifying the set concurrently.  This is
+        acceptable because the cache is best-effort — the authoritative CB state
+        lives on SchedulerServer, which performs the final gate.
+        """
+        return instance_id in self._cb_blocked_instances
+
+    async def report_cb_event(self, instance_id: int, event: str) -> None:
+        """Send a circuit-breaker event ("failure" | "success") to SchedulerServer."""
+        if not self._transport.connected:
+            if event == "failure":
+                logger.warning(
+                    "CircuitBreaker: transport disconnected, failure report dropped: instance_id=%d",
+                    instance_id,
+                )
+            return
+        if event == "failure":
+            logger.warning(
+                "CircuitBreaker: reporting failure to SchedulerServer: instance_id=%d",
+                instance_id,
+            )
+        elif event == "success":
+            logger.info(
+                "CircuitBreaker: reporting success to SchedulerServer: instance_id=%d",
+                instance_id,
+            )
+        else:
+            return
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.CIRCUIT_BREAKER_REPORT,
+            request_id=str(uuid.uuid4()),
+            data={
+                "instance_id": instance_id,
+                "event": event,
+            },
+        )
+
+        def _on_cb_send_done(fut):
+            if fut.cancelled():
+                return
+            try:
+                fut.result()
+            except Exception as err:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "CircuitBreaker: CB report send failed: instance_id=%d event=%s error=%s",
+                    instance_id,
+                    event,
+                    err,
+                )
+
+        task = asyncio.create_task(self._transport.send_request(request))
+        task.add_done_callback(_on_cb_send_done)
 
     def _select_endpoint_candidates_from_list(
         self,
@@ -1267,7 +1384,9 @@ class AsyncSchedulerClient:
             if ep:
                 return (instance, ep)
             return (instance, all_endpoints[0])
-        ep = RoundRobinPolicy.select_endpoint_from_instance(instance, self._endpoint_rr_counters)
+        ep = RoundRobinPolicy.select_endpoint_from_instance(
+            instance, self._endpoint_rr_counters, is_blocked=self.is_instance_blocked
+        )
         return (instance, ep) if ep else None
 
     async def _init_cache(self) -> None:
@@ -1291,5 +1410,6 @@ class AsyncSchedulerClient:
             top_k=max(1, top_k),
             instance_score_weight=self._endpoint_instance_score_weight,
             start_index=start_index,
+            is_blocked=self.is_instance_blocked,
         )
         return [(candidate.instance, candidate.endpoint, candidate.score) for candidate in candidates]

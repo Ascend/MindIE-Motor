@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -9,8 +8,9 @@
 
 from __future__ import annotations
 
-from threading import Lock
+from typing import Callable
 
+from threading import Lock
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
@@ -57,6 +57,8 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
     def select_endpoint_from_instance(
         instance: Instance,
         counters: dict[int | str, int],
+        *,
+        is_blocked: Callable[[int], bool] | None = None,
     ) -> Endpoint | None:
         """
         Round-robin select one endpoint from the instance; updates counters[instance.id] in place.
@@ -65,6 +67,7 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
         Args:
             instance: Instance to select an endpoint from.
             counters: Per-instance round-robin counters (mutated in place).
+            is_blocked: Optional filter (instance_id) -> bool. Blocked instances are skipped.
 
         Returns:
             Selected Endpoint or None if no endpoints available.
@@ -74,6 +77,10 @@ class RoundRobinPolicy(BaseSchedulingPolicy):
         all_endpoints = instance.get_all_endpoints()
         if not all_endpoints:
             return None
+        if is_blocked is not None:
+            all_endpoints = [ep for ep in all_endpoints if not is_blocked(instance.id)]
+            if not all_endpoints:
+                return None
         if instance.id not in counters:
             counters[instance.id] = 0
         idx = counters[instance.id] % len(all_endpoints)

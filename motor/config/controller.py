@@ -98,6 +98,9 @@ class EventPusherConfig:
     # Coordinator restart detection is rare, so 10 s is sufficient.
     coordinator_heartbeat_interval: float = 10.0  # 10 seconds
 
+    # periodic full-instance SET sync to coordinator (seconds, 0 = disable)
+    coordinator_set_sync_interval: int = 300  # 5 minutes
+
 
 @dataclass
 class FaultToleranceConfig:

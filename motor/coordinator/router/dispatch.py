@@ -117,14 +117,36 @@ async def select_router_class(scheduler, req_info: RequestInfo | None = None) ->
     if has_pd_roles:
         compatibility_check = getattr(scheduler, "has_compatible_pd_pair", None)
         has_compatible_pair = await compatibility_check() if compatibility_check is not None else True
+        if has_compatible_pair:
+            # Check circuit breaker: only treat as compatible if there are
+            # non-blocked instances for BOTH roles
+            get_unblocked = getattr(scheduler, "get_unblocked_instances", None)
+            if get_unblocked is not None:
+                unblocked_p = await get_unblocked(PDRole.ROLE_P)
+                unblocked_d = await get_unblocked(PDRole.ROLE_D)
+                if not unblocked_p or not unblocked_d:
+                    has_compatible_pair = False
 
     if has_compatible_pair:
         return UnifiedPDRouter
-    if has_pd_roles and PDRole.ROLE_U not in roles:
+
+    # Degrade to hybrid mode if any unblocked instance is available
+    get_unblocked = getattr(scheduler, "get_unblocked_instances", None)
+    has_unblocked = False
+    if get_unblocked is not None:
+        for role in (PDRole.ROLE_U, PDRole.ROLE_P, PDRole.ROLE_D):
+            if await get_unblocked(role):
+                has_unblocked = True
+                break
+    else:
+        has_unblocked = PDRole.ROLE_U in roles or PDRole.ROLE_P in roles or PDRole.ROLE_D in roles
+
+    if not has_unblocked:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No compatible P/D dispatch capability is currently available",
+            detail="No routable inference topology is currently available: all instances are circuit-broken or absent",
         )
+
     if PDRole.ROLE_U in roles or PDRole.ROLE_P in roles:
         if has_pd_roles and not has_compatible_pair and PDRole.ROLE_U in roles:
             message = (
@@ -135,6 +157,10 @@ async def select_router_class(scheduler, req_info: RequestInfo | None = None) ->
             if req_info is not None:
                 req_info.trace_obj.set_trace_error_message(message)
             logger.warning(message)
+        elif has_pd_roles and not has_compatible_pair and req_info is not None:
+            error_message = "PD separate service degraded to hybrid: P or D instances circuit-broken or incompatible"
+            req_info.trace_obj.set_trace_error_message(error_message)
+            logger.warning(error_message)
         elif req_info is not None and PDRole.ROLE_U not in roles:
             error_message = "PD separate service degraded to hybrid: only prefill instances available"
             req_info.trace_obj.set_trace_error_message(error_message)

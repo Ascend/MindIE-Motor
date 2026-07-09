@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -124,9 +122,13 @@ class TestRouterPDHybrid:
         async def mock_update_workload(self, params):
             return True
 
+        async def mock_get_unblocked_instances(self, role):
+            return [mock_instance.id] if role == PDRole.ROLE_U else []
+
         monkeypatch.setattr(InstanceManager, "get_required_instances_status", mock_get_required_instances_status)
         monkeypatch.setattr(InstanceManager, "has_required_instances", mock_has_required_instances)
         monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "get_unblocked_instances", mock_get_unblocked_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
@@ -368,6 +370,9 @@ class TestRouterPDHybrid:
         async def mock_update_workload(self, params):
             return True
 
+        async def mock_get_unblocked_instances(self, role):
+            return [mock_instance.id] if role == PDRole.ROLE_P else []
+
         async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
@@ -379,6 +384,7 @@ class TestRouterPDHybrid:
             return resp
 
         monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "get_unblocked_instances", mock_get_unblocked_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -434,6 +440,9 @@ class TestRouterPDHybrid:
         async def mock_update_workload(self, params):
             return True
 
+        async def mock_get_unblocked_instances(self, role):
+            return [mock_instance.id] if role == PDRole.ROLE_U else []
+
         async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
@@ -445,6 +454,7 @@ class TestRouterPDHybrid:
             return resp
 
         monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "get_unblocked_instances", mock_get_unblocked_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -544,7 +554,11 @@ class TestPDHybridTracer:
         async def mock_update_workload(self, params):
             return True
 
+        async def mock_get_unblocked_instances(self, role):
+            return [mock_instance.id] if role == PDRole.ROLE_U else []
+
         monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "get_unblocked_instances", mock_get_unblocked_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
@@ -698,6 +712,9 @@ class TestPDHybridTracer:
         async def mock_update_workload(self, params):
             return True
 
+        async def mock_get_unblocked_instances(self, role):
+            return [mock_instance.id] if role == PDRole.ROLE_P else []
+
         async def mock_forward(self, api, req_data, client, timeout):
             resp = MagicMock()
             resp.json = MagicMock(
@@ -709,6 +726,7 @@ class TestPDHybridTracer:
             return resp
 
         monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "get_unblocked_instances", mock_get_unblocked_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
@@ -800,7 +818,11 @@ class TestPDHybridCancelReschedule:
         async def mock_update_workload(self, params):
             return True
 
+        async def mock_get_unblocked_instances(self, role):
+            return [mock_instance.id] if role == PDRole.ROLE_U else []
+
         monkeypatch.setattr(Scheduler, "get_available_instance_roles", mock_get_available_instance_roles)
+        monkeypatch.setattr(Scheduler, "get_unblocked_instances", mock_get_unblocked_instances)
         monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 

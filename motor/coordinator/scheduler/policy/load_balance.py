@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -11,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import heapq
-from typing import Iterable
+from typing import Callable, Iterable
 
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
@@ -79,12 +78,17 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         top_k: int = 1,
         instance_score_weight: float = DEFAULT_ENDPOINT_INSTANCE_SCORE_WEIGHT,
         start_index: int = 0,
+        *,
+        is_blocked: Callable[[int], bool] | None = None,
     ) -> list[EndpointCandidate]:
         """
         Select top-K endpoints globally across all instances.
 
         ``start_index`` rotates traversal order and only affects ties, spreading equal-load choices
         across worker processes without changing load-based ordering.
+
+        ``is_blocked`` optional filter (instance_id) -> bool. Blocked instances are
+        skipped during scoring (usually circuit-breaker OPEN instances from local PUB cache).
         """
         if top_k <= 0:
             return []
@@ -99,6 +103,8 @@ class LoadBalancePolicy(BaseSchedulingPolicy):
         tie_order = 0
         for instance in rotated_instances:
             for endpoint in instance.get_all_endpoints():
+                if is_blocked is not None and is_blocked(instance.id):
+                    continue
                 try:
                     score = LoadBalancePolicy.calculate_endpoint_score(
                         instance,

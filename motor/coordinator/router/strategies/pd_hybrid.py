@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,7 +7,8 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-from typing import Dict, AsyncGenerator, Any, Iterator
+
+from typing import AsyncGenerator, Any, Iterator, Callable
 import asyncio
 import contextlib
 import json
@@ -48,15 +48,33 @@ class PDHybridRouter(BaseRouter):
         self._stream_commit_controller: StreamCommitController | None = None
         self._stream_body_sent = False
         self._scheduled_resource: ScheduledResource | None = None
+        self._cb_iid: int | None = None
         self.rescheduler = Rescheduler(
             self.config.exception_config.reschedule_enabled,
             self.req_info,
             self.logger,
         )
 
+    @contextlib.asynccontextmanager
+    async def _optional_request_context(self, manage_request_context: bool):
+        if manage_request_context:
+            async with self._manage_request_context():
+                yield
+        else:
+            yield
+
     async def _resolve_candidate_roles(self) -> tuple[PDRole, ...]:
-        """Pick a single scheduling role from the scheduler's local topology view."""
+        """Pick a single scheduling role with unblocked instances for hybrid mode."""
         if self._resolved_roles is not None:
+            return self._resolved_roles
+
+        get_unblocked = getattr(self._scheduler, "get_unblocked_instances", None)
+        if get_unblocked is not None:
+            for role in (PDRole.ROLE_U, PDRole.ROLE_P):
+                if await get_unblocked(role):
+                    self._resolved_roles = (role,)
+                    return self._resolved_roles
+            self._resolved_roles = ()
             return self._resolved_roles
 
         roles = await self._scheduler.get_available_instance_roles()
@@ -90,6 +108,7 @@ class PDHybridRouter(BaseRouter):
     @contextlib.asynccontextmanager
     async def _manage_hybrid_resource_context(self, attempt: int, max_retry: int):
         """Schedule using the role resolved from instance pool pre-check."""
+        self._cb_iid = None  # reset before each attempt so stale id is never mis-reported
         candidate_roles = await self._resolve_candidate_roles()
         if not candidate_roles:
             error_message = "No available instance for hybrid scheduling"
@@ -99,7 +118,14 @@ class PDHybridRouter(BaseRouter):
         role = candidate_roles[0]
         async with self._manage_resource_context(role, self.release_all) as resource:
             self._scheduled_resource = resource
+            if resource.instance and resource.endpoint:
+                self._cb_iid = resource.instance.id
             yield resource
+
+    async def _report_cb(self, event: str) -> None:
+        iid = getattr(self, '_cb_iid', None)
+        if iid is not None:
+            await self._scheduler.report_cb_event(iid, event)
 
     def _instance_label(self) -> str:
         """Serving-instance log label, mirroring unified PD's P=[...] D=[...] style."""
@@ -143,50 +169,61 @@ class PDHybridRouter(BaseRouter):
 
     @contextlib.asynccontextmanager
     async def _inference_lifecycle(  # pylint: disable=contextmanager-generator-missing-cleanup
-        self, attempt: int, max_retry: int
+        self, attempt: int, max_retry: int, *, manage_request_context: bool = True
     ):
         """Tracer span + request lifecycle + hybrid scheduling + HTTP client."""
         with self._inference_span():
             async with (
-                self._manage_request_context(),
+                self._optional_request_context(manage_request_context),
                 self._manage_hybrid_resource_context(attempt, max_retry) as resource,
                 self._manage_client_context(resource) as client,
                 self._manage_canceller_context(resource),
             ):
                 yield client
 
-    async def handle_request(self) -> Response:
+    async def handle_request(self, *, manage_request_context: bool = True) -> Response:
         req_data = self.req_info.req_data.copy()
 
         if self.req_info.req_data.get("stream", False):
             self._stream_commit_controller = StreamCommitController.requiring({"engine"})
             return CommitAwareStreamingResponse(
-                self._generate_stream(req_data),
+                self._generate_stream(req_data, manage_request_context=manage_request_context),
                 self._stream_commit_controller,
                 on_first_body_sent=self._mark_stream_body_sent,
             )
-        return await self._generate_post(req_data)
+        return await self._generate_post(req_data, manage_request_context=manage_request_context)
 
     def _mark_stream_body_sent(self) -> None:
         self._stream_body_sent = True
 
     async def _stream_inference_attempt(  # pylint: disable=contextmanager-generator-missing-cleanup
         self,
-        req_data: Dict[str, Any],
+        req_data: dict[str, Any],
         api: str,
         attempt: int,
         max_retry: int,
-        stream_adapter_state: Dict[str, Any],
+        stream_adapter_state: dict[str, Any],
+        *,
+        manage_request_context: bool = True,
+        on_response_ready: Callable[[], None] | None = None,
     ) -> AsyncGenerator[str, None]:
         trace_obj = self.req_info.trace_obj
         reschedule_enabled = self.config.exception_config.reschedule_enabled
-        async with self._inference_lifecycle(attempt, max_retry) as client:
+        ready_cb = on_response_ready
+        if ready_cb is None:
+
+            def ready_cb() -> None:
+                self._stream_commit_controller.mark_ready("engine", attempt + 1)
+
+        async with self._inference_lifecycle(
+            attempt, max_retry, manage_request_context=manage_request_context
+        ) as client:
             async for chunk in self.forward_stream_request(
                 api,
                 req_data,
                 client,
                 self.config.exception_config.first_token_timeout,
-                on_response_ready=lambda: self._stream_commit_controller.mark_ready("engine", attempt + 1),
+                on_response_ready=ready_cb,
             ):
                 if reschedule_enabled:
                     # Cache prompt/output token ids so a node-fault reschedule can
@@ -200,7 +237,9 @@ class PDHybridRouter(BaseRouter):
             self.req_info.update_state(ReqState.DECODE_END)
             self.logger.info(trace_obj.set_end_and_ttft_tpot())
 
-    async def _generate_stream(self, req_data: Dict[str, Any]) -> AsyncGenerator[str, None]:
+    async def _generate_stream(
+        self, req_data: dict[str, Any], *, manage_request_context: bool = True
+    ) -> AsyncGenerator[str, None]:
         """
         Handling hybrid streaming requests
         """
@@ -216,7 +255,7 @@ class PDHybridRouter(BaseRouter):
                 req_data["return_token_ids"] = True
 
             for attempt in range(max_retry):
-                stream_adapter_state: Dict[str, Any] = {}
+                stream_adapter_state: dict[str, Any] = {}
                 if not self._stream_commit_controller.commit_sealed:
                     self._stream_commit_controller.begin_attempt(attempt + 1)
                 try:
@@ -227,10 +266,18 @@ class PDHybridRouter(BaseRouter):
                             req_data, api = self.rescheduler.prepare_retry_request(req_data)
                         self.logger.warning("Rescheduling stream[%d/%d] to a new hybrid instance", attempt, max_retry)
                     async with aclosing(
-                        self._stream_inference_attempt(req_data, api, attempt, max_retry, stream_adapter_state)
+                        self._stream_inference_attempt(
+                            req_data,
+                            api,
+                            attempt,
+                            max_retry,
+                            stream_adapter_state,
+                            manage_request_context=manage_request_context,
+                        )
                     ) as attempt_stream:
                         async for chunk in attempt_stream:
                             yield chunk
+                    await self._report_cb("success")
                     return
                 except asyncio.CancelledError as e:
                     reason, cancel_retryable = check_cancel_error(e)
@@ -262,8 +309,10 @@ class PDHybridRouter(BaseRouter):
                         trace_obj.set_trace_error_message(str(error))
                         trace_obj.set_trace_error_message(str(error), is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
+                        await self._report_cb("failure")
                         raise error
                     self._uncancel_current_task()
+                    await self._report_cb("failure")
                 except httpx.TimeoutException as e:
                     elapsed_ms = (time.time() - self.req_info.status[ReqState.ARRIVE]) * 1000
                     trace_obj.set_trace_timeout("first_token_timeout", elapsed_ms)
@@ -310,13 +359,15 @@ class PDHybridRouter(BaseRouter):
                         trace_obj.set_trace_status(e)
                         trace_obj.set_trace_exception(e, is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
+                        await self._report_cb("failure")
                         raise
 
+                    await self._report_cb("failure")
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
 
-    async def _generate_post(self, req_data: Dict[str, Any]) -> JSONResponse:
+    async def _generate_post(self, req_data: dict[str, Any], *, manage_request_context: bool = True) -> JSONResponse:
         """
         Handling hybrid non-streaming requests
         """
@@ -329,7 +380,9 @@ class PDHybridRouter(BaseRouter):
 
             for attempt in range(max_retries):
                 try:
-                    async with self._inference_lifecycle(attempt, max_retries) as client:
+                    async with self._inference_lifecycle(
+                        attempt, max_retries, manage_request_context=manage_request_context
+                    ) as client:
                         response = await self.forward_request(
                             self.req_info.api,
                             req_data,
@@ -344,6 +397,7 @@ class PDHybridRouter(BaseRouter):
                         adapters.strip_nonstream_response_body_for_client(
                             body, client_return_token_ids=self.req_info.client_expects_token_ids
                         )
+                        await self._report_cb("success")
                         return JSONResponse(content=body)
 
                 except asyncio.CancelledError as e:
@@ -365,8 +419,10 @@ class PDHybridRouter(BaseRouter):
                         trace_obj.set_trace_error_message(f"Non-streaming request cancelled: {reason}")
                         trace_obj.set_trace_error_message(f"Non-streaming request cancelled: {reason}", is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
+                        await self._report_cb("failure")
                         raise e
                     self._uncancel_current_task()
+                    await self._report_cb("failure")
                 except httpx.TimeoutException as e:
                     elapsed_ms = (time.time() - self.req_info.status[ReqState.ARRIVE]) * 1000
                     trace_obj.set_trace_timeout("infer_timeout", elapsed_ms)
@@ -409,11 +465,64 @@ class PDHybridRouter(BaseRouter):
                     if attempt >= max_retries - 1:
                         self.logger.error("All retries failed for non-streaming decode request.")
                         self.req_info.update_state(ReqState.EXCEPTION)
+                        await self._report_cb("failure")
                         raise e
 
+                    await self._report_cb("failure")
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying non-streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
+
+    async def stream_fallback_from_existing_context(
+        self,
+        *,
+        req_data: dict[str, Any],
+        attempt_id: int,
+        mark_unified_ready: Callable[[], None] | None = None,
+        api: str | None = None,
+        is_resume: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """Run one hybrid stream attempt inside an already-managed outer request context.
+
+        ``is_resume`` marks a post-commit continuation: the HTTP response is already
+        committed and ``req_data`` is a token-replay body, so the commit-controller
+        readiness callback is skipped and the rescheduler normalizes replayed chunks
+        (Completions-shaped chunks adapted back for chat clients, token ids stripped).
+        ``api`` overrides the forward target (e.g. chat replayed via ``v1/completions``).
+        """
+        trace_obj = self.req_info.trace_obj
+        with self._trace_span("PDHybrid_Stream_Fallback", True):
+            await self.do_encode()
+            self.is_meta = False
+            self.logger.warning("Running stream fallback to hybrid mode in existing request context")
+            stream_adapter_state: dict[str, Any] = {}
+            request_data = req_data.copy()
+            if self.config.exception_config.reschedule_enabled:
+                request_data["return_token_ids"] = True
+            if is_resume:
+                self.rescheduler.is_rescheduling = True
+                self.rescheduler.retry_count = max(attempt_id - 1, 1)
+            on_ready = mark_unified_ready if mark_unified_ready is not None else (lambda: None)
+            try:
+                async with aclosing(
+                    self._stream_inference_attempt(
+                        request_data,
+                        api or self.req_info.api,
+                        max(attempt_id - 1, 0),
+                        1,
+                        stream_adapter_state,
+                        manage_request_context=False,
+                        on_response_ready=on_ready,
+                    )
+                ) as attempt_stream:
+                    async for chunk in attempt_stream:
+                        yield chunk
+                await self._report_cb("success")
+            except Exception as e:
+                trace_obj.set_trace_error_message(f"Hybrid stream fallback failed: {e}")
+                trace_obj.set_trace_error_message(f"Hybrid stream fallback failed: {e}", is_meta=True)
+                await self._report_cb("failure")
+                raise
 
     @staticmethod
     def _generate_streaming_error_chunk(error: Exception) -> bytes:

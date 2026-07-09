@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -20,6 +19,7 @@ import time
 from typing import Awaitable, Callable
 
 import zmq.asyncio
+import msgspec
 
 from motor.common.resources.endpoint import Endpoint, WorkloadAction, Workload
 from motor.common.resources.http_msg_spec import EventType
@@ -28,6 +28,9 @@ from motor.common.logger import get_logger
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import (
     UpdateWorkloadParams,
+)
+from motor.coordinator.domain.circuit_breaker import (
+    CircuitBreakerManager,
 )
 from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
 from motor.coordinator.domain.instance_manager import InstanceManager
@@ -46,6 +49,7 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
     CANDIDATE_POLICY_KV_CACHE_AFFINITY,
     KNOWN_CANDIDATE_POLICIES,
     INSTANCE_CHANGE_TOPIC,
+    CIRCUIT_BREAKER_TOPIC,
     pack_send_frames,
     unpack_recv_payload,
 )
@@ -169,12 +173,17 @@ class _SchedulerRequestDispatcher:
         config: CoordinatorConfig,
         workload_writer: WorkloadSharedMemoryWriter | None = None,
         on_instance_refresh_done: Callable[[], None | Awaitable[None]] | None = None,
+        circuit_breaker_manager: CircuitBreakerManager | None = None,
+        pub_socket: zmq.asyncio.Socket | None = None,
     ):
         self._instance_manager = instance_manager
         self._scheduler = scheduler
         self._config = config
         self._workload_writer = workload_writer
         self._on_instance_refresh_done = on_instance_refresh_done
+        self._cb_manager = circuit_breaker_manager or CircuitBreakerManager()
+        self._pub_socket = pub_socket
+        self._recovery_timers: dict[int, asyncio.Task] = {}
         self._workload_commit_lock = asyncio.Lock()
         self._endpoint_instance_score_weight = max(
             0.0,
@@ -194,6 +203,7 @@ class _SchedulerRequestDispatcher:
             SchedulerRequestType.CONFIRM_SAMPLE.value: self._handle_confirm_sample,
             SchedulerRequestType.RECORD_PRECISION_RESULT.value: self._handle_record_precision_result,
             SchedulerRequestType.FINISH_PRECISION_ACTION.value: self._handle_finish_precision_action,
+            SchedulerRequestType.CIRCUIT_BREAKER_REPORT.value: self._handle_circuit_breaker_report,
         }
         handler = handlers.get(request.request_type)
         if handler:
@@ -283,8 +293,21 @@ class _SchedulerRequestDispatcher:
                 request_id=request.request_id,
                 error=f"Invalid event type: {event_type_str}",
             )
+        previously_open_ids: list[int] = []
         async with self._workload_commit_lock:
             changed = await self._instance_manager.refresh_instances(event_type, instances)
+            if event_type == EventType.SET:
+                # Snapshot open instances before clearing so workers can be notified.
+                previously_open_ids = self._cb_manager.get_open_instance_ids()
+                self._cb_manager.clear_all()
+                for key, task in list(self._recovery_timers.items()):
+                    if not task.done():
+                        task.cancel()
+                    self._recovery_timers.pop(key, None)
+            elif event_type == EventType.DEL:
+                for inst in instances:
+                    self._cb_manager.clear_instance(inst.id)
+                    self._cancel_recovery(inst.id)
             if changed and self._workload_writer:
                 self._workload_writer.write_snapshot()
         if changed:
@@ -295,6 +318,8 @@ class _SchedulerRequestDispatcher:
                         await result
                 except Exception as e:
                     logger.warning("Failed to publish instance change: %s", e)
+        for iid in previously_open_ids:
+            asyncio.create_task(self._publish_circuit_breaker(iid, "closed"))
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
@@ -437,6 +462,41 @@ class _SchedulerRequestDispatcher:
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
             data={"finished": ok},
+        )
+
+    async def _handle_circuit_breaker_report(self, request: SchedulerRequest) -> SchedulerResponse:
+        instance_id = request.data.get("instance_id")
+        event = request.data.get("event")
+
+        if instance_id is None:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error="Missing instance_id in circuit breaker report",
+            )
+        instance_id = int(instance_id)
+
+        if event == "failure":
+            should_trip, timeout = self._cb_manager.process_failure(instance_id)
+            if should_trip:
+                self._schedule_recovery(instance_id, timeout)
+                await self._publish_circuit_breaker(instance_id, "open")
+        elif event == "success":
+            recovered = self._cb_manager.process_success(instance_id)
+            if recovered:
+                self._cancel_recovery(instance_id)
+                await self._publish_circuit_breaker(instance_id, "closed")
+        else:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error=f"Unknown circuit breaker event: {event}",
+            )
+
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={},
         )
 
     async def _handle_allocate_only(self, request: SchedulerRequest) -> SchedulerResponse:
@@ -715,6 +775,8 @@ class _SchedulerRequestDispatcher:
         lweight = load_weight if load_weight is not None else 1.0
         best: tuple[Instance, Endpoint, float, float] | None = None  # (..., combined, prefill_cost)
         for instance_id, endpoint_id, prefill_cost in affinity_candidates:
+            if self._is_instance_circuit_open(instance_id):
+                continue
             found = self._find_available_instance_endpoint(instance_id, endpoint_id)
             if found is None:
                 continue
@@ -761,6 +823,8 @@ class _SchedulerRequestDispatcher:
         """
         best: tuple[Instance, Endpoint, float] | None = None
         for cand in candidates:
+            if self._is_instance_circuit_open(cand[0]):
+                continue
             found = self._find_available_instance_endpoint(*cand)
             if found is None:
                 continue
@@ -805,17 +869,79 @@ class _SchedulerRequestDispatcher:
             )
         return self._is_load_balance_scheduler
 
+    # ------------------------------------------------------------------
+    # Circuit breaker helpers
+    # ------------------------------------------------------------------
+
+    def _is_instance_circuit_open(self, instance_id: int) -> bool:
+        """Check if an instance is currently circuit-broken (blocked from scheduling)."""
+        return self._cb_manager.is_open(instance_id)
+
+    def _schedule_recovery(self, instance_id: int, timeout: float) -> None:
+        """Schedule an auto-recovery timer for a tripped instance."""
+        key = instance_id
+        if key in self._recovery_timers:
+            self._recovery_timers[key].cancel()
+        task = asyncio.create_task(self._auto_recover(instance_id, timeout))
+        self._recovery_timers[key] = task
+
+    async def _auto_recover(self, instance_id: int, timeout: float) -> None:
+        """Recovery timer callback. Resets the instance to closed after timeout."""
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
+        try:
+            recovered = self._cb_manager.auto_recover(instance_id)
+            if recovered:
+                await self._publish_circuit_breaker(instance_id, "closed")
+        finally:
+            # Only remove our own entry: a concurrent _schedule_recovery may have
+            # already replaced _recovery_timers[instance_id] with a new task before
+            # this finally block runs (race window inside _publish_circuit_breaker).
+            if self._recovery_timers.get(instance_id) is asyncio.current_task():
+                self._recovery_timers.pop(instance_id, None)
+
+    def _cancel_recovery(self, instance_id: int) -> None:
+        """Cancel a pending recovery timer for an instance."""
+        key = instance_id
+        task = self._recovery_timers.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _publish_circuit_breaker(self, instance_id: int, state: str) -> None:
+        """Publish circuit breaker state change to PUB subscribers."""
+        if not self._pub_socket:
+            return
+        payload = {
+            "instance_id": instance_id,
+            "state": state,
+        }
+        try:
+            await self._pub_socket.send_multipart([CIRCUIT_BREAKER_TOPIC, msgspec.msgpack.encode(payload)])
+        except Exception as e:
+            logger.warning(
+                "Failed to publish circuit breaker change: instance_id=%d error=%s",
+                instance_id,
+                e,
+            )
+
     def _select_global_load_balance_candidate(
         self,
         role: PDRole,
     ) -> tuple[Instance, Endpoint, float] | None:
-        """Select the globally lowest-score endpoint for role from SchedulerServer's local pool."""
+        """Select the globally lowest-score endpoint for role from SchedulerServer's local pool.
+
+        Circuit-broken endpoints are filtered so the authoritative re-scan never picks one
+        that the local PUB cache may not yet know about.
+        """
         instances = self._instance_manager.get_available_instances(role).values()
         candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
             instances,
             role=role,
             top_k=1,
             instance_score_weight=self._endpoint_instance_score_weight,
+            is_blocked=self._is_instance_circuit_open,
         )
         if not candidates:
             return None
@@ -849,6 +975,8 @@ class _SchedulerRequestDispatcher:
         only validates the worker-selected endpoint.
         """
         instance_id, endpoint_id = candidate
+        if self._is_instance_circuit_open(instance_id):
+            return None
         found = self._find_available_instance_endpoint(instance_id, endpoint_id)
         if found is None:
             return None
@@ -988,6 +1116,7 @@ class AsyncSchedulerServer:
         self._workload_writer: WorkloadSharedMemoryWriter | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._pub_socket: zmq.asyncio.Socket | None = None
+        self._cb_manager: CircuitBreakerManager | None = None
 
     async def stop(self):
         """Stop the async server."""
@@ -1028,12 +1157,21 @@ class AsyncSchedulerServer:
             except Exception as e:
                 logger.warning("Error closing workload shared memory: %s", e)
             self._workload_shm = None
+        if self._dispatcher is not None:
+            for key, task in list(self._dispatcher._recovery_timers.items()):
+                if not task.done():
+                    task.cancel()
+            self._dispatcher._recovery_timers.clear()
         if self._pub_socket:
             try:
                 self._pub_socket.close()
             except Exception as e:
                 logger.warning("Error closing instance PUB socket: %s", e)
             self._pub_socket = None
+        if self._cb_manager:
+            count = self._cb_manager.clear_all()
+            if count:
+                logger.info("Circuit breaker pool cleared on shutdown: count=%d", count)
         if self._transport:
             await self._transport.disconnect()
         if self.context:
@@ -1077,12 +1215,16 @@ class AsyncSchedulerServer:
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
+        self._cb_manager = CircuitBreakerManager()
+
         self._dispatcher = _SchedulerRequestDispatcher(
             self.instance_manager,
             self.scheduler,
             self.config,
             workload_writer=self._workload_writer,
             on_instance_refresh_done=self._publish_instance_changed,
+            circuit_breaker_manager=self._cb_manager,
+            pub_socket=self._pub_socket,
         )
 
         logger.info("Async scheduler server started, frontend: %s", self.frontend_address)

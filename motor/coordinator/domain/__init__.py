@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -13,6 +12,8 @@ Domain logic: contracts (protocols) and implementations (instance pool, request 
 
 __all__ = [
     "calculate_demand_workload",
+    "CircuitBreakerManager",
+    "CircuitBreakerState",
     "InstanceManager",
     "InstanceProvider",
     "InstanceReadiness",
@@ -35,6 +36,10 @@ __all__ = [
 ]
 
 from motor.coordinator.domain.workload_calculator import calculate_demand_workload
+from motor.coordinator.domain.circuit_breaker import (
+    CircuitBreakerManager,
+    CircuitBreakerState,
+)
 from motor.coordinator.domain.instance_manager import (
     InstanceManager,
     UpdateInstanceMode,

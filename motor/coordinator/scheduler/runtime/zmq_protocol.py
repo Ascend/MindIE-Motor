@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You may use this software according to the terms and conditions of the Mulan PSL v2.
@@ -38,6 +37,7 @@ class SchedulerRequestType(str, Enum):
     CONFIRM_SAMPLE = "confirm_sample"  # cross-worker precision sampling exit gate
     RECORD_PRECISION_RESULT = "record_precision_result"  # global consecutive + probing
     FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm
+    CIRCUIT_BREAKER_REPORT = "circuit_breaker_report"  # worker reports instance failure/success
 
 
 class SchedulerResponseType(str, Enum):
@@ -88,6 +88,9 @@ DEFAULT_ZERO_COPY_THRESHOLD = 1024
 
 # PUB/SUB topic for instance list change notifications (multipart: [topic, version_bytes])
 INSTANCE_CHANGE_TOPIC = b"instances_changed"
+
+# PUB/SUB topic for circuit breaker state change (multipart: [topic, msgpack_payload])
+CIRCUIT_BREAKER_TOPIC = b"circuit_breaker"
 
 
 def _enc_hook(obj: Any) -> Any:

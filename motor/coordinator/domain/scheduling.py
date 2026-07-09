@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Protocol, Tuple
+from typing import Iterable, Protocol
 
 from pydantic import BaseModel
 
@@ -126,7 +125,7 @@ class SchedulingFacade(Protocol):
         req_info: RequestInfo,
         *,
         target_instance_id: int | None = None,
-    ) -> Tuple[Instance, Endpoint, Workload] | None:
+    ) -> tuple[Instance, Endpoint, Workload] | None:
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
         When target_instance_id is set, pin to that instance (skip policy selection).
@@ -155,4 +154,16 @@ class SchedulingFacade(Protocol):
 
     async def has_compatible_pd_pair(self) -> bool:
         """Return whether the local scheduler view contains a compatible P/D pair."""
+        ...
+
+    async def report_cb_event(self, instance_id: int, event: str) -> None:
+        """Report a circuit-breaker event ("failure" | "success") for an instance.
+
+        Implementations that run alongside SchedulerServer forward the event via
+        ZMQ; in-process implementations may be a no-op.
+        """
+        ...
+
+    async def get_unblocked_instances(self, role: PDRole) -> list[int]:
+        """Return instance IDs of the given role that are NOT blocked by circuit breaker."""
         ...

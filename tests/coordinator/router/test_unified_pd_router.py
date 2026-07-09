@@ -1,3 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -88,6 +98,13 @@ class _Scheduler:
         instance = self.p if role == PDRole.ROLE_P else self.d
         endpoint = next(iter(next(iter(instance.endpoints.values())).values()))
         return instance, endpoint, Workload(active_kv_cache=1, active_tokens=1)
+
+    async def report_cb_event(self, instance_id: int, event: str) -> None:
+        """No-op stub for circuit-breaker reporting."""
+
+    async def get_unblocked_instances(self, role) -> list:
+        """Return both instances as unblocked (no circuit breaker in test)."""
+        return [self.p.id, self.d.id]
 
 
 class _Client:

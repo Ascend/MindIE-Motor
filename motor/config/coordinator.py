@@ -163,10 +163,11 @@ class ExceptionConfig:
     # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
     # Engine-side recompute is independent of this switch.
     reschedule_enabled: bool = True
-    transport_max_retry: Optional[int] = None
+    transport_max_retry: int | None = None
     retry_delay: float = 0.2
     first_token_timeout: int = 600  # 10 minutes
     infer_timeout: int = 3600  # 60 minutes
+    connect_timeout: float = 5.0  # TCP connect phase only; set 0 to inherit first_token_timeout
     upstream_error_body_max_bytes: int = 64 * 1024
 
     @property
@@ -311,9 +312,9 @@ class DeployConfig:
 
     p_instances_num: int = 1
     d_instances_num: int = 1
-    hybrid_instances_num: Optional[int] = None
-    single_hybrid_instance_pod_num: Optional[int] = None
-    hybrid_pod_npu_num: Optional[int] = None
+    hybrid_instances_num: int | None = None
+    single_hybrid_instance_pod_num: int | None = None
+    hybrid_pod_npu_num: int | None = None
 
 
 @dataclass
@@ -375,7 +376,7 @@ class CoordinatorConfig:
     config_path: str | None = field(default=None, init=False)
     last_modified: float | None = field(default=None, init=False)
     _errors: list[str] = field(default_factory=list, init=False)
-    worker_index: Optional[int] = field(default=None, repr=False)
+    worker_index: int | None = field(default=None, repr=False)
 
     def __post_init__(self):
         """Validate configuration after initialization"""
@@ -577,6 +578,7 @@ class CoordinatorConfig:
         self._validate_positive_number(self.exception_config.retry_delay, "retry_delay")
         self._validate_positive_number(self.exception_config.first_token_timeout, "first_token_timeout")
         self._validate_positive_number(self.exception_config.infer_timeout, "infer_timeout")
+        self._validate_positive_number(self.exception_config.connect_timeout, "connect_timeout", allow_zero=True)
         self._validate_positive_number(
             self.exception_config.upstream_error_body_max_bytes,
             "upstream_error_body_max_bytes",
@@ -710,7 +712,7 @@ class CoordinatorConfig:
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-    def get_aigw_models(self) -> Optional[dict[str, Any]]:
+    def get_aigw_models(self) -> dict[str, Any] | None:
         """Return configured AIGW model."""
         return self.aigw_model
 

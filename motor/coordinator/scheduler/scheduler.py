@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -221,6 +220,13 @@ class Scheduler:
         prefill = self._instance_provider.get_available_instances(PDRole.ROLE_P).values()
         decode = self._instance_provider.get_available_instances(PDRole.ROLE_D).values()
         return has_compatible_dispatch_pair(prefill, decode)
+
+    async def get_unblocked_instances(self, role: PDRole) -> list[int]:
+        """Return all instance IDs for the role (in-process scheduler has no CB)."""
+        return [inst.id for inst in self._instance_provider.get_available_instances(role).values()]
+
+    async def report_cb_event(self, instance_id: int, event: str) -> None:
+        """No-op: in-process scheduler has no circuit breaker (CB managed by SchedulerServer)."""
 
     async def has_required_instances(self) -> InstanceReadiness:
         """Return readiness inferred from currently available instance roles."""

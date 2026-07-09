@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Callable, Mapping
 
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import Instance
@@ -30,17 +30,33 @@ def select_endpoint_for_instance(
     *,
     scheduler_type: str = "round_robin",
     endpoint_rr_counters: dict[int, int] | None = None,
+    is_blocked: Callable[[int], bool] | None = None,
 ) -> Endpoint | None:
-    """Pick endpoint on a pinned instance (same rules as AsyncSchedulerClient)."""
+    """Pick endpoint on a pinned instance (same rules as AsyncSchedulerClient).
+
+    Args:
+        is_blocked: Optional filter (instance_id) -> bool.
+            Circuit-broken instances are skipped.
+    """
     if not instance:
         return None
     st = scheduler_type or "round_robin"
     if st in ("load_balance", "kv_cache_affinity"):
         ep = LoadBalancePolicy.select_endpoint_from_instance(instance)
+        if ep and is_blocked is not None and is_blocked(instance.id):
+            ep = None
         if ep:
             return ep
         all_eps = instance.get_all_endpoints()
-        return all_eps[0] if all_eps else None
+        if all_eps:
+            if is_blocked is not None:
+                all_eps = [e for e in all_eps if not is_blocked(instance.id)]
+            return all_eps[0] if all_eps else None
+        return None
     counters = endpoint_rr_counters if endpoint_rr_counters is not None else {}
-    ep = RoundRobinPolicy.select_endpoint_from_instance(instance, counters)
+    ep = RoundRobinPolicy.select_endpoint_from_instance(
+        instance,
+        counters,
+        is_blocked=is_blocked,
+    )
     return ep
