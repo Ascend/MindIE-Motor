@@ -424,7 +424,7 @@ def test_config_partial_fields_in_group():
         assert config.standby_config.enable_master_standby is False
         # Other fields should keep default values
         assert config.standby_config.master_standby_check_interval == 5
-        assert config.standby_config.master_lock_ttl == 10
+        assert config.standby_config.master_lock_ttl == 15
         assert config.standby_config.master_lock_retry_interval == 5
         assert config.standby_config.master_lock_max_failures == 3
         assert config.standby_config.master_lock_key == "/controller/master_lock"

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,6 +7,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
 import pytest
 import queue
 from unittest.mock import Mock, patch, MagicMock
@@ -186,43 +186,6 @@ def test_event_consumer_set_event(event_pusher, mock_http_client):
         mock_http_client.assert_called_once()
 
 
-def test_event_consumer_set_event_skip_missing_prefill(event_pusher, mock_http_client):
-    """test event consumer set event is skipped when missing prefill instance"""
-    # add only decode instances
-    for i in range(2):
-        job_name = "test_decode_job" + str(i)
-        test_instance = Instance(job_name=job_name, model_name="test_model", id=i, role="decode")
-        readonly_instance = ReadOnlyInstance(test_instance)
-        event_pusher.instances[job_name] = readonly_instance
-
-    test_event = Event(event_type=EventType.SET, instance=None)
-
-    event_pusher.event_queue.put(test_event)
-    event_pusher.event_queue.put(None)
-
-    _original_get = event_pusher.event_queue.get
-
-    def mock_get(timeout=None):
-        try:
-            return _original_get(block=False)
-        except queue.Empty:
-            raise StopIteration
-
-    with patch('motor.controller.core.event_pusher.logger') as mock_logger:
-        with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
-            try:
-                event_pusher._event_consumer()
-            except StopIteration:
-                pass
-
-            # check send_instance_refresh is NOT called due to missing prefill instance
-            mock_http_client.assert_not_called()
-            # check debug log is called with correct message
-            mock_logger.debug.assert_called_once_with(
-                "SET event skipped: requires at least one prefill instance, current instances: prefill=%s", False
-            )
-
-
 def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client):
     """test event consumer set event is skipped when missing decode instance"""
     # add only prefill instances
@@ -362,6 +325,53 @@ def test_heartbeat_detector_failure(event_pusher):
                     if "Coordinator heartbeat lost. Possible restart detected" in str(call)
                 ]
                 assert len(warning_calls) >= 1
+
+
+def test_heartbeat_detector_ready_false_not_repeated(event_pusher):
+    """SET event should only fire once when ready=False persists across iterations."""
+    ready_values = [
+        {"ready": True},  # iteration 1: normal
+        {"ready": False},  # iteration 2: transition → SET triggered
+        {"ready": False},  # iteration 3: still not ready → no SET
+        {"ready": False},  # iteration 4: still not ready → no SET
+        {"ready": True},  # iteration 5: ready again → flag reset
+        {"ready": False},  # iteration 6: transition again → SET triggered
+    ]
+    call_count = 0
+
+    def mock_query_status(params: dict = None):
+        nonlocal call_count
+        if call_count < len(ready_values):
+            val = ready_values[call_count]
+        else:
+            raise StopIteration
+        call_count += 1
+        return val
+
+    with patch('motor.controller.core.event_pusher.CoordinatorApiClient.query_status', side_effect=mock_query_status):
+        iter_count = 0
+
+        def mock_wait(timeout=None):
+            nonlocal iter_count
+            iter_count += 1
+            if iter_count > len(ready_values):
+                raise StopIteration
+
+        with patch.object(event_pusher.work_condition, 'wait', side_effect=mock_wait):
+            try:
+                event_pusher._coordinator_heartbeat_detector()
+            except StopIteration:
+                pass
+
+    # Collect all SET events from the queue
+    set_events = []
+    while not event_pusher.event_queue.empty():
+        evt = event_pusher.event_queue.get()
+        if evt.event_type == EventType.SET:
+            set_events.append(evt)
+
+    # Should have exactly 2 SET events (iteration 2 and iteration 6), not 4
+    assert len(set_events) == 2, f"Expected 2 SET events (one per ready transition), got {len(set_events)}"
 
 
 def test_update_add_instance(event_pusher):

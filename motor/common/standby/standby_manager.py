@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -190,15 +188,41 @@ class StandbyManager(ThreadSafeSingleton):
             logger.info("Master/standby manager thread stopped and released lock")
 
     def _renew_master_lock(self) -> bool:
-        """Renew master lock lease"""
+        """Renew master lock lease with retry on transient failures.
+
+        Mirrors the retry logic in _try_become_master() so that *keeping*
+        the master role is at least as resilient as *acquiring* it.
+        With TTL=15s, a 3s keepalive timeout, and up to 3 attempts
+        (2 retries × 1s gaps), the worst-case renewal sequence is
+        3×3s + 2×1s = 11s < 15s TTL, so the lease never expires
+        while retries are in flight.
+        """
         if not self.is_master():
             return False
 
-        try:
-            return self.etcd_client.renew_lease(self.config.standby_config.master_lock_key)
-        except Exception as e:
-            logger.error(f"Error renewing master lock: {e}")
-            return False
+        max_retries = 2  # 3 attempts total
+        retry_delay = 1  # seconds between retries
+
+        for attempt in range(max_retries + 1):
+            try:
+                if self.etcd_client.renew_lease(self.config.standby_config.master_lock_key):
+                    return True
+            except Exception as e:
+                logger.error(
+                    "Error renewing master lock (attempt %d/%d): %s",
+                    attempt + 1,
+                    max_retries + 1,
+                    e,
+                )
+
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+
+        logger.warning(
+            "Failed to renew master lock after %d attempts, becoming standby",
+            max_retries + 1,
+        )
+        return False
 
     def _release_master_lock(self) -> None:
         """Release master lock"""

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -26,7 +24,9 @@ class StandbyConfig:
     master_standby_check_interval: int = 5
 
     # master lock lease TTL in seconds
-    master_lock_ttl: int = 10
+    # Raised from 10s to 15s to provide headroom for transient etcd/network
+    # issues while keeping failover recovery time acceptable.
+    master_lock_ttl: int = 15
 
     # master lock retry interval in seconds
     master_lock_retry_interval: int = 5
@@ -35,6 +35,6 @@ class StandbyConfig:
     master_lock_max_failures: int = 3
 
     # master lock key path in ETCD
-    # Note: controller and coordinator will automatically 
+    # Note: controller and coordinator will automatically
     # add "/controller/" and "/coordinator/" prefixes respectively
     master_lock_key: str = "/master_lock"

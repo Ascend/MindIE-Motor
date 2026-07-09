@@ -15,11 +15,13 @@ from dataclasses import dataclass
 
 from motor.common.resources import Instance, ReadOnlyInstance, InsEventMsg, EventType
 from motor.common.logger import get_logger
+from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.config.controller import ControllerConfig
 from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 from motor.controller.core import Observer, ObserverEvent
 
 logger = get_logger(__name__)
+_rl = RateLimitedLogger(logger)
 
 
 @dataclass
@@ -58,6 +60,11 @@ class EventPusher(Observer):
 
         # Last successfully sent instance-ID fingerprint; used to suppress noisy periodic SET logs
         self._last_sent_fingerprint: tuple[int, ...] | None = None
+
+        # Track whether we've already sent SET for the current ready=False period.
+        # Prevents repeated SET pushes when Coordinator stays not-ready (e.g. only
+        # decode instances remain after a prefill failure).
+        self._ready_false_set_sent = False
 
         self.event_consumer_thread = None
         self.heartbeat_detector_thread = None
@@ -185,20 +192,16 @@ class EventPusher(Observer):
                     with self.lock:
                         instances = list(self.instances.values())
                         set_fingerprint = tuple(sorted(inst.id for inst in instances))
-                        # Check if we have at least one prefill
-                        has_prefill = any(inst.role == "prefill" for inst in instances)
 
-                        if has_prefill:
-                            event_msg = InsEventMsg(
-                                event=event_type, instances=[instance.to_instance() for instance in instances]
-                            )
-                        else:
-                            logger.debug(
-                                "SET event skipped: requires at least one prefill "
-                                "instance, current instances: prefill=%s",
-                                has_prefill,
-                            )
-                            event_msg = None
+                    if instances:
+                        event_msg = InsEventMsg(
+                            event=event_type, instances=[instance.to_instance() for instance in instances]
+                        )
+                    else:
+                        logger.debug(
+                            "SET event skipped: no instances in memory (Controller may have lost its own instances)."
+                        )
+                        event_msg = None
                 else:
                     logger.error("Unknown event type: %s", event_type)
                     continue
@@ -216,10 +219,9 @@ class EventPusher(Observer):
         Detect Coordinator heartbeat, when Coordinator need Controller sent all
         instances resource, this function will produce a SET event.
         """
-        hb_loss_cnt = 0
-        log_counter = 0  # Counter to control log frequency
-        log_interval = 12  # Only log every 12 iterations
-        not_ready_log_counter = 0  # Counter to control not ready log frequency
+        hb_loss_cnt = 0  # Consecutive heartbeat failures (path 2 debounce)
+        not_ready_log_interval = 12  # Only log "not ready" every 12 iterations
+        not_ready_log_counter = 0
 
         while not self.stop_event.is_set():
             try:
@@ -229,17 +231,24 @@ class EventPusher(Observer):
                 if not self.is_first_heartbeat_success:
                     self.is_first_heartbeat_success = True
                     logger.info("Coordinator heartbeat established successfully.")
-                    log_counter = 0  # Reset counter on successful connection
-                    not_ready_log_counter = 0  # Reset not ready counter on successful connection
+                    not_ready_log_counter = 0
 
                 if response is None or response.get("ready") is None or not response.get("ready"):
                     # When get info 'coordinator is not ready', controller will reset coordinator
                     # Only log not ready message periodically to avoid spam
                     not_ready_log_counter += 1
-                    if not_ready_log_counter >= log_interval:
+                    if not_ready_log_counter >= not_ready_log_interval:
                         logger.info("Coordinator is alive but is not ready.")
                         not_ready_log_counter = 0
-                    self.is_coordinator_reset = True
+                    # Only trigger SET on the first not-ready detection — not every
+                    # iteration.  This avoids repeated SET pushes when Coordinator
+                    # stays not-ready (e.g. only decode instances remain after a
+                    # prefill failure).  The flag is reset when ready becomes True.
+                    if not self._ready_false_set_sent:
+                        self.is_coordinator_reset = True
+                        self._ready_false_set_sent = True
+                else:
+                    self._ready_false_set_sent = False
 
                 if self.is_coordinator_reset:
                     # SET event means push all instances to coordinator,
@@ -258,17 +267,21 @@ class EventPusher(Observer):
                         self.is_coordinator_reset = True
                         logger.warning("Coordinator heartbeat lost. Possible restart detected.")
                         hb_loss_cnt = 0
-                    # Only log heartbeat failure periodically to avoid spam
-                    log_counter += 1
-                    if log_counter >= log_interval:
-                        logger.warning("Send Coordinator heartbeat failed, Exception occurred %s", e)
-                        log_counter = 0
+                    # Rate-limit repeated connection-failure logs via error_window.
+                    _rl.error_window(
+                        "event_pusher.coordinator_hb_fail",
+                        "Send Coordinator heartbeat failed, Exception occurred %s" % e,
+                        window_sec=60,
+                        level="WARNING",
+                    )
                 else:
-                    # Only log waiting message periodically to avoid spam
-                    log_counter += 1
-                    if log_counter >= log_interval:
-                        logger.info("Coordinator not yet available, waiting for first successful heartbeat.")
-                        log_counter = 0
+                    # Rate-limit the "not yet available" message during initial startup.
+                    _rl.error_window(
+                        "event_pusher.coordinator_not_available",
+                        "Coordinator not yet available, waiting for first successful heartbeat.",
+                        window_sec=60,
+                        level="INFO",
+                    )
 
             # Periodic full-instance SET sync to coordinator (fallback for controller restart / missed events)
             if self._set_sync_interval > 0:

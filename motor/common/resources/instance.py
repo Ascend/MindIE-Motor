@@ -13,13 +13,15 @@ import threading
 import copy
 from enum import Enum
 from types import MappingProxyType
-from typing import Optional
 from pydantic import BaseModel, Field
 from motor.common.logger import get_logger
 from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
 from motor.common.alarm.server_exception_event import ServerExceptionEvent, ServerExceptionReason
 
+from motor.common.logger.rate_limited_logger import RateLimitedLogger
+
 logger = get_logger(__name__)
+_rl = RateLimitedLogger(logger)
 
 CLEAR_INSTANCE_TIMEOUT = 300
 # Default heartbeat timeout for ACTIVE instances (seconds).
@@ -166,8 +168,8 @@ class Instance(BaseModel):
         # Cache for get_all_endpoints() to avoid repeated tuple creation.
         # Version counter tracks structural changes (add/del); O(1) check vs O(n) hashing.
         self._endpoints_version: int = 0  # Incremented when endpoints structure changes
-        self._cached_endpoints_tuple: Optional[tuple[Endpoint, ...]] = None
-        self._cached_endpoints_version: Optional[int] = None  # Version at cache time
+        self._cached_endpoints_tuple: tuple[Endpoint, ...] | None = None
+        self._cached_endpoints_version: int | None = None  # Version at cache time
 
     def add_node_mgr(self, pod_ip: str, port: str, device_num: int = 0) -> None:
         if pod_ip is None or port is None:
@@ -325,8 +327,14 @@ class Instance(BaseModel):
                         reason_id=ServerExceptionReason.HEARTBEAT_TIMEOUT,
                     )
                     Observability().add_alarm(event)
-                logger.warning(
-                    "Instance %s(id:%d)'s endpoints %s have heartbeat timeout", self.job_name, self.id, dead_endpoints
+                # Throttle: the management loop fires every ~1 s; logging every
+                # cycle floods the logs. Collapse repeated timeouts into a summary.
+                _rl.error_window(
+                    f"hb_timeout:{self.id}",
+                    "Instance %s(id:%d)'s endpoints %s have heartbeat timeout"
+                    % (self.job_name, self.id, dead_endpoints),
+                    window_sec=60,
+                    level="WARNING",
                 )
                 return False
             return True
@@ -406,7 +414,16 @@ class Instance(BaseModel):
                 logger.debug("Updated heartbeat for pod_ip %s in instance %s", ip, self.job_name)
                 return True
             else:
-                logger.error("Instance %s not found endpoints for pod_ip %s", self.id, ip)
+                # Pod sending heartbeat for an IP not registered in this instance's
+                # endpoints (e.g. stale engine-server after scale-down / pod eviction).
+                # The caller raises HTTPException so the engine-server knows to
+                # re-register.  Throttle to avoid flooding the log every heartbeat cycle.
+                _rl.error_window(
+                    f"hb_unknown_ip:{self.id}:{ip}",
+                    "Instance %s not found endpoints for pod_ip %s" % (self.id, ip),
+                    window_sec=60,
+                    level="WARNING",
+                )
                 return False
 
     def get_endpoints_num(self) -> int:

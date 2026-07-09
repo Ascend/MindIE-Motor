@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -55,6 +53,10 @@ class EtcdClient:
         self.lease_stub = None
         self._leases: dict[str, int] = {}  # lock_key -> lease_id
         self._lock = threading.Lock()
+        # Dedicated timeout for LeaseKeepAlive RPCs — shorter than the general
+        # etcd_timeout (5 s) so that a single slow renewal fails fast and leaves
+        # room for retries before the lease TTL expires.
+        self._lease_keepalive_timeout = 3
 
         try:
             channel_options = [
@@ -135,7 +137,14 @@ class EtcdClient:
             return None
 
     def renew_lease(self, lock_key: str) -> bool:
-        """Renew lease for a lock"""
+        """Renew lease for a lock.
+
+        Returns True on success, False if the renewal failed.
+        NOTE: On failure the local lease tracking is cleaned up, but the
+        gRPC LeaseRevoke is NOT called — the lease is left to expire
+        naturally on the etcd side.  This avoids needlessly destroying a
+        still-valid lease when only the renewal RPC itself was transient.
+        """
         try:
             with self._lock:
                 lock_key, lease_id = self._get_lock_key_and_id(lock_key)
@@ -145,23 +154,27 @@ class EtcdClient:
 
                 keep_alive_req = rpc_pb2.LeaseKeepAliveRequest(ID=lease_id)
 
-                # 2. Call LeaseKeepAlive (this is a streaming API)
-                # An iterator must be passed in, and the returned response iterator must be obtained.
-                response_stream = self.lease_stub.LeaseKeepAlive(iter([keep_alive_req]), timeout=self.timeout)
-                # 3. Read the response (this step is critical—it confirms that the lease renewal was successful
-                #    and retrieves the latest TTL) If you don't read the next response, the request might still
-                #    be buffered and not actually sent, or errors may go undetected.
+                response_stream = self.lease_stub.LeaseKeepAlive(
+                    iter([keep_alive_req]), timeout=self._lease_keepalive_timeout
+                )
                 response = next(response_stream)
                 new_ttl = response.TTL
 
                 if new_ttl <= 0:
-                    # If the returned TTL is <= 0, it means the lease has already expired.
                     raise RuntimeError(f"Lease expired (TTL={new_ttl}) during renewal")
                 logger.debug("Renewed lease for lock %s. New TTL: %s", lock_key, new_ttl)
                 return True
         except Exception as e:
             logger.error("Failed to renew lease for lock  %s: %s, will release", lock_key, e)
-            self.release_lock(lock_key)
+            # Remove local lease tracking WITHOUT revoking on the etcd side.
+            # The lease is left to expire naturally — if this was a transient
+            # gRPC failure the lease may still be valid and should NOT be
+            # preemptively destroyed.
+            with self._lock:
+                try:
+                    del self._leases[lock_key]
+                except KeyError:
+                    pass
             return False
 
     def release_lock(self, lock_key: str) -> bool:

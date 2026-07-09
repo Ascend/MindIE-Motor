@@ -31,12 +31,14 @@ from motor.controller.api_client.node_manager_api_client import NodeManagerApiCl
 from motor.controller.core import Observer, ObserverEvent
 from motor.controller.core.event_pusher import EventPusher
 from motor.common.logger import get_logger
+from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.alarm.instance_exception_alarm import InstanceExceptionAlarm, InstanceExceptionReason
 from motor.common.alarm.coordinator_exception_alarm import CoordinatorExceptionAlarm, CoordinatorExceptionReason
 from motor.common.alarm.enums import Cleared
 
 
 logger = get_logger(__name__)
+_rl = RateLimitedLogger(logger)
 
 # Heartbeat handle result code
 HEARTBEAT_HANDLER_SUCCESS = 200
@@ -585,7 +587,14 @@ class InstanceManager(ThreadSafeSingleton):
         if instance.update_heartbeat(pod_ip, timestamp, heartbeat_msg.status):
             logger.debug("Heartbeat received successfully  for instance %d from IP %s.", ins_id, pod_ip)
         else:
-            logger.error("Failed to update heartbeat for instance %d.", ins_id)
+            # instance.update_heartbeat already logs the specific reason (throttled).
+            # Throttle here too: stale engine-servers can retry every few seconds.
+            _rl.error_window(
+                f"hb_fail:{ins_id}:{pod_ip}",
+                "Failed to update heartbeat for instance %d from IP %s." % (ins_id, pod_ip),
+                window_sec=60,
+                level="WARNING",
+            )
             raise HTTPException(HEARTBEAT_HANDLER_ERROR)
 
         if self._handle_state_transition(instance):

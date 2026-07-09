@@ -59,20 +59,29 @@ class RateLimitedLogger:
         msg: str,
         window_sec: int = 10,
         threshold: int = 3,
+        level: str = "ERROR",
     ) -> None:
-        """Emit a single ERROR with ``count=N`` once ``threshold`` occurrences
-        pile up inside ``window_sec``; suppress intermediate ones.
+        """Collapse repeated log messages inside a sliding window into periodic summaries.
+
+        The *first* occurrence is always emitted immediately at the chosen
+        ``level``.  Subsequent occurrences inside ``window_sec`` are
+        suppressed; once the window elapses a summary line
+        ``"<msg> (last <N>s saw <M> occurrences)"`` is emitted at the same
+        level and the window resets.
 
         Args:
             key: dedup key (e.g. ``"controller.query_status.timeout"``).
-            msg: the error message (static — variable parts should be folded
+            msg: the log message (static — variable parts should be folded
                 into the key or omitted).
             window_sec: time window in seconds.
-            threshold: minimum occurrences before emitting.
-
-        The first occurrence is always emitted immediately. Once the threshold
-        is reached, the window resets and the counter starts over.
+            threshold: (unused — kept for API compatibility; window expiry
+                alone triggers the summary).
+            level: log level name (``"ERROR"``, ``"WARNING"``, ``"INFO"``,
+                ``"DEBUG"``).  Default ``"ERROR"``.
         """
+        log_level = level.upper()
+        log_method = getattr(self._logger, log_level.lower(), self._logger.error)
+
         now = time.time()
         with self._lock:
             state = self._err_state.get(key)
@@ -82,22 +91,28 @@ class RateLimitedLogger:
                     "count": 1,
                     "first_ts": now,
                     "last_msg": msg,
+                    "level": log_level,
                 }
-                self._logger.error("%s", msg)
+                log_method("%s", msg)
                 return
+
+            # Preserve the level used when the window was first opened.
+            log_level = state.get("level", log_level)
+            log_method = getattr(self._logger, log_level.lower(), self._logger.error)
 
             state["count"] += 1
             state["last_msg"] = msg
             if now - state["first_ts"] >= window_sec:
                 # Window elapsed: emit summary, reset.
                 summary = f"{msg} (last {int(now - state['first_ts'])}s saw {state['count']} occurrences)"
-                self._logger.error("%s", summary)
+                log_method("%s", summary)
                 self._err_state[key] = {
                     "count": 1,
                     "first_ts": now,
                     "last_msg": msg,
+                    "level": log_level,
                 }
-            # else: inside window, below threshold-equivalent — suppress.
+            # else: inside window — suppress.
 
     # ------------------------------------------------------------------
     # periodic summary (level-agnostic; was info_periodic)

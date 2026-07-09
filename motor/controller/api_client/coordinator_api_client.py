@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,8 +7,12 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
+import threading
+import time
+
 from motor.common.resources import InsEventMsg
-from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.http.http_client import ConnectionMode, SafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.config.controller import ControllerConfig
@@ -18,6 +21,48 @@ from motor.config.coordinator import CoordinatorConfig
 logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
 
+# --- Persistent client for instance-refresh pushes (Keep-Alive) ---
+_REFRESH_CLIENT: SafeHTTPSClient | None = None
+_REFRESH_CLIENT_LOCK = threading.Lock()  # protects client creation / reset
+_REFRESH_REQUEST_LOCK = threading.Lock()  # serialises request+retry+reset on the shared client
+_REFRESH_TIMEOUT = 3  # per-request TCP timeout (seconds)
+_REFRESH_RETRY_DELAYS = (1, 2)  # back-off between retries (seconds)
+
+
+def _get_refresh_client() -> SafeHTTPSClient:
+    """Return a shared long-lived HTTP client for instance-refresh pushes."""
+    global _REFRESH_CLIENT
+    if _REFRESH_CLIENT is not None:
+        return _REFRESH_CLIENT
+
+    with _REFRESH_CLIENT_LOCK:
+        if _REFRESH_CLIENT is not None:
+            return _REFRESH_CLIENT
+        client_args = CoordinatorApiClient._generate_client_args()
+        _REFRESH_CLIENT = SafeHTTPSClient(
+            mode=ConnectionMode.LONG,
+            timeout=_REFRESH_TIMEOUT,
+            **client_args,
+        )
+        logger.info(
+            "Instance-refresh HTTP client created (Keep-Alive, timeout=%ds) → %s",
+            _REFRESH_TIMEOUT,
+            client_args.get("address", "unknown"),
+        )
+        return _REFRESH_CLIENT
+
+
+def _reset_refresh_client() -> None:
+    """Close and discard the shared refresh client."""
+    global _REFRESH_CLIENT
+    with _REFRESH_CLIENT_LOCK:
+        if _REFRESH_CLIENT is not None:
+            try:
+                _REFRESH_CLIENT.close()
+            except Exception:  # nosec B110 — best-effort close on a client we are discarding
+                pass
+            _REFRESH_CLIENT = None
+
 
 class CoordinatorApiClient:
     controller_config = ControllerConfig.from_json()
@@ -25,41 +70,77 @@ class CoordinatorApiClient:
 
     @staticmethod
     def send_instance_refresh(event_msg: InsEventMsg) -> bool:
-        is_succeed = True
-        client = None
+        """Push an instance event to the Coordinator with retry on failure.
 
-        client_ars = CoordinatorApiClient._generate_client_args()
-        try:
-            client = SafeHTTPSClient(timeout=0.5, **client_ars)
-            response = client.post("/instances/refresh", data=event_msg.model_dump())
-            response_text = response.get("text")
+        Uses a persistent Keep-Alive connection.  On TCP-level failure the stale
+        client is discarded and up to two retries (1 s, 2 s back-off) are attempted.
+        Returns True on success, False after all attempts are exhausted.
 
-            if event_msg.instances and len(event_msg.instances) > 0:
-                job_names = [instance.job_name for instance in event_msg.instances]
-                job_names_str = ", ".join(job_names)
-                logger.info(
-                    "Event pushed type: %s, job names: [%s], response: %s",
-                    event_msg.event,
-                    job_names_str,
-                    response_text,
+        The shared Keep-Alive client is guarded by a request lock so that
+        concurrent callers cannot interleave requests on the same connection
+        or reset the client while another thread is using it.
+        """
+        total_attempts = 1 + len(_REFRESH_RETRY_DELAYS)
+        last_error: Exception | None = None
+        client_args = CoordinatorApiClient._generate_client_args()
+
+        for attempt in range(total_attempts):
+            with _REFRESH_REQUEST_LOCK:
+                try:
+                    client = _get_refresh_client()
+                    response = client.post("/instances/refresh", data=event_msg.model_dump())
+                    response_text = response.get("text")
+
+                    if event_msg.instances and len(event_msg.instances) > 0:
+                        job_names = [instance.job_name for instance in event_msg.instances]
+                        job_names_str = ", ".join(job_names)
+                        logger.info(
+                            "Event pushed type: %s, job names: [%s], response: %s (attempt %d/%d)",
+                            event_msg.event,
+                            job_names_str,
+                            response_text,
+                            attempt + 1,
+                            total_attempts,
+                        )
+                    else:
+                        logger.info(
+                            "Event pushed type: %s, push all instances, response: %s (attempt %d/%d)",
+                            event_msg.event,
+                            response_text,
+                            attempt + 1,
+                            total_attempts,
+                        )
+                    return True
+
+                except Exception as e:
+                    last_error = e
+                    _reset_refresh_client()
+            # Lock released — sleep outside the critical section so other
+            # threads can push events between retry attempts.
+            if attempt < len(_REFRESH_RETRY_DELAYS):
+                delay = _REFRESH_RETRY_DELAYS[attempt]
+                logger.debug(
+                    "Instance refresh attempt %d/%d failed (%s), retrying in %ds...",
+                    attempt + 1,
+                    total_attempts,
+                    last_error,
+                    delay,
                 )
-            else:
-                logger.info("Event pushed type: %s, push all instances, response: %s", event_msg.event, response_text)
-        except Exception as e:
-            is_succeed = False
-            address = client_ars.get("address", "unknown")
-            logger.error("Exception occurred while pushing event, %s, %s", address, e)
-        finally:
-            if client is not None:
-                client.close()
+                time.sleep(delay)
 
-        return is_succeed
+        address = client_args.get("address", "unknown")
+        _rl.error_window(
+            "coordinator.send_instance_refresh",
+            "Exception occurred while pushing event to %s: %s" % (address, last_error),
+            window_sec=60,
+        )
+        return False
 
     @staticmethod
     def query_status(params: dict[str, str] | None = None) -> dict[str, str]:
         try:
             client_ars = CoordinatorApiClient._generate_client_args()
-            client = SafeHTTPSClient(**client_ars, timeout=0.5)
+            client = SafeHTTPSClient(**client_ars, timeout=3)
             response = client.get("/readiness", params=params)
             _rl.record_success("controller.coordinator.query_status")
             _rl.emit_periodic(
@@ -70,13 +151,12 @@ class CoordinatorApiClient:
             return response
         except Exception as e:
             address = CoordinatorApiClient._generate_client_args().get("address", "unknown")
-            logger.error(
-                "Controller->Coordinator query_status failed. address=%s, error=%s. "
-                "Possible causes: 1) coordinator down 2) network unreachable 3) tls mismatch. "
-                "Check: ping %s, coordinator process status.",
-                address,
-                e,
-                address,
+            # Rate-limit: the heartbeat detector runs frequently and repeated
+            # connection failures flood the log.  Collapse into periodic summaries.
+            _rl.error_window(
+                "coordinator.query_status",
+                "Controller->Coordinator query_status failed. address=%s, error=%s" % (address, e),
+                window_sec=60,
             )
             raise e
 

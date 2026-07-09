@@ -23,6 +23,7 @@ from motor.controller.fault_tolerance.k8s.configmap_parser import (
     _parse_json_string,
     _parse_device_fault_code,
     _normalize_fault_level_string,
+    _normalize_device_list_value,
     _resolve_device_list_key,
     _parse_switch_fault_key,
     process_device_info,
@@ -689,6 +690,27 @@ def test_resolve_device_list_key_json_string_format():
     assert result[0]["npu_name"] == "npu-3"
 
 
+def test_normalize_device_list_value_comma_separated_string():
+    """Comma-separated NPU names (e.g. ``Ascend910-0,Ascend910-1``) are not JSON
+    and must be silently skipped without logging an ERROR.  This is the format
+    used by ``huawei.com/Ascend910-NetworkUnhealthy`` in real ConfigMaps.
+    """
+    comma_sep = "Ascend910-0,Ascend910-1,Ascend910-5"
+    result = _normalize_device_list_value(comma_sep)
+    assert result == []
+
+
+def test_normalize_device_list_value_comma_separated_no_error_log():
+    """A comma-separated string must NOT trigger a JSON parse error log.  Before
+    the fix every heartbeat cycle (3 s) would emit an ERROR from inside
+    ``_parse_json_string``.
+    """
+    with patch("motor.controller.fault_tolerance.k8s.configmap_parser.logger") as mock_logger:
+        _normalize_device_list_value("Ascend910-0,Ascend910-1")
+        # error() must never be called — the string was skipped before JSON parsing
+        mock_logger.error.assert_not_called()
+
+
 # =============================================================================
 # 9. process_device_info with new naming convention (npu-*) tests
 # =============================================================================
@@ -878,6 +900,53 @@ def test_process_device_info_old_keys_still_work():
     assert result[0].fault_level == FaultLevel.L3
     assert result[1].npu_name == "Ascend910-5"
     assert result[1].fault_type == HardwareFaultType.CARD_NETWORK_UNHEALTHY
+
+
+def test_process_device_info_network_unhealthy_comma_separated():
+    """Real ConfigMap format: huawei.com/Ascend910-NetworkUnhealthy stores NPU
+    names as a comma-separated string (not JSON).  This must be silently skipped
+    without triggering a JSON parse ERROR log — the fault devices are already
+    captured via huawei.com/Ascend910-Fault.
+    """
+    fault_list_json = json.dumps(
+        [
+            {
+                "fault_type": "CardNetworkUnhealthy",
+                "npu_name": "Ascend910-0",
+                "fault_level": "PreSeparateNPU",
+                "fault_code": "81078603",
+            },
+            {
+                "fault_type": "CardNetworkUnhealthy",
+                "npu_name": "Ascend910-1",
+                "fault_level": "PreSeparateNPU",
+                "fault_code": "81078603",
+            },
+        ]
+    )
+    device_info_dict = {
+        "DeviceInfo": {
+            "DeviceList": {
+                "huawei.com/Ascend910": "",
+                "huawei.com/Ascend910-Fault": fault_list_json,
+                "huawei.com/Ascend910-NetworkUnhealthy": "Ascend910-0,Ascend910-1",
+                "huawei.com/Ascend910-Recovering": "",
+                "huawei.com/Ascend910-Unhealthy": "",
+            }
+        },
+        "UpdateTime": 1783483394,
+    }
+    device_info_json = json.dumps(device_info_dict)
+
+    with patch("motor.controller.fault_tolerance.k8s.configmap_parser.logger") as mock_logger:
+        result = process_device_info(device_info_json)
+        # Fault devices from the JSON-string field should be parsed
+        assert len(result) == 2
+        assert result[0].npu_name == "Ascend910-0"
+        assert result[1].npu_name == "Ascend910-1"
+        # The comma-separated field must NOT trigger a JSON parse error
+        error_calls = [call for call in mock_logger.error.call_args_list if "JSON parsing failed" in str(call)]
+        assert len(error_calls) == 0
 
 
 # =============================================================================

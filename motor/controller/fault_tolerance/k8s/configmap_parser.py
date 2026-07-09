@@ -152,13 +152,20 @@ def _normalize_device_list_value(value: Any) -> list:
 
     Some ConfigMap producers serialize fault arrays as a JSON string inside the
     JSON value (e.g. ``"[{...},{...}]"``), while others emit a native JSON array.
+    Non-JSON strings (e.g. comma-separated NPU names like
+    ``"Ascend910-0,Ascend910-1"``) are skipped without attempting a parse.
     """
     if isinstance(value, list):
         return value
     if isinstance(value, str) and value.strip():
-        parsed = _parse_json_string(value)
-        if isinstance(parsed, list):
-            return parsed
+        stripped = value.strip()
+        # Only attempt JSON parsing for strings that look like JSON arrays/objects.
+        # Comma-separated identifiers (e.g. "Ascend910-0,Ascend910-1") are not JSON
+        # and would log a spurious ERROR from _parse_json_string on every watch event.
+        if stripped.startswith(("[", "{")):
+            parsed = _parse_json_string(stripped)
+            if isinstance(parsed, list):
+                return parsed
         logger.debug("DeviceList field is a string but not a JSON array, skipping: %s...", value[:100])
     return []
 
