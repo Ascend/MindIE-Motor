@@ -14,7 +14,6 @@ if [ "$ROLE" != "encode" ] && [ "$ROLE" != "prefill" ] && [ "$ROLE" != "decode" 
     exit 1
 fi
 
-apply_shuffle_safetensors_patch
 setup_jemalloc
 
 gen_ranktable_config
@@ -25,6 +24,8 @@ set_cann_env
 if is_a5_hardware; then
     set_a5_engine_env
 fi
+
+apply_shuffle_safetensors_patch
 
 set_mf_store_env
 

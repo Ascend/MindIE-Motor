@@ -14,7 +14,6 @@ if [ "$ROLE" != "SINGLE_CONTAINER" ]; then
     exit 1
 fi
 
-apply_shuffle_safetensors_patch
 setup_jemalloc
 
 export CONTROLLER_SERVICE="$POD_IP"
@@ -27,6 +26,8 @@ set_cann_env
 if is_a5_hardware; then
     set_a5_engine_env
 fi
+
+apply_shuffle_safetensors_patch
 
 pids=()
 
