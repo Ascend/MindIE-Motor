@@ -364,17 +364,105 @@ vllm:num_requests_running{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruc
 vllm:num_requests_running{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruct"} -1.0"""
 
         metric_collector = MetricsCollector(self.config)
+        # Illegal TYPE is a structural failure → None (not an empty success list).
         result = metric_collector._parse_metric_text(metrics_str_type_error)
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result is None
 
         result = metric_collector._parse_metric_text(metrics_str_value_type_error)
+        assert result is None
+
+        result = metric_collector._parse_metric_text(metrics_str_value_error)
+        assert result is None
+
+    @_test_without_background_thread
+    def test_parse_metrics_text_resilient(self):
+        metric_collector = MetricsCollector(self.config)
+
+        # A negative gauge sample is legitimate and must be kept.
+        gauge_negative = """
+# HELP g_metric a gauge
+# TYPE g_metric gauge
+g_metric{engine="0"} -0.5"""
+        result = metric_collector._parse_metric_text(gauge_negative)
+        assert len(result) == 1
+        assert result[0].type == MetricType.GAUGE
+        assert result[0].value == [-0.5]
+
+        # A label value containing spaces must survive parsing.
+        label_with_space = """
+# HELP s_metric a gauge
+# TYPE s_metric gauge
+s_metric{name="prepare input"} 3.0"""
+        result = metric_collector._parse_metric_text(label_with_space)
+        assert len(result) == 1
+        assert result[0].value == [3.0]
+
+        # A counter whose only sample is negative is corrupt; the family has no
+        # valid sample and must be dropped rather than returned with empty arrays.
+        counter_all_bad = """
+# HELP c_metric a counter
+# TYPE c_metric counter
+c_metric{engine="0"} -1.0"""
+        result = metric_collector._parse_metric_text(counter_all_bad)
         assert isinstance(result, list)
         assert len(result) == 0
 
-        result = metric_collector._parse_metric_text(metrics_str_value_error)
-        assert isinstance(result, list)
-        assert len(result) == 0
+        # One corrupt family must not take down the healthy families around it.
+        mixed = """
+# HELP c_metric a counter
+# TYPE c_metric counter
+c_metric{engine="0"} -1.0
+# HELP g_metric a gauge
+# TYPE g_metric gauge
+g_metric{engine="0"} 2.0"""
+        result = metric_collector._parse_metric_text(mixed)
+        assert len(result) == 1
+        assert result[0].name == "g_metric"
+        assert result[0].value == [2.0]
+
+        # Empty family (HELP+TYPE, no samples): silently dropped, neighbors kept.
+        empty_family = """
+# HELP e_metric empty
+# TYPE e_metric gauge
+# HELP g_metric a gauge
+# TYPE g_metric gauge
+g_metric{engine="0"} 1.0"""
+        result = metric_collector._parse_metric_text(empty_family)
+        assert len(result) == 1
+        assert result[0].name == "g_metric"
+        assert result[0].value == [1.0]
+
+        # Large negative gauge (scale+interrupt style) must be kept.
+        big_neg = """
+# HELP rate_metric a gauge
+# TYPE rate_metric gauge
+rate_metric{engine="0"} -335927.113155146
+# HELP ok_metric a gauge
+# TYPE ok_metric gauge
+ok_metric{engine="0"} 3.0"""
+        result = metric_collector._parse_metric_text(big_neg)
+        assert len(result) == 2
+        assert result[0].name == "rate_metric"
+        assert result[0].value == [-335927.113155146]
+        assert result[1].name == "ok_metric"
+        assert result[1].value == [3.0]
+
+        # All families dropped → empty list (success), not None / not collect failure.
+        all_dropped = """
+# HELP c_metric a counter
+# TYPE c_metric counter
+c_metric{engine="0"} -1.0"""
+        result = metric_collector._parse_metric_text(all_dropped)
+        assert result == []
+        collects = {
+            1: {
+                "endpoints": {
+                    0: {"metrics_str": all_dropped},
+                }
+            }
+        }
+        assert metric_collector._parse_metrics(collects) is True
+        assert collects[1]["endpoints"][0][metric_collector.METRICS_KEY] == []
 
     @_test_without_background_thread
     def test_clear_inactive_metrics(self):

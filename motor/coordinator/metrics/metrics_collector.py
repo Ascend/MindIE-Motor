@@ -578,13 +578,21 @@ class MetricsCollector(ThreadSafeSingleton):
                     logger.error("[Metrics] Missing 'metrics_str' for endpoint in instance %s", instance_id)
                     return False
                 parsed_metric = self._parse_metric_text(metrics_str)
-                if not parsed_metric:
+                # None = structural parse failure; [] = parsed OK but no valid samples.
+                if parsed_metric is None:
                     logger.error("[Metrics] Parse metric text failed for instance %s", instance_id)
                     return False
                 pod_info[self.METRICS_KEY] = parsed_metric
         return True
 
-    def _parse_metric_text(self, metrics_str: str) -> list[Metric]:
+    def _parse_metric_text(self, metrics_str: str) -> list[Metric] | None:
+        """Parse Prometheus text into Metric families.
+
+        Returns:
+            list[Metric]: parse completed; may be empty when every family was
+                empty or dropped by per-line resilience.
+            None: structural failure (bad HELP/TYPE layout); caller must fail.
+        """
         lines = [ln for ln in metrics_str.splitlines() if ln.strip()]
         if not lines:
             return []
@@ -594,15 +602,43 @@ class MetricsCollector(ThreadSafeSingleton):
         while i < n:
             metric = Metric()
             if not self._parse_metric_help(metric, lines[i]):
-                return []
+                return None
             i += 1
             if i >= n or not self._parse_metric_type(metric, lines[i]):
-                return []
+                return None
             i += 1
+            sample_total = 0
+            sample_failed = 0
             while i < n and not lines[i].startswith("#"):
+                # A single bad body line is skipped so the rest of this instance's
+                # metrics still parse; the per-family summary below records the
+                # impact without taking down the full metrics text.
+                sample_total += 1
                 if not self._parse_metric_body_block(metric, lines[i]):
-                    return []
+                    sample_failed += 1
                 i += 1
+            if not metric.value:
+                # HELP/TYPE with no sample lines is normal during engine startup
+                # or scale-up; silently skip because this is not a parse failure.
+                if sample_total == 0:
+                    continue
+                # Had samples but every line failed: drop the family instead of
+                # emitting empty label/value arrays to downstream consumers.
+                logger.error(
+                    "[Metrics] Drop metric %s: all %d sample line(s) failed to parse",
+                    metric.name,
+                    sample_total,
+                )
+                continue
+            if sample_failed:
+                # One WARNING per family only; per-line detail is omitted to avoid
+                # spam when the same metric keeps emitting bad values each scrape.
+                logger.warning(
+                    "[Metrics] Metric %s: skipped %d of %d bad sample line(s)",
+                    metric.name,
+                    sample_failed,
+                    sample_total,
+                )
             metric_array.append(metric)
         return metric_array
 
@@ -641,22 +677,27 @@ class MetricsCollector(ThreadSafeSingleton):
         metric: Metric,
         line: str,
     ) -> bool:
+        # The value is always the last whitespace-separated token; rsplit once
+        # so label values containing spaces (e.g. name="prepare input") survive.
         parts = line.rsplit(None, 1)
         if len(parts) != 2:
-            logger.error("[Metrics] Parse metric body failed.")
             return False
 
-        label = cls._ENGINE_LABEL_RE.sub("", parts[0])
-        metric.label.append(label)
         try:
             value = float(parts[1])
-            if value < 0:
-                logger.error("[Metrics] Illegal metric value: %s", parts[1])
-                return False
-            metric.value.append(value)
         except ValueError:
-            logger.error("[Metrics] Illegal metric value: %s", parts[1])
             return False
+
+        # Only gauges may legitimately be negative; a negative counter/histogram
+        # is corrupt, so drop just this line rather than the whole metric text.
+        # Per-line logging is omitted; _parse_metric_text emits one family WARNING.
+        if value < 0 and metric.type != MetricType.GAUGE:
+            return False
+
+        # Append label and value together so the parallel arrays stay aligned.
+        label = cls._ENGINE_LABEL_RE.sub("", parts[0])
+        metric.label.append(label)
+        metric.value.append(value)
         return True
 
     def _fetch_instance_metrics(
