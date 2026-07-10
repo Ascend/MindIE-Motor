@@ -102,18 +102,14 @@ PD 分离场景下，建议 **prefill 的 `priority` 数值大于 decode**（即
 
 ```yaml
     - name: prefill
+      replicas: 4
+      priority: 2          # 优先级低于 decode
       # ...
-      spec:
-        replicas: 2
-        priority: 2          # 优先级低于 decode
-        # ...
 
     - name: decode
+      replicas: 4
+      priority: 1          # 优先级高于 prefill
       # ...
-      spec:
-        replicas: 2
-        priority: 1          # 优先级高于 prefill
-        # ...
 ```
 
 #### 3. 将 Pod 标签 fault-scheduling 改为 external-force
