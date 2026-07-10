@@ -256,8 +256,40 @@ def _start_log_collection(deploy_config):
     logger.info("Log collection started via show_log.sh")
 
 
+def handle_general_config(args):
+    config_tool_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_tool")
+    script = os.path.join(config_tool_dir, "vllm_to_motor.py")
+    cmd = [
+        sys.executable,
+        script,
+        "--deploy-scenario",
+        args.deploy_scenario,
+        "--hardware-type",
+        args.hardware_type,
+    ]
+    if args.weight_path:
+        cmd.extend(["--weight-path", args.weight_path])
+    if args.image_name:
+        cmd.extend(["--image-name", args.image_name])
+    subprocess.run(cmd, cwd=config_tool_dir, check=True)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["deploy", "general_config"],
+        default="deploy",
+        help="deploy: deploy service; general_config: generate user_config.json/env.json from config_tool",
+    )
+    parser.add_argument(
+        "--deploy-scenario",
+        choices=["hybrid", "separate"],
+        help="Required for general_config mode",
+    )
+    parser.add_argument("--hardware-type", type=str, help="Required for general_config mode: A2 or A3")
+    parser.add_argument("--weight-path", type=str, help="Optional for general_config mode: weight mount path")
+    parser.add_argument("--image-name", type=str, help="Optional for general_config mode: container image name")
     parser.add_argument(
         "--config_dir",
         "--dir",
@@ -354,6 +386,13 @@ def start_monitoring(user_config):
 
 def main():
     args = parse_arguments()
+
+    if args.mode == "general_config":
+        if not args.deploy_scenario or not args.hardware_type:
+            logger.error("In general_config mode, the --deploy-scenario and --hardware-type parameters are required.")
+            sys.exit(2)
+        handle_general_config(args)
+        return
 
     # No configuration at all → launch TUI directly (undeployed mode)
     no_config = not (args.config_dir or args.user_config_path or args.env_config_path)

@@ -1,0 +1,130 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 1,
+    "single_d_instance_pod_num": 1,
+    "p_pod_npu_num": 16,
+    "d_pod_npu_num": 16,
+    "image_name": "<请手动填写镜像名称，例如：mindie-motor-vllm:dev-26.1.0.B081-800I-A3-py311-Ubuntu24.04-lts-aarch64>",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {},
+  "motor_engine_prefill_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "data_parallel_size": 4,
+      "tensor_parallel_size": 4,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "served_model_name": "dsv4",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "seed": 1024,
+      "enable_expert_parallel": true,
+      "max-model-len": 1048576,
+      "max-num-batched-tokens": 8192,
+      "max-num-seqs": 16,
+      "block-size": 128,
+      "enforce-eager": true,
+      "no_disable_hybrid_kv_cache_manager": true,
+      "trust-remote-code": true,
+      "gpu_memory_utilization": 0.9,
+      "quantization": "ascend",
+      "safetensors-load-strategy": "prefetch",
+      "model-loader-extra-config": {
+        "enable_multithread_load": "true",
+        "num_threads": 128
+      },
+      "tokenizer-mode": "deepseek_v4",
+      "tool-call-parser": "deepseek_v4",
+      "enable-auto-tool-choice": true,
+      "reasoning-parser": "deepseek_v4",
+      "speculative-config": {
+        "num_speculative_tokens": 1,
+        "method": "mtp",
+        "enforce_eager": true
+      },
+      "profiler-config": {
+        "profiler": "torch",
+        "torch_profiler_dir": "./vllm_profile",
+        "torch_profiler_with_stack": false
+      },
+      "additional-config": {
+        "enable_cpu_binding": true,
+        "enable_shared_expert_dp": true,
+        "enable_dsa_cp": true
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeHybridConnector",
+        "kv_role": "kv_producer",
+        "kv_port": "30000",
+        "engine_id": "0"
+      },
+      "no-enable-prefix-caching": true
+    }
+  },
+  "motor_engine_decode_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "data_parallel_size": 16,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "served_model_name": "dsv4",
+      "model": "<请按实际情况填写模型权重文件的访问路径>",
+      "seed": 1024,
+      "enable_expert_parallel": true,
+      "max-model-len": 1048576,
+      "max-num-batched-tokens": 120,
+      "max-num-seqs": 60,
+      "async-scheduling": true,
+      "block-size": 128,
+      "no-enable-prefix-caching": true,
+      "no_disable_hybrid_kv_cache_manager": true,
+      "safetensors-load-strategy": "prefetch",
+      "model-loader-extra-config": {
+        "enable_multithread_load": "true",
+        "num_threads": 128
+      },
+      "trust-remote-code": true,
+      "tokenizer-mode": "deepseek_v4",
+      "tool-call-parser": "deepseek_v4",
+      "enable-auto-tool-choice": true,
+      "reasoning-parser": "deepseek_v4",
+      "gpu_memory_utilization": 0.9,
+      "quantization": "ascend",
+      "compilation-config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY"
+      },
+      "speculative-config": {
+        "num_speculative_tokens": 1,
+        "method": "mtp",
+        "enforce_eager": true
+      },
+      "profiler-config": {
+        "profiler": "torch",
+        "torch_profiler_dir": "./vllm_profile",
+        "torch_profiler_with_stack": false
+      },
+      "additional-config": {
+        "enable_cpu_binding": true,
+        "multistream_overlap_shared_expert": true,
+        "recompute_scheduler_enable": true,
+        "ascend_compilation_config": {
+          "enable_npugraph_ex": true,
+          "enable_static_kernel": false
+        }
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeHybridConnector",
+        "kv_role": "kv_consumer",
+        "kv_port": "30100",
+        "engine_id": "1"
+      }
+    }
+  }
+}

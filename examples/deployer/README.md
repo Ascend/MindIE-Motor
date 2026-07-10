@@ -14,6 +14,8 @@
 
 ### 参数说明
 
+Motor**服务部署**参数说明
+
 | 参数 | 简写 | 说明 |
 |------|------|------|
 | `--config_dir` | `--dir` | 配置文件所在目录，目录下需包含 `user_config.json` 和 `env.json` |
@@ -24,6 +26,16 @@
 | `--dry-run` | - | 仅生成 YAML 文件，不执行 kubectl apply |
 | `--auto_log_collect` | - | 部署完成后自动启动日志采集 |
 | `--nostep` | - | 部署完成后不显示服务启动进度条 |
+
+Motor**配置文件自动生成**参数说明
+
+| 参数 | 简写 | 说明 |
+|------|------|------|
+| `--mode` | - | `deploy`（默认）或 `general_config`（从 vLLM 脚本生成配置） |
+| `--deploy-scenario` | - | `general_config` 必填：`hybrid` / `separate` |
+| `--hardware-type` | - | `general_config` 必填：`A2` / `A3` |
+| `--weight-path` | - | `general_config` 可选：权重挂载路径 |
+| `--image-name` | - | `general_config` 可选：镜像名称 |
 
 ### 使用方式
 
@@ -73,6 +85,10 @@ python deploy.py --config_dir ../infer_engines/vllm --config /path/to/custom_use
 ```
 
 当同时指定 `--config_dir` 和 `--config`/`--env` 时，以 `--config` 和 `--env` 为准。
+
+#### 方式四：基于vllm部署脚本生成Motor全量配置文件
+
+使用方式请参阅[Motor配置自动生成指导](../infer_engines/vllm/models/README.md)。
 
 ### 其他操作
 
