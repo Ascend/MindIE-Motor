@@ -20,7 +20,7 @@ Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参�
 
 ### 虚推（虚拟推理）健康探测
 
-虚推用于在业务低负载时主动探测推理引擎是否可用，配置项位于 `user_config` 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 **`health_check_config`**，参数说明见 [配置参考第 6 节](../../user_guide/deployment/k8s/config_reference.md#6-motor_engine_prefill_config--motor_engine_decode_configpd-引擎)。
+虚推用于在业务低负载时主动探测推理引擎是否可用，配置项位于 `user_config` 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 **`health_check_config`**，参数说明见 [配置参考第 6 节](../../user_guide/deployment/k8s/config_reference.md#motor_engine_prefill_configmotor_engine_decode_config)。
 
 **版本要求**：虚推仅支持 **HDK 26.0.RC1** 及以后版本。
 

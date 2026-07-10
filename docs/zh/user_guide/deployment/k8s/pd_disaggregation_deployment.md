@@ -258,7 +258,7 @@ examples/
 
 ### motor_nodemanger_config
 
-用于 NodeManager 组件的专项配置。仓内 `user_config.json` 中该对象为空 `{}`，PD 分离场景下一般无需配置。全量参数见 [user_config 全量参数说明](./config_reference.md#4-motor_nodemanger_config)。注意字段名为 `motor_nodemanger_config`（拼写保留仓内一致）。
+用于 NodeManager 组件的专项配置。仓内 `user_config.json` 中该对象为空 `{}`，PD 分离场景下一般无需配置。全量参数见 [motor_nodemanger_config](config_reference.md#motor_nodemanger_config)。注意字段名为 `motor_nodemanger_config`（拼写保留仓内一致）。
 
 ### motor_engine_prefill_config / motor_engine_decode_config（P/D 引擎）
 
@@ -343,7 +343,7 @@ examples/
 | engine_type | string | 引擎类型，如 `vllm` |
 | engine_config | object | 引擎相关配置，含模型信息、并行策略、KV 传输与引擎原生参数 |
 | dispatch_profile | string | 可选；P/D 协同语义（`handoff` / `trigger`）。`kv_connector` 不在白名单时必填，见 [kv_connector 识别白名单与 dispatch_profile](#kv_connector-识别白名单与-dispatch_profile) |
-| health_check_config | object | 可选；虚推（虚拟推理）健康探测配置，见下表及 [配置参考](./config_reference.md#62-health_check_config虚推健康探测) |
+| health_check_config | object | 可选；虚推（虚拟推理）健康探测配置，见下表及 [配置参考](./config_reference.md#health_check_config) |
 
 #### health_check_config 配置项（虚推健康探测）
 
@@ -461,7 +461,7 @@ NodeManager 根据 `engine_config.kv_transfer_config.kv_connector`（大小写�
 }
 ```
 
-字段说明见 [user_config 全量参数说明](./config_reference.md#61-dispatch_profilepd-协同语义)。
+字段说明见 [user_config 全量参数说明](./config_reference.md#dispatch_profile)。
 
 ### kv_cache_pool_config（可选）
 
@@ -763,7 +763,7 @@ kubectl exec -it <pod_name> -n <job_id> -- bash
 
 ## 发送推理请求
 
-服务就绪后，可通过发送推理请求测试服务是否拉起正常，以 `/v1/chat/completions` 接口为例（更多API接口可参考[业务接口](../../../api_reference/service_interface.md)。推理入口为 Coordinator 对外暴露的端口（默认 31015）。请将 `<IP>` 替换为实际访问地址（如 Coordinator Service 的 NodePort/LoadBalancer 或宿主机 IP）。若已开启 TLS（见 4.6），请使用 `https` 并配置客户端证书。
+服务就绪后，可通过发送推理请求测试服务是否拉起正常，以 `/v1/chat/completions` 接口为例（更多API接口可参考[业务接口](../../../user_guide/api/service_interfaces.md)。推理入口为 Coordinator 对外暴露的端口（默认 31015）。请将 `<IP>` 替换为实际访问地址（如 Coordinator Service 的 NodePort/LoadBalancer 或宿主机 IP）。若已开启 TLS（见 4.6），请使用 `https` 并配置客户端证书。
 
 ```bash
 curl -X POST http://<IP>:31015/v1/chat/completions \

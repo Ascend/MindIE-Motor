@@ -34,7 +34,7 @@ EOF
 echo "Building wheel package with pip wheel (PEP517)... (VERBOSE=${VERBOSE})"
 
 # Use pep517 build interface to avoid legacy setup.py warning. if no network, need add "--no-build-isolation"
-cmd=(python -m pip wheel . --no-deps --use-pep517 -w dist)
+cmd=(python -m pip wheel . --no-deps --use-pep517 -w dist -i https://pypi.tuna.tsinghua.edu.cn/simple)
 if [[ "${VERBOSE}" -eq 0 ]]; then
   cmd+=(-q) # quiet output by default
 fi
