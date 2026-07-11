@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    appgroup: ''
+    version: v1
+  name: etcd
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: etcd
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: etcd
+        version: v1
+    spec:
+      containers:
+        - name: etcd-server
+          image: swr.cn-southwest-2.myhuaweicloud.com/private-cs/etcd:v3.5.10
+          command:
+            - /usr/local/bin/etcd
+          args:
+            - --name=$(POD_NAME)
+            - --data-dir=/tmp/etcd-yuanong
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://$(POD_NAME).etcd-headless.default.svc.cluster.local:2379
+            - --initial-advertise-peer-urls=http://$(POD_NAME).etcd-headless.default.svc.cluster.local:2380
+            - --initial-cluster=etcd-0=http://etcd-0.etcd-headless.default.svc.cluster.local:2380,etcd-1=http://etcd-1.etcd-headless.default.svc.cluster.local:2380,etcd-2=http://etcd-2.etcd-headless.default.svc.cluster.local:2380
+            - --initial-cluster-state=new
+            - --initial-cluster-token=etcd-cluster-token
+            - --auto-compaction-retention=1
+          imagePullPolicy: Always
+          env:
+            - name: PAAS_APP_NAME
+              value: etcd
+            - name: PAAS_NAMESPACE
+              value: default
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 8192Mi
+          livenessProbe:
+            tcpSocket:
+              port: 2379
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            tcpSocket:
+              port: 2379
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: etcd-data
+              readOnly: false
+              mountPath: /tmp/etcd-yuanong
+              subPath:
+      imagePullSecrets:
+        - name: default-secret
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - etcd
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300
+      initContainers: []
+      volumes:
+        - name: etcd-data
+          hostPath:
+            path: /tmp/etcd-yuanong
+  serviceName: etcd-headless
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  revisionHistoryLimit: 10
+  updateStrategy:
+    type: RollingUpdate
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd-headless
+  labels:
+    app: etcd
+    version: v1
+  namespace: default
+spec:
+  selector:
+    app: etcd
+    version: v1
+  clusterIP: None
+  ports:
+    - name: peer
+      targetPort: 2380
+      nodePort: 0
+      port: 2380
+      protocol: TCP
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd-client-service
+  labels:
+    app: etcd
+    version: v1
+  namespace: default
+  annotations: {}
+spec:
+  selector:
+    app: etcd
+    version: v1
+  ports:
+    - name: cce-service-0
+      targetPort: 2379
+      nodePort: 0
+      port: 2379
+      protocol: TCP
+  type: ClusterIP
