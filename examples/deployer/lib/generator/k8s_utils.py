@@ -220,29 +220,79 @@ def _get_kubectl_path():
     return kubectl
 
 
-def get_accelerator_type_from_cluster():
-    """Resolve accelerator-type from the first cluster node that has the label via kubectl."""
-    if C.ACCELERATOR_TYPE in _g_accelerator_type_cache:
-        return _g_accelerator_type_cache[C.ACCELERATOR_TYPE]
-
+def _get_cluster_nodes(label_selector):
     kubectl = _get_kubectl_path()
-    out = run_cmd_get_output([kubectl, "get", "nodes", "-o", "json"])
-    nodes = json.loads(out).get("items", [])
+    out = run_cmd_get_output([kubectl, "get", "nodes", "-l", label_selector, "-o", "json"])
+    return json.loads(out).get("items", [])
 
+
+def _collect_node_accelerator_types(nodes):
+    accelerator_types = set()
     for node in nodes:
         labels = node.get("metadata", {}).get("labels", {})
         accelerator_type = labels.get(C.ACCELERATOR_TYPE)
         if accelerator_type:
-            logger.info(
-                "Resolved %s=%s from node %s",
-                C.ACCELERATOR_TYPE,
-                accelerator_type,
-                node.get("metadata", {}).get("name", "<unknown>"),
-            )
-            _g_accelerator_type_cache[C.ACCELERATOR_TYPE] = accelerator_type
-            return accelerator_type
+            accelerator_types.add(accelerator_type)
+    return accelerator_types
 
-    raise RuntimeError(f"No node in cluster has label {C.ACCELERATOR_TYPE}")
+
+def _matches_hardware_generation(accelerator_type, hardware_type):
+    if hardware_type in C.HARDWARE_TYPE_A2:
+        return "910b" in accelerator_type.lower()
+    if hardware_type in C.HARDWARE_TYPE_A3:
+        return "a3" in accelerator_type.lower()
+    return True
+
+
+def _resolve_accelerator_type_from_nodes(nodes, hardware_type):
+    accelerator_types = _collect_node_accelerator_types(nodes)
+    if not accelerator_types:
+        raise RuntimeError(f"Matched nodes for hardware_type={hardware_type} do not have label {C.ACCELERATOR_TYPE}")
+
+    matched_types = {value for value in accelerator_types if _matches_hardware_generation(value, hardware_type)}
+    if not matched_types:
+        raise RuntimeError(
+            f"No {C.ACCELERATOR_TYPE} on cluster matches hardware_type={hardware_type}. "
+            f"Found values: {sorted(accelerator_types)}"
+        )
+    if len(matched_types) == 1:
+        return next(iter(matched_types))
+
+    raise RuntimeError(
+        f"Multiple {C.ACCELERATOR_TYPE} values match hardware_type={hardware_type}: {sorted(matched_types)}"
+    )
+
+
+def get_accelerator_type_from_cluster(hardware_type):
+    """Resolve accelerator-type node label value from cluster nodes via kubectl."""
+    if hardware_type in _g_accelerator_type_cache:
+        return _g_accelerator_type_cache[hardware_type]
+
+    if hardware_type in C.HARDWARE_TYPE_950I_A5:
+        label_selector = f"{C.ACCELERATOR}={C.ACCELERATOR_A5},{C.ACCELERATOR_TYPE}={hardware_type}"
+        nodes = _get_cluster_nodes(label_selector)
+        if not nodes:
+            raise RuntimeError(f"No node in cluster matches {label_selector} for hardware_type={hardware_type}")
+        accelerator_type = hardware_type
+    elif hardware_type in C.HARDWARE_TYPE_A2 or hardware_type in C.HARDWARE_TYPE_A3:
+        nodes = _get_cluster_nodes(f"{C.ACCELERATOR}={C.ACCELERATOR_910}")
+        if not nodes:
+            raise RuntimeError(
+                f"No node in cluster with label {C.ACCELERATOR}={C.ACCELERATOR_910} for hardware_type={hardware_type}"
+            )
+        accelerator_type = _resolve_accelerator_type_from_nodes(nodes, hardware_type)
+    else:
+        known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
+        raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
+
+    logger.info(
+        "Resolved %s=%s from cluster for hardware_type=%s",
+        C.ACCELERATOR_TYPE,
+        accelerator_type,
+        hardware_type,
+    )
+    _g_accelerator_type_cache[hardware_type] = accelerator_type
+    return accelerator_type
 
 
 def get_baseline_config_from_configmap(job_id):

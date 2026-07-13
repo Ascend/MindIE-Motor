@@ -134,7 +134,7 @@ def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
     monkeypatch.setattr(
         k8s_utils,
         "get_accelerator_type_from_cluster",
-        lambda: cluster_accelerator_type,
+        lambda _hardware_type: cluster_accelerator_type,
     )
 
     user_config = make_pd_hybrid_user_config()

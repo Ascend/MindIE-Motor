@@ -6,6 +6,36 @@
 
 ## 部署流程
 
+以`/mnt/motor`作为根路径，目录结构如下：
+
+```text
+/mnt/motor/
+├── prepare.sh
+├── start_motor.sh
+├── start_docker.sh
+├── user_config.json
+├── env.json
+├── examples/
+└── configmap/ # 该目录下的文件都是自动生成的
+    ├── boot.sh
+    ├── common.sh
+    ├── hccl_tools.py
+    ├── mooncake_config.py
+    ├── all_combine_in_single_container.sh
+    ├── controller.sh
+    ├── coordinator.sh
+    ├── engine.sh
+    ├── kv_conductor.sh
+    ├── kv_pool.sh
+    ├── mf_store.sh
+    ├── user_config.json
+    └── env.json
+```
+
+### 准备examples
+
+`examples` 获取方式见[quick_start](../../quick_start.md#服务部署)
+
 ### 准备user_config.json和env.json配置文件
 
 可从如下路径获取[user_config.json](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/infer_engines/vllm/user_config.json)和[env.json](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/infer_engines/vllm/env.json)模板，本文主要介绍docker-only部署方式相关适配点，其他特性请参考[quick_start](../../quick_start.md)。
@@ -61,17 +91,20 @@
 }
 ```
 
-### 准备CONFIGMAP_PATH
+### 准备configmap
 
 准备阶段需将配置文件、启动脚本拷贝到环境变量**CONFIGMAP_PATH**对应目录下，并通过set_env_docker.py加载环境变量。准备阶段脚本**prepare.sh**示例(**EXAMPLES_PATH**、**CONFIGMAP_PATH**、**USER_CONFIG_PATH**、**ENV_PATH**需修改为实际路径)：
 
+以下以`/mnt/motor`作为根路径为例
+
 ```shell
-EXAMPLES_PATH="xxx" # 主机examples部署脚本路径
-CONFIGMAP_PATH="xxx" # 服务启动脚本路径，需挂载到容器内
-USER_CONFIG_PATH="xxx" # user_config.json路径
-ENV_PATH="xxx" # env.json路径
+EXAMPLES_PATH="/mnt/motor/examples/"
+CONFIGMAP_PATH="/mnt/motor/configmap/"
+USER_CONFIG_PATH="/mnt/motor/user_config.json"
+ENV_PATH="/mnt/motor/env.json"
 
 mkdir -p $CONFIGMAP_PATH
+
 # 容器启动脚本boot.sh，其运行时会调用startup目录下其他脚本，需要将其统一拷贝到$CONFIGMAP_PATH目录下。
 cp -f $EXAMPLES_PATH/deployer/startup/boot.sh $CONFIGMAP_PATH/boot.sh
 cp -f $EXAMPLES_PATH/deployer/startup/common.sh $CONFIGMAP_PATH/common.sh
@@ -109,38 +142,52 @@ python $EXAMPLES_PATH/deployer/startup/set_env_docker.py --configmap_path $CONFI
 sh prepare.sh
 ```
 
-### Docker启动服务
+执行完成后，在`/mnt/motor/configmap/`目录下会生成一些脚本
 
-准备启动脚本start_docker.sh，脚本示例(**CONFIGMAP_PATH**需修改为实际路径，**IMAGE_NAME**需修改为实际镜像名)：
+### 准备Motor启动脚本
+
+准备`start_motor.sh`脚本
+
+```sh
+CONFIGMAP_PATH="/mnt/motor/configmap" # CONFIGMAP_PATH需与prepare.sh保持一致，且必须使用绝对路径
+CONFIG_PATH=/usr/local/Ascend/pyMotor/conf
+
+ROLE=SINGLE_CONTAINER
+
+# mooncake池化配置
+# 若开启池化，KVS_MASTER_SERVICE设置为任意非空字符串,如kvp_master，不开启池化设置为空。
+KVS_MASTER_SERVICE=""
+KV_STORE_PORT=50088
+KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=0.9
+KV_STORE_EVICTION_RATIO=0.1
+DEFAULT_KV_LEASE_TTL=11000
+
+source $CONFIGMAP_PATH/boot.sh
+```
+
+环境变量说明：
+
+| 变量名 | 含义 | 取值 |
+| :--- | :--- | :--- |
+| KVS_MASTER_SERVICE | mooncake_master部署域名 | 若开启kv_pool，设置为任意非空字符串，如kvp_master，boot.sh会自动适配为容器ip；若不开启则设置为空 |
+| KV_STORE_PORT | mooncake_master部署端口 | 若开启kv_pool，设置任意有效端口，如50088；若不开启则设置为空 |
+| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | mooncake_master进程高水位比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
+| KV_STORE_EVICTION_RATIO | mooncake_master进程逐出比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
+| DEFAULT_KV_LEASE_TTL | 控制 KV 对象的默认租约 TTL（毫秒） | 配置值需大于env.json中vllm实例的环境变量`ASCEND_CONNECT_TIMEOUT`和`ASCEND_TRANSFER_TIMEOUT`。默认值11000；若不开启kv_pool则设置为空 |
+
+### 准备Docker启动脚本
+
+准备启动脚本`start_docker.sh`，脚本示例(**CONFIGMAP_PATH**需修改为实际路径，**IMAGE_NAME**需修改为实际镜像名)：
 
 ```shell
 # 默认不开启特权容器，如需开启，将--privileged=false改为--privileged=true
-CONFIGMAP_PATH="xxx" # CONFIGMAP_PATH需与prepare.sh保持一致，且必须使用绝对路径
+CONFIGMAP_PATH="/mnt/motor/configmap" # CONFIGMAP_PATH需与prepare.sh保持一致，且必须使用绝对路径
 IMAGE_NAME="xxx" # 镜像名
 
-# 从环境变量读取可见卡，默认自动检测主机昇腾卡，用逗号拼接，如"0,1,2,3"
-if [ -z "$ASCEND_VISIBLE_DEVICES" ]; then
-    ASCEND_VISIBLE_DEVICES=$(ls /dev/davinci[0-9]* 2>/dev/null | sed 's/[^0-9]//g' | paste -sd "," -)
-fi
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/devmm_svm --device=/dev/hisi_hdc"
-# 循环挂载ASCEND_VISIBLE_DEVICES指定卡
-IFS=',' read -ra ADDR <<< "$ASCEND_VISIBLE_DEVICES"
-for i in "${ADDR[@]}"; do
-    ASCEND_DEVICES="$ASCEND_DEVICES --device=/dev/davinci$i"
-done
 
 docker run -u root --rm --name single_container \
 -e ASCEND_RUNTIME_OPTIONS=NODRV --privileged=false \
--e CONFIGMAP_PATH=$CONFIGMAP_PATH \
--e CONFIG_PATH=/usr/local/Ascend/pyMotor/conf \
--e ROLE=SINGLE_CONTAINER \
--e KVS_MASTER_SERVICE=$KVS_MASTER_SERVICE \
--e KV_STORE_PORT=$KV_STORE_PORT \
--e KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO \
--e KV_STORE_EVICTION_RATIO=$KV_STORE_EVICTION_RATIO \
--e DEFAULT_KV_LEASE_TTL=$DEFAULT_KV_LEASE_TTL \
--p $ENDPOINT_PORT_RANGE:$ENDPOINT_PORT_RANGE \
--p $KV_PORT_RANGE:$KV_PORT_RANGE \
 $ASCEND_DEVICES \
 -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
 -v /usr/local/Ascend/add-ons/:/usr/local/Ascend/add-ons/ \
@@ -148,30 +195,20 @@ $ASCEND_DEVICES \
 -v /usr/local/sbin:/usr/local/sbin \
 -v /var/log/npu/:/usr/slog \
 -v /mnt:/mnt \
+-p 31015:1025 \
+-p 31017:1027 \
 $IMAGE_NAME \
-bash -c "export POD_IP=\$(grep \$(hostname) /etc/hosts | cut -f1) && source \$CONFIGMAP_PATH/boot.sh"
+bash -c "export POD_IP=\$(grep \$(hostname) /etc/hosts | cut -f1) && source /mnt/motor/start_motor.sh"
 ```
 
-环境变量说明：
+**注意：挂载路径要包含/mnt**
 
-| 变量名 | 含义 | 取值 |
-| :--- | :--- | :--- |
-| CONFIGMAP_PATH | 启动脚本路径 | 与2.2小节保持一致，需挂载到容器中 |
-| IMAGE_NAME | 镜像名 | 版本镜像，确保docker images能查询到 |
-| ASCEND_VISIBLE_DEVICES | 可见卡 | 指定挂载卡，如"0,1,2,3"，默认自动检测主机昇腾卡 |
-| ENDPOINT_PORT_RANGE | endpoint端口映射区间 | 非host网络部署设置endpoint端口映射，起始端口默认值10000，先P后D，每dp端口偏移2，分别对应推理端口和管理端口 |
-| KV_PORT_RANGE | kv_port映射端口区间 | 非host网络部署设置kv_port映射端口，起始端口user-config.json中motor_engine_prefill_config下kv_port值，先P后D，每实例端口偏移1 |
-| KVS_MASTER_SERVICE | mooncake_master部署域名 | 若开启kv_pool，设置为任意非空字符串，如kvp_master，boot.sh会自动适配为容器ip；若不开启则设置为空 |
-| KV_STORE_PORT | mooncake_master部署端口 | 若开启kv_pool，设置任意有效端口，如50088；若不开启则设置为空 |
-| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | mooncake_master进程高水位比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
-| KV_STORE_EVICTION_RATIO | mooncake_master进程逐出比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
-| DEFAULT_KV_LEASE_TTL | 控制 KV 对象的默认租约 TTL（毫秒） | 配置值需大于env.json中vllm实例的环境变量`ASCEND_CONNECT_TIMEOUT`和`ASCEND_TRANSFER_TIMEOUT`。默认值11000；若不开启kv_pool则设置为空 |
+### 启动Docker
 
 启动服务示例（1P1D）：
 
 ```shell
-# 若开启池化，KVS_MASTER_SERVICE设置为任意非空字符串,如kvp_master，不开启池化设置为空。
-ASCEND_VISIBLE_DEVICES=0,1 KVS_MASTER_SERVICE="" KV_STORE_PORT=50088 KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=0.9 KV_STORE_EVICTION_RATIO=0.1 DEFAULT_KV_LEASE_TTL=11000 sh start_docker.sh
+sh start_docker.sh
 ```
 
 ### A5 环境额外修改内容
@@ -196,7 +233,6 @@ A5 启动示例片段（基于上述实例基础修改）：
 
 ```shell
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
-# 按 ASCEND_VISIBLE_DEVICES 循环追加 --device=/dev/davinci$i
 
 docker run -u root --rm --name single_container \
   --network host \

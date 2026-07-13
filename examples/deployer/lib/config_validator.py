@@ -182,12 +182,12 @@ def _get_hardware_node_labels(hardware_type):
     if hardware_type in C.HARDWARE_TYPE_A2 or hardware_type in C.HARDWARE_TYPE_A3:
         return {
             C.ACCELERATOR: C.ACCELERATOR_910,
-            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(),
+            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(hardware_type),
         }
     if hardware_type in C.HARDWARE_TYPE_950I_A5:
         return {
             C.ACCELERATOR: C.ACCELERATOR_A5,
-            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(),
+            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(hardware_type),
         }
     known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
     raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
