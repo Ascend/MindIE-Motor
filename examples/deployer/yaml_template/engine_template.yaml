@@ -64,8 +64,6 @@ spec:
               cpu: "16"
               huawei.com/Ascend910: 1
             limits:
-              memory: "256Gi"
-              cpu: "64"
               huawei.com/Ascend910: 1
           volumeMounts:
           - name: data
