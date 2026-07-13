@@ -85,9 +85,10 @@ async def start_instance(request: Request):
         # If snapshot mode is not disabled, prepare snapshot runtime directories and metadata file for engine suspend
         await asyncio.to_thread(EngineManager().engine_suspend_prepare)
 
+        daemon = Daemon()
         try:
             await asyncio.to_thread(
-                Daemon().pull_engine,
+                daemon.pull_engine,
                 PDRole(start_msg.role),
                 start_msg.endpoints,
                 start_msg.instance_id,
@@ -100,6 +101,16 @@ async def start_instance(request: Request):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start engine server"
             ) from pull_err
+
+        # A3/A5 with memcache: start standalone LocalService alongside engines
+        try:
+            await asyncio.to_thread(daemon.pull_local_service)
+        except Exception as ls_err:
+            logger.error("Failed to start LocalService, cleaning up engines: %s", ls_err)
+            await asyncio.to_thread(daemon.stop)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start LocalService"
+            ) from ls_err
 
         HeartbeatManager().update_endpoint(start_msg)
         HeartbeatManager().start()

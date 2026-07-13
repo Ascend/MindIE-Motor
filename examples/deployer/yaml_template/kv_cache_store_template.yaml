@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mindie-motor-kv-pool
+  name: mindie-motor-kv-store
   labels:
-    app: mindie-motor-kv-pool
+    app: mindie-motor-kv-store
   namespace: mindie
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: mindie-motor-kv-pool
+      app: mindie-motor-kv-store
   template:
     metadata:
       labels:
-        app: mindie-motor-kv-pool
-        deploy-name: mindie-motor-kv-pool
+        app: mindie-motor-kv-store
+        deploy-name: mindie-motor-kv-store
     spec:
       terminationGracePeriodSeconds: 0
       automountServiceAccountToken: false
@@ -23,7 +23,7 @@ spec:
       containers:
         - image: mindie:1.0.0-aarch64-800I-A2
           imagePullPolicy: IfNotPresent
-          name: mindie-motor-kv-pool
+          name: mindie-motor-kv-store
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -37,11 +37,11 @@ spec:
                   fieldPath: status.podIP
             - name: CONFIGMAP_PATH
               value: /mnt/configmap
+            - name: CONFIG_PATH
+              value: /usr/local/Ascend/pyMotor/conf
             - name: ROLE
-              value: kv_pool
-          command: ["/bin/bash", "-c", "
-              source /mnt/configmap/boot.sh; \n
-          "]
+              value: kv_store
+          command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
           resources:
             requests:
               memory: "2Gi"
@@ -52,15 +52,22 @@ spec:
           volumeMounts:
             - name: motor-config
               mountPath: /mnt/configmap
+            - name: mnt
+              mountPath: /mnt
             - name: coredump
               mountPath: /var/coredump
             - name: ascend-driver
               mountPath: /usr/local/Ascend/driver
+            - name: varlog
+              mountPath: /var/log
       volumes:
         - name: motor-config
           configMap:
             name: motor-config
             defaultMode: 0550
+        - name: mnt
+          hostPath:
+            path: /mnt
         - name: coredump
           hostPath:
             path: /var/coredump
@@ -68,13 +75,17 @@ spec:
         - name: ascend-driver
           hostPath:
             path: /usr/local/Ascend/driver
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: mindie-motor-kv-pool
-  name: kvp-master
+    app: mindie-motor-kv-store
+  name: mindie-motor-kvs-master
   namespace: mindie
 spec:
   ports:
@@ -82,12 +93,16 @@ spec:
     port: 50088
     protocol: TCP
     targetPort: 50088
+  - name: config-store
+    port: 56001
+    protocol: TCP
+    targetPort: 56001
   - name: metrics
     port: 9003
     protocol: TCP
     targetPort: 9003
   selector:
-    app: mindie-motor-kv-pool
+    app: mindie-motor-kv-store
   sessionAffinity: None
   type: ClusterIP
 status:

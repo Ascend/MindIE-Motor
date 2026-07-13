@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -31,7 +29,7 @@ KEY_FILE = "key_file"
 class ConfigKey(Enum):
     MOTOR_CONTROLLER = "motor_controller_config"
     MOTOR_COORDINATOR = "motor_coordinator_config"
-    MOTOR_KV_POOL = "kv_cache_pool_config"
+    MOTOR_KV_STORE = "kv_cache_store_config"
     MOTOR_NODEMANAGER_UNION = "motor_engine_union_config.motor_nodemanger_config"
     MOTOR_NODEMANAGER_PREFILL = "motor_engine_prefill_config.motor_nodemanger_config"
     MOTOR_NODEMANAGER_DECODE = "motor_engine_decode_config.motor_nodemanger_config"

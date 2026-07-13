@@ -221,7 +221,9 @@ class DeployInteractiveSession(_DeployActionsMixin):
                 and now >= _progress_retry_deadline
             ):
                 self._start_progress_monitor()
-                _progress_retry_deadline = now + 15
+                # Short retry (5 s) if pods not ready yet; _rescan_pods
+                # handles incremental discovery once progress is active.
+                _progress_retry_deadline = now + 5
 
             # Periodic re-scan for pods that appeared after initial discovery
             if self._progress_active and hasattr(self, '_progress_monitor') and now >= _repoll_deadline:

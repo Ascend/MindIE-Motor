@@ -17,7 +17,7 @@ from typing import Any
 
 ENCODING_UTF8 = "utf-8"
 
-KV_POOL_CONFIG_KEY = "kv_cache_pool_config"
+KV_STORE_CONFIG_KEY = "kv_cache_store_config"
 KV_CONDUCTOR_CONFIG_KEY = "kv_conductor_config"
 MASTER_SERVER_ADDRESS = "master_server_address"
 ENDPOINT_ADDRESS = "endpoint"
@@ -81,28 +81,28 @@ def write_json(path: str, data: dict[str, Any]) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def generate_kv_cache_pool_config(output_path: str, user_config_path: str) -> bool:
+def generate_kv_cache_store_config(output_path: str, user_config_path: str) -> bool:
     if not os.path.exists(user_config_path):
         logging.error("user_config.json does not exist: %s", user_config_path)
         return False
 
     user_cfg = read_json(user_config_path)
-    kv_cfg = user_cfg.get(KV_POOL_CONFIG_KEY)
+    kv_cfg = user_cfg.get(KV_STORE_CONFIG_KEY)
     if not kv_cfg:
-        logging.error("KV cache pool config not provided, skipping kv_cache_pool_config generation")
+        logging.error("KV cache pool config not provided, skipping kv_cache_store_config generation")
         return False
 
     out_cfg: dict[str, Any] = dict(kv_cfg)
 
-    kvp_master_service = os.getenv("KVP_MASTER_SERVICE", "")
+    kvp_master_service = os.getenv("KVS_MASTER_SERVICE", "")
     if not kvp_master_service:
-        logging.error("Env KVP_MASTER_SERVICE is required but not set, cannot generate kv_cache_pool_config")
+        logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")
         return False
     master_server_port = kv_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
     out_cfg[MASTER_SERVER_ADDRESS] = format_address(kvp_master_service, master_server_port)
 
     write_json(output_path, out_cfg)
-    logging.info("kv_cache_pool_config generated: %s", output_path)
+    logging.info("kv_cache_store_config generated: %s", output_path)
     return True
 
 
@@ -126,16 +126,16 @@ def generate_kv_conductor_config(output_path: str, user_config_path: str) -> boo
         write_json(output_path, out_cfg)
         return True
 
-    kv_pool_cfg = user_cfg.get(KV_POOL_CONFIG_KEY)
-    if not kv_pool_cfg:
-        logging.error("KV cache pool config not provided, skipping kv_cache_pool_config generation")
+    kv_store_cfg = user_cfg.get(KV_STORE_CONFIG_KEY)
+    if not kv_store_cfg:
+        logging.error("KV cache pool config not provided, skipping kv_cache_store_config generation")
         return False
 
-    kvp_master_service = os.getenv("KVP_MASTER_SERVICE", "")
+    kvp_master_service = os.getenv("KVS_MASTER_SERVICE", "")
     if not kvp_master_service:
-        logging.error("Env KVP_MASTER_SERVICE is required but not set, cannot generate kv_cache_pool_config")
+        logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")
         return False
-    master_server_port = kv_pool_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
+    master_server_port = kv_store_cfg.get(MASTER_SERVER_PORT_KEY, DEFAULT_MASTER_SERVER_PORT)
     mooncake_master = out_cfg[KVEVENT_INSTANCE][MOONCAKE_MASTER]
     mooncake_master[ENDPOINT_ADDRESS] = f"tcp://{format_address(kvp_master_service, master_server_port)}"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -155,7 +155,7 @@ def main() -> None:
     user_config_path = sys.argv[3]
 
     if config_type == "pool":
-        success = generate_kv_cache_pool_config(output_path, user_config_path)
+        success = generate_kv_cache_store_config(output_path, user_config_path)
     elif config_type == "conductor":
         success = generate_kv_conductor_config(output_path, user_config_path)
     else:

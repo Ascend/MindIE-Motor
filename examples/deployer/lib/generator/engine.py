@@ -96,7 +96,7 @@ def is_hybrid_deploy(deploy_config):
     return C.HYBRID_INSTANCES_NUM in deploy_config
 
 
-def build_engine_env_items(role, deploy_config, job_name, include_kv_pool=False):
+def build_engine_env_items(role, deploy_config, job_name, include_kv_store=False):
     env_items = [
         {C.NAME: C.ENV_ROLE, C.VALUE: role},
         {C.NAME: C.ENV_JOB_NAME, C.VALUE: job_name},
@@ -105,8 +105,20 @@ def build_engine_env_items(role, deploy_config, job_name, include_kv_pool=False)
         {C.NAME: C.ENV_COORDINATOR_INFER_SERVICE, C.VALUE: k8s_utils.g_coordinator_infer_service},
         {C.NAME: C.ENV_COORDINATOR_OBS_SERVICE, C.VALUE: k8s_utils.g_coordinator_obs_service},
     ]
-    if include_kv_pool and k8s_utils.g_kv_pool_enabled:
-        env_items.append({C.NAME: C.ENV_KVP_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_pool_service})
+    if include_kv_store and k8s_utils.g_kv_store_enabled:
+        env_items.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service})
+        env_items.append({C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(k8s_utils.g_kv_cache_store_port)})
+        env_items.append(
+            {
+                C.NAME: C.ENV_MMC_CONFIG_STORE_URL,
+                C.VALUE: f"tcp://{k8s_utils.g_kv_store_service}:{k8s_utils.g_mmc_config_store_port}",
+            }
+        )
+        env_items.append(
+            {C.NAME: C.ENV_MMC_LOCAL_CONFIG_PATH, C.VALUE: "/usr/local/Ascend/pyMotor/conf/mmc-local.conf"}
+        )
+        if k8s_utils.g_mmc_local_service_mode:
+            env_items.append({C.NAME: C.ENV_MMC_LOCAL_SERVICE_MODE, C.VALUE: k8s_utils.g_mmc_local_service_mode})
     if k8s_utils.g_mf_store_enabled:
         ascend_mf_store_url = f"tcp://{k8s_utils.g_mf_store_service}:{C.DEFAULT_MF_STORE_PORT}"
         hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
@@ -140,7 +152,7 @@ def set_engine_env(container, deploy_config, node_type, job_name):
         role = role_map.get(node_type)
     if C.ENV not in container:
         container[C.ENV] = []
-    container[C.ENV].extend(build_engine_env_items(role, deploy_config, job_name, include_kv_pool=True))
+    container[C.ENV].extend(build_engine_env_items(role, deploy_config, job_name, include_kv_store=True))
 
 
 def set_engine_replicas(deployment_data, deploy_config, node_type):

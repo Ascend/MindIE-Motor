@@ -380,6 +380,8 @@ spec:
                 mountPath: /mnt
               - name: hccn-tool
                 mountPath: /usr/local/Ascend/driver/tools/hccn_tool
+              - name: driver-version
+                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
               - name: weight-mount
@@ -411,6 +413,10 @@ spec:
             - name: hccn-tool
               hostPath:
                 path: /usr/local/Ascend/driver/tools/hccn_tool
+            - name: driver-version
+              hostPath:
+                path: /usr/local/Ascend/driver/version.info
+                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
@@ -501,6 +507,8 @@ spec:
                 mountPath: /mnt
               - name: hccn-tool
                 mountPath: /usr/local/Ascend/driver/tools/hccn_tool
+              - name: driver-version
+                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
               - name: weight-mount
@@ -532,6 +540,10 @@ spec:
             - name: hccn-tool
               hostPath:
                 path: /usr/local/Ascend/driver/tools/hccn_tool
+            - name: driver-version
+              hostPath:
+                path: /usr/local/Ascend/driver/version.info
+                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
@@ -622,6 +634,8 @@ spec:
                 mountPath: /mnt
               - name: hccn-tool
                 mountPath: /usr/local/Ascend/driver/tools/hccn_tool
+              - name: driver-version
+                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
               - name: weight-mount
@@ -653,6 +667,10 @@ spec:
             - name: hccn-tool
               hostPath:
                 path: /usr/local/Ascend/driver/tools/hccn_tool
+            - name: driver-version
+              hostPath:
+                path: /usr/local/Ascend/driver/version.info
+                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
@@ -743,6 +761,8 @@ spec:
                 mountPath: /mnt
               - name: hccn-tool
                 mountPath: /usr/local/Ascend/driver/tools/hccn_tool
+              - name: driver-version
+                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
               - name: weight-mount
@@ -774,6 +794,10 @@ spec:
             - name: hccn-tool
               hostPath:
                 path: /usr/local/Ascend/driver/tools/hccn_tool
+            - name: driver-version
+              hostPath:
+                path: /usr/local/Ascend/driver/version.info
+                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
@@ -785,22 +809,26 @@ spec:
                 path: /root/ascend/log
                 type: DirectoryOrCreate
 
-    - name: kv-pool
+    - name: kv-store
       replicas: 0
       services:
-      - name: kvp-master
+      - name: mindie-motor-kvs-master
         spec:
           ports:
           - name: business
             port: 50088
             protocol: TCP
             targetPort: 50088
+          - name: config-store
+            port: 56001
+            protocol: TCP
+            targetPort: 56001
           - name: metrics
             port: 9003
             protocol: TCP
             targetPort: 9003
           selector:
-            app: mindie-motor-kv-pool
+            app: mindie-motor-kv-store
           sessionAffinity: None
           type: ClusterIP
       workload:
@@ -810,12 +838,12 @@ spec:
         replicas: 1
         selector:
           matchLabels:
-            app: mindie-motor-kv-pool
+            app: mindie-motor-kv-store
         template:
           metadata:
             labels:
-              app: mindie-motor-kv-pool
-              deploy-name: mindie-motor-kv-pool
+              app: mindie-motor-kv-store
+              deploy-name: mindie-motor-kv-store
           spec:
             terminationGracePeriodSeconds: 0
             automountServiceAccountToken: false
@@ -824,7 +852,7 @@ spec:
             containers:
             - image: mindie:1.0.0-aarch64-800I-A2
               imagePullPolicy: IfNotPresent
-              name: mindie-motor-kv-pool
+              name: mindie-motor-kv-store
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
@@ -841,7 +869,7 @@ spec:
               - name: CONFIG_PATH
                 value: /usr/local/Ascend/pyMotor/conf
               - name: ROLE
-                value: kv_pool
+                value: kv_store
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
               resources:
                 requests:
@@ -853,22 +881,34 @@ spec:
               volumeMounts:
               - name: motor-config
                 mountPath: /mnt/configmap
+              - name: mnt
+                mountPath: /mnt
               - name: coredump
                 mountPath: /var/coredump
-              - name: ascend-driver
-                mountPath: /usr/local/Ascend/driver
+              - name: driver-version
+                mountPath: /usr/local/Ascend/driver/version.info
+              - name: varlog
+                mountPath: /var/log
             volumes:
             - name: motor-config
               configMap:
                 name: motor-config
                 defaultMode: 360
+            - name: mnt
+              hostPath:
+                path: /mnt
             - name: coredump
               hostPath:
                 path: /var/coredump
                 type: DirectoryOrCreate
-            - name: ascend-driver
+            - name: driver-version
               hostPath:
-                path: /usr/local/Ascend/driver
+                path: /usr/local/Ascend/driver/version.info
+                type: File
+            - name: varlog
+              hostPath:
+                path: /var/log
+                type: DirectoryOrCreate
 
     - name: kv-conductor
       replicas: 0
@@ -935,8 +975,6 @@ spec:
                 mountPath: /mnt/configmap
               - name: coredump
                 mountPath: /var/coredump
-              - name: ascend-driver
-                mountPath: /usr/local/Ascend/driver
             volumes:
             - name: motor-config
               configMap:
@@ -946,6 +984,3 @@ spec:
               hostPath:
                 path: /var/coredump
                 type: DirectoryOrCreate
-            - name: ascend-driver
-              hostPath:
-                path: /usr/local/Ascend/driver

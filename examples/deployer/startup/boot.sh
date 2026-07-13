@@ -25,8 +25,8 @@ case "$ROLE" in
     "coordinator")
         source "$SCRIPT_DIR/coordinator.sh"
         ;;
-    "kv_pool")
-        source "$SCRIPT_DIR/kv_pool.sh"
+    "kv_store")
+        source "$SCRIPT_DIR/kv_cache_store.sh"
         ;;
     "kv_conductor")
         source "$SCRIPT_DIR/kv_conductor.sh"
@@ -36,7 +36,7 @@ case "$ROLE" in
         ;;
     *)
         echo "Error: Unknown ROLE=$ROLE"
-        echo "Valid roles: SINGLE_CONTAINER, encode, prefill, decode, union, controller, coordinator, kv_pool, kv_conductor, mf_store"
+        echo "Valid roles: SINGLE_CONTAINER, encode, prefill, decode, union, controller, coordinator, kv_store, kv_conductor, mf_store"
         exit 1
         ;;
 esac

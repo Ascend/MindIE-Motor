@@ -169,7 +169,7 @@
         "OMP_NUM_THREADS": 100,
         "ASCEND_BUFFER_POOL": "0:0"
       },
-      "motor_kv_cache_pool_env": {},
+      "motor_kv_cache_store_env": {},
       "motor_kv_conductor_env": {}
     }
      ```

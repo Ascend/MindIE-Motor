@@ -18,7 +18,7 @@ nav:
       - 特性指南:
           - EPD 分离: user_guide/features/EPD_disaggregation.md
           - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
-          - KV Pool: user_guide/features/KV_pool.md
+          - KV Pool: user_guide/features/kv_cache_store/README.md
           - 手动扩缩容: user_guide/features/manual_instance_scaling.md
           - 主备倒换: user_guide/features/standby.md
           - 链路追踪: user_guide/features/tracing.md

@@ -89,13 +89,13 @@ sed -i '/^function set_coordinator_env()/,/^}/d' $CONFIGMAP_PATH/coordinator.sh
 sed -i '/^function set_prefill_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
 sed -i '/^function set_decode_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
 sed -i '/^function set_common_env()/,/^}/d' $CONFIGMAP_PATH/common.sh
-sed -i '/^function set_kv_pool_env()/,/^}/d' $CONFIGMAP_PATH/kv_pool.sh
+sed -i '/^function set_kv_store_env()/,/^}/d' $CONFIGMAP_PATH/kv_store.sh
 sed -i '/^function set_kv_conductor_env()/,/^}/d' $CONFIGMAP_PATH/kv_conductor.sh
 sed -i '/^function set_controller_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_coordinator_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_prefill_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_decode_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_kv_pool_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
+sed -i '/^function set_kv_store_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_kv_conductor_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/./,$!d' $CONFIGMAP_PATH/common.sh
 
@@ -134,10 +134,10 @@ docker run -u root --rm --name single_container \
 -e CONFIGMAP_PATH=$CONFIGMAP_PATH \
 -e CONFIG_PATH=/usr/local/Ascend/pyMotor/conf \
 -e ROLE=SINGLE_CONTAINER \
--e KVP_MASTER_SERVICE=$KVP_MASTER_SERVICE \
--e KV_POOL_PORT=$KV_POOL_PORT \
--e KV_POOL_EVICTION_HIGH_WATERMARK_RATIO=$KV_POOL_EVICTION_HIGH_WATERMARK_RATIO \
--e KV_POOL_EVICTION_RATIO=$KV_POOL_EVICTION_RATIO \
+-e KVS_MASTER_SERVICE=$KVS_MASTER_SERVICE \
+-e KV_STORE_PORT=$KV_STORE_PORT \
+-e KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO \
+-e KV_STORE_EVICTION_RATIO=$KV_STORE_EVICTION_RATIO \
 -e DEFAULT_KV_LEASE_TTL=$DEFAULT_KV_LEASE_TTL \
 -p $ENDPOINT_PORT_RANGE:$ENDPOINT_PORT_RANGE \
 -p $KV_PORT_RANGE:$KV_PORT_RANGE \
@@ -161,17 +161,17 @@ bash -c "export POD_IP=\$(grep \$(hostname) /etc/hosts | cut -f1) && source \$CO
 | ASCEND_VISIBLE_DEVICES | 可见卡 | 指定挂载卡，如"0,1,2,3"，默认自动检测主机昇腾卡 |
 | ENDPOINT_PORT_RANGE | endpoint端口映射区间 | 非host网络部署设置endpoint端口映射，起始端口默认值10000，先P后D，每dp端口偏移2，分别对应推理端口和管理端口 |
 | KV_PORT_RANGE | kv_port映射端口区间 | 非host网络部署设置kv_port映射端口，起始端口user-config.json中motor_engine_prefill_config下kv_port值，先P后D，每实例端口偏移1 |
-| KVP_MASTER_SERVICE | mooncake_master部署域名 | 若开启kv_pool，设置为任意非空字符串，如kvp_master，boot.sh会自动适配为容器ip；若不开启则设置为空 |
-| KV_POOL_PORT | mooncake_master部署端口 | 若开启kv_pool，设置任意有效端口，如50088；若不开启则设置为空 |
-| KV_POOL_EVICTION_HIGH_WATERMARK_RATIO | mooncake_master进程高水位比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
-| KV_POOL_EVICTION_RATIO | mooncake_master进程逐出比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
+| KVS_MASTER_SERVICE | mooncake_master部署域名 | 若开启kv_pool，设置为任意非空字符串，如kvp_master，boot.sh会自动适配为容器ip；若不开启则设置为空 |
+| KV_STORE_PORT | mooncake_master部署端口 | 若开启kv_pool，设置任意有效端口，如50088；若不开启则设置为空 |
+| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | mooncake_master进程高水位比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
+| KV_STORE_EVICTION_RATIO | mooncake_master进程逐出比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
 | DEFAULT_KV_LEASE_TTL | 控制 KV 对象的默认租约 TTL（毫秒） | 配置值需大于env.json中vllm实例的环境变量`ASCEND_CONNECT_TIMEOUT`和`ASCEND_TRANSFER_TIMEOUT`。默认值11000；若不开启kv_pool则设置为空 |
 
 启动服务示例（1P1D）：
 
 ```shell
-# 若开启池化，KVP_MASTER_SERVICE设置为任意非空字符串,如kvp_master，不开启池化设置为空。
-ASCEND_VISIBLE_DEVICES=0,1 KVP_MASTER_SERVICE="" KV_POOL_PORT=50088 KV_POOL_EVICTION_HIGH_WATERMARK_RATIO=0.9 KV_POOL_EVICTION_RATIO=0.1 DEFAULT_KV_LEASE_TTL=11000 sh start_docker.sh
+# 若开启池化，KVS_MASTER_SERVICE设置为任意非空字符串,如kvp_master，不开启池化设置为空。
+ASCEND_VISIBLE_DEVICES=0,1 KVS_MASTER_SERVICE="" KV_STORE_PORT=50088 KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=0.9 KV_STORE_EVICTION_RATIO=0.1 DEFAULT_KV_LEASE_TTL=11000 sh start_docker.sh
 ```
 
 ### A5 环境额外修改内容

@@ -126,9 +126,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-          command: ["/bin/bash", "-c", "
-              source /mnt/configmap/boot.sh; \n
-          "]
+          command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
           resources:
             requests:
               memory: "2Gi"

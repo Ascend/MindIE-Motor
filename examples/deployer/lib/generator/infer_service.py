@@ -24,7 +24,7 @@ from lib.generator.k8s_utils import (
     set_coordinator_service,
     set_coordinator_infer_service,
     set_coordinator_obs_service,
-    set_kv_pool_service,
+    set_kv_store_service,
     set_kv_conductor_service,
     set_rbac_namespace,
     extract_rbac_resources,
@@ -40,7 +40,7 @@ from lib.generator.engine import (
     apply_a5_workload,
     apply_a5_engine_pod_config,
 )
-from lib.generator.kv_pool import normalize_kv_cache_pool_config, gen_kv_pool_env
+from lib.generator.kv_cache_store import normalize_kv_cache_store_config, gen_kv_store_env
 from lib.generator.kv_conductor import normalize_kv_conductor_config
 
 
@@ -187,7 +187,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     job_name_base = f"{job_id}-{infer_name}"
     set_container_env(
         container,
-        build_engine_env_items(env_role, deploy_config, job_name_base, include_kv_pool=True),
+        build_engine_env_items(env_role, deploy_config, job_name_base, include_kv_store=True),
     )
     npu_num = int(deploy_config.get(npu_key, 1))
     set_container_npu(container, npu_num, deploy_config)
@@ -208,8 +208,8 @@ def _set_role_primary_service_port(role, service_port):
     ports[0][C.TARGET_PORT] = service_port
 
 
-def _configure_kv_pool_role(infer_doc, user_config):
-    role = get_infer_role(infer_doc, C.ROLE_KV_POOL)
+def _configure_kv_store_role(infer_doc, user_config):
+    role = get_infer_role(infer_doc, C.ROLE_KV_STORE)
     if not role:
         return
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
@@ -219,19 +219,19 @@ def _configure_kv_pool_role(infer_doc, user_config):
     containers = pod_spec.get(C.CONTAINERS, [])
     if containers:
         containers[0][C.IMAGE] = deploy_config[C.IMAGE_NAME]
-    if not k8s_utils.g_kv_pool_enabled:
+    if not k8s_utils.g_kv_store_enabled:
         role[C.REPLICAS] = 0
         workload_spec[C.REPLICAS] = 1
         return
 
-    kv_pool_config = normalize_kv_cache_pool_config(user_config)
+    kv_store_config = normalize_kv_cache_store_config(user_config)
     role[C.REPLICAS] = 1
     workload_spec[C.REPLICAS] = 1
-    _set_role_primary_service_port(role, kv_pool_config[C.KV_POOL_PORT])
+    _set_role_primary_service_port(role, kv_store_config[C.KV_CACHE_STORE_PORT])
     if not containers:
         return
     container = containers[0]
-    set_container_env(container, gen_kv_pool_env(kv_pool_config))
+    set_container_env(container, gen_kv_store_env(kv_store_config))
 
 
 def _configure_kv_conductor_role(infer_doc, user_config):
@@ -257,7 +257,7 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     if not containers:
         return
     container = containers[0]
-    set_container_env(container, [{C.NAME: C.ENV_KVP_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_pool_service}])
+    set_container_env(container, [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}])
 
 
 def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
@@ -272,6 +272,10 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
     set_rbac_namespace(extract_rbac_resources(all_docs), namespace)
     infer_doc[C.METADATA][C.NAMESPACE] = namespace
+    # Must call before engine config so g_mmc_local_service_mode is set
+    # when build_engine_env_items() reads it. Second call in _configure_kv_store_role is idempotent.
+    if k8s_utils.g_kv_store_enabled:
+        normalize_kv_cache_store_config(user_config)
     _configure_controller_role(infer_doc, user_config)
     _configure_coordinator_role(infer_doc, user_config)
     if C.E_INSTANCES_NUM in deploy_config:
@@ -286,7 +290,7 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_PREFILL)
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_DECODE)
         _zero_engine_role_replicas(infer_doc, C.ROLE_UNION)
-    _configure_kv_pool_role(infer_doc, user_config)
+    _configure_kv_store_role(infer_doc, user_config)
     _configure_kv_conductor_role(infer_doc, user_config)
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     write_yaml(all_docs, output_file, False)
@@ -347,9 +351,9 @@ def init_infer_service_domain_name(infer_service_template_yaml, deploy_config):
     set_coordinator_infer_service(coord_fqdns.get(1025, ""))
     set_coordinator_obs_service(coord_fqdns.get(1027, ""))
 
-    kv_pool_service = get_service_fqdn_for_role(C.ROLE_KV_POOL)
-    if kv_pool_service:
-        set_kv_pool_service(kv_pool_service)
+    kv_store_service = get_service_fqdn_for_role(C.ROLE_KV_STORE)
+    if kv_store_service:
+        set_kv_store_service(kv_store_service)
 
     kv_conductor_service = get_service_fqdn_for_role(C.ROLE_KV_CONDUCTOR)
     if kv_conductor_service:

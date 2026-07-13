@@ -7,7 +7,6 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-import json
 import logging
 import argparse
 import os
@@ -16,7 +15,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib.utils import read_json, get_json_by_path, resolve_model_name, shell_escape, update_shell_safely
+from lib.utils import read_json, get_json_by_path, resolve_model_name, update_shell_safely
 
 
 MOTOR_COMMON_ENV = "motor_common_env"
@@ -38,7 +37,7 @@ def set_env_docker(configmap_path):
     controller_shell_path = os.path.join(configmap_path, "controller.sh")
     coordinator_shell_path = os.path.join(configmap_path, "coordinator.sh")
     engine_shell_path = os.path.join(configmap_path, "engine.sh")
-    kv_pool_shell_path = os.path.join(configmap_path, "kv_pool.sh")
+    kv_cache_store_shell_path = os.path.join(configmap_path, "kv_cache_store.sh")
     kv_conductor_shell_path = os.path.join(configmap_path, "kv_conductor.sh")
 
     deploy_mode = get_json_by_path(user_config, "motor_deploy_config.deploy_mode")
@@ -75,30 +74,21 @@ def set_env_docker(configmap_path):
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_encode_env", "set_encode_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_decode_env", "set_decode_env")
-        update_shell_safely(single_container_shell_path, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
-        update_shell_safely(
-            single_container_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env"
-        )
+        update_shell_safely(single_container_shell_path, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
+        update_shell_safely(single_container_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
     else:
         update_shell_safely(controller_shell_path, env_config, "motor_controller_env", "set_controller_env")
         update_shell_safely(coordinator_shell_path, env_config, "motor_coordinator_env", "set_coordinator_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_encode_env", "set_encode_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_decode_env", "set_decode_env")
-        update_shell_safely(kv_pool_shell_path, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
-        update_shell_safely(
-            kv_conductor_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env"
-        )
+        update_shell_safely(kv_cache_store_shell_path, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
+        update_shell_safely(kv_conductor_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--configmap_path",
-        "-c",
-        type=str,
-        help="Path of configmap"
-    )
+    parser.add_argument("--configmap_path", "-c", type=str, help="Path of configmap")
     return parser.parse_args()
 
 

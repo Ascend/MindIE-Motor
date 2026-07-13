@@ -17,7 +17,7 @@ fi
 setup_jemalloc
 
 gen_ranktable_config
-gen_kv_pool_config
+gen_kv_store_config
 
 set_cann_env
 

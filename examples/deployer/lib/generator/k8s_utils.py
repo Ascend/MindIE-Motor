@@ -13,16 +13,19 @@ import shutil
 import subprocess
 
 import lib.constant as C
-from lib.utils import logger, safe_exec_cmd, load_yaml
+from lib.utils import logger, safe_exec_cmd, load_yaml, pipe_kubectl
 
 g_controller_service = "mindie-motor-controller-service"
 g_coordinator_service = "mindie-motor-coordinator-mgmt"
 g_coordinator_infer_service = "mindie-motor-coordinator-infer"
 g_coordinator_obs_service = "mindie-motor-coordinator-obs"
-g_kv_pool_service = "kvp-master"
+g_kv_store_service = "mindie-motor-kvs-master"
 g_kv_conductor_service = "kv-conductor"
-g_kv_pool_enabled = False
+g_kv_store_enabled = False
 g_kv_conductor_enabled = False
+g_kv_cache_store_port = C.DEFAULT_KV_CACHE_STORE_PORT
+g_mmc_config_store_port = C.DEFAULT_MMC_CONFIG_STORE_PORT
+g_mmc_local_service_mode = ""  # 空 → 由 common.sh 按硬件默认
 g_engine_base_name = "mindie-server"
 g_generate_yaml_list = []
 g_user_config_path = None
@@ -56,9 +59,9 @@ def set_coordinator_obs_service(service_name):
     g_coordinator_obs_service = service_name
 
 
-def set_kv_pool_service(service_name):
-    global g_kv_pool_service
-    g_kv_pool_service = service_name
+def set_kv_store_service(service_name):
+    global g_kv_store_service
+    g_kv_store_service = service_name
 
 
 def set_kv_conductor_service(service_name):
@@ -76,15 +79,15 @@ def set_engine_base_name(engine_name):
     g_engine_base_name = engine_name
 
 
-def update_kv_pool_enabled_flag(user_config):
-    global g_kv_pool_enabled
-    g_kv_pool_enabled = False
+def update_kv_store_enabled_flag(user_config):
+    global g_kv_store_enabled
+    g_kv_store_enabled = False
 
     engine_section = user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG) or user_config.get(C.MOTOR_ENGINE_UNION_CONFIG, {})
     kv_connector = engine_section.get(C.ENGINE_CONFIG, {}).get(C.KV_TRANSFER_CONFIG, {}).get(C.KV_CONNECTOR, "")
-    kv_pool_cfg = user_config.get(C.KV_CACHE_POOL_CONFIG)
-    if kv_connector == C.MULTI_CONNECTOR or (isinstance(kv_pool_cfg, dict) and kv_pool_cfg):
-        g_kv_pool_enabled = True
+    kv_store_cfg = user_config.get(C.KV_CACHE_STORE_CONFIG)
+    if kv_connector == C.MULTI_CONNECTOR or (isinstance(kv_store_cfg, dict) and kv_store_cfg):
+        g_kv_store_enabled = True
 
 
 def update_kv_conductor_enabled_flag(user_config):
@@ -143,7 +146,7 @@ def _pick_coordinator_services(docs: list[dict]):
 def init_service_domain_name(paths, deploy_config):
     controller_data = load_yaml(paths["controller_input_yaml"], False)
     coordinator_data = load_yaml(paths["coordinator_input_yaml"], False)
-    kv_pool_data = load_yaml(paths["kv_pool_input_yaml"], False)
+    kv_store_data = load_yaml(paths["kv_store_input_yaml"], False)
     kv_conductor_data = load_yaml(paths["kv_conductor_input_yaml"], False)
     mf_store_data = load_yaml(paths["mf_store_input_yaml"], False)
 
@@ -155,10 +158,10 @@ def init_service_domain_name(paths, deploy_config):
 
     coord_services = _pick_coordinator_services(coordinator_data)
 
-    kv_pull_service_data = None
-    for doc in kv_pool_data:
+    kv_store_service_data = None
+    for doc in kv_store_data:
         if doc.get(C.KIND) == C.SERVICE:
-            kv_pull_service_data = doc
+            kv_store_service_data = doc
             break
 
     kv_conductor_service_data = None
@@ -187,8 +190,8 @@ def init_service_domain_name(paths, deploy_config):
     if obs_svc:
         set_coordinator_obs_service(f"{obs_svc[C.METADATA][C.NAME]}.{ns}.svc.cluster.local")
 
-    kv_pool_name = kv_pull_service_data[C.METADATA][C.NAME]
-    set_kv_pool_service(f"{kv_pool_name}.{deploy_config[C.CONFIG_JOB_ID]}.svc.cluster.local")
+    kv_store_svc_name = kv_store_service_data[C.METADATA][C.NAME]
+    set_kv_store_service(f"{kv_store_svc_name}.{deploy_config[C.CONFIG_JOB_ID]}.svc.cluster.local")
     kv_conductor_name = kv_conductor_service_data[C.METADATA][C.NAME]
     set_kv_conductor_service(f"{kv_conductor_name}.{deploy_config[C.CONFIG_JOB_ID]}.svc.cluster.local")
     mf_store_name = mf_store_service_data[C.METADATA][C.NAME]
@@ -256,9 +259,9 @@ def get_baseline_config_from_configmap(job_id):
         return None
 
 
-def apply_configmap(create_cmd: str):
+def apply_configmap(create_cmd):
     """Create or update a configmap by applying the generated manifest."""
-    safe_exec_cmd(f"{create_cmd} --dry-run=client -o yaml | kubectl apply -f -")
+    pipe_kubectl(create_cmd)
 
 
 def extract_resources(data):
@@ -366,23 +369,35 @@ def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mod
     """Create or update ConfigMap motor-config with all mounted files (scripts + user_config.json)."""
     config_path = _user_config_path_for_configmap(user_config, effective_deploy_mode)
     apply_configmap(
-        f"kubectl create configmap {C.MOTOR_CONFIG_CONFIGMAP_NAME} "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/boot.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/common.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/hccl_tools.py "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/mooncake_config.py "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/controller.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/coordinator.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/engine.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_pool.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_conductor.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/mf_store.sh "
-        f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/all_combine_in_single_container.sh "
-        "--from-file=./probe/probe.sh "
-        "--from-file=./probe/probe.py "
-        "--from-file=./prestop/prestop.sh "
-        "--from-file=./prestop/prestop.py "
-        f"--from-file=user_config.json={config_path}" + " -n " + job_id
+        [
+            "kubectl",
+            "create",
+            "configmap",
+            C.MOTOR_CONFIG_CONFIGMAP_NAME,
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/boot.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/common.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/hccl_tools.py",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/mooncake/mooncake_config.py",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/controller.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/coordinator.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/engine.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_cache_store.sh",
+            f"--from-file=kv_store_backends.mooncake.mooncake.sh=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/mooncake/mooncake.sh",
+            f"--from-file=kv_store_backends.memcache.memcache.sh=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/memcache.sh",
+            f"--from-file=kv_store_backends.memcache.memcache_meta_service.py=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/memcache_meta_service.py",
+            f"--from-file=kv_store_backends.memcache.mmc-local.conf=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/mmc-local.conf",
+            f"--from-file=kv_store_backends.memcache.mmc-local-a2.conf=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/mmc-local-a2.conf",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_conductor.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/mf_store.sh",
+            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/all_combine_in_single_container.sh",
+            "--from-file=./probe/probe.sh",
+            "--from-file=./probe/probe.py",
+            "--from-file=./prestop/prestop.sh",
+            "--from-file=./prestop/prestop.py",
+            f"--from-file=user_config.json={config_path}",
+            "-n",
+            job_id,
+        ]
     )
 
 
@@ -399,10 +414,10 @@ def exec_all_kubectl_multi(
 
     if baseline_config is None:
         for yaml_file in g_generate_yaml_list:
-            safe_exec_cmd(f"kubectl apply -f {yaml_file} -n {job_id}")
+            safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
     elif deploy_mode_arg == C.DEPLOY_MODE_INFER_SERVICE_SET:
         for yaml_file in g_generate_yaml_list:
-            safe_exec_cmd(f"kubectl apply -f {yaml_file} -n {job_id}")
+            safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
     else:
         baseline_deploy_config = baseline_config.get(C.MOTOR_DEPLOY_CONFIG, {})
         elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out_deploy_yaml_path)
@@ -412,7 +427,7 @@ def exec_all_kubectl_singer(deploy_config, yaml_file):
     """Execute kubectl commands for single container deployment."""
     job_id = deploy_config[C.CONFIG_JOB_ID]
     create_motor_config_configmap(job_id)
-    safe_exec_cmd(f"kubectl apply -f {yaml_file} -n {job_id}")
+    safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
 
 
 def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, node_type):
@@ -432,14 +447,14 @@ def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_
         logger.info("Scale-in %s instance, %s -> %s", node_type, base, total)
         for index in reversed(range(total, base)):
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{node_type}{index}.yaml")
-            safe_exec_cmd(f"kubectl delete -f {yaml_path} -n {job_id}")
+            safe_exec_cmd(["kubectl", "delete", "-f", yaml_path, "-n", job_id])
             if os.path.exists(yaml_path):
                 os.remove(yaml_path)
     if total > base:
         logger.info("Scale-out %s instance, %s -> %s", node_type, base, total)
         for index in range(base, total):
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{node_type}{index}.yaml")
-            safe_exec_cmd(f"kubectl apply -f {yaml_path} -n {job_id}")
+            safe_exec_cmd(["kubectl", "apply", "-f", yaml_path, "-n", job_id])
 
 
 def scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path):
@@ -453,14 +468,14 @@ def scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yam
         logger.info("Scale-in %s instance, %s -> %s", C.NODE_TYPE_E, base, total)
         for index in reversed(range(total, base)):
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{C.NODE_TYPE_E}{index}.yaml")
-            safe_exec_cmd(f"kubectl delete -f {yaml_path} -n {job_id}")
+            safe_exec_cmd(["kubectl", "delete", "-f", yaml_path, "-n", job_id])
             if os.path.exists(yaml_path):
                 os.remove(yaml_path)
     if total > base:
         logger.info("Scale-out %s instance, %s -> %s", C.NODE_TYPE_E, base, total)
         for index in range(base, total):
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{C.NODE_TYPE_E}{index}.yaml")
-            safe_exec_cmd(f"kubectl apply -f {yaml_path} -n {job_id}")
+            safe_exec_cmd(["kubectl", "apply", "-f", yaml_path, "-n", job_id])
 
 
 def elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out_deploy_yaml_path):
@@ -482,13 +497,13 @@ def apply_yaml_files(deploy_config):
     job_id = deploy_config[C.CONFIG_JOB_ID]
     create_motor_config_configmap(job_id)
     for yaml_file in g_generate_yaml_list:
-        safe_exec_cmd(f"kubectl apply -f {yaml_file} -n {job_id}")
+        safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
 
 
 def apply_single_yaml(deploy_config, yaml_file):
     job_id = deploy_config[C.CONFIG_JOB_ID]
     create_motor_config_configmap(job_id)
-    safe_exec_cmd(f"kubectl apply -f {yaml_file} -n {job_id}")
+    safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
 
 
 def scale_engine(deploy_config, baseline_deploy_config):

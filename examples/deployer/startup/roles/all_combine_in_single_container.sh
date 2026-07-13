@@ -47,13 +47,13 @@ python3 -m ccae_reporter.run Controller &
 ROLE=controller python3 -m motor.controller.main --config $USER_CONFIG_PATH &
 pids+=($!)
 
-gen_kv_pool_config
+gen_kv_store_config
 
-if [ -n "$KVP_MASTER_SERVICE" ]; then
-    set_kv_pool_env
-    ROLE=kv_pool mooncake_master --port "$KV_POOL_PORT" \
-    --eviction_high_watermark_ratio "$KV_POOL_EVICTION_HIGH_WATERMARK_RATIO" \
-    --eviction_ratio "$KV_POOL_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" &
+if [ -n "$KVS_MASTER_SERVICE" ]; then
+    set_kv_store_env
+    ROLE=kv_store mooncake_master --port "$KV_CACHE_STORE_PORT" \
+    --eviction_high_watermark_ratio "$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO" \
+    --eviction_ratio "$KV_STORE_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" &
     pids+=($!)
 fi
 

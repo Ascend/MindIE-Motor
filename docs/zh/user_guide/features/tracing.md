@@ -36,7 +36,7 @@ pyMotor开启tracing能力需修改env.json配置文件和user_config.json配置
     "OTEL_EXPORTER_OTLP_TRACES_INSECURE": "true",
     "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf"
   },
-  "motor_kv_cache_pool_env": {
+  "motor_kv_cache_store_env": {
   }
 }
 ```

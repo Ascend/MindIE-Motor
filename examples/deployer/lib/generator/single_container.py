@@ -18,7 +18,7 @@ from lib.generator.engine import (
     apply_a5_workload,
     apply_a5_engine_pod_config,
 )
-from lib.generator.kv_pool import normalize_kv_cache_pool_config, gen_kv_pool_env
+from lib.generator.kv_cache_store import normalize_kv_cache_store_config, gen_kv_store_env
 
 
 def generate_yaml_single_container(input_yaml, output_file, user_config):
@@ -56,10 +56,10 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
             {C.NAME: C.ENV_JOB_NAME, C.VALUE: job_name},
         ]
     )
-    if k8s_utils.g_kv_pool_enabled:
-        kv_pool_config = normalize_kv_cache_pool_config(user_config)
-        kv_pool_env = gen_kv_pool_env(kv_pool_config)
-        container[C.ENV].extend(kv_pool_env)
+    if k8s_utils.g_kv_store_enabled:
+        kv_store_config = normalize_kv_cache_store_config(user_config)
+        kv_store_env = gen_kv_store_env(kv_store_config)
+        container[C.ENV].extend(kv_store_env)
 
     npu_num = max(int(deploy_config[C.P_POD_NPU_NUM]), int(deploy_config[C.D_POD_NPU_NUM]))
     set_container_npu(container, npu_num, deploy_config)

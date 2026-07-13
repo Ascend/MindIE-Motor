@@ -41,9 +41,7 @@ spec:
               value: /usr/local/Ascend/pyMotor/conf
             - name: ROLE
               value: mf_store
-          command: ["/bin/bash", "-c", "
-              source /mnt/configmap/boot.sh; \n
-          "]
+          command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
           resources:
             requests:
               memory: "2Gi"

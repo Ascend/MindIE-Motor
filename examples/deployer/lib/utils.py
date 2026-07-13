@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -60,19 +62,41 @@ def load_yaml(input_yaml, single_doc):
     return data
 
 
-def exec_cmd(command):
-    """Execute command"""
-    logger.info(f"Executing command: {command}")
-    os.popen(command).read()  # nosec B605
+def exec_cmd(cmd):
+    """Execute command with a list of arguments (no shell)."""
+    logger.info(f"Executing command: {' '.join(cmd)}")
+    subprocess.run(cmd, capture_output=True, check=False)
 
 
-def safe_exec_cmd(command):
+def safe_exec_cmd(cmd):
     """Safely execute command"""
     try:
-        exec_cmd(command)
+        exec_cmd(cmd)
     except Exception as e:
         logger.warning(f"Command execution failed: {e}")
         raise
+
+
+_KUBECTL = shutil.which("kubectl") or "kubectl"
+
+
+def pipe_kubectl(kubectl_create_cmd):
+    """Run a kubectl create command and pipe its output to kubectl apply.
+
+    Raises RuntimeError if either the dry-run or apply step fails.
+    """
+    result = subprocess.run(
+        kubectl_create_cmd + ["--dry-run=client", "-o", "yaml"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"kubectl create (dry-run) failed (rc={result.returncode}): {result.stderr.strip()}")
+    apply_result = subprocess.run(
+        [_KUBECTL, "apply", "-f", "-"], input=result.stdout, capture_output=True, text=True, check=False
+    )
+    if apply_result.returncode != 0:
+        raise RuntimeError(
+            f"kubectl apply configmap failed (rc={apply_result.returncode}): {apply_result.stderr.strip()}"
+        )
 
 
 def shell_escape(value):
@@ -258,7 +282,7 @@ def set_env_to_shell(user_config, env_config_path, deploy_mode):
         update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_engine_decode_env", "set_decode_env")
         update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, union_env_key, "set_union_env")
-        update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
+        update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
         update_shell_safely(C.MF_STORE_SHELL_PATH, env_config, "motor_mf_store_env", "set_mf_store_env")
         update_shell_safely(C.SINGLE_CONTAINER_SHELL_PATH, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
     else:
@@ -268,13 +292,13 @@ def set_env_to_shell(user_config, env_config_path, deploy_mode):
         update_shell_safely(C.ENGINE_SHELL_PATH, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(C.ENGINE_SHELL_PATH, env_config, "motor_engine_decode_env", "set_decode_env")
         update_shell_safely(C.ENGINE_SHELL_PATH, env_config, union_env_key, "set_union_env")
-        update_shell_safely(C.KV_POOL_SHELL_PATH, env_config, "motor_kv_cache_pool_env", "set_kv_pool_env")
+        update_shell_safely(C.KV_CACHE_STORE_SHELL_PATH, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
         update_shell_safely(C.MF_STORE_SHELL_PATH, env_config, "motor_mf_store_env", "set_mf_store_env")
         update_shell_safely(C.KV_CONDUCTOR_SHELL_PATH, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
 
 
 def get_deploy_paths():
-    from lib.generator import k8s_utils
+    from lib.generator import k8s_utils  # pylint: disable=cyclic-import
 
     return {
         "controller_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'controller_template.yaml'),
@@ -283,8 +307,8 @@ def get_deploy_paths():
         "coordinator_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_coordinator.yaml'),
         "engine_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'engine_template.yaml'),
         "engine_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, k8s_utils.g_engine_base_name),
-        "kv_pool_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'kv_pool_template.yaml'),
-        "kv_pool_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_kv_pool.yaml'),
+        "kv_store_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'kv_cache_store_template.yaml'),
+        "kv_store_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_kv_store.yaml'),
         "kv_conductor_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'kv_conductor_template.yaml'),
         "kv_conductor_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_kv_conductor.yaml'),
         "infer_service_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'infer_service_template.yaml'),

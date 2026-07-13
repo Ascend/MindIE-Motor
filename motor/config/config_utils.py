@@ -1,5 +1,12 @@
-# coding=utf-8
-# Copyright (c) 2025, HUAWEI CORPORATION.  All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
 
 import json
 import os
@@ -65,7 +72,7 @@ class ConfigKey(Enum):
     MOTOR_ENGINE_PREFILL = "motor_engine_prefill_config"
     MOTOR_ENGINE_DECODE = "motor_engine_decode_config"
     MOTOR_NODEMANAGER = "motor_nodemanger_config"
-    MOTOR_KV_POOL = "kv_cache_pool_config"
+    MOTOR_KV_STORE = "kv_cache_store_config"
 
     @staticmethod
     def is_valid(config_key: str) -> bool:

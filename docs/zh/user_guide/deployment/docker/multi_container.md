@@ -84,13 +84,13 @@ sed -i '/^function set_coordinator_env()/,/^}/d' $CONFIGMAP_PATH/coordinator.sh
 sed -i '/^function set_prefill_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
 sed -i '/^function set_decode_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
 sed -i '/^function set_common_env()/,/^}/d' $CONFIGMAP_PATH/common.sh
-sed -i '/^function set_kv_pool_env()/,/^}/d' $CONFIGMAP_PATH/kv_pool.sh
+sed -i '/^function set_kv_store_env()/,/^}/d' $CONFIGMAP_PATH/kv_store.sh
 sed -i '/^function set_kv_conductor_env()/,/^}/d' $CONFIGMAP_PATH/kv_conductor.sh
 sed -i '/^function set_controller_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_coordinator_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_prefill_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_decode_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_kv_pool_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
+sed -i '/^function set_kv_store_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/^function set_kv_conductor_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
 sed -i '/./,$!d' $CONFIGMAP_PATH/common.sh
 
@@ -137,10 +137,10 @@ docker run -u root --rm --name $CONTAINER_NAME --net=host $SET_IPC_HOST_STR \
 -e COORDINATOR_SERVICE=$COORDINATOR_SERVICE \
 -e CONTROLLER_SERVICE=$CONTROLLER_SERVICE \
 -e POD_IP=$POD_IP \
--e KVP_MASTER_SERVICE=$KVP_MASTER_SERVICE \
--e KV_POOL_PORT=$KV_POOL_PORT \
--e KV_POOL_EVICTION_HIGH_WATERMARK_RATIO=$KV_POOL_EVICTION_HIGH_WATERMARK_RATIO \
--e KV_POOL_EVICTION_RATIO=$KV_POOL_EVICTION_RATIO \
+-e KVS_MASTER_SERVICE=$KVS_MASTER_SERVICE \
+-e KV_STORE_PORT=$KV_STORE_PORT \
+-e KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO \
+-e KV_STORE_EVICTION_RATIO=$KV_STORE_EVICTION_RATIO \
 -e DEFAULT_KV_LEASE_TTL=$DEFAULT_KV_LEASE_TTL \
 $ASCEND_DEVICES \
 -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
@@ -167,10 +167,10 @@ bash -c "source \$CONFIGMAP_PATH/boot.sh"
 | COORDINATOR_SERVICE | coordinator域名 | 设置成coordinator部署所在的主机ip, coordinator/controller/prefill/decode需设置 |
 | CONTROLLER_SERVICE | controller域名 | 设置成controller部署所在的主机ip, coordinator/controller/prefill/decode需设置 |
 | POD_IP | 容器ip | 因使用host网络部署容器，取值为主机ip |
-| KVP_MASTER_SERVICE | mooncake_master部署域名 | 若开启kv_pool，取值与POD_IP相同；若不开启则设置为空 |
-| KV_POOL_PORT | mooncake_master部署端口 | 若开启kv_pool，设置任意有效端口，如50088；若不开启则设置为空 |
-| KV_POOL_EVICTION_HIGH_WATERMARK_RATIO | mooncake_master进程高水位比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
-| KV_POOL_EVICTION_RATIO | mooncake_master进程逐出比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
+| KVS_MASTER_SERVICE | mooncake_master部署域名 | 若开启kv_pool，取值与POD_IP相同；若不开启则设置为空 |
+| KV_STORE_PORT | mooncake_master部署端口 | 若开启kv_pool，设置任意有效端口，如50088；若不开启则设置为空 |
+| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | mooncake_master进程高水位比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
+| KV_STORE_EVICTION_RATIO | mooncake_master进程逐出比例 | 若开启kv_pool，取值0~1；若不开启则设置为空 |
 | DEFAULT_KV_LEASE_TTL | 控制 KV 对象的默认租约 TTL（毫秒） | 配置值需大于env.json中vllm实例的环境变量`ASCEND_CONNECT_TIMEOUT`和`ASCEND_TRANSFER_TIMEOUT`。默认值11000；若不开启kv_pool则设置为空 |
 
 启动服务示例（1P1D）：
@@ -184,18 +184,18 @@ COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="" ROLE="coordin
 COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="" ROLE="controller" POD_IP="<IP1>"CONTAINER_NAME="docker_controller"  sh start_docker.sh
 
 # 若开启池化（可选），启动kv_pool，假定部署在节点<IP0>。
-ROLE=kv_pool POD_IP="<IP0>" KVP_MASTER_SERVICE="<IP2>" KV_POOL_PORT=50088 KV_POOL_EVICTION_HIGH_WATERMARK_RATIO=0.9 KV_POOL_EVICTION_RATIO=0.1 DEFAULT_KV_LEASE_TTL=11000 CONTAINER_NAME="docker_kv_pool" sh start_docker.sh
+ROLE=kv_pool POD_IP="<IP0>" KVS_MASTER_SERVICE="<IP2>" KV_STORE_PORT=50088 KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=0.9 KV_STORE_EVICTION_RATIO=0.1 DEFAULT_KV_LEASE_TTL=11000 CONTAINER_NAME="docker_kv_pool" sh start_docker.sh
 
 # 启动PD实例
-# 若开启池化，KVP_MASTER_SERVICE设置为kv_pool部署节点ip（即<IP2>），不开启池化设置为空。
+# 若开启池化，KVS_MASTER_SERVICE设置为kv_pool部署节点ip（即<IP2>），不开启池化设置为空。
 # 若开启池化，ENABLE_IPC_HOST设置为"enable"，不开启池化设置为空。
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="p0" ROLE="prefill" POD_IP="<IP0>" CONTAINER_NAME="docker_p0"  sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="p0" ROLE="prefill" POD_IP="<IP1>" CONTAINER_NAME="docker_p0"  sh start_docker.sh
+COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="p0" ROLE="prefill" POD_IP="<IP0>" CONTAINER_NAME="docker_p0"  sh start_docker.sh
+COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="p0" ROLE="prefill" POD_IP="<IP1>" CONTAINER_NAME="docker_p0"  sh start_docker.sh
 
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP2>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP3>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP4>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVP_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP5>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
+COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP2>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
+COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP3>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
+COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP4>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
+COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP5>" CONTAINER_NAME="docker_d0"  sh start_docker.sh
 ```
 
 ### A5 环境额外修改内容

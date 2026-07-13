@@ -9,15 +9,19 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-if [ "$ROLE" != "kv_pool" ]; then
-    echo "Error: This script is for kv_pool role only. Current ROLE=$ROLE"
+if [ "$ROLE" != "kv_store" ]; then
+    echo "Error: This script is for kv_store role only. Current ROLE=$ROLE"
     exit 1
 fi
 
-export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
+set_kv_store_env
 
-set_kv_pool_env
+BACKEND="${KV_STORE_BACKEND:-memcache}"
+BACKEND_SCRIPT="$SCRIPT_DIR/kv_store_backends.${BACKEND}.${BACKEND}.sh"
 
-mooncake_master --port "$KV_POOL_PORT" \
-    --eviction_high_watermark_ratio "$KV_POOL_EVICTION_HIGH_WATERMARK_RATIO" \
-    --eviction_ratio "$KV_POOL_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL"
+if [ -f "$BACKEND_SCRIPT" ]; then
+    source "$BACKEND_SCRIPT"
+else
+    echo "Error: Unsupported KV store backend '${BACKEND}' (script not found: ${BACKEND_SCRIPT})"
+    exit 1
+fi

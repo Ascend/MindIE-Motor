@@ -410,7 +410,7 @@ prefill / decode 子字段：
 > **说明**
 >
 >- `kv_connector_extra_config` 中 prefill/decode 的 dp_size、tp_size 一般无需手动填写，Motor 在拉起服务时会根据 `data_parallel_size` / `tensor_parallel_size` 自动刷新。
->- 若需使用 KV 池化等能力，请改用 MultiConnector，并参考 [KV 池化部署指南](../../features/KV_pool.md) 修改 `user_config.json`，并与 `deploy.py` 配合使用。
+>- 若需使用 KV 池化等能力，请改用 MultiConnector，并参考 [KV 池化部署指南](../../features/kv_cache_store/README.md) 修改 `user_config.json`，并与 `deploy.py` 配合使用。
 
 #### kv_connector 识别白名单与 dispatch_profile
 
@@ -463,14 +463,14 @@ NodeManager 根据 `engine_config.kv_transfer_config.kv_connector`（大小写�
 
 字段说明见 [user_config 全量参数说明](./config_reference.md#dispatch_profile)。
 
-### kv_cache_pool_config（可选）
+### kv_cache_store_config（可选）
 
-仅在启用 KV Cache 池化时需要配置，详细内容可参考 [KV 池化部署指南](../../features/KV_pool.md)；若仅使用 PD 分离且未开启池化，可保留仓内默认结构即可。
+仅在启用 KV Cache 池化时需要配置，详细内容可参考 [KV 池化部署指南](../../features/kv_cache_store/README.md)；若仅使用 PD 分离且未开启池化，可保留仓内默认结构即可。
 
 **配置示例**（与仓内 `user_config.json` 一致）
 
 ```json
-"kv_cache_pool_config": {
+"kv_cache_store_config": {
   "metadata_server": "P2PHANDSHAKE",
   "protocol": "ascend",
   "device_name": "",
@@ -554,7 +554,7 @@ NodeManager 根据 `engine_config.kv_transfer_config.kv_connector`（大小写�
 
 ## 配置 `env.json`
 
-`env.json` 用于为各组件注入环境变量，其路径由 `user_config.json` 中的 `motor_deploy_config.env_path` 指定（如 `./conf/env.json`）。`deploy.py` 会读取该文件，并将对应段落写入 `boot_helper/boot.sh` 中的 `set_common_env`、`set_controller_env`、`set_coordinator_env`、`set_prefill_env`、`set_decode_env`、`set_kv_pool_env` 等函数，供容器启动时 source 执行。
+`env.json` 用于为各组件注入环境变量，其路径由 `user_config.json` 中的 `motor_deploy_config.env_path` 指定（如 `./conf/env.json`）。`deploy.py` 会读取该文件，并将对应段落写入 `boot_helper/boot.sh` 中的 `set_common_env`、`set_controller_env`、`set_coordinator_env`、`set_prefill_env`、`set_decode_env`、`set_kv_store_env` 等函数，供容器启动时 source 执行。
 
 **配置示例**（典型结构）：
 
@@ -582,7 +582,7 @@ NodeManager 根据 `engine_config.kv_transfer_config.kv_connector`（大小写�
     "OMP_NUM_THREADS": 100,
     "ASCEND_BUFFER_POOL": "4:8"
   },
-  "motor_kv_cache_pool_env": {}
+  "motor_kv_cache_store_env": {}
 }
 ```
 

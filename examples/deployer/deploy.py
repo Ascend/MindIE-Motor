@@ -29,7 +29,7 @@ from lib.generator.k8s_utils import (
     create_motor_config_configmap,
     init_service_domain_name,
     get_deploy_mode_from_config,
-    update_kv_pool_enabled_flag,
+    update_kv_store_enabled_flag,
     update_kv_conductor_enabled_flag,
     update_engine_type_flag,
     set_user_config_path,
@@ -37,7 +37,7 @@ from lib.generator.k8s_utils import (
 from lib.generator.controller import generate_yaml_controller
 from lib.generator.coordinator import generate_yaml_coordinator
 from lib.generator.engine import generate_yaml_engine, update_engine_base_name, validate_instance_nums
-from lib.generator.kv_pool import generate_yaml_kv_pool, normalize_kv_cache_pool_config
+from lib.generator.kv_cache_store import generate_yaml_kv_store, normalize_kv_cache_store_config
 from lib.generator.kv_conductor import generate_yaml_kv_conductor, normalize_kv_conductor_config
 from lib.generator.single_container import generate_yaml_single_container
 from lib.generator.infer_service import (
@@ -110,7 +110,7 @@ def handle_update_instance_num(user_config):
         )
     validate_deploy_mode_value(deploy_mode_arg)
 
-    update_kv_pool_enabled_flag(user_config)
+    update_kv_store_enabled_flag(user_config)
     update_engine_base_name(user_config)
 
     k8s_utils.g_generate_yaml_list = []
@@ -128,6 +128,8 @@ def handle_update_instance_num(user_config):
             init_infer_service_domain_name(infer_input, deploy_config)
             generate_yaml_infer_service_set(infer_input, infer_output, user_config)
     else:
+        if k8s_utils.g_kv_store_enabled:
+            normalize_kv_cache_store_config(user_config)
         generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
 
     exec_all_kubectl_multi(deploy_config, baseline_config, deploy_mode_arg, user_config=user_config)
@@ -139,10 +141,16 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False):
     init_service_domain_name(paths, deploy_config)
     generate_yaml_controller(paths["controller_input_yaml"], paths["controller_output_yaml"], user_config)
     generate_yaml_coordinator(paths["coordinator_input_yaml"], paths["coordinator_output_yaml"], user_config)
+    # normalize_kv_cache_store_config must be called before generate_yaml_engine
+    # so g_mmc_local_service_mode is set when build_engine_env_items() reads it
+    kv_store_config = None
+    if k8s_utils.g_kv_store_enabled:
+        kv_store_config = normalize_kv_cache_store_config(user_config)
     generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
-    if k8s_utils.g_kv_pool_enabled:
-        kv_pool_config = normalize_kv_cache_pool_config(user_config)
-        generate_yaml_kv_pool(paths["kv_pool_input_yaml"], paths["kv_pool_output_yaml"], user_config, kv_pool_config)
+    if kv_store_config is not None:
+        generate_yaml_kv_store(
+            paths["kv_store_input_yaml"], paths["kv_store_output_yaml"], user_config, kv_store_config
+        )
     if k8s_utils.g_kv_conductor_enabled:
         kv_conductor_config = normalize_kv_conductor_config(user_config)
         generate_yaml_kv_conductor(
@@ -172,7 +180,7 @@ def deploy_services_infer_service_set(paths, user_config, dry_run=False):
 
 def deploy_services_single_container(paths, user_config, dry_run=False):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
-    update_kv_pool_enabled_flag(user_config)
+    update_kv_store_enabled_flag(user_config)
     generate_yaml_single_container(
         paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
     )
@@ -186,7 +194,7 @@ def resolve_deploy_mode_for_services(deploy_config):
 
 def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collect=False):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
-    update_kv_pool_enabled_flag(user_config)
+    update_kv_store_enabled_flag(user_config)
     update_kv_conductor_enabled_flag(user_config)
     update_engine_type_flag(user_config)
 

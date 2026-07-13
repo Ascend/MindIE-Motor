@@ -134,7 +134,7 @@ examples/infer_engines/
 - `motor_coordinator_config`: Coordinator 组件配置
 - `motor_engine_prefill_config`: Prefill 引擎配置
 - `motor_engine_decode_config`: Decode 引擎配置
-- `kv_cache_pool_config`: KV 缓存池配置
+- `kv_cache_store_config`: KV 缓存池配置
 
 ### env.json
 
