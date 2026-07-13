@@ -420,7 +420,7 @@ g_metric{engine="0"} 2.0"""
         assert result[0].name == "g_metric"
         assert result[0].value == [2.0]
 
-        # Empty family (HELP+TYPE, no samples): silently dropped, neighbors kept.
+        # Empty family (HELP+TYPE, no samples): keep family; serializers emit 0.
         empty_family = """
 # HELP e_metric empty
 # TYPE e_metric gauge
@@ -428,9 +428,33 @@ g_metric{engine="0"} 2.0"""
 # TYPE g_metric gauge
 g_metric{engine="0"} 1.0"""
         result = metric_collector._parse_metric_text(empty_family)
+        assert len(result) == 2
+        assert result[0].name == "e_metric"
+        assert result[0].label == []
+        assert result[0].value == []
+        assert result[1].name == "g_metric"
+        assert result[1].value == [1.0]
+        text = metric_collector._format_prometheus(result)
+        assert "e_metric 0" in text
+        assert "g_metric{engine=\"0\"} 1.0" in text
+
+        # Explicit zero sample must remain visible after prometheus formatting.
+        zero_sample = """
+# HELP z_metric a gauge
+# TYPE z_metric gauge
+z_metric{engine="0"} 0.0"""
+        result = metric_collector._parse_metric_text(zero_sample)
         assert len(result) == 1
-        assert result[0].name == "g_metric"
-        assert result[0].value == [1.0]
+        assert result[0].value == [0.0]
+        text = metric_collector._format_prometheus(result)
+        assert "z_metric{engine=\"0\"} 0.0" in text or "z_metric{engine=\"0\"} 0" in text
+
+        # Empty label/value family still serializes as an explicit 0 line.
+        empty_metric = Metric(name="idle_metric", help="idle", type=MetricType.GAUGE, label=[], value=[])
+        text = metric_collector._format_prometheus([empty_metric])
+        assert "# HELP idle_metric idle" in text
+        assert "# TYPE idle_metric gauge" in text
+        assert "idle_metric 0" in text
 
         # Large negative gauge (scale+interrupt style) must be kept.
         big_neg = """

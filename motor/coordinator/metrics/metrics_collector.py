@@ -618,19 +618,18 @@ class MetricsCollector(ThreadSafeSingleton):
                     sample_failed += 1
                 i += 1
             if not metric.value:
-                # HELP/TYPE with no sample lines is normal during engine startup
-                # or scale-up; silently skip because this is not a parse failure.
-                if sample_total == 0:
+                if sample_total != 0:
+                    # Had samples but every line failed: drop the family instead of
+                    # emitting empty label/value arrays to downstream consumers.
+                    logger.error(
+                        "[Metrics] Drop metric %s: all %d sample line(s) failed to parse",
+                        metric.name,
+                        sample_total,
+                    )
                     continue
-                # Had samples but every line failed: drop the family instead of
-                # emitting empty label/value arrays to downstream consumers.
-                logger.error(
-                    "[Metrics] Drop metric %s: all %d sample line(s) failed to parse",
-                    metric.name,
-                    sample_total,
-                )
-                continue
-            if sample_failed:
+                # sample_total == 0: HELP/TYPE only (idle / just-started). Keep the
+                # family with empty samples; serializers emit an explicit 0.
+            elif sample_failed:
                 # One WARNING per family only; per-line detail is omitted to avoid
                 # spam when the same metric keeps emitting bad values each scrape.
                 logger.warning(
@@ -893,6 +892,10 @@ class MetricsCollector(ThreadSafeSingleton):
         for item in aggregate:
             lines.append("# HELP {} {}".format(item.name, item.help))
             lines.append("# TYPE {} {}".format(item.name, item.type))
+            if not item.label or not item.value:
+                # Keep zero-valued / empty-sample families visible on :1027/metrics.
+                lines.append("{} 0".format(item.name))
+                continue
             for i, label in enumerate(item.label):
                 v = item.value[i]
                 if math.isnan(v):
@@ -935,8 +938,12 @@ class MetricsCollector(ThreadSafeSingleton):
             meta = name_to_meta[name]
             out_lines.append(f"# HELP {name} {meta['help']}")
             out_lines.append(f"# TYPE {name} {meta['type']}")
-            meta["lines"].sort(key=lambda kv: (kv[0], kv[1]))
-            out_lines.extend(line for _, line in meta["lines"])
+            if not meta["lines"]:
+                # No sample lines (idle / empty family): still expose an explicit 0.
+                out_lines.append(f"{name} 0")
+            else:
+                meta["lines"].sort(key=lambda kv: (kv[0], kv[1]))
+                out_lines.extend(line for _, line in meta["lines"])
         return "\n".join(out_lines)
 
     def _generate_dp_metrics(self, collects: dict[int, dict[str, Any]]) -> str:
@@ -955,6 +962,10 @@ class MetricsCollector(ThreadSafeSingleton):
                         metric.name,
                         {"help": metric.help, "type": metric.type, "lines": []},
                     )
+                    if not metric.label or not metric.value:
+                        new_label = self._prepend_dim_labels(metric.name, dim_labels)
+                        meta["lines"].append(((instance_id, ep_id), f"{new_label} 0"))
+                        continue
                     for i, label_str in enumerate(metric.label):
                         new_label = self._prepend_dim_labels(label_str, dim_labels)
                         meta["lines"].append(
@@ -989,6 +1000,10 @@ class MetricsCollector(ThreadSafeSingleton):
                     metric.name,
                     {"help": metric.help, "type": metric.type, "lines": []},
                 )
+                if not metric.label or not metric.value:
+                    new_label = self._prepend_dim_labels(metric.name, dim_labels)
+                    meta["lines"].append(((pod_ip, role), f"{new_label} 0"))
+                    continue
                 for i, label_str in enumerate(metric.label):
                     new_label = self._prepend_dim_labels(label_str, dim_labels)
                     meta["lines"].append(((pod_ip, role), f"{new_label} {self._metric_value_str(metric.value[i])}"))
