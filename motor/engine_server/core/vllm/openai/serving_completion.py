@@ -29,8 +29,8 @@ from vllm.entrypoints.openai.completion.protocol import CompletionRequest, Compl
 
 from motor.engine_server.core.vllm.vllm_openai_compat import (
     RequestLogger,
+    call_openai_serving,
     kwargs_matching_signature,
-    openai_http_response_from_generator,
 )
 
 
@@ -62,5 +62,8 @@ class OpenAIServingCompletion:
         )
 
     async def handle_request(self, request: CompletionRequest, raw_request: Request):
-        generator = await self._vllm_serving_completion.create_completion(request, raw_request)
-        return openai_http_response_from_generator(generator, CompletionResponse)
+        return await call_openai_serving(
+            self._vllm_serving_completion,
+            lambda: self._vllm_serving_completion.create_completion(request, raw_request),
+            CompletionResponse,
+        )

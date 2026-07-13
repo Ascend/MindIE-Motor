@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,7 @@ from motor.common.resources.dispatch import (
     PrefillResult,
 )
 from motor.engine_server.core.config import IConfig
+from motor.engine_server.core.errors.sanitizer import sanitize_error_message
 
 logger = get_logger(__name__)
 
@@ -301,6 +303,7 @@ class DispatchAdapter:
         self._config = config
         endpoint_config = config.get_endpoint_config()
         self._local_role = getattr(endpoint_config, "role", "union")
+        self.engine_type = getattr(endpoint_config, "engine_type", "unknown")
         self._registry = DispatchAttemptRegistry()
         self._peer_stop_client = DispatchPeerStopClient(config)
 
@@ -367,15 +370,60 @@ class DispatchAdapter:
     ) -> bytes | str | None:
         return chunk
 
+    def register_error_handlers(self, app: Any) -> None:
+        """Install engine-specific FastAPI handlers.
+
+        The endpoint must not branch on engine type.  Adapters own both the
+        error format and the decision whether an application-level handler is
+        required (for example, validation errors raised before a route runs).
+        """
+
+    def map_serving_exception(self, exc: Exception, *, has_dispatch: bool) -> Exception:
+        """Apply the generic serving exception policy for this engine."""
+        from motor.engine_server.core.serving_error import map_serving_exception
+
+        return map_serving_exception(exc, map_unknown_to_http_500=not has_dispatch)
+
+    def map_stream_error(self, exc: Exception, context: DispatchResponseContext) -> str | None:
+        """Return a serialized SSE error payload after response headers are sent.
+
+        Non-vLLM engines must still emit a structured event instead of raising,
+        because the HTTP status can no longer be changed once streaming starts.
+        """
+        if isinstance(exc, HTTPException):
+            message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            payload = {
+                "error": {
+                    "message": sanitize_error_message(message),
+                    "type": "EngineError",
+                    "code": "engine_error",
+                }
+            }
+        else:
+            payload = {
+                "error": {
+                    "message": sanitize_error_message(str(exc)),
+                    "type": "EngineError",
+                    "code": "engine_error",
+                }
+            }
+        return json.dumps(payload, separators=(",", ":"))
+
     def map_engine_error(self, exc: Exception, context: DispatchResponseContext) -> Response | HTTPException:
+        """Return the engine-native error representation.
+
+        The base adapter is shared by non-vLLM engines.  Keep the historical
+        FastAPI semantics here; vLLM overrides this to return its OpenAI error
+        envelope.
+        """
         if isinstance(exc, HTTPException):
             return exc
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "error": {
-                    "message": str(exc),
-                    "type": exc.__class__.__name__,
+                    "message": sanitize_error_message(str(exc)),
+                    "type": "EngineError",
                     "code": "engine_error",
                 }
             },

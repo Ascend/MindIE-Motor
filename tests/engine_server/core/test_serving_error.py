@@ -22,6 +22,12 @@ class BadRequestError(Exception):
     pass
 
 
+class VLLMValidationError(ValueError):
+    def __init__(self, message: str, *, parameter: str | None = None) -> None:
+        super().__init__(message)
+        self.parameter = parameter
+
+
 class _StatusError(Exception):
     def __init__(self, status_code, detail, headers=None):
         super().__init__(str(detail))
@@ -181,6 +187,10 @@ def test_map_serving_exception_preserves_http_error_status_matrix(status_code):
         BadRequestError("invalid sampling parameter"),
         ValueError("This model's maximum context length is 2048 tokens. However, you requested 2049 tokens."),
         ValueError("The sequence length is longer than the configured model limit"),
+        VLLMValidationError(
+            "max_tokens=6008003 cannot be greater than max_model_len=max_total_tokens=256.",
+            parameter="max_tokens",
+        ),
     ],
 )
 def test_map_serving_exception_maps_known_client_errors_to_400(error):

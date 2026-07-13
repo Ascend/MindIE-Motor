@@ -30,8 +30,8 @@ from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionReque
 
 from motor.engine_server.core.vllm.vllm_openai_compat import (
     RequestLogger,
+    call_openai_serving,
     kwargs_matching_signature,
-    openai_http_response_from_generator,
 )
 
 
@@ -85,5 +85,8 @@ class OpenAIServingChat:
         )
 
     async def handle_request(self, request: ChatCompletionRequest, raw_request: Request):
-        generator = await self._vllm_serving_chat.create_chat_completion(request, raw_request)
-        return openai_http_response_from_generator(generator, ChatCompletionResponse)
+        return await call_openai_serving(
+            self._vllm_serving_chat,
+            lambda: self._vllm_serving_chat.create_chat_completion(request, raw_request),
+            ChatCompletionResponse,
+        )

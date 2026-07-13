@@ -1,3 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -13,11 +23,11 @@ from motor.engine_server.core.infer_endpoint import InferEndpoint
 
 
 class _Config:
-    def __init__(self, role="decode"):
+    def __init__(self, role="decode", engine_type="vllm"):
         self._endpoint_config = SimpleNamespace(
             host="127.0.0.1",
             port=0,
-            engine_type="vllm",
+            engine_type=engine_type,
             role=role,
             deploy_config=SimpleNamespace(infer_tls_config=None),
         )
@@ -46,6 +56,14 @@ class _Endpoint(InferEndpoint):
     def init_request_handlers(self) -> None:
         self.chat_completion_request = _RequestModel
         self.completion_request = _RequestModel
+
+
+def test_infer_endpoint_registers_vllm_handlers_only_for_vllm():
+    vllm_endpoint = _Endpoint(_Config(engine_type="vllm"))
+    sglang_endpoint = _Endpoint(_Config(engine_type="sglang"))
+
+    assert HTTPException in vllm_endpoint.app.exception_handlers
+    assert HTTPException not in sglang_endpoint.app.exception_handlers
 
 
 class _Serving:
@@ -265,7 +283,42 @@ def test_infer_endpoint_plain_unknown_error_returns_structured_500():
     )
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "engine boom"}
+    payload = response.json()
+    assert payload["error"]["message"] == "engine boom"
+    assert payload["error"]["code"] == 500
+    assert payload["error"]["type"] == "InternalServerError"
+
+
+def test_infer_endpoint_plain_http_exception_preserves_status_headers():
+    endpoint = _Endpoint(_Config(role="decode"))
+    endpoint.app.state.openai_serving_completion = _RaisingHTTPServing()
+
+    response = TestClient(endpoint.app).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hello"},
+    )
+
+    assert response.status_code == 429
+    payload = response.json()
+    assert payload["error"]["message"] == "engine rate limited"
+    assert payload["error"]["code"] == 429
+    assert payload["error"]["type"] == "Too Many Requests"
+    assert response.headers["retry-after"] == "3"
+
+
+def test_infer_endpoint_plain_context_length_error_returns_400():
+    endpoint = _Endpoint(_Config(role="decode"))
+    endpoint.app.state.openai_serving_completion = _RaisingContextLengthServing()
+
+    response = TestClient(endpoint.app).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hello"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert "maximum context length" in payload["error"]["message"]
+    assert payload["error"]["code"] == 400
 
 
 def test_infer_endpoint_normalizes_dispatch_stream_response():
@@ -310,7 +363,8 @@ def test_infer_endpoint_dispatch_engine_error_stops_peer(monkeypatch):
     assert response.status_code == 500
     payload = _response_json(response)
     assert payload["error"]["message"] == "engine boom"
-    assert payload["error"]["code"] == "engine_error"
+    assert payload["error"]["code"] == 500
+    assert payload["error"]["type"] == "InternalServerError"
     assert calls[0]["ip"] == "127.0.0.1"
     assert calls[0]["port"] == "8000"
     assert calls[1]["path"] == "/v1/dispatch/stop"
@@ -352,7 +406,10 @@ def test_infer_endpoint_dispatch_http_exception_preserves_status_headers(monkeyp
     )
 
     assert response.status_code == 429
-    assert response.json() == {"detail": "engine rate limited"}
+    payload = response.json()
+    assert payload["error"]["message"] == "engine rate limited"
+    assert payload["error"]["code"] == 429
+    assert payload["error"]["type"] == "Too Many Requests"
     assert response.headers["retry-after"] == "3"
     assert calls[1]["path"] == "/v1/dispatch/stop"
 
@@ -368,7 +425,9 @@ def test_infer_endpoint_dispatch_context_length_error_returns_400(monkeypatch):
     )
 
     assert response.status_code == 400
-    assert "maximum context length" in response.json()["detail"]
+    payload = response.json()
+    assert "maximum context length" in payload["error"]["message"]
+    assert payload["error"]["code"] == 400
     assert calls[1]["path"] == "/v1/dispatch/stop"
 
 
@@ -387,7 +446,8 @@ def test_infer_endpoint_peer_stop_failure_preserves_engine_error(monkeypatch):
     assert response.status_code == 500
     payload = _response_json(response)
     assert payload["error"]["message"] == "engine boom"
-    assert payload["error"]["code"] == "engine_error"
+    assert payload["error"]["code"] == 500
+    assert payload["error"]["type"] == "InternalServerError"
     assert calls[1]["path"] == "/v1/dispatch/stop"
 
 
@@ -460,3 +520,118 @@ def test_infer_endpoint_metaserver_engine_error_stops_decode_peer(monkeypatch):
     assert calls[0]["port"] == "8000"
     assert calls[1]["path"] == "/v1/dispatch/stop"
     assert calls[1]["json"]["reason"] == "peer_failed"
+
+
+def test_infer_endpoint_stream_peer_stop_emits_sse_error_and_done(monkeypatch):
+    _install_peer_stop_client(monkeypatch)
+    checks = {"n": 0}
+
+    async def _is_stopped(dispatch):
+        # One pre-stream check in `_call_openai_serving`, then one check per chunk.
+        # After peer stop is observed, later checks stay true so `_handle_dispatch_failure`
+        # does not attempt another peer stop.
+        checks["n"] += 1
+        return checks["n"] > 2
+
+    async def _chunks():
+        yield b'data: {"choices":[{"text":"A"}]}\n\n'
+        yield b'data: {"choices":[{"text":"B"}]}\n\n'
+
+    endpoint = _Endpoint(_Config(role="decode"))
+    monkeypatch.setattr(endpoint.dispatch_adapter, "is_dispatch_stopped", _is_stopped)
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+    )
+
+    chunks = []
+
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_collect())
+    payload = b"".join(chunks).decode("utf-8")
+    assert '"text":"A"' in payload or '"text": "A"' in payload
+    assert "ClientClosedRequest" in payload
+    assert "Dispatch stopped by peer." in payload
+    assert payload.rstrip().endswith("data: [DONE]")
+
+
+def test_infer_endpoint_stream_runtime_error_emits_sse_error_and_done(monkeypatch):
+    _install_peer_stop_client(monkeypatch)
+
+    async def _chunks():
+        yield b'data: {"choices":[{"text":"A"}]}\n\n'
+        raise RuntimeError("stream boom")
+
+    endpoint = _Endpoint(_Config(role="decode"))
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+    )
+
+    chunks = []
+
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_collect())
+    payload = b"".join(chunks).decode("utf-8")
+    assert "stream boom" in payload
+    assert "InternalServerError" in payload
+    assert payload.rstrip().endswith("data: [DONE]")
+
+
+def test_infer_endpoint_stream_ignores_error_after_done(monkeypatch):
+    _install_peer_stop_client(monkeypatch)
+
+    async def _chunks():
+        yield b'data: {"choices":[{"text":"A"}]}\n\n'
+        yield b"data: [DONE]\n\n"
+        raise RuntimeError("late stream boom")
+
+    endpoint = _Endpoint(_Config(role="decode"))
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+    )
+
+    chunks = []
+
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_collect())
+    payload = b"".join(chunks).decode("utf-8")
+    assert '"text":"A"' in payload or '"text": "A"' in payload
+    assert "data: [DONE]" in payload
+    assert "late stream boom" not in payload
+    assert "InternalServerError" not in payload
+
+
+def test_sglang_map_stream_error_uses_engine_error_envelope():
+    endpoint = _Endpoint(_Config(role="decode", engine_type="sglang"))
+    payload = json.loads(endpoint.dispatch_adapter.map_stream_error(RuntimeError("sglang boom"), MagicMock()))
+    assert payload["error"]["message"] == "sglang boom"
+    assert payload["error"]["type"] == "EngineError"
+    assert payload["error"]["code"] == "engine_error"
+
+
+def test_chunk_contains_done_requires_exact_sse_line():
+    assert InferEndpoint._chunk_contains_done(b"data: [DONE]\n")
+    assert not InferEndpoint._chunk_contains_done(b'data: {"text":"data: [DONE] marker"}\n')

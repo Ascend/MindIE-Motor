@@ -55,6 +55,27 @@ class VLLMDispatchAdapter(DispatchAdapter):
         super().__init__(config)
         self._dispatch_profile = self._infer_dispatch_profile(config)
 
+    def map_engine_error(self, exc: Exception, context: DispatchResponseContext) -> Response:
+        from motor.engine_server.core.vllm.vllm_openai_compat import openai_http_response_from_exception
+
+        return openai_http_response_from_exception(exc)
+
+    def register_error_handlers(self, app: Any) -> None:
+        from motor.engine_server.core.vllm.vllm_openai_compat import register_vllm_openai_error_handlers
+
+        register_vllm_openai_error_handlers(app)
+
+    def map_serving_exception(self, exc: Exception, *, has_dispatch: bool) -> Exception:
+        # vLLM's native create_error_response() must see the original
+        # exception.  Pre-converting it to HTTPException changes both type and
+        # message semantics compared with standalone vLLM.
+        return exc
+
+    def map_stream_error(self, exc: Exception, context: DispatchResponseContext) -> str | None:
+        from motor.engine_server.core.vllm.vllm_openai_compat import vllm_stream_error_json
+
+        return vllm_stream_error_json(exc)
+
     async def _adapt_engine_body(self, body: dict[str, Any], dispatch: MotorDispatch) -> dict[str, Any]:
         body["request_id"] = dispatch.engine_request_id
         if dispatch.role == "decode":

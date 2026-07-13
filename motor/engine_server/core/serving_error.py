@@ -28,15 +28,18 @@ _CLIENT_ERROR_EXCEPTION_NAMES = frozenset(
         "InputTooLongError",
         "InvalidRequestError",
         "RequestValidationError",
+        "VLLMValidationError",
     }
 )
 _CONTEXT_LENGTH_ERROR_MARKERS = (
     "maximum context length",
     "maximum model length",
     "max model length",
+    "max_model_len",
     "prompt is too long",
     "input is too long",
     "too many tokens",
+    "cannot be greater than max_model_len",
 )
 _FORWARDED_EXCEPTION_HEADERS = frozenset(
     {

@@ -28,7 +28,6 @@ from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
 from motor.common.utils.net import format_address
 from motor.engine_server.core.endpoint import Endpoint
-from motor.engine_server.core.serving_error import map_serving_exception
 from motor.engine_server.utils.cancellation import with_cancellation
 
 logger = get_logger(__name__)
@@ -47,7 +46,8 @@ class InferEndpoint(Endpoint):
         self.infer_tls_config = config.get_endpoint_config().deploy_config.infer_tls_config
 
         self.app = FastAPI(title="EngineServer InferEndpoint", lifespan=self.get_lifespan())
-
+        self.dispatch_adapter = create_dispatch_adapter(config)
+        self.dispatch_adapter.register_error_handlers(self.app)
         self.app.extra[CONFIG_KEY] = self.config
 
         self._stop_event = multiprocessing.Event()
@@ -56,8 +56,6 @@ class InferEndpoint(Endpoint):
             target=self._run_server, name="infer_endpoint_process", daemon=False
         )
         self._run_http_in_process = True
-        self.engine_type = config.get_endpoint_config().engine_type
-        self.dispatch_adapter = create_dispatch_adapter(config)
         self.init_request_handlers()
         self._register_routes()
 
@@ -156,21 +154,10 @@ class InferEndpoint(Endpoint):
                 await self._handle_dispatch_failure(context)
                 return await self._normalize_openai_response(response, context) if normalize else response
         except Exception as e:
-            mapped_error = map_serving_exception(
-                e,
-                map_unknown_to_http_500=context.dispatch is None,
-            )
-            if (mapped_error is e and not isinstance(e, HTTPException)) or (
-                isinstance(mapped_error, HTTPException) and mapped_error.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
-            ):
-                logger.exception(
-                    "Engine serving request failed api=%s error_type=%s",
-                    context.api,
-                    type(e).__name__,
-                )
-            if context.dispatch is None:
-                raise mapped_error from e
-            await self._handle_dispatch_failure(context)
+            mapped_error = self.dispatch_adapter.map_serving_exception(e, has_dispatch=context.dispatch is not None)
+            self._log_serving_exception(e, context)
+            if context.dispatch is not None:
+                await self._handle_dispatch_failure(context)
             mapped = self.dispatch_adapter.map_engine_error(mapped_error, context)
             if isinstance(mapped, HTTPException):
                 raise mapped from e
@@ -179,6 +166,57 @@ class InferEndpoint(Endpoint):
         if not isinstance(normalized, StreamingResponse):
             await self.dispatch_adapter.finish_dispatch(context.dispatch)
         return normalized
+
+    def _log_serving_exception(self, exc: Exception, context: DispatchResponseContext) -> None:
+        """Log serving failures once at the endpoint boundary."""
+        dispatch = context.dispatch
+        log_kwargs = {
+            "api": context.api,
+            "engine_type": self.dispatch_adapter.engine_type,
+            "error_type": type(exc).__name__,
+            "root_request_id": getattr(dispatch, "root_request_id", None),
+            "engine_request_id": getattr(dispatch, "engine_request_id", None),
+            "attempt_seq": getattr(dispatch, "attempt_seq", None),
+        }
+        if self._is_client_facing_serving_error(exc):
+            logger.warning(
+                "Engine serving request rejected api=%(api)s engine_type=%(engine_type)s "
+                "error_type=%(error_type)s root_request_id=%(root_request_id)s "
+                "engine_request_id=%(engine_request_id)s attempt_seq=%(attempt_seq)s",
+                log_kwargs,
+            )
+            return
+        logger.exception(
+            "Engine serving request failed api=%(api)s engine_type=%(engine_type)s "
+            "error_type=%(error_type)s root_request_id=%(root_request_id)s "
+            "engine_request_id=%(engine_request_id)s attempt_seq=%(attempt_seq)s",
+            log_kwargs,
+        )
+
+    @staticmethod
+    def _is_client_facing_serving_error(exc: Exception) -> bool:
+        if isinstance(exc, HTTPException):
+            return exc.status_code < HTTPStatus.INTERNAL_SERVER_ERROR
+        if isinstance(exc, ValueError | TypeError | OverflowError):
+            return True
+        name = type(exc).__name__
+        if name in {"VLLMValidationError", "VLLMUnprocessableEntityError", "VLLMNotFoundError"}:
+            return True
+        if name == "GenerationError":
+            code = getattr(exc, "status_code", HTTPStatus.INTERNAL_SERVER_ERROR)
+            try:
+                return int(code) < HTTPStatus.INTERNAL_SERVER_ERROR
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    @staticmethod
+    def _chunk_contains_done(chunk: bytes | str) -> bool:
+        text = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else chunk
+        for line in text.splitlines():
+            if line.strip() == "data: [DONE]":
+                return True
+        return False
 
     async def _normalize_openai_response(
         self,
@@ -197,6 +235,8 @@ class InferEndpoint(Endpoint):
         context: DispatchResponseContext,
     ) -> StreamingResponse:
         async def _normalized_body():
+            stream_done = False
+            dispatch_finished = False
             try:
                 state: dict[str, Any] = {}
                 async for chunk in response.body_iterator:
@@ -207,12 +247,26 @@ class InferEndpoint(Endpoint):
                         )
                     normalized = await self.dispatch_adapter.normalize_stream_chunk(chunk, context, state)
                     if normalized:
+                        if self._chunk_contains_done(normalized):
+                            stream_done = True
                         yield normalized
-            except Exception:
+            except Exception as exc:
                 await self._handle_dispatch_failure(context)
-                raise
+                dispatch_finished = True
+                self._log_serving_exception(exc, context)
+                # Once [DONE] has been forwarded, the SSE stream is closed for
+                # clients. Emitting another error event would be an invalid
+                # post-termination frame.
+                if stream_done:
+                    return
+                stream_error = self.dispatch_adapter.map_stream_error(exc, context)
+                if stream_error is None:
+                    raise
+                yield f"data: {stream_error}\n\n"
+                yield "data: [DONE]\n\n"
             finally:
-                await self.dispatch_adapter.finish_dispatch(context.dispatch)
+                if not dispatch_finished:
+                    await self.dispatch_adapter.finish_dispatch(context.dispatch)
 
         headers = {
             key: value
