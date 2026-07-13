@@ -228,6 +228,20 @@ def _configure_kv_store_role(infer_doc, user_config):
     role[C.REPLICAS] = 1
     workload_spec[C.REPLICAS] = 1
     _set_role_primary_service_port(role, kv_store_config[C.KV_CACHE_STORE_PORT])
+    # Sync memcache MetaService ports from config (port indices 1,2 in template)
+    backend = kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
+    if backend == C.MMC_STORE_BACKEND:
+        services = role.get(C.SERVICES, [])
+        if services:
+            ports = services[0].get(C.SPEC, {}).get(C.PORTS, [])
+            if len(ports) > 1:
+                config_store_port = kv_store_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
+                ports[1][C.PORT] = config_store_port
+                ports[1][C.TARGET_PORT] = config_store_port
+            if len(ports) > 2:
+                metrics_port = kv_store_config.get(C.MMC_METRICS_PORT_KEY, C.DEFAULT_MMC_METRICS_PORT)
+                ports[2][C.PORT] = metrics_port
+                ports[2][C.TARGET_PORT] = metrics_port
     if not containers:
         return
     container = containers[0]

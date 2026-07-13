@@ -107,6 +107,7 @@ def build_engine_env_items(role, deploy_config, job_name, include_kv_store=False
     ]
     if include_kv_store and k8s_utils.g_kv_store_enabled:
         env_items.append({C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service})
+        env_items.append({C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: k8s_utils.g_kv_store_backend})
         env_items.append({C.NAME: C.ENV_KV_CACHE_STORE_PORT, C.VALUE: str(k8s_utils.g_kv_cache_store_port)})
         env_items.append(
             {
@@ -119,6 +120,8 @@ def build_engine_env_items(role, deploy_config, job_name, include_kv_store=False
         )
         if k8s_utils.g_mmc_local_service_mode:
             env_items.append({C.NAME: C.ENV_MMC_LOCAL_SERVICE_MODE, C.VALUE: k8s_utils.g_mmc_local_service_mode})
+        if k8s_utils.g_mmc_dram_size:
+            env_items.append({C.NAME: C.ENV_MMC_DRAM_SIZE, C.VALUE: k8s_utils.g_mmc_dram_size})
     if k8s_utils.g_mf_store_enabled:
         ascend_mf_store_url = f"tcp://{k8s_utils.g_mf_store_service}:{C.DEFAULT_MF_STORE_PORT}"
         hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)

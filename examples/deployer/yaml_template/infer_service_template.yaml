@@ -820,13 +820,13 @@ spec:
             protocol: TCP
             targetPort: 50088
           - name: config-store
-            port: 56001
+            port: 50089
             protocol: TCP
-            targetPort: 56001
+            targetPort: 50089
           - name: metrics
-            port: 9003
+            port: 50090
             protocol: TCP
-            targetPort: 9003
+            targetPort: 50090
           selector:
             app: mindie-motor-kv-store
           sessionAffinity: None
@@ -885,8 +885,10 @@ spec:
                 mountPath: /mnt
               - name: coredump
                 mountPath: /var/coredump
-              - name: driver-version
-                mountPath: /usr/local/Ascend/driver/version.info
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+              - name: driver
+                mountPath: /driver
               - name: varlog
                 mountPath: /var/log
             volumes:
@@ -901,10 +903,12 @@ spec:
               hostPath:
                 path: /var/coredump
                 type: DirectoryOrCreate
-            - name: driver-version
+            - name: ascend-driver
               hostPath:
-                path: /usr/local/Ascend/driver/version.info
-                type: File
+                path: /usr/local/Ascend/driver
+            - name: driver
+              hostPath:
+                path: /driver
             - name: varlog
               hostPath:
                 path: /var/log

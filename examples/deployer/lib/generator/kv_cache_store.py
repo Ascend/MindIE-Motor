@@ -27,8 +27,10 @@ def normalize_kv_cache_store_config(user_config):
 
     # Store for use by engine generator
     k8s_utils.g_kv_cache_store_port = kv_config[C.KV_CACHE_STORE_PORT]
+    k8s_utils.g_kv_store_backend = kv_config[C.KV_STORE_BACKEND]
     k8s_utils.g_mmc_config_store_port = kv_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
     k8s_utils.g_mmc_local_service_mode = kv_config.get(C.MMC_LOCAL_SERVICE_CONFIG_KEY, "")
+    k8s_utils.g_mmc_dram_size = kv_config.get(C.MMC_DRAM_SIZE_CONFIG_KEY, "")
 
     return kv_config
 
@@ -104,6 +106,18 @@ def generate_yaml_kv_store(input_yaml, output_file, user_config, kv_store_config
         )
     ports[0][C.PORT] = service_port
     ports[0][C.TARGET_PORT] = service_port
+
+    # Sync memcache MetaService ports from config (indices 1,2 in template)
+    backend = kv_store_config.get(C.KV_STORE_BACKEND, C.DEFAULT_KV_STORE_BACKEND)
+    if backend == C.MMC_STORE_BACKEND:
+        if len(ports) > 1:
+            config_store_port = kv_store_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
+            ports[1][C.PORT] = config_store_port
+            ports[1][C.TARGET_PORT] = config_store_port
+        if len(ports) > 2:
+            metrics_port = kv_store_config.get(C.MMC_METRICS_PORT_KEY, C.DEFAULT_MMC_METRICS_PORT)
+            ports[2][C.PORT] = metrics_port
+            ports[2][C.TARGET_PORT] = metrics_port
 
     write_yaml(data, output_file, False)
     k8s_utils.g_generate_yaml_list.append(output_file)

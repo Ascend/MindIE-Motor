@@ -24,8 +24,10 @@ g_kv_conductor_service = "kv-conductor"
 g_kv_store_enabled = False
 g_kv_conductor_enabled = False
 g_kv_cache_store_port = C.DEFAULT_KV_CACHE_STORE_PORT
+g_kv_store_backend = C.DEFAULT_KV_STORE_BACKEND
 g_mmc_config_store_port = C.DEFAULT_MMC_CONFIG_STORE_PORT
 g_mmc_local_service_mode = ""  # 空 → 由 common.sh 按硬件默认
+g_mmc_dram_size = ""  # 空 → daemon 使用默认 10GB
 g_engine_base_name = "mindie-server"
 g_generate_yaml_list = []
 g_user_config_path = None
@@ -436,7 +438,6 @@ def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mod
             f"--from-file=kv_store_backends.memcache.memcache.sh=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/memcache.sh",
             f"--from-file=kv_store_backends.memcache.memcache_meta_service.py=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/memcache_meta_service.py",
             f"--from-file=kv_store_backends.memcache.mmc-local.conf=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/mmc-local.conf",
-            f"--from-file=kv_store_backends.memcache.mmc-local-a2.conf=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/mmc-local-a2.conf",
             f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_conductor.sh",
             f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/mf_store.sh",
             f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/all_combine_in_single_container.sh",

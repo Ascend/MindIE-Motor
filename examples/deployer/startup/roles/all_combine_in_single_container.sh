@@ -19,6 +19,7 @@ setup_jemalloc
 export CONTROLLER_SERVICE="$POD_IP"
 export COORDINATOR_SERVICE="$POD_IP"
 
+# only A2 and A3 need it, A5 does not need it.
 gen_ranktable_config
 
 set_cann_env
@@ -47,15 +48,22 @@ python3 -m ccae_reporter.run Controller &
 ROLE=controller python3 -m motor.controller.main --config $USER_CONFIG_PATH &
 pids+=($!)
 
-gen_kv_store_config
-
-if [ -n "$KVS_MASTER_SERVICE" ]; then
-    set_kv_store_env
-    ROLE=kv_store mooncake_master --port "$KV_CACHE_STORE_PORT" \
-    --eviction_high_watermark_ratio "$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO" \
-    --eviction_ratio "$KV_STORE_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" &
-    pids+=($!)
-fi
+case "${KV_STORE_BACKEND:-}" in
+    mooncake)
+        gen_kv_store_config
+        set_kv_store_env
+        ROLE=kv_store mooncake_master --port "$KV_CACHE_STORE_PORT" \
+            --eviction_high_watermark_ratio "$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO" \
+            --eviction_ratio "$KV_STORE_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" &
+        pids+=($!)
+        ;;
+    memcache)
+        sync_mmc_local_config
+        set_kv_store_env
+        ROLE=kv_store python3 "$CONFIGMAP_PATH/kv_store_backends.memcache.memcache_meta_service.py" &
+        pids+=($!)
+        ;;
+esac
 
 p_instances_num=$(grep '"p_instances_num"' $USER_CONFIG_PATH | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
 d_instances_num=$(grep '"d_instances_num"' $USER_CONFIG_PATH | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')

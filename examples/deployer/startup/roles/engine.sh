@@ -16,8 +16,14 @@ fi
 
 setup_jemalloc
 
+# only A2 and A3 need it, A5 does not need it.
 gen_ranktable_config
-gen_kv_store_config
+
+# set up kv store backend
+case "${KV_STORE_BACKEND:-}" in
+    mooncake) gen_kv_store_config ;;
+    memcache) sync_mmc_local_config ;;
+esac
 
 set_cann_env
 
@@ -27,6 +33,7 @@ fi
 
 apply_shuffle_safetensors_patch
 
+# for SGLang
 set_mf_store_env
 
 # CRD scenario: refresh JOB_NAME with INFER_SERVICE_INDEX and INSTANCE_INDEX injected by CRD

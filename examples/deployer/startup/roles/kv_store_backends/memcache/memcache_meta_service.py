@@ -22,8 +22,8 @@ def main():
     pod_ip = os.environ.get("POD_IP", "127.0.0.1")
 
     # Always use Pod IP; only extract port from env vars if set
-    config_store_port = _extract_port(os.environ.get("MMC_CONFIG_STORE_URL", ""), 56001)
-    metrics_port = _extract_port(os.environ.get("MMC_METRICS_URL", ""), 58001)
+    config_store_port = _extract_port(os.environ.get("MMC_CONFIG_STORE_URL", ""), 50089)
+    metrics_port = _extract_port(os.environ.get("MMC_METRICS_URL", ""), 50090)
 
     config = MetaConfig()
     config.meta_service_url = f"tcp://{pod_ip}:{os.environ.get('KV_CACHE_STORE_PORT', '12345')}"

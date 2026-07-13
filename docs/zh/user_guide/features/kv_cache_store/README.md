@@ -157,9 +157,10 @@ pyMotor开启KV池化能力只需修改`user_config.json`配置文件，其余�
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `config_store_port` | int（可选） | `56001` | MemCache MetaService 配置存储端口 |
-| `metrics_port` | int（可选） | `58001` | MemCache MetaService 监控上报端口 |
+| `config_store_port` | int（可选） | `50089` | MemCache MetaService 配置存储端口 |
+| `metrics_port` | int（可选） | `50090` | MemCache MetaService 监控上报端口 |
 | `local_service_mode` | string（可选） | A2：`inprocess`，A3/A5：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
+| `dram_size` | string（可选） | `"10GB"` | **每个节点**贡献给 KV 池化的 DRAM 总内存大小。`inprocess` 模式下 daemon 会自动除以本节点 DP 数得到单进程 `dram.size`；`standalone` 模式下独立 LS 直接使用该值。格式如 `"100GB"`。默认 10GB，后续版本将通过 `memcache_hybrid.mem_scan()` 自动扫描 |
 
 > 使用 MemCache 后端时，deploy.py 会自动启动 MemCache MetaService（对标 Mooncake 的 `mooncake_master`），无需手动干预。
 
