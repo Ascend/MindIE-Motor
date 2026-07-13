@@ -2,59 +2,56 @@
 
 ## 功能介绍
 
-在本仓库中，**Engine Server** 指可执行入口 **`engine_server`**（`setup.py` 中 entry point：`engine_server = motor.engine_server.cli.main:main`），对应实现为 `motor/engine_server/cli/main.py`。
+在本仓库中，**Engine Server** 指可执行入口 **`engine_server`**（`setup.py` 中 entry point：`engine_server = motor.engine_server.cli.main:main`），实现该功能的脚本路径为 `motor/engine_server/cli/main.py`。
 
-主要职责：
+主要功能如下：
 
-1. **解析端点配置**：`EndpointConfig.init_endpoint_config()`，经 `ConfigFactory` 得到具体引擎配置（`motor/engine_server/factory/config_factory.py` 中按 `vllm` / `sglang` 等类型选择配置类）。
-2. **管理面 HTTP（MgmtEndpoint）**：`motor/engine_server/core/mgmt_endpoint.py` 内在 `mgmt_port` 上启动 uvicorn，挂载 Prometheus 相关路由及 **`GET /status`**（路径常量 `STATUS_INTERFACE`，值为 `/status`）。状态字段键为 `STATUS_KEY` 对应常量（与同文件 `NORMAL_STATUS` / `ABNORMAL_STATUS` / `INIT_STATUS` 等配合使用）。可选 **TLS**（`mgmt_tls_config.enable_tls`）。
-3. **推理面（InferEndpoint）**：由 `EndpointFactory.get_infer_endpoint(config)` 按引擎类型构造（如 `VLLMEndpoint`、`SGLangEndpoint`，见 `motor/engine_server/factory/endpoint_factory.py`），与 `MgmtEndpoint` 并行 `run()`，主线程在 `infer_endpoint.wait()` 阻塞直至退出，再 `shutdown` 两端点。
+- **解析端点配置**：`EndpointConfig.init_endpoint_config()`，经 `ConfigFactory` 得到具体引擎配置（`motor/engine_server/factory/config_factory.py` 中按 `vllm` / `sglang` 等类型选择配置类）。
+- **管理面 HTTP（MgmtEndpoint）**：`motor/engine_server/core/mgmt_endpoint.py` 内在 `mgmt_port` 上启动 uvicorn，挂载 Prometheus 相关路由及 **`GET /status`**（路径常量 `STATUS_INTERFACE`，值为 `/status`）。状态字段键为 `STATUS_KEY` 对应常量（与同文件 `NORMAL_STATUS` / `ABNORMAL_STATUS` / `INIT_STATUS` 等配合使用）。可选 **TLS**（`mgmt_tls_config.enable_tls`）。
+- **推理面（InferEndpoint）**：由 `EndpointFactory.get_infer_endpoint(config)` 按引擎类型构造（如 `VLLMEndpoint`、`SGLangEndpoint`，见 `motor/engine_server/factory/endpoint_factory.py`），与 `MgmtEndpoint` 并行 `run()`，主线程在 `infer_endpoint.wait()` 阻塞直至退出，再 `shutdown` 两端点。
 
-Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参数在 `motor/node_manager/core/daemon.py` 的 `pull_engine` 中写死格式，包括 `--dp-rank`、`--instance-id`、`--role`、`--host`、`--port`、`--mgmt-port`、`--master-dp-ip`、`--config-path`（值为 `Env.user_config_path`）；单容器模式下还会追加 `--kv-port`、`--dp-rpc-port` 等（见同方法）。
+Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参数在 `motor/node_manager/core/daemon.py` 的 `pull_engine` 中，包括 `--dp-rank`、`--instance-id`、`--role`、`--host`、`--port`、`--mgmt-port`、`--master-dp-ip`、`--config-path`（值为 `Env.user_config_path`）；单容器模式下还会追加 `--kv-port`、`--dp-rpc-port` 等。
 
-## 与 Node Manager / Controller 的关系
+## 与周边组件的关系
 
-- **启动**：Controller 经组装实例后，由 Node Manager 的 `POST /node-manager/start` 触发 `Daemon.pull_engine`，从而 `subprocess.Popen` 执行 `engine_server ...`。
-- **健康检查**：`motor/node_manager/api_client/engine_server_api_client.py` 使用 `SafeHTTPSClient` 对 `{ip}:{mgmt_port}` 发起 **`GET /status`**，TLS 选项来自 `NodeManagerConfig.from_json().mgmt_tls_config`。
-- **停止**：`POST /node-manager/stop` 调用 `Daemon.stop`，对记录的 PID `SIGKILL`。
+Engine Server 同时处于**数据面**推理转发链路与**管控面**生命周期链路中：对外承接 Coordinator 转发的 OpenAI 请求；管控面上由 Node Manager 通过子进程拉起 Engine Server 并周期性探测其健康状态，再将结果经 heartbeat 上报 Controller。**Controller 与 Engine Server 之间无直接 HTTP 或进程调用**，启停均经 Node Manager 间接完成。
 
-### 虚推（虚拟推理）健康探测
+![Engine Server 与周边组件关系图](../../imgs/engine_server_component_relations.png)
 
-虚推用于在业务低负载时主动探测推理引擎是否可用，配置项位于 `user_config` 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 **`health_check_config`**，参数说明见 [配置参考第 6 节](../../user_guide/deployment/k8s/config_reference.md#motor_engine_prefill_configmotor_engine_decode_config)。
+PD 分离模式下，Coordinator 可能将 Prefill 与 Decode 分派至不同 role 的 Engine Server 实例；单节点 / Hybrid 模式则由同一实例完成推理全流程。
 
-**版本要求**：虚推仅支持 **HDK 26.0.RC1** 及以后版本。
+| 阶段     | 方向                          | 接口/机制                        | 说明                                       |
+| -------- | ----------------------------- | -------------------------------- | ------------------------------------------ |
+| 推理请求 | Coordinator → Engine Server  | infer 端口`/v1/*`              | Coordinator 路由选中实例后转发 OpenAI 请求 |
+| 节点注册 | Node Manager → Controller    | `POST /controller/register`    | Node Manager 启动后向 Controller 注册节点  |
+| 实例启动 | Controller → Node Manager    | `POST /node-manager/start`     | Controller 完成实例组装后下发启动命令      |
+| 引擎拉起 | Node Manager → Engine Server | `subprocess` `engine_server` | Node Manager 子进程拉起 engine_server      |
+| 健康探测 | Node Manager → Engine Server | mgmt 端口`GET /status`         | Node Manager 周期性轮询引擎 mgmt 健康状态  |
+| 状态上报 | Node Manager → Controller    | `POST /controller/heartbeat`   | 将各 endpoint 健康状态上报 Controller      |
+| 实例停止 | Controller → Node Manager    | `POST /node-manager/stop`      | Controller 下发停止指令（含故障恢复场景）  |
+| 引擎停止 | Node Manager → Engine Server | `Daemon.stop` SIGKILL          | Node Manager 对引擎子进程发送 SIGKILL      |
 
-**启用条件**（须同时满足）：
+Node Manager 经 `engine_server_api_client` 对 `{ip}:{mgmt_port}` 发起 **`GET /status`**（TLS 取自 `motor_nodemanger_config.mgmt_tls_config`）。mgmt `/status` 综合推理面 `/health` 与可选虚推结果；虚推由 `health_check_config.enable_virtual_inference` 控制，默认关闭，机制见 [虚推健康探测](../../user_guide/features/sim_inference.md)，字段见 [配置参考 health_check_config](../../user_guide/deployment/k8s/config_reference.md#health_check_config)。
 
-1. `health_check_config.enable_virtual_inference` 为 `true`
-2. `0 < health_check_config.npu_usage_threshold <= 100`
-3. 推理面 `GET /health` 返回正常（由 `HealthCollector` 探测，`health_collector_timeout` 控制超时）
+## 环境准备
 
-满足条件后，`mgmt_endpoint.py` 在首次 `/status` 请求时调用 `run_virtual_inference()` 启动虚推循环。
-
-**虚推请求**：向推理面 `POST /v1/completions`，请求体为 `prompt: "1"`、`max_tokens: 1`。Decode 角色额外携带 `kv_transfer_params.do_virtual: true` 及 PD 分离相关字段。
-
-**NPU 负载采样**：使用 `npu-smi info watch -s u` 采集 **AI Cube 利用率**（AI Cube Usage）。启动虚推前会通过 `npu-smi info watch -h` 检查 help 是否包含 `u - AI Cube Usage`；若当前 HDK 不支持该指标，Engine Server 会自动关闭虚推。
-
-**动态探测间隔**：
-
-| AI Cube 利用率峰值（约 3 秒采样窗口） | 下一轮间隔 |
-|--------------------------------------|------------|
-| ≥ 80% | 20 秒 |
-| < `npu_usage_threshold` | 5 秒（默认） |
-| `[npu_usage_threshold, 80%)` | 保持当前间隔不变 |
-
-**异常判定**：当 AI Cube 利用率峰值低于 `npu_usage_threshold` 且虚推请求失败时，累计连续失败次数；达到 `max_failure_count` 后，`GET /status` 返回 `abnormal`。Node Manager 的 `HeartbeatManager` 连续 5 次收到 abnormal 后触发自杀重调度。
-
-**vLLM 指标过滤（v0.18+）**：启用虚推时，Engine Server 会 patch vLLM `OutputProcessor._update_stats_from_finished`，在写入 per-request 指标前跳过 `external_req_id` 含 `_virtual` 后缀的虚推请求（对应虚推 `X-Request-Id: {timestamp}_virtual`）。仅过滤 `request_success_total` 等 per-request 指标；`prompt_tokens` / `generation_tokens` 等 iteration 级 counter 仍会累计。
+- `--config-path` 指向包含 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 `user_config.json`（与 Node Manager 挂载路径一致，见[配置文件说明](../../user_guide/deployment/k8s/config_reference.md)）。
+- Ascend NPU 驱动/HDK、模型权重路径等运行环境要求见 [环境准备](../../user_guide/environment_preparation.md)。
 
 ## 配置说明
 
-引擎与端点相关字段分布在 `user_config` 的引擎配置与 **`motor_nodemanger_config`** 等中；与 vLLM/SGLang 引擎子字段的对照见 [配置参考](../../user_guide/deployment/k8s/config_reference.md) 及其中 **`motor_engine_prefill_config` / `motor_engine_decode_config`** 等章节。TLS 等与 `EndpointConfig` 交叉的项以 `motor/config/endpoint.py` 及 `config_reference` 为准。
+- **引擎配置块**：`motor_engine_prefill_config` / `motor_engine_decode_config`（含可选 `health_check_config`）。
+- **节点侧交叉项**：`motor_nodemanger_config`（如 mgmt TLS，供 Node Manager 探测 Engine Server mgmt 端口）。
+- **字段权威说明**：[配置参考](../../user_guide/deployment/k8s/config_reference.md) 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 等章节。
+- **CLI 侧定义**：`motor/config/endpoint.py` 中 `EndpointConfig` 字段与校验逻辑。
 
 ## 使用样例（本地调试）
 
-与 Node Manager 下发命令一致，需满足 `EndpointConfig` 所需环境/参数，例如：
+与 Node Manager 下发命令一致，本地调试需准备：
+
+- **CLI 参数**：`--host`、`--role`、`--port`、`--mgmt-port`、`--instance-id`、`--dp-rank`、`--master-dp-ip`、`--config-path`；单容器模式可能还需 `--kv-port`、`--dp-rpc-port`。
+- **配置文件**：`--config-path` 指向的 `user_config.json` 须包含与 `--role` 对应的引擎配置块。
+- **运行环境**：NPU/Ascend 运行时与模型权重路径由 `user_config` 内 `engine_config` 指定，见 [环境准备](../../user_guide/environment_preparation.md)。
 
 ```bash
 engine_server --dp-rank 0 --instance-id 1 --role prefill \
@@ -62,7 +59,31 @@ engine_server --dp-rank 0 --instance-id 1 --role prefill \
   --master-dp-ip 127.0.0.1 --config-path /path/to/user_config.json
 ```
 
-实际端口与角色以调度结果为准；单机调试请参考测试与示例配置。
+下表说明示例命令中的 CLI 参数（完整定义与校验见 `motor/config/endpoint.py` 中 `EndpointConfig.parse_cli_args`；Node Manager 组装逻辑见 `motor/node_manager/core/daemon.py` 的 `pull_engine`）。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `--dp-rank` | int | 数据并行组内 endpoint 序号，默认 `0`。Node Manager 拉起时取 `endpoint.id`，并映射为 vLLM `data-parallel-rank`（见 [examples/deployer/README.md](../../../../examples/deployer/README.md)）。 |
+| `--instance-id` | int | 实例 ID，由 Controller 组装后随 `StartCmdMsg` 下发，默认 `0`。 |
+| `--role` | string | PD 分离角色：`prefill`、`decode` 或 `union`（混部）。 |
+| `--host` | string | 推理面与管理面监听地址（bind IP）。 |
+| `--port` | int | 推理业务端口，对外提供 `/v1/*`、`/health` 等 infer 接口。 |
+| `--mgmt-port` | int | 管理面端口，对外提供 `GET /status` 及 Prometheus 路由。 |
+| `--master-dp-ip` | string | DP master 节点 IP，用于分布式推理组网（对应 vLLM `data-parallel-address` 来源，见 [examples/deployer/README.md](../../../../examples/deployer/README.md)）。 |
+| `--config-path` | string | `user_config.json` 路径，须含与 `--role` 匹配的引擎配置块。 |
+
+单容器或跨节点等场景可能额外传入下表参数（本地最小示例可不填）：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `--node-rank` | int | 跨节点 PCP 节点序号，由 Controller 按注册顺序分配；传递规则见 [Node Manager 组件文档](./node_manager.md#跨节点-pcp-启动参数)。 |
+| `--kv-port` | int | 单容器模式下 KV 相关通信端口（`Daemon.pull_engine` 在 `single_container_flag` 时追加）。 |
+| `--dp-rpc-port` | int | 单容器模式下 DP RPC 端口（同上）。 |
+| `--lookup-rpc-port` | int | 可选 lookup RPC 端口（配置存在时追加）。 |
+| `--d2d-peer-ips` | string | D2D 权重传输对端 IP 列表，逗号分隔。 |
+| `--snapshot-metadata` | string | 容器快照元数据 JSON 路径，启用快照能力时传入。 |
+
+实际端口与角色以调度结果为准；单机调试可参考测试与示例配置。
 
 ## 报错与日志
 

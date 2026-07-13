@@ -586,7 +586,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类union E
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
-motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；可选配置dispatch_profile（PD协同语义）与health_check_config（虚推健康探测）。配置示例如下所示。
+motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；可选配置dispatch_profile（PD协同语义）与health_check_config（虚推健康探测，见 [虚推健康探测](../../features/sim_inference.md)）。配置示例如下所示。
 
 ```json
 "motor_engine_prefill_config": {
@@ -819,7 +819,7 @@ vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../../desi
 
 ### health_check_config
 
-虚推健康探测由Engine Server周期性向推理面发送轻量请求，结合NPU AI Cube利用率判断引擎是否健康。详细说明请参见[Engine Server 组件文档](../../../developer_guide/components/engine_server.md#虚推虚拟推理健康探测)。
+可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 子块，默认关闭。机制说明见 [虚推健康探测](../../features/sim_inference.md)；PD 部署配置示例见 [PD 分离服务部署](./pd_disaggregation_deployment.md#health_check_config-配置项虚推健康探测)。
 
 **表7** health_check_config字段参数说明
 

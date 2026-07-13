@@ -354,7 +354,7 @@ examples/
 | max_failure_count | int | `6` | 连续虚推失败次数上限，达到后 `/status` 返回 abnormal |
 | health_collector_timeout | int | `2` | 推理面 `/health` 探测超时（秒） |
 
-**启用虚推**：将 P/D 配置中的 `enable_virtual_inference` 设为 `true`。`npu_usage_threshold` 建议按业务负载调整（默认 3% 表示仅在 NPU 近乎空闲时判定虚推失败）；`max_failure_count` 控制触发 abnormal 的容忍度。机制细节见 [Engine Server 组件文档](../../../developer_guide/components/engine_server.md#虚推虚拟推理健康探测)。
+**启用虚推**：将 P/D 配置中的 `enable_virtual_inference` 设为 `true`。`npu_usage_threshold` 建议按业务负载调整（默认 3% 表示仅在 NPU 近乎空闲时判定虚推失败）；`max_failure_count` 控制触发 abnormal 的容忍度。机制细节见 [虚推健康探测](../../features/sim_inference.md)。
 
 #### engine_config 配置项（模型与并行策略）
 

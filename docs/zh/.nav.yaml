@@ -18,12 +18,13 @@ nav:
       - 特性指南:
           - EPD 分离: user_guide/features/EPD_disaggregation.md
           - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
-          - KV Pool: user_guide/features/kv_cache_store/README.md
+          - KV Pool: user_guide/features/KV_pool.md
           - 手动扩缩容: user_guide/features/manual_instance_scaling.md
           - 主备倒换: user_guide/features/standby.md
           - 链路追踪: user_guide/features/tracing.md
           - ScaleP2D 故障恢复: user_guide/features/scale_p2d.md
           - 容器快照: user_guide/features/container_snapshot.md
+          - 虚推健康探测: user_guide/features/sim_inference.md
       - 运维工具:
           - 日志配置: user_guide/operations/log_config_guide.md
           - 命令行转换工具: user_guide/operations/cli_to_engine_config_guide.md
