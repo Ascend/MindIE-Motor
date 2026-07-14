@@ -93,7 +93,6 @@ spec:
           volumeMounts:
           - name: data
             mountPath: /data
-            readOnly: true
           - name: motor-config
             mountPath: /mnt/configmap
           - name: queue-schedule
