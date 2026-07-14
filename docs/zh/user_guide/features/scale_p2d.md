@@ -69,7 +69,7 @@ ScaleP2D 恢复大致分为四步：
 }
 ```
 
-详见 [配置参考](../deployment/k8s/config_reference.md#26-fault_tolerance_config)。
+详见 [配置参考](../deployment/k8s/config_reference.md#fault_tolerance_config)。
 
 ### InferServiceSet YAML 配置（CRD 部署）
 
@@ -90,25 +90,35 @@ spec:
       # ...
 ```
 
-#### 2. 为 prefill / decode 角色配置 priority
+#### 2. 为 controller/coordinator/prefill / decode 角色配置 priority
 
-在 `prefill`、`decode` 两个 role 的 `spec` 同级增加 `priority` 字段（**仅开启优先级调度时生效**）：
+在 `controller`、`coordinator`、`prefill`、`decode` 四个 role 的 `spec` 同级增加 `priority` 字段（**仅开启优先级调度时生效**）：
 
 | 字段 | 类型 | 取值范围 | 说明 |
 |------|------|----------|------|
 | `priority` | int | 1–32 | 数值越小，调度优先级越高 |
 
-PD 分离场景下，建议 **prefill 的 `priority` 数值大于 decode**（即 decode 优先级更高、prefill 更易被抢占），与 ScaleP2D「优先释放 P 算力」的策略一致。示例：
+PD 分离场景下，建议 **prefill 的 `priority` 数值大于 controller，coordinator，decode**（即 prefill 优先级最低，更易被抢占），与 ScaleP2D「优先释放 P 算力」的策略一致。示例：
 
 ```yaml
+    - name: controller
+      replicas: 1
+      priority: 1
+      # ...
+
+    - name: coordinator
+      replicas: 1
+      priority: 1
+       # ...
+
     - name: prefill
       replicas: 4
-      priority: 2          # 优先级低于 decode
+      priority: 2          # 优先级最低
       # ...
 
     - name: decode
       replicas: 4
-      priority: 1          # 优先级高于 prefill
+      priority: 1
       # ...
 ```
 
@@ -129,8 +139,6 @@ PD 分离场景下，建议 **prefill 的 `priority` 数值大于 decode**（即
               app: mindie-server
               # ...
 ```
-
-> **说明：** 以上 YAML 改动仅作用于 `prefill`、`decode` 推理角色；`controller`、`coordinator` 等角色无需修改。
 
 ## 日志与排查
 

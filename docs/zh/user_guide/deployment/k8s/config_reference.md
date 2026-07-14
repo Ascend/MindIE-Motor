@@ -156,7 +156,7 @@ motor_controller_config字段配置样例如下所示：
 | **event_config字段** |-|-|
 | event_consumer_sleep_interval | float | 事件队列轮询间隔，即每次处理事件后的等待时间，单位：秒，默认值：1.0。 |
 | coordinator_heartbeat_interval | float | Controller 与 Coordinator 间心跳上报间隔，单位：秒，默认值：10.0。 |
-|**fault_tolerance_config字段**|-|-|
+|<a id="fault_tolerance_config"></a>**fault_tolerance_config字段**|-|-|
 | enable_fault_tolerance | bool | 是否启用故障自愈（高级 RAS），默认值：false。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
 | strategy_center_check_internal | int | 策略中心轮询间隔，单位：秒，默认值：1。 |
 | configmap_namespace |string|configmap命名空间，默认值："kube-system"。|
