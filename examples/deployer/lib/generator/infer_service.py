@@ -39,6 +39,7 @@ from lib.generator.engine import (
     apply_pd_heterogeneous_node_selector,
     apply_a5_workload,
     apply_a5_engine_pod_config,
+    apply_a5_dns_config,
 )
 from lib.generator.kv_cache_store import normalize_kv_cache_store_config, gen_kv_store_env
 from lib.generator.kv_conductor import normalize_kv_conductor_config
@@ -94,6 +95,7 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     uuid_spec = generate_unique_id()
     job_name = f"{job_id}-{role_name}-{uuid_spec}"
     set_container_env(container, build_engine_env_items(role_name, deploy_config, job_name))
+    apply_a5_dns_config(pod_spec, deploy_config)
     return container
 
 

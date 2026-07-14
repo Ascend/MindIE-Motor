@@ -58,7 +58,7 @@ MindIE各组件需要配套使用，请勿跨版本混用各组件。
 
 # 3.1.0更新说明
 
-在 MindIE 3.1.0 及以上版本，MindIE PyMotor代码仓将该名为MindIE Motor，后续版本发布将沿用该命名，软件定位与基于功能与原先保持一致。
+在 MindIE 3.1.0 及以上版本，MindIE PyMotor代码仓将改名为MindIE Motor，后续版本会沿用该命名，软件定位与基本功能与原先保持一致。
 
 ## 新增特性
 

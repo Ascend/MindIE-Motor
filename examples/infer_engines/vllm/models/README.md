@@ -1,6 +1,6 @@
 # MindIE Motor配置自动生成指导
 
-MindIE Motor的一键部署工具可以实现“将vllm-ascend社区的部署脚本转换为Motor部署配置”，以降低维护成本并保证与下游推理引擎配置一致。
+MindIE Motor的一键部署工具可以实现“将vllm-ascend社区的部署脚本转换为Motor部署配置”，以降低操作成本并保证与下游推理引擎配置一致。
 
 ---
 
@@ -40,6 +40,7 @@ examples/deployer/config_tool/
       1个P实例占用的NPU卡数 = single_p_instance_pod_num（占用几个pod，跨几机） × p_pod_npu_num （每个pod占用的NPU数）= data_parallel_size × tensor_parallel_size
 
 3. 生成的Motor配置仅支撑基础推理服务成功部署，**Motor特性调整（例如：主备倒换、KV 亲和性调度、服务限流）需要用户手动修改配置**。
+4. 当前不支持单容器PD分离和单容器PD混部的场景。
 
 ---
 
@@ -110,14 +111,18 @@ examples/deployer/config_tool/
     根据场景，执行以下命令直接生成Motor配置：
 
     ```bash
-    # PD分离、Atlas 800I A3 超节点服务器
-    python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
-    # PD混部、Atlas 800I A3 超节点服务器
-    python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A3
     # PD分离、Atlas 800I A2 推理服务器
     python3 deploy.py --mode general_config  --deploy-scenario separate --hardware-type A2
     # PD混部、Atlas 800I A2 推理服务器
     python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A2
+    # PD分离、Atlas 800I A3 超节点服务器
+    python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
+    # PD混部、Atlas 800I A3 超节点服务器
+    python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A3
+    # PD分离、Atlas 850 Server 推理服务器
+    python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A5
+    # PD分离、Atlas 850 Server 推理服务器
+    python3 deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A5
     ```
 
 5. 查看结果并微调。

@@ -58,14 +58,27 @@ def _append_a5_host_path_volumes(pod_spec, container):
             existing_mount_names.add(volume_name)
 
 
+def apply_a5_dns_config(pod_spec, deploy_config):
+    """Lower ndots so cluster FQDNs resolve directly without corporate search suffixes."""
+    hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
+    if hardware_type not in C.HARDWARE_TYPE_950I_A5:
+        return
+    pod_spec[C.DNS_CONFIG] = {C.DNS_OPTIONS: [{C.NAME: C.A5_DNS_NDOTS_OPTION, C.VALUE: C.A5_DNS_NDOTS_VALUE}]}
+    logger.info(
+        "Applied A5 dnsConfig %s=%s for hardware_type=%s",
+        C.A5_DNS_NDOTS_OPTION,
+        C.A5_DNS_NDOTS_VALUE,
+        hardware_type,
+    )
+
+
 def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
     """Apply A5-specific pod network and hostPath settings to engine pods."""
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_950I_A5:
         return
-    pod_spec[C.HOST_NETWORK] = True
-    pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
     _append_a5_host_path_volumes(pod_spec, container)
+    apply_a5_dns_config(pod_spec, deploy_config)
     logger.info("Applied A5 engine pod config for hardware_type=%s", hardware_type)
 
 

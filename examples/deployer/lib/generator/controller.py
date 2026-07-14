@@ -9,10 +9,9 @@
 # See the Mulan PSL v2 for more details.
 
 import lib.constant as C
-from lib.utils import (
-    generate_unique_id, load_yaml, write_yaml, logger, modify_log_mount
-)
+from lib.utils import generate_unique_id, load_yaml, write_yaml, logger, modify_log_mount
 from lib.generator import k8s_utils
+from lib.generator.engine import apply_a5_dns_config
 from lib.generator.k8s_utils import extract_resources, set_rbac_namespace, set_services_namespace
 
 
@@ -28,7 +27,7 @@ def modify_controller_replicas(data, user_config):
 def modify_controller_deployment(deployment_data, user_config):
     if not deployment_data:
         return
-    
+
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     namespace = deploy_config[C.CONFIG_JOB_ID]
     deployment_data[C.METADATA][C.NAMESPACE] = namespace
@@ -39,27 +38,24 @@ def modify_controller_deployment(deployment_data, user_config):
     if C.ENV not in container:
         container[C.ENV] = []
 
-    container[C.ENV].append({
-        C.NAME: C.ENV_ROLE,
-        C.VALUE: C.CONTROLLER
-    })
+    container[C.ENV].append({C.NAME: C.ENV_ROLE, C.VALUE: C.CONTROLLER})
 
     uuid_spec = generate_unique_id()
     job_name = f"{deploy_config[C.CONFIG_JOB_ID]}-{C.CONTROLLER}-{uuid_spec}"
     deployment_data[C.METADATA][C.LABELS]["job-name"] = job_name
-    container[C.ENV].append({
-        C.NAME: C.ENV_JOB_NAME,
-        C.VALUE: job_name
-    })
+    container[C.ENV].append({C.NAME: C.ENV_JOB_NAME, C.VALUE: job_name})
 
-    container[C.ENV].extend([
-        {C.NAME: C.ENV_CONTROLLER_SERVICE, C.VALUE: k8s_utils.g_controller_service},
-        {C.NAME: C.ENV_COORDINATOR_SERVICE, C.VALUE: k8s_utils.g_coordinator_service},
-        {C.NAME: C.ENV_COORDINATOR_INFER_SERVICE, C.VALUE: k8s_utils.g_coordinator_infer_service},
-        {C.NAME: C.ENV_COORDINATOR_OBS_SERVICE, C.VALUE: k8s_utils.g_coordinator_obs_service}
-    ])
+    container[C.ENV].extend(
+        [
+            {C.NAME: C.ENV_CONTROLLER_SERVICE, C.VALUE: k8s_utils.g_controller_service},
+            {C.NAME: C.ENV_COORDINATOR_SERVICE, C.VALUE: k8s_utils.g_coordinator_service},
+            {C.NAME: C.ENV_COORDINATOR_INFER_SERVICE, C.VALUE: k8s_utils.g_coordinator_infer_service},
+            {C.NAME: C.ENV_COORDINATOR_OBS_SERVICE, C.VALUE: k8s_utils.g_coordinator_obs_service},
+        ]
+    )
 
     modify_controller_replicas(deployment_data, user_config)
+    apply_a5_dns_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], deploy_config)
     modify_log_mount(deployment_data, user_config, "mindie-motor-controller")
 
 

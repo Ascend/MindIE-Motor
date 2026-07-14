@@ -8,6 +8,7 @@
 #     python vllm_to_motor.py --deploy-scenario hybrid --hardware-type A3
 #   PD 分离: 同目录放置 run_dp_template_prefill.sh / run_dp_template_decode.sh 后执行
 #     python vllm_to_motor.py --deploy-scenario separate --hardware-type A3
+#   硬件类型: A2 / A3 / A5（A5 按每节点 8 卡，输出 hardware_type=850-Atlas-8p-8）
 #   可选: --weight-path <路径>  --image-name <镜像>
 #   输出: output_config/user_config.json、output_config/env.json
 #
@@ -201,6 +202,13 @@ HARDWARE_PRESETS: dict[str, dict[str, Any]] = {
         "hardware_type": "800I_A3",
         "cards_per_node": 16,
         "image_name": "<请手动填写镜像名称，例如：mindie-motor-vllm:dev-26.1.0.B081-800I-A3-py311-Ubuntu24.04-lts-aarch64>",
+        "weight_mount_path": "/mnt/weight/",
+        "job_id": "mindie-motor",
+    },
+    "A5": {
+        "hardware_type": "850-Atlas-8p-8",
+        "cards_per_node": 8,
+        "image_name": "<请手动填写镜像名称>",
         "weight_mount_path": "/mnt/weight/",
         "job_id": "mindie-motor",
     },
@@ -467,15 +475,17 @@ def format_user_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_hardware_type(value: str) -> str:
-    """Normalize ``A2`` / ``800I-A2`` -> ``800I_A2``."""
+    """Normalize ``A2`` / ``800I-A2`` -> ``800I_A2``; ``A5`` -> internal ``A5`` preset."""
     text = value.strip().upper().replace("-", "_")
     if text in {"A2", "800I_A2", "910B"}:
         return "800I_A2"
     if text in {"A3", "800I_A3"}:
         return "800I_A3"
+    if text in {"A5", "850_ATLAS_8P_8"}:
+        return "A5"
     if text in HARDWARE_PRESETS:
         return text
-    raise ValueError(f"unsupported hardware type: {value!r}, use A2 or A3")
+    raise ValueError(f"unsupported hardware type: {value!r}, use A2, A3 or A5")
 
 
 def _get_kv_config(cli_args: dict[str, Any]) -> dict[str, Any] | None:
@@ -570,7 +580,7 @@ def remap_parallel_for_hardware(
     """Remap dp/tp while preserving world_size.
 
     Script tp is kept when already <= cards-per-node; only values above the
-    hardware cap (8 for A2, 16 for A3) are reduced and dp is increased accordingly.
+    hardware cap (8 for A2/A5, 16 for A3) are reduced and dp is increased accordingly.
     """
     cards = cards_per_node(hardware_type)
 
@@ -1027,6 +1037,28 @@ def _should_skip_key(cli_key: str, *, include_parallel: bool = False) -> bool:
     return False
 
 
+_KV_EXTRA_PARALLEL_KEYS = frozenset({"dp_size", "tp_size"})
+
+
+def _strip_parallel_from_kv_extra_config(extra: Any) -> dict[str, Any]:
+    """Drop prefill/decode dp_size/tp_size; keep other kv_connector_extra_config fields."""
+    if not isinstance(extra, dict):
+        return {}
+    stripped: dict[str, Any] = {}
+    for key, value in extra.items():
+        if key in ("prefill", "decode"):
+            if not isinstance(value, dict):
+                continue
+            role_extra = {
+                field: field_value for field, field_value in value.items() if field not in _KV_EXTRA_PARALLEL_KEYS
+            }
+            if role_extra:
+                stripped[key] = role_extra
+            continue
+        stripped[key] = value
+    return stripped
+
+
 def _convert_kv_transfer_config(raw_value: Any) -> dict[str, Any]:
     if isinstance(raw_value, str):
         kv_config = json.loads(raw_value)
@@ -1040,6 +1072,9 @@ def _convert_kv_transfer_config(raw_value: Any) -> dict[str, Any]:
         "kv_port": str(kv_config.get("kv_port", "")),
         "engine_id": str(kv_config.get("engine_id", "0")),
     }
+    extra = _strip_parallel_from_kv_extra_config(kv_config.get("kv_connector_extra_config"))
+    if extra:
+        motor_kv["kv_connector_extra_config"] = extra
     return {k: v for k, v in motor_kv.items() if v is not None}
 
 
@@ -1394,7 +1429,7 @@ def _print_optional_arg_reminders(
     )
     print(file=sys.stderr)
     cmd = (
-        f"python3 deploy.py --mode general_config --deploy-scenario {deploy_scenario} "
+        f"python3 vllm_to_motor.py --deploy-scenario {deploy_scenario} "
         f"--hardware-type {hardware_type} "
         f"--weight-path <权重路径> --image-name <镜像名称>"
     )
@@ -1405,10 +1440,11 @@ def _print_optional_arg_reminders(
     example_images = {
         "800I_A2": "mindie-motor-vllm:r0.17.0rc1-800I-A2-py311-lts-aarch64",
         "800I_A3": "mindie-motor-vllm:dev-26.1.0.B081-800I-A3-py311-Ubuntu24.04-lts-aarch64",
+        "A5": "mindie-motor-vllm:<请填写 A5 镜像名称>",
     }
     example_image = example_images.get(hw, example_images["800I_A3"])
     example_cmd = (
-        f"python3 deploy.py --mode general_config --deploy-scenario {deploy_scenario} "
+        f"python3 vllm_to_motor.py --deploy-scenario {deploy_scenario} "
         f"--hardware-type {hardware_type} "
         f"--weight-path {example_weight} "
         f"--image-name {example_image}"
@@ -1438,7 +1474,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--hardware-type",
         required=True,
-        help="硬件类型: A2 或 A3",
+        help="硬件类型: A2、A3 或 A5（A5 按每节点 8 卡，输出 hardware_type=850-Atlas-8p-8）",
     )
     parser.add_argument(
         "--weight-path",
