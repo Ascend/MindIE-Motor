@@ -498,6 +498,108 @@ def test_infer_endpoint_dispatch_stop_aborts_engine_client():
     assert engine_client.aborted == ["req#a1"]
 
 
+def test_infer_endpoint_dispatch_stop_during_stream_does_not_raise():
+    """
+    When dispatch is stopped during streaming, the _normalized_body generator
+    should emit SSE error + [DONE] and exit, instead of raising HTTPException(499).
+
+    The old behavior raised HTTPException(499) after the response headers had
+    already been sent, causing Starlette to throw:
+        RuntimeError: Caught handled exception, but response already started.
+
+    After the fix, the generator emits an SSE error event and [DONE] via
+    map_stream_error, then returns — no exception propagates to the ASGI layer.
+    """
+
+    async def _chunks():
+        yield b'data: {"choices":[{"text":"A","token_ids":[1]}]}\n\n'
+        yield b'data: {"choices":[{"text":"B","token_ids":[2]}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    stop_body = {
+        "root_request_id": "req",
+        "engine_request_id": "req#a1",
+        "attempt_seq": 1,
+        "pair_id": "pair",
+        "reason": "peer_failed",
+    }
+
+    endpoint = _Endpoint(_Config(role="decode"))
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+    )
+
+    # Scenario A: dispatch stopped before any chunk is yielded
+    # The generator should emit SSE error + [DONE] and stop.
+    asyncio.run(endpoint.dispatch_adapter.handle_stop(stop_body))
+
+    chunks = []
+
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_collect())
+    # SSE error + [DONE] are emitted, no exception raised
+    assert len(chunks) == 2
+    payload = b"".join(chunks).decode("utf-8")
+    assert "ClientClosedRequest" in payload
+    assert "Dispatch stopped by peer." in payload
+    assert payload.rstrip().endswith("data: [DONE]")
+
+
+def test_infer_endpoint_dispatch_stop_mid_stream_does_not_raise():
+    """
+    When dispatch is stopped mid-stream (after some chunks have been yielded),
+    the _normalized_body generator should emit SSE error + [DONE] on the next
+    chunk check and exit, without raising an exception that propagates to
+    the ASGI layer.
+    """
+
+    async def _test():
+        async def _chunks():
+            yield b'data: {"choices":[{"text":"A","token_ids":[1]}]}\n\n'
+            yield b'data: {"choices":[{"text":"B","token_ids":[2]}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        stop_body = {
+            "root_request_id": "req",
+            "engine_request_id": "req#a1",
+            "attempt_seq": 1,
+            "pair_id": "pair",
+            "reason": "peer_failed",
+        }
+
+        endpoint = _Endpoint(_Config(role="decode"))
+        body = _dispatch_body("decode") | {"stream": True}
+        response = await _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+            if len(chunks) == 1:
+                # Stop dispatch after first chunk — mid-stream
+                await endpoint.dispatch_adapter.handle_stop(stop_body)
+
+        # First chunk + SSE error + [DONE] = 3 chunks
+        assert len(chunks) == 3
+        payload = b"".join(chunks).decode("utf-8")
+        assert "ClientClosedRequest" in payload
+        assert "Dispatch stopped by peer." in payload
+        assert payload.rstrip().endswith("data: [DONE]")
+
+    asyncio.run(_test())
+
+
 def test_infer_endpoint_metaserver_engine_error_stops_decode_peer(monkeypatch):
     calls = _install_peer_stop_client(monkeypatch)
     endpoint = _Endpoint(_Config(role="prefill"))
