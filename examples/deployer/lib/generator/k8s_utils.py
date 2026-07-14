@@ -375,6 +375,14 @@ def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
             del metadata[C.ANNOTATIONS]
         return
     annotations = metadata.setdefault(C.ANNOTATIONS, {})
+    if C.SP_BLOCK in annotations:
+        logger.info(
+            "Skip setting %s annotation to %s because template already configures it as %s",
+            C.SP_BLOCK,
+            sp_block_num,
+            annotations[C.SP_BLOCK],
+        )
+        return
     annotations[C.SP_BLOCK] = str(sp_block_num)
 
 
