@@ -203,6 +203,72 @@ class _SchedulerInstanceCache:
                     for ep in (pod_eps or {}).values():
                         self._endpoint_map[(inst.id, ep.id)] = ep
 
+    @staticmethod
+    def _role_of(inst: Instance) -> PDRole | None:
+        role = getattr(inst, "role", None)
+        if isinstance(role, PDRole):
+            return role
+        if role is None:
+            return None
+        normalized_role = str(role).strip().lower()
+        # "hybrid" predates PDRole.ROLE_U ("union").  The enum itself handles
+        # all canonical roles and the historical "both" alias, including future
+        # values added to PDRole.
+        if normalized_role == "hybrid":
+            return PDRole.ROLE_U
+        try:
+            return PDRole(normalized_role)
+        except ValueError:
+            return None
+
+    async def apply_add(self, instances: list[Instance]) -> bool:
+        """Incrementally upsert instances (from a PUB ADD delta), keeping each role list sorted by
+        id, so a worker patches its cache on a topology change without a full GET round-trip. An
+        ADD may also update an existing instance, so remove its prior role and endpoint entries
+        before inserting the replacement. Returns False without mutation when a role is unknown,
+        so the caller can fall back to a full refresh instead of accepting an incomplete delta.
+        """
+        resolved_instances = [(inst, self._role_of(inst)) for inst in instances]
+        unknown_instances = [inst for inst, role in resolved_instances if role is None]
+        if unknown_instances:
+            logger.warning(
+                "Rejecting instance ADD delta with unknown role(s); falling back to full refresh: %s",
+                [(getattr(inst, "id", None), getattr(inst, "role", None)) for inst in unknown_instances],
+            )
+            return False
+        async with self._lock:
+            for inst, role in resolved_instances:
+                for existing_role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+                    role_map = self._instance_map.get(existing_role)
+                    if role_map and inst.id in role_map:
+                        del role_map[inst.id]
+                        self._instance_cache[existing_role] = sorted(role_map.values(), key=lambda i: i.id)
+                for key in [key for key in self._endpoint_map if key[0] == inst.id]:
+                    del self._endpoint_map[key]
+                role_map = self._instance_map.setdefault(role, {})
+                role_map[inst.id] = inst
+                self._instance_cache[role] = sorted(role_map.values(), key=lambda i: i.id)
+                if inst.endpoints:
+                    for pod_eps in (inst.endpoints or {}).values():
+                        for ep in (pod_eps or {}).values():
+                            self._endpoint_map[(inst.id, ep.id)] = ep
+        return True
+
+    async def apply_remove(self, instances: list[Instance]) -> None:
+        """Incrementally drop instances (from a PUB DEL delta) from every role list and the endpoint
+        map. Role is searched across all pools so a stale role on the delta cannot orphan an entry.
+        """
+        async with self._lock:
+            for inst in instances:
+                iid = inst.id
+                for role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+                    role_map = self._instance_map.get(role)
+                    if role_map and iid in role_map:
+                        del role_map[iid]
+                        self._instance_cache[role] = sorted(role_map.values(), key=lambda i: i.id)
+                for key in [k for k in self._endpoint_map if k[0] == iid]:
+                    del self._endpoint_map[key]
+
 
 class _SchedulerTransport:
     def __init__(
@@ -408,8 +474,9 @@ class _SchedulerTransport:
                 logger.error("Scheduler transport receive loop error: %s", e, exc_info=True)
 
 
-# Callback when instance list change is received from Scheduler PUB; arg: instance_version (int | None)
-OnInstanceChangeNotify = Callable[[int | None], Awaitable[None]]
+# Callback when instance list change is received from Scheduler PUB; args: instance_version, optional
+# incremental delta ({"event": "add"|"del", "instances": [...]}) or None for version-only messages.
+OnInstanceChangeNotify = Callable[[int | None, dict | None], Awaitable[None]]
 
 # Callback when circuit breaker state change is received from Scheduler PUB
 OnCircuitBreakerChangeNotify = Callable[[int, str], Awaitable[None]]
@@ -494,7 +561,8 @@ class _InstancePushSubscriber:
                     topic = frames[0] if frames else b""
                     if topic == INSTANCE_CHANGE_TOPIC:
                         version = self._parse_int_frame(frames, 1)
-                        await self._on_instance_change(version)
+                        delta = self._parse_msgpack_frame(frames, 2)
+                        await self._on_instance_change(version, delta)
                     elif topic == CIRCUIT_BREAKER_TOPIC and self._on_circuit_breaker_change:
                         payload = self._parse_msgpack_frame(frames, 1)
                         if payload and isinstance(payload, dict):
@@ -737,13 +805,22 @@ class AsyncSchedulerClient:
             logger.warning("Failed to refresh instances on %s: %s", reason, e)
             return
         self._last_instance_version = current_version
-        if self._on_instance_refreshed:
-            active_endpoints = _collect_active_endpoints_from_cache(self._cache)
-            if active_endpoints:
-                try:
-                    await self._on_instance_refreshed(active_endpoints)
-                except Exception as e:
-                    logger.warning("on_instance_refreshed callback failed: %s", e)
+        await self._notify_instance_refreshed()
+
+    async def _notify_instance_refreshed(self) -> None:
+        """Fire the instance-refresh callback with the current active endpoints.
+
+        Always fires when a callback is registered -- an empty list is meaningful: a full drain
+        must still notify downstream (e.g. so the HTTP client pool prunes clients for endpoints that
+        went away) instead of leaking them until the next non-empty refresh.
+        """
+        if not self._on_instance_refreshed:
+            return
+        active_endpoints = _collect_active_endpoints_from_cache(self._cache)
+        try:
+            await self._on_instance_refreshed(active_endpoints)
+        except Exception as e:
+            logger.warning("on_instance_refreshed callback failed: %s", e)
 
     async def select_and_allocate(
         self,
@@ -1262,9 +1339,13 @@ class AsyncSchedulerClient:
         elif response:
             logger.error(f"Failed to refresh instances: {response.error}")
 
-    async def _on_instance_change_notify(self, version: int | None) -> None:
-        """Called when SUB receives instance-change from Scheduler; dedup by version, then refresh cache."""
+    async def _on_instance_change_notify(self, version: int | None, delta: dict | None = None) -> None:
+        """Called when SUB receives instance-change from Scheduler; dedup by version, then apply the
+        incremental ADD/DEL delta when present (no GET), else fall back to a full instance pull.
+        """
         if version is not None and self._last_instance_version is not None and version == self._last_instance_version:
+            return
+        if await self._try_apply_instance_delta(version, delta):
             return
         try:
             await self.get_available_instances(None)
@@ -1278,12 +1359,42 @@ class AsyncSchedulerClient:
                 for inst in self._cache.get_instances(role)
             }
             self._cb_blocked_instances &= current_ids
-            if self._on_instance_refreshed:
-                active_endpoints = _collect_active_endpoints_from_cache(self._cache)
-                if active_endpoints:
-                    await self._on_instance_refreshed(active_endpoints)
+            await self._notify_instance_refreshed()
         except Exception as e:
             logger.warning("Instance change notify refresh failed: %s", e)
+
+    async def _try_apply_instance_delta(self, version: int | None, delta: dict | None) -> bool:
+        """Patch the local cache from an ADD/DEL PUB delta without a full GET. Returns True on apply.
+
+        Only apply a delta when it is the next contiguous version.  A dropped or reordered PUB
+        notification must fall back to a full pull; otherwise accepting a later version would hide
+        the gap from the shared-memory version check and leave the cache permanently incomplete.
+        """
+        if not delta or version is None:
+            return False
+        if self._last_instance_version is None or version != self._last_instance_version + 1:
+            return False
+        event = delta.get("event")
+        instances_data = delta.get("instances")
+        if event not in ("add", "del") or not isinstance(instances_data, list):
+            return False
+        instances = []
+        for instance_data in instances_data:
+            instance = _instance_from_dict(instance_data)
+            if instance is None:
+                return False
+            instances.append(instance)
+        if not instances:
+            return False
+        if event == "add":
+            if not await self._cache.apply_add(instances):
+                return False
+        else:
+            await self._cache.apply_remove(instances)
+            self._cb_blocked_instances -= {inst.id for inst in instances}
+        self._last_instance_version = version
+        await self._notify_instance_refreshed()
+        return True
 
     async def _on_circuit_breaker_change(self, instance_id: int, state: str) -> None:
         """Update local CB blocked-instance cache when PUB notifies state change."""

@@ -43,6 +43,13 @@ _ROLE_SEQUENCE_FIELDS = {
     PDRole.ROLE_U: "hybrid",
 }
 
+# shm role byte -> role-sequence key (encode has no role sequence; it uses the global fallback).
+_SHM_ROLE_TO_SEQ_KEY = {
+    ROLE_PREFILL: "prefill",
+    ROLE_DECODE: "decode",
+    ROLE_HYBRID: "hybrid",
+}
+
 
 def _pdrole_to_shm_role(role: PDRole) -> int:
     """Map PDRole to workload_shm layout role byte."""
@@ -112,6 +119,13 @@ class WorkloadSharedMemoryWriter:
             "decode": 0,
             "hybrid": 0,
         }
+        # Per-role (instance_id, endpoint_id) membership at the last snapshot, used to bump only the
+        # role sequences whose membership actually changed (see _bump_changed_role_sequences).
+        self._role_members: dict[str, set[tuple[int, int]]] = {
+            "prefill": set(),
+            "decode": set(),
+            "hybrid": set(),
+        }
         self._entry_count = 0
         self._instance_version = 0
         self._heartbeat_sequence = 0
@@ -164,7 +178,7 @@ class WorkloadSharedMemoryWriter:
                     active_kv_cache=kv,
                 ),
             )
-        self._bump_all_role_sequences()
+        self._bump_changed_role_sequences(entries)
         self._instance_version += 1
         self._end_write()
 
@@ -216,9 +230,20 @@ class WorkloadSharedMemoryWriter:
             return
         self.write_single_entry_sync(instance_id, endpoint_id)
 
-    def _bump_all_role_sequences(self) -> None:
-        for role_key in self._role_sequences:
-            self._role_sequences[role_key] = (self._role_sequences[role_key] + 1) % (1 << 64)
+    def _bump_changed_role_sequences(self, entries) -> None:
+        """Bump only the role sequences whose (instance_id, endpoint_id) membership changed since the
+        last snapshot, so a topology change confined to one role does not force readers of the other
+        roles to re-scan their (unchanged) entries.
+        """
+        new_members: dict[str, set[tuple[int, int]]] = {"prefill": set(), "decode": set(), "hybrid": set()}
+        for iid, eid, role, _tokens, _kv in entries:
+            role_key = _SHM_ROLE_TO_SEQ_KEY.get(role)
+            if role_key is not None:
+                new_members[role_key].add((iid, eid))
+        for role_key, members in new_members.items():
+            if members != self._role_members[role_key]:
+                self._role_sequences[role_key] = (self._role_sequences[role_key] + 1) % (1 << 64)
+        self._role_members = new_members
 
     def _bump_role_sequence(self, role: PDRole) -> None:
         role_key = _ROLE_SEQUENCE_FIELDS.get(role)

@@ -363,6 +363,9 @@ class TestHandleUpdateWorkload:
         dispatcher, instance_manager, scheduler, _ = _make_dispatcher(workload_writer=writer)
         inst = _make_instance(3, (30,))
         await instance_manager.refresh_instances(EventType.ADD, [inst])
+        # Seed a positive allocation so the release below stays non-negative and the ledger value can
+        # distinguish "applied once" from "applied twice" (a release-without-allocation floors to 0).
+        await instance_manager.update_instance_workload(3, 30, Workload(active_tokens=10))
 
         data = {
             "instance_id": 3,
@@ -399,7 +402,7 @@ class TestHandleUpdateWorkload:
         assert "operation_id=op-r7-release-tokens" in caplog.text
         assert "scheduler_request_id=req-7b" in caplog.text
         _role, workload = await instance_manager.get_endpoint_workload(3, 30)
-        assert workload.active_tokens == -3
+        assert workload.active_tokens == 7  # 10 seeded - 3 released, applied exactly once
         assert writer.writes == [(3, 30), (3, 30)]
 
     def test_committed_operation_store_is_bounded_fifo(self):
@@ -593,10 +596,10 @@ class TestHandleRefreshInstances:
 
     @pytest.mark.asyncio
     async def test_changed_calls_sync_callback(self):
-        callback_called = [False]
+        received = []
 
-        def sync_cb():
-            callback_called[0] = True
+        def sync_cb(event_type=None, instances=None):
+            received.append((event_type, instances))
 
         dispatcher, instance_manager, *_ = _make_dispatcher(on_refresh_done=sync_cb)
         instance_manager.refresh_instances = AsyncMock(return_value=True)
@@ -607,13 +610,15 @@ class TestHandleRefreshInstances:
             data={"event_type": EventType.ADD.value, "instances": []},
         )
         await dispatcher.dispatch(request)
-        assert callback_called[0] is True
+        # The refresh callback now receives the event type + changed instances (for delta PUB).
+        assert len(received) == 1
+        assert received[0][0] == EventType.ADD
 
     @pytest.mark.asyncio
     async def test_changed_calls_async_callback(self):
         callback_called = [False]
 
-        async def async_cb():
+        async def async_cb(event_type=None, instances=None):
             callback_called[0] = True
 
         dispatcher, instance_manager, *_ = _make_dispatcher(on_refresh_done=async_cb)
@@ -631,7 +636,7 @@ class TestHandleRefreshInstances:
     async def test_callback_exception_is_logged_not_raised(self):
         """Callback exception must not propagate; dispatcher returns SUCCESS."""
 
-        def bad_cb():
+        def bad_cb(event_type=None, instances=None):
             raise RuntimeError("callback error")
 
         dispatcher, instance_manager, *_ = _make_dispatcher(on_refresh_done=bad_cb)
@@ -1123,3 +1128,38 @@ class TestAsyncSchedulerServerPublishInstanceChanged:
 
         # Must not raise
         await server._publish_instance_changed()
+
+    @pytest.mark.asyncio
+    async def test_add_event_appends_delta_frame(self):
+        from motor.coordinator.scheduler.runtime.zmq_protocol import INSTANCE_CHANGE_TOPIC
+        import msgspec
+
+        server = _make_server()
+        mock_pub = AsyncMock()
+        server._pub_socket = mock_pub
+        server._workload_writer = _DummyWorkloadWriter(instance_version=9)
+        inst = _make_instance(7, (70,), role=PDRole.ROLE_P)
+
+        await server._publish_instance_changed(EventType.ADD, [inst])
+
+        frames = mock_pub.send_multipart.call_args[0][0]
+        assert len(frames) == 3  # topic, version, delta
+        assert frames[0] == INSTANCE_CHANGE_TOPIC
+        assert frames[1] == b"9"
+        delta = msgspec.msgpack.decode(frames[2])
+        assert delta["event"] == "add"
+        assert [i["id"] for i in delta["instances"]] == [7]
+
+    @pytest.mark.asyncio
+    async def test_set_event_sends_version_only(self):
+        server = _make_server()
+        mock_pub = AsyncMock()
+        server._pub_socket = mock_pub
+        server._workload_writer = _DummyWorkloadWriter(instance_version=9)
+        inst = _make_instance(7, (70,), role=PDRole.ROLE_P)
+
+        # SET is not delta-patched by workers; publish version only so they full-pull.
+        await server._publish_instance_changed(EventType.SET, [inst])
+
+        frames = mock_pub.send_multipart.call_args[0][0]
+        assert len(frames) == 2

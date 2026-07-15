@@ -180,7 +180,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
 
     # ---------------------------------------------------------------
     def test_instance_version(self):
-        """instance_version starts at 0 and is bumped after write_snapshot."""
+        """instance_version bumps on every snapshot; an empty snapshot changes no role membership."""
         shm = _make_mock_shm()
         writer = WorkloadSharedMemoryWriter(shm, MagicMock())
         self.assertEqual(writer.instance_version, 0)
@@ -192,14 +192,70 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
             writer.write_snapshot()
 
         self.assertEqual(writer.instance_version, 1)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 1)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 1)
+        # Empty snapshot: no role gained or lost members, so no role sequence is bumped.
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 0)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
 
         header = unpack_header(writer._buf)
-        self.assertEqual(header.prefill_sequence, 1)
-        self.assertEqual(header.decode_sequence, 1)
-        self.assertEqual(header.hybrid_sequence, 1)
+        self.assertEqual(header.prefill_sequence, 0)
+        self.assertEqual(header.decode_sequence, 0)
+        self.assertEqual(header.hybrid_sequence, 0)
+
+    # ---------------------------------------------------------------
+    def test_snapshot_bumps_only_changed_role_membership(self):
+        """A topology change in one role bumps only that role's sequence, not the others'."""
+        shm = _make_mock_shm()
+        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
+        collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
+
+        # First snapshot: a single prefill endpoint appears.
+        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0, 3.0)], {(1, 10): 0})):
+            writer.write_snapshot()
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
+        self.assertEqual(writer.instance_version, 1)
+
+        # Second snapshot: prefill membership unchanged, a NEW decode endpoint appears.
+        with patch(
+            collect,
+            return_value=(
+                [(1, 10, ROLE_PREFILL, 5.0, 3.0), (2, 20, ROLE_DECODE, 7.0, 0.0)],
+                {(1, 10): 0, (2, 20): 1},
+            ),
+        ):
+            writer.write_snapshot()
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)  # unchanged -> not bumped
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 1)  # new member -> bumped
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
+        self.assertEqual(writer.instance_version, 2)
+
+    # ---------------------------------------------------------------
+    def test_snapshot_same_membership_does_not_bump_role(self):
+        """Re-taking a snapshot with identical membership bumps no role sequence."""
+        shm = _make_mock_shm()
+        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
+        collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
+        entries = ([(1, 10, ROLE_PREFILL, 5.0, 3.0)], {(1, 10): 0})
+        with patch(collect, return_value=entries):
+            writer.write_snapshot()
+            self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
+            writer.write_snapshot()  # identical membership
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
+
+    # ---------------------------------------------------------------
+    def test_snapshot_removed_member_bumps_role(self):
+        """Losing a role's last endpoint bumps that role (membership changed to empty)."""
+        shm = _make_mock_shm()
+        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
+        collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
+        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0, 3.0)], {(1, 10): 0})):
+            writer.write_snapshot()
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
+        with patch(collect, return_value=([], {})):
+            writer.write_snapshot()
+        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 2)
 
     # ---------------------------------------------------------------
     def test_release(self):

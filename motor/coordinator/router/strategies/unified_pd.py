@@ -1298,6 +1298,12 @@ class UnifiedPDRouter(BaseRouter):
             req_id=self.req_info.req_id,
             workload_action=action,
             workload_change=workload_change,
+            # Deterministic id keyed on (request, attempt, endpoint, action): stable across the
+            # retries in _send_release_work_item, so a release whose ACK was lost is de-duplicated by
+            # the scheduler instead of applied twice (which would drive the load ledger negative).
+            operation_id=(
+                f"{self.req_info.req_id}:a{attempt_seq}:{resource.instance.id}:{resource.endpoint.id}:{action.value}"
+            ),
         )
         return ReleaseWorkItem(
             stage=self._release_stage(resource, action),

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -225,6 +223,64 @@ class TestInstanceManager:
         assert self.prefill_instance.gathered_workload.active_kv_cache == 20
         assert self.endpoint.workload.active_tokens == 10
         assert self.endpoint.workload.active_kv_cache == 20
+
+    @pytest.mark.asyncio
+    async def test_update_instance_workload_floors_negative_and_warns(self, caplog):
+        """A release exceeding prior allocation floors load to 0 (never negative) and warns.
+
+        The ledger is an unbounded signed accumulator; a duplicated/late release could otherwise
+        drive an endpoint below zero, turning it into a permanent minimum-score scheduling magnet.
+        """
+        self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        await self.instance_manager.update_instance_workload(
+            1, self.endpoint.id, Workload(active_tokens=10, active_kv_cache=20)
+        )
+        caplog.clear()
+        # Over-release: subtract more than was allocated -> would go negative without the floor.
+        await self.instance_manager.update_instance_workload(
+            1, self.endpoint.id, Workload(active_tokens=-30, active_kv_cache=-50)
+        )
+
+        assert self.endpoint.workload.active_tokens == 0
+        assert self.endpoint.workload.active_kv_cache == 0
+        assert self.prefill_instance.gathered_workload.active_tokens == 0
+        assert self.prefill_instance.gathered_workload.active_kv_cache == 0
+        assert "floor" in caplog.text.lower()
+        assert "endpoint_id=1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_update_instance_workload_balanced_release_no_floor_no_warn(self, caplog):
+        """A balanced allocate/release settles at exactly 0 with no floor warning."""
+        self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        await self.instance_manager.update_instance_workload(
+            1, self.endpoint.id, Workload(active_tokens=10, active_kv_cache=20)
+        )
+        caplog.clear()
+        await self.instance_manager.update_instance_workload(
+            1, self.endpoint.id, Workload(active_tokens=-10, active_kv_cache=-20)
+        )
+
+        assert self.endpoint.workload.active_tokens == 0
+        assert self.endpoint.workload.active_kv_cache == 0
+        assert "floor" not in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_update_instance_workload_rebuilds_aggregate_after_sibling_overrelease(self):
+        """An over-release on one endpoint must not hide load on sibling endpoints."""
+        sibling = Endpoint(id=2, ip="127.0.0.2", business_port="8080", mgmt_port="8080")
+        self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
+        self.prefill_instance.add_endpoints("127.0.0.2", {sibling.id: sibling})
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+
+        await self.instance_manager.update_instance_workload(1, 1, Workload(active_tokens=100))
+        await self.instance_manager.update_instance_workload(1, 2, Workload(active_tokens=100))
+        await self.instance_manager.update_instance_workload(1, 1, Workload(active_tokens=-150))
+
+        assert self.endpoint.workload.active_tokens == 0
+        assert sibling.workload.active_tokens == 100
+        assert self.prefill_instance.gathered_workload.active_tokens == 100
 
     @pytest.mark.asyncio
     async def test_update_instance_workload_instance_not_found(self, caplog):

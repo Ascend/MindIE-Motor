@@ -57,6 +57,8 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 
 logger = get_logger(__name__)
 
+InstanceRefreshCallback = Callable[[EventType, list[Instance]], None | Awaitable[None]]
+
 
 def _create_workload_shared_memory(shared_memory_mod, shm_name: str, shm_size: int):
     """Create POSIX workload SharedMemory; recover from orphan segment (unclean exit / PID reuse).
@@ -186,7 +188,7 @@ class _SchedulerRequestDispatcher:
         scheduler: Scheduler,
         config: CoordinatorConfig,
         workload_writer: WorkloadSharedMemoryWriter | None = None,
-        on_instance_refresh_done: Callable[[], None | Awaitable[None]] | None = None,
+        on_instance_refresh_done: InstanceRefreshCallback | None = None,
         circuit_breaker_manager: CircuitBreakerManager | None = None,
         pub_socket: zmq.asyncio.Socket | None = None,
     ):
@@ -379,7 +381,7 @@ class _SchedulerRequestDispatcher:
         if changed:
             if self._on_instance_refresh_done:
                 try:
-                    result = self._on_instance_refresh_done()
+                    result = self._on_instance_refresh_done(event_type, instances)
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception as e:
@@ -1327,15 +1329,34 @@ class AsyncSchedulerServer:
         finally:
             await self.stop()
 
-    async def _publish_instance_changed(self) -> None:
-        """Publish instance list changed + version to SUB clients (no-op if PUB not enabled)."""
+    async def _publish_instance_changed(self, event_type=None, instances=None) -> None:
+        """Publish instance list changed + version to SUB clients (no-op if PUB not enabled).
+
+        For ADD/DEL a third msgpack frame carries the changed instances so workers patch their cache
+        incrementally instead of each doing a full GET; other events (SET/PAUSE/RESUME) omit it and
+        workers fall back to a full pull. The frame is additive -- older workers ignore it.
+        """
         if not self._pub_socket:
             return
         version = self._workload_writer.instance_version if self._workload_writer else 0
+        frames: list[bytes] = [INSTANCE_CHANGE_TOPIC, str(version).encode()]
+        delta = self._build_instance_delta(event_type, instances)
+        if delta is not None:
+            frames.append(msgspec.msgpack.encode(delta))
         try:
-            await self._pub_socket.send_multipart([INSTANCE_CHANGE_TOPIC, str(version).encode()])
+            await self._pub_socket.send_multipart(frames)
         except Exception as e:
             logger.warning("Failed to publish instance change: %s", e)
+
+    @staticmethod
+    def _build_instance_delta(event_type, instances):
+        """Build the incremental PUB delta for ADD/DEL; None for events workers don't patch (SET/…)."""
+        if event_type not in (EventType.ADD, EventType.DEL) or not instances:
+            return None
+        return {
+            "event": "add" if event_type == EventType.ADD else "del",
+            "instances": [_instance_to_dict(inst) for inst in instances],
+        }
 
     async def _heartbeat_loop(self) -> None:
         """Write heartbeat to shm every 1s so Infer can detect Scheduler restart (stale = no change)."""

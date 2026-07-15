@@ -962,6 +962,88 @@ async def test_unified_pd_release_inflight_deduplicates_same_action():
 
 
 @pytest.mark.asyncio
+async def test_unified_pd_release_carries_stable_operation_id():
+    """Release RPCs carry a deterministic operation_id keyed on (request, attempt, endpoint, action)
+    so a retried release is de-duplicated scheduler-side instead of double-applied (which would drive
+    the load ledger negative).
+    """
+    req_info = RequestInfo(
+        req_id="root-op-id",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(req_info, config, scheduler=scheduler, request_manager=request_manager)
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        resource = attempt.prefill_resource
+        item = await router._prepare_release_work_item(
+            resource, attempt.attempt_seq, WorkloadAction.RELEASE_TOKENS, attempt=attempt
+        )
+        assert item is not None
+        op_id = item.params.operation_id
+        assert op_id  # set (was previously None, disabling the scheduler-side dedup)
+        assert str(req_info.req_id) in op_id
+        assert str(resource.instance.id) in op_id
+        assert str(resource.endpoint.id) in op_id
+        assert WorkloadAction.RELEASE_TOKENS.value in op_id
+        # A different action on the same resource must get a different id.
+        item_kv = await router._prepare_release_work_item(
+            resource, attempt.attempt_seq, WorkloadAction.RELEASE_KV, attempt=attempt
+        )
+        assert item_kv is not None
+        assert item_kv.params.operation_id != op_id
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_release_retry_reuses_same_operation_id():
+    """A failed release RPC is retried with the SAME operation_id, so the scheduler dedups the retry
+    rather than applying the delta twice.
+    """
+    req_info = RequestInfo(
+        req_id="root-op-id-retry",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    seen = []
+
+    async def _update_workload(params):
+        seen.append(params.operation_id)
+        return len(seen) >= 2  # fail the first send, succeed the retry
+
+    scheduler.update_workload = AsyncMock(side_effect=_update_workload)
+    router = UnifiedPDRouter(req_info, config, scheduler=scheduler, request_manager=request_manager)
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        ok = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        assert ok is True
+        assert len(seen) == 2  # one retry happened
+        assert seen[0] and seen[0] == seen[1]  # same non-empty operation_id across the retry
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
 async def test_unified_pd_background_release_uses_single_tracked_task():
     req_info = RequestInfo(
         req_id="root-release-background-single-task",
