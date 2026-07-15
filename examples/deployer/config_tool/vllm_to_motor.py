@@ -82,6 +82,8 @@ AUTO_PREFILL_SCRIPT = "run_dp_template_prefill.sh"
 AUTO_DECODE_SCRIPT = "run_dp_template_decode.sh"
 MANUAL_FILL_WEIGHT_MOUNT_PATH = "<请按实际情况填写模型权重文件的访问路径>"
 MANUAL_FILL_IMAGE_NAME = "<请按实际情况填写镜像名称>"
+MANUAL_FILL_PARALLEL_FIELD = "<请手动填写该参数，因为kv-transfer-config中未识别到dp_size和tp_size>"
+MANUAL_FILL_DEPLOY_POD_FIELD = "<请手动填写该参数，未获取到dp_size和tp_size，无法推断pod切分情况>"
 
 _ANSI_BLUE = "\033[34m"
 _ANSI_RESET = "\033[0m"
@@ -500,37 +502,78 @@ def _get_kv_config(cli_args: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def extract_parallel_from_cli_args(cli_args: dict[str, Any]) -> dict[str, int]:
-    """Read P/D dp/tp from kv_connector_extra_config (preferred)."""
-    kv_config = _get_kv_config(cli_args)
-    if not kv_config:
-        raise ValueError("脚本中缺少 kv-transfer-config / kv_connector_extra_config，无法推断 P/D 并行度。")
+def _as_optional_int(value: Any) -> int | None:
+    if value is None or value is True or value is False:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-    extra = kv_config.get("kv_connector_extra_config") or {}
+
+def _read_prefill_decode_parallel(extra: dict[str, Any]) -> dict[str, int] | None:
+    """Read P/D dp/tp from one dict that contains prefill/decode, if complete."""
     prefill = extra.get("prefill") or {}
     decode = extra.get("decode") or {}
+    if not isinstance(prefill, dict) or not isinstance(decode, dict):
+        return None
 
-    def _as_int(value: Any) -> int | None:
-        if value is None or value is True or value is False:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    prefill_dp = _as_int(prefill.get("dp_size"))
-    prefill_tp = _as_int(prefill.get("tp_size"))
-    decode_dp = _as_int(decode.get("dp_size"))
-    decode_tp = _as_int(decode.get("tp_size"))
-
+    prefill_dp = _as_optional_int(prefill.get("dp_size"))
+    prefill_tp = _as_optional_int(prefill.get("tp_size"))
+    decode_dp = _as_optional_int(decode.get("dp_size"))
+    decode_tp = _as_optional_int(decode.get("tp_size"))
     if not all([prefill_dp, prefill_tp, decode_dp, decode_tp]):
-        raise ValueError("kv_connector_extra_config 中需包含完整的 prefill/decode dp_size 与 tp_size。")
+        return None
     return {
         "prefill_dp": prefill_dp,
         "prefill_tp": prefill_tp,
         "decode_dp": decode_dp,
         "decode_tp": decode_tp,
     }
+
+
+def _find_prefill_decode_parallel(node: Any) -> dict[str, int] | None:
+    """Recursively find the first complete prefill/decode dp/tp in a nested structure."""
+    if isinstance(node, dict):
+        parallel = _read_prefill_decode_parallel(node)
+        if parallel is not None:
+            return parallel
+        for value in node.values():
+            found = _find_prefill_decode_parallel(value)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_prefill_decode_parallel(item)
+            if found is not None:
+                return found
+    return None
+
+
+def try_extract_parallel_from_cli_args(cli_args: dict[str, Any]) -> dict[str, int] | None:
+    """Return P/D dp/tp from kv config when present; otherwise None (no error)."""
+    kv_config = _get_kv_config(cli_args)
+    if not kv_config:
+        return None
+    return _find_prefill_decode_parallel(kv_config)
+
+
+def extract_parallel_from_cli_args(cli_args: dict[str, Any]) -> dict[str, int]:
+    """Read P/D dp/tp from kv_connector_extra_config (preferred).
+
+    Supports top-level prefill/decode and nested structures such as MultiConnector
+    ``connectors[].kv_connector_extra_config``.
+    """
+    parallel = try_extract_parallel_from_cli_args(cli_args)
+    if parallel is not None:
+        return parallel
+
+    if not _get_kv_config(cli_args):
+        raise ValueError("脚本中缺少 kv-transfer-config / kv_connector_extra_config，无法推断 P/D 并行度。")
+    raise ValueError(
+        "kv_connector_extra_config 中需包含完整的 prefill/decode dp_size 与 tp_size。"
+        "（支持写在 MultiConnector 等任意嵌套层级）"
+    )
 
 
 def _as_positive_int(value: Any, *, field: str) -> int:
@@ -750,6 +793,29 @@ def apply_manual_fill_placeholders(
         engine_config = user_config[role_key]["engine_config"]
         if "model" in engine_config:
             engine_config["model"] = MANUAL_FILL_WEIGHT_MOUNT_PATH
+
+
+def apply_parallel_manual_fill_placeholders(user_config: dict[str, Any]) -> None:
+    """Mark parallel-related fields that could not be inferred from kv-transfer-config."""
+    deploy = user_config["motor_deploy_config"]
+    for key in (
+        "single_p_instance_pod_num",
+        "single_d_instance_pod_num",
+        "p_pod_npu_num",
+        "d_pod_npu_num",
+    ):
+        deploy[key] = MANUAL_FILL_DEPLOY_POD_FIELD
+
+    parallel_engine_keys = (
+        "data_parallel_size",
+        "tensor_parallel_size",
+        "pipeline_parallel_size",
+        "data_parallel_rpc_port",
+    )
+    for role_key in ("motor_engine_prefill_config", "motor_engine_decode_config"):
+        engine_config = user_config[role_key]["engine_config"]
+        for key in parallel_engine_keys:
+            engine_config[key] = MANUAL_FILL_PARALLEL_FIELD
 
 
 def _try_parse_json_text(raw: str) -> Any | None:
@@ -1040,12 +1106,14 @@ def _should_skip_key(cli_key: str, *, include_parallel: bool = False) -> bool:
 _KV_EXTRA_PARALLEL_KEYS = frozenset({"dp_size", "tp_size"})
 
 
-def _strip_parallel_from_kv_extra_config(extra: Any) -> dict[str, Any]:
-    """Drop prefill/decode dp_size/tp_size; keep other kv_connector_extra_config fields."""
-    if not isinstance(extra, dict):
-        return {}
+def _strip_parallel_from_tree(node: Any) -> Any:
+    """Recursively drop prefill/decode dp_size/tp_size; keep all other nested fields."""
+    if isinstance(node, list):
+        return [_strip_parallel_from_tree(item) for item in node]
+    if not isinstance(node, dict):
+        return node
     stripped: dict[str, Any] = {}
-    for key, value in extra.items():
+    for key, value in node.items():
         if key in ("prefill", "decode"):
             if not isinstance(value, dict):
                 continue
@@ -1055,8 +1123,14 @@ def _strip_parallel_from_kv_extra_config(extra: Any) -> dict[str, Any]:
             if role_extra:
                 stripped[key] = role_extra
             continue
-        stripped[key] = value
+        stripped[key] = _strip_parallel_from_tree(value)
     return stripped
+
+
+def _strip_parallel_from_kv_extra_config(extra: Any) -> dict[str, Any]:
+    """Drop prefill/decode dp_size/tp_size at any nesting depth under kv extra."""
+    stripped = _strip_parallel_from_tree(extra)
+    return stripped if isinstance(stripped, dict) else {}
 
 
 def _convert_kv_transfer_config(raw_value: Any) -> dict[str, Any]:
@@ -1066,15 +1140,22 @@ def _convert_kv_transfer_config(raw_value: Any) -> dict[str, Any]:
         kv_config = dict(raw_value)
     else:
         raise ValueError("kv_transfer_config must be a JSON object")
-    motor_kv = {
+    motor_kv: dict[str, Any] = {
         "kv_connector": kv_config.get("kv_connector"),
         "kv_role": kv_config.get("kv_role"),
-        "kv_port": str(kv_config.get("kv_port", "")),
         "engine_id": str(kv_config.get("engine_id", "0")),
     }
-    extra = _strip_parallel_from_kv_extra_config(kv_config.get("kv_connector_extra_config"))
-    if extra:
-        motor_kv["kv_connector_extra_config"] = extra
+    if kv_config.get("kv_port") not in (None, ""):
+        motor_kv["kv_port"] = str(kv_config.get("kv_port"))
+    for key, value in kv_config.items():
+        if key in {"kv_connector", "kv_role", "kv_port", "engine_id"}:
+            continue
+        if key == "kv_connector_extra_config":
+            extra = _strip_parallel_from_kv_extra_config(value)
+            if extra:
+                motor_kv[key] = extra
+            continue
+        motor_kv[key] = value
     return {k: v for k, v in motor_kv.items() if v is not None}
 
 
@@ -1102,6 +1183,7 @@ def cli_args_to_engine_config(
     strip_kv_extra_config: bool = True,
     role: str | None = None,
     parallel: dict[str, int] | None = None,
+    infer_parallel: bool = True,
     include_parallel_cli: bool = False,
     skip_kv_transfer: bool = False,
 ) -> dict[str, Any]:
@@ -1129,18 +1211,12 @@ def cli_args_to_engine_config(
     elif "model" in engine_config:
         engine_config["model"] = str(engine_config["model"])
 
-    if parallel is None:
-        try:
-            parallel = extract_parallel_from_cli_args(cli_args)
-        except ValueError:
-            parallel = None
+    if parallel is None and infer_parallel:
+        parallel = try_extract_parallel_from_cli_args(cli_args)
 
     if parallel is not None:
         engine_role = role or _infer_role_from_cli_args(cli_args)
         apply_engine_parallel(engine_config, role=engine_role, parallel=parallel)
-    else:
-        engine_config.setdefault("pipeline_parallel_size", 1)
-        engine_config.setdefault("data_parallel_rpc_port", DEFAULT_DP_RPC_PORT)
 
     if add_profiler_config and "profiler-config" not in engine_config:
         engine_config["profiler-config"] = dict(DEFAULT_PROFILER_CONFIG)
@@ -1333,6 +1409,14 @@ def convert_vllm_hybrid_script_to_user_config(
     return user_config, env_config
 
 
+def _print_parallel_manual_fill_hint() -> None:
+    print(
+        f"{_blue_text('[提示]')} 未从 kv-transfer-config 推断出 prefill/decode 的 dp_size/tp_size；"
+        "已在 user_config.json 对应字段写入手动填写说明，请按实际情况修改。",
+        file=sys.stderr,
+    )
+
+
 def convert_vllm_scripts_to_user_config(
     prefill_script: str,
     decode_script: str,
@@ -1347,8 +1431,16 @@ def convert_vllm_scripts_to_user_config(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     prefill_cli = parse_vllm_serve_command(prefill_script, variables=variables)
     decode_cli = parse_vllm_serve_command(decode_script, variables=variables)
-    script_parallel = extract_parallel_from_cli_args(prefill_cli)
-    parallel = remap_parallel_for_hardware(script_parallel, hardware_type) if hardware_type else script_parallel
+    script_parallel = try_extract_parallel_from_cli_args(prefill_cli)
+    if script_parallel is None:
+        script_parallel = try_extract_parallel_from_cli_args(decode_cli)
+
+    parallel: dict[str, int] | None = None
+    if script_parallel is not None:
+        parallel = remap_parallel_for_hardware(script_parallel, hardware_type) if hardware_type else script_parallel
+    else:
+        _print_parallel_manual_fill_hint()
+
     env_config = build_env_config(
         parse_script_exports(prefill_script),
         parse_script_exports(decode_script),
@@ -1360,6 +1452,7 @@ def convert_vllm_scripts_to_user_config(
         overrides=prefill_overrides,
         role="prefill",
         parallel=parallel,
+        infer_parallel=False,
     )
     decode_engine = cli_args_to_engine_config(
         decode_cli,
@@ -1367,17 +1460,23 @@ def convert_vllm_scripts_to_user_config(
         overrides=decode_overrides,
         role="decode",
         parallel=parallel,
+        infer_parallel=False,
     )
 
     merged_deploy = dict(deploy_config or {})
     if weight_mount_path:
         merged_deploy["weight_mount_path"] = weight_mount_path
 
-    if hardware_type:
+    if parallel is not None and hardware_type:
         inferred = infer_motor_deploy_config(parallel, hardware_type, overrides=merged_deploy or None)
         merged_deploy = inferred
     elif merged_deploy:
         merged_deploy = {**DEFAULT_DEPLOY_CONFIG, **merged_deploy}
+    elif hardware_type:
+        hw = normalize_hardware_type(hardware_type)
+        preset = dict(HARDWARE_PRESETS[hw])
+        preset.pop("cards_per_node", None)
+        merged_deploy = {**DEFAULT_DEPLOY_CONFIG, **preset}
 
     user_config = build_user_config(
         prefill_engine,
@@ -1385,6 +1484,9 @@ def convert_vllm_scripts_to_user_config(
         deploy_config=merged_deploy or None,
         minimal_template=minimal_template,
     )
+    if parallel is None:
+        apply_parallel_manual_fill_placeholders(user_config)
+        user_config = format_user_config(user_config)
     if not weight_mount_path:
         apply_manual_fill_placeholders(user_config)
     return user_config, env_config
