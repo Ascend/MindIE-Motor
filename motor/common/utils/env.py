@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -83,6 +81,48 @@ class _Environment:
     @property
     def conductor_service(self):
         return os.getenv("KV_CONDUCTOR_SERVICE", "")
+
+    # --- KV store ---
+
+    @property
+    def kv_store_backend(self):
+        return os.getenv("KV_STORE_BACKEND", "")
+
+    @property
+    def kv_cache_store_port(self):
+        return os.getenv("KV_CACHE_STORE_PORT", "")
+
+    @property
+    def kvs_master_service(self):
+        return os.getenv("KVS_MASTER_SERVICE", "")
+
+    # --- Daemon behaviour ---
+
+    @property
+    def motor_restart_engine(self):
+        return os.getenv("MOTOR_RESTART_ENGINE", "0") == "1"
+
+    @property
+    def motor_restart_local_service(self):
+        return os.getenv("MOTOR_RESTART_LOCAL_SERVICE", "1") == "1"
+
+    # --- Memcache LocalService ---
+
+    @property
+    def mmc_local_config_path(self):
+        return os.getenv("MMC_LOCAL_CONFIG_PATH", "")
+
+    @property
+    def mmc_local_service_mode(self):
+        return os.getenv("MMC_LOCAL_SERVICE_MODE", "")
+
+    @property
+    def mmc_dram_size(self):
+        return os.getenv("MMC_DRAM_SIZE", "")
+
+    @property
+    def mmc_config_store_url(self):
+        return os.getenv("MMC_CONFIG_STORE_URL", "")
 
 
 Env = _Environment()

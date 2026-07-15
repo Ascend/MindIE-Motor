@@ -99,6 +99,32 @@ def _default_rate_limit_skip_paths() -> list[str]:
     ]
 
 
+def _merge_kv_store_metrics_config(cfg: dict, raw: dict) -> None:
+    """Populate ``prometheus_metrics_config`` defaults from ``kv_cache_store_config``.
+
+    Only fills fields that are NOT already explicitly set in the prometheus config.
+    Called during ``CoordinatorConfig.from_json()``, before the dict is applied to
+    the dataclass.
+    """
+    kv = raw.get("kv_cache_store_config", {}) if isinstance(raw, dict) else {}
+    if not isinstance(kv, dict) or not kv:
+        return
+    pm = cfg.setdefault("prometheus_metrics_config", {})
+    pm.setdefault("kv_store_backend", kv.get("backend", ""))
+    pm.setdefault(
+        "kv_store_service",
+        kv.get("service", "") or os.getenv("KVS_MASTER_SERVICE", ""),
+    )
+    pm.setdefault("kv_store_metrics_port", kv.get("metrics_port", 0) or int(os.getenv("KV_STORE_METRICS_PORT", "0")))
+    pm.setdefault(
+        "kv_store_metrics_endpoint",
+        os.getenv("KV_STORE_METRICS_URL", ""),
+    )
+    if not pm.get("enable_kv_store_metrics"):
+        # Auto-enable when an explicit kv_cache_store_config is present
+        pm["enable_kv_store_metrics"] = True
+
+
 class SchedulerType(Enum):
     LOAD_BALANCE = "load_balance"
     ROUND_ROBIN = "round_robin"
@@ -151,8 +177,12 @@ class PrometheusMetricsConfig:
     """Prometheus metrics configuration class"""
 
     reuse_time: int = 3
-    pool_metrics_enable: bool = False
-    pool_metrics_endpoint: str = ""
+    # --- KV store metrics (auto-populated from kv_cache_store_config) ---
+    enable_kv_store_metrics: bool = False
+    kv_store_metrics_endpoint: str = ""
+    kv_store_backend: str = ""  # e.g. "memcache", "mooncake"
+    kv_store_service: str = ""  # default falls back to $KVS_MASTER_SERVICE
+    kv_store_metrics_port: int = 0  # 0 → auto: 50088 (mooncake) / 50090 (default)
 
 
 @dataclass
@@ -408,6 +438,7 @@ class CoordinatorConfig:
                         _update_tls_config(tls_configs, cfg, raw)
                         _update_instances_num(cfg, raw)
                         _update_prefill_kv_event_config(cfg, raw)
+                        _merge_kv_store_metrics_config(cfg, raw)
         except (json.JSONDecodeError, Exception) as e:
             log_json_config_load_error(json_path, e)
 
