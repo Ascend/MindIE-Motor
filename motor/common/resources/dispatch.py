@@ -228,6 +228,30 @@ class DispatchEndpoints(BaseModel):
     )
 
 
+class PrefillContextBudget(BaseModel):
+    """Output budget used by the prefill post-tokenization context check."""
+
+    max_output_tokens: int = Field(
+        ...,
+        ge=0,
+        description="Remaining output-token budget for the current dispatch attempt",
+    )
+    parameter: Literal["max_tokens", "max_completion_tokens"] = Field(
+        ...,
+        description="Client request field that supplied the output-token budget",
+    )
+
+    def after_output_tokens(self, consumed_output_tokens: int) -> "PrefillContextBudget":
+        """Return the budget remaining after replaying visible output tokens."""
+        if consumed_output_tokens < 0:
+            raise ValueError("consumed_output_tokens must be non-negative")
+        if consumed_output_tokens == 0:
+            return self
+        # Resumed decode requests retain at least one output token so they can
+        # recover a missing terminal chunk after the advertised budget was used.
+        return self.model_copy(update={"max_output_tokens": max(1, self.max_output_tokens - consumed_output_tokens)})
+
+
 class MotorDispatch(BaseModel):
     """Motor metadata embedded in inference request bodies under ``_motor_dispatch``."""
 
@@ -248,6 +272,13 @@ class MotorDispatch(BaseModel):
         ...,
         min_length=1,
         description="Coordinator dispatch plan name, e.g. concurrent_engine_sync or prefill_handoff_decode",
+    )
+    prefill_context_budget: PrefillContextBudget | None = Field(
+        default=None,
+        description=(
+            "Remaining client output-token budget and its source field; used for "
+            "post-tokenization handoff-prefill validation"
+        ),
     )
     endpoints: DispatchEndpoints = Field(
         ...,

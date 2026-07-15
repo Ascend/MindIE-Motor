@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from motor.common.http import HTTPClientPool
-from motor.common.resources.dispatch import DispatchEndpoint, DispatchEndpoints, MotorDispatch
+from motor.common.resources.dispatch import (
+    DispatchEndpoint,
+    DispatchEndpoints,
+    MotorDispatch,
+    PrefillContextBudget,
+)
 from motor.common.resources.instance import PDRole
 from motor.common.utils.net import format_address
 from motor.config.coordinator import CoordinatorConfig
@@ -49,6 +54,7 @@ class AttemptContext:
     root_request_id: str
     attempt_seq: int
     pair_id: str
+    prefill_context_budget: PrefillContextBudget | None = None
     prefill_resource: ScheduledResource | None = None
     decode_resource: ScheduledResource | None = None
     state: AttemptState = AttemptState.CREATED
@@ -94,6 +100,7 @@ class AttemptContext:
             attempt_seq=self.attempt_seq,
             role="prefill" if role == PDRole.ROLE_P else "decode",
             dispatch_mode=dispatch_mode,
+            prefill_context_budget=self.prefill_context_budget,
             endpoints=DispatchEndpoints(
                 prefill=_dispatch_endpoint(self.prefill_resource),
                 decode=_dispatch_endpoint(self.decode_resource),
@@ -193,8 +200,13 @@ class AttemptContext:
 
 
 class PDDispatchSession:
-    def __init__(self, root_request_id: str) -> None:
+    def __init__(
+        self,
+        root_request_id: str,
+        prefill_context_budget: PrefillContextBudget | None = None,
+    ) -> None:
         self.root_request_id = root_request_id
+        self.prefill_context_budget = prefill_context_budget
         self._attempt_seq = 0
         self.attempts: dict[int, AttemptContext] = {}
 
@@ -203,12 +215,18 @@ class PDDispatchSession:
         prefill_resource: ScheduledResource | None,
         decode_resource: ScheduledResource | None,
         config: CoordinatorConfig,
+        *,
+        consumed_output_tokens: int = 0,
     ) -> AttemptContext:
         self._attempt_seq += 1
+        budget = self.prefill_context_budget
+        if budget is not None:
+            budget = budget.after_output_tokens(consumed_output_tokens)
         attempt = AttemptContext(
             root_request_id=self.root_request_id,
             attempt_seq=self._attempt_seq,
             pair_id=uuid.uuid4().hex,
+            prefill_context_budget=budget,
             prefill_resource=prefill_resource,
             decode_resource=decode_resource,
             config=config,

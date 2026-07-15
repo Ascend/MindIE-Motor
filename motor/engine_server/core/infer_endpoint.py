@@ -104,6 +104,9 @@ class InferEndpoint(Endpoint):
             original_body = await raw_request.json()
             body = original_body.copy()
             body, dispatch = await self.dispatch_adapter.adapt_request_body(body)
+            prefill_context_check = self.dispatch_adapter.get_prefill_context_check(dispatch)
+            if prefill_context_check is not None:
+                raw_request.state.motor_prefill_context_check = prefill_context_check
             context = DispatchResponseContext(
                 api=raw_request.url.path.strip("/"),
                 raw_path=raw_request.url.path,

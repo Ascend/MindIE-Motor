@@ -34,6 +34,9 @@ from motor.engine_server.core.dispatch_adapter.normalization import (
     normalize_nonstream_body,
     normalize_stream_chunk,
 )
+from motor.engine_server.core.vllm.prefill_context_validation import (
+    PrefillContextCheck,
+)
 
 
 class VLLMDispatchAdapter(DispatchAdapter):
@@ -105,6 +108,24 @@ class VLLMDispatchAdapter(DispatchAdapter):
                     {"do_remote_decode": True, "do_remote_prefill": False},
                 )
         return body
+
+    def get_prefill_context_check(
+        self,
+        dispatch: MotorDispatch | None,
+    ) -> PrefillContextCheck | None:
+        """Read the Coordinator-carried budget after P request rewriting."""
+        if (
+            dispatch is None
+            or dispatch.role != "prefill"
+            or not self._uses_handoff(dispatch)
+            or dispatch.prefill_context_budget is None
+        ):
+            return None
+        budget = dispatch.prefill_context_budget
+        return PrefillContextCheck(
+            max_output_tokens=budget.max_output_tokens,
+            parameter=budget.parameter,
+        )
 
     async def maybe_prepare_response(
         self, body: dict[str, Any], dispatch: MotorDispatch | None
@@ -205,6 +226,12 @@ class VLLMDispatchAdapter(DispatchAdapter):
         if not isinstance(body, dict):
             return response
         if context.dispatch is not None and context.dispatch.role == "prefill" and self._uses_handoff(context.dispatch):
+            # Only successful prefill responses are valid handoff results.
+            # Preserve validation and serving errors with their original HTTP
+            # status and OpenAI-compatible error body.
+            status_code = getattr(response, "status_code", 200)
+            if not 200 <= status_code < 300 or body.get("error") is not None:
+                return response
             # The decode leg consumes ``payload`` directly as its ``kv_transfer_params``
             # (see ``_consume_prefill_result``), and the engine connector reads the KV
             # bootstrap fields (do_remote_prefill, remote_block_ids, remote_host, ...) at

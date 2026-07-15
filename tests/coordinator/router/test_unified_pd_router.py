@@ -11,6 +11,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -24,18 +25,29 @@ from motor.common.resources.dispatch import (
     DispatchStopReason,
     MOTOR_DISPATCH_KEY,
     MOTOR_PREFILL_RESULT_KEY,
+    PrefillContextBudget,
 )
-from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload, WorkloadAction
+from motor.common.resources.endpoint import (
+    Endpoint,
+    EndpointStatus,
+    Workload,
+    WorkloadAction,
+)
 from motor.common.resources.instance import Instance, InsStatus, ParallelConfig, PDRole
 from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
-from motor.coordinator.router.dispatch_session import AttemptContext, AttemptState, PDDispatchSession
+from motor.coordinator.router.dispatch_session import (
+    AttemptContext,
+    AttemptState,
+    PDDispatchSession,
+)
 from motor.coordinator.router.dispatch_capability import (
     DispatchPlanNotSupported,
     select_dispatch_plan_for_pair,
 )
+from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
 
@@ -334,7 +346,10 @@ async def _invoke_asgi_response(response) -> list[dict]:
 @pytest.mark.parametrize(
     ("reason", "expected"),
     [
-        (f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8102", DispatchStopReason.PEER_FAILED),
+        (
+            f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8102",
+            DispatchStopReason.PEER_FAILED,
+        ),
         (cancel_error.CLIENT_DISCONNECT, DispatchStopReason.CLIENT_DISCONNECT),
         (cancel_error.DISPATCH_ABORT, DispatchStopReason.OTHER),
         (cancel_error.SCOPE_ABORT, DispatchStopReason.OTHER),
@@ -604,7 +619,9 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_handoff_registers_decode_canceller_after_client_open(monkeypatch):
+async def test_unified_pd_handoff_registers_decode_canceller_after_client_open(
+    monkeypatch,
+):
     # Regression: the late-allocated decode canceller must be registered only after the
     # decode client is opened, because HTTPClientPool.register_canceller is a no-op until
     # the client exists in the pool.
@@ -702,7 +719,9 @@ async def test_unified_pd_nonretryable_upstream_error_is_not_retried(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_stream_prefill_rejection_is_returned_before_first_decode_token(monkeypatch):
+async def test_unified_pd_stream_prefill_rejection_is_returned_before_first_decode_token(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-stream-reject",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -984,7 +1003,10 @@ async def test_unified_pd_release_carries_stable_operation_id():
         attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
         resource = attempt.prefill_resource
         item = await router._prepare_release_work_item(
-            resource, attempt.attempt_seq, WorkloadAction.RELEASE_TOKENS, attempt=attempt
+            resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt=attempt,
         )
         assert item is not None
         op_id = item.params.operation_id
@@ -1320,7 +1342,9 @@ async def test_unified_pd_drain_double_cancel_keeps_release_cleanup():
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_concurrent_stream_tail_release_survives_iterator_cancellation(monkeypatch):
+async def test_unified_pd_concurrent_stream_tail_release_survives_iterator_cancellation(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-stream-tail-cancel",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1387,7 +1411,9 @@ async def test_unified_pd_concurrent_stream_tail_release_survives_iterator_cance
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_handoff_stream_yields_before_prefill_kv_release_finishes(monkeypatch):
+async def test_unified_pd_handoff_stream_yields_before_prefill_kv_release_finishes(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-handoff-kv-background",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1451,7 +1477,9 @@ async def test_unified_pd_handoff_stream_yields_before_prefill_kv_release_finish
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_handoff_stream_yields_before_prefill_token_release_finishes(monkeypatch):
+async def test_unified_pd_handoff_stream_yields_before_prefill_token_release_finishes(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-handoff-token-background",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1572,7 +1600,9 @@ async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_concurrent_stream_prefill_release_does_not_block_first_chunk(monkeypatch):
+async def test_unified_pd_concurrent_stream_prefill_release_does_not_block_first_chunk(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-concurrent-prefill-release-background",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1644,7 +1674,9 @@ async def test_unified_pd_concurrent_stream_prefill_release_does_not_block_first
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_concurrent_nonstream_releases_prefill_tokens_before_decode_finishes(monkeypatch):
+async def test_unified_pd_concurrent_nonstream_releases_prefill_tokens_before_decode_finishes(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-concurrent-nonstream-prefill-release",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -1982,10 +2014,18 @@ async def test_unified_pd_stream_error_after_visible_chunk_reschedules_with_toke
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_retry_plan_validation_fails_before_new_attempt_allocation(monkeypatch):
+async def test_unified_pd_retry_plan_validation_fails_before_new_attempt_allocation(
+    monkeypatch,
+):
     req_info = RequestInfo(
         req_id="root-stream-invalid-replay",
-        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8, "n": 2},
+        req_data={
+            "model": "m",
+            "prompt": "hello",
+            "stream": True,
+            "max_tokens": 8,
+            "n": 2,
+        },
         api="v1/completions",
         entry_api="v1/completions",
         req_len=10,
@@ -2106,6 +2146,14 @@ async def test_unified_pd_handoff_stream_retry_replays_same_prompt_through_prefi
     assert len(d_client.requests) == 2
     assert p_client.requests[1]["prompt"] == [1, 2, 10]
     assert p_client.requests[1]["max_tokens"] == 1
+    assert p_client.requests[0][MOTOR_DISPATCH_KEY]["prefill_context_budget"] == {
+        "max_output_tokens": 8,
+        "parameter": "max_tokens",
+    }
+    assert p_client.requests[1][MOTOR_DISPATCH_KEY]["prefill_context_budget"] == {
+        "max_output_tokens": 7,
+        "parameter": "max_tokens",
+    }
     assert d_client.requests[1]["prompt"] == [1, 2, 10]
     assert d_client.requests[1]["max_tokens"] == 7
     retry_prefill_result = d_client.requests[1][MOTOR_PREFILL_RESULT_KEY]
@@ -2331,3 +2379,51 @@ async def test_unified_pd_stream_error_before_first_body_retries_without_token_r
 
     assert len(d_client.requests) == 2
     assert chunks == [b'data: {"choices":[{"delta":{"content":"B"},"index":0,"finish_reason":"stop"}]}\n\n']
+
+
+def test_dispatch_carries_effective_output_budget_to_prefill_leg():
+    session = PDDispatchSession(
+        "request-1",
+        prefill_context_budget=PrefillContextBudget(
+            max_output_tokens=24,
+            parameter="max_completion_tokens",
+        ),
+    )
+    attempt = session.new_attempt(None, None, config=None, consumed_output_tokens=5)
+
+    dispatch = attempt.dispatch_for(PDRole.ROLE_P, "prefill_handoff_decode")
+
+    assert dispatch.prefill_context_budget == PrefillContextBudget(
+        max_output_tokens=19,
+        parameter="max_completion_tokens",
+    )
+
+
+def test_unified_pd_prefers_max_completion_tokens_and_preserves_parameter():
+    router = SimpleNamespace(req_info=SimpleNamespace(req_data={"max_tokens": 32, "max_completion_tokens": 24}))
+
+    assert UnifiedPDRouter._prefill_context_budget(router) == PrefillContextBudget(
+        max_output_tokens=24,
+        parameter="max_completion_tokens",
+    )
+
+
+def test_retry_plan_preserves_max_completion_tokens_precedence_for_completion_replay():
+    plan = RetryRequestPlan(
+        prompt_token_ids=(1, 2, 10),
+        api="v1/completions",
+        remove_chat_fields=True,
+        cached_output_tokens=1,
+    )
+    request = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 32,
+        "max_completion_tokens": 8,
+    }
+
+    decode_request, api = Rescheduler.apply_retry_plan(request, plan)
+
+    assert api == "v1/completions"
+    assert "messages" not in decode_request
+    assert "max_completion_tokens" not in decode_request
+    assert decode_request["max_tokens"] == 7

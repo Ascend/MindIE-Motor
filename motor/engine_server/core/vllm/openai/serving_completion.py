@@ -32,6 +32,11 @@ from motor.engine_server.core.vllm.vllm_openai_compat import (
     call_openai_serving,
     kwargs_matching_signature,
 )
+from motor.engine_server.core.vllm.prefill_context_validation import (
+    activate_prefill_context_check,
+    install_completion_render_validator,
+    reset_prefill_context_check,
+)
 
 
 class OpenAIServingCompletion:
@@ -60,10 +65,16 @@ class OpenAIServingCompletion:
             models,
             **comp_kw,
         )
+        install_completion_render_validator(self._vllm_serving_completion)
 
     async def handle_request(self, request: CompletionRequest, raw_request: Request):
-        return await call_openai_serving(
-            self._vllm_serving_completion,
-            lambda: self._vllm_serving_completion.create_completion(request, raw_request),
-            CompletionResponse,
-        )
+        check = getattr(raw_request.state, "motor_prefill_context_check", None)
+        token = activate_prefill_context_check(check)
+        try:
+            return await call_openai_serving(
+                self._vllm_serving_completion,
+                lambda: self._vllm_serving_completion.create_completion(request, raw_request),
+                CompletionResponse,
+            )
+        finally:
+            reset_prefill_context_check(token)

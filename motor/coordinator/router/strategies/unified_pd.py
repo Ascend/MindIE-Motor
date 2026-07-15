@@ -27,6 +27,7 @@ from motor.common.resources.dispatch import (
     MOTOR_PREFILL_RESULT_KEY,
     PrefillResult,
     PrefillResultStatus,
+    PrefillContextBudget,
 )
 from motor.common.resources.endpoint import WorkloadAction
 from motor.common.resources.instance import PDRole
@@ -37,6 +38,7 @@ from motor.coordinator.domain import (
     UpdateWorkloadParams,
 )
 from motor.coordinator.domain.request_manager import RequestManager
+from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
@@ -361,7 +363,10 @@ class UnifiedPDRouter(BaseRouter):
         trace_obj = self.req_info.trace_obj
         with self._trace_span("UnifiedPD_Stream", True):
             max_retry = max(self.config.exception_config.transport_retry_limit, 1)
-            session = PDDispatchSession(self.req_info.req_id)
+            session = PDDispatchSession(
+                self.req_info.req_id,
+                prefill_context_budget=self._prefill_context_budget(),
+            )
 
             async with self._manage_request_context():
                 for attempt_index in range(max_retry):
@@ -442,7 +447,10 @@ class UnifiedPDRouter(BaseRouter):
         trace_obj = self.req_info.trace_obj
         with self._trace_span("UnifiedPD", False):
             max_retry = max(self.config.exception_config.transport_retry_limit, 1)
-            session = PDDispatchSession(self.req_info.req_id)
+            session = PDDispatchSession(
+                self.req_info.req_id,
+                prefill_context_budget=self._prefill_context_budget(),
+            )
 
             async with self._manage_request_context():
                 for attempt_index in range(max_retry):
@@ -541,13 +549,21 @@ class UnifiedPDRouter(BaseRouter):
 
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
+        consumed_output_tokens = (
+            self._active_retry_plan.cached_output_tokens if self._active_retry_plan is not None else 0
+        )
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
 
         # Handoff connectors (CPCD-style) do not need a concrete decode endpoint while prefill runs.
         # Allocate D after prefill completes so long prompts do not reserve stale decode workload for
         # the entire prefill window. Concurrent connectors still allocate both legs up front.
         if self._should_defer_decode_allocation(p_resource):
-            return session.new_attempt(p_resource, None, self.config)
+            return session.new_attempt(
+                p_resource,
+                None,
+                self.config,
+                consumed_output_tokens=consumed_output_tokens,
+            )
 
         try:
             d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt_seq)
@@ -561,7 +577,12 @@ class UnifiedPDRouter(BaseRouter):
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_TOKENS)
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_KV)
             raise
-        return session.new_attempt(p_resource, d_resource, self.config)
+        return session.new_attempt(
+            p_resource,
+            d_resource,
+            self.config,
+            consumed_output_tokens=consumed_output_tokens,
+        )
 
     @staticmethod
     def _should_defer_decode_allocation(
@@ -1066,6 +1087,17 @@ class UnifiedPDRouter(BaseRouter):
         if prefill_result is not None:
             req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")
         return (req, api)
+
+    def _prefill_context_budget(self) -> PrefillContextBudget | None:
+        """Return the client budget before the prefill leg is rewritten to one token."""
+        for field in (OpenAIField.MAX_COMPLETION_TOKENS, OpenAIField.MAX_TOKENS):
+            value = self.req_info.req_data.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return PrefillContextBudget(
+                    max_output_tokens=value,
+                    parameter=field.value,
+                )
+        return None
 
     async def _request_prefill_result(self, attempt: AttemptContext, p_client) -> PrefillResult:
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)

@@ -32,6 +32,7 @@ from motor.common.resources.dispatch import (
     PrefillResult,
 )
 from motor.engine_server.core.config import IConfig
+from motor.engine_server.core.vllm.prefill_context_validation import PrefillContextCheck
 from motor.engine_server.core.errors.sanitizer import sanitize_error_message
 
 logger = get_logger(__name__)
@@ -337,6 +338,13 @@ class DispatchAdapter:
             await self.stop_peer(dispatch)
             await self.finish_dispatch(dispatch)
             raise
+
+    def get_prefill_context_check(
+        self,
+        dispatch: MotorDispatch | None,
+    ) -> PrefillContextCheck | None:
+        """Return a post-tokenization context check for this request, if needed."""
+        return None
 
     async def maybe_prepare_response(
         self, body: dict[str, Any], dispatch: MotorDispatch | None

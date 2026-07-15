@@ -265,6 +265,11 @@ class Rescheduler:
         if plan.remove_chat_fields:
             for key in _CHAT_ONLY_KEYS_RECOMPUTE:
                 req_data.pop(key, None)
+            if OpenAIField.MAX_COMPLETION_TOKENS in req_data:
+                # When token replay converts Chat to Completions, preserve
+                # max_completion_tokens precedence using the field that the
+                # CompletionRequest protocol actually consumes.
+                req_data[OpenAIField.MAX_TOKENS] = req_data.pop(OpenAIField.MAX_COMPLETION_TOKENS)
         req_data[OpenAIField.PROMPT] = list(plan.prompt_token_ids)
 
         if not prefill and OpenAIField.MAX_TOKENS in req_data:
