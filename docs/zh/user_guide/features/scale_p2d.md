@@ -90,27 +90,17 @@ spec:
       # ...
 ```
 
-#### 2. 为 controller/coordinator/prefill / decode 角色配置 priority
+#### 2. 为 prefill / decode 角色配置 priority
 
-在 `controller`、`coordinator`、`prefill`、`decode` 四个 role 的 `spec` 同级增加 `priority` 字段（**仅开启优先级调度时生效**）：
+在 `prefill`、`decode` 两个 role 的 `spec` 同级增加 `priority` 字段（**仅开启优先级调度时生效**）：
 
 | 字段 | 类型 | 取值范围 | 说明 |
 |------|------|----------|------|
 | `priority` | int | 1–32 | 数值越小，调度优先级越高 |
 
-PD 分离场景下，建议 **prefill 的 `priority` 数值大于 controller，coordinator，decode**（即 prefill 优先级最低，更易被抢占），与 ScaleP2D「优先释放 P 算力」的策略一致。示例：
+PD 分离场景下，建议 **prefill 的 `priority` 数值大于 decode**（即 prefill 优先级最低，更易被抢占），与 ScaleP2D「优先释放 P 算力」的策略一致。示例：
 
 ```yaml
-    - name: controller
-      replicas: 1
-      priority: 1
-      # ...
-
-    - name: coordinator
-      replicas: 1
-      priority: 1
-       # ...
-
     - name: prefill
       replicas: 4
       priority: 2          # 优先级最低
