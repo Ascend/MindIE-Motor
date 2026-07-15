@@ -24,6 +24,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from motor.common.logger import get_logger
+from motor.common.http.cert_util import CertUtil
+from motor.common.utils.net import format_address
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
@@ -68,6 +70,7 @@ class ObservabilityServer(BaseCoordinatorServer):
             config = CoordinatorConfig()
         super().__init__(config)
         self._daemon_pid = daemon_pid
+        self._obs_ssl_config = self.coordinator_config.mgmt_tls_config
 
         # Connect to the scheduler the same way Inference/Mgmt servers do, so the
         # client subscribes to the scheduler's instance-change pub and keeps a live view.
@@ -140,8 +143,28 @@ class ObservabilityServer(BaseCoordinatorServer):
         self.apply_timeout_to_config(config_kwargs)
         uv_config = uvicorn.Config(**config_kwargs)
         uv_config.load()
+        if self._obs_ssl_config and self._obs_ssl_config.enable_tls:
+            obs_ssl_context = CertUtil.create_ssl_context(tls_config=self._obs_ssl_config)
+            if obs_ssl_context:
+                uv_config.ssl = obs_ssl_context
+                logger.info(
+                    "Starting observability API server on https://%s",
+                    format_address(
+                        self.coordinator_config.api_config.coordinator_api_host,
+                        self.coordinator_config.api_config.coordinator_obs_port,
+                    ),
+                )
+            else:
+                logger.warning(
+                    "Failed to create SSL context for observability API server on %s, "
+                    "falling back to HTTP. Check certificate and key file paths.",
+                    format_address(
+                        self.coordinator_config.api_config.coordinator_api_host,
+                        self.coordinator_config.api_config.coordinator_obs_port,
+                    ),
+                )
         server = uvicorn.Server(uv_config)
         await server.serve()
 
     def _apply_config_changes(self, new_config: CoordinatorConfig) -> None:
-        pass
+        self._obs_ssl_config = new_config.mgmt_tls_config

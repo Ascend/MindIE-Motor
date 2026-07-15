@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -499,9 +498,9 @@ def test_config_summary_includes_hybrid_fields(_temp_json_file):
     config = CoordinatorConfig.from_json(_temp_json_file)
     summary = config.get_config_summary()
 
-    assert "hybrid_instances_num: 3" in summary
+    assert "hybrid_instances_num:   3" in summary
     assert "single_hybrid_instance_pod_num: 1" in summary
-    assert "hybrid_pod_npu_num: 4" in summary
+    assert "hybrid_pod_npu_num:     4" in summary
 
 
 def test_multiple_instances():
