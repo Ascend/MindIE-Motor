@@ -4,7 +4,7 @@
 
 ## 功能介绍
 
-PyMotor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到缓存了对应 KV 的实例，从而减少 KV Cache 跨实例传输开销，提升推理吞吐与响应速度。相关能力和接口的介绍可参考 [Mooncake Conductor 介绍文档](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md)。
+MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到缓存了对应 KV 的实例，从而减少 KV Cache 跨实例传输开销，提升推理吞吐与响应速度。相关能力和接口的介绍可参考 [Mooncake Conductor 介绍文档](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md)。
 
 通过修改 `user_config.json` 配置文件后即可通过 `deploy.py` 脚本完成服务部署。
 
@@ -12,8 +12,8 @@ PyMotor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conducto
 
 ## 前置说明
 
-- 必须已使用 motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
-- 开启亲和性调度能力前请先参考 [pyMotor 快速开始](../quick_start.md)，确保环境能正常完成基础的服务部署。
+- 必须已使用 MindIE Motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
+- 开启亲和性调度能力前请先参考 [MindIE Motor 快速开始](../quick_start.md)，确保环境能正常完成基础的服务部署。
 - 当前 Mooncake Conductor 组件相关代码还未上库主线分支，当前镜像中不含 Mooncake Conductor，**需要基于现有镜像额外安装 Mooncake Conductor 服务组件**（见快速实践步骤二）。
 - 后续所有操作只在 k8s 集群的管理节点（master 节点）执行。
 
@@ -111,7 +111,7 @@ PyMotor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conducto
 
 ### 1. PD 分离配置示例
 
-以 [PyMotor 快速开始](../quick_start.md) 中的 `user_config.json` 为基线，开启 KV Cache 亲和性调度后的完整配置示例如下：
+以 [MindIE Motor 快速开始](../quick_start.md) 中的 `user_config.json` 为基线，开启 KV Cache 亲和性调度后的完整配置示例如下：
 
 ```json
 {
@@ -233,7 +233,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 ### KV Cache 亲和性调度整体流程
 
-PyMotor KV Cache 亲和性调度能力基于 Mooncake Conductor 组件实现。整体流程如下：
+MindIE Motor KV Cache 亲和性调度能力基于 Mooncake Conductor 组件实现。整体流程如下：
 
 1. **KV Cache 事件发布**：P 实例完成 PreFill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 sequence 的 KV Cache 位置信息）。
 2. **Conductor 事件收集**：Mooncake Conductor 组件接收并索引 P 实例发布的 KV Cache 事件，维护一张全局的 KV Cache 位置映射表。

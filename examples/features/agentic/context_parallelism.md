@@ -2,19 +2,19 @@
 
 ## 概述
 
-**Prefill Context Parallel (PCP)** 是将长序列的 prefill 计算切分到多个设备上并行执行的策略，用于支持超长上下文场景。PyMotor 完整集成了 PCP 以及跨节点的 PCP 编排能力。
+**Prefill Context Parallel (PCP)** 是将长序列的 prefill 计算切分到多个设备上并行执行的策略，用于支持超长上下文场景。MindIE Motor 完整集成了 PCP 以及跨节点的 PCP 编排能力。
 
-- **单节点 PCP**：PCP rank 全部在同一节点的多张 NPU 上，PyMotor 通过 `engine_config` 中的 `prefill-context-parallel-size` 参数自动将配置透传给 vLLM 引擎。
-- **跨节点 PCP**：PCP rank 分布在多个节点的 NPU 上，PyMotor 自动化处理节点注册、主从分配、通信地址注入等全流程。
+- **单节点 PCP**：PCP rank 全部在同一节点的多张 NPU 上，MindIE Motor 通过 `engine_config` 中的 `prefill-context-parallel-size` 参数自动将配置透传给 vLLM 引擎。
+- **跨节点 PCP**：PCP rank 分布在多个节点的 NPU 上，MindIE Motor 自动化处理节点注册、主从分配、通信地址注入等全流程。
 
 > 关于 vLLM Ascend 跨节点 PCP 的底层原理与参数说明，请参考 vLLM 社区文档：
 > 👉 **[长序列上下文并行的多节点部署](https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/v0.18.0/tutorials/features/long_sequence_context_parallel_multi_node.html)**
 
-## 跨节点 PCP 在 PyMotor 中的使用
+## 跨节点 PCP 在 MindIE Motor 中的使用
 
 ### 用户配置
 
-用户只需在 `engine_config` 中添加 `nnodes` 和 `master-port` 两个字段，其余参数由 PyMotor 自动管理：
+用户只需在 `engine_config` 中添加 `nnodes` 和 `master-port` 两个字段，其余参数由 MindIE Motor 自动管理：
 
 ```json
 {
@@ -37,12 +37,12 @@
 |------|------|
 | `nnodes` | PCP 组包含的节点数。每个 PCP 组内 `nnodes` 个节点协同完成跨节点上下文并行 |
 | `master-port` | PCP 主节点（`node_rank=0`）的通信端口 |
-| `prefill-context-parallel-size` | 全局 PCP 并行度。PyMotor 会自动计算每节点贡献的 PCP rank 数 |
+| `prefill-context-parallel-size` | 全局 PCP 并行度。MindIE Motor 会自动计算每节点贡献的 PCP rank 数 |
 | `cp-kv-cache-interleave-size` | CP KV cache 交错粒度，控制 PCP rank 间 KV cache 的分片大小 |
 
-### PyMotor 自动管理的参数
+### MindIE Motor 自动管理的参数
 
-以下 vLLM 原生参数由 PyMotor 自动推导和注入，**无需用户手动配置**：
+以下 vLLM 原生参数由 MindIE Motor 自动推导和注入，**无需用户手动配置**：
 
 | 参数 | 自动管理方式 |
 |------|-------------|

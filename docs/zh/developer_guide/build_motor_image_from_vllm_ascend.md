@@ -1,4 +1,4 @@
-# 基于vllm-ascend/sglang镜像安装Motor
+# 基于vllm-ascend/sglang镜像安装MindIE Motor
 
 ## 依赖下载（可选）
 
@@ -24,11 +24,11 @@ tar -czvf pciutils-offline.tar.gz pciutils-offline
 
 ### 2. 下载whl依赖
 
-下载Motor代码到`/mnt/`路径下
+下载MindIE Motor代码到`/mnt/`路径下
 
 ```bash
 cd /mnt/
-git clone <motor的git链接>
+git clone <MindIE Motor的git链接>
 
 mkdir -p /mnt/packages-offline
 
@@ -43,7 +43,7 @@ tar -czvf packages-offline.tar.gz packages-offline
 
 将`/mnt/packages-offline.tar.gz`拷贝到制作镜像机器的`/mnt/`路径下
 
-### 3. 构建motor的whl包
+### 3. 构建MindIE Motor的whl包
 
 ```bash
 cd /mnt/MindIE-PyMotor
@@ -69,7 +69,7 @@ tar -czvf MindIE-PyMotor.tar.gz MindIE-PyMotor
 docker pull quay.io/ascend/vllm-ascend:v0.13.0
 ```
 
-## 安装PyMotor
+## 安装MindIE Motor
 
 ### 1. 查看镜像
 
@@ -95,7 +95,7 @@ docker start docker-vllm-ascend
 docker exec -it docker-vllm-ascend bash
 ```
 
-### 5. 安装motor及其依赖
+### 5. 安装MindIE Motor及其依赖
 
 #### 5.1 安装 pciutils
 
@@ -120,9 +120,9 @@ dpkg -i *.deb
 - 在线安装：
 
     ```bash
-    # 下载motor代码，执行以下命令，git命令根据需要下载的分支或tag进行修改
+    # 下载MindIE Motor代码，执行以下命令，git命令根据需要下载的分支或tag进行修改
     cd /mnt/
-    git clone <motor的git链接>
+    git clone <MindIE Motor的git链接>
 
     cd /mnt/MindIE-PyMotor
 
@@ -149,7 +149,7 @@ dpkg -i *.deb
     tar -xzvf packages-offline.tar.gz
     pip install /mnt/packages-offline/*.whl --force-reinstall --no-index -v
 
-    # 安装motor
+    # 安装MindIE Motor
     pip install --force-reinstall /mnt/MindIE-PyMotor/dist/motor-0.1.0-py3-none-any.whl --force-reinstall --no-index -v
 
     # 拷贝examples
@@ -166,7 +166,7 @@ dpkg -i *.deb
 docker commit -m "add motor"  docker-vllm-ascend  mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64
 ```
 
-保存后，`mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64`镜像就是制作好之后带motor的镜像。
+保存后，`mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64`镜像就是制作好之后带MindIE Motor的镜像。
 
 ### 7. 打包镜像
 
@@ -174,7 +174,7 @@ docker commit -m "add motor"  docker-vllm-ascend  mindie-motor-vllm:dev-800I-A3-
 docker save -o /mnt/motor-vllm-ascend.tar mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64
 ```
 
-### 8. 导入带有motor的镜像
+### 8. 导入带有MindIE Motor的镜像
 
 在非制作镜像的节点导入镜像
 

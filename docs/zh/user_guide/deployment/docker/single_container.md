@@ -2,7 +2,7 @@
 
 ## 特性介绍
 
-本文档描述在**不使用 Kubernetes deployer**、仅用 **Docker 容器 + 宿主机挂载配置** 的方式部署单容器PyMotor PD分离推理的**端到端流程**。
+本文档描述在**不使用 Kubernetes deployer**、仅用 **Docker 容器 + 宿主机挂载配置** 的方式部署单容器MindIE Motor PD分离推理的**端到端流程**。
 
 ## 部署流程
 

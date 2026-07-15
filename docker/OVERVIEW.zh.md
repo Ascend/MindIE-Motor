@@ -127,7 +127,7 @@ docker run --rm -it \
 
 #### 启动推理服务
 
-实际部署需提前准备 `boot.sh`、`user_config.json` 等配置文件，并挂载到容器内。完整端到端流程见 [docker-only 单容器部署指南](../docs/zh/developer_guide/docker_only/single_container_docker_only.md)。
+实际部署需提前准备 `boot.sh`、`user_config.json` 等配置文件，并挂载到容器内。完整端到端流程见 [docker-only 单容器部署指南](../docs/zh/user_guide/deployment/docker/single_container.md)。
 
 ```bash
 CONFIGMAP_PATH="/path/to/configmap"

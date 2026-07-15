@@ -1,8 +1,8 @@
-# CRD 方式部署设计文档（MindIE PyMotor）
+# CRD 方式部署设计文档（MindIE Motor）
 
 ## 背景与目标
 
-本文用于说明 MindIE PyMotor 基于 InferServiceSet CRD 的部署方式设计与实现。
+本文用于说明 MindIE Motor 基于 InferServiceSet CRD 的部署方式设计与实现。
 
 目标：
 

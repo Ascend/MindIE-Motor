@@ -1,6 +1,6 @@
 # 可靠性能力（特性说明）
 
-MindIE-PyMotor 提供多层级的可靠性保障机制，覆盖硬件故障感知、实例故障隔离、自动重拉起注册、缩P保D及token级重推（网络故障恢复）等场景。核心组件包括 `FaultManager`（故障管理）、`InstanceAssembler`（实例组装）和 `InstanceManager`（实例生命周期管理）。
+MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知、实例故障隔离、自动重拉起注册、缩P保D及token级重推（网络故障恢复）等场景。核心组件包括 `FaultManager`（故障管理）、`InstanceAssembler`（实例组装）和 `InstanceManager`（实例生命周期管理）。
 
 ## 能力总览
 

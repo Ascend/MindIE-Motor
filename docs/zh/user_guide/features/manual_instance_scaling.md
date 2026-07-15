@@ -1,8 +1,8 @@
-# 手动扩缩容用户手册（MindIE PyMotor）
+# 手动扩缩容用户手册
 
 ## 适用范围
 
-本手册适用于 MindIE PyMotor 的手动扩缩容流程，通过修改 `user_config.json` 中的实例数并执行相应命令完成扩缩容。
+本手册适用于 MindIE Motor 的手动扩缩容流程，通过修改 `user_config.json` 中的实例数并执行相应命令完成扩缩容。
 
 ## 前置条件
 

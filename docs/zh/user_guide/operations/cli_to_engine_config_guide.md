@@ -2,7 +2,7 @@
 
 ## 概述
 
-PyMotor 的 `user_config.json` 中，`motor_engine_prefill_config` / `motor_engine_decode_config` 下的 **`engine_config`** 字段与推理引擎启动命令（如 vLLM 的 `vllm serve`、SGLang 的 `python -m sglang.launch_server`）的 CLI 参数等价——去掉 `--` 前缀后以 JSON 键值写入即可。
+MindIE Motor 的 `user_config.json` 中，`motor_engine_prefill_config` / `motor_engine_decode_config` 下的 **`engine_config`** 字段与推理引擎启动命令（如 vLLM 的 `vllm serve`、SGLang 的 `python -m sglang.launch_server`）的 CLI 参数等价——去掉 `--` 前缀后以 JSON 键值写入即可。
 
 若已有可运行的引擎启动命令，可使用本文提供的转换脚本，将 `serve` 后的 CLI 参数批量转为 `engine_config` JSON 对象，再粘贴到配置文件中。
 

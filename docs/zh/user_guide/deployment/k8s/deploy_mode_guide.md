@@ -2,7 +2,7 @@
 
 ## 概述
 
-`motor_deploy_config.deploy_mode` 用于选择 MindIE PyMotor 的部署方式，决定 deploy.py 如何生成并应用 Kubernetes 资源。
+`motor_deploy_config.deploy_mode` 用于选择 MindIE Motor 的部署方式，决定 deploy.py 如何生成并应用 Kubernetes 资源。
 
 **默认行为**：默认的 `user_config.json` 中不包含 `deploy_mode` 字段时，使用 CRD 方式（`infer_service_set`）部署。如需使用传统多 YAML 方式，在 `motor_deploy_config` 中显式配置 `"deploy_mode": "multi_deployment"` 即可。
 

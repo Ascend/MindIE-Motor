@@ -1,4 +1,4 @@
-# Motor Controller（控制器）
+# Controller（控制器）
 
 ## 功能介绍
 
@@ -57,7 +57,7 @@ Controller 进程入口为 `motor/controller/main.py`。启动时加载 `Control
 | `GET` | `/observability/alarms` | 获取告警信息，支持 `source_id` 查询参数过滤 |
 
 > [!WARNING] 已弃用
-> `GET /observability/metrics` 已弃用，将在后续版本移除。请改为直接访问 Coordinator 的 `GET /metrics?type={type}&role={role}` 接口。Coordinator 的地址和端口见 [Coordinator 指标查询接口](../../api_reference/management_and_monitoring_interfaces.md#指标查询接口)。
+> `GET /observability/metrics` 已弃用，将在后续版本移除。请改为直接访问 Coordinator 的 `GET /metrics?type={type}&role={role}` 接口。Coordinator 的地址和端口见 [Coordinator 指标查询接口](../../user_guide/api/monitoring_interfaces.md#指标查询接口)。
 
 ## 使用样例
 

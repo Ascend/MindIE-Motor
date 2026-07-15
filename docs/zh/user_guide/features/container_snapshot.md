@@ -44,7 +44,7 @@
 
 ## 启用制作容器快照配置
 
-### 1. user_config.json
+### user_config.json
 
 在 `user_config.json` 中增加容器快照相关配置组 `motor_container_snapshot_config`：
 
@@ -85,7 +85,7 @@
 
 Motor 服务框架需为实例节点 Pod 配置 Kubernetes Readiness Probe，供 MindCluster 查询实例节点是否到达稳态点。MindCluster 在实例节点到达稳态点后执行 checkpoint，保存容器 Host 快照镜像。
 
-MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/05_developer_guide/04_container_snapshot_usage.md)。
+MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md)。
 
 **容器快照特性在实例重调度应用场景下的约束**：
 
@@ -151,7 +151,7 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
                 # 因此将seccompProfile.type 设置为 Unconfined，禁用 seccomp 系统调用过滤, 以获得最佳兼容性
                 # 请注意，Unconfined 会增加容器攻击面，仅建议在确有需要时使用
                 # 如果您的集群在 seccompProfile.type: RuntimeDefault 下运行正常，可直接使用 RuntimeDefault，以获得运行时默认的安全过滤
-                # 具体详见资料描述: MindIE-PyMotor/examples/features/pod_permission_guide/README.md
+                # 具体详见资料描述: MindIE Motor/examples/features/pod_permission_guide/README.md
                 seccompProfile:
                   type: Unconfined
               # --------TODO 3: 启用readiness探针用于Mindcluster探测稳态点--------

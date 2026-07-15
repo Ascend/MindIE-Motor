@@ -2,7 +2,7 @@
 
 ## 概述
 
-FaultManager 是 MindIE-PyMotor Controller 中负责故障容错管理的核心组件。它通过观察者模式监听实例生命周期事件，统一管理硬件故障（ConfigMap 上报）和软件故障（引擎异常），协调 ResourceMonitor 进行故障检测，并与 InstanceManager 配合进行实例隔离和恢复。
+FaultManager 是 MindIE Motor Controller 中负责故障容错管理的核心组件。它通过观察者模式监听实例生命周期事件，统一管理硬件故障（ConfigMap 上报）和软件故障（引擎异常），协调 ResourceMonitor 进行故障检测，并与 InstanceManager 配合进行实例隔离和恢复。
 
 ## 架构总览
 
@@ -99,7 +99,7 @@ class FaultInfo(BaseModel):
 
 #### OriginFaultLevel → FaultLevel 静态映射
 
-`OriginFaultLevel` 是 mind-cluster 上游 ConfigMap 中的故障处理策略字符串，通过 `map_fault_level()` 映射为 PyMotor 内部的 `FaultLevel`：
+`OriginFaultLevel` 是 mind-cluster 上游 ConfigMap 中的故障处理策略字符串，通过 `map_fault_level()` 映射为 MindIE Motor 内部的 `FaultLevel`：
 
 | OriginFaultLevel | FaultLevel | 语义 |
 |---|---|---|
@@ -114,7 +114,7 @@ class FaultInfo(BaseModel):
 
 #### PreSeparateNPU 动态等级调整
 
-`PreSeparateNPU` 在 mind-cluster 中表示 NPU 进入预警状态（节点状态 `PreSeparate`，不同于 `UnHealthy`）：不给该 NPU 调度新任务，但现有任务可继续运行。因此 PyMotor 采用**运行时动态判定**而非静态映射：
+`PreSeparateNPU` 在 mind-cluster 中表示 NPU 进入预警状态（节点状态 `PreSeparate`，不同于 `UnHealthy`）：不给该 NPU 调度新任务，但现有任务可继续运行。因此 MindIE Motor 采用**运行时动态判定**而非静态映射：
 
 ```text
 PreSeparateNPU 故障感知

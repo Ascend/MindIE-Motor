@@ -8,7 +8,7 @@
 ```text
                 ┌─────────────────────────────────────────────────────────────────┐
                 │                                                                 │
-                │                             PyMotor                             │
+                │                             MindIE Motor                             │
                 │                                                                 │
                 └────────────────────────────────┬────────────────────────────────┘
                                                  │
@@ -32,13 +32,13 @@
 └──────────────┘                         └──────────────┘                         └──────────────┘
 ```
 
-PyMotor部署EPD分离特性支持`infer_service_set`和`multi_deployment`模式下部署，
+MindIE Motor部署EPD分离特性支持`infer_service_set`和`multi_deployment`模式下部署，
 支持`CPCD`和`CDP`调度模式，在两种调度模式下都是先调度E实例，然后再按照之前逻辑进行调度。
 通过修改user_config.json配置文件后即可通过deploy.py脚本完成服务部署。
 
 ## 部署流程
 
-PyMotor部署EPD分离只需修改user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
+MindIE Motor部署EPD分离只需修改user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
 
 ### 注意
 
@@ -47,7 +47,7 @@ PyMotor部署EPD分离只需修改user_config.json配置文件后，通过deploy
 
 ### 配置user_config.json
 
-以[PyMotor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配EPD分离部署的配置
+以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配EPD分离部署的配置
 
 ```json
 {

@@ -9,7 +9,7 @@
 下文路径均以仓库根目录为基准。
 
 ```text
-MindIE-PyMotor/
+MindIE Motor/
 ├── mkdocs.yml                    # MkDocs 主配置（主题、插件、extensions、extra_css/js 等）
 ├── .readthedocs.yaml             # Read the Docs 在线构建（Python 版本、依赖安装、fail_on_warning）
 ├── requirements/

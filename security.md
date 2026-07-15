@@ -2,7 +2,7 @@
 
 ## 安全须知
 
-使用PyMotor时，为保证安全，用户应根据自身业务，审视整个系统的网络安全加固措施，按照所在组织的安全策略进行相关配置，包括但不局限于软件版本、口令复杂度要求、安全配置（协议、加密套件、秘钥长度等），权限配置、防火墙设置等。关于更多安全声明与建议可参考[昇腾社区MindIE安全管理与加固](https://www.hiascend.com/document/detail/zh/mindie/22RC1/envdeployment/instg/mindie_instg_0041.html)，以社区最新版本为准。
+使用MindIE Motor时，为保证安全，用户应根据自身业务，审视整个系统的网络安全加固措施，按照所在组织的安全策略进行相关配置，包括但不局限于软件版本、口令复杂度要求、安全配置（协议、加密套件、秘钥长度等），权限配置、防火墙设置等。关于更多安全声明与建议可参考[昇腾社区MindIE安全管理与加固](https://www.hiascend.com/document/detail/zh/mindie/22RC1/envdeployment/instg/mindie_instg_0041.html)，以社区最新版本为准。
 
 ## 运行环境建议
 
@@ -24,7 +24,7 @@
 - 本项目涉及Python whl包安装，为避免其他用户直接访问和修改Python代码引起代码篡改、伪造等风险，建议用户设置Python为仅安装用户可修改和使用。
 - 使用Linux自带的ASLR（Address Space Layout Randomization）和KASLR（Kernel Address Space Layout Randomization）机制进行安全编译。
     - ASLR，开启后可以增强漏洞攻击防护能力，开启方式为：
-        
+
         ```shell
         echo 2 > /proc/sys/kernel/randomize_va_space
         ```
@@ -75,7 +75,7 @@
 ## 运行安全声明
 
 - 为避免服务和客户端通信过程信息泄露，建议用户启用HTTPS通信并启用双向认证，如果启用，建议对通信认证涉及的证书、私钥、口令等做好安全访问控制。
-- PyMotor仅提供部分流控能力，且不直接对接公网，建议用户对PyMotor流控和公网、局域网隔离做好控制。如可以使用开源软件Nginx进行保障，用户可参照[Nginx官方文档](https://nginx.org/en/docs/)和[昇腾社区Server安全加固](https://www.hiascend.com/document/detail/zh/mindie/22RC1/envdeployment/instg/mindie_instg_0068.html)进行Nginx的部署。
+- MindIE Motor仅提供部分流控能力，且不直接对接公网，建议用户对MindIE Motor流控和公网、局域网隔离做好控制。如可以使用开源软件Nginx进行保障，用户可参照[Nginx官方文档](https://nginx.org/en/docs/)和[昇腾社区Server安全加固](https://www.hiascend.com/document/detail/zh/mindie/22RC1/envdeployment/instg/mindie_instg_0068.html)进行Nginx的部署。
 - 对于全网侦听的端口和其他端口，如非必要建议关闭。
 - 建议用户关闭不安全的服务，如Telnet、FTP等。
 - 用户可以根据自身业务，按IP地址限制与服务器的连接速率对系统进行防DoS攻击，方法包括但不限于利用Linux系统自带iptables防火墙进行预防、优化sysctl参数等。
@@ -138,14 +138,14 @@
 
 - 步骤1 编译PyTorch
     1. 编译PyTorch源码。
-        
+
         ```shell
         git clone https://github.com/pytorch/pytorch.git --depth=1 -b v2.1.0
         git submodule sync && git submodule update --init --depth=1 --recursive
-        ```  
+        ```
 
     2. 安装openssl-1.1
-       
+
         ```shell
         wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz
         tar -xzf openssl-1.1.1w.tar.gz
@@ -153,32 +153,32 @@
         ./config --prefix=/usr/local/openssl-1.1
         make -j$(nproc)
         sudo make install
-        ```  
+        ```
 
     3. 导出环境变量
-        
+
         ```shell
         export OPENSSL_ROOT_DIR=/usr/local/openssl-1.1
         export LD_LIBRARY_PATH=$OPENSSL_ROOT_DIR/lib:$LD_LIBRARY_PATH
         export USE_GLOO=1
         export USE_GLOO_WITH_OPENSSL=1
-        ```  
+        ```
 
     4. 构建Python包
-        
+
         ```shell
         python3 setup.py bdist_wheel
-        ```  
+        ```
 
 - 步骤2 安装Pytorch。支持TLS需要安装torch 2.1.0a0+git7bcf7da版本。
-    
+
     ```shell
     cd dist
     pip install --ignore-installed torch-2.1.0a0+git7bcf7da-cp311-cp311-linux_aarch.whl
-    ```  
+    ```
 
 - 步骤3 编译安装Gloo
-    
+
     ```shell
     git clone https://github.com/pytorch/gloo.git
     mkdir build && cd build
@@ -186,13 +186,13 @@
     make -j&(nproc)
     sudo make install
     export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-    ```  
+    ```
 
 - 步骤4 开启GLOO TLS
-    
+
     ```shell
     export GLOO_DEVICE_TRANSPORT=TCP_TLS
     export GLOO_DEVICE_TRANSPORT_TCP_TLS_PKEY=/path/to/tls_ca/server.key.pem
     export GLOO_DEVICE_TRANSPORT_TCP_TLS_CERT=/path/to/tls_ca/server.pem
     export GLOO_DEVICE_TRANSPORT_TCP_TLS_CA_FILE=/path/to/tls_ca/ca.pem
-    ```  
+    ```

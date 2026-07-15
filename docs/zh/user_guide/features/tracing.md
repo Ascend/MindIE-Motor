@@ -2,17 +2,17 @@
 
 ## 特性介绍
 
-pyMotor tracing能力基于三方件`opentelemetry`能力，`opentelemetry`文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
+MindIE Motor tracing能力基于三方件`opentelemetry`能力，`opentelemetry`文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
 
 通过修改env.json配置文件和user_config.json配置文件后即可通过deploy.py脚本完成服务部署。
 
 ## 部署流程
 
-pyMotor开启tracing能力需修改env.json配置文件和user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
+MindIE Motor开启tracing能力需修改env.json配置文件和user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
 
 ### 配置env.json
 
-以[pyMotor快速开始](../quick_start.md)中实例env.json为参考基线，适配打开tracing能力后的配置文件示例如下：
+以[MindIE Motor快速开始](../quick_start.md)中实例env.json为参考基线，适配打开tracing能力后的配置文件示例如下：
 
 ```json
 {
@@ -50,7 +50,7 @@ pyMotor开启tracing能力需修改env.json配置文件和user_config.json配置
 
 ### 配置user_config.json
 
-以[PyMotor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配打开tracing能力后的配置文件示例如下：
+以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配打开tracing能力后的配置文件示例如下：
 
 ```json
 {

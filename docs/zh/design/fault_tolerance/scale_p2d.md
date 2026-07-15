@@ -16,7 +16,7 @@
 
 ## 概述
 
-**ScaleP2D**（Scale Prefill to Decode）是 MindIE PyMotor 在 **PD 分离**（Prefill / Decode 解耦）场景下的一种故障自愈策略。当 **Decode（D）实例** 因 **L4–L6 级硬件故障** 导致部分节点不可用时，通过 **主动停止若干 Prefill（P）实例** 释放算力与节点资源，为故障 D 实例的恢复或替换腾出容量。
+**ScaleP2D**（Scale Prefill to Decode）是 MindIE Motor 在 **PD 分离**（Prefill / Decode 解耦）场景下的一种故障自愈策略。当 **Decode（D）实例** 因 **L4–L6 级硬件故障** 导致部分节点不可用时，通过 **主动停止若干 Prefill（P）实例** 释放算力与节点资源，为故障 D 实例的恢复或替换腾出容量。
 
 | 项 | 说明 |
 |----|------|

@@ -2,7 +2,7 @@
 
 ## 概述
 
-MindIE-PyMotor 的 Metrics 子系统负责从所有 vLLM 引擎 Pod 采集 Prometheus 格式的原始指标，按语义类型进行聚合，并在 Coordinator 侧注入 Motor 自有计算指标，最终以多种视图重新暴露给下游监控系统（Prometheus / OpenTelemetry Collector）。
+MindIE Motor 的 Metrics 子系统负责从所有 vLLM 引擎 Pod 采集 Prometheus 格式的原始指标，按语义类型进行聚合，并在 Coordinator 侧注入 Motor 自有计算指标，最终以多种视图重新暴露给下游监控系统（Prometheus / OpenTelemetry Collector）。
 
 核心设计目标：
 
@@ -363,7 +363,7 @@ vLLM 引擎通过 `/metrics` 端点暴露 Prometheus 兼容指标，使用 `vllm
 ### 关键注意事项
 
 - **所有 Counter 指标是引擎进程启动后的累计值**，不会因 `/metrics` 请求而重置。Counter 归零的唯一时机是引擎进程重启。
-- PyMotor **不做 delta / rate 计算**（Motor 计算指标除外），原始累计值直接透传。速率计算应由下游 Prometheus 通过 `rate()` PromQL 完成。
+- MindIE Motor **不做 delta / rate 计算**（Motor 计算指标除外），原始累计值直接透传。速率计算应由下游 Prometheus 通过 `rate()` PromQL 完成。
 - vLLM 设计文档：`https://github.com/vllm-project/vllm/blob/main/docs/design/metrics.md`
 - vLLM 用户文档：`https://docs.vllm.ai/en/latest/usage/metrics/`
 

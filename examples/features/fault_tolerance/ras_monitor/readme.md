@@ -1,8 +1,8 @@
-# ras_monitor MindIE-pyMotor 中的部署指南
+# ras_monitor MindIE Motor 中的部署指南
 
 ## 概述
 
-出于PD实例可靠性增强的目的，**MindIE-pyMotor** 提供一个参考脚本 **ras_monitor** 进行大EP服务的健康状态监控和快速重启，**ras_monitor** 启动后，当软件故障发生导致服务不可用时，该脚本20分钟左右可检测到并启动自动重拉。本文档提供快速部署 **ras_monitor** 的完整配置部署示例。
+出于PD实例可靠性增强的目的，**MindIE Motor** 提供一个参考脚本 **ras_monitor** 进行大EP服务的健康状态监控和快速重启，**ras_monitor** 启动后，当软件故障发生导致服务不可用时，该脚本20分钟左右可检测到并启动自动重拉。本文档提供快速部署 **ras_monitor** 的完整配置部署示例。
 
 适用范围说明：
 
@@ -13,8 +13,8 @@
 
 ### 1.1 前提条件
 
-- **硬件**: Atlas 800I A3 推理服务器
-- **软件**: 
+- **硬件**：Atlas 800I A3 推理服务器
+- **软件**:
   - NPU 驱动和固件已安装 (`npu-smi info` 可正常显示)
   - Kubernetes 集群就绪 (`kubectl get Node -A`)
   - Docker 已安装并运行 (`docker ps`)

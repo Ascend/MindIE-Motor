@@ -1,4 +1,4 @@
-# MindIE PyMotor
+# MindIE Motor
 
 <p align="center">
     <img alt="MindIE PyMotor" src="./docs/zh/imgs/mindie_pymotor_title.png">
@@ -22,7 +22,7 @@
 
 # 快速开始
 
-**以下是代码仓库智能体，点击 "Ask AI" ，即可开启智能代码学习与问答体验！它们将帮助您更深入地理解 MindIE-PyMotor 的运行原理，并协助解决使用过程中遇到的问题与错误！**
+**以下是代码仓库智能体，点击 "Ask AI" ，即可开启智能代码学习与问答体验！它们将帮助您更深入地理解 MindIE Motor 的运行原理，并协助解决使用过程中遇到的问题与错误！**
 
 <p align="center">
     <a href="https://zread.ai/verylucky01/MindIE-PyMotor">
@@ -41,7 +41,7 @@
 
 # 最新消息
 
-[2026/03] 🚀 MindIE-PyMotor正式开源，新增代码仓智能体。
+[2026/03] 🚀 MindIE Motor正式开源，新增代码仓智能体。
 
 # 社区活动
 

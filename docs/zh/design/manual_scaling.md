@@ -1,4 +1,4 @@
-# 实例级手动扩缩容设计说明（MindIE PyMotor）
+# 实例级手动扩缩容设计说明（MindIE Motor）
 
 本文档描述 **`examples/deployer/deploy.py` 在传入 `--update_instance_num` 时的行为**，以及与集群 ConfigMap、YAML 产物的对应关系。表述均来自仓库内上述脚本及其依赖模块的实现，不包含脚本未实现的保证。
 

@@ -1,10 +1,10 @@
-# MindIE PyMotor部署推理服务常见问题
+# MindIE Motor部署推理服务常见问题
 
 ## Kubernetes节点间pod网络不通
 
 **问题描述**
 
-部署服务失败，PyMotor日志中显示Controller和PD实例之间的网络通信异常。
+部署服务失败，MindIE Motor日志中显示Controller和PD实例之间的网络通信异常。
 
 <br>
 

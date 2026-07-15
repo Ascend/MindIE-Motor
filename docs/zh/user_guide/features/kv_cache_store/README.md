@@ -4,7 +4,7 @@
 
 允许P/D实例通过KV缓存池共享KV Cache，P实例将计算好的KV Cache推入缓存池，D实例从缓存池拉取并复用，从而在PD分离场景下提升显存利用率和推理吞吐。
 
-pyMotor KV池化能力基于vllm-ascend本身池化能力，能力介绍和环境依赖可参考[vllm-ascend池化文档](https://docs.vllm.ai/projects/ascend/zh-cn/main/user_guide/feature_guide/kv_pool.html)。
+MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和环境依赖可参考[vllm-ascend池化文档](https://docs.vllm.ai/projects/ascend/zh-cn/main/user_guide/feature_guide/kv_pool.html)。
 
 通过修改`user_config.json`配置文件后即可通过`deploy.py`脚本完成服务部署。
 
@@ -12,7 +12,7 @@ pyMotor KV池化能力基于vllm-ascend本身池化能力，能力介绍和环�
 
 - 必须已使用 motor 部署 PD 分离推理服务，KV 池化在该服务基础上开启，不会对 controller 和 coordinator 产生影响。
 - KV 池化能力的约束条件，详情参考：[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)。
-- 开启池化能力前请先参考[PyMotor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
+- 开启池化能力前请先参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 - **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打补丁**（见下方应用补丁章节）；`v0.17.0rc2` 及以上版本请直接跳过补丁步骤。
 - 后续所有操作只在 k8s 集群的管理节点（master 节点）执行。
 
@@ -22,13 +22,13 @@ pyMotor KV池化能力基于vllm-ascend本身池化能力，能力介绍和环�
 > **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打此补丁。**
 > 如果您的 `vllm-ascend` 版本为 `v0.17.0rc2` 及以上，补丁已合入主干，**请直接跳过本节内容，无需进行打补丁操作**。
 
-由于vllm代码的layerwise KV-cache传输叠加KV池化存在推理bug，需要应用vllm_multi_connector.patch补丁，具体操作步骤可参考[pyMotor应用补丁](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/patch/README.md)。
+由于vllm代码的layerwise KV-cache传输叠加KV池化存在推理bug，需要应用vllm_multi_connector.patch补丁，具体操作步骤可参考[MindIE Motor应用补丁](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/patch/README.md)。
 
 ## 配置 user_config.json
 
-pyMotor开启KV池化能力只需修改`user_config.json`配置文件，其余配置项与不开启池化时保持一致即可。需要关注以下两处配置。
+MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其余配置项与不开启池化时保持一致即可。需要关注以下两处配置。
 
-> 注意：开启池化能力前请参考[PyMotor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
+> 注意：开启池化能力前请参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 
 ### 1. kv_transfer_config（P/D 实例 engine_config 内）
 
@@ -200,7 +200,7 @@ python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env
 
 ### KV 池化整体流程
 
-pyMotor KV 池化能力基于 vllm-ascend 的 KV 传输层实现。整体流程如下：
+MindIE Motor KV 池化能力基于 vllm-ascend 的 KV 传输层实现。整体流程如下：
 
 1. **PreFill 阶段**：P 实例完成 PreFill 计算后，将 KV Cache 通过 `MooncakeLayerwiseConnector` 按 layer 粒度推入共享的 KV 缓存池。
 2. **KV 缓存池管理**：`kv_cache_store_config` 控制缓存池的元数据服务模式、传输协议、全局共享段大小及驱逐策略。缓存池在多个实例间共享显存资源，提升整体利用率。

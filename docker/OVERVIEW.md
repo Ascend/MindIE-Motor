@@ -98,7 +98,7 @@ Each Dockerfile header comment contains the exact `--platform` value, source rep
 The build process:
 
 1. Pulls the matching vllm-ascend base image.
-2. Clones the pinned MindIE-PyMotor source into `/opt/MindIE-PyMotor`.
+2. Clones the pinned MindIE Motor source into `/opt/MindIE-PyMotor`.
 3. Installs dependencies, compiles, and installs the `motor` wheel.
 4. Builds and installs the `ccae_reporter` observability component.
 5. Generates the entrypoint script and license agreement inline within the Dockerfile.
@@ -127,7 +127,7 @@ docker run --rm -it \
 
 #### Start Inference Service
 
-Prepare `boot.sh`, `user_config.json`, and other config files before deployment. See the [docker-only single-container deployment guide](../docs/zh/developer_guide/docker_only/single_container_docker_only.md) for the full workflow.
+Prepare `boot.sh`, `user_config.json`, and other config files before deployment. See the [docker-only single-container deployment guide](../docs/zh/user_guide/deployment/docker/single_container.md) for the full workflow.
 
 ```bash
 CONFIGMAP_PATH="/path/to/configmap"

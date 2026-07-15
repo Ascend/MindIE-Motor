@@ -44,7 +44,7 @@ PD 混部部署支持的硬件环境如下所示。
 
 ## 准备镜像
 
-在部署 PD 混部服务前，需要在各计算节点上准备好可用的推理镜像。镜像要求与 PD 分离部署一致：需包含 MindIE-PyMotor、所选推理引擎（如 vLLM）及其 Ascend 适配组件。镜像获取、离线导入和自定义构建方式请参考 [PD 分离服务部署](./pd_disaggregation_deployment.md) 中的“准备镜像”章节。
+在部署 PD 混部服务前，需要在各计算节点上准备好可用的推理镜像。镜像要求与 PD 分离部署一致：需包含 MindIE Motor、所选推理引擎（如 vLLM）及其 Ascend 适配组件。镜像获取、离线导入和自定义构建方式请参考 [PD 分离服务部署](./pd_disaggregation_deployment.md) 中的“准备镜像”章节。
 
 >[!NOTE]说明
 >
@@ -56,7 +56,7 @@ PD 混部部署支持的硬件环境如下所示。
 
 - **从本代码仓获取**：将仓库根目录下的 `examples` 目录上传至 master 服务器。
 
-- **从容器镜像获取**：若无完整代码仓，但已拉取PyMotor推理镜像，可使用镜像内预置的示例目录，路径为 **`/tmp/motor/examples`**（目录结构与仓库中的 `examples` 一致）。在已拉取镜像的机器上执行（将 `IMAGE` 替换为实际镜像名或镜像 ID，可与 `user_config.json` 中 `motor_deploy_config.image_name` 保持一致）：
+- **从容器镜像获取**：若无完整代码仓，但已拉取MindIE Motor推理镜像，可使用镜像内预置的示例目录，路径为 **`/tmp/motor/examples`**（目录结构与仓库中的 `examples` 一致）。在已拉取镜像的机器上执行（将 `IMAGE` 替换为实际镜像名或镜像 ID，可与 `user_config.json` 中 `motor_deploy_config.image_name` 保持一致）：
 
   ```bash
   IMAGE="<镜像名或镜像ID>"
@@ -124,7 +124,7 @@ PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/user_config.json
 | hybrid_instances_num | int | union 实例个数，≥1 且 ≤16 |
 | single_hybrid_instance_pod_num | int | 单个 union 实例对应的 Pod 数，≥1 |
 | hybrid_pod_npu_num | int | 单个 union Pod 占用的 NPU 卡数 |
-| image_name | string | 推理镜像名，需包含 MindIE-PyMotor 与推理引擎运行环境 |
+| image_name | string | 推理镜像名，需包含 MindIE Motor 与推理引擎运行环境 |
 | job_id | string | 部署任务名，同时作为 K8s 命名空间使用，如 `mindie-motor` |
 | hardware_type | string | 硬件类型：`800I_A2` 或 `800I_A3` |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 需与此挂载路径一致 |

@@ -2,17 +2,17 @@
 
 ## 特性介绍
 
-pyMotor 日志能力基于三方件`logging`能力增强。
+MindIE Motor 日志能力基于三方件`logging`能力增强。
 
 通过修改user_config.json配置文件后即可通过deploy.py脚本完成服务部署，业务运行均会保留日志。日志持久化磁盘为可选配置项，默认为非持久化磁盘。
 
 ## 配置指导
 
-pyMotor开启日志持久化需修改user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
+MindIE Motor开启日志持久化需修改user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
 
 ### 配置user_config.json
 
-以[PyMotor快速开始](../quick_start.md)中实例user_config.json为参考基线，开启日志持久化的配置片段如下：
+以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，开启日志持久化的配置片段如下：
 
 ```json
 {
