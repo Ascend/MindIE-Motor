@@ -228,12 +228,8 @@ class VLLMProgressMonitor:
         except Exception as e:
             print(f"{pod_name} :Exception: {e}")
         finally:
-            self._processes.pop(pod_name, None)
-            # Close tqdm bar on exit
-            if self._use_tqdm:
-                pbar = self._tqdm_bars.pop(pod_name, None)
-                if pbar:
-                    pbar.close()
+            if not self._use_tqdm:
+                self._processes.pop(pod_name, None)
 
     # ------------------------------------------------------------------
     # Lifecycle
