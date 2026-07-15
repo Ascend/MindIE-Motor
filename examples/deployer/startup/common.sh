@@ -147,6 +147,17 @@ setup_jemalloc() {
     fi
 }
 
+# Same physical node → same HCCL_LOGIC_SUPERPOD_ID (intra-node fabric OK);
+# different node names → different IDs (force inter-node RoCE).
+# Prefer NODE_NAME, then HOST_IP, then HOSTNAME. Do not hardcode in env.json.
+set_logic_superpod_id_per_node() {
+    local key="${NODE_NAME:-${HOST_IP:-${HOSTNAME:-unknown}}}"
+    local id
+    id=$(printf '%s' "${key}" | cksum | awk '{print $1 % 65536}')
+    export HCCL_LOGIC_SUPERPOD_ID="${id}"
+    echo "HCCL_LOGIC_SUPERPOD_ID=${HCCL_LOGIC_SUPERPOD_ID} (from ${key}; different node names → different IDs)"
+}
+
 USER_CONFIG_FILE="$CONFIGMAP_PATH/user_config.json"
 export USER_CONFIG_PATH="$USER_CONFIG_FILE"
 
