@@ -118,13 +118,17 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 ### 2. kv_cache_store_config（全局配置）
 
-`kv_cache_store_config` 为 KV 池化全局配置，P/D 实例共享（以默认后端 MemCache 为例）：
+`kv_cache_store_config` 为 KV 池化全局配置，P/D 实例共享：
 
 ```json
 "kv_cache_store_config": {
   "backend": "memcache",
-  "local_service_mode": "standalone",
-  "dram_size": "100GB"
+  "metadata_server": "P2PHANDSHAKE",
+  "protocol": "ascend",
+  "device_name": "",
+  "global_segment_size": "1GB",
+  "eviction_high_watermark_ratio": 0.9,
+  "eviction_ratio": 0.1
 }
 ```
 
@@ -156,7 +160,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 | `config_store_port` | int（可选） | `50089` | MemCache MetaService 配置存储端口 |
 | `metrics_port` | int（可选） | `50090` | MemCache MetaService 监控上报端口 |
 | `local_service_mode` | string（可选） | A2：`inprocess`，A3/A5：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
-| `dram_size` | string（可选） | `"10GB"` | **每个节点**贡献给 KV 池化的 DRAM 总内存大小。`inprocess` 模式下 daemon 会自动除以本节点 DP 数得到单进程 `dram.size`；`standalone` 模式下独立 LS 直接使用该值。格式如 `"100GB"`。默认 10GB，后续版本将通过 `memfabric_hybrid.mem_scan.stat()` 自动扫描 |
+| `dram_size` | string（可选） | `"10GB"` | **每个节点**贡献给 KV 池化的 DRAM 总内存大小。`inprocess` 模式下 daemon 会自动除以本节点 DP 数得到单进程 `dram.size`；`standalone` 模式下独立 LS 直接使用该值。格式如 `"100GB"`。默认 10GB，后续版本将通过 `memcache_hybrid.mem_scan()` 自动扫描 |
 
 > 使用 MemCache 后端时，deploy.py 会自动启动 MemCache MetaService（对标 Mooncake 的 `mooncake_master`），无需手动干预。
 

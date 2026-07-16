@@ -2,9 +2,7 @@
 
 本文档通过**完整详细**的部署案例，指导开发者体验基于 Motor 的 PD 分离服务部署，并指导生产环境配置优化实践。
 
-<a id="setup-and-image-preparation"></a>
-
-## 获取启动脚本 (Setup and Image Preparation)
+## 获取启动脚本
 
 1. **环境要求**
    - 准备足够存放模型权重的推理服务器。
@@ -172,9 +170,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
 - **关闭**：删除 `rate_limit_config` 配置块，或将 `enable_rate_limit` 设为 `false`。
 - **注意**：字段说明见 [config_reference — motor_coordinator_config](./config_reference.md#motor_coordinator_config)。
 
-<a id="virtual-inference-health-check"></a>
-
-### 虚推健康检查 (Virtual Inference Health Check)
+### 虚推健康检查
 
 探测服务健康状态，避免静默故障带来业务损失。静默故障表现为：部分进程卡死，服务看似无问题，但无法正常推理。
 

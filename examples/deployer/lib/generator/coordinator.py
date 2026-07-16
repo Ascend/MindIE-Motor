@@ -56,8 +56,6 @@ def modify_coordinator_deployment(deployment_data, user_config):
     if k8s_utils.g_kv_conductor_enabled:
         container[C.ENV].append({C.NAME: C.ENV_KV_CONDUCTOR_SERVICE, C.VALUE: k8s_utils.g_kv_conductor_service})
 
-    container[C.ENV].extend(k8s_utils.build_kv_store_env_items())
-
     disaggregation_bootstrap_port = (
         user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG, {})
         .get(C.ENGINE_CONFIG, {})

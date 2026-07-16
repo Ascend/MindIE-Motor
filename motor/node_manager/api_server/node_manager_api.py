@@ -102,14 +102,14 @@ async def start_instance(request: Request):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start engine server"
             ) from pull_err
 
-        # Start KV store service (if backend is configured)
+        # A3/A5 with memcache: start standalone LocalService alongside engines
         try:
-            await asyncio.to_thread(daemon.pull_kv_store)
+            await asyncio.to_thread(daemon.pull_local_service)
         except Exception as ls_err:
-            logger.error("Failed to start KV store service, cleaning up engines: %s", ls_err)
+            logger.error("Failed to start LocalService, cleaning up engines: %s", ls_err)
             await asyncio.to_thread(daemon.stop)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start KV store service"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start LocalService"
             ) from ls_err
 
         HeartbeatManager().update_endpoint(start_msg)

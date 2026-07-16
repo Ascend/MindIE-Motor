@@ -108,7 +108,7 @@ def _configure_coordinator_role(infer_doc, user_config):
     if not container:
         return
 
-    coordinator_env = list(k8s_utils.build_kv_store_env_items())
+    coordinator_env = []
     if k8s_utils.g_kv_conductor_enabled:
         coordinator_env.append({C.NAME: C.ENV_KV_CONDUCTOR_SERVICE, C.VALUE: k8s_utils.g_kv_conductor_service})
 

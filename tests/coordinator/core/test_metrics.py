@@ -27,7 +27,7 @@ from motor.coordinator.metrics.metrics_collector import (
     MetricsCollector,
     MetricType,
     Metric,
-    _filter_kvstore_metrics,
+    _filter_kvpool_metrics,
 )
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.utils.singleton import ThreadSafeSingleton
@@ -1094,7 +1094,7 @@ def test_generate_role_metrics_empty():
 # ---------------------------------------------------------------------------
 
 
-def test_filter_kvstore_metrics_mooncake():
+def test_filter_kvpool_metrics_keeps_allowlist_and_renames():
     raw = (
         "master_allocated_bytes 1073741824\n"
         "master_total_capacity_bytes 8589934592\n"
@@ -1104,45 +1104,21 @@ def test_filter_kvstore_metrics_mooncake():
         "master_attempted_evictions_total 15\n"
         "master_ping_requests_total 5\n"
     )
-    out = _filter_kvstore_metrics(raw, "")
-    assert 'kv_store_size{layer="all",stat="total"} 10.0' in out
-    assert 'kv_store_size{layer="all",stat="usage"} 2.0' in out
-    assert 'kv_store_ratio{layer="all",stat="usage_rate"} 0.2' in out
-    assert 'kv_store_ratio{layer="cpu",stat="usage_rate"} 0.125' in out
-    assert 'kv_store_eviction{stat="success"} 12.0' in out
+    out = _filter_kvpool_metrics(raw)
+    assert 'kv_pool_size{layer="all",stat="total"} 10.0' in out
+    assert 'kv_pool_size{layer="all",stat="usage"} 2.0' in out
+    assert 'kv_pool_ratio{layer="all",stat="usage_rate"} 0.2' in out
+    assert 'kv_pool_ratio{layer="cpu",stat="usage_rate"} 0.125' in out
+    assert 'kv_pool_eviction{stat="success"} 12.0' in out
     assert "master_ping_requests_total" not in out
-    assert 'kv_store_keys 0.0' in out
-    assert "kv_store_query" not in out
+    assert 'kv_pool_keys 0.0' in out
+    assert "kv_pool_query" not in out
     assert "hit_rate" not in out
     assert out.count("# HELP ") == 4
 
 
-def test_filter_kvstore_metrics_memcache():
-    raw = (
-        "memcache_alloc_requests_total 42\n"
-        "memcache_stored_keys 3\n"
-        'memcache_total_capacity_bytes{medium="dram"} 21474836480\n'
-        'memcache_allocated_bytes{medium="dram"} 1073741824\n'
-        "memcache_evict_operations_total 5\n"
-    )
-    out = _filter_kvstore_metrics(raw, "memcache")
-    # 20 GB total, 1 GB usage → ratio 0.05
-    assert 'kv_store_size{layer="cpu",stat="total"} 20.0' in out
-    assert 'kv_store_size{layer="cpu",stat="usage"} 1.0' in out
-    assert 'kv_store_size{layer="ssd",stat="total"} 0.0' in out
-    assert 'kv_store_ratio{layer="cpu",stat="usage_rate"} 0.05' in out
-    assert 'kv_store_keys 3.0' in out
-    assert 'kv_store_eviction{stat="success"} 5.0' in out
-    assert 'kv_store_eviction{stat="attempts"} 0.0' in out
-    # Pass-through: raw memcache_* renamed to motor:memcache_*
-    assert 'motor:memcache_alloc_requests_total 42' in out
-    assert 'motor:memcache_stored_keys 3' in out
-    assert 'motor:memcache_total_capacity_bytes{medium="dram"} 21474836480' in out
-    assert 'motor:memcache_evict_operations_total 5' in out
-
-
 @patch("threading.Thread.start", MagicMock())
-def test_get_metrics_full_with_kv_store_append():
+def test_get_metrics_full_with_pool_append():
     _cleanup_singletons()
     config = CoordinatorConfig()
     collector = MetricsCollector(config)
@@ -1158,11 +1134,11 @@ def test_get_metrics_full_with_kv_store_append():
         0: {"role": "prefill", "endpoints": {0: {"metrics": [metric], "pod_ip": "10.0.0.1"}}},
     }
     collector._collects_version = 1
-    collector._kv_store_metrics_text = "# HELP kv_store_metric kv_store\nkv_store_metric 1.0\n"
+    collector._pool_metrics_text = "# HELP pool_metric pool\npool_metric 1.0\n"
 
     result = collector.get_metrics(metrics_type="full")
     assert "test_metric" in result
-    assert "kv_store_metric" in result
+    assert "pool_metric" in result
     _cleanup_singletons()
 
 

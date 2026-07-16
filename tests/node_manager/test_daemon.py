@@ -14,7 +14,6 @@ import pytest
 from unittest.mock import patch, MagicMock, mock_open
 
 from motor.node_manager.core.daemon import Daemon
-from motor.node_manager.core.services.registry import SERVICE_ENGINE
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole, ParallelConfig
@@ -85,8 +84,8 @@ class TestDaemon:
         master_dp_ip = "192.168.1.100"
         daemon.pull_engine(PDRole.ROLE_P, endpoints, instance_id, master_dp_ip)
         # Verify that process was added to engine_pids
-        assert len(daemon._services[SERVICE_ENGINE].engine_pids) > 0
-        assert 12345 in daemon._services[SERVICE_ENGINE].engine_pids
+        assert len(daemon.engine_pids) > 0
+        assert 12345 in daemon.engine_pids
 
     @pytest.mark.parametrize(
         "invalid_endpoint,error_msg",
@@ -111,8 +110,8 @@ class TestDaemon:
     @patch('os.kill')
     def test_exit_daemon(self, mock_kill, daemon, exception, should_not_raise):
         # Mock SIGKILL for Windows compatibility
-        with patch('motor.node_manager.core.services.engine.signal.SIGKILL', 9, create=True):
-            daemon._services[SERVICE_ENGINE].engine_pids = [1001, 1002]
+        with patch('motor.node_manager.core.daemon.signal.SIGKILL', 9, create=True):
+            daemon.engine_pids = [1001, 1002]
             if exception:
                 mock_kill.side_effect = exception
             daemon.stop()  # Method is called 'stop', not 'exit_daemon'
@@ -133,7 +132,7 @@ class TestDaemon:
     )
     def test_check_params(self, daemon, ip, port, expected):
         endpoint = Endpoint(id=1, ip=ip, business_port=port, mgmt_port="9090")
-        assert daemon._services[SERVICE_ENGINE]._check_params(endpoint) == expected
+        assert daemon._check_params(endpoint) == expected
 
     @patch('subprocess.Popen')
     @patch('motor.node_manager.core.daemon.logger')
@@ -148,8 +147,8 @@ class TestDaemon:
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id, master_dp_ip)
 
         # Verify that process was added to engine_pids
-        assert len(daemon._services[SERVICE_ENGINE].engine_pids) > 0
-        assert 12345 in daemon._services[SERVICE_ENGINE].engine_pids
+        assert len(daemon.engine_pids) > 0
+        assert 12345 in daemon.engine_pids
         # Verify Popen was called
         mock_popen.assert_called_once()
 

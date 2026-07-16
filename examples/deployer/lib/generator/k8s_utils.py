@@ -26,7 +26,6 @@ g_kv_conductor_enabled = False
 g_kv_cache_store_port = C.DEFAULT_KV_CACHE_STORE_PORT
 g_kv_store_backend = C.DEFAULT_KV_STORE_BACKEND
 g_mmc_config_store_port = C.DEFAULT_MMC_CONFIG_STORE_PORT
-g_mmc_metrics_port = C.DEFAULT_MMC_METRICS_PORT
 g_mmc_local_service_mode = ""  # 空 → 由 common.sh 按硬件默认
 g_mmc_dram_size = ""  # 空 → daemon 使用默认 10GB
 g_engine_base_name = "mindie-server"
@@ -40,20 +39,6 @@ g_engine_type = "vllm"
 def set_user_config_path(path):
     global g_user_config_path
     g_user_config_path = path
-
-
-def build_kv_store_env_items():
-    """Return KV-store env items that cannot be derived from config."""
-    items = [
-        {C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: g_kv_store_service},
-        {C.NAME: C.ENV_KV_STORE_BACKEND, C.VALUE: g_kv_store_backend},
-    ]
-    if g_kv_store_backend == C.MMC_STORE_BACKEND:
-        # memcache C++ layer reads this env var directly at engine startup
-        items.append(
-            {C.NAME: C.ENV_MMC_LOCAL_CONFIG_PATH, C.VALUE: C.DEFAULT_MMC_LOCAL_CONFIG_PATH},
-        )
-    return items
 
 
 def set_controller_service(service_name):

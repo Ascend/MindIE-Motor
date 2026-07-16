@@ -12,7 +12,7 @@
     "hardware_type": "800I_A3",
     "weight_mount_path": "/mnt/weight/",
     "tls_config": {
-      "mgmt_tls_config": {
+      "infer_tls_config": {
         "enable_tls": false,
         "ca_file": "security/mgmt/cert/ca.crt",
         "cert_file": "security/mgmt/cert/server.crt",
@@ -20,7 +20,7 @@
         "passwd_file": "security/mgmt/keys/key_pwd.txt",
         "crl_file": ""
       },
-      "infer_tls_config": {
+      "mgmt_tls_config": {
         "enable_tls": false,
         "ca_file": "security/mgmt/cert/ca.crt",
         "cert_file": "security/mgmt/cert/server.crt",
@@ -67,10 +67,7 @@
       "log_compress_level": 6,
       "log_max_total_size": 200,
       "log_cleanup_interval": 1800,
-      "log_collector_enabled": true,
-      "third_party_log_levels": {
-        "default": "WARNING"
-      }
+      "third_party_log_levels": {"default": "WARNING"}
     },
     "api_config": {
       "controller_api_host": "127.0.0.1",
@@ -80,8 +77,8 @@
     },
     "instance_config": {
       "instance_assemble_timeout": 600,
-      "instance_assembler_check_interval": 30,
-      "instance_assembler_cmd_send_interval": 30,
+      "instance_assembler_check_interval": 1,
+      "instance_assembler_cmd_send_interval": 1,
       "instance_manager_check_interval": 1,
       "instance_heartbeat_timeout": 10,
       "instance_expired_timeout": 1200,
@@ -89,16 +86,15 @@
     },
     "event_config": {
       "event_consumer_sleep_interval": 1.0,
-      "coordinator_heartbeat_interval": 10.0,
-      "coordinator_set_sync_interval": 300
+      "coordinator_heartbeat_interval": 10.0
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": true,
-      "strategy_center_check_interval": 10,
+      "strategy_center_check_interval": 1,
       "configmap_namespace": "kube-system",
       "configmap_prefix": "mindx-dl-deviceinfo-",
       "k8s_cert_path": "",
-      "enable_scale_p2d": true,
+      "enable_scale_p2d": false,
       "enable_token_reinference": true,
       "scale_p2d_d_instance_reinit_wait_timeout": 60
     },
@@ -109,7 +105,7 @@
     "standby_config": {
       "enable_master_standby": false,
       "master_standby_check_interval": 5,
-      "master_lock_ttl": 15,
+      "master_lock_ttl": 10,
       "master_lock_retry_interval": 5,
       "master_lock_max_failures": 3,
       "master_lock_key": "/controller/master_lock"
@@ -118,17 +114,8 @@
       "etcd_host": "etcd.default.svc.cluster.local",
       "etcd_port": 2379,
       "etcd_timeout": 5,
-      "etcd_lb_policy": "round_robin",
       "enable_etcd_persistence": false
-    },
-    "port_allocator_config": {
-      "enable": true,
-      "scan_range": 100,
-      "probe_timeout_seconds": 0.5,
-      "remote_check_timeout_seconds": 1.0,
-      "bind_host": "0.0.0.0"
-    },
-    "precision_auto_recovery_enabled": false
+    }
   },
   "motor_coordinator_config": {
     "logging_config": {
@@ -143,15 +130,12 @@
       "log_compress_level": 6,
       "log_max_total_size": 200,
       "log_cleanup_interval": 1800,
-      "log_collector_enabled": true,
-      "third_party_log_levels": {
-        "default": "WARNING"
-      }
+      "third_party_log_levels": {"default": "WARNING"}
     },
     "prometheus_metrics_config": {
       "reuse_time": 3,
-      "enable_kv_store_metrics": false,
-      "kv_store_metrics_endpoint": ""
+      "pool_metrics_enable": false,
+      "pool_metrics_endpoint": "http://kvp-master.mindie-motor.svc.cluster.local:9003/metrics"
     },
     "exception_config": {
       "max_retry": 5,
@@ -160,20 +144,14 @@
       "retry_delay": 0.2,
       "first_token_timeout": 600,
       "infer_timeout": 3600,
-      "connect_timeout": 5.0,
       "upstream_error_body_max_bytes": 65536
     },
     "scheduler_config": {
-      "scheduler_type": "load_balance",
-      "endpoint_instance_score_weight": 0.05,
-      "kv_affinity_mode": "unified",
-      "kv_affinity_load_weight": 1.0,
-      "kv_affinity_overlap_credit": 1.0,
-      "kv_affinity_prefill_load_scale": 1.0,
-      "kv_affinity_load_gate_topn": 0
+      "scheduler_type": "load_balance"
     },
     "inference_workers_config": {
-      "num_workers": 4
+      "num_workers": 4,
+      "worker_metaserver_base_port": 12000
     },
     "timeout_config": {
       "request_timeout": 30,
@@ -188,16 +166,16 @@
       "header_name": "Authorization",
       "key_prefix": "Bearer ",
       "skip_paths": [
-        "/",
-        "/startup",
-        "/readiness",
         "/docs",
+        "/instances/refresh",
         "/favicon.ico",
         "/openapi.json",
+        "/readiness",
         "/liveness",
-        "/redoc",
-        "/instances/refresh",
-        "/metrics"
+        "/",
+        "/metrics",
+        "/startup",
+        "/redoc"
       ],
       "encryption_algorithm": "PBKDF2_SHA256"
     },
@@ -218,13 +196,12 @@
         "/startup"
       ],
       "error_message": "too many requests, please try again later",
-      "error_status_code": 429,
-      "olc_config_path": ""
+      "error_status_code": 429
     },
     "standby_config": {
       "enable_master_standby": false,
       "master_standby_check_interval": 5,
-      "master_lock_ttl": 15,
+      "master_lock_ttl": 10,
       "master_lock_retry_interval": 5,
       "master_lock_max_failures": 3,
       "master_lock_key": "/coordinator/master_lock"
@@ -233,15 +210,12 @@
       "etcd_host": "etcd.default.svc.cluster.local",
       "etcd_port": 2379,
       "etcd_timeout": 5,
-      "etcd_lb_policy": "round_robin",
       "enable_etcd_persistence": false
     },
     "aigw_model": null,
     "api_config": {
       "coordinator_api_host": "127.0.0.1",
       "coordinator_api_dns": "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
-      "coordinator_api_infer_dns": "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
-      "coordinator_api_obs_dns": "mindie-motor-coordinator-service.mindie-motor.svc.cluster.local",
       "coordinator_api_infer_port": 1025,
       "coordinator_api_mgmt_port": 1026,
       "coordinator_obs_port": 1027
@@ -261,99 +235,16 @@
       "endpoint": "",
       "replay_endpoint": "",
       "engine_type": "vLLM",
-      "model_path": "",
-      "re_register_interval_sec": 0
-    },
-    "token_sampling_config": {
-      "interval_seconds": 30.0,
-      "logprobs_count": 1,
-      "precision_check_enabled": false,
-      "precision_issue_threshold": 10,
-      "probe_max_attempts": 3,
-      "probe_timeout_seconds": 600.0
-    },
-    "port_allocator_config": {
-      "enable": true,
-      "scan_range": 100,
-      "probe_timeout_seconds": 0.5,
-      "remote_check_timeout_seconds": 1.0,
-      "bind_host": "0.0.0.0"
+      "model_path": ""
     },
     "_errors": [],
-    "worker_index": null
+    "worker_index": null,
+    "worker_metaserver_port": null
   },
   "motor_nodemanger_config": {
-    "api_config": {
-      "pod_ip": "127.0.0.1",
-      "node_manager_port": 1026
-    },
-    "endpoint_config": {
-      "endpoint_num": 0,
-      "base_port": 10000,
-      "mgmt_ports": [],
-      "service_ports": []
-    },
-    "basic_config": {
-      "job_name": null,
-      "role": "union",
-      "model_name": "",
-      "engine_type": null,
-      "hardware_type": "800I-A3",
-      "heartbeat_interval_seconds": 3,
-      "device_num": 0,
-      "parallel_config": {
-        "dp_size": 1,
-        "pcp_size": 1,
-        "tp_size": 1,
-        "ep_size": 1,
-        "pp_size": 1,
-        "world_size": 1,
-        "local_world_size": 1
-      },
-      "enable_multi_endpoints": true,
-      "nnodes": 1
-    },
-    "snapshot_config": {
-      "enable_snapshot": false,
-      "snapshot_metadata_path": ""
-    },
-    "logging_config": {
-      "log_level": "INFO",
-      "log_max_line_length": 8192,
-      "log_format": "(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s [%(name)s][%(fileinfo)s:%(lineno)d] %(message)s",
-      "log_date_format": "%m-%d %H:%M:%S",
-      "host_log_dir": "/root/ascend/log",
-      "log_rotation_size": 20,
-      "log_rotation_count": 10,
-      "log_compress": false,
-      "log_compress_level": 6,
-      "log_max_total_size": 200,
-      "log_cleanup_interval": 1800,
-      "log_collector_enabled": true,
-      "third_party_log_levels": {
-        "default": "WARNING"
-      }
-    },
-    "single_container_config": {
-      "single_container_flag": false,
-      "node_manager_port_offset": null,
-      "base_port_offset": null,
-      "device_offset": null,
-      "device_num": null,
-      "kv_port": null,
-      "lookup_rpc_port": null,
-      "dp_rpc_port": null
-    },
     "fault_tolerance_config": {
       "enable_fault_tolerance": false,
       "zmq_pub_port": 0
-    },
-    "port_allocator_config": {
-      "enable": true,
-      "scan_range": 100,
-      "probe_timeout_seconds": 0.5,
-      "remote_check_timeout_seconds": 1.0,
-      "bind_host": "0.0.0.0"
     }
   }
 }
