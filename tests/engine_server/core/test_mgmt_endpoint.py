@@ -14,7 +14,7 @@ from unittest import mock
 from motor.engine_server.core.mgmt_endpoint import MgmtEndpoint
 
 
-def _make_config(dp_rank: int, enable_virtual_inference: bool = True):
+def _make_config(dp_rank: int, enable_virtual_inference: bool = True, engine_type: str = "vllm"):
     health_check_config = SimpleNamespace(
         enable_virtual_inference=enable_virtual_inference,
         npu_usage_threshold=3,
@@ -33,6 +33,7 @@ def _make_config(dp_rank: int, enable_virtual_inference: bool = True):
         role="decode",
         snapshot_metadata=None,
         dp_rank=dp_rank,
+        engine_type=engine_type,
         deploy_config=deploy_config,
     )
     args = SimpleNamespace(headless=False, host="127.0.0.1", port=8000)
@@ -70,3 +71,22 @@ def test_mgmt_endpoint_keeps_virtual_inference_on_dp0(
     mgmt.attach_engine(config)
 
     assert mgmt.sim_inference.enable_virtual_inference is True
+
+
+@mock.patch("motor.engine_server.core.mgmt_endpoint.attach_metrics_router")
+@mock.patch("motor.engine_server.core.sim_inference.infer_vllm_dispatch_profile_from_config")
+def test_mgmt_endpoint_disables_virtual_inference_for_sglang(
+    _mock_dispatch_profile,
+    _mock_attach_metrics,
+):
+    config, endpoint_config, health_check_config = _make_config(
+        dp_rank=0,
+        enable_virtual_inference=True,
+        engine_type="sglang",
+    )
+
+    mgmt = MgmtEndpoint(endpoint_config)
+    mgmt.attach_engine(config)
+
+    assert mgmt.sim_inference.enable_virtual_inference is False
+    assert health_check_config.enable_virtual_inference is True

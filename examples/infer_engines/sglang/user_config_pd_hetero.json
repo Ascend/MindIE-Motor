@@ -70,11 +70,6 @@
       "load_balance_method": "round_robin",
       "base_gpu_id": 0,
       "nnodes": 1
-    },
-    "health_check_config": {
-      "enable_virtual_inference": false,
-      "npu_usage_threshold": 3,
-      "max_failure_count": 6
     }
   },
   "motor_engine_decode_config": {
@@ -96,11 +91,6 @@
       "prefill_round_robin_balance": true,
       "base_gpu_id": 4,
       "nnodes": 1
-    },
-    "health_check_config": {
-      "enable_virtual_inference": false,
-      "npu_usage_threshold": 3,
-      "max_failure_count": 6
     }
   },
   "kv_cache_pool_config": {}

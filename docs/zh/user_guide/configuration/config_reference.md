@@ -827,7 +827,7 @@ vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../design/
 
 | 配置项 | 类型 | 说明 |
 |--------|------|--------|
-| enable_virtual_inference | bool | 虚推总开关，默认值：false。<br>取值为 `true` 时，在推理面 `/health` 正常后启动周期性虚推。 |
+| enable_virtual_inference | bool | 虚推总开关，默认值：false。<br>取值为 `true` 时，在推理面 `/health` 正常后启动周期性虚推。**仅支持 vLLM**；SGLang 引擎配置为 `true` 时运行时会自动关闭 |
 | npu_usage_threshold | int | AI Cube 利用率阈值（%），默认值：3。<br>虚推仅在 `0 < npu_usage_threshold <= 100` 时启动；低于该阈值且虚推失败时累计失败次数 |
 | max_failure_count | int | 连续虚推失败次数上限（在累计条件满足后），默认值：6。<br>达到后Engine Server `/status` 返回abnormal。 |
 | health_collector_timeout | int | 推理面 `GET /health` 探测超时（秒），默认值：2。<br>虚推启动的前置条件。 |

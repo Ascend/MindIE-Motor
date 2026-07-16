@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -322,19 +321,98 @@ def test_stop_health_check(sim_inference):
     mock_task.done.return_value = False
     sim_inference._health_check_task = mock_task
 
-    # Create a mock client
+    # Stop health check while abnormal
+    sim_inference.set_abnormal_status()
+    sim_inference.stop_health_check()
+
+    # Verify task was canceled
+    mock_task.cancel.assert_called_once()
+    assert sim_inference.is_abnormal()
+
+
+def test_stop_health_check_signals_ai_cube_worker_stop(sim_inference):
+    """Stopping health check should signal the AI Cube worker to exit."""
+    sim_inference._ai_cube_stop_event.clear()
+    sim_inference.stop_health_check()
+    assert sim_inference._ai_cube_stop_event.is_set()
+
+
+def test_close_http_client_on_loop_closes_client(sim_inference):
+    """HTTP client should be closed on the same event loop that created it."""
     mock_client = mock.MagicMock()
     mock_client.is_closed = False
     mock_client.aclose = mock.AsyncMock()
     sim_inference._client = mock_client
 
-    # Stop health check
+    loop = asyncio.new_event_loop()
+    try:
+        sim_inference._close_http_client_on_loop(loop)
+    finally:
+        loop.close()
+
+    mock_client.aclose.assert_awaited_once()
+    assert sim_inference._client is None
+
+
+def test_stop_health_check_warns_when_client_still_open(sim_inference):
+    """stop_health_check should not cross-loop close; warn if client remains open."""
+    mock_client = mock.MagicMock()
+    mock_client.is_closed = False
+    sim_inference._client = mock_client
+
+    with mock.patch.object(sim_inference, "_health_check_thread", None):
+        with mock.patch.object(sim_inference, "_ai_cube_thread", None):
+            sim_inference.stop_health_check()
+
+    assert sim_inference._client is mock_client
+
+
+def test_health_check_thread_closes_client_on_exit(sim_inference):
+    """Health check thread should close HTTP client on its event loop before exit."""
+    mock_client = mock.MagicMock()
+    mock_client.is_closed = False
+    mock_client.aclose = mock.AsyncMock()
+    sim_inference._client = mock_client
+
+    async def quick_loop():
+        return
+
+    with mock.patch.object(sim_inference, "health_check_loop", side_effect=quick_loop):
+
+        def _run_in_thread():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                task = loop.create_task(sim_inference.health_check_loop())
+                sim_inference._health_check_task = task
+                loop.run_until_complete(task)
+            finally:
+                sim_inference._close_http_client_on_loop(loop)
+                if not loop.is_closed():
+                    loop.close()
+
+        thread = threading.Thread(target=_run_in_thread)
+        thread.start()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    mock_client.aclose.assert_awaited_once()
+    assert sim_inference._client is None
+
+
+@mock.patch("motor.engine_server.core.sim_inference.get_ai_cube_usage", return_value=0)
+def test_ai_cube_worker_stops_on_shutdown_event(_mock_get_ai_cube, sim_inference):
+    """AI Cube worker thread should exit after stop_health_check sets the stop event."""
+    sim_inference._ai_cube_stop_event.clear()
+    worker = threading.Thread(target=sim_inference.check_ai_cube_usage_worker, daemon=True)
+    sim_inference._ai_cube_thread = worker
+    worker.start()
+    time.sleep(0.05)
+
     sim_inference.stop_health_check()
 
-    # Verify task was canceled
-    mock_task.cancel.assert_called_once()
-    # Verify abnormal status was reset
-    assert not sim_inference.is_abnormal()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
 
 
 def test_generate_request_id(sim_inference):
@@ -401,8 +479,6 @@ async def test_health_check_loop_abnormal(mock_sleep, mock_send_request, mock_th
     # Set max_failure_count to 1 for this test to avoid infinite loop
     sim_inference._max_failure_count = 1
 
-    sim_inference._count_failure_flag = True
-
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
     # Mock failed request sending and low AI Cube usage
@@ -431,33 +507,92 @@ async def test_health_check_loop_abnormal(mock_sleep, mock_send_request, mock_th
 @mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
 @mock.patch.object(SimInference, 'send_virtual_request_async')
 @mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
-async def test_health_check_loop_reset_abnormal(mock_sleep, mock_send_request, mock_thread, sim_inference):
-    """Test health check loop - reset abnormal status"""
-    # Set status to normal
+async def test_health_check_loop_counts_failures_after_warmup_without_prior_success(
+    mock_sleep, mock_send_request, mock_thread, sim_inference
+):
+    """Failures after warmup should count even without a prior successful loop iteration."""
     sim_inference.set_status(constants.NORMAL_STATUS)
-    # First set to abnormal status
-    sim_inference.set_abnormal_status()
+    sim_inference._max_failure_count = 1
+    sim_inference.npu_usage_threshold = 10
+
+    with mock.patch.object(sim_inference, "_send_virtual_request_safe", new=mock.AsyncMock(return_value=True)):
+        assert await sim_inference._run_virtual_warmup() is True
 
     _mock_health_check_loop_thread(mock_thread, sim_inference)
 
-    async def set_normal_ai_cube_on_virtual_request(timeout):
+    async def set_low_ai_cube_and_fail(timeout):
         with sim_inference._shared_data_lock:
-            sim_inference._max_ai_cube_usage = 15  # > 10%
+            sim_inference._max_ai_cube_usage = 2
             sim_inference._ai_cube_usage_available = True
             sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
+        raise RuntimeError("Request failed")
 
-    mock_send_request.side_effect = set_normal_ai_cube_on_virtual_request
-
-    # Mock sleep to raise exception to end loop
+    mock_send_request.side_effect = set_low_ai_cube_and_fail
     mock_sleep.side_effect = asyncio.CancelledError
 
-    # Execute loop
     with _patched_health_check_loop(mock_thread, sim_inference):
         with pytest.raises(asyncio.CancelledError):
             await sim_inference.health_check_loop()
 
-    # Verify abnormal status was reset
-    assert not sim_inference.is_abnormal()
+    assert sim_inference.is_abnormal()
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch.object(SimInference, 'send_virtual_request_async')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_skips_when_already_abnormal(mock_sleep, mock_send_request, mock_thread, sim_inference):
+    """Health check loop should not run or clear abnormal when already abnormal."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    sim_inference.set_abnormal_status()
+
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    await sim_inference.health_check_loop()
+
+    mock_send_request.assert_not_called()
+    mock_sleep.assert_not_called()
+    assert sim_inference.is_abnormal()
+
+
+@pytest.mark.asyncio
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+@mock.patch.object(SimInference, 'send_virtual_request_async')
+@mock.patch('motor.engine_server.core.sim_inference.asyncio.sleep')
+async def test_health_check_loop_exits_after_max_failure_count(
+    mock_sleep, mock_send_request, mock_thread, sim_inference
+):
+    """Loop should stop after abnormal is set from max failure count."""
+    sim_inference.set_status(constants.NORMAL_STATUS)
+    sim_inference._max_failure_count = 1
+    sim_inference.npu_usage_threshold = 10
+
+    _mock_health_check_loop_thread(mock_thread, sim_inference)
+
+    request_calls = []
+
+    async def set_low_ai_cube_and_fail(timeout):
+        request_calls.append(1)
+        with sim_inference._shared_data_lock:
+            sim_inference._max_ai_cube_usage = 2
+            sim_inference._ai_cube_usage_available = True
+            sim_inference._ai_cube_completed_generation = sim_inference._ai_cube_requested_generation
+        raise RuntimeError("Request failed")
+
+    mock_send_request.side_effect = set_low_ai_cube_and_fail
+    sleep_calls = []
+
+    async def track_sleep(delay):
+        sleep_calls.append(delay)
+
+    mock_sleep.side_effect = track_sleep
+
+    with _patched_health_check_loop(mock_thread, sim_inference):
+        await sim_inference.health_check_loop()
+
+    assert sim_inference.is_abnormal()
+    assert len(request_calls) == 1
+    assert len(sleep_calls) == 1
 
 
 def _mock_health_check_loop_thread(mock_thread, sim_inference=None):
@@ -787,7 +922,6 @@ async def test_health_check_loop_skip_failure_count_when_ai_cube_unavailable(
 ):
     """Virtual request failure should not count when AI Cube sampling is unavailable."""
     sim_inference.set_status(constants.NORMAL_STATUS)
-    sim_inference._count_failure_flag = True
     sim_inference._max_failure_count = 1
 
     _mock_health_check_loop_thread(mock_thread, sim_inference)
