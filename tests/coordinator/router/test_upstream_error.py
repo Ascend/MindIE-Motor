@@ -1,3 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 import json
 from unittest.mock import MagicMock
 
@@ -10,6 +20,7 @@ from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
+    is_cb_reportable_failure,
     is_retryable_upstream_error,
     render_upstream_error,
 )
@@ -226,3 +237,42 @@ def test_retry_classification_only_retries_transient_failures():
     assert not is_retryable_upstream_error(UpstreamHTTPError(status_code=422, body=b"", headers={}, phase="non-stream"))
     assert is_retryable_upstream_error(httpx.ConnectError("connection refused"))
     assert not is_retryable_upstream_error(httpx.UnsupportedProtocol("bad protocol"))
+
+
+def _make_error(status_code: int, body: bytes = b"") -> UpstreamHTTPError:
+    return UpstreamHTTPError(status_code=status_code, body=body, headers={}, phase="stream")
+
+
+# ---------------------------------------------------------------------------
+# is_cb_reportable_failure — circuit breaker gate
+# ---------------------------------------------------------------------------
+
+
+def test_cb_not_reportable_for_4xx():
+    """4xx errors are client errors (e.g. input too long, bad params); the instance
+    must not be penalised.  The engine_server is responsible for mapping all known
+    request-validation exceptions to 4xx before they reach the coordinator.
+    """
+    assert not is_cb_reportable_failure(_make_error(400))
+    assert not is_cb_reportable_failure(_make_error(422))
+
+
+def test_cb_reportable_for_5xx():
+    """5xx errors indicate an instance-side fault and must trip the circuit breaker."""
+    assert is_cb_reportable_failure(_make_error(500))
+    assert is_cb_reportable_failure(_make_error(503))
+
+
+def test_cb_not_reportable_for_vllm_validation_error_returned_as_400():
+    """VLLMValidationError (max_tokens > max_model_len) must be mapped to HTTP 400 by
+    the engine_server so the coordinator never sees it as a 5xx fault.
+    """
+    body = json.dumps({"detail": "max_tokens=1024 cannot be greater than max_model_len=50"}).encode()
+    error = _make_error(400, body)
+    assert not is_cb_reportable_failure(error)
+    assert not is_retryable_upstream_error(error)
+
+
+def test_cb_reportable_for_connection_error():
+    """Network-level errors always count as instance faults."""
+    assert is_cb_reportable_failure(httpx.ConnectError("connection refused"))
