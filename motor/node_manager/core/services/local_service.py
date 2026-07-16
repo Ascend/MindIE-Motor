@@ -25,6 +25,7 @@ def _create_local_service(hardware_type: str, config):  # pylint: disable=unused
     return LocalService(
         hardware_type=hardware_type,
         kv_cache_store_config=config.kv_cache_store_config,
+        local_world_size=config.basic_config.parallel_config.local_world_size,
         restart_local_service=Env.motor_restart_local_service,
     )
 
@@ -47,10 +48,12 @@ class LocalService:
         self,
         hardware_type: str,
         kv_cache_store_config: KVCacheStoreConfig | None = None,
+        local_world_size: int = 1,
         restart_local_service: bool = True,
     ):
         self.hardware_type = hardware_type
         self._kv_cfg = kv_cache_store_config or KVCacheStoreConfig()
+        self._local_world_size = local_world_size
         self.restart_local_service = restart_local_service
 
         self._ls_thread: threading.Thread | None = None
@@ -102,7 +105,7 @@ class LocalService:
                 clamped_gb = self._clamp_dram_size(configured_gb, available_gb)
             else:
                 clamped_gb = available_gb
-            per_process_gb = max(1, clamped_gb // endpoints_count)
+            per_process_gb = max(1, clamped_gb // (endpoints_count * self._local_world_size))
             dram_val = f"{per_process_gb}GB"
 
         content = self._set_conf_key(content, "ock.mmc.local_service.dram.size", dram_val)

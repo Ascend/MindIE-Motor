@@ -200,24 +200,13 @@ sync_mmc_local_config() {
     fi
     export MMC_LOCAL_CONFIG_PATH="$mmc_dst"
 
+    echo "MMC_LOCAL_CONFIG_PATH=$mmc_dst"
+
     # Replace hardcoded DNS name with the actual K8s service FQDN
     if [ -n "$KVS_MASTER_SERVICE" ]; then
         sed -i "s|tcp://[^:]*:|tcp://${KVS_MASTER_SERVICE}:|g" "$mmc_dst"
     fi
 
-    # Determine mode: env override (from deployer) → hardware default, export for daemon.py
-    local ls_mode="${MMC_LOCAL_SERVICE_MODE:-}"
-    if [ -z "$ls_mode" ]; then
-        local hw_type
-        hw_type="$(_motor_deploy_hardware_type)"
-        case "$hw_type" in
-            800I_A2|800T_A2) ls_mode="inprocess" ;;
-            *) ls_mode="standalone" ;;
-        esac
-    fi
-    export MMC_LOCAL_SERVICE_MODE="$ls_mode"
-
-    echo "MMC_LOCAL_CONFIG_PATH=$MMC_LOCAL_CONFIG_PATH (mode=$ls_mode)"
 }
 
 sync_user_config
