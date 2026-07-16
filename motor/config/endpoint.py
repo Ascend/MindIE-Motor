@@ -343,7 +343,7 @@ class EndpointConfig:
                     kv_config[constants.KV_PORT] = str(self.kv_port)
         if self.role == "encode" and self.dp_rpc_port is not None:
             self.deploy_config.model_config.encode_parallel_config.dp_rpc_port = self.dp_rpc_port
-        if self.role == "prefill" and self.dp_rpc_port is not None:
+        if self.role in ("prefill", "union") and self.dp_rpc_port is not None:
             self.deploy_config.model_config.prefill_parallel_config.dp_rpc_port = self.dp_rpc_port
         if self.role == "decode" and self.dp_rpc_port is not None:
             self.deploy_config.model_config.decode_parallel_config.dp_rpc_port = self.dp_rpc_port

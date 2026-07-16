@@ -1,5 +1,5 @@
 site_name: MindIE-PyMotor-Doc
-site_url: https://mindie-pymotor-doc.readthedocs.io/zh-cn/latest/
+site_url: https://mindie-pymotor.readthedocs.io/zh-cn/latest/
 site_author: MindIE-PyMotor Team
 site_description: 华为昇腾大语言模型推理引擎文档
 docs_dir: docs/zh

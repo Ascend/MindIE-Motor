@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -315,10 +313,10 @@ def test_deploy_config_load_with_role_encode(encode_engine_config_file):
 
 def test_deploy_config_load_with_health_check(simple_engine_config_file):
     """Test DeployConfig.load includes health_check_config"""
-    with open(simple_engine_config_file) as f:
+    with open(simple_engine_config_file, encoding="utf-8") as f:
         data = json.load(f)
     data["health_check_config"] = {"npu_usage_threshold": 15, "enable_virtual_inference": False}
-    with open(simple_engine_config_file, "w") as f:
+    with open(simple_engine_config_file, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
     config = DeployConfig.load(simple_engine_config_file)
@@ -608,13 +606,13 @@ def test_endpoint_config_load_deploy_config(valid_config_file_for_endpoint):
 
 def test_endpoint_config_load_deploy_config_updates_kv_port(valid_config_file_for_endpoint):
     """Test load_deploy_config updates kv_port in kv_transfer_config"""
-    with open(valid_config_file_for_endpoint) as f:
+    with open(valid_config_file_for_endpoint, encoding="utf-8") as f:
         data = json.load(f)
     data["engine_config"][constants.KV_TRANSFER_CONFIG] = {
         constants.KV_CONNECTOR: "MooncakeConnector",
         constants.KV_PORT: "20001",
     }
-    with open(valid_config_file_for_endpoint, "w") as f:
+    with open(valid_config_file_for_endpoint, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
     config = EndpointConfig(
@@ -644,6 +642,21 @@ def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_prefill(valid_co
     config.deploy_config = DeployConfig.load(valid_config_file_for_endpoint)
     config.load_deploy_config()
     assert config.deploy_config.model_config.prefill_parallel_config.dp_rpc_port == 9010
+
+
+def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_union(valid_config_file_for_endpoint):
+    """Test load_deploy_config updates dp_rpc_port for union role."""
+    config = EndpointConfig(
+        host="127.0.0.1",
+        role="union",
+        port=8000,
+        mgmt_port=9001,
+        config_path=valid_config_file_for_endpoint,
+        dp_rpc_port=9011,
+    )
+    config.deploy_config = DeployConfig.load(valid_config_file_for_endpoint)
+    config.load_deploy_config()
+    assert config.deploy_config.model_config.prefill_parallel_config.dp_rpc_port == 9011
 
 
 def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_decode(valid_config_file_for_endpoint):

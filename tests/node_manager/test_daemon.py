@@ -166,6 +166,37 @@ class TestDaemon:
         role_arg_index = cmd.index("--role") + 1
         assert cmd[role_arg_index] == "union"
 
+    @patch('subprocess.Popen')
+    def test_single_container_hybrid_omits_kv_port_when_unset(self, mock_popen, config_data):
+        if hasattr(Daemon, '_instances') and Daemon in Daemon._instances:
+            del Daemon._instances[Daemon]
+
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'jsons', 'user_config.json')
+        with patch.dict('os.environ', {'JOB_NAME': 'test_job', 'USER_CONFIG_PATH': config_path, 'ROLE': 'both'}):
+            config = NodeManagerConfig()
+            config.basic_config.parallel_config = ParallelConfig(
+                tp_size=config_data["parallel_config"]["tp_size"],
+                pp_size=config_data["parallel_config"]["pp_size"],
+            )
+            config.basic_config.device_num = 8
+            config.basic_config.enable_multi_endpoints = False
+            config.single_container_config.single_container_flag = True
+            config.single_container_config.device_offset = 0
+            config.single_container_config.kv_port = None
+            config.single_container_config.dp_rpc_port = 9000
+            daemon = Daemon(config)
+
+        mock_process = MagicMock(pid=12345)
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
+
+        cmd = mock_popen.call_args.args[0]
+        assert "--kv-port" not in cmd
+        assert cmd[cmd.index("--dp-rpc-port") + 1] == "9000"
+
     # ===== D2D Weight Transfer Tests =====
 
     @patch('subprocess.Popen')

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -20,7 +18,7 @@ from unittest.mock import patch, mock_open, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from motor.config.node_manager import NodeManagerConfig
+from motor.config.node_manager import NodeManagerConfig, SingleContainerNodemanagerConfig
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import ParallelConfig, PDRole
 
@@ -542,6 +540,50 @@ def test_from_json_loads_union_config_for_hybrid():
     assert config.basic_config.parallel_config.pp_size == 1
     assert config.basic_config.device_num == 4
     assert config.endpoint_config.endpoint_num == 2
+
+
+def _single_container_hybrid_user_config():
+    return {
+        "motor_deploy_config": {
+            "deploy_mode": "single_container",
+            "hardware_type": "800I_A3",
+            "hybrid_instances_num": 2,
+            "single_hybrid_instance_pod_num": 1,
+            "hybrid_pod_npu_num": 4,
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "data_parallel_size": 1,
+                "tensor_parallel_size": 2,
+                "pipeline_parallel_size": 1,
+                "data_parallel_rpc_port": 9000,
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("index", "expected_port_offset", "expected_device_offset", "expected_dp_rpc_port"),
+    [
+        (0, 0, 0, 9000),
+        (1, 1, 2, 9001),
+    ],
+)
+@patch.dict("os.environ", {"ROLE": "union"}, clear=False)
+def test_single_container_union_port_offsets_for_hybrid(
+    index, expected_port_offset, expected_device_offset, expected_dp_rpc_port
+):
+    user_config = _single_container_hybrid_user_config()
+    with patch.dict("os.environ", {"INDEX": str(index)}, clear=False):
+        config = SingleContainerNodemanagerConfig.from_json(user_config)
+
+    assert config.single_container_flag is True
+    assert config.node_manager_port_offset == expected_port_offset
+    assert config.base_port_offset == expected_port_offset * 2
+    assert config.device_offset == expected_device_offset
+    assert config.device_num == 2
+    assert config.dp_rpc_port == expected_dp_rpc_port
 
 
 def test_vllm_handoff_connector_infers_handoff_capability():

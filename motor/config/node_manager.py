@@ -172,6 +172,26 @@ class SingleContainerNodemanagerConfig:
             return config
 
         config.single_container_flag = True
+        index = int(Env.index)
+
+        union_section = user_config_data.get(MOTOR_ENGINE_UNION_CONFIG_KEY)
+        prefill_section = user_config_data.get(MOTOR_ENGINE_PREFILL_CONFIG_KEY)
+        if union_section and not prefill_section:
+            if Env.role != "union":
+                return config
+
+            union_resolver = ConfigResolver(union_section)
+            union_parallel_config = union_resolver.get_parallel_config()
+            u_dp_size = union_parallel_config.get(DP, 1)
+            u_world_size = union_parallel_config["world_size"]
+
+            config.node_manager_port_offset = index
+            config.base_port_offset = index * u_dp_size * 2
+            config.device_offset = index * u_world_size
+            config.device_num = u_world_size
+            config.dp_rpc_port = int(union_parallel_config["dp_rpc_port"]) + index
+            return config
+
         p_instances_num = user_config_data['motor_deploy_config']['p_instances_num']
         d_instances_num = user_config_data['motor_deploy_config']['d_instances_num']
         encode_section = user_config_data.get(MOTOR_ENGINE_ENCODE_CONFIG_KEY, {})
@@ -189,8 +209,6 @@ class SingleContainerNodemanagerConfig:
         e_world_size = encode_parallel_config.get("world_size", 0)
         p_world_size = prefill_parallel_config["world_size"]
         d_world_size = decode_parallel_config["world_size"]
-
-        index = int(Env.index)
 
         d_node_manager_port_offset = p_instances_num * p_dp_size + index
         d_base_port_offset = (p_instances_num * p_dp_size + index * d_dp_size) * 2
