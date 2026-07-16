@@ -58,4 +58,4 @@ Node Manager 周期性请求 Engine Server mgmt 面 **`GET /status`**；返回�
 
 ## 启用方式
 
-在 PD 分离部署的 `user_config.json` 中，将 Prefill 与 Decode 引擎配置的 `health_check_config.enable_virtual_inference` 设为 `true`，并按业务调整 `npu_usage_threshold`、`max_failure_count`。
+在 PD 分离部署的 `user_config.json` 中，将 Prefill 与 Decode 引擎配置的 `health_check_config.enable_virtual_inference` 设为 `true`，并按业务调整 `npu_usage_threshold`、`max_failure_count`。配置示例与字段说明见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#virtual-inference-health-check)。

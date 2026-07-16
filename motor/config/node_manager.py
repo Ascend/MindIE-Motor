@@ -252,6 +252,20 @@ class NodeManagerFaultToleranceConfig:
 
 
 @dataclass
+class KVCacheStoreConfig:
+    """KV cache store configuration — parsed from ``kv_cache_store_config``."""
+
+    enable: bool = False  # True when kv_cache_store_config is present
+    backend: str = "memcache"
+    service: str = ""  # default from $KVS_MASTER_SERVICE
+    local_service_mode: str = ""  # "standalone" / "inprocess"
+    dram_size: str = ""  # e.g. "100GB"
+    port: int = 50088  # RPC port
+    config_store_port: int = 50089  # ConfigStore TCP port
+    local_config_path: str = "/usr/local/Ascend/pyMotor/conf/mmc-local.conf"
+
+
+@dataclass
 class NodeManagerConfig:
     """Global configuration singleton for node manager"""
 
@@ -265,6 +279,7 @@ class NodeManagerConfig:
     single_container_config: SingleContainerNodemanagerConfig = field(default_factory=SingleContainerNodemanagerConfig)
     fault_tolerance_config: NodeManagerFaultToleranceConfig = field(default_factory=NodeManagerFaultToleranceConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
+    kv_cache_store_config: KVCacheStoreConfig = field(default_factory=KVCacheStoreConfig)
 
     # Internal fields
     config_path: str | None = field(default=None, init=False)
@@ -318,6 +333,7 @@ class NodeManagerConfig:
             logger.warning("Config file does not exist, using default configuration: %s", config_path_obj)
 
         cls._set_device_count_from_config(config, raw)
+        cls._parse_kv_cache_store_config(config, raw)
 
         config.validate_config()
 
@@ -540,6 +556,47 @@ class NodeManagerConfig:
             config.endpoint_config.mgmt_ports = []
 
     @classmethod
+    def _parse_kv_cache_store_config(cls, config: "NodeManagerConfig", raw: dict | None):
+        """Populate ``kv_cache_store_config`` from ``user_config.json``.
+
+        Env vars serve as fallback for values only the deployer provides.
+        When the config section is missing, env vars alone can enable KV store.
+        """
+        if not isinstance(raw, dict):
+            raw = {}
+        kv = raw.get("kv_cache_store_config", {})
+        if not isinstance(kv, dict):
+            kv = {}
+        kcfg = config.kv_cache_store_config
+
+        # --- enable: config section or deployer-injected env var ---
+        if kv or os.getenv("KV_STORE_BACKEND", ""):
+            kcfg.enable = True
+
+        # --- populate from config first, env var as fallback ---
+        if "backend" in kv:
+            kcfg.backend = kv["backend"]
+        if not kcfg.service:
+            kcfg.service = kv.get("service", "") or os.getenv("KVS_MASTER_SERVICE", "")
+        if not kcfg.local_service_mode:
+            kcfg.local_service_mode = kv.get("local_service_mode", "") or os.getenv("MMC_LOCAL_SERVICE_MODE", "")
+        if not kcfg.dram_size:
+            kcfg.dram_size = kv.get("dram_size", "") or os.getenv("MMC_DRAM_SIZE", "")
+        port = kv.get("port", 0)
+        if port:
+            kcfg.port = int(port)
+        elif not kcfg.port or kcfg.port == 50088:
+            env_port = os.getenv("KV_CACHE_STORE_PORT", "")
+            if env_port:
+                kcfg.port = int(env_port)
+        cs_port = kv.get("config_store_port", 0)
+        if cs_port:
+            kcfg.config_store_port = int(cs_port)
+        config_path = kv.get("local_config_path", "") or os.getenv("MMC_LOCAL_CONFIG_PATH", "")
+        if config_path:
+            kcfg.local_config_path = config_path
+
+    @classmethod
     def _set_device_count_for_single_container(cls, config: "NodeManagerConfig"):
         """Set device count for single container mode using parallel_config.world_size"""
         device_count = config.basic_config.parallel_config.world_size
@@ -710,5 +767,15 @@ class NodeManagerConfig:
             f"    ├─ EP Size:          EP={self.basic_config.parallel_config.ep_size}\n"
             f"    ├─ PCP Size:         PCP={self.basic_config.parallel_config.pcp_size}\n"
             f"    └─ World Size:       World Size={self.basic_config.parallel_config.world_size}\n"
+            "\n"
+            "  KV Cache Store Configuration:\n"
+            f"    ├─ Enabled:              {self.kv_cache_store_config.enable}\n"
+            f"    ├─ Backend:              {self.kv_cache_store_config.backend}\n"
+            f"    ├─ Service:              {self.kv_cache_store_config.service or '(env: KVS_MASTER_SERVICE)'}\n"
+            f"    ├─ Mode:                 {self.kv_cache_store_config.local_service_mode or '(default)'}\n"
+            f"    ├─ DRAM Size:            {self.kv_cache_store_config.dram_size or '(default)'}\n"
+            f"    ├─ Port:                 {self.kv_cache_store_config.port}\n"
+            f"    ├─ ConfigStore Port:     {self.kv_cache_store_config.config_store_port}\n"
+            f"    └─ Local Config Path:    {self.kv_cache_store_config.local_config_path}\n"
             f"{'=' * 80}"
         )

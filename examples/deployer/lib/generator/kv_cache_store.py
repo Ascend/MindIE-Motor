@@ -29,6 +29,10 @@ def normalize_kv_cache_store_config(user_config):
     k8s_utils.g_kv_cache_store_port = kv_config[C.KV_CACHE_STORE_PORT]
     k8s_utils.g_kv_store_backend = kv_config[C.KV_STORE_BACKEND]
     k8s_utils.g_mmc_config_store_port = kv_config.get(C.MMC_CONFIG_STORE_PORT_KEY, C.DEFAULT_MMC_CONFIG_STORE_PORT)
+    k8s_utils.g_mmc_metrics_port = kv_config.get(
+        C.MMC_METRICS_PORT_KEY,
+        C.DEFAULT_KV_CACHE_STORE_PORT if kv_config[C.KV_STORE_BACKEND] == "mooncake" else C.DEFAULT_MMC_METRICS_PORT,
+    )
     k8s_utils.g_mmc_local_service_mode = kv_config.get(C.MMC_LOCAL_SERVICE_CONFIG_KEY, "")
     k8s_utils.g_mmc_dram_size = kv_config.get(C.MMC_DRAM_SIZE_CONFIG_KEY, "")
 

@@ -245,9 +245,12 @@ else
 fi
 
 set_cann_env() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] set_cann_env start"
+    local _start_ts=$(date +%s)
     export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/local/lib"
     source "$CANN_INSTALL_PATH/ascend-toolkit/set_env.sh"
-    source "$CANN_INSTALL_PATH/nnal/atb/set_env.sh"
+    local _end_ts=$(date +%s)
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] set_cann_env done, elapsed=$((_end_ts - _start_ts))s"
 }
 
 _motor_deploy_hardware_type() {
