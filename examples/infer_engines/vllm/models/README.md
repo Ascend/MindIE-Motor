@@ -2,6 +2,8 @@
 
 MindIE Motor的一键部署工具可以实现“将vllm-ascend社区的部署脚本转换为Motor部署配置”，以降低操作成本并保证与下游推理引擎配置一致。
 
+**同级目录下已准备常用部署模型的配置示例**，例如：[deepseek v4 flash模型配置示例](./deepseek_v4_flash)
+
 ---
 
 ## 目录简介

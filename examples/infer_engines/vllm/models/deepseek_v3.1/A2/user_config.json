@@ -1,0 +1,101 @@
+{
+    "version": "v2.0",
+    "motor_deploy_config": {
+      "p_instances_num": 1,
+      "d_instances_num": 1,
+      "single_p_instance_pod_num": 2,
+      "single_d_instance_pod_num": 4,
+      "p_pod_npu_num": 8,
+      "d_pod_npu_num": 8,
+      "image_name": "<请按实际情况填写镜像名称>",
+      "job_id": "mindie-motor",
+      "hardware_type": "800I_A2",
+      "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+    },
+    "motor_controller_config": {},
+    "motor_coordinator_config": {},
+    "motor_engine_prefill_config": {
+      "engine_type": "vllm",
+      "engine_config": {
+        "data_parallel_size": 2,
+        "tensor_parallel_size": 8,
+        "pipeline_parallel_size": 1,
+        "data_parallel_rpc_port": 9000,
+        "served_model_name": "deepseek_v3",
+        "model": "<请按实际情况填写模型权重文件的访问路径>",
+        "seed": 1024,
+        "enable_expert_parallel": true,
+        "max-model-len": 65536,
+        "max-num-batched-tokens": 16384,
+        "max-num-seqs": 8,
+        "enforce-eager": true,
+        "trust-remote-code": true,
+        "gpu_memory_utilization": 0.9,
+        "quantization": "ascend",
+        "speculative-config": {
+          "num_speculative_tokens": 1,
+          "method": "mtp"
+        },
+        "profiler-config": {
+          "profiler": "torch",
+          "torch_profiler_dir": "./vllm_profile",
+          "torch_profiler_with_stack": false
+        },
+        "additional-config": {
+          "recompute_scheduler_enable": true
+        },
+        "kv_transfer_config": {
+          "kv_connector": "MooncakeConnectorV1",
+          "kv_role": "kv_producer",
+          "kv_port": "30000",
+          "engine_id": "0"
+        },
+        "no-enable-prefix-caching": true
+      }
+    },
+    "motor_engine_decode_config": {
+      "engine_type": "vllm",
+      "engine_config": {
+        "data_parallel_size": 32,
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "data_parallel_rpc_port": 9000,
+        "served_model_name": "deepseek_v3",
+        "model": "<请按实际情况填写模型权重文件的访问路径>",
+        "seed": 1024,
+        "enable_expert_parallel": true,
+        "max-model-len": 65536,
+        "max-num-batched-tokens": 256,
+        "max-num-seqs": 28,
+        "no-enable-prefix-caching": true,
+        "trust-remote-code": true,
+        "gpu_memory_utilization": 0.92,
+        "quantization": "ascend",
+        "compilation-config": {
+          "cudagraph_mode": "FULL_DECODE_ONLY"
+        },
+        "speculative-config": {
+          "num_speculative_tokens": 1,
+          "method": "mtp"
+        },
+        "profiler-config": {
+          "profiler": "torch",
+          "torch_profiler_dir": "./vllm_profile",
+          "torch_profiler_with_stack": false
+        },
+        "additional-config": {
+          "multistream_overlap_shared_expert": true,
+          "recompute_scheduler_enable": true,
+          "finegrained_tp_config": {
+            "lmhead_tensor_parallel_size": 16
+          }
+        },
+        "kv_transfer_config": {
+          "kv_connector": "MooncakeConnectorV1",
+          "kv_role": "kv_consumer",
+          "kv_port": "30200",
+          "engine_id": "0"
+        }
+      }
+    }
+}
