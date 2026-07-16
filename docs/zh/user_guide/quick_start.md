@@ -61,7 +61,7 @@
      vim ../infer_engines/vllm/user_config.json
      ```
 
-   user_config.json文件**完整示例**如下（可直接复制使用，5项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./deployment/k8s/config_reference.md)。）：
+   user_config.json文件**完整示例**如下（可直接复制使用，5项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./configuration/config_reference.md)。）：
 
       ```json
       {

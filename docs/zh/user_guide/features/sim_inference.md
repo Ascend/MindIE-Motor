@@ -54,7 +54,7 @@ Node Manager 周期性请求 Engine Server mgmt 面 **`GET /status`**；返回�
 | max_failure_count | int | `6` | 连续虚推失败次数上限 |
 | health_collector_timeout | int | `2` | 推理面 `/health` 探测超时（秒） |
 
-完整字段说明见 [配置参考 health_check_config](../deployment/k8s/config_reference.md#health_check_config)。
+完整字段说明见 [配置参考 health_check_config](../configuration/config_reference.md#health_check_config)。
 
 ## 启用方式
 

@@ -6,7 +6,7 @@ MindIE Motor 支持以下两种部署方式，均为最佳实践，可根据自�
 
 适用于已有 Kubernetes 集群的场景，通过 deployer 工具一键生成并 apply 资源文件，支持 PD 分离、PD 聚合等多种部署形态，具备完整的服务发现、负载均衡与自愈能力。
 
-→ 从 [部署模式说明](k8s/deploy_mode_guide.md) 开始
+→ 从 [部署模式说明](k8s/README.md) 开始
 
 ## Docker 部署
 

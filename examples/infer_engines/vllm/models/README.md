@@ -119,9 +119,9 @@ examples/deployer/config_tool/
     python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
     # PD混部、Atlas 800I A3 超节点服务器
     python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A3
-    # PD分离、Atlas 850 Server 推理服务器
+    # PD分离、Atlas 850 超节点服务器
     python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A5
-    # PD分离、Atlas 850 Server 推理服务器
+    # PD分离、Atlas 850 超节点服务器
     python3 deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A5
     ```
 

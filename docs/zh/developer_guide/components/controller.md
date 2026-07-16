@@ -20,7 +20,7 @@ Controller 进程入口为 `motor/controller/main.py`。启动时加载 `Control
 ## 环境准备
 
 - 运行所需 JSON 配置需满足 `ControllerConfig` 的字段定义，见 `motor/config/controller.py`。
-- 与集群部署相关的挂载路径、环境变量等与 `examples/deployer` 生成的启动脚本及 ConfigMap 一致；部署层面步骤见 [环境准备](../../user_guide/environment_preparation.md) 与 [配置参考](../../user_guide/deployment/k8s/config_reference.md)。
+- 与集群部署相关的挂载路径、环境变量等与 `examples/deployer` 生成的启动脚本及 ConfigMap 一致；部署层面步骤见 [环境准备](../../user_guide/environment_preparation.md) 与 [配置参考](../../user_guide/configuration/config_reference.md)。
 
 ## 配置说明
 
@@ -31,7 +31,7 @@ Controller 进程入口为 `motor/controller/main.py`。启动时加载 `Control
 - **主备**：`standby_config.enable_master_standby`。
 - **可观测**：`observability_config.observability_enable` 控制库存盘点/指标/告警等 HTTP 能力是否在独立 observability 应用上开放（见 `_create_observability_app` 与装饰器 `observability_enabled_required`）。
 
-完整字段表请以 [配置参考：motor_controller_config](../../user_guide/deployment/k8s/config_reference.md) 为准。
+完整字段表请以 [配置参考：motor_controller_config](../../user_guide/configuration/config_reference.md) 为准。
 
 ## 对外 HTTP 路由（主 API）
 

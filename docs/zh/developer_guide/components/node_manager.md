@@ -169,7 +169,7 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 
 配置文件路径优先使用 `USER_CONFIG_PATH`，否则使用 `CONFIG_PATH`。在按角色组织的用户配置中，Node Manager 配置位于对应引擎块内的 **`motor_nodemanger_config`**。该键名中的 `nodemanger` 为当前兼容格式，请勿改写为 `node_manager`。
 
-常用配置如下，完整字段参见[配置参考](../../user_guide/deployment/k8s/config_reference.md#motor_nodemanger_config)。
+常用配置如下，完整字段参见[配置参考](../../user_guide/configuration/config_reference.md#motor_nodemanger_config)。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|

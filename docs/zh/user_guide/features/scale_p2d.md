@@ -69,7 +69,7 @@ ScaleP2D 恢复大致分为四步：
 }
 ```
 
-详见 [配置参考](../deployment/k8s/config_reference.md#fault_tolerance_config)。
+详见 [配置参考](../configuration/config_reference.md#motor_controller_config)。
 
 ### InferServiceSet YAML 配置（CRD 部署）
 

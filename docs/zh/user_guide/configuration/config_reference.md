@@ -34,11 +34,11 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | single_d_instance_pod_num | int | 单个D实例对应的Pod数，取值范围：大于等于1 |
 | p_pod_npu_num | int | 单个P实例Pod占用的NPU卡数，每个Pod最大为16卡 |
 | d_pod_npu_num | int | 单个D实例Pod占用的NPU卡数，每个Pod最大为16卡 |
-| image_name | string | 推理镜像名（需包含MindIE-PyMotor与vLLM等运行环境），与[PD分离服务部署](./pd_disaggregation_deployment.md#setup-and-image-preparation)中准备/加载的镜像名保持一致 |
+| image_name | string | 推理镜像名（需包含MindIE-PyMotor与vLLM等运行环境），与[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#setup-and-image-preparation)中准备/加载的镜像名保持一致 |
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，例如"mindie-motor" |
 | hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2 推理服务器：800I_A2</li><li>Atlas 800I A3 超节点服务器：800I_A3</li><li>Atlas 850 Server：850-Atlas-8p-8</li></ul>|
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内model_path需与此挂载路径一致，例如 `"/mnt/weight/"` |
-| tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类，结构见[PD分离服务部署](./pd_disaggregation_deployment.md) |
+| tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类，结构见[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md) |
 
 ---
 
@@ -586,7 +586,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类union E
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
-motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；可选配置dispatch_profile（PD协同语义）与health_check_config（虚推健康探测，见 [虚推健康探测](../../features/sim_inference.md)）。配置示例如下所示。
+motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；可选配置dispatch_profile（PD协同语义）与health_check_config（虚推健康探测，见 [虚推健康探测](../features/sim_inference.md)）。配置示例如下所示。
 
 ```json
 "motor_engine_prefill_config": {
@@ -768,7 +768,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 
-PD模式下P与D**各自独立配置**"health_check_config"；未配置时使用代码默认值。引擎"engine_config"字段说明请参见[motor_engine_prefill_config/motor_engine_decode_config](#motor_engine_prefill_configmotor_engine_decode_config)。
+PD模式下P与D**各自独立配置**"health_check_config"；未配置时使用代码默认值。引擎"engine_config"字段说明请参见[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#生成配置文件)。
 
 ### dispatch_profile
 
@@ -780,7 +780,7 @@ PD模式下P与D**各自独立配置**"health_check_config"；未配置时使用
 |--------|------|--------|
 | dispatch_profile | string | P/D 协同语义。默认值：未配时由 kv_connector白名单推断。<br>可选值：<ul><li>handoff：Prefill完成后交给Decode，推导出的capability为prefill_handoff_decode。</li><li>trigger：P/D并发，引擎同步KV，推导出的capability为concurrent_engine_sync。</li></ul>Prefill与Decode**两端须配置相同取值**。 |
 
-vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../../design/pd_disaggregation.md#vllm-connector-识别白名单)。白名单内connector无需手动配置dispatch_profile。
+vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)。白名单内connector无需手动配置dispatch_profile。
 
 >[!NOTE]说明
 >
@@ -819,7 +819,7 @@ vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../../desi
 
 ### health_check_config
 
-可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 子块，默认关闭。机制说明见 [虚推健康探测](../../features/sim_inference.md)；PD 部署配置示例见 [PD 分离服务部署](./pd_disaggregation_deployment.md#virtual-inference-health-check)。
+可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 子块，默认关闭。机制说明见 [虚推健康探测](../features/sim_inference.md)；PD 部署配置示例见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#virtual-inference-health-check)。
 
 **表7** health_check_config字段参数说明
 
@@ -862,7 +862,7 @@ PD混部场景下，union Engine Server 的环境变量配置在 `env.json` 的 
 
 该字段加载 `user_config.json` 时由 Coordinator 合并，一般无需手动添加。
 Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据引擎 Connector 推导、由 NodeManager 内部上报的 `dispatch_capabilities` 选择并发或 handoff 行为。该字段不支持用户显式配置；自定义 Connector 可在 `motor_engine_prefill_config` / `motor_engine_decode_config` 顶层使用 `dispatch_profile` 声明语义，详情请参见[dispatch_profile](#dispatch_profile)。
-Connector 识别白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未识别连接器导致路由 503（fail-closed）的处理，详情请参见[PD 分离特性说明](../../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[dispatch_profile](#dispatch_profile)。
+Connector 识别白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未识别连接器导致路由 503（fail-closed）的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
 
 **表9** prefill_kv_event_config说明
 
