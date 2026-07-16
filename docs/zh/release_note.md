@@ -13,44 +13,28 @@
 
 | 产品名称                         | 版本                                                                                                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CANN                         | 9.0.1                                                                                                                                                            |
-| MindCluster                        | 26.1.0                                                                                                                                                   |
+| MindCluster                        | 26.1.0                                                                                                                                                  |
 | vllm                         | v0.23.0                                                                                                                                                            |
 | vLLM Ascend                  | releases/v0.23.0                                                                                                                                      |
-| Ascend Extension for PyTorch | 26.0.0                                                                                                                                             |
 | Mooncake                     | v0.3.11.post1                                                                                                                                            |
-| CCAE                     | iMaster CCAE V100R026C10SPC100                                                                                                               |
+| CCAE                     | iMaster CCAE V100R026C10SPC100                                                                                                                |
 | Ascend HDK                   | 26.0.RC1 |
 
 # 版本兼容性说明
 
 MindIE各组件需要配套使用，请勿跨版本混用各组件。
 
-**表 1**  软件版本兼容性说明
+**表 1**  软件版本兼容性说明(Y代表版本间可以配套使用)
 
-| MindIE Motor 版本 | CANN 9.1.0 | CANN 9.0.1 | CANN 9.0.0 | CANN 8.5.1 | CANN 8.5.0 |
-| ----------------- | ---------- | ---------- | ---------- |---------- |---------- |
-| 3.1.0             |Y            | Y          | Y          |            |            |
-| 3.0.0             |              |             | Y          |Y          |Y          |
-| 2.3.0             |              |             |             |            |Y          |
+| MindIE Motor 版本 | MindCluster 26.1.0 | MindCluster 26.0.0 |
+| ----------------- | ---------- | ---------- |
+| 3.1.0             |Y            |            |
+| 3.0.0             |              |Y          |
 
-| MindIE Motor 版本 | MindCluster 26.1.0 | MindCluster 26.0.0 | MindCluster 7.3.0 |
-| ----------------- | ---------- | ---------- | ---------- |
-| 3.1.0             |Y            |Y          |Y            |
-| 3.0.0             |              |Y          |Y            |
-| 2.3.0             |              |            |Y            |
-
-| MindIE Motor 版本 | Ascend Extension for PyTorch 26.1.0 | Ascend Extension for PyTorch 26.0.0 | Ascend Extension for PyTorch 7.3.0 |
-| ----------------- | ---------- | ---------- | ---------- |
-| 3.1.0             |Y            |Y          |Y            |
-| 3.0.0             |              |Y          |Y            |
-| 2.3.0             |              |            |Y            |
-
-| MindIE Motor 版本 | CCAE iMaster CCAE V100R026C10SPC100 | CCAE iMaster CCAE V100R026C00SPC010 | CCAE iMaster CCAE V100R025C30SPC100 |
-| ----------------- | ---------- | ---------- | ---------- |
-| 3.1.0             |Y            |Y          |Y            |
-| 3.0.0             |              |Y          |Y            |
-| 2.3.0             |              |            |Y            |
+| MindIE Motor 版本 | CCAE iMaster CCAE V100R026C10SPC100 | CCAE iMaster CCAE V100R026C00SPC010 |
+| ----------------- | ---------- | ---------- |
+| 3.1.0             |Y            |Y          |
+| 3.0.0             |              |Y          |
 
 # 版本使用注意事项
 

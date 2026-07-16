@@ -36,7 +36,7 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | d_pod_npu_num | int | 单个D实例Pod占用的NPU卡数，每个Pod最大为16卡 |
 | image_name | string | 推理镜像名（需包含MindIE-PyMotor与vLLM等运行环境），与[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#setup-and-image-preparation)中准备/加载的镜像名保持一致 |
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，例如"mindie-motor" |
-| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2 推理服务器：800I_A2</li><li>Atlas 800I A3 超节点服务器：800I_A3</li><li>Atlas 850 Server：850-Atlas-8p-8</li></ul>|
+| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2 推理服务器：800I_A2</li><li>Atlas 800I A3 超节点服务器：800I_A3</li><li>Atlas 850 Server：850-Atlas-8p-8</li><li>Atlas 850 Server 超节点服务器：850-SuperPod-Atlas-8</li></ul>|
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内model_path需与此挂载路径一致，例如 `"/mnt/weight/"` |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类，结构见[PD分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md) |
 

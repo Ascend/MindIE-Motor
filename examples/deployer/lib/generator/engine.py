@@ -82,6 +82,16 @@ def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
     logger.info("Applied A5 engine pod config for hardware_type=%s", hardware_type)
 
 
+def _apply_a5_inferservice_id_label(template_metadata, deploy_config, hardware_type):
+    if hardware_type not in ("850-SuperPod-Atlas-8", "950-SuperPod-Atlas-8"):
+        return
+    job_id = deploy_config.get(C.CONFIG_JOB_ID) if deploy_config else None
+    if not job_id:
+        logger.warning("job_id is missing in deploy config, skip applying A5 label %s", C.INFERSERVICE_ID_LABEL)
+        return
+    template_metadata.setdefault(C.LABELS, {})[C.INFERSERVICE_ID_LABEL] = job_id
+
+
 def apply_a5_workload(workload, deploy_config):
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_950I_A5:
@@ -94,6 +104,7 @@ def apply_a5_workload(workload, deploy_config):
         template_meta = workload.setdefault(C.METADATA, {})
     _pop_ring_controller_atlas_from_labels(template_meta.get(C.LABELS))
     _apply_a5_schedule_policy_annotation(template_meta, hardware_type)
+    _apply_a5_inferservice_id_label(template_meta, deploy_config, hardware_type)
 
 
 def update_engine_base_name(user_config):

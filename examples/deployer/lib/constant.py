@@ -28,6 +28,7 @@ D_POD_NPU_NUM = "d_pod_npu_num"
 ASCEND_910_NPU_NUM = "huawei.com/Ascend910"
 ASCEND_950_NPU_NUM = "huawei.com/npu"
 RING_CONTROLLER_ATLAS_LABEL = "ring-controller.atlas"
+INFERSERVICE_ID_LABEL = "inferserviceid"
 HUAWEI_SCHEDULE_POLICY_ANNOTATION = "huawei.com/schedule_policy"
 A5_SCHEDULE_POLICY_BY_ACCELERATOR_TYPE = {
     "350-Atlas-8": "chip1-node8",
