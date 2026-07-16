@@ -225,6 +225,26 @@ def test_from_json_maps_hybrid_instances(_temp_json_file):
     assert config.deploy_config.d_instances_num == 3
 
 
+def test_from_json_maps_pd_fallback_switch_from_scheduler_config(_temp_json_file):
+    user_config = {
+        "motor_deploy_config": {
+            "p_instances_num": 1,
+            "d_instances_num": 1,
+        },
+        "motor_coordinator_config": {
+            "scheduler_config": {
+                "enable_pd_separation_fallback_to_hybrid": False,
+            }
+        },
+    }
+    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.scheduler_config.enable_pd_separation_fallback_to_hybrid is False
+
+
 def test_from_json_with_invalid_json(_temp_json_file):
     """Test loading configuration from invalid JSON file"""
     with open(_temp_json_file, 'w', encoding="utf-8") as f:

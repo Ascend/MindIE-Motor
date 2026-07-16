@@ -229,6 +229,7 @@ motor_coordinator_config字段配置样例如下所示：
   },
   "scheduler_config": {
     "scheduler_type": "load_balance",
+    "enable_pd_separation_fallback_to_hybrid": true,
     "endpoint_instance_score_weight": 0.05,
     "kv_affinity_mode": "unified",
     "kv_affinity_load_weight": 1.0,
@@ -378,6 +379,7 @@ motor_coordinator_config字段配置样例如下所示：
 | upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认：`65536` |
 | **scheduler_config字段** |-|-|
 | scheduler_type | string | 调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
+| enable_pd_separation_fallback_to_hybrid | bool | PD分离场景下，当D实例不可用或P/D实例不满足调度条件时，是否允许降级使用混部路由，默认值为 `true` |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认：`0.05` |
 | kv_affinity_mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
 | kv_affinity_load_weight | float | unified 模式下 endpoint 实时负载权重。默认：`1.0` |

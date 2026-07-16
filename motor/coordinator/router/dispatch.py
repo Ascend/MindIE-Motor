@@ -102,7 +102,21 @@ def with_cancellation(handler_func):
     return wrapper
 
 
-async def select_router_class(scheduler, req_info: RequestInfo | None = None) -> type["BaseRouter"]:
+def _is_pd_hybrid_deploy(config: CoordinatorConfig | None) -> bool:
+    deploy_config = getattr(config, "deploy_config", None)
+    return getattr(deploy_config, "hybrid_instances_num", None) is not None
+
+
+def _is_pd_separation_fallback_to_hybrid_enabled(config: CoordinatorConfig | None) -> bool:
+    scheduler_config = getattr(config, "scheduler_config", None)
+    return bool(getattr(scheduler_config, "enable_pd_separation_fallback_to_hybrid", True))
+
+
+async def select_router_class(
+    scheduler,
+    req_info: RequestInfo | None = None,
+    config: CoordinatorConfig | None = None,
+) -> type["BaseRouter"]:
     """Select the router implementation from the live instance topology.
 
     Routing is derived from the roles currently present plus whether a P/D pair shares a
@@ -146,6 +160,18 @@ async def select_router_class(scheduler, req_info: RequestInfo | None = None) ->
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No routable inference topology is currently available: all instances are circuit-broken or absent",
         )
+
+    fallback_enabled = _is_pd_separation_fallback_to_hybrid_enabled(config)
+    is_hybrid_deploy = _is_pd_hybrid_deploy(config)
+    if not fallback_enabled and not is_hybrid_deploy:
+        if has_pd_roles:
+            message = "PD separate service has no compatible P/D pair and fallback to hybrid is disabled"
+        else:
+            message = "PD separate service is unavailable and fallback to hybrid is disabled"
+        if req_info is not None:
+            req_info.trace_obj.set_trace_error_message(message)
+        logger.warning("PD separate service cannot route request because hybrid fallback is disabled: %s", message)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=message)
 
     if PDRole.ROLE_U in roles or PDRole.ROLE_P in roles:
         if has_pd_roles and not has_compatible_pair and PDRole.ROLE_U in roles:
@@ -204,7 +230,7 @@ async def handle_request(
             detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
         )
 
-    router_impl_class = await select_router_class(scheduler, req_info=req_info)
+    router_impl_class = await select_router_class(scheduler, req_info=req_info, config=config)
 
     sampling_manager = getattr(raw_request.app.state, "sampling_manager", None)
     router_impl = router_impl_class(

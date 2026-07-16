@@ -1,3 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -127,6 +137,28 @@ def test_dispatch_uses_single_node_fallback_when_only_prefill(monkeypatch):
     assert calls and calls[0]["prompt"] == "hi"
 
 
+def test_dispatch_rejects_only_prefill_when_hybrid_fallback_disabled(monkeypatch):
+    class _FakeHybridRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            raise AssertionError("PDHybridRouter should not be used when fallback is disabled")
+
+    instances = {
+        1: Instance(job_name="p", model_name="m", id=1, role=PDRole.ROLE_P.value),
+    }
+    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
+
+    config = CoordinatorConfig()
+    config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
+
+    response = TestClient(_app(config, _Scheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "PD separate service is unavailable and fallback to hybrid is disabled"
+
+
 def test_dispatch_rejects_incompatible_pd_topology():
     instances = {
         1: Instance(
@@ -187,6 +219,43 @@ def test_dispatch_falls_back_to_union_for_incompatible_pd(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"router": "hybrid"}
+
+
+def test_dispatch_rejects_union_fallback_when_hybrid_fallback_disabled(monkeypatch):
+    class _FakeHybridRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            raise AssertionError("PDHybridRouter should not be used when fallback is disabled")
+
+    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+        2: Instance(
+            job_name="d",
+            model_name="m",
+            id=2,
+            role=PDRole.ROLE_D.value,
+            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+        ),
+        3: Instance(job_name="u", model_name="m", id=3, role=PDRole.ROLE_U.value),
+    }
+    config = CoordinatorConfig()
+    config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
+
+    response = TestClient(_app(config, _Scheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 503
+    assert (
+        response.json()["detail"] == "PD separate service has no compatible P/D pair and fallback to hybrid is disabled"
+    )
 
 
 def test_dispatch_preserves_upstream_http_error(monkeypatch):
