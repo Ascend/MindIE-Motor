@@ -314,6 +314,7 @@ class RateLimitConfig:
     skip_paths: list[str] = field(default_factory=_default_rate_limit_skip_paths)
     error_message: str = "too many requests, please try again later"
     error_status_code: int = 429
+    max_request_body_size: int = 10 * 1024 * 1024
 
     olc_config_path: str = ""
 

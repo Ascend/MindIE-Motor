@@ -264,6 +264,7 @@ class InferenceServer(BaseCoordinatorServer):
                 app=self._inference_app,
                 max_requests=rate_limit_config.max_requests,
                 window_size=rate_limit_config.window_size,
+                max_request_body_size=rate_limit_config.max_request_body_size,
             )
             self._rate_limit_middleware = middleware
             self._inference_app.add_middleware(
@@ -272,6 +273,7 @@ class InferenceServer(BaseCoordinatorServer):
                 skip_paths=rate_limit_config.skip_paths,
                 error_message=rate_limit_config.error_message,
                 error_status_code=rate_limit_config.error_status_code,
+                max_request_body_size=rate_limit_config.max_request_body_size,
             )
             logger.info(
                 "Create simple limit: max_requests=%s/%ss",
@@ -331,6 +333,7 @@ class InferenceServer(BaseCoordinatorServer):
                     error_message=rlc.error_message,
                     error_status_code=rlc.error_status_code,
                     enabled=rlc.enable_rate_limit,
+                    max_request_body_size=rlc.max_request_body_size,
                 )
 
     def _get_scheduler_client(self):
