@@ -23,7 +23,7 @@ MemCache 为默认池化后端，基于 [memcache_hybrid](https://gitcode.com/As
 - `dram_size`（可选）：**每个节点**贡献给 KV 池化的 DRAM 总内存大小，`inprocess` 和 `standalone` 模式均生效。格式如 `"100GB"`。
   - `inprocess` 模式：daemon 会自动将该值除以本节点 DP 数，得到每个 vLLM 进程的 `dram.size`，确保节点总贡献等于 `dram_size`。
   - `standalone` 模式：独立 LocalService 直接使用该值作为 DRAM 池化内存。
-  - 未配置时默认 `"10GB"`（后续版本将通过 `memfabric_hybrid.mem_scan.stat()` 自动扫描节点可用内存）。
+  - 未配置时通过 `free -b` 自动扫描节点可用内存（保留 20% 余量）。
 
 > deploy.py 会自动启动 MemCache MetaService（对标 Mooncake 的 `mooncake_master`），无需手动干预。
 

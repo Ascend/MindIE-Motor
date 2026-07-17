@@ -1151,13 +1151,13 @@ def test_fetch_memcache_metrics_brackets_ipv6_service():
     collector = MetricsCollector(config)
 
     response = MagicMock()
-    response.status = 200
-    response.read.return_value = b""
-    with patch("motor.coordinator.metrics.metrics_collector.urllib_request.urlopen") as mock_urlopen:
-        mock_urlopen.return_value.__enter__.return_value = response
+    response.status_code = 200
+    response.text = ""
+    with patch("motor.coordinator.metrics.metrics_collector.requests.get") as mock_get:
+        mock_get.return_value = response
         collector._fetch_kv_store_metrics()
 
-    mock_urlopen.assert_called_once_with("http://[2001:db8::10]:50090/metrics", timeout=5)
+    mock_get.assert_called_once_with("http://[2001:db8::10]:50090/metrics", timeout=15)
 
 
 @patch("threading.Thread.start", MagicMock())
