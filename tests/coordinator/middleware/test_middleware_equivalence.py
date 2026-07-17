@@ -68,11 +68,13 @@ async def _collecting_send(messages: List[Dict[str, Any]]) -> callable:
 
 async def _dummy_app(scope, receive, send):
     """Minimal ASGI app that returns 200 with a plain-text body."""
-    await send({
-        "type": "http.response.start",
-        "status": 200,
-        "headers": [(b"content-type", b"text/plain")],
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain")],
+        }
+    )
     await send({"type": "http.response.body", "body": b"ok"})
 
 
@@ -82,13 +84,8 @@ def _parse_response(
     """Extract status, headers dict, and body from collected ASGI messages."""
     start = next(m for m in messages if m["type"] == "http.response.start")
     status = start["status"]
-    headers = {
-        k.decode("latin-1").lower(): v.decode("latin-1")
-        for k, v in start.get("headers", [])
-    }
-    body = b"".join(
-        m.get("body", b"") for m in messages if m["type"] == "http.response.body"
-    )
+    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in start.get("headers", [])}
+    body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
     return status, headers, body
 
 
@@ -103,6 +100,7 @@ def _make_limiter(max_requests: int, tokens: int | None = None) -> SimpleRateLim
 # ---------------------------------------------------------------------------
 # Test helpers that run both implementations and compare
 # ---------------------------------------------------------------------------
+
 
 async def _run_native(
     limiter: SimpleRateLimiter,
@@ -166,9 +164,7 @@ async def _run_legacy(
     mw.app = app
 
     transport = httpx.ASGITransport(app=mw)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(
             (scope or _HTTP_SCOPE)["path"],
             timeout=10.0,
@@ -179,10 +175,7 @@ async def _run_legacy(
         {
             "type": "http.response.start",
             "status": resp.status_code,
-            "headers": [
-                (k.encode("latin-1"), v.encode("latin-1"))
-                for k, v in resp.headers.items()
-            ],
+            "headers": [(k.encode("latin-1"), v.encode("latin-1")) for k, v in resp.headers.items()],
         },
         {
             "type": "http.response.body",
@@ -195,6 +188,7 @@ async def _run_legacy(
 # ---------------------------------------------------------------------------
 # The actual equivalence checks
 # ---------------------------------------------------------------------------
+
 
 def _assert_stats_equal(
     native_mw: NativeMW,
@@ -209,11 +203,7 @@ def _assert_stats_equal(
     # 只比较两个中间件共有的 key（native 可能包含 legacy 没有的额外统计项）
     common_keys = set(n.keys()) & set(l.keys())
     for key in common_keys:
-        assert n[key] == l[key], (
-            f"[{label}] stats mismatch for key '{key}':\n"
-            f"  native: {n[key]}\n"
-            f"  legacy: {l[key]}"
-        )
+        assert n[key] == l[key], f"[{label}] stats mismatch for key '{key}':\n  native: {n[key]}\n  legacy: {l[key]}"
 
 
 def _assert_response_equal(
@@ -225,37 +215,28 @@ def _assert_response_equal(
     n_status, n_headers, n_body = _parse_response(native_msgs)
     l_status, l_headers, l_body = _parse_response(legacy_msgs)
 
-    assert n_status == l_status, (
-        f"[{label}] status mismatch: native={n_status} legacy={l_status}"
-    )
+    assert n_status == l_status, f"[{label}] status mismatch: native={n_status} legacy={l_status}"
 
     # Compare rate-limit headers only (content-type / content-length may differ)
     for hdr in ("x-ratelimit-remaining", "x-ratelimit-limit", "x-ratelimit-window"):
         n_val = n_headers.get(hdr)
         l_val = l_headers.get(hdr)
-        assert n_val == l_val, (
-            f"[{label}] header {hdr} mismatch: native={n_val!r} legacy={l_val!r}"
-        )
+        assert n_val == l_val, f"[{label}] header {hdr} mismatch: native={n_val!r} legacy={l_val!r}"
 
     # Body comparison (for blocked case the body is JSON)
     if n_status >= 400:
         try:
             n_json = json.loads(n_body)
             l_json = json.loads(l_body)
-            assert n_json == l_json, (
-                f"[{label}] error body mismatch:\n"
-                f"  native: {n_json}\n"
-                f"  legacy: {l_json}"
-            )
+            assert n_json == l_json, f"[{label}] error body mismatch:\n  native: {n_json}\n  legacy: {l_json}"
         except json.JSONDecodeError:
-            assert n_body == l_body, (
-                f"[{label}] raw body mismatch: native={n_body!r} legacy={l_body!r}"
-            )
+            assert n_body == l_body, f"[{label}] raw body mismatch: native={n_body!r} legacy={l_body!r}"
 
 
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
+
 
 async def test_allowed_request():
     """Both should allow the request, inject X-RateLimit-* headers, and return 200."""
@@ -348,12 +329,8 @@ async def test_custom_error():
     limiter_n = _make_limiter(1, tokens=0)
     limiter_l = _make_limiter(1, tokens=0)
 
-    n_msgs, n_mw = await _run_native(
-        limiter_n, error_message="custom msg", error_status_code=503
-    )
-    l_msgs, l_mw = await _run_legacy(
-        limiter_l, error_message="custom msg", error_status_code=503
-    )
+    n_msgs, n_mw = await _run_native(limiter_n, error_message="custom msg", error_status_code=503)
+    l_msgs, l_mw = await _run_legacy(limiter_l, error_message="custom msg", error_status_code=503)
 
     n_status, _, n_body = _parse_response(n_msgs)
     l_status, _, l_body = _parse_response(l_msgs)
@@ -406,9 +383,7 @@ async def test_multiple_requests_stats():
 
     l_mw.app = app
     transport = httpx.ASGITransport(app=l_mw)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         for _ in range(5):
             await client.get("/v1/chat/completions", timeout=10.0)
 
@@ -421,6 +396,7 @@ async def test_multiple_requests_stats():
 
 async def test_exception_safety():
     """When the rate limiter raises, both should pass through and count as allowed."""
+
     class _FaultyLimiter:
         def is_allowed(self, *a, **kw):
             raise RuntimeError("simulated limiter failure")
@@ -445,6 +421,7 @@ async def test_exception_safety():
 # ---------------------------------------------------------------------------
 # Body size limit tests (native-only feature, no legacy equivalence)
 # ---------------------------------------------------------------------------
+
 
 def _make_scope_with_content_length(path: str, content_length: int) -> Dict[str, Any]:
     """构造带 Content-Length 头的 ASGI HTTP scope"""
@@ -481,9 +458,7 @@ async def test_body_size_within_limit():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/v1/chat/completions", 1024)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=10 * 1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=10 * 1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200, got {status}"
@@ -497,9 +472,7 @@ async def test_body_size_exceeds_limit():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/v1/chat/completions", 2048)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 413, f"expected 413, got {status}"
@@ -514,9 +487,7 @@ async def test_body_size_exact_boundary():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/v1/chat/completions", 1024)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200 at exact boundary, got {status}"
@@ -529,9 +500,7 @@ async def test_body_size_no_content_length():
     limiter = _make_limiter(100)
     scope = _make_scope_without_content_length("/v1/chat/completions")
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200 without content-length, got {status}"
@@ -542,13 +511,9 @@ async def test_body_size_no_content_length():
 async def test_body_size_invalid_content_length():
     """Content-Length 头值为非法整数，应跳过大小检查并放行"""
     limiter = _make_limiter(100)
-    scope = _make_scope_with_invalid_content_length(
-        "/v1/chat/completions", "not-a-number"
-    )
+    scope = _make_scope_with_invalid_content_length("/v1/chat/completions", "not-a-number")
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200 with invalid content-length, got {status}"
@@ -561,9 +526,7 @@ async def test_body_size_disabled_when_zero():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/v1/chat/completions", 999 * 1024 * 1024)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=0
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=0)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200 when body size check disabled, got {status}"
@@ -576,9 +539,7 @@ async def test_body_size_check_before_rate_limit():
     limiter = _make_limiter(1, tokens=0)  # 令牌已耗尽，正常会返回 429
     scope = _make_scope_with_content_length("/v1/chat/completions", 2048)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=1024)
 
     status, _, body = _parse_response(n_msgs)
     assert status == 413, f"expected 413 (body size before rate limit), got {status}"
@@ -594,9 +555,7 @@ async def test_body_size_skip_path_bypass():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/liveness", 999 * 1024 * 1024)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, skip_paths=["/liveness"], max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, skip_paths=["/liveness"], max_request_body_size=1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200 for skip path, got {status}"
@@ -609,9 +568,7 @@ async def test_body_size_disabled_middleware_bypass():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/v1/chat/completions", 999 * 1024 * 1024)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, enabled=False, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, enabled=False, max_request_body_size=1024)
 
     status, _, _ = _parse_response(n_msgs)
     assert status == 200, f"expected 200 when middleware disabled, got {status}"
@@ -624,9 +581,7 @@ async def test_body_size_413_response_body():
     limiter = _make_limiter(100)
     scope = _make_scope_with_content_length("/v1/chat/completions", 5000)
 
-    n_msgs, n_mw = await _run_native(
-        limiter, scope=scope, max_request_body_size=1024
-    )
+    n_msgs, n_mw = await _run_native(limiter, scope=scope, max_request_body_size=1024)
 
     status, _, body = _parse_response(n_msgs)
     assert status == 413
@@ -641,7 +596,9 @@ async def test_body_size_update_config():
     """update_config 应能运行时更新 max_request_body_size"""
     limiter = _make_limiter(100)
     n_mw = NativeMW(
-        app=_dummy_app, rate_limiter=limiter, skip_paths=[],
+        app=_dummy_app,
+        rate_limiter=limiter,
+        skip_paths=[],
         max_request_body_size=1024,
     )
 
@@ -667,9 +624,7 @@ async def test_load_config_max_request_body_size_env():
     try:
         os.environ[ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE] = "2048"
         config = load_rate_limit_config()
-        assert config.max_request_body_size == 2048, (
-            f"expected 2048 from env, got {config.max_request_body_size}"
-        )
+        assert config.max_request_body_size == 2048, f"expected 2048 from env, got {config.max_request_body_size}"
     finally:
         if original is None:
             os.environ.pop(ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE, None)
@@ -698,6 +653,7 @@ async def test_load_config_max_request_body_size_env_invalid():
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 async def main() -> int:
     print("Behavioural equivalence tests: native vs legacy middleware\n")
@@ -744,7 +700,7 @@ async def main() -> int:
             failed += 1
             print(f"  [ERROR] {name}: {type(e).__name__}: {e}")
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Results: {passed} passed, {failed} failed out of {len(tests)} tests")
     return 0 if failed == 0 else 1
 

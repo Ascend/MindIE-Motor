@@ -145,13 +145,13 @@ class SimpleRateLimitMiddleware:
     """
 
     def __init__(
-            self,
-            app: ASGIApp,
-            rate_limiter: SimpleRateLimiter | None = None,
-            skip_paths: list | None = None,
-            error_message: str = "Request too frequent, please try again later",
-            error_status_code: int = 429,
-            max_request_body_size: int = 10 * 1024 * 1024,
+        self,
+        app: ASGIApp,
+        rate_limiter: SimpleRateLimiter | None = None,
+        skip_paths: list | None = None,
+        error_message: str = "Request too frequent, please try again later",
+        error_status_code: int = 429,
+        max_request_body_size: int = 10 * 1024 * 1024,
     ):
         """
         初始化限流中间件
@@ -173,8 +173,13 @@ class SimpleRateLimitMiddleware:
         self.max_request_body_size = max_request_body_size
         self.enabled = True  # Hot-reload can disable rate limit via update_config(enabled=False)
 
-        self.stats = {"total_requests": 0, "allowed_requests": 0, "blocked_requests": 0,
-                      "body_size_rejected_requests": 0, "start_time": time.time()}
+        self.stats = {
+            "total_requests": 0,
+            "allowed_requests": 0,
+            "blocked_requests": 0,
+            "body_size_rejected_requests": 0,
+            "start_time": time.time(),
+        }
 
     @staticmethod
     def _extract_request_data(scope: Scope) -> dict[str, Any]:
@@ -239,13 +244,12 @@ class SimpleRateLimitMiddleware:
             if content_length > self.max_request_body_size:
                 self.stats["body_size_rejected_requests"] += 1
                 logger.warning(
-                    f"Request body size too large: {content_length} > "
-                    f"{self.max_request_body_size}, path={path}"
+                    f"Request body size too large: {content_length} > {self.max_request_body_size}, path={path}"
                 )
                 error_response = {
                     "error": "request_body_too_large",
                     "message": f"Request body size ({content_length} bytes) exceeds "
-                               f"maximum allowed ({self.max_request_body_size} bytes)",
+                    f"maximum allowed ({self.max_request_body_size} bytes)",
                     "details": {
                         "content_length": content_length,
                         "max_allowed": self.max_request_body_size,
@@ -274,9 +278,7 @@ class SimpleRateLimitMiddleware:
 
             # Pre-build rate limiting response headers (bytes form, required by ASGI)
             rate_limit_headers = self._create_rate_limit_headers(limit_info)
-            header_pairs = [
-                (k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in rate_limit_headers.items()
-            ]
+            header_pairs = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in rate_limit_headers.items()]
 
             if not header_pairs:
                 # No headers to inject, skip the send wrapper to minimize overhead
@@ -319,12 +321,12 @@ class SimpleRateLimitMiddleware:
             return
 
     def update_config(
-            self,
-            skip_paths: list | None = None,
-            error_message: str | None = None,
-            error_status_code: int | None = None,
-            enabled: bool | None = None,
-            max_request_body_size: int | None = None,
+        self,
+        skip_paths: list | None = None,
+        error_message: str | None = None,
+        error_status_code: int | None = None,
+        enabled: bool | None = None,
+        max_request_body_size: int | None = None,
     ) -> None:
         """运行时更新中间件配置（用于配置热加载）"""
         if skip_paths is not None:
@@ -344,10 +346,10 @@ class SimpleRateLimitMiddleware:
 
 
 def create_simple_rate_limit_middleware(
-        app: ASGIApp,
-        max_requests: int = 100,
-        window_size: int = 60,
-        max_request_body_size: int = 10 * 1024 * 1024,
+    app: ASGIApp,
+    max_requests: int = 100,
+    window_size: int = 60,
+    max_request_body_size: int = 10 * 1024 * 1024,
 ) -> SimpleRateLimitMiddleware:
     """创建限流中间件实例（含请求体大小检查）"""
     # 创建限流器
