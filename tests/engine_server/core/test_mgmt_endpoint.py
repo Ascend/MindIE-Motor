@@ -20,6 +20,7 @@ def _make_config(dp_rank: int, enable_virtual_inference: bool = True, engine_typ
         npu_usage_threshold=3,
         max_failure_count=6,
         health_collector_timeout=5,
+        health_collector_timeout_retry_attempts=3,
     )
     deploy_config = SimpleNamespace(
         mgmt_tls_config=None,

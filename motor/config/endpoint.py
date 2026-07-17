@@ -108,10 +108,27 @@ class EngineConfig:
 class HealthCheckConfig:
     """Configuration for health check"""
 
-    health_collector_timeout: int = 2
+    health_collector_timeout: int = 5
+    # Max attempts for /health probe when request times out (timeout-only retry).
+    health_collector_timeout_retry_attempts: int = 3
     npu_usage_threshold: int = 3
     enable_virtual_inference: bool = False
     max_failure_count: int = 6
+
+    @staticmethod
+    def _as_positive_int(name: str, value: Any) -> int:
+        # bool is a subclass of int; reject it to avoid true/false silently becoming 1/0.
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer, got {value!r}")
+        if value < 1:
+            raise ValueError(f"{name} must be >= 1, got {value}")
+        return value
+
+    def __post_init__(self):
+        self.health_collector_timeout = self._as_positive_int("health_collector_timeout", self.health_collector_timeout)
+        self.health_collector_timeout_retry_attempts = self._as_positive_int(
+            "health_collector_timeout_retry_attempts", self.health_collector_timeout_retry_attempts
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HealthCheckConfig":

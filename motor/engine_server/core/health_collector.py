@@ -8,6 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import httpx
+
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
@@ -22,7 +24,9 @@ class HealthCollector:
         self.host = endpoint_config.host
         self.port = endpoint_config.port
         self.infer_tls_config = endpoint_config.deploy_config.infer_tls_config
-        self.timeout = endpoint_config.deploy_config.health_check_config.health_collector_timeout
+        health_check_config = endpoint_config.deploy_config.health_check_config
+        self.timeout = health_check_config.health_collector_timeout
+        self.max_attempts = health_check_config.health_collector_timeout_retry_attempts
         self.address = build_endpoint(self.host, self.port)
         self._has_connected = False
         self._has_refreshed_after_restored = False
@@ -38,15 +42,25 @@ class HealthCollector:
                 tls_config=self.infer_tls_config,
                 timeout=self.timeout,
             ) as client:
-                response = await client.get("/health")
-                response.raise_for_status()
-                response_text = await response.aread()
-                health_status = response_text.decode('utf-8').lower() != 'false'
-                self._has_connected = True
-                return health_status
+                for attempt in range(1, self.max_attempts + 1):
+                    try:
+                        response = await client.get("/health")
+                        response.raise_for_status()
+                        response_text = await response.aread()
+                        health_status = response_text.decode('utf-8').lower() != 'false'
+                        self._has_connected = True
+                        return health_status
+                    except httpx.TimeoutException:
+                        if attempt < self.max_attempts:
+                            logger.info(
+                                "Health check timed out (attempt %d/%d), retrying...",
+                                attempt,
+                                self.max_attempts,
+                            )
+                            continue
+                        raise
         except Exception as e:
-            logger.debug(f"Health check failed: {e}")
+            logger.debug("Health check failed: %s", e)
             if self._has_connected:
                 return False
-            else:
-                raise e
+            raise

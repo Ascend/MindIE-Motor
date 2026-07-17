@@ -124,7 +124,8 @@ def test_engine_config_set():
 def test_health_check_config_defaults():
     """Test HealthCheckConfig default values"""
     config = HealthCheckConfig()
-    assert config.health_collector_timeout == 2
+    assert config.health_collector_timeout == 5
+    assert config.health_collector_timeout_retry_attempts == 3
     assert config.npu_usage_threshold == 3
     assert config.enable_virtual_inference is False
 
@@ -132,14 +133,41 @@ def test_health_check_config_defaults():
 def test_health_check_config_from_dict():
     """Test HealthCheckConfig.from_dict"""
     data = {
-        "health_collector_timeout": 5,
+        "health_collector_timeout": 10,
+        "health_collector_timeout_retry_attempts": 5,
         "npu_usage_threshold": 20,
         "enable_virtual_inference": False,
     }
     config = HealthCheckConfig.from_dict(data)
-    assert config.health_collector_timeout == 5
+    assert config.health_collector_timeout == 10
+    assert config.health_collector_timeout_retry_attempts == 5
     assert config.npu_usage_threshold == 20
     assert config.enable_virtual_inference is False
+
+
+def test_health_check_config_rejects_non_integer_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": "abc"})
+
+
+def test_health_check_config_rejects_bool_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": True})
+
+
+def test_health_check_config_rejects_bool_timeout():
+    with pytest.raises(ValueError, match="health_collector_timeout must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout": False})
+
+
+def test_health_check_config_rejects_non_positive_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be >= 1"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": 0})
+
+
+def test_health_check_config_rejects_numeric_string_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": "4"})
 
 
 # --- DeployConfig tests ---
