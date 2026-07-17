@@ -200,8 +200,6 @@ async def _dispatch_context(endpoint: _Endpoint, body: dict) -> DispatchResponse
         request_body=adapted_body,
         dispatch=dispatch,
         stream=bool(original_body.get("stream", False)),
-        client_return_token_ids=bool(original_body.get("return_token_ids", False)),
-        client_expects_chat_shape=("messages" in original_body),
     )
 
 
@@ -221,7 +219,7 @@ def _response_json(response):
     return json.loads(body.decode() if isinstance(body, (bytes, bytearray)) else body)
 
 
-def test_infer_endpoint_normalizes_dispatch_nonstream_response():
+def test_infer_endpoint_passthrough_dispatch_nonstream_response():
     endpoint = _Endpoint(_Config(role="decode"))
     body = _dispatch_body("decode")
     response = asyncio.run(
@@ -240,8 +238,8 @@ def test_infer_endpoint_normalizes_dispatch_nonstream_response():
     )
 
     payload = response.body.decode() if hasattr(response.body, "decode") else response.body
-    assert "token_ids" not in payload
-    assert "prompt_token_ids" not in payload
+    assert "token_ids" in payload
+    assert "prompt_token_ids" in payload
 
     stop = TestClient(endpoint.app).post(
         "/v1/dispatch/stop",
@@ -321,7 +319,7 @@ def test_infer_endpoint_plain_context_length_error_returns_400():
     assert payload["error"]["code"] == 400
 
 
-def test_infer_endpoint_normalizes_dispatch_stream_response():
+def test_infer_endpoint_passthrough_dispatch_stream_response():
     async def _chunks():
         yield b'data: {"choices":[{"text":"A","token_ids":[1]}]}\n\n'
         yield b"data: [DONE]\n\n"
@@ -344,7 +342,7 @@ def test_infer_endpoint_normalizes_dispatch_stream_response():
 
     asyncio.run(_collect())
     payload = b"".join(chunks).decode("utf-8")
-    assert "token_ids" not in payload
+    assert "token_ids" in payload
     assert "data: [DONE]" in payload
 
 
@@ -724,6 +722,112 @@ def test_infer_endpoint_stream_ignores_error_after_done(monkeypatch):
     assert "data: [DONE]" in payload
     assert "late stream boom" not in payload
     assert "InternalServerError" not in payload
+
+
+def test_infer_endpoint_stream_unserializable_error_closes_without_raising(monkeypatch):
+    _install_peer_stop_client(monkeypatch)
+
+    async def _chunks():
+        yield b'data: {"choices":[{"text":"A"}]}\n\n'
+        raise RuntimeError("stream boom")
+
+    endpoint = _Endpoint(_Config(role="decode"))
+    # Adapter cannot produce an error envelope for this failure; the unified abort
+    # model must still close the stream cleanly instead of re-raising after the
+    # response has started (which would surface as an ASGI RuntimeError).
+    monkeypatch.setattr(endpoint.dispatch_adapter, "map_stream_error", lambda exc, context: None)
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+    )
+
+    chunks = []
+
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    # Must not raise: the generator swallows the failure and closes cleanly.
+    asyncio.run(_collect())
+    payload = b"".join(chunks).decode("utf-8")
+    assert '"text":"A"' in payload or '"text": "A"' in payload
+    assert "data: [DONE]" not in payload
+
+
+def test_finalize_streaming_error_swallows_secondary_failures(monkeypatch):
+    """Cleanup / log / map failures must not escape once streaming has started."""
+    endpoint = _Endpoint(_Config(role="decode"))
+    context = asyncio.run(_dispatch_context(endpoint, _dispatch_body("decode") | {"stream": True}))
+
+    async def _boom_failure(_context):
+        raise RuntimeError("dispatch cleanup boom")
+
+    def _boom_log(_exc, _context):
+        raise RuntimeError("log boom")
+
+    def _boom_map(_exc, _context):
+        raise RuntimeError("map boom")
+
+    monkeypatch.setattr(endpoint, "_handle_dispatch_failure", _boom_failure)
+    monkeypatch.setattr(endpoint, "_log_serving_exception", _boom_log)
+    monkeypatch.setattr(endpoint.dispatch_adapter, "map_stream_error", _boom_map)
+
+    frames = asyncio.run(endpoint._finalize_streaming_error(RuntimeError("stream boom"), context, stream_done=False))
+    assert frames == []
+
+
+def test_finalize_streaming_error_emits_frames_when_cleanup_fails(monkeypatch):
+    """A cleanup failure must not prevent emitting the terminal SSE error frames."""
+    endpoint = _Endpoint(_Config(role="decode"))
+    context = asyncio.run(_dispatch_context(endpoint, _dispatch_body("decode") | {"stream": True}))
+
+    async def _boom_failure(_context):
+        raise RuntimeError("dispatch cleanup boom")
+
+    monkeypatch.setattr(endpoint, "_handle_dispatch_failure", _boom_failure)
+
+    frames = asyncio.run(endpoint._finalize_streaming_error(RuntimeError("stream boom"), context, stream_done=False))
+    assert len(frames) == 2
+    assert "stream boom" in frames[0]
+    assert frames[1] == "data: [DONE]\n\n"
+
+
+def test_stream_finish_dispatch_secondary_failure_does_not_raise(monkeypatch):
+    """Normal stream completion must tolerate finish_dispatch failures in finally."""
+    _install_peer_stop_client(monkeypatch)
+
+    async def _chunks():
+        yield b'data: {"choices":[{"text":"A"}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    async def _boom_finish(_dispatch):
+        raise RuntimeError("finish boom")
+
+    endpoint = _Endpoint(_Config(role="decode"))
+    monkeypatch.setattr(endpoint.dispatch_adapter, "finish_dispatch", _boom_finish)
+    body = _dispatch_body("decode") | {"stream": True}
+    response = asyncio.run(
+        _call_dispatch_serving(
+            endpoint,
+            body,
+            _Serving(StreamingResponse(_chunks(), media_type="text/event-stream")),
+        )
+    )
+
+    chunks = []
+
+    async def _collect():
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_collect())
+    payload = b"".join(chunks).decode("utf-8")
+    assert '"text":"A"' in payload or '"text": "A"' in payload
+    assert "data: [DONE]" in payload
 
 
 def test_sglang_map_stream_error_uses_engine_error_envelope():

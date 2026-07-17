@@ -8,6 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import json
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -157,6 +159,45 @@ def test_dispatch_rejects_only_prefill_when_hybrid_fallback_disabled(monkeypatch
 
     assert response.status_code == 503
     assert response.json()["detail"] == "PD separate service is unavailable and fallback to hybrid is disabled"
+
+
+def test_dispatch_reuses_request_json_parsed_at_ingress(monkeypatch):
+    """A body parsed by the API layer is not parsed again while building RequestInfo."""
+    calls = []
+
+    class _FakeHybridRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            calls.append(req_info.req_data)
+
+        async def handle_request(self):
+            return JSONResponse({"router": "hybrid"})
+
+    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
+    app = FastAPI()
+    config = CoordinatorConfig()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler({1: Instance(job_name="p", model_name="m", id=1, role=PDRole.ROLE_P.value)})
+
+    @app.post("/v1/completions")
+    async def completions(request: Request):
+        request_json = json.loads((await request.body()).decode("utf-8"))
+
+        async def unexpected_second_parse():
+            raise AssertionError("request.json() must not be called after ingress parsing")
+
+        monkeypatch.setattr(request, "json", unexpected_second_parse)
+        return await dispatch.handle_request(
+            request,
+            config,
+            scheduler=scheduler,
+            request_manager=request_manager,
+            request_json=request_json,
+        )
+
+    response = TestClient(app).post("/v1/completions", json={"model": "m", "prompt": "hi"})
+
+    assert response.status_code == 200
+    assert calls == [{"model": "m", "prompt": "hi"}]
 
 
 def test_dispatch_rejects_incompatible_pd_topology():

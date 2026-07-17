@@ -33,7 +33,6 @@ from motor.coordinator.middleware.fastapi_middleware import (
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.common.http.http_client import HTTPClientPool
-from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.dispatch import handle_request
@@ -74,47 +73,13 @@ def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens
             )
 
 
-def _validate_openai_request(body_json: dict[str, Any], request_type: RequestType) -> None:
-    """Validate OpenAI-style request body. Raises HTTPException on invalid."""
-    if OpenAIField.MODEL not in body_json:
+def _validate_openai_request(body_json: Any) -> None:
+    """Keep ingress validation structural; the engine owns OpenAI request semantics."""
+    if not isinstance(body_json, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing required field: {OpenAIField.MODEL}",
+            detail="Request body must be a JSON object",
         )
-    if request_type != RequestType.OPENAI:
-        return
-    if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing required field: {OpenAIField.PROMPT} or {OpenAIField.MESSAGES}",
-        )
-    if OpenAIField.MESSAGES not in body_json:
-        return
-    if not isinstance(body_json[OpenAIField.MESSAGES], list) or len(body_json[OpenAIField.MESSAGES]) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid {OpenAIField.MESSAGES} field: must be a non-empty array",
-        )
-    for i, message in enumerate(body_json[OpenAIField.MESSAGES]):
-        if not isinstance(message, dict):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid message format at index {i}: must be an object",
-            )
-        if OpenAIField.ROLE not in message or OpenAIField.CONTENT not in message:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(f"Invalid message at index {i}: missing {OpenAIField.ROLE} or {OpenAIField.CONTENT}"),
-            )
-        if message[OpenAIField.ROLE] not in ["system", "user", "assistant", "tool"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Invalid {OpenAIField.ROLE} "
-                    f"'{message[OpenAIField.ROLE]}' at index {i}: must be system, "
-                    "user, or assistant"
-                ),
-            )
 
 
 class InferenceServer(BaseCoordinatorServer):
@@ -358,7 +323,7 @@ class InferenceServer(BaseCoordinatorServer):
             request_manager: RequestManager = Depends(get_request_manager),
         ):
             self.verify_api_key(request)
-            return await self._handle_openai_request(request, RequestType.OPENAI, request_manager)
+            return await self._handle_openai_request(request, request_manager)
 
         @self._inference_app.post("/v1/chat/completions")
         @self.timeout_handler()
@@ -367,7 +332,7 @@ class InferenceServer(BaseCoordinatorServer):
             request_manager: RequestManager = Depends(get_request_manager),
         ):
             self.verify_api_key(request)
-            return await self._handle_openai_request(request, RequestType.OPENAI, request_manager)
+            return await self._handle_openai_request(request, request_manager)
 
         @self._inference_app.post("/v1/messages")
         @self.timeout_handler()
@@ -445,6 +410,7 @@ class InferenceServer(BaseCoordinatorServer):
                 self.coordinator_config,
                 scheduler=self._get_scheduler_client(),
                 request_manager=request_manager,
+                request_json=body_json,
             )
         except HTTPException:
             raise
@@ -458,13 +424,18 @@ class InferenceServer(BaseCoordinatorServer):
     async def _handle_openai_request(
         self,
         request: Request,
-        request_type: RequestType,
         request_manager: RequestManager,
     ):
         try:
             body = await request.body()
-            body_json = json.loads(body.decode("utf-8"))
-            _validate_openai_request(body_json, request_type)
+            try:
+                body_json = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid JSON format",
+                ) from e
+            _validate_openai_request(body_json)
             if not await self._is_available():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -475,6 +446,7 @@ class InferenceServer(BaseCoordinatorServer):
                 self.coordinator_config,
                 scheduler=self._get_scheduler_client(),
                 request_manager=request_manager,
+                request_json=body_json,
             )
         except HTTPException:
             raise

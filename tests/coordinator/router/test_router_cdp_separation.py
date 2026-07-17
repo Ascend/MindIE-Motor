@@ -1083,10 +1083,10 @@ class TestRouterCDPSeparation:
         assert response_data["usage"]["prompt_tokens_details"] == prompt_tokens_details
 
     @pytest.mark.asyncio
-    async def test_cdp_nonstream_recompute_returns_decode_body_as_is(
+    async def test_cdp_nonstream_strips_token_ids_at_coordinator_exit(
         self, client, monkeypatch: MonkeyPatch, setup_cdp_separation
     ):
-        """UnifiedPD non-stream returns the decode engine body without coordinator-side recompute merge."""
+        """UnifiedPD non-stream strips token ids and normalizes stop_reason before returning to client."""
         req_info = await create_mock_request_info(stream=False)
         req_info.entry_api = req_info.api
 
@@ -1119,5 +1119,7 @@ class TestRouterCDPSeparation:
         response_data = json.loads(response_json)
 
         assert response_data["choices"][0]["message"]["content"] == "partial "
-        assert response_data["choices"][0]["stop_reason"] == "recomputed"
+        assert response_data["choices"][0]["stop_reason"] == "stop"
+        assert "token_ids" not in response_data["choices"][0]
+        assert "prompt_token_ids" not in response_data
         assert req_info.state == ReqState.DECODE_END

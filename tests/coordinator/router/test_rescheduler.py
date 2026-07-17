@@ -1,4 +1,13 @@
-# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """Unit tests for motor.coordinator.router.recompute."""
 
 import json
@@ -6,13 +15,13 @@ import json
 import pytest
 from fastapi import HTTPException
 
+from motor.coordinator.models.request import RequestInfo
+from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 from motor.coordinator.router.adapters.stream import (
     parse_stream_chunk_json,
     strip_nonstream_response_body_for_client,
     strip_stream_chunk_bytes_for_client,
 )
-from motor.coordinator.models.request import RequestInfo
-from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 from motor.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -165,6 +174,32 @@ def test_strip_stream_chunk_bytes_for_client_sse_prefix():
     parsed = json.loads(line[len("data: ") :])
     assert "prompt_token_ids" not in parsed
     assert "token_ids" not in parsed["choices"][0]
+
+
+def test_strip_stream_chunk_bytes_for_client_passthrough_plain_delta():
+    raw = b'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n'
+    out = strip_stream_chunk_bytes_for_client(raw)
+    assert out is raw
+
+
+def test_process_stream_chunk_passthrough_plain_delta_when_no_client_mutation():
+    req_data = {"messages": [{"role": "user", "content": "x"}], "stream": True, "max_tokens": 10}
+    raw = b'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n'
+    req = _make_request_info(req_data)
+    resch = Rescheduler(True, req, logger=logger)
+    out = resch.process_stream_chunk(raw)
+    assert out is raw
+    assert resch._replay_progress_complete is False
+
+
+def test_process_stream_chunk_passthrough_finish_reason_without_mutation():
+    req_data = {"messages": [{"role": "user", "content": "x"}], "stream": True, "max_tokens": 10}
+    raw = b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1}}\n\n'
+    req = _make_request_info(req_data)
+    resch = Rescheduler(True, req, logger=logger)
+    out = resch.process_stream_chunk(raw)
+    assert out is raw
+    assert resch._stream_finished is True
 
 
 def test_strip_nonstream_response_body_for_client():

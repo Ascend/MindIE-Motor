@@ -65,9 +65,17 @@ from motor.coordinator.router.upstream_error import (
     is_cb_reportable_failure,
     is_retryable_upstream_error,
 )
+from motor.coordinator.router.adapters.completion_to_chat import (
+    adapt_completion_nonstream_to_chat,
+    is_completion_like_body,
+)
 from motor.coordinator.router.adapters.stream import (
+    chunk_has_usage_field,
     parse_stream_chunk_json,
     encode_stream_chunk_bytes,
+    stream_chunk_needs_sampling_parse,
+    strip_nonstream_response_body_for_client,
+    strip_stream_chunk_bytes_for_client,
     update_token_id_cache,
 )
 
@@ -189,7 +197,7 @@ class UnifiedPDRouter(BaseRouter):
             return chunk
         # Only usage-bearing chunks (typically just the final include_usage chunk) can carry
         # prompt_tokens_details; skip the JSON parse for the vast majority that have no usage.
-        if b"usage" not in chunk:
+        if not chunk_has_usage_field(chunk):
             return chunk
         chunk_json = parse_stream_chunk_json(chunk, self.logger)
         if chunk_json is None or not self._merge_prompt_tokens_details(chunk_json):
@@ -472,6 +480,12 @@ class UnifiedPDRouter(BaseRouter):
                         attempt.unregister_canceller()
                         attempt.transition(AttemptState.DONE)
                         self._merge_prompt_tokens_details(body)
+                        if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
+                            adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
+                        strip_nonstream_response_body_for_client(
+                            body,
+                            client_return_token_ids=self.req_info.client_expects_token_ids,
+                        )
                         return JSONResponse(content=body)
                     except (asyncio.CancelledError, Exception) as e:
                         error, retry = await self._process_response_error(attempt, attempt_index, e)
@@ -621,7 +635,10 @@ class UnifiedPDRouter(BaseRouter):
             async def prefill_task():
                 try:
                     response = await self.forward_request(
-                        p_api, p_req, p_client, self.config.exception_config.first_token_timeout
+                        p_api,
+                        p_req,
+                        p_client,
+                        self.config.exception_config.first_token_timeout,
                     )
                     self._record_prefill_complete(response.json())
                     self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
@@ -802,6 +819,11 @@ class UnifiedPDRouter(BaseRouter):
                         )
                     else:
                         value = self._merge_prompt_tokens_details_into_stream_chunk(value)
+                        value = strip_stream_chunk_bytes_for_client(
+                            value,
+                            client_return_token_ids=self.req_info.client_expects_token_ids,
+                            logger=self.logger,
+                        )
                     if release_prefill_on_stream and not prefill_kv_release_submitted:
                         self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_KV)
                         prefill_kv_release_submitted = True
@@ -853,7 +875,10 @@ class UnifiedPDRouter(BaseRouter):
             async def prefill_task():
                 try:
                     response = await self.forward_request(
-                        p_api, p_req, p_client, self.config.exception_config.first_token_timeout
+                        p_api,
+                        p_req,
+                        p_client,
+                        self.config.exception_config.first_token_timeout,
                     )
                     self._record_prefill_complete(response.json())
                     await self._scheduler.report_cb_event(p_instance_id, "success")
@@ -1644,6 +1669,8 @@ class UnifiedPDRouter(BaseRouter):
     def _collect_logprobs_from_stream_chunk(self, chunk: bytes, sampling_state: dict) -> bytes:
         if not sampling_state["enabled"] or not chunk:
             return chunk
+        if not stream_chunk_needs_sampling_parse(chunk):
+            return chunk
         chunk_json = parse_stream_chunk_json(chunk, self.logger)
         if chunk_json is None:
             return chunk
@@ -1653,10 +1680,15 @@ class UnifiedPDRouter(BaseRouter):
             chunk_json,
             logprobs_count=sampling_state["lp_count"],
         )
+        has_logprobs_field = any(isinstance(ch, dict) and "logprobs" in ch for ch in chunk_json.get("choices") or [])
         sampling_resp.strip_logprobs_for_client(
             chunk_json,
             client_requested_logprobs=sampling_state["client_logprobs"],
         )
+        if not sampling_state["client_logprobs"] and not has_logprobs_field:
+            return chunk
+        if sampling_state["client_logprobs"]:
+            return chunk
         return encode_stream_chunk_bytes(chunk, chunk_json)
 
     def _collect_logprobs_from_nonstream_body(self, body: dict, sampling_state: dict) -> dict:

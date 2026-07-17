@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -13,11 +12,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from motor.common.resources.endpoint import Workload
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
-from motor.coordinator.models.request import RequestInfo
 from motor.common.utils.image_utils import get_mul_token
+
+if TYPE_CHECKING:
+    from motor.coordinator.models.request import RequestInfo
 
 
 logger = get_logger(__name__)

@@ -26,7 +26,10 @@ from motor.coordinator.models.request import ReqState
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 import motor.coordinator.router.adapters as adapters
-from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
+from motor.coordinator.router.adapters.completion_to_chat import (
+    adapt_completion_nonstream_to_chat,
+    is_completion_like_body,
+)
 from motor.common.resources.instance import PDRole
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.router.upstream_error import (
@@ -232,7 +235,9 @@ class PDHybridRouter(BaseRouter):
                     yield self.rescheduler.process_stream_chunk(chunk, stream_adapter_state=stream_adapter_state)
                 else:
                     yield adapters.strip_stream_chunk_bytes_for_client(
-                        chunk, client_return_token_ids=self.req_info.client_expects_token_ids
+                        chunk,
+                        client_return_token_ids=self.req_info.client_expects_token_ids,
+                        logger=self.logger,
                     )
 
             self.req_info.update_state(ReqState.DECODE_END)
@@ -395,7 +400,7 @@ class PDHybridRouter(BaseRouter):
 
                         self.req_info.update_state(ReqState.DECODE_END)
                         body = response.json()
-                        if "chat" in self.req_info.effective_entry_api() and body.get("object") == "text_completion":
+                        if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
                         adapters.strip_nonstream_response_body_for_client(
                             body, client_return_token_ids=self.req_info.client_expects_token_ids

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 
 from motor.common.resources.dispatch import (
     MOTOR_DISPATCH_KEY,
@@ -22,12 +22,7 @@ from motor.common.resources.dispatch import (
     DispatchStopState,
 )
 from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
-from motor.engine_server.core.dispatch_adapter.normalization import (
-    strip_engine_dispatch_fields,
-)
-from motor.engine_server.core.dispatch_adapter.sglang_adapter import (
-    SGLangDispatchAdapter,
-)
+from motor.engine_server.core.dispatch_adapter.sglang_adapter import SGLangDispatchAdapter
 from motor.engine_server.core.dispatch_adapter.vllm_adapter import VLLMDispatchAdapter
 
 
@@ -40,13 +35,7 @@ class _EngineConfig:
 
 
 class _Config:
-    def __init__(
-        self,
-        engine_type="vllm",
-        role="decode",
-        engine_config=None,
-        dispatch_profile=None,
-    ):
+    def __init__(self, engine_type="vllm", role="decode", engine_config=None, dispatch_profile=None):
         self._endpoint_config = SimpleNamespace(
             engine_type=engine_type,
             role=role,
@@ -157,15 +146,13 @@ def _metaserver_trigger(request_id="req#a1"):
     }
 
 
-def _context(dispatch, *, client_return_token_ids=False, chat=False):
+def _context(dispatch, *, chat=False):
     return DispatchResponseContext(
         api="v1/chat/completions" if chat else "v1/completions",
         raw_path="/v1/chat/completions" if chat else "/v1/completions",
         request_body={"messages": []} if chat else {"prompt": "hello"},
         dispatch=dispatch,
         stream=False,
-        client_return_token_ids=client_return_token_ids,
-        client_expects_chat_shape=chat,
     )
 
 
@@ -193,41 +180,48 @@ async def test_vllm_handoff_prefill_request_sets_do_remote_decode():
         "do_remote_decode": True,
         "do_remote_prefill": False,
     }
+    assert "return_token_ids" not in engine_body
     # Prefill is still a single-token generation.
     assert engine_body["max_tokens"] == 1
     assert engine_body["min_tokens"] == 1
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("parameter", ["max_tokens", "max_completion_tokens"])
-async def test_vllm_handoff_prefill_keeps_budget_parameter_for_post_tokenizer_check(parameter):
+async def test_vllm_handoff_prefill_restores_original_budget_for_context_check():
     adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
     body = _body("prefill")
-    # Coordinator has already reduced the P payload to one token. The original
-    # client budget must therefore come from _motor_dispatch, not this body.
-    body["max_tokens"] = 1
     body[MOTOR_DISPATCH_KEY]["prefill_context_budget"] = {
-        "max_output_tokens": 24,
-        "parameter": parameter,
+        "max_output_tokens": 32,
+        "parameter": "max_completion_tokens",
     }
 
-    _, dispatch = await adapter.adapt_request_body(body.copy())
+    _, dispatch = await adapter.adapt_request_body(body)
     check = adapter.get_prefill_context_check(dispatch)
 
     assert check is not None
-    assert check.max_output_tokens == 24
-    assert check.parameter == parameter
+    assert check.max_output_tokens == 32
+    assert check.parameter == "max_completion_tokens"
 
 
 @pytest.mark.asyncio
-async def test_vllm_non_handoff_prefill_skips_post_tokenizer_context_check():
-    adapter = VLLMDispatchAdapter(_Config(role="prefill"))
-    body = _body("prefill")
-    body["max_tokens"] = 32
+async def test_vllm_prefill_context_check_skips_non_handoff_and_decode():
+    budget = {
+        "max_output_tokens": 32,
+        "parameter": "max_tokens",
+    }
 
-    _, dispatch = await adapter.adapt_request_body(body.copy())
+    trigger_adapter = VLLMDispatchAdapter(_Config(role="prefill"))
+    trigger_body = _body("prefill")
+    trigger_body[MOTOR_DISPATCH_KEY]["prefill_context_budget"] = budget
+    _, trigger_dispatch = await trigger_adapter.adapt_request_body(trigger_body)
 
-    assert adapter.get_prefill_context_check(dispatch) is None
+    decode_adapter = VLLMDispatchAdapter(_Config(role="decode", engine_config=_handoff_config()))
+    decode_body = _body("decode")
+    decode_body[MOTOR_DISPATCH_KEY]["prefill_context_budget"] = budget
+    _, decode_dispatch = await decode_adapter.adapt_request_body(decode_body)
+
+    assert trigger_adapter.get_prefill_context_check(trigger_dispatch) is None
+    assert decode_adapter.get_prefill_context_check(decode_dispatch) is None
 
 
 @pytest.mark.asyncio
@@ -246,34 +240,14 @@ async def test_vllm_handoff_decode_does_not_inject_metaserver():
         "attempt_seq": 1,
         "status": "completed",
         "handoff_mode": "handoff",
-        "payload": {
-            "do_remote_prefill": True,
-            "remote_block_ids": [[1, 2]],
-            "remote_host": "10.0.0.5",
-        },
+        "payload": {"do_remote_prefill": True, "remote_block_ids": [[1, 2]], "remote_host": "10.0.0.5"},
     }
 
     engine_body, _ = await adapter.adapt_request_body(body)
 
     kv = engine_body["kv_transfer_params"]
-    assert kv == {
-        "do_remote_prefill": True,
-        "remote_block_ids": [[1, 2]],
-        "remote_host": "10.0.0.5",
-    }
+    assert kv == {"do_remote_prefill": True, "remote_block_ids": [[1, 2]], "remote_host": "10.0.0.5"}
     assert "metaserver" not in kv
-
-
-def test_normalization_strips_engine_dispatch_fields():
-    body = {
-        "prompt": [1, 2, 3],
-        "kv_transfer_params": {"metaserver": "legacy"},
-        "bootstrap_host": "127.0.0.1",
-        "bootstrap_port": 30000,
-        "bootstrap_room": 7,
-    }
-    strip_engine_dispatch_fields(body)
-    assert body == {"prompt": [1, 2, 3]}
 
 
 @pytest.mark.asyncio
@@ -471,10 +445,7 @@ async def test_vllm_cpcd_prefill_response_becomes_completed_prefill_result():
             "id": "cmpl-x",
             "choices": [{"text": "", "finish_reason": "length"}],
             "usage": {"prompt_tokens": 2, "completion_tokens": 1},
-            "kv_transfer_params": {
-                "do_remote_prefill": True,
-                "remote_block_ids": [[12, 13]],
-            },
+            "kv_transfer_params": {"do_remote_prefill": True, "remote_block_ids": [[12, 13]]},
         }
     )
 
@@ -486,81 +457,7 @@ async def test_vllm_cpcd_prefill_response_becomes_completed_prefill_result():
     assert body["handoff_mode"] == "handoff"
     # The payload must be only the KV bootstrap sub-object, not the whole
     # response body, so the decode leg can use it directly as kv_transfer_params.
-    assert body["payload"] == {
-        "do_remote_prefill": True,
-        "remote_block_ids": [[12, 13]],
-    }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [400, 500])
-async def test_vllm_handoff_prefill_preserves_openai_error_response(status_code):
-    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
-    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
-    response = JSONResponse(
-        {"error": {"message": "context validation failed", "type": "BadRequestError"}},
-        status_code=status_code,
-    )
-
-    normalized = await adapter.normalize_response(response, _context(dispatch))
-
-    assert normalized is response
-    assert normalized.status_code == status_code
-    assert json.loads(normalized.body)["error"]["message"] == "context validation failed"
-
-
-@pytest.mark.asyncio
-async def test_vllm_handoff_prefill_preserves_200_error_body():
-    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
-    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
-    response = JSONResponse({"error": {"message": "engine rejected request"}})
-
-    normalized = await adapter.normalize_response(response, _context(dispatch))
-
-    assert normalized is response
-    assert "motor.prefill_result" not in normalized.body.decode("utf-8")
-
-
-@pytest.mark.asyncio
-async def test_vllm_handoff_prefill_preserves_redirect_response():
-    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
-    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
-    response = JSONResponse({"location": "/retry"}, status_code=302)
-
-    normalized = await adapter.normalize_response(response, _context(dispatch))
-
-    assert normalized is response
-    assert normalized.status_code == 302
-
-
-@pytest.mark.asyncio
-async def test_vllm_handoff_prefill_preserves_non_json_error_response():
-    adapter = VLLMDispatchAdapter(_Config(role="prefill", engine_config=_handoff_config()))
-    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
-    response = Response(content=b"engine unavailable", status_code=500, media_type="text/plain")
-
-    normalized = await adapter.normalize_response(response, _context(dispatch))
-
-    assert normalized is response
-    assert normalized.body == b"engine unavailable"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [200, 400])
-async def test_vllm_non_handoff_prefill_keeps_existing_normalization(status_code):
-    adapter = VLLMDispatchAdapter(_Config(role="prefill"))
-    _, dispatch = await adapter.adapt_request_body(_body("prefill"))
-    response = JSONResponse(
-        {"error": {"message": "not a handoff result"}},
-        status_code=status_code,
-    )
-
-    normalized = await adapter.normalize_response(response, _context(dispatch))
-    body = json.loads(normalized.body)
-
-    assert normalized.status_code == status_code
-    assert body["error"]["message"] == "not a handoff result"
-    assert "object" not in body or body["object"] != "motor.prefill_result"
+    assert body["payload"] == {"do_remote_prefill": True, "remote_block_ids": [[12, 13]]}
 
 
 @pytest.mark.asyncio
@@ -588,11 +485,7 @@ async def test_vllm_handoff_prefill_to_decode_round_trip_preserves_bootstrap():
         {
             "id": "cmpl-x",
             "choices": [{"text": "", "finish_reason": "length"}],
-            "usage": {
-                "prompt_tokens": 2,
-                "completion_tokens": 1,
-                "prompt_tokens_details": {"cached_tokens": 16},
-            },
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 16}},
             "kv_transfer_params": {
                 "do_remote_prefill": True,
                 "do_remote_decode": False,
@@ -787,7 +680,7 @@ async def test_dispatch_adapter_setup_error_stops_peer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_vllm_normalizes_nonstream_dispatch_response():
+async def test_vllm_passthrough_nonstream_dispatch_response():
     adapter = VLLMDispatchAdapter(_Config(role="decode"))
     _, dispatch = await adapter.adapt_request_body(_body("decode"))
     response = JSONResponse(
@@ -807,13 +700,13 @@ async def test_vllm_normalizes_nonstream_dispatch_response():
     normalized = await adapter.normalize_response(response, _context(dispatch))
     body = normalized.body.decode("utf-8")
 
-    assert "token_ids" not in body
-    assert "prompt_token_ids" not in body
-    assert '"stop_reason":"stop"' in body
+    assert "token_ids" in body
+    assert "prompt_token_ids" in body
+    assert '"stop_reason":"recomputed"' in body
 
 
 @pytest.mark.asyncio
-async def test_vllm_normalizes_completion_response_to_chat_shape():
+async def test_vllm_passthrough_completion_response_for_chat_client():
     adapter = VLLMDispatchAdapter(_Config(role="decode"))
     _, dispatch = await adapter.adapt_request_body(_body("decode"))
     response = JSONResponse(
@@ -826,26 +719,26 @@ async def test_vllm_normalizes_completion_response_to_chat_shape():
     normalized = await adapter.normalize_response(response, _context(dispatch, chat=True))
     body = normalized.body.decode("utf-8")
 
-    assert '"object":"chat.completion"' in body
-    assert '"message":{"role":"assistant","content":"hello"}' in body
-    assert "token_ids" not in body
+    assert '"object":"text_completion"' in body
+    assert '"text":"hello"' in body
+    assert "token_ids" in body
 
 
 @pytest.mark.asyncio
-async def test_vllm_normalizes_stream_dispatch_chunk():
+async def test_vllm_passthrough_stream_dispatch_chunk():
     adapter = VLLMDispatchAdapter(_Config(role="decode"))
     _, dispatch = await adapter.adapt_request_body(_body("decode"))
+    original = b'data: {"choices":[{"text":"A","token_ids":[1],"stop_reason":"recomputed"}]}\n\n'
 
     chunk = await adapter.normalize_stream_chunk(
-        b'data: {"choices":[{"text":"A","token_ids":[1],"stop_reason":"recomputed"}]}\n\n',
+        original,
         _context(dispatch, chat=True),
         {},
     )
 
-    assert b'"object":"chat.completion.chunk"' in chunk
-    assert b'"delta":{"role":"assistant","content":"A"}' in chunk
-    assert b"token_ids" not in chunk
-    assert b'"stop_reason":"stop"' in chunk
+    assert chunk is original
+    assert b"token_ids" in chunk
+    assert b'"stop_reason":"recomputed"' in chunk
 
 
 @pytest.mark.asyncio

@@ -45,8 +45,6 @@ class DispatchResponseContext:
     request_body: dict[str, Any]
     dispatch: MotorDispatch | None
     stream: bool
-    client_return_token_ids: bool = False
-    client_expects_chat_shape: bool = False
 
 
 @dataclass(frozen=True)

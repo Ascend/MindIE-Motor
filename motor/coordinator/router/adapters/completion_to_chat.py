@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -28,6 +27,14 @@ def _lift_prompt_token_ids_from_choice(choice: dict[str, Any], response: dict[st
 def _chat_completion_id(req_id: str) -> str:
     base = req_id.replace("cmpl-", "").replace("chatcmpl-", "")
     return f"chatcmpl-{base}"
+
+
+def is_completion_like_body(body: dict[str, Any]) -> bool:
+    """True if a non-stream response has the OpenAI Completion shape."""
+    if body.get("object") == "text_completion":
+        return True
+    choices = body.get(OpenAIField.CHOICES) or []
+    return bool(choices and isinstance(choices[0], dict) and OpenAIField.TEXT in choices[0])
 
 
 def is_completion_like_stream_chunk(chunk_json: dict[str, Any]) -> bool:

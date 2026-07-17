@@ -21,9 +21,11 @@ from motor.coordinator.router.adapters.completion_to_chat import (
 )
 
 from motor.coordinator.router.adapters.stream import (
+    encode_stream_chunk_bytes,
+    is_done_stream_chunk,
+    merge_prompt_tokens_details_into_usage,
     parse_stream_chunk_json,
     strip_openai_token_id_fields_for_client,
-    encode_stream_chunk_bytes,
 )
 
 # Chat-only fields removed when switching recompute retry to OpenAI Completions body.
@@ -87,20 +89,17 @@ class Rescheduler:
         """
         chunk_json = parse_stream_chunk_json(chunk, self.logger)
         if chunk_json is None:
-            try:
-                text = chunk.decode("utf-8", errors="replace").strip()
-            except Exception:
-                text = ""
-            if "[DONE]" in text:
+            if is_done_stream_chunk(chunk):
                 self._stream_finished = True
                 return chunk
             if self.logger is not None:
                 self.logger.debug("Dropping non-JSON decode stream chunk (Coordinator safety)")
             return b""
 
+        mutated = False
         if self.req.prompt_tokens_details:
-            if chunk_json.get(OpenAIField.USAGE, {}):
-                chunk_json[OpenAIField.USAGE]["prompt_tokens_details"] = self.req.prompt_tokens_details
+            if merge_prompt_tokens_details_into_usage(chunk_json, self.req.prompt_tokens_details):
+                mutated = True
 
         if self.enable:
             if self._has_visible_output_without_token_ids(chunk_json):
@@ -117,15 +116,16 @@ class Rescheduler:
                 req_id=self.req.req_id,
                 stream_state=sta,
             )
+            mutated = True
 
-        choices = chunk_json.get(OpenAIField.CHOICES, [])
-        if not choices:
-            strip_openai_token_id_fields_for_client(
-                chunk_json, client_return_token_ids=self.req.client_expects_token_ids
-            )
-            return encode_stream_chunk_bytes(chunk, chunk_json)
+        if strip_openai_token_id_fields_for_client(
+            chunk_json,
+            client_return_token_ids=self.req.client_expects_token_ids,
+        ):
+            mutated = True
 
-        strip_openai_token_id_fields_for_client(chunk_json, client_return_token_ids=self.req.client_expects_token_ids)
+        if not mutated:
+            return chunk
         return encode_stream_chunk_bytes(chunk, chunk_json)
 
     def can_resume_after_visible_output(self, req_data: dict) -> bool:

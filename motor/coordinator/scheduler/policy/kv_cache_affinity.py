@@ -104,6 +104,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         :returns: best-first ``[(instance, endpoint, score), ...]`` or ``None`` to fall back.
         """
         encoded_ids = KvCacheAffinityPolicy._ensure_token_ids(req_info)
+        if not encoded_ids:
+            logger.warning("kv_cache_affinity: prompt cannot be tokenized for affinity; falling back to load_balance")
+            return None
 
         block_size = KvCacheAffinityPolicy._conductor_block_size()
         if block_size > 0 and len(encoded_ids) < block_size:
@@ -194,12 +197,32 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         encoded_ids: list[int] = []
         messages = req_info.req_data.get(OpenAIField.MESSAGES, None)
         tools = req_info.req_data.get(OpenAIField.TOOLS, None)
-        if messages is not None:
-            encoded_ids = TokenizerManager().apply_chat_template(messages, tools, req_data=req_info.req_data)
-        else:
-            prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
-            if prompt is not None:
-                encoded_ids = TokenizerManager().encode(prompt)
+        try:
+            if messages is not None:
+                encoded_ids = TokenizerManager().apply_chat_template(messages, tools, req_data=req_info.req_data)
+            else:
+                prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
+                if isinstance(prompt, str):
+                    encoded_ids = TokenizerManager().encode(prompt)
+                elif (
+                    isinstance(prompt, list)
+                    and prompt
+                    and all(isinstance(token_id, int) and not isinstance(token_id, bool) for token_id in prompt)
+                ):
+                    encoded_ids = prompt.copy()
+                elif prompt is not None:
+                    logger.info(
+                        "kv_cache_affinity: unsupported prompt type %s; falling back to load_balance",
+                        type(prompt).__name__,
+                    )
+        except Exception as e:
+            logger.warning("kv_cache_affinity tokenization failed; falling back to load_balance: %s", e)
+            encoded_ids = []
+        if not isinstance(encoded_ids, list) or any(
+            not isinstance(token_id, int) or isinstance(token_id, bool) for token_id in encoded_ids
+        ):
+            logger.warning("kv_cache_affinity tokenizer returned invalid token ids; falling back to load_balance")
+            encoded_ids = []
         try:
             req_info.token_ids = encoded_ids
         except Exception as e:  # pragma: no cover - req_info may be immutable in some callers
@@ -209,9 +232,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         # function-call requests are being tokenised correctly.
         logger.debug(
             "kv_affinity tokenize ok: msgs=%d tools=%d encoded_ids=%d",
-            len(messages or []),
-            len(tools or []),
-            len(encoded_ids or []),
+            len(messages) if isinstance(messages, list) else 0,
+            len(tools) if isinstance(tools, list) else 0,
+            len(encoded_ids),
         )
         return encoded_ids
 

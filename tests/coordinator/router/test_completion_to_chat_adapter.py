@@ -1,11 +1,16 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 from motor.coordinator.router.adapters.completion_to_chat import (
     adapt_completion_nonstream_to_chat,
     adapt_completion_stream_chunk_to_chat,
+    is_completion_like_body,
     is_completion_like_stream_chunk,
 )
+
+
+def test_is_completion_like_body_accepts_text_shape_without_object_marker():
+    assert is_completion_like_body({"choices": [{"text": "a"}]})
+    assert not is_completion_like_body({"choices": [{"message": {"content": "a"}}]})
 
 
 def test_is_completion_like_stream_chunk():

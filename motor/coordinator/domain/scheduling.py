@@ -15,14 +15,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Protocol
+from typing import TYPE_CHECKING, Iterable, Protocol
 
 from pydantic import BaseModel
 
 from motor.common.resources.dispatch import has_compatible_dispatch_pair
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, PDRole
-from motor.coordinator.models.request import RequestInfo
+
+if TYPE_CHECKING:
+    from motor.coordinator.models.request import RequestInfo
 
 # Protocol stub bodies use ellipsis; pylint false positive (W2301).
 # pylint: disable=unnecessary-ellipsis

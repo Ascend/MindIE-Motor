@@ -197,6 +197,23 @@ class _PrefillResultClient(_Client):
         )
 
 
+def test_collect_logprobs_removes_null_field_when_client_did_not_request_it():
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.logger = MagicMock()
+    sampling_state = {
+        "enabled": True,
+        "client_logprobs": False,
+        "lp_count": 1,
+        "info": {},
+    }
+    chunk = b'data: {"choices":[{"logprobs":null,"token_ids":[1]}]}\n\n'
+
+    out = router._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+
+    assert out is not chunk
+    assert b'"logprobs"' not in out
+
+
 class _StreamResponse:
     def __init__(self, chunks, exc_after_chunks: Exception | None = None):
         self.chunks = chunks

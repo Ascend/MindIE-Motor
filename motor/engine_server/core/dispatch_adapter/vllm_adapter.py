@@ -30,13 +30,7 @@ from motor.engine_server.core.dispatch_adapter.base import (
     DispatchMetaserverRequest,
     DispatchResponseContext,
 )
-from motor.engine_server.core.dispatch_adapter.normalization import (
-    normalize_nonstream_body,
-    normalize_stream_chunk,
-)
-from motor.engine_server.core.vllm.prefill_context_validation import (
-    PrefillContextCheck,
-)
+from motor.engine_server.core.vllm.prefill_context_validation import PrefillContextCheck
 
 
 class VLLMDispatchAdapter(DispatchAdapter):
@@ -96,7 +90,6 @@ class VLLMDispatchAdapter(DispatchAdapter):
                         "metaserver": f"{prefill.url.rstrip('/')}/v1/metaserver",
                     }
         elif dispatch.role == "prefill":
-            body.setdefault("return_token_ids", True)
             self._apply_prefill_generation_params(body)
             if self._uses_handoff(dispatch):
                 # Tell the producer engine to generate KV for a remote decode so its
@@ -113,7 +106,7 @@ class VLLMDispatchAdapter(DispatchAdapter):
         self,
         dispatch: MotorDispatch | None,
     ) -> PrefillContextCheck | None:
-        """Read the Coordinator-carried budget after P request rewriting."""
+        """Restore the client's output budget for post-tokenization P validation."""
         if (
             dispatch is None
             or dispatch.role != "prefill"
@@ -216,76 +209,46 @@ class VLLMDispatchAdapter(DispatchAdapter):
     async def normalize_response(self, response: Response, context: DispatchResponseContext) -> Response:
         if context.dispatch is None:
             return response
+        dispatch = context.dispatch
+        if dispatch.role != "prefill" or not self._uses_handoff(dispatch):
+            # Decode and non-handoff prefill bodies are forwarded as-is; client contract
+            # normalization (strip token ids, completion→chat) runs at the Coordinator exit.
+            return response
         raw_body = getattr(response, "body", None)
         if not raw_body:
             return response
+        if isinstance(raw_body, memoryview):
+            raw_body = raw_body.tobytes()
         try:
             body = json.loads(raw_body)
         except (TypeError, json.JSONDecodeError, UnicodeDecodeError):
             return response
         if not isinstance(body, dict):
             return response
-        if context.dispatch is not None and context.dispatch.role == "prefill" and self._uses_handoff(context.dispatch):
-            # Only successful prefill responses are valid handoff results.
-            # Preserve validation and serving errors with their original HTTP
-            # status and OpenAI-compatible error body.
-            status_code = getattr(response, "status_code", 200)
-            if not 200 <= status_code < 300 or body.get("error") is not None:
-                return response
-            # The decode leg consumes ``payload`` directly as its ``kv_transfer_params``
-            # (see ``_consume_prefill_result``), and the engine connector reads the KV
-            # bootstrap fields (do_remote_prefill, remote_block_ids, remote_host, ...) at
-            # the top level of ``kv_transfer_params``.
-            kv_transfer_params = body.get("kv_transfer_params")
-            usage = body.get("usage")
-            prefill_result = PrefillResult(
-                root_request_id=context.dispatch.root_request_id,
-                engine_request_id=context.dispatch.engine_request_id,
-                pair_id=context.dispatch.pair_id,
-                attempt_seq=context.dispatch.attempt_seq,
-                status="completed",
-                handoff_mode="handoff",
-                payload=kv_transfer_params if isinstance(kv_transfer_params, dict) else {},
-                # Preserve the prefill usage separately so the coordinator can still
-                # capture prompt_tokens_details (cached tokens) -- payload now carries
-                # only the KV bootstrap and no longer the full response body.
-                usage=usage if isinstance(usage, dict) else None,
-            )
-            return JSONResponse(
-                content=prefill_result.model_dump(mode="json"),
-                status_code=response.status_code,
-            )
-        normalize_nonstream_body(
-            body,
-            client_expects_chat_shape=context.client_expects_chat_shape,
-            req_id=context.dispatch.root_request_id,
-            client_return_token_ids=context.client_return_token_ids,
+        # Only successful prefill responses are valid handoff results. Preserve
+        # validation and serving errors with their original OpenAI-compatible body.
+        status_code = getattr(response, "status_code", 200)
+        if not 200 <= status_code < 300 or body.get("error") is not None:
+            return response
+        # Handoff prefill: convert engine response into PrefillResult for the decode leg.
+        kv_transfer_params = body.get("kv_transfer_params")
+        usage = body.get("usage")
+        prefill_result = PrefillResult(
+            root_request_id=dispatch.root_request_id,
+            engine_request_id=dispatch.engine_request_id,
+            pair_id=dispatch.pair_id,
+            attempt_seq=dispatch.attempt_seq,
+            status="completed",
+            handoff_mode="handoff",
+            payload=kv_transfer_params if isinstance(kv_transfer_params, dict) else {},
+            # Preserve the prefill usage separately so the coordinator can still
+            # capture prompt_tokens_details (cached tokens) -- payload now carries
+            # only the KV bootstrap and no longer the full response body.
+            usage=usage if isinstance(usage, dict) else None,
         )
-        headers = {
-            key: value
-            for key, value in response.headers.items()
-            if key.lower() not in ("content-length", "content-type")
-        }
         return JSONResponse(
-            content=body,
+            content=prefill_result.model_dump(mode="json"),
             status_code=response.status_code,
-            headers=headers,
-        )
-
-    async def normalize_stream_chunk(
-        self,
-        chunk: bytes | str,
-        context: DispatchResponseContext,
-        state: dict[str, Any],
-    ) -> bytes | str | None:
-        if context.dispatch is None:
-            return chunk
-        return normalize_stream_chunk(
-            chunk,
-            client_expects_chat_shape=context.client_expects_chat_shape,
-            req_id=context.dispatch.root_request_id,
-            stream_state=state,
-            client_return_token_ids=context.client_return_token_ids,
         )
 
     @staticmethod

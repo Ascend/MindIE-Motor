@@ -131,7 +131,7 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
     def test_select_endpoint_from_list_no_messages_or_prompt(
         self, mock_tokenizer_manager, mock_query_conductor, _mock_block_size
     ):
-        """No messages/prompt -> empty token ids (< one block) -> fast path routes by load, no query."""
+        """No messages/prompt -> affinity yields to the scheduler's load-balance fallback."""
         # Preparing Test Data
         mock_instance = Mock()
         mock_instance.id = "instance-3"
@@ -147,12 +147,10 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         mock_tokenizer = Mock()
         mock_tokenizer_manager.return_value = mock_tokenizer
 
-        # Performing the test: sub-block prompt -> conductor is not consulted.
+        # There is no tokenizable prompt, so conductor is not consulted.
         result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info)
 
-        # verification result: routed to the (only) endpoint by load, without a query.
-        self.assertIsNotNone(result)
-        self.assertEqual(result[1].id, 1)
+        self.assertIsNone(result)
         mock_query_conductor.assert_not_called()
 
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
@@ -772,6 +770,50 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         ids2 = KvCacheAffinityPolicy._ensure_token_ids(req)
         self.assertEqual(ids2, [7, 8, 9])
         mock_tokenizer.encode.assert_called_once()
+
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_ensure_token_ids_uses_token_id_prompt_directly(self, mock_tokenizer_manager):
+        """A single token-id prompt is already affinity-ready and must not be tokenized again."""
+        req = Mock()
+        req.req_data = {"prompt": [7, 8, 9]}
+        req.token_ids = None
+
+        result = KvCacheAffinityPolicy._ensure_token_ids(req)
+
+        self.assertEqual(result, [7, 8, 9])
+        self.assertEqual(req.token_ids, [7, 8, 9])
+        mock_tokenizer_manager.assert_not_called()
+
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_unsupported_prompt_types_fall_back_without_tokenizing(self, mock_tokenizer_manager, mock_query_conductor):
+        """Batch and otherwise unsupported prompt shapes must not block request routing."""
+        for prompt in (["one", "two"], [[1, 2], [3, 4]], 123, True, []):
+            with self.subTest(prompt=prompt):
+                req = Mock()
+                req.req_data = {"prompt": prompt}
+                req.token_ids = None
+
+                result = KvCacheAffinityPolicy.select_endpoint_candidates_from_list([Mock()], req)
+
+                self.assertIsNone(result)
+
+        mock_tokenizer_manager.assert_not_called()
+        mock_query_conductor.assert_not_called()
+
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_completion_tokenization_failure_falls_back(self, mock_tokenizer_manager, mock_query_conductor):
+        """A tokenizer failure is a scheduling miss, not an inference request failure."""
+        mock_tokenizer_manager.return_value.encode.side_effect = RuntimeError("tokenizer failed")
+        req = Mock()
+        req.req_data = {"prompt": "hello"}
+        req.token_ids = None
+
+        result = KvCacheAffinityPolicy.select_endpoint_candidates_from_list([Mock()], req)
+
+        self.assertIsNone(result)
+        mock_query_conductor.assert_not_called()
 
 
 class TestKvAffinityFallbackConsolidation(unittest.TestCase):
@@ -1506,8 +1548,8 @@ class TestKvCacheAffinityWithToolsEndToEnd(unittest.TestCase):
 
     @patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=0)
     @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
-    def test_tokenize_total_failure_falls_back_to_empty_ids(self, mock_query, _mock_block_size) -> None:
-        """If both tokenize attempts fail, encoded_ids must be [] and conductor queried with []."""
+    def test_tokenize_total_failure_falls_back_without_conductor(self, mock_query, _mock_block_size) -> None:
+        """If tokenization fails, affinity yields so the scheduler can use load balance."""
         manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
         mock_tokenizer.apply_chat_template.side_effect = RuntimeError("boom")
 
@@ -1525,6 +1567,4 @@ class TestKvCacheAffinityWithToolsEndToEnd(unittest.TestCase):
         }
         result = KvCacheAffinityPolicy.select_endpoint_from_list([instance], req_info)
         self.assertIsNone(result)
-        mock_query.assert_called_once()
-        sent_instances, sent_ids = mock_query.call_args[0]
-        self.assertEqual(sent_ids, [])
+        mock_query.assert_not_called()

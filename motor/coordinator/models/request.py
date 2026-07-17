@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -17,7 +16,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 import anyio
 
 from motor.common.resources.instance import PDRole
-from motor.coordinator.domain.scheduling_constraint import SchedulingConstraint
+from motor.coordinator.models.scheduling_constraint import SchedulingConstraint
 from motor.coordinator.tracer.tracing import TraceObj
 from motor.coordinator.models.constants import OpenAIField
 

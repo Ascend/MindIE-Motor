@@ -205,12 +205,14 @@ async def handle_request(
     scheduler=None,
     *,
     request_manager: RequestManager,
+    request_json: dict | None = None,
 ) -> Response:
     """Handle incoming requests and route them to appropriate router implementation
 
     Args:
         raw_request: The incoming FastAPI request object
         request_manager: RequestManager instance (required, injected by InferenceServer)
+        request_json: Body parsed by the API ingress, when available, to avoid parsing it again
 
     Returns:
         Response: The response from the selected router implementation (stream, non-stream, or error)
@@ -219,7 +221,7 @@ async def handle_request(
         HTTPException: If request body is empty or request fail
     """
 
-    req_info = await __create_request_info(raw_request, request_manager)
+    req_info = await __create_request_info(raw_request, request_manager, request_json=request_json)
 
     if TracerManager().contains_trace_headers(raw_request.headers):
         req_info.trace_obj.parent_context = TracerManager().extract_trace_context(raw_request.headers)
@@ -271,19 +273,21 @@ async def handle_request(
 async def __create_request_info(
     raw_request: Request,
     request_manager: RequestManager,
+    *,
+    request_json: dict | None = None,
 ) -> RequestInfo:
     request_body = await raw_request.body()
     if not request_body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request body")
 
-    try:
-        request_json = await raw_request.json()
-    except Exception as e:
-        logger.warning("JSON parse failed: %s", e)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format") from e
-
-    if not request_json:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")
+    if request_json is None:
+        try:
+            request_json = await raw_request.json()
+        except Exception as e:
+            logger.warning("JSON parse failed: %s", e)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format") from e
+    if not isinstance(request_json, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object")
     filtered_headers = filter_sensitive_headers(raw_request.headers)
     filtered_body = build_safe_body_structure(request_json)
     logger.debug("Got request headers: %s, body: %s", filtered_headers, filtered_body)

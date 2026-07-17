@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -29,7 +27,11 @@ from fastapi import FastAPI
 from motor.common.standby.standby_manager import StandbyRole, StandbyManager
 from motor.coordinator.api_server.management_server import ManagementServer
 from motor.coordinator.domain.probe import RoleHeartbeatResult
-from motor.coordinator.api_server.inference_server import InferenceServer, _validate_anthropic_request
+from motor.coordinator.api_server.inference_server import (
+    InferenceServer,
+    _validate_anthropic_request,
+    _validate_openai_request,
+)
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
 from motor.coordinator.domain import InstanceReadiness
@@ -167,11 +169,13 @@ class TestCoordinatorServer:
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
             """Mock handle_request that returns JSON response matching test expectations"""
+            body_json = request_json
             try:
                 # Try to get JSON from request (cached if already parsed)
-                body_json = await request.json()
+                if body_json is None:
+                    body_json = await request.json()
             except Exception:
                 # Fallback: try to read body directly
                 try:
@@ -248,8 +252,9 @@ class TestCoordinatorServer:
         # Create test server shell (ManagementServer + InferenceServer)
         self.coordinator_server = _TestServerShell(config=coordinator_config)
         self.coordinator_server.setup_rate_limiting()
-        # Do not mock _handle_openai_request: let real handler run so validation (400), JSON error (500), and
-        # _is_available (503) are exercised; handle_request is already patched above for 200 responses.
+        # Do not mock _handle_openai_request: let real handler run so structural JSON checks (400),
+        # decode errors, and _is_available (503) are exercised; handle_request is patched for 200s.
+        # Semantic OpenAI field validation is deferred to the engine.
         inf = self.coordinator_server._inf
         inf._is_available = AsyncMock(return_value=True)
         # Mock scheduler so handle_request is reached and /v1/models can await get_available_instances
@@ -562,7 +567,7 @@ class TestCoordinatorServer:
         # Should return 400, 500, or 422 error
         assert response.status_code in [400, 422, 500], f"Invalid JSON handling exception: {response.status_code}"
 
-        # Test missing required fields
+        # Missing model is deferred to the engine; Coordinator only enforces a JSON object.
         invalid_data = {
             "prompt": "test"  # Missing model field
         }
@@ -571,11 +576,9 @@ class TestCoordinatorServer:
             json=invalid_data,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
         )
+        assert response.status_code == 200, f"Missing model should be forwarded to engine, got: {response.status_code}"
 
-        # Should return 400 or 422 error
-        assert response.status_code in [400, 422, 500], f"Missing field handling exception: {response.status_code}"
-
-        # Test invalid chat completion request
+        # Non-array messages are also deferred to the engine schema.
         invalid_chat_data = {
             "model": "gpt-3.5-turbo",
             "messages": "invalid messages",  # messages should be an array
@@ -585,8 +588,8 @@ class TestCoordinatorServer:
             json=invalid_chat_data,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
         )
-        assert response.status_code in [400, 422, 500], (
-            f"Invalid chat completion handling exception: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Invalid messages shape should be forwarded to engine, got: {response.status_code}"
         )
 
     def test_rate_limiting(self):
@@ -931,11 +934,13 @@ class TestCoordinatorServerAdvanced:
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
             """Mock handle_request that returns JSON response matching test expectations"""
+            body_json = request_json
             try:
                 # Try to get JSON from request (cached if already parsed)
-                body_json = await request.json()
+                if body_json is None:
+                    body_json = await request.json()
             except Exception:
                 # Fallback: try to read body directly
                 try:
@@ -1004,8 +1009,9 @@ class TestCoordinatorServerAdvanced:
         self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = None
         self.coordinator_server._mgmt._scheduler_connection.disconnect = AsyncMock()
         self.coordinator_server.setup_rate_limiting()
-        # Do not mock _handle_openai_request: let real handler run so validation (400), JSON/decode (500), and
-        # _is_available (503) are exercised; handle_request is already patched above for 200 responses.
+        # Do not mock _handle_openai_request: let real handler run so structural JSON checks (400),
+        # decode errors, and _is_available (503) are exercised; handle_request is patched for 200s.
+        # Semantic OpenAI field validation is deferred to the engine.
         inf = self.coordinator_server._inf
         inf._is_available = AsyncMock(return_value=True)
         _mock_scheduler = MagicMock()
@@ -1166,100 +1172,60 @@ class TestCoordinatorServerAdvanced:
         response = dst_client.get("/docs")
         assert response.status_code == 404, "/docs route should be skipped"
 
-    def test_validate_openai_request_invalid_model(self):
-        """Test _validate_openai_request with missing model"""
-        # This tests the validation logic indirectly through the endpoint
-        invalid_data = {
-            "messages": [{"role": "user", "content": "test"}]
-            # Missing model field
-        }
+    def test_validate_openai_request_defers_missing_model_to_engine(self):
+        """Coordinator does not duplicate the engine's required-field validation."""
+        request_data = {"messages": [{"role": "user", "content": "test"}]}
+        _validate_openai_request(request_data)
 
-        inference_client = TestClient(self.coordinator_server.inference_app)
-        response = inference_client.post(
-            "/v1/chat/completions",
-            json=invalid_data,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
-        )
-
-        assert response.status_code == 400, f"Expected 400 for missing model, got: {response.status_code}"
-
-    def test_validate_openai_request_invalid_messages(self):
-        """Test _validate_openai_request with invalid messages"""
-        invalid_data = {
+    def test_validate_openai_request_defers_messages_type_to_engine(self):
+        """Coordinator accepts any semantic shape inside a JSON object."""
+        request_data = {
             "model": "gpt-3.5-turbo",
-            "messages": "not a list",  # Invalid format
+            "messages": "not a list",
         }
+        _validate_openai_request(request_data)
 
-        inference_client = TestClient(self.coordinator_server.inference_app)
-        response = inference_client.post(
-            "/v1/chat/completions",
-            json=invalid_data,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
-        )
+    def test_validate_openai_request_accepts_empty_object(self):
+        """Even an empty object is structurally valid; the engine reports missing fields."""
+        _validate_openai_request({})
 
-        assert response.status_code == 400, f"Expected 400 for invalid messages, got: {response.status_code}"
-
-    def test_validate_openai_request_empty_messages(self):
-        """Test _validate_openai_request with empty messages list"""
-        invalid_data = {"model": "gpt-3.5-turbo", "messages": []}
-
-        inference_client = TestClient(self.coordinator_server.inference_app)
-        response = inference_client.post(
-            "/v1/chat/completions",
-            json=invalid_data,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
-        )
-
-        assert response.status_code == 400, f"Expected 400 for empty messages, got: {response.status_code}"
-
-    def test_validate_openai_request_invalid_message_format(self):
-        """Test _validate_openai_request with invalid message format"""
-        invalid_data = {
+    def test_validate_openai_request_accepts_assistant_tool_call_without_content(self):
+        """Assistant tool-call messages may omit content in the engine's OpenAI schema."""
+        request_data = {
             "model": "gpt-3.5-turbo",
             "messages": [
-                "not a dict"  # Invalid message format
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"type": "function", "function": {"name": "lookup", "arguments": "{}"}}],
+                }
             ],
         }
+        _validate_openai_request(request_data)
 
-        inference_client = TestClient(self.coordinator_server.inference_app)
-        response = inference_client.post(
-            "/v1/chat/completions",
-            json=invalid_data,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
-        )
-
-        assert response.status_code == 400, f"Expected 400 for invalid message format, got: {response.status_code}"
-
-    def test_validate_openai_request_missing_role_or_content(self):
-        """Test _validate_openai_request with missing role or content"""
-        invalid_data = {
+    def test_validate_openai_request_accepts_engine_owned_roles(self):
+        """Coordinator does not freeze the role enum ahead of the engine schema."""
+        request_data = {
             "model": "gpt-3.5-turbo",
-            "messages": [
-                {"role": "user"}  # Missing content
-            ],
+            "messages": [{"role": "developer", "content": "Be concise"}],
         }
+        _validate_openai_request(request_data)
 
+    @pytest.mark.parametrize("request_data", [None, [], "prompt", 1, True])
+    def test_validate_openai_request_rejects_non_object_json(self, request_data):
+        """Only the top-level JSON object contract is enforced by Coordinator."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_openai_request(request_data)
+        assert exc_info.value.status_code == 400
+
+    def test_openai_endpoint_rejects_non_object_json(self):
+        """The structural guard is applied before routing."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/chat/completions",
-            json=invalid_data,
+            json=[],
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
         )
-
-        assert response.status_code == 400, f"Expected 400 for missing content, got: {response.status_code}"
-
-    def test_validate_openai_request_invalid_role(self):
-        """Test _validate_openai_request with invalid role"""
-        invalid_data = {"model": "gpt-3.5-turbo", "messages": [{"role": "invalid_role", "content": "test"}]}
-
-        inference_client = TestClient(self.coordinator_server.inference_app)
-        response = inference_client.post(
-            "/v1/chat/completions",
-            json=invalid_data,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
-        )
-
-        assert response.status_code == 400, f"Expected 400 for invalid role, got: {response.status_code}"
+        assert response.status_code == 400
 
     def test_handle_openai_request_unavailable_instances(self):
         """Test _handle_openai_request when instances are unavailable (503)."""
@@ -1287,7 +1253,7 @@ class TestCoordinatorServerAdvanced:
         assert data["data"]["input_data"] == "Hello world", "Prompt should be extracted correctly"
 
     def test_handle_openai_request_empty_input(self):
-        """Test _handle_openai_request with empty input"""
+        """Missing prompt/messages is deferred to the engine; Coordinator still routes the request."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/completions",
@@ -1298,8 +1264,10 @@ class TestCoordinatorServerAdvanced:
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
         )
 
-        # Should return 400 for missing required fields
-        assert response.status_code == 400, f"Expected 400 for missing prompt/messages, got: {response.status_code}"
+        assert response.status_code == 200, (
+            f"Missing prompt/messages should be forwarded to engine, got: {response.status_code}"
+        )
+        assert response.json()["status"] == "success"
 
     def test_openai_is_stream(self):
         """Test _openai_is_stream method"""
@@ -1888,9 +1856,9 @@ class TestAnthropicEndpoints:
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
             try:
-                body_json = await request.json()
+                body_json = request_json if request_json is not None else await request.json()
             except Exception:
                 body_json = {}
 

@@ -113,8 +113,6 @@ class InferEndpoint(Endpoint):
                 request_body=body,
                 dispatch=dispatch,
                 stream=bool(body.get("stream", False)),
-                client_return_token_ids=bool(original_body.get("return_token_ids", False)),
-                client_expects_chat_shape=("messages" in original_body or "chat/completions" in raw_request.url.path),
             )
             prepared = await self.dispatch_adapter.maybe_prepare_response(body, dispatch)
             if prepared is not None:
@@ -238,38 +236,45 @@ class InferEndpoint(Endpoint):
         context: DispatchResponseContext,
     ) -> StreamingResponse:
         async def _normalized_body():
+            # Unified stream-abort model: every mid-stream termination -- an expected
+            # peer/dispatch stop and a genuine engine error alike -- converges on
+            # ``_finalize_streaming_error`` and is turned into a well-formed SSE close.
+            # The generator never raises for control flow once the response has started,
+            # so Starlette can never surface a post-header "response already started"
+            # error. ``CancelledError`` (upstream client disconnect) is intentionally
+            # not caught here: it must keep propagating as a clean cancellation.
             stream_done = False
             dispatch_finished = False
             try:
                 state: dict[str, Any] = {}
                 async for chunk in response.body_iterator:
                     if await self.dispatch_adapter.is_dispatch_stopped(context.dispatch):
-                        raise HTTPException(
-                            status_code=499,
-                            detail="Dispatch stopped by peer.",
+                        frames = await self._finalize_streaming_error(
+                            HTTPException(status_code=499, detail="Dispatch stopped by peer."),
+                            context,
+                            stream_done=stream_done,
                         )
+                        dispatch_finished = True
+                        for frame in frames:
+                            yield frame
+                        return
                     normalized = await self.dispatch_adapter.normalize_stream_chunk(chunk, context, state)
                     if normalized:
                         if self._chunk_contains_done(normalized):
                             stream_done = True
                         yield normalized
             except Exception as exc:
-                await self._handle_dispatch_failure(context)
+                frames = await self._finalize_streaming_error(exc, context, stream_done=stream_done)
                 dispatch_finished = True
-                self._log_serving_exception(exc, context)
-                # Once [DONE] has been forwarded, the SSE stream is closed for
-                # clients. Emitting another error event would be an invalid
-                # post-termination frame.
-                if stream_done:
-                    return
-                stream_error = self.dispatch_adapter.map_stream_error(exc, context)
-                if stream_error is None:
-                    raise
-                yield f"data: {stream_error}\n\n"
-                yield "data: [DONE]\n\n"
+                for frame in frames:
+                    yield frame
             finally:
                 if not dispatch_finished:
-                    await self.dispatch_adapter.finish_dispatch(context.dispatch)
+                    try:
+                        await self.dispatch_adapter.finish_dispatch(context.dispatch)
+                    except Exception:  # nosec B110 — best-effort cleanup after response may have started
+                        # A raised exception here would surface as an ASGI RuntimeError.
+                        pass
 
         headers = {
             key: value
@@ -283,6 +288,52 @@ class InferEndpoint(Endpoint):
             headers=headers,
             background=response.background,
         )
+
+    async def _finalize_streaming_error(
+        self,
+        exc: Exception,
+        context: DispatchResponseContext,
+        *,
+        stream_done: bool,
+    ) -> list[str]:
+        """Single convergence point for terminating a stream after it has started.
+
+        Both an expected peer/dispatch stop and a genuine engine error route here.
+        Runs dispatch-failure cleanup, logs once, and returns the SSE terminal
+        frames to emit (empty when the stream already sent ``[DONE]`` or when no
+        error envelope is available). It never raises for control flow: once
+        streaming has begun the HTTP status can no longer change, so a raised
+        exception would only surface as an ASGI-level ``RuntimeError``. Secondary
+        failures during cleanup, logging, or error mapping are swallowed so the
+        generator can always close with a safe (possibly empty) frame list.
+        ``CancelledError`` is not caught (it is not an ``Exception`` subclass).
+        """
+        try:
+            await self._handle_dispatch_failure(context)
+        except Exception:  # nosec B110 — must not raise after streaming response started
+            pass
+
+        try:
+            self._log_serving_exception(exc, context)
+        except Exception:  # nosec B110 — must not raise after streaming response started
+            pass
+
+        # Once [DONE] has been forwarded, the SSE stream is closed for clients.
+        # Emitting another event would be an invalid post-termination frame.
+        if stream_done:
+            return []
+
+        try:
+            stream_error = self.dispatch_adapter.map_stream_error(exc, context)
+            if stream_error is None:
+                logger.warning(
+                    "Stream aborted without a serializable error envelope; closing cleanly api=%s",
+                    context.api,
+                )
+                return []
+            return [f"data: {stream_error}\n\n", "data: [DONE]\n\n"]
+        except Exception:  # nosec B110 — close cleanly without terminal frames
+            return []
 
     @staticmethod
     def _replace_request_body(raw_request: Request, body: dict[str, Any]) -> None:
@@ -416,8 +467,6 @@ class InferEndpoint(Endpoint):
                 request_body=engine_body,
                 dispatch=metaserver_request.dispatch,
                 stream=False,
-                client_return_token_ids=False,
-                client_expects_chat_shape="messages" in engine_body,
             )
             self._replace_request_body(raw_request, engine_body)
             try:
