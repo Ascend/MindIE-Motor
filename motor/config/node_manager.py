@@ -277,6 +277,7 @@ class KVCacheStoreConfig:
     backend: str = "memcache"
     service: str = ""  # default from $KVS_MASTER_SERVICE
     local_service_mode: str = ""  # "standalone" / "inprocess"
+    protocol: str = ""  # "device_rdma" / "device_sdma" / "device_urma"
     dram_size: str = ""  # e.g. "100GB"
     port: int = 50088  # RPC port
     config_store_port: int = 50089  # ConfigStore TCP port
@@ -600,6 +601,8 @@ class NodeManagerConfig:
             kcfg.local_service_mode = kv.get("local_service_mode", "") or os.getenv("MMC_LOCAL_SERVICE_MODE", "")
         if not kcfg.dram_size:
             kcfg.dram_size = kv.get("dram_size", "") or os.getenv("MMC_DRAM_SIZE", "")
+        if not kcfg.protocol:
+            kcfg.protocol = kv.get("protocol", "") or os.getenv("MMC_LOCAL_SERVICE_PROTOCOL", "")
         port = kv.get("port", 0)
         if port:
             kcfg.port = int(port)

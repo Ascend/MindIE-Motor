@@ -40,10 +40,11 @@ def test_standalone_local_service_brackets_ipv6_urls(monkeypatch):
         backend="memcache",
         service="2001:db8::11",
         local_service_mode="standalone",
+        protocol="device_sdma",
         port=51088,
         config_store_port=51089,
     )
-    service = LocalService("800T_A2", config)
+    service = LocalService("800T_A3", config)
     service._ls_stop = threading.Event()
     service._ls_stop.set()
 
