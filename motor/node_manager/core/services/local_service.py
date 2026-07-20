@@ -78,8 +78,8 @@ class LocalService:
     def prepare(self, **kwargs) -> None:
         """Modify ``mmc-local.conf`` before engines start (PreparableService protocol).
 
-        Sets ``protocol`` (device_rdma / device_sdma) based on hardware
-        type and ``dram.size`` based on local_service_mode and DP count.
+        Sets ``dram.size`` based on local_service_mode and DP count.
+        ``protocol`` is user-configured in mmc-local.conf and left as-is.
 
         Keyword Args:
             endpoints_count: Number of DP endpoints on this node.
@@ -97,14 +97,19 @@ class LocalService:
 
         ls_mode = self._kv_cfg.local_service_mode
 
+        # A2 / A5 only support inprocess; override standalone if configured
+        if self.hardware_type not in ("800I_A3", "800T_A3"):
+            if ls_mode not in ("", "inprocess"):
+                logger.warning(
+                    "Hardware %s does not support standalone mode; forcing inprocess (configured: %s)",
+                    self.hardware_type,
+                    ls_mode,
+                )
+            ls_mode = "inprocess"
+            self._kv_cfg.local_service_mode = "inprocess"
+
         with open(conf_path, "r", encoding="utf-8") as f:
             content = f.read()
-
-        # Protocol: rdma for A2, sdma for A3/A5
-        if self.hardware_type in ("800I_A2", "800T_A2"):
-            protocol = "device_rdma"
-        else:
-            protocol = "device_sdma"
 
         # dram.size: 0GB for standalone (vLLM uses 0), per-process for inprocess
         if ls_mode == "standalone":
@@ -122,7 +127,7 @@ class LocalService:
 
         content = self._set_conf_key(content, "ock.mmc.local_service.dram.size", dram_val)
         content = self._set_conf_key(content, "ock.mmc.local_service.max.dram.size", "1024GB")
-        content = self._set_conf_key(content, "ock.mmc.local_service.protocol", protocol)
+        content = self._set_conf_key(content, "ock.mmc.local_service.protocol", self._kv_cfg.protocol)
 
         with open(conf_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -130,7 +135,7 @@ class LocalService:
         logger.info(
             "Prepared mmc-local.conf: mode=%s, protocol=%s, dram.size=%s, endpoints=%d",
             ls_mode,
-            protocol,
+            self._kv_cfg.protocol,
             dram_val,
             self._endpoints_count,
         )
@@ -218,11 +223,6 @@ class LocalService:
             # --- General settings ---
             config.log_level = "info"
             config.world_size = 256
-            # --- Protocol ---
-            if self.hardware_type in ("800I_A2", "800T_A2"):
-                config.protocol = "device_rdma"
-            else:
-                config.protocol = "device_sdma"
             # --- DRAM pool size ---
             per_node = self._kv_cfg.dram_size
             if per_node:
@@ -230,6 +230,7 @@ class LocalService:
             else:
                 config.dram_size = f"{self._scan_node_available_dram_gb()}GB"
             config.max_dram_size = "1024GB"
+            config.protocol = self._kv_cfg.protocol
 
             logger.info(
                 "Starting standalone LocalService (dram=%s, protocol=%s)",
