@@ -77,6 +77,28 @@ class TokenBucket:
             available = min(self.capacity, self.tokens + tokens_to_add)
             return int(available)
 
+    def update_params(self, capacity: int, refill_rate: float) -> None:
+        """Thread-safely update bucket parameters (for hot reload).
+
+        Update capacity and refill_rate. If current tokens exceed the new capacity,
+        truncate to the new capacity. If capacity increases, add the delta to current
+        tokens so that additional quota is immediately available after expansion.
+
+        Args:
+            capacity: New bucket capacity.
+            refill_rate: New token refill rate (tokens per second).
+        """
+        with self._lock:
+            old_capacity = self.capacity
+            self.capacity = capacity
+            self.refill_rate = refill_rate
+
+            if self.tokens > capacity:
+                self.tokens = capacity
+            elif capacity > old_capacity:
+                added_capacity = capacity - old_capacity
+                self.tokens = min(capacity, self.tokens + added_capacity)
+
 
 class SimpleRateLimiter:
     
@@ -173,4 +195,30 @@ class SimpleRateLimiter:
                 "allowed": True,
                 "timestamp": time.time()
             }
+
+    def update_config(self, max_requests: int | None = None, window_size: int | None = None) -> None:
+        """Update rate limiting parameters at runtime (for hot reload).
+
+        Update max_requests and/or window_size, and sync the TokenBucket's
+        capacity and refill_rate accordingly.
+
+        Args:
+            max_requests: New maximum number of requests; None means no change.
+            window_size: New time window in seconds; None means no change.
+        """
+        if max_requests is not None:
+            self.max_requests = max_requests
+        if window_size is not None:
+            self.window_size = window_size
+
+        # Recalculate and update TokenBucket parameters
+        new_capacity = self.max_requests
+        new_refill_rate = self.max_requests / self.window_size
+        self._bucket.update_params(capacity=new_capacity, refill_rate=new_refill_rate)
+
+        logger.info(
+            "Updated rate limiter: max_requests=%s, window_size=%ss",
+            self.max_requests,
+            self.window_size,
+        )
     

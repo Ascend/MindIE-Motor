@@ -37,7 +37,7 @@ from motor.common.http.key_encryption import encrypt_api_key, set_default_key_en
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.middleware.fastapi_middleware import (
     SimpleRateLimitMiddleware,
-    create_simple_rate_limit_middleware,
+    RateLimitConfigHolder,
 )
 
 
@@ -81,18 +81,25 @@ def create_unified_app_for_test(
     if not getattr(unified.state, "request_manager", None):
         unified.state.request_manager = inf._request_manager
     if rate_limit_config and rate_limit_config.enable_rate_limit:
-        middleware = create_simple_rate_limit_middleware(
-            app=unified,
-            max_requests=rate_limit_config.max_requests,
-            window_size=rate_limit_config.window_size,
-        )
-        unified.add_middleware(
-            SimpleRateLimitMiddleware,
-            rate_limiter=middleware.rate_limiter,
+        from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
+
+        holder = RateLimitConfigHolder(
             skip_paths=rate_limit_config.skip_paths,
             error_message=rate_limit_config.error_message,
             error_status_code=rate_limit_config.error_status_code,
+            max_request_body_size=rate_limit_config.max_request_body_size,
         )
+        rate_limiter = SimpleRateLimiter(
+            max_requests=rate_limit_config.max_requests,
+            window_size=rate_limit_config.window_size,
+        )
+        holder.rate_limiter = rate_limiter
+        unified.add_middleware(
+            SimpleRateLimitMiddleware,
+            rate_limiter=rate_limiter,
+            config_holder=holder,
+        )
+        inf._rate_limit_config = holder
     return unified
 
 
@@ -1436,11 +1443,10 @@ class TestCoordinatorServerAdvanced:
 
     def test_setup_rate_limiting_with_exception(self):
         """Test setup_rate_limiting exception handling"""
-        # Mock create_simple_rate_limit_middleware to raise exception
         with patch(
-            "motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware"
-        ) as mock_create:
-            mock_create.side_effect = Exception("Test exception")
+            "motor.coordinator.api_server.inference_server.SimpleRateLimiter"
+        ) as mock_limiter:
+            mock_limiter.side_effect = Exception("Test exception")
             coordinator_server = _TestServerShell(config=CoordinatorConfig())
             coordinator_server.instance_manager = MagicMock()
             coordinator_server.setup_rate_limiting()
@@ -1448,11 +1454,10 @@ class TestCoordinatorServerAdvanced:
 
     def test_create_unified_app_with_exception(self):
         """Test create_unified_app exception handling"""
-        # Mock create_simple_rate_limit_middleware to raise exception
         with patch(
-            "motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware"
-        ) as mock_create:
-            mock_create.side_effect = Exception("Test exception")
+            "motor.coordinator.api_server.inference_server.SimpleRateLimiter"
+        ) as mock_limiter:
+            mock_limiter.side_effect = Exception("Test exception")
             unified_app = self.coordinator_server.create_unified_app()
             assert unified_app is not None, "Unified app should be created even with exceptions"
 
@@ -1516,8 +1521,7 @@ class TestFastAPIMiddlewareAdvanced:
         from motor.coordinator.middleware.fastapi_middleware import (
             SimpleRateLimitMiddleware,
             SimpleRateLimitConfig,
-            load_rate_limit_config,
-            create_simple_rate_limit_middleware,
+            load_rate_limit_config
         )
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
@@ -1527,7 +1531,6 @@ class TestFastAPIMiddlewareAdvanced:
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
         self.SimpleRateLimitConfig = SimpleRateLimitConfig
         self.load_rate_limit_config = load_rate_limit_config
-        self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
         self._report_alarms_patcher = patch(
@@ -1655,15 +1658,6 @@ class TestFastAPIMiddlewareAdvanced:
         assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
         assert "/ready" in config.skip_paths, "/ready should be in skip_paths"
         assert "/metrics" in config.skip_paths, "/metrics should be in skip_paths"
-
-    def test_create_simple_rate_limit_middleware_defaults(self):
-        """Test create_simple_rate_limit_middleware with default parameters"""
-        middleware = self.create_simple_rate_limit_middleware(app=self.app)
-
-        assert middleware is not None, "Middleware should be created"
-        assert middleware.rate_limiter.max_requests == 100, "Should use default max_requests"
-        assert middleware.rate_limiter.window_size == 60, "Should use default window_size"
-
 
 @pytest.mark.asyncio
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")

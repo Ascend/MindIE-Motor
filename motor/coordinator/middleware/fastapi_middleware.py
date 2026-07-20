@@ -43,7 +43,7 @@ class SimpleRateLimitConfig:
     skip_paths: list = None
     error_message: str = "Request too frequent, please try again later"
     error_status_code: int = 429
-    # 请求体最大大小（字节），超过则直接拒绝；<= 0 表示不限制
+    # Maximum request body size in bytes; requests exceeding this are rejected directly. <= 0 means no limit.
     max_request_body_size: int = 10 * 1024 * 1024  # 10MB
 
     def __post_init__(self):
@@ -123,7 +123,7 @@ def load_rate_limit_config(config_file: str | None = None) -> SimpleRateLimitCon
         if skip_paths_str:
             config.skip_paths = [path.strip() for path in skip_paths_str.split(",") if path.strip()]
 
-    # RATE_LIMIT_MAX_REQUEST_BODY_SIZE（请求体最大大小，字节）
+    # RATE_LIMIT_MAX_REQUEST_BODY_SIZE (maximum request body size in bytes)
     if os.getenv(ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE) is not None:
         try:
             config.max_request_body_size = int(os.getenv(ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE))
@@ -139,6 +139,35 @@ def load_rate_limit_config(config_file: str | None = None) -> SimpleRateLimitCon
     return config
 
 
+@dataclass
+class RateLimitConfigHolder:
+    """Hot-reloadable rate limit configuration holder.
+
+    Centralizes rate limit middleware configuration and the rate_limiter instance reference.
+    External code (e.g. _apply_config_changes) can directly modify attributes or call methods
+    to apply changes immediately.
+    """
+    skip_paths: list = None
+    error_message: str = "Request too frequent, please try again later"
+    error_status_code: int = 429
+    enabled: bool = True
+    max_request_body_size: int = 10 * 1024 * 1024
+    rate_limiter: SimpleRateLimiter = None
+
+    def __post_init__(self):
+        if self.skip_paths is None:
+            self.skip_paths = [
+                "/liveness",
+                "/ready",
+                "/metrics",
+                "/docs",
+                "/redoc",
+                "/openapi.json",
+                "/favicon.ico",
+                "/startup",
+            ]
+
+
 class SimpleRateLimitMiddleware:
     """
     FastAPI rate limiting middleware.
@@ -152,26 +181,34 @@ class SimpleRateLimitMiddleware:
         error_message: str = "Request too frequent, please try again later",
         error_status_code: int = 429,
         max_request_body_size: int = 10 * 1024 * 1024,
+        config_holder: "RateLimitConfigHolder | None" = None,
     ):
         """
-        初始化限流中间件
+        Initialize the rate limiting middleware.
 
         Args:
-            app: 下游 ASGI 应用（FastAPI 实例或下一层中间件）
-            rate_limiter: 限流器实例，为 None 时使用默认 SimpleRateLimiter
-            skip_paths: 跳过限流的路径列表
-            error_message: 限流错误消息
-            error_status_code: 限流错误状态码
-            max_request_body_size: 请求体最大大小（字节），超过则拒绝；<= 0 表示不限制
+            app: Downstream ASGI application (FastAPI instance or next middleware layer).
+            rate_limiter: Rate limiter instance; uses default SimpleRateLimiter if None.
+            skip_paths: List of paths to skip rate limiting.
+            error_message: Rate limit error message.
+            error_status_code: Rate limit error status code.
+            max_request_body_size: Maximum request body size in bytes; requests exceeding this
+                are rejected. <= 0 means no limit.
+            config_holder: Hot-reloadable configuration holder. If None, created internally
+                from the other parameters.
         """
         self.app = app
-
         self.rate_limiter = rate_limiter or SimpleRateLimiter()
-        self.skip_paths = skip_paths or ["/liveness", "/ready", "/metrics", "/docs", "/redoc", "/openapi.json"]
-        self.error_message = error_message
-        self.error_status_code = error_status_code
-        self.max_request_body_size = max_request_body_size
-        self.enabled = True  # Hot-reload can disable rate limit via update_config(enabled=False)
+
+        if config_holder is not None:
+            self._config_holder = config_holder
+        else:
+            self._config_holder = RateLimitConfigHolder(
+                skip_paths=skip_paths,
+                error_message=error_message,
+                error_status_code=error_status_code,
+                max_request_body_size=max_request_body_size,
+            )
 
         self.stats = {
             "total_requests": 0,
@@ -183,19 +220,19 @@ class SimpleRateLimitMiddleware:
 
     @staticmethod
     def _extract_request_data(scope: Scope) -> dict[str, Any]:
-        """从 ASGI scope 中提取请求基础信息（路径、方法、时间戳）"""
+        """Extract basic request info (path, method, timestamp) from the ASGI scope."""
         return {"endpoint": scope.get("path", ""), "method": scope.get("method", ""), "timestamp": time.time()}
 
     @staticmethod
     def _get_content_length(scope: Scope) -> int:
         """
-        从 ASGI scope 中提取 Content-Length 头
+        Extract the Content-Length header from the ASGI scope.
 
         Args:
-            scope: ASGI scope
+            scope: ASGI scope.
 
         Returns:
-            int: Content-Length 值，未找到或解析失败返回 -1
+            int: Content-Length value, or -1 if not found or parsing failed.
         """
         for header_name, header_value in scope.get("headers", []):
             if header_name == b"content-length":
@@ -228,7 +265,7 @@ class SimpleRateLimitMiddleware:
         self.stats["total_requests"] += 1
 
         # Rate limiting disabled at runtime, pass through
-        if not self.enabled:
+        if not self._config_holder.enabled:
             await self.app(scope, receive, send)
             return
 
@@ -238,21 +275,22 @@ class SimpleRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # 请求体大小检查（基于 Content-Length 请求头，不读取 body）
-        if self.max_request_body_size > 0:
+        # Request body size check (based on Content-Length header, without reading the body)
+        max_body_size = self._config_holder.max_request_body_size
+        if max_body_size > 0:
             content_length = self._get_content_length(scope)
-            if content_length > self.max_request_body_size:
+            if content_length == -1 or content_length > max_body_size:
                 self.stats["body_size_rejected_requests"] += 1
                 logger.warning(
-                    f"Request body size too large: {content_length} > {self.max_request_body_size}, path={path}"
+                    f"Request body size too large: {content_length} > {max_body_size}, path={path}"
                 )
                 error_response = {
                     "error": "request_body_too_large",
                     "message": f"Request body size ({content_length} bytes) exceeds "
-                    f"maximum allowed ({self.max_request_body_size} bytes)",
+                    f"maximum allowed ({max_body_size} bytes)",
                     "details": {
                         "content_length": content_length,
-                        "max_allowed": self.max_request_body_size,
+                        "max_allowed": max_body_size,
                     },
                 }
                 response = JSONResponse(status_code=413, content=error_response)
@@ -303,7 +341,7 @@ class SimpleRateLimitMiddleware:
             rate_limit_headers = self._create_rate_limit_headers(limit_info)
             error_response = {
                 "error": "rate_limit_exceeded",
-                "message": self.error_message,
+                "message": self._config_holder.error_message,
                 "details": {
                     "available": limit_info.get("available", 0),
                     "limit": limit_info.get("limit", 0),
@@ -315,7 +353,7 @@ class SimpleRateLimitMiddleware:
 
             # Send JSONResponse directly via ASGI, bypassing the downstream app
             response = JSONResponse(
-                status_code=self.error_status_code, content=error_response, headers=rate_limit_headers
+                status_code=self._config_holder.error_status_code, content=error_response, headers=rate_limit_headers
             )
             await response(scope, receive, send)
             return
@@ -328,21 +366,21 @@ class SimpleRateLimitMiddleware:
         enabled: bool | None = None,
         max_request_body_size: int | None = None,
     ) -> None:
-        """运行时更新中间件配置（用于配置热加载）"""
+        """Update middleware configuration at runtime (for hot reload)."""
         if skip_paths is not None:
-            self.skip_paths = skip_paths
+            self._config_holder.skip_paths = skip_paths
         if error_message is not None:
-            self.error_message = error_message
+            self._config_holder.error_message = error_message
         if error_status_code is not None:
-            self.error_status_code = error_status_code
+            self._config_holder.error_status_code = error_status_code
         if enabled is not None:
-            self.enabled = enabled
+            self._config_holder.enabled = enabled
         if max_request_body_size is not None:
-            self.max_request_body_size = max_request_body_size
+            self._config_holder.max_request_body_size = max_request_body_size
 
     def _should_skip_path(self, path: str) -> bool:
         """Return True if the given path matches any skip-listed prefix."""
-        return any(path.startswith(skip_path) for skip_path in self.skip_paths)
+        return any(path.startswith(skip_path) for skip_path in self._config_holder.skip_paths)
 
 
 def create_simple_rate_limit_middleware(
@@ -351,11 +389,8 @@ def create_simple_rate_limit_middleware(
     window_size: int = 60,
     max_request_body_size: int = 10 * 1024 * 1024,
 ) -> SimpleRateLimitMiddleware:
-    """创建限流中间件实例（含请求体大小检查）"""
-    # 创建限流器
     rate_limiter = SimpleRateLimiter(max_requests=max_requests, window_size=window_size)
 
-    # 创建中间件
     middleware = SimpleRateLimitMiddleware(
         app=app,
         rate_limiter=rate_limiter,

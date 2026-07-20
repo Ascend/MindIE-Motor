@@ -1,6 +1,14 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
 
 """
 Behavioural equivalence test for the two rate limiting middleware implementations.
@@ -120,7 +128,7 @@ async def _run_native(
         error_status_code=error_status_code,
         max_request_body_size=max_request_body_size,
     )
-    mw.enabled = enabled
+    mw._config_holder.enabled = enabled
     messages: List[Dict[str, Any]] = []
     await mw(
         scope or dict(_HTTP_SCOPE),
@@ -354,9 +362,12 @@ async def test_update_config():
     n_mw.update_config(skip_paths=["/b", "/c"], enabled=False, error_message="new")
     l_mw.update_config(skip_paths=["/b", "/c"], enabled=False, error_message="new")
 
-    assert n_mw.skip_paths == l_mw.skip_paths == ["/b", "/c"]
-    assert n_mw.enabled == l_mw.enabled == False
-    assert n_mw.error_message == l_mw.error_message == "new"
+    assert n_mw._config_holder.skip_paths == ["/b", "/c"]
+    assert l_mw.skip_paths == ["/b", "/c"]
+    assert n_mw._config_holder.enabled == False
+    assert l_mw.enabled == False
+    assert n_mw._config_holder.error_message == "new"
+    assert l_mw.error_message == "new"
     print("  [PASS] update_config")
 
 
@@ -648,62 +659,3 @@ async def test_load_config_max_request_body_size_env_invalid():
         else:
             os.environ[ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE] = original
     print("  [PASS] load_config_max_request_body_size_env_invalid")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-async def main() -> int:
-    print("Behavioural equivalence tests: native vs legacy middleware\n")
-
-    tests = [
-        ("allowed_request", test_allowed_request),
-        ("blocked_request", test_blocked_request),
-        ("skip_path", test_skip_path),
-        ("disabled", test_disabled),
-        ("non_http_scope", test_non_http_scope),
-        ("custom_error", test_custom_error),
-        ("update_config", test_update_config),
-        ("multiple_requests_stats", test_multiple_requests_stats),
-        ("exception_safety", test_exception_safety),
-        # 请求体大小限制（native-only）
-        ("body_size_within_limit", test_body_size_within_limit),
-        ("body_size_exceeds_limit", test_body_size_exceeds_limit),
-        ("body_size_exact_boundary", test_body_size_exact_boundary),
-        ("body_size_no_content_length", test_body_size_no_content_length),
-        ("body_size_invalid_content_length", test_body_size_invalid_content_length),
-        ("body_size_disabled_when_zero", test_body_size_disabled_when_zero),
-        ("body_size_check_before_rate_limit", test_body_size_check_before_rate_limit),
-        ("body_size_skip_path_bypass", test_body_size_skip_path_bypass),
-        ("body_size_disabled_middleware_bypass", test_body_size_disabled_middleware_bypass),
-        ("body_size_413_response_body", test_body_size_413_response_body),
-        ("body_size_update_config", test_body_size_update_config),
-        ("load_config_max_request_body_size_env", test_load_config_max_request_body_size_env),
-        ("load_config_max_request_body_size_env_invalid", test_load_config_max_request_body_size_env_invalid),
-    ]
-
-    passed = 0
-    failed = 0
-
-    for name, test_fn in tests:
-        try:
-            await test_fn()
-            passed += 1
-        except AssertionError as e:
-            failed += 1
-            print(f"  [FAIL] {name}")
-            for line in str(e).splitlines():
-                print(f"         {line}")
-        except Exception as e:
-            failed += 1
-            print(f"  [ERROR] {name}: {type(e).__name__}: {e}")
-
-    print(f"\n{'=' * 60}")
-    print(f"Results: {passed} passed, {failed} failed out of {len(tests)} tests")
-    return 0 if failed == 0 else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))

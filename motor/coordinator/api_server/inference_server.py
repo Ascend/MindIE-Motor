@@ -28,8 +28,9 @@ from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.middleware.fastapi_middleware import (
     SimpleRateLimitMiddleware,
-    create_simple_rate_limit_middleware,
+    RateLimitConfigHolder,
 )
+from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.common.http.http_client import HTTPClientPool
@@ -140,7 +141,7 @@ class InferenceServer(BaseCoordinatorServer):
             self.coordinator_config,
             on_instance_refreshed=self._make_on_instance_refreshed(),
         )
-        self._rate_limit_middleware: Any | None = None
+        self._rate_limit_config: RateLimitConfigHolder | None = None
         self._register_routes()
 
     @property
@@ -260,21 +261,27 @@ class InferenceServer(BaseCoordinatorServer):
 
     def build_simple_rate_limit(self, rate_limit_config: RateLimitConfig | None = None) -> None:
         try:
-            middleware = create_simple_rate_limit_middleware(
-                app=self._inference_app,
-                max_requests=rate_limit_config.max_requests,
-                window_size=rate_limit_config.window_size,
-                max_request_body_size=rate_limit_config.max_request_body_size,
-            )
-            self._rate_limit_middleware = middleware
-            self._inference_app.add_middleware(
-                SimpleRateLimitMiddleware,
-                rate_limiter=middleware.rate_limiter,
+            holder = RateLimitConfigHolder(
                 skip_paths=rate_limit_config.skip_paths,
                 error_message=rate_limit_config.error_message,
                 error_status_code=rate_limit_config.error_status_code,
                 max_request_body_size=rate_limit_config.max_request_body_size,
             )
+
+            rate_limiter = SimpleRateLimiter(
+                max_requests=rate_limit_config.max_requests,
+                window_size=rate_limit_config.window_size,
+            )
+
+            self._inference_app.add_middleware(
+                SimpleRateLimitMiddleware,
+                rate_limiter=rate_limiter,
+                config_holder=holder,
+            )
+
+            holder.rate_limiter = rate_limiter
+            self._rate_limit_config = holder
+
             logger.info(
                 "Create simple limit: max_requests=%s/%ss",
                 rate_limit_config.max_requests,
@@ -287,10 +294,8 @@ class InferenceServer(BaseCoordinatorServer):
     @staticmethod
     def _extract_tags_from_request(request: Request) -> dict:
         # "Extract tags from the request; the tag names are defined in olc.bean.dimension."
-        dimension_dict = {}
-        dimension_dict["URL"] = request.url.path
-        dimension_dict["Method"] = request.method
-        dimension_dict["IP"] = request.client.host if request.client else "unknown"
+        dimension_dict = {"URL": request.url.path, "Method": request.method,
+                          "IP": request.client.host if request.client else "unknown"}
         return dimension_dict
 
     def _make_on_instance_refreshed(self):
@@ -326,14 +331,17 @@ class InferenceServer(BaseCoordinatorServer):
         self._api_key_config = new_config.api_key_config
         self._infer_ssl_config = new_config.infer_tls_config
         rlc = new_config.rate_limit_config
-        if self._rate_limit_middleware is not None:
-            if isinstance(self._rate_limit_middleware, SimpleRateLimitMiddleware):
-                self._rate_limit_middleware.update_config(
-                    skip_paths=rlc.skip_paths,
-                    error_message=rlc.error_message,
-                    error_status_code=rlc.error_status_code,
-                    enabled=rlc.enable_rate_limit,
-                    max_request_body_size=rlc.max_request_body_size,
+        if self._rate_limit_config is not None:
+            holder = self._rate_limit_config
+            holder.skip_paths = rlc.skip_paths
+            holder.error_message = rlc.error_message
+            holder.error_status_code = rlc.error_status_code
+            holder.enabled = rlc.enable_rate_limit
+            holder.max_request_body_size = rlc.max_request_body_size
+            if holder.rate_limiter is not None:
+                holder.rate_limiter.update_config(
+                    max_requests=rlc.max_requests,
+                    window_size=rlc.window_size,
                 )
 
     def _get_scheduler_client(self):
