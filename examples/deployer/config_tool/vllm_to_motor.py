@@ -1,13 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 #
-# 独立脚本：不依赖 motor 包，可直接拷贝到任意目录运行。
-# 部署示例：只需拷贝本文件到 /mnt/share/g00955508/b081_0707/ 即可使用。
-#
 # 用法:
-#   PD 混部: 同目录放置 run_dp_template.sh 后执行
-#     python vllm_to_motor.py --deploy-scenario hybrid --hardware-type A3
+#   PD 混部: 同目录放置 run_dp_template_hybrid.sh 后执行
+#     python deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A3
 #   PD 分离: 同目录放置 run_dp_template_prefill.sh / run_dp_template_decode.sh 后执行
-#     python vllm_to_motor.py --deploy-scenario separate --hardware-type A3
+#     python deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
 #   硬件类型: A2 / A3 / A5（A5 按每节点 8 卡，输出 hardware_type=850-Atlas-8p-8）
 #   可选: --weight-path <路径>  --image-name <镜像>
 #   输出: output_config/user_config.json、output_config/env.json
@@ -1531,7 +1528,7 @@ def _print_optional_arg_reminders(
     )
     print(file=sys.stderr)
     cmd = (
-        f"python3 vllm_to_motor.py --deploy-scenario {deploy_scenario} "
+        f"python3 deploy.py --mode general_config --deploy-scenario {deploy_scenario} "
         f"--hardware-type {hardware_type} "
         f"--weight-path <权重路径> --image-name <镜像名称>"
     )
@@ -1546,7 +1543,7 @@ def _print_optional_arg_reminders(
     }
     example_image = example_images.get(hw, example_images["800I_A3"])
     example_cmd = (
-        f"python3 vllm_to_motor.py --deploy-scenario {deploy_scenario} "
+        f"python3 deploy.py --mode general_config --deploy-scenario {deploy_scenario} "
         f"--hardware-type {hardware_type} "
         f"--weight-path {example_weight} "
         f"--image-name {example_image}"
