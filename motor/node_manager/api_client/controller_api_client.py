@@ -75,23 +75,7 @@ class ControllerApiClient:
     nodemanager_config = NodeManagerConfig.from_json()
 
     @staticmethod
-    def register(register_msg: RegisterMsg):
-        # Read config values under lock protection
-        client_args = {}
-        try:
-            client_args = ControllerApiClient._generate_client_args()
-            with SafeHTTPSClient(timeout=15, **client_args) as client:
-                _ = client.post("/controller/register", register_msg.model_dump())
-                logger.info("Register success!")
-                return True
-        except Exception as e:
-            logger.error(
-                "Exception occurred while register to controller at %s: %s", client_args.get("address", "unknown"), e
-            )
-            return False
-
-    @staticmethod
-    def register_after_restore(register_msg: RegisterMsg) -> bool:
+    def register(register_msg: RegisterMsg) -> bool:
         client_args = {}
         try:
             client_args = ControllerApiClient._generate_client_args()
@@ -104,13 +88,13 @@ class ControllerApiClient:
             return False
 
         if not isinstance(response, dict):
-            logger.error("Invalid register response from controller after restore: %s", response)
+            logger.error("Invalid register response from controller: %s", response)
             return False
         if error := response.get("error"):
-            logger.warning("Register rejected by controller after restore: %s", error)
+            logger.warning("Register rejected by controller: %s", error)
             return False
 
-        logger.info("Register after restore success!")
+        logger.info("Register success!")
         return True
 
     @staticmethod

@@ -213,14 +213,6 @@ class EngineManager(ThreadSafeSingleton):
 
         return ControllerApiClient.register(register_msg)
 
-    def post_register_msg_after_restore(self) -> bool | None:
-        register_msg = self._gen_register_msg()
-        if register_msg is None:
-            return False
-        logger.debug("register_msg is %s", register_msg)
-
-        return ControllerApiClient.register_after_restore(register_msg)
-
     def post_reregister_msg(self) -> bool | None:
         reregister_msg = self._gen_reregister_msg()
         if reregister_msg is None:
