@@ -97,31 +97,29 @@ if [ -n "$ENABLE_GEN_CERT" ] && [ "$ENABLE_GEN_CERT" = "true" ]; then
 fi
 
 setup_motor_log_path() {
-    if [ -n "$MOTOR_LOG_ROOT_PATH" ] && [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        chmod 750 "$MOTOR_LOG_ROOT_PATH"
-        if [ ! -d "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor" ]; then
-            mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
-        fi
+    # Default aligns with env.json motor_common_env.MOTOR_LOG_ROOT_PATH
+    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
+    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
         export MOTOR_LOG_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
     fi
 }
 
 setup_ascend_work_path() {
-    if [ -n "$MOTOR_LOG_ROOT_PATH" ] && [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        chmod 750 "$MOTOR_LOG_ROOT_PATH"
-        if [ ! -d "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path" ];then
-            mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
-        fi
+    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
+    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
         export ASCEND_WORK_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
     fi
 }
 
 setup_ascend_cache_path() {
-    if [ -n "$MOTOR_LOG_ROOT_PATH" ] && [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        chmod 750 "$MOTOR_LOG_ROOT_PATH"
-        if [ ! -d "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path" ];then
-            mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
-        fi
+    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
+    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
         export ASCEND_CACHE_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
     fi
 }
