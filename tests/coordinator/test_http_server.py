@@ -1443,9 +1443,7 @@ class TestCoordinatorServerAdvanced:
 
     def test_setup_rate_limiting_with_exception(self):
         """Test setup_rate_limiting exception handling"""
-        with patch(
-            "motor.coordinator.api_server.inference_server.SimpleRateLimiter"
-        ) as mock_limiter:
+        with patch("motor.coordinator.api_server.inference_server.SimpleRateLimiter") as mock_limiter:
             mock_limiter.side_effect = Exception("Test exception")
             coordinator_server = _TestServerShell(config=CoordinatorConfig())
             coordinator_server.instance_manager = MagicMock()
@@ -1454,9 +1452,7 @@ class TestCoordinatorServerAdvanced:
 
     def test_create_unified_app_with_exception(self):
         """Test create_unified_app exception handling"""
-        with patch(
-            "motor.coordinator.api_server.inference_server.SimpleRateLimiter"
-        ) as mock_limiter:
+        with patch("motor.coordinator.api_server.inference_server.SimpleRateLimiter") as mock_limiter:
             mock_limiter.side_effect = Exception("Test exception")
             unified_app = self.coordinator_server.create_unified_app()
             assert unified_app is not None, "Unified app should be created even with exceptions"
@@ -1521,7 +1517,7 @@ class TestFastAPIMiddlewareAdvanced:
         from motor.coordinator.middleware.fastapi_middleware import (
             SimpleRateLimitMiddleware,
             SimpleRateLimitConfig,
-            load_rate_limit_config
+            load_rate_limit_config,
         )
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
@@ -1658,6 +1654,7 @@ class TestFastAPIMiddlewareAdvanced:
         assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
         assert "/ready" in config.skip_paths, "/ready should be in skip_paths"
         assert "/metrics" in config.skip_paths, "/metrics should be in skip_paths"
+
 
 @pytest.mark.asyncio
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")

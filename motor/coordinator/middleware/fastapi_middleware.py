@@ -147,6 +147,7 @@ class RateLimitConfigHolder:
     External code (e.g. _apply_config_changes) can directly modify attributes or call methods
     to apply changes immediately.
     """
+
     skip_paths: list = None
     error_message: str = "Request too frequent, please try again later"
     error_status_code: int = 429
@@ -281,9 +282,7 @@ class SimpleRateLimitMiddleware:
             content_length = self._get_content_length(scope)
             if content_length == -1 or content_length > max_body_size:
                 self.stats["body_size_rejected_requests"] += 1
-                logger.warning(
-                    f"Request body size too large: {content_length} > {max_body_size}, path={path}"
-                )
+                logger.warning(f"Request body size too large: {content_length} > {max_body_size}, path={path}")
                 error_response = {
                     "error": "request_body_too_large",
                     "message": f"Request body size ({content_length} bytes) exceeds "
