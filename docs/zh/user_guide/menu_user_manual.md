@@ -28,7 +28,7 @@
   - [KV Cache亲和性调度能力部署](../user_guide/features/KV_cache_affinity.md)
   - [Tracing能力部署](../user_guide/features/tracing.md)
   - [主备倒换特性](../user_guide/features/standby.md)
-  - [手动扩缩容](../user_guide/features/manual_instance_scaling.md)
+  - [手动扩缩容](../user_guide/features/manual_scaling.md)
   - [日志级别动态调整]()
 - [API参考]()
   - [接口说明](../user_guide/api/README.md)

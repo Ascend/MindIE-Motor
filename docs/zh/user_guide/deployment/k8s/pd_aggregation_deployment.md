@@ -377,7 +377,7 @@ python3 deploy.py --config_dir ../infer_engines/vllm/pd_hybrid --update_instance
 - 除 `hybrid_instances_num` 外，不允许同时修改其他配置项。
 - CRD 默认方式下，脚本更新 `infer_service.yaml` 中 union 角色的 replicas 后执行 apply，由 CRD controller 完成扩缩容。
 
-更多说明请参考 [手动扩缩容用户手册](../../features/manual_instance_scaling.md)。
+更多说明请参考 [手动扩缩容用户手册](../../features/manual_scaling.md)。
 
 ## 卸载
 
