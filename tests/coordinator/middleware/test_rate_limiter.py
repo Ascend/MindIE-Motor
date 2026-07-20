@@ -11,6 +11,7 @@
 # See the Mulan PSL v2 for more details.
 
 """Tests for TokenBucket and SimpleRateLimiter parameter hot reload."""
+
 import pytest
 import threading
 import time

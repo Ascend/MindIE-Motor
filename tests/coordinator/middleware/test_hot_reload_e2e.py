@@ -15,6 +15,7 @@
 This test covers the real path of build_simple_rate_limit + _apply_config_changes,
 ensuring that the middleware immediately reads the latest config after holder attributes are modified.
 """
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient

@@ -294,8 +294,11 @@ class InferenceServer(BaseCoordinatorServer):
     @staticmethod
     def _extract_tags_from_request(request: Request) -> dict:
         # "Extract tags from the request; the tag names are defined in olc.bean.dimension."
-        dimension_dict = {"URL": request.url.path, "Method": request.method,
-                          "IP": request.client.host if request.client else "unknown"}
+        dimension_dict = {
+            "URL": request.url.path,
+            "Method": request.method,
+            "IP": request.client.host if request.client else "unknown",
+        }
         return dimension_dict
 
     def _make_on_instance_refreshed(self):
