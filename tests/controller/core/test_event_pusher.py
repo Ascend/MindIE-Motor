@@ -412,12 +412,12 @@ def test_update_seperated_instance(event_pusher):
     readonly_instance = ReadOnlyInstance(test_instance)
     event_pusher.instances[readonly_instance.job_name] = readonly_instance
 
-    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPERATED)
+    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPARATED)
 
     # Verify that the event has been placed in the queue
     assert not event_pusher.event_queue.empty()
     event = event_pusher.event_queue.get()
-    # INSTANCE_SEPERATED 应作为 DEL 事件通知
+    # INSTANCE_SEPARATED 应作为 DEL 事件通知
     assert event.event_type == EventType.DEL
     assert event.instance.job_name == readonly_instance.job_name
 
@@ -429,7 +429,7 @@ def test_update_seperated_instance_recovery(event_pusher):
     event_pusher.instances[readonly_instance.job_name] = readonly_instance
 
     # First separate the instance
-    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPERATED)
+    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPARATED)
     # Clear the queue
     while not event_pusher.event_queue.empty():
         event_pusher.event_queue.get()
@@ -501,7 +501,7 @@ def test_update_deep_copy_seperated_instance(event_pusher):
     event_pusher.instances[readonly_instance.job_name] = readonly_instance
 
     # Call update method for seperated event (this should perform deep copy)
-    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPERATED)
+    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPARATED)
 
     # Get the event from queue
     assert not event_pusher.event_queue.empty()
@@ -526,7 +526,7 @@ def test_update_seperated_instance_initial_stage_abnormal(event_pusher):
     # Intentionally do not add the instance to event_pusher.instances
     # dict to simulate abnormal instance in initial stage
 
-    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPERATED)
+    event_pusher.update(readonly_instance, ObserverEvent.INSTANCE_SEPARATED)
 
     # When instance abnormal in initial stage, the event should be
     # ignored and no event should be pushed to the queue

@@ -1509,7 +1509,7 @@ def test_node_status_update_refreshes_all_instances(fault_manager):
 
 
 def test_instances_seperated_event_triggers_fault_refresh(fault_manager):
-    """INSTANCE_SEPERATED event triggers _refresh_instance_fault_level."""
+    """INSTANCE_SEPARATED event triggers _refresh_instance_fault_level."""
     fault_manager.instances[1] = InstanceMetadata(instance_id=1)
     fault_manager.nodes["node_a"] = NodeMetadata(
         node_name="node_a",
@@ -1537,9 +1537,9 @@ def test_instances_seperated_event_triggers_fault_refresh(fault_manager):
         mock_im_class.return_value = mock_im
         mock_im.get_instance.return_value = instance
 
-        fault_manager.update(instance, ObserverEvent.INSTANCE_SEPERATED)
+        fault_manager.update(instance, ObserverEvent.INSTANCE_SEPARATED)
 
-        # After SEPERATED + _refresh_instance_fault_level, the decode instance
+        # After SEPARATED + _refresh_instance_fault_level, the decode instance
         # should have L6 fault level from the node_reboot fault
         ins_meta = fault_manager.instances[1]
         assert ins_meta.fault_level == FaultLevel.L6

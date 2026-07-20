@@ -132,7 +132,7 @@ class EventPusher(Observer):
             # Deep copy the instance to ensure data consistency during async HTTP sending
             event = Event(EventType.ADD, instance.to_instance())
             logger.info("Instance ready: %s", instance.job_name)
-        elif event == ObserverEvent.INSTANCE_SEPERATED:
+        elif event == ObserverEvent.INSTANCE_SEPARATED:
             with self.lock:
                 if instance.job_name in self.instances:
                     del self.instances[instance.job_name]
