@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -9,8 +7,6 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-
-from motor.common.constants import CHAT_COMPLETION_PREFIX, COMPLETION_PREFIX
 
 # log dir permission
 MOTOR_CUSTOM_ZMQ_PRIVILEGE = 0o640
@@ -59,6 +55,9 @@ ASCEND_STORE_CONNECTOR = "AscendStoreConnector"
 MOON_CAKE_RPC_PORT = "mooncake_rpc_port"
 LOOKUP_RPC_PORT = "lookup_rpc_port"
 CONNECTORS = "connectors"
+KV_CONNECTOR_MODULE_PATH = "kv_connector_module_path"
+UCM_CONNECTOR = "UCMConnector"
+KV_BOTH = "kv_both"
 
 # parallel config keys
 DP_SIZE = "dp_size"

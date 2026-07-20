@@ -115,6 +115,16 @@ class VLLMConfig(IConfig):
         try:
             if kv_config[constants.KV_CONNECTOR] == constants.MULTI_CONNECTOR:
                 self._process_multi_connector(kv_config)
+            elif kv_config[constants.KV_CONNECTOR] == constants.UCM_CONNECTOR:
+                # Standalone UCMConnector (centralized-PD topology) is out of scope for the
+                # prefill/decode roles today (it needs dispatch/profile work). Fail loud instead
+                # of silently injecting mooncake-style prefill/decode keys into UCM's inline
+                # config. The union role returns earlier and passes UCM through untouched.
+                raise ValueError(
+                    "standalone UCMConnector is only supported in the union role or as "
+                    "connectors[1] of a MultiConnector; wrap it in a MultiConnector for "
+                    "prefill/decode roles"
+                )
             else:
                 self._process_mooncake_connector(kv_config, add_engine_id=True)
 
@@ -135,6 +145,13 @@ class VLLMConfig(IConfig):
         connectors = kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.CONNECTORS]
         if len(connectors) < 2:
             raise ValueError("KV connector extra config at least have 2 connectors")
+        # connectors[0] is processed as the transport; a UCM store placed first would
+        # silently get mooncake-style keys injected into its inline config.
+        if connectors[0].get(constants.KV_CONNECTOR) == constants.UCM_CONNECTOR:
+            raise ValueError(
+                f"{constants.UCM_CONNECTOR} must be connectors[1] (the store) of a "
+                "MultiConnector; put the transport connector first"
+            )
         self._process_mooncake_connector(connectors[0], add_engine_id=False)
         self._process_store_connector(connectors[1])
 
@@ -165,22 +182,32 @@ class VLLMConfig(IConfig):
         }
 
     def _process_store_connector(self, kv_config):
+        connector = kv_config[constants.KV_CONNECTOR]
+
+        # UCM store is driven entirely by its inline kv_connector_extra_config and is
+        # bidirectional on BOTH prefill and decode, so it must keep kv_role=kv_both and
+        # must NOT receive any injected rpc port (injecting keys would pollute the inline
+        # UCM config). Handle it before the role-based kv_role overwrite and return early.
+        if connector == constants.UCM_CONNECTOR:
+            kv_config[constants.KV_ROLE] = constants.KV_BOTH
+            return
+
         role = self.endpoint_config.role
         if role == constants.PREFILL_ROLE:
             kv_config[constants.KV_ROLE] = constants.KV_PRODUCER
         elif role == constants.DECODE_ROLE:
             kv_config[constants.KV_ROLE] = constants.KV_CONSUMER
 
-        if kv_config[constants.KV_CONNECTOR] == constants.MOON_CAKE_STORE_V1:
+        if connector == constants.MOON_CAKE_STORE_V1:
             kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.MOON_CAKE_RPC_PORT] = str(
                 self.endpoint_config.instance_id
             )
-        elif kv_config[constants.KV_CONNECTOR] == constants.ASCEND_STORE_CONNECTOR:
+        elif connector == constants.ASCEND_STORE_CONNECTOR:
             kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.LOOKUP_RPC_PORT] = str(
                 self.endpoint_config.instance_id
             )
         else:
-            raise ValueError(f"{constants.KV_CONNECTOR} is not supported")
+            raise ValueError(f"{connector} is not supported")
 
     def _process_d2d_config(self):
         d2d_peer_ips = self.endpoint_config.d2d_peer_ips

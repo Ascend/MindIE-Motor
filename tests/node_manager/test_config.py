@@ -878,3 +878,78 @@ def test_cross_node_pcp_generate_endpoint_ports():
     assert config.endpoint_config.endpoint_num == 1
     assert len(config.endpoint_config.service_ports) == 1
     assert len(config.endpoint_config.mgmt_ports) == 1
+
+
+# --- single_container port path with UCM as MultiConnector store -------------------------
+
+
+def _single_container_user_config(store_connector: dict) -> dict:
+    return {
+        "motor_deploy_config": {
+            "deploy_mode": "single_container",
+            "p_instances_num": 1,
+            "d_instances_num": 1,
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "data_parallel_rpc_port": 9000,
+                "kv_transfer_config": {
+                    "kv_connector": "MultiConnector",
+                    "kv_connector_extra_config": {
+                        "connectors": [
+                            {"kv_connector": "MooncakeConnectorV1", "kv_port": "20001"},
+                            store_connector,
+                        ]
+                    },
+                },
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {"data_parallel_rpc_port": 9000},
+        },
+    }
+
+
+def test_single_container_ucm_store_skips_lookup_rpc_port(monkeypatch):
+    """UCM connectors[1] has no lookup_rpc_port; from_json must not KeyError and leaves it None."""
+    monkeypatch.setenv("ROLE", "prefill")
+    monkeypatch.setenv("INDEX", "0")
+    ucm = {
+        "kv_connector": "UCMConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+        "kv_connector_extra_config": {"ucm_connectors": [{"ucm_connector_name": "UcmPipelineStore"}]},
+    }
+    cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(ucm))
+    assert cfg.lookup_rpc_port is None
+    assert cfg.kv_port == 20001
+
+
+def test_single_container_ascend_store_still_sets_lookup_rpc_port(monkeypatch):
+    """Regression: AscendStore connectors[1] still gets lookup_rpc_port (top-level + offset)."""
+    monkeypatch.setenv("ROLE", "prefill")
+    monkeypatch.setenv("INDEX", "0")
+    ascend = {"kv_connector": "AscendStoreConnector", "lookup_rpc_port": "26000"}
+    cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(ascend))
+    assert cfg.lookup_rpc_port == 26000
+    assert cfg.kv_port == 20001
+
+
+def test_single_container_malformed_multi_connectors_rejected(monkeypatch):
+    """MultiConnector connectors must be a list of >=2 dicts — validated before any indexing."""
+    monkeypatch.setenv("ROLE", "prefill")
+    monkeypatch.setenv("INDEX", "0")
+    ascend = {"kv_connector": "AscendStoreConnector", "lookup_rpc_port": "26000"}
+    bad_connectors_cases = (
+        "not-a-list",
+        [{"kv_connector": "MooncakeConnectorV1", "kv_port": "20001"}],  # too short
+        [{"kv_connector": "MooncakeConnectorV1", "kv_port": "20001"}, "not-a-dict"],
+    )
+    for bad_connectors in bad_connectors_cases:
+        user_config = _single_container_user_config(ascend)
+        kv = user_config["motor_engine_prefill_config"]["engine_config"]["kv_transfer_config"]
+        kv["kv_connector_extra_config"]["connectors"] = bad_connectors
+        with pytest.raises(ValueError, match="connectors"):
+            SingleContainerNodemanagerConfig.from_json(user_config)

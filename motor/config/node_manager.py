@@ -63,6 +63,7 @@ KV_CONNECTOR_EXTRA_CONFIG_KEY = "kv_connector_extra_config"
 CONNECTORS_KEY = "connectors"
 KV_PORT_KEY = "kv_port"
 LOOPUP_RPC_PORT_KEY = "lookup_rpc_port"
+UCM_CONNECTOR = "UCMConnector"
 SERVER_LIST = "server_list"
 DEVICE = "device"
 HARDWARE_TYPE_KEY = "hardware_type"
@@ -250,9 +251,27 @@ class SingleContainerNodemanagerConfig:
         kv_config = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG_KEY][ENGINE_CONFIG_KEY].get(KV_TRANSFER_CONFIG_KEY, {})
         if kv_config:
             if kv_config[KV_CONNECTOR_KEY] == MULTICONNECTOR:
-                connectors = kv_config[KV_CONNECTOR_EXTRA_CONFIG_KEY][CONNECTORS_KEY]
+                extra_config = kv_config.get(KV_CONNECTOR_EXTRA_CONFIG_KEY)
+                connectors = extra_config.get(CONNECTORS_KEY) if isinstance(extra_config, dict) else None
+                if not isinstance(connectors, list) or len(connectors) < 2:
+                    raise ValueError(
+                        f"{KV_TRANSFER_CONFIG_KEY}.{KV_CONNECTOR_EXTRA_CONFIG_KEY}.{CONNECTORS_KEY} "
+                        f"must be a list of at least 2 connectors (transport first, store second) "
+                        f"when {KV_CONNECTOR_KEY} is {MULTICONNECTOR}"
+                    )
+                if not all(isinstance(connector, dict) for connector in connectors[:2]):
+                    raise ValueError(
+                        f"{KV_TRANSFER_CONFIG_KEY}.{KV_CONNECTOR_EXTRA_CONFIG_KEY}.{CONNECTORS_KEY} "
+                        "entries must be objects (connector configs)"
+                    )
                 config.kv_port = int(connectors[0][KV_PORT_KEY]) + kv_port_offset
-                config.lookup_rpc_port = int(connectors[1][LOOPUP_RPC_PORT_KEY]) + lookup_rpc_port_offset
+                store = connectors[1]
+                # UCM store carries no lookup_rpc_port. Skip ONLY UCM (use .get() to avoid a
+                # KeyError on the kv_connector lookup); every other store still direct-indexes
+                # lookup_rpc_port, so a genuine AscendStore missing its port fails fast exactly
+                # as before instead of being silently skipped.
+                if store.get(KV_CONNECTOR_KEY) != UCM_CONNECTOR:
+                    config.lookup_rpc_port = int(store[LOOPUP_RPC_PORT_KEY]) + lookup_rpc_port_offset
             else:
                 config.kv_port = int(kv_config[KV_PORT_KEY]) + kv_port_offset
 

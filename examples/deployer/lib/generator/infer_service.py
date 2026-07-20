@@ -41,6 +41,7 @@ from lib.generator.engine import (
     apply_a5_engine_pod_config,
     apply_a5_dns_config,
 )
+from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 from lib.generator.kv_cache_store import normalize_kv_cache_store_config, gen_kv_store_env
 from lib.generator.kv_conductor import normalize_kv_conductor_config
 
@@ -195,6 +196,8 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     set_container_npu(container, npu_num, deploy_config)
     weight_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     set_weight_mount(pod_spec, container, weight_path)
+    apply_storage_volumes(pod_spec, container, user_config)
+    apply_dshm_size(pod_spec, user_config)
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
     _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name)
 
