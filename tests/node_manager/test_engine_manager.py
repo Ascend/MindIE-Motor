@@ -232,9 +232,7 @@ class TestEngineManager:
         with pytest.raises(TypeError):
             engine_manager._gen_reregister_msg()
 
-    @patch("motor.node_manager.core.engine_manager.ControllerApiClient.register")
-    def test_post_register_msg_success(self, mock_register, engine_manager):
-        """Test post_register_msg with successful response"""
+    def _prepare_post_register_config(self, engine_manager):
         engine_manager._config.basic_config.job_name = "test_job"
         engine_manager._config.basic_config.model_name = "test_model"
         engine_manager._config.basic_config.role = PDRole.ROLE_U
@@ -246,29 +244,49 @@ class TestEngineManager:
         engine_manager._config.api_config.coordinator_api_mgmt_port = 8080
         engine_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
 
-        mock_register.return_value = True
+    @patch("motor.node_manager.api_client.controller_api_client.ControllerApiClient._generate_client_args")
+    @patch("motor.node_manager.api_client.controller_api_client.SafeHTTPSClient")
+    def test_post_register_msg_success(self, mock_http, mock_client_args, engine_manager):
+        self._prepare_post_register_config(engine_manager)
+        mock_client_args.return_value = {"address": "controller:8080", "tls_config": None}
+        mock_http.return_value.__enter__.return_value.post.return_value = {"status": "ok"}
 
         result = engine_manager.post_register_msg()
+
         assert result is True
-        mock_register.assert_called_once()
+        mock_http.return_value.__enter__.return_value.post.assert_called_once()
 
-    @patch("motor.node_manager.core.engine_manager.ControllerApiClient.register")
-    def test_post_register_msg_failure(self, mock_register, engine_manager):
-        """Test post_register_msg with exception"""
-        engine_manager._config.basic_config.job_name = "test_job"
-        engine_manager._config.basic_config.model_name = "test_model"
-        engine_manager._config.basic_config.role = PDRole.ROLE_U
-        engine_manager._config.api_config.pod_ip = "192.168.1.100"
-        engine_manager._config.api_config.host_ip = "192.168.1.200"
-        engine_manager._config.endpoint_config.service_ports = ["8080"]
-        engine_manager._config.api_config.node_manager_port = 8080
-        engine_manager._config.api_config.coordinator_api_dns = "localhost"
-        engine_manager._config.api_config.coordinator_api_mgmt_port = 8080
-        engine_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
-
-        mock_register.return_value = False
+    @patch("motor.node_manager.api_client.controller_api_client.ControllerApiClient._generate_client_args")
+    @patch("motor.node_manager.api_client.controller_api_client.SafeHTTPSClient")
+    def test_post_register_msg_failure_on_exception(self, mock_http, mock_client_args, engine_manager):
+        self._prepare_post_register_config(engine_manager)
+        mock_client_args.return_value = {"address": "controller:8080", "tls_config": None}
+        mock_http.return_value.__enter__.return_value.post.side_effect = RuntimeError("connection refused")
 
         result = engine_manager.post_register_msg()
+
+        assert result is False
+
+    @patch("motor.node_manager.api_client.controller_api_client.ControllerApiClient._generate_client_args")
+    @patch("motor.node_manager.api_client.controller_api_client.SafeHTTPSClient")
+    def test_post_register_msg_failure_on_rejected(self, mock_http, mock_client_args, engine_manager):
+        self._prepare_post_register_config(engine_manager)
+        mock_client_args.return_value = {"address": "controller:8080", "tls_config": None}
+        mock_http.return_value.__enter__.return_value.post.return_value = {"error": "already registered"}
+
+        result = engine_manager.post_register_msg()
+
+        assert result is False
+
+    @patch("motor.node_manager.api_client.controller_api_client.ControllerApiClient._generate_client_args")
+    @patch("motor.node_manager.api_client.controller_api_client.SafeHTTPSClient")
+    def test_post_register_msg_failure_on_invalid_response(self, mock_http, mock_client_args, engine_manager):
+        self._prepare_post_register_config(engine_manager)
+        mock_client_args.return_value = {"address": "controller:8080", "tls_config": None}
+        mock_http.return_value.__enter__.return_value.post.return_value = "not-a-dict"
+
+        result = engine_manager.post_register_msg()
+
         assert result is False
 
     @patch("motor.node_manager.core.engine_manager.ControllerApiClient.re_register")
