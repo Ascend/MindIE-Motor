@@ -45,7 +45,7 @@ set_controller_env
 # not necessary if no ccae
 python3 -m ccae_reporter.run Controller &
 
-ROLE=controller python3 -m motor.controller.main --config $USER_CONFIG_PATH &
+ROLE=controller python3 -m motor.controller.main --config "$USER_CONFIG_PATH" &
 pids+=($!)
 
 case "${KV_STORE_BACKEND:-}" in
@@ -65,22 +65,37 @@ case "${KV_STORE_BACKEND:-}" in
         ;;
 esac
 
-p_instances_num=$(grep '"p_instances_num"' $USER_CONFIG_PATH | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
-d_instances_num=$(grep '"d_instances_num"' $USER_CONFIG_PATH | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
+if grep -q '"motor_engine_union_config"' "$USER_CONFIG_PATH"; then
+    hybrid_instances_num=$(grep '"hybrid_instances_num"' "$USER_CONFIG_PATH" | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
+    if [ -z "$hybrid_instances_num" ] || [ "$hybrid_instances_num" -lt 1 ]; then
+        echo "Error: PD hybrid single container requires hybrid_instances_num >= 1"
+        exit 1
+    fi
 
-set_prefill_env
-for i in $(seq 0 $((p_instances_num - 1))); do
-    ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &
-    pids+=($!)
-    echo "pull up instance: ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &"
-done
+    set_union_env
+    for i in $(seq 0 $((hybrid_instances_num - 1))); do
+        ROLE=union INDEX=$i JOB_NAME=u$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_u${i}.json python3 -m motor.node_manager.main &
+        pids+=($!)
+        echo "pull up instance: ROLE=union INDEX=$i JOB_NAME=u$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_u${i}.json python3 -m motor.node_manager.main &"
+    done
+else
+    p_instances_num=$(grep '"p_instances_num"' "$USER_CONFIG_PATH" | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
+    d_instances_num=$(grep '"d_instances_num"' "$USER_CONFIG_PATH" | sed 's/.*:[[:space:]]*\([0-9.]*\).*/\1/')
 
-set_decode_env
-for i in $(seq 0 $((d_instances_num - 1))); do
-    ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &
-    pids+=($!)
-    echo "pull up instance: ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &"
-done
+    set_prefill_env
+    for i in $(seq 0 $((p_instances_num - 1))); do
+        ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &
+        pids+=($!)
+        echo "pull up instance: ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &"
+    done
+
+    set_decode_env
+    for i in $(seq 0 $((d_instances_num - 1))); do
+        ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &
+        pids+=($!)
+        echo "pull up instance: ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &"
+    done
+fi
 
 for pid in "${pids[@]}"; do
     wait $pid

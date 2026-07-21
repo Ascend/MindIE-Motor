@@ -20,6 +20,7 @@ from lib.utils import (
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num
+from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 
 
 def _pop_ring_controller_atlas_from_labels(labels):
@@ -82,6 +83,16 @@ def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
     logger.info("Applied A5 engine pod config for hardware_type=%s", hardware_type)
 
 
+def _apply_a5_inferservice_id_label(template_metadata, deploy_config, hardware_type):
+    if hardware_type not in ("850-SuperPod-Atlas-8", "950-SuperPod-Atlas-8"):
+        return
+    job_id = deploy_config.get(C.CONFIG_JOB_ID) if deploy_config else None
+    if not job_id:
+        logger.warning("job_id is missing in deploy config, skip applying A5 label %s", C.INFERSERVICE_ID_LABEL)
+        return
+    template_metadata.setdefault(C.LABELS, {})[C.INFERSERVICE_ID_LABEL] = job_id
+
+
 def apply_a5_workload(workload, deploy_config):
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_950I_A5:
@@ -94,6 +105,7 @@ def apply_a5_workload(workload, deploy_config):
         template_meta = workload.setdefault(C.METADATA, {})
     _pop_ring_controller_atlas_from_labels(template_meta.get(C.LABELS))
     _apply_a5_schedule_policy_annotation(template_meta, hardware_type)
+    _apply_a5_inferservice_id_label(template_meta, deploy_config, hardware_type)
 
 
 def update_engine_base_name(user_config):
@@ -286,7 +298,10 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     set_engine_npu(container, deploy_config, node_type)
     set_engine_node_selector(deployment_data, deploy_config, node_type)
     set_engine_weight_mount(deployment_data, container, deploy_config)
-    apply_a5_engine_pod_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], container, deploy_config)
+    engine_pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    apply_storage_volumes(engine_pod_spec, container, user_config)
+    apply_dshm_size(engine_pod_spec, user_config)
+    apply_a5_engine_pod_config(engine_pod_spec, container, deploy_config)
     apply_a5_workload(deployment_data, deploy_config)
     modify_log_mount(deployment_data, user_config, deployment_data[C.METADATA][C.NAME])
 

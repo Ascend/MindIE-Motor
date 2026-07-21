@@ -63,6 +63,7 @@ KV_CONNECTOR_EXTRA_CONFIG_KEY = "kv_connector_extra_config"
 CONNECTORS_KEY = "connectors"
 KV_PORT_KEY = "kv_port"
 LOOPUP_RPC_PORT_KEY = "lookup_rpc_port"
+UCM_CONNECTOR = "UCMConnector"
 SERVER_LIST = "server_list"
 DEVICE = "device"
 HARDWARE_TYPE_KEY = "hardware_type"
@@ -172,6 +173,26 @@ class SingleContainerNodemanagerConfig:
             return config
 
         config.single_container_flag = True
+        index = int(Env.index)
+
+        union_section = user_config_data.get(MOTOR_ENGINE_UNION_CONFIG_KEY)
+        prefill_section = user_config_data.get(MOTOR_ENGINE_PREFILL_CONFIG_KEY)
+        if union_section and not prefill_section:
+            if Env.role != "union":
+                return config
+
+            union_resolver = ConfigResolver(union_section)
+            union_parallel_config = union_resolver.get_parallel_config()
+            u_dp_size = union_parallel_config.get(DP, 1)
+            u_world_size = union_parallel_config["world_size"]
+
+            config.node_manager_port_offset = index
+            config.base_port_offset = index * u_dp_size * 2
+            config.device_offset = index * u_world_size
+            config.device_num = u_world_size
+            config.dp_rpc_port = int(union_parallel_config["dp_rpc_port"]) + index
+            return config
+
         p_instances_num = user_config_data['motor_deploy_config']['p_instances_num']
         d_instances_num = user_config_data['motor_deploy_config']['d_instances_num']
         encode_section = user_config_data.get(MOTOR_ENGINE_ENCODE_CONFIG_KEY, {})
@@ -189,8 +210,6 @@ class SingleContainerNodemanagerConfig:
         e_world_size = encode_parallel_config.get("world_size", 0)
         p_world_size = prefill_parallel_config["world_size"]
         d_world_size = decode_parallel_config["world_size"]
-
-        index = int(Env.index)
 
         d_node_manager_port_offset = p_instances_num * p_dp_size + index
         d_base_port_offset = (p_instances_num * p_dp_size + index * d_dp_size) * 2
@@ -232,9 +251,27 @@ class SingleContainerNodemanagerConfig:
         kv_config = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG_KEY][ENGINE_CONFIG_KEY].get(KV_TRANSFER_CONFIG_KEY, {})
         if kv_config:
             if kv_config[KV_CONNECTOR_KEY] == MULTICONNECTOR:
-                connectors = kv_config[KV_CONNECTOR_EXTRA_CONFIG_KEY][CONNECTORS_KEY]
+                extra_config = kv_config.get(KV_CONNECTOR_EXTRA_CONFIG_KEY)
+                connectors = extra_config.get(CONNECTORS_KEY) if isinstance(extra_config, dict) else None
+                if not isinstance(connectors, list) or len(connectors) < 2:
+                    raise ValueError(
+                        f"{KV_TRANSFER_CONFIG_KEY}.{KV_CONNECTOR_EXTRA_CONFIG_KEY}.{CONNECTORS_KEY} "
+                        f"must be a list of at least 2 connectors (transport first, store second) "
+                        f"when {KV_CONNECTOR_KEY} is {MULTICONNECTOR}"
+                    )
+                if not all(isinstance(connector, dict) for connector in connectors[:2]):
+                    raise ValueError(
+                        f"{KV_TRANSFER_CONFIG_KEY}.{KV_CONNECTOR_EXTRA_CONFIG_KEY}.{CONNECTORS_KEY} "
+                        "entries must be objects (connector configs)"
+                    )
                 config.kv_port = int(connectors[0][KV_PORT_KEY]) + kv_port_offset
-                config.lookup_rpc_port = int(connectors[1][LOOPUP_RPC_PORT_KEY]) + lookup_rpc_port_offset
+                store = connectors[1]
+                # UCM store carries no lookup_rpc_port. Skip ONLY UCM (use .get() to avoid a
+                # KeyError on the kv_connector lookup); every other store still direct-indexes
+                # lookup_rpc_port, so a genuine AscendStore missing its port fails fast exactly
+                # as before instead of being silently skipped.
+                if store.get(KV_CONNECTOR_KEY) != UCM_CONNECTOR:
+                    config.lookup_rpc_port = int(store[LOOPUP_RPC_PORT_KEY]) + lookup_rpc_port_offset
             else:
                 config.kv_port = int(kv_config[KV_PORT_KEY]) + kv_port_offset
 
@@ -259,6 +296,7 @@ class KVCacheStoreConfig:
     backend: str = "memcache"
     service: str = ""  # default from $KVS_MASTER_SERVICE
     local_service_mode: str = ""  # "standalone" / "inprocess"
+    protocol: str = ""  # "device_rdma" / "device_sdma" / "device_urma"
     dram_size: str = ""  # e.g. "100GB"
     port: int = 50088  # RPC port
     config_store_port: int = 50089  # ConfigStore TCP port
@@ -582,6 +620,8 @@ class NodeManagerConfig:
             kcfg.local_service_mode = kv.get("local_service_mode", "") or os.getenv("MMC_LOCAL_SERVICE_MODE", "")
         if not kcfg.dram_size:
             kcfg.dram_size = kv.get("dram_size", "") or os.getenv("MMC_DRAM_SIZE", "")
+        if not kcfg.protocol:
+            kcfg.protocol = kv.get("protocol", "") or os.getenv("MMC_LOCAL_SERVICE_PROTOCOL", "")
         port = kv.get("port", 0)
         if port:
             kcfg.port = int(port)

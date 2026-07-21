@@ -42,9 +42,12 @@ def set_env_docker(configmap_path):
 
     deploy_mode = get_json_by_path(user_config, "motor_deploy_config.deploy_mode")
 
-    engine_type = get_json_by_path(user_config, "motor_engine_prefill_config.engine_type", "Unknown")
     prefill_section = user_config.get("motor_engine_prefill_config", {})
-    model_name = resolve_model_name(prefill_section)
+    union_section = user_config.get("motor_engine_union_config", {})
+    engine_section = prefill_section if prefill_section else union_section
+
+    engine_type = get_json_by_path(engine_section, "engine_type", "Unknown")
+    model_name = resolve_model_name(engine_section)
     north_platform = get_json_by_path(user_config, "north_config.name")
 
     if MOTOR_COMMON_ENV not in env_config:
@@ -68,12 +71,17 @@ def set_env_docker(configmap_path):
 
     update_shell_safely(common_shell_path, env_config, MOTOR_COMMON_ENV, "set_common_env")
 
+    union_env_key = "motor_engine_union_env"
+    if union_env_key not in env_config:
+        env_config[union_env_key] = dict(env_config.get("motor_engine_prefill_env", {}))
+
     if deploy_mode == "single_container":
         update_shell_safely(single_container_shell_path, env_config, "motor_controller_env", "set_controller_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_coordinator_env", "set_coordinator_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_encode_env", "set_encode_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_engine_decode_env", "set_decode_env")
+        update_shell_safely(single_container_shell_path, env_config, union_env_key, "set_union_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
         update_shell_safely(single_container_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
     else:
@@ -82,6 +90,7 @@ def set_env_docker(configmap_path):
         update_shell_safely(engine_shell_path, env_config, "motor_engine_encode_env", "set_encode_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_prefill_env", "set_prefill_env")
         update_shell_safely(engine_shell_path, env_config, "motor_engine_decode_env", "set_decode_env")
+        update_shell_safely(engine_shell_path, env_config, union_env_key, "set_union_env")
         update_shell_safely(kv_cache_store_shell_path, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
         update_shell_safely(kv_conductor_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
 

@@ -61,9 +61,9 @@ class EngineService:
         snapshot_metadata_path: str,
         single_container_flag: bool = False,
         device_offset: int = 0,
-        kv_port: int = 0,
+        kv_port: int | None = None,
         lookup_rpc_port: int | None = None,
-        dp_rpc_port: int = 0,
+        dp_rpc_port: int | None = None,
     ):
         self.hardware_type = hardware_type
         self.device_num = device_num
@@ -153,8 +153,10 @@ class EngineService:
                 if self.enable_snapshot:
                     cmd.extend(["--snapshot-metadata", self.snapshot_metadata_path])
                 if self.single_container_flag:
-                    cmd.extend(["--kv-port", str(self.kv_port)])
-                    cmd.extend(["--dp-rpc-port", str(self.dp_rpc_port)])
+                    if self.kv_port is not None:
+                        cmd.extend(["--kv-port", str(self.kv_port)])
+                    if self.dp_rpc_port is not None:
+                        cmd.extend(["--dp-rpc-port", str(self.dp_rpc_port)])
                     if self.lookup_rpc_port is not None:
                         cmd.extend(["--lookup-rpc-port", str(self.lookup_rpc_port)])
                 if d2d_peer_ips:

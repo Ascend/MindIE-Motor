@@ -1,0 +1,16 @@
+# Dynamically-provisioned PVC for engine pods (e.g. UCM storage_backends).
+# storageClassName / accessModes / storage are filled by lib/generator/storage.py from
+# user_config motor_deploy_config.storage. The StorageClass must support dynamic provisioning
+# (ReadWriteMany when Prefill/Decode run on different nodes and share the volume).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mindie-motor-store
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 200Gi

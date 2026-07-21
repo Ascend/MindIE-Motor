@@ -75,7 +75,7 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 }
 ```
 
-> Prefill 与 Decode **两端 `dispatch_profile` 必须一致**，且取值须与 connector 实际协同语义匹配，否则 Coordinator 仍无法配对（503）。字段说明见 [user_config 全量参数说明](../user_guide/deployment/k8s/config_reference.md#dispatch_profile)。
+> Prefill 与 Decode **两端 `dispatch_profile` 必须一致**，且取值须与 connector 实际协同语义匹配，否则 Coordinator 仍无法配对（503）。字段说明见 [user_config 全量参数说明](../user_guide/configuration/config_reference.md#dispatch_profile)。
 
 ## 数据流
 

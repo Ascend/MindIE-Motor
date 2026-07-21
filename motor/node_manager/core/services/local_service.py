@@ -10,6 +10,7 @@
 
 import os
 import re
+import subprocess
 import threading
 
 from motor.common.logger import get_logger
@@ -25,6 +26,7 @@ def _create_local_service(hardware_type: str, config):  # pylint: disable=unused
     return LocalService(
         hardware_type=hardware_type,
         kv_cache_store_config=config.kv_cache_store_config,
+        local_world_size=config.basic_config.parallel_config.local_world_size,
         restart_local_service=Env.motor_restart_local_service,
     )
 
@@ -47,14 +49,27 @@ class LocalService:
         self,
         hardware_type: str,
         kv_cache_store_config: KVCacheStoreConfig | None = None,
+        local_world_size: int = 1,
         restart_local_service: bool = True,
     ):
         self.hardware_type = hardware_type
         self._kv_cfg = kv_cache_store_config or KVCacheStoreConfig()
+        self._local_world_size = local_world_size
         self.restart_local_service = restart_local_service
+
+        self._endpoints_count: int = 0  # updated by prepare()
 
         self._ls_thread: threading.Thread | None = None
         self._ls_stop: threading.Event | None = None
+
+    # ------------------------------------------------------------------
+    # properties
+    # ------------------------------------------------------------------
+
+    @property
+    def _worker_count(self) -> int:
+        """Total vLLM worker processes on this node."""
+        return max(1, self._endpoints_count * self._local_world_size)
 
     # ------------------------------------------------------------------
     # mmc-local.conf preparation
@@ -63,13 +78,13 @@ class LocalService:
     def prepare(self, **kwargs) -> None:
         """Modify ``mmc-local.conf`` before engines start (PreparableService protocol).
 
-        Sets ``protocol`` (device_rdma / device_sdma) based on hardware
-        type and ``dram.size`` based on local_service_mode and DP count.
+        Sets ``dram.size`` based on local_service_mode and DP count.
+        ``protocol`` is user-configured in mmc-local.conf and left as-is.
 
         Keyword Args:
             endpoints_count: Number of DP endpoints on this node.
         """
-        endpoints_count: int = kwargs.get("endpoints_count", 0)
+        self._endpoints_count = kwargs.get("endpoints_count", 0)
         if not self._kv_cfg.enable:
             return
         if self._kv_cfg.backend != "memcache":
@@ -82,32 +97,37 @@ class LocalService:
 
         ls_mode = self._kv_cfg.local_service_mode
 
+        # A2 / A5 only support inprocess; override standalone if configured
+        if self.hardware_type not in ("800I_A3", "800T_A3"):
+            if ls_mode not in ("", "inprocess"):
+                logger.warning(
+                    "Hardware %s does not support standalone mode; forcing inprocess (configured: %s)",
+                    self.hardware_type,
+                    ls_mode,
+                )
+            ls_mode = "inprocess"
+            self._kv_cfg.local_service_mode = "inprocess"
+
         with open(conf_path, "r", encoding="utf-8") as f:
             content = f.read()
-
-        # Protocol: rdma for A2, sdma for A3/A5
-        if self.hardware_type in ("800I_A2", "800T_A2"):
-            protocol = "device_rdma"
-        else:
-            protocol = "device_sdma"
 
         # dram.size: 0GB for standalone (vLLM uses 0), per-process for inprocess
         if ls_mode == "standalone":
             dram_val = "0GB"
         else:
-            available_gb = self._scan_node_available_dram_gb()
             per_node = self._kv_cfg.dram_size
             if per_node:
+                # User configured — trust it; skip expensive mem_scan.stat()
                 configured_gb = self._parse_dram_size_gb(per_node)
-                clamped_gb = self._clamp_dram_size(configured_gb, available_gb)
+                clamped_gb = configured_gb
             else:
-                clamped_gb = available_gb
-            per_process_gb = max(1, clamped_gb // endpoints_count)
+                clamped_gb = self._scan_node_available_dram_gb()
+            per_process_gb = max(1, clamped_gb // self._worker_count)
             dram_val = f"{per_process_gb}GB"
 
         content = self._set_conf_key(content, "ock.mmc.local_service.dram.size", dram_val)
         content = self._set_conf_key(content, "ock.mmc.local_service.max.dram.size", "1024GB")
-        content = self._set_conf_key(content, "ock.mmc.local_service.protocol", protocol)
+        content = self._set_conf_key(content, "ock.mmc.local_service.protocol", self._kv_cfg.protocol)
 
         with open(conf_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -115,9 +135,9 @@ class LocalService:
         logger.info(
             "Prepared mmc-local.conf: mode=%s, protocol=%s, dram.size=%s, endpoints=%d",
             ls_mode,
-            protocol,
+            self._kv_cfg.protocol,
             dram_val,
-            endpoints_count,
+            self._endpoints_count,
         )
 
     @staticmethod
@@ -203,20 +223,14 @@ class LocalService:
             # --- General settings ---
             config.log_level = "info"
             config.world_size = 256
-            # --- Protocol ---
-            if self.hardware_type in ("800I_A2", "800T_A2"):
-                config.protocol = "device_rdma"
-            else:
-                config.protocol = "device_sdma"
             # --- DRAM pool size ---
-            available_gb = self._scan_node_available_dram_gb()
             per_node = self._kv_cfg.dram_size
             if per_node:
-                configured_gb = self._parse_dram_size_gb(per_node)
-                config.dram_size = f"{self._clamp_dram_size(configured_gb, available_gb)}GB"
+                config.dram_size = per_node
             else:
-                config.dram_size = f"{available_gb}GB"
+                config.dram_size = f"{self._scan_node_available_dram_gb()}GB"
             config.max_dram_size = "1024GB"
+            config.protocol = self._kv_cfg.protocol
 
             logger.info(
                 "Starting standalone LocalService (dram=%s, protocol=%s)",
@@ -240,7 +254,7 @@ class LocalService:
             self._ls_stop = None
 
     # ------------------------------------------------------------------
-    # DRAM sizing helpers
+    # DRAM / memory helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -252,61 +266,33 @@ class LocalService:
 
     @staticmethod
     def _scan_node_available_dram_gb() -> int:
-        """Scan for available DRAM and return GB (floor at 5).
+        """Return available DRAM in GB (floor at 5) using ``free -b``.
 
-        Prefers ``memfabric_hybrid.mem_scan.stat()`` when available; falls
-        back to ``/proc/meminfo`` parsing.  Reserves 20 % for overhead.
+        Uses the ``free`` column (truly unused memory) as a conservative
+        estimate.  Reserves 20 % for overhead.
         """
         RESERVE_RATIO = 0.8
         MIN_GB = 5
 
         try:
-            from memfabric_hybrid import mem_scan  # noqa: PLC0415
-
-            total_gb = int(mem_scan.stat(node=None, min_mb=2))
-            if total_gb > 0:
-                available_gb = max(MIN_GB, int(total_gb * RESERVE_RATIO))
-                logger.info(
-                    "mem_scan.stat(node=None, min_mb=2) returned %d GB total, reserved=%d GB",
-                    total_gb,
-                    available_gb,
-                )
-                return available_gb
-            logger.warning("mem_scan.stat(node=None, min_mb=2) returned 0 GB, falling back to /proc/meminfo")
-        except ImportError:
-            pass
+            proc = subprocess.run(["/usr/bin/free", "-b"], capture_output=True, text=True, timeout=5, check=False)
+            if proc.returncode == 0:
+                for line in proc.stdout.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("Mem:"):
+                        parts = stripped.split()
+                        free_bytes = int(parts[3])
+                        free_gb = free_bytes // (1024 * 1024 * 1024)
+                        if free_gb > 0:
+                            result = max(MIN_GB, int(free_gb * RESERVE_RATIO))
+                            logger.info(
+                                "free -b scan: %d GB free, reserved=%d GB",
+                                free_gb,
+                                result,
+                            )
+                            return result
         except Exception:
-            logger.warning("mem_scan.stat() failed, falling back to /proc/meminfo", exc_info=True)
+            logger.warning("Failed to run `free -b` for DRAM scan", exc_info=True)
 
-        def _read_gb_from_meminfo(first_line: str) -> int:
-            try:
-                with open("/proc/meminfo", "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.startswith(first_line):
-                            kb = int(line.split()[1])
-                            gb = kb / 1024 / 1024
-                            return max(MIN_GB, int(gb * RESERVE_RATIO))
-            except Exception:
-                logger.warning("Failed to read %s from /proc/meminfo", first_line, exc_info=True)
-            return 0
-
-        available = _read_gb_from_meminfo("MemAvailable:")
-        if available > 0:
-            logger.info("/proc/meminfo scan: %d GB available (reserved)", available)
-            return available
-        free = _read_gb_from_meminfo("MemFree:")
-        scanned = free if free > 0 else MIN_GB
-        logger.info("/proc/meminfo scan: fallback %d GB", scanned)
-        return scanned
-
-    @staticmethod
-    def _clamp_dram_size(configured_gb: int, available_gb: int) -> int:
-        if configured_gb <= available_gb:
-            return configured_gb
-        logger.warning(
-            "Configured dram_size %dGB exceeds available node DRAM %dGB -- clamping to %dGB",
-            configured_gb,
-            available_gb,
-            available_gb,
-        )
-        return available_gb
+        logger.warning("Cannot determine available DRAM, using minimum %d GB", MIN_GB)
+        return MIN_GB

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -63,7 +61,7 @@ class TestIpUtils:
             assert "parse to ip failed" in str(excinfo.value)
 
     def test_ip_valid_check_all_zeros_ip(self):
-        """Test ip_valid_check with all zeros IP addresses"""
+        """Test ip_valid_check accepts unspecified (all zeros) IP addresses as bind hosts"""
         all_zeros_ips = [
             "0.0.0.0",  # IPv4 all zeros
             "::",  # IPv6 all zeros
@@ -71,9 +69,7 @@ class TestIpUtils:
         ]
 
         for ip in all_zeros_ips:
-            with pytest.raises(ValueError) as excinfo:
-                ip_valid_check(ip)
-            assert "is all zeros ip" in str(excinfo.value)
+            ip_valid_check(ip)  # Should not raise exception
 
     def test_ip_valid_check_multicast_ip(self):
         """Test ip_valid_check with multicast IP addresses"""

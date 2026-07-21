@@ -5,30 +5,40 @@ nav:
   - 用户指南:
       - 快速开始: user_guide/quick_start.md
       - 环境准备: user_guide/environment_preparation.md
-      - 部署:
+      - 通信矩阵: user_guide/communication_matrix.md
+      - 服务部署:
           - K8s 部署:
-              - 部署模式说明: user_guide/deployment/k8s/deploy_mode_guide.md
-              - PD 分离部署: user_guide/deployment/k8s/pd_disaggregation_deployment.md
-              - PD 聚合部署: user_guide/deployment/k8s/pd_aggregation_deployment.md
-              - 配置参考: user_guide/deployment/k8s/config_reference.md
-              - 更新配置白名单: user_guide/deployment/k8s/update_config_whitelist.md
+              - 部署模式说明: user_guide/deployment/k8s/README.md
+              - PD分离服务部署: user_guide/deployment/k8s/pd_disaggregation_deployment.md
+              - PD混部服务部署: user_guide/deployment/k8s/pd_aggregation_deployment.md
           - Docker 部署:
               - 单容器部署: user_guide/deployment/docker/single_container.md
               - 多容器部署: user_guide/deployment/docker/multi_container.md
+      - 配置说明:
+          - 全量配置参数说明: user_guide/configuration/config_reference.md
+          - 热更新配置项说明: user_guide/configuration/update_config_whitelist.md
       - 特性指南:
+          - 推理引擎对接说明: user_guide/features/supported_inference_engines.md
           - EPD 分离: user_guide/features/EPD_disaggregation.md
+          - PD 分离: user_guide/features/pd_disaggregation.md
           - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
-          - KV Pool: user_guide/features/KV_pool.md
+          - KV Cache Store: user_guide/features/kv_cache_store/README.md
           - 手动扩缩容: user_guide/features/manual_instance_scaling.md
           - 主备倒换: user_guide/features/standby.md
           - 链路追踪: user_guide/features/tracing.md
           - ScaleP2D 故障恢复: user_guide/features/scale_p2d.md
           - 容器快照: user_guide/features/container_snapshot.md
           - 虚推健康探测: user_guide/features/sim_inference.md
-      - 运维工具:
-          - 日志配置: user_guide/operations/log_config_guide.md
-          - 命令行转换工具: user_guide/operations/cli_to_engine_config_guide.md
-      - 故障排查: user_guide/troubleshooting/solutions_to_common_problems.md
+      - 服务维护:
+          - 镜像制作: user_guide/maintenance/build_motor_image_from_vllm_ascend.md
+          - 常用维护技巧: user_guide/maintenance/maintenance_tips.md
+          - 故障案例排查: user_guide/maintenance/solutions_to_common_problems.md
+      - API 参考:
+          - 服务接口: user_guide/api/service_interfaces.md
+          - 管理接口: user_guide/api/management_interfaces.md
+          - 健康检查与 Metrics观测接口: user_guide/api/monitoring_interfaces.md
+          - 服务运行状态观测接口: user_guide/api/observability_interface.md
+          - 容器快照内部接口: user_guide/api/engine_server_interfaces.md
   - 设计文档:
       - PD 分离: design/pd_disaggregation.md
       - 可靠性:
@@ -38,17 +48,11 @@ nav:
       - 手动扩缩容: design/manual_scaling.md
       - CRD 部署设计: design/crd_deployment.md
       - Metrics 可观测性: design/metrics.md
+      - 熔断设计: design/circuit_breaker_design.md
   - 开发者指南:
       - 本地构建文档: developer_guide/build_docs.md
-      - 镜像制作: developer_guide/make_image.md
       - 组件设计:
           - Controller: developer_guide/components/controller.md
           - Coordinator: developer_guide/components/coordinator.md
           - Engine Server: developer_guide/components/engine_server.md
           - Node Manager: developer_guide/components/node_manager.md
-  - API 参考:
-      - 接口说明: api_reference/interface_description.md
-      - 服务接口: api_reference/service_interface.md
-      - 管理与监控接口: api_reference/management_and_monitoring_interfaces.md
-      - Observability 接口: api_reference/observability_interface.md
-      - Engine Server 快照接口: api_reference/engine_server_snapshot_interfaces.md

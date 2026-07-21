@@ -31,6 +31,7 @@ from motor.common.resources.instance import PDRole
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
+    is_cb_reportable_failure,
     is_retryable_upstream_error,
 )
 from motor.coordinator.router.stream_response import (
@@ -359,10 +360,12 @@ class PDHybridRouter(BaseRouter):
                         trace_obj.set_trace_status(e)
                         trace_obj.set_trace_exception(e, is_meta=True)
                         self.req_info.update_state(ReqState.EXCEPTION)
-                        await self._report_cb("failure")
+                        if is_cb_reportable_failure(e):
+                            await self._report_cb("failure")
                         raise
 
-                    await self._report_cb("failure")
+                    if is_cb_reportable_failure(e):
+                        await self._report_cb("failure")
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
@@ -465,10 +468,12 @@ class PDHybridRouter(BaseRouter):
                     if attempt >= max_retries - 1:
                         self.logger.error("All retries failed for non-streaming decode request.")
                         self.req_info.update_state(ReqState.EXCEPTION)
-                        await self._report_cb("failure")
+                        if is_cb_reportable_failure(e):
+                            await self._report_cb("failure")
                         raise e
 
-                    await self._report_cb("failure")
+                    if is_cb_reportable_failure(e):
+                        await self._report_cb("failure")
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying non-streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
@@ -521,7 +526,8 @@ class PDHybridRouter(BaseRouter):
             except Exception as e:
                 trace_obj.set_trace_error_message(f"Hybrid stream fallback failed: {e}")
                 trace_obj.set_trace_error_message(f"Hybrid stream fallback failed: {e}", is_meta=True)
-                await self._report_cb("failure")
+                if is_cb_reportable_failure(e):
+                    await self._report_cb("failure")
                 raise
 
     @staticmethod

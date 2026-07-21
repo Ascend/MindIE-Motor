@@ -401,7 +401,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         # Register for post-snapshot brandnew job name
         # Do not consider retry
         # If current register failed, next register will be triggered by next heartbeat report exception
-        ret = EngineManager().post_register_msg_after_restore()
+        ret = EngineManager().post_register_msg()
         self._is_registered_after_restore = ret is True
 
     def _reregister(self) -> None:

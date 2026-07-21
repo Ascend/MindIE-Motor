@@ -62,6 +62,7 @@ from motor.coordinator.router.stream_response import (
 )
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
+    is_cb_reportable_failure,
     is_retryable_upstream_error,
 )
 from motor.coordinator.router.adapters.stream import (
@@ -627,8 +628,9 @@ class UnifiedPDRouter(BaseRouter):
                     await self._scheduler.report_cb_event(p_instance_id, "success")
                 except asyncio.CancelledError:  # pylint: disable=try-except-raise
                     raise
-                except Exception:
-                    await self._scheduler.report_cb_event(p_instance_id, "failure")
+                except Exception as e:
+                    if is_cb_reportable_failure(e):
+                        await self._scheduler.report_cb_event(p_instance_id, "failure")
                     raise
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
@@ -712,7 +714,8 @@ class UnifiedPDRouter(BaseRouter):
                 if not terminal.done():
                     terminal.set_result(("cancel", e))
             except Exception as e:
-                await self._scheduler.report_cb_event(d_instance_id, "failure")
+                if is_cb_reportable_failure(e):
+                    await self._scheduler.report_cb_event(d_instance_id, "failure")
                 if not terminal.done():
                     terminal.set_result(("error", e))
 
@@ -856,8 +859,9 @@ class UnifiedPDRouter(BaseRouter):
                     await self._scheduler.report_cb_event(p_instance_id, "success")
                 except asyncio.CancelledError:  # pylint: disable=try-except-raise
                     raise
-                except Exception:
-                    await self._scheduler.report_cb_event(p_instance_id, "failure")
+                except Exception as e:
+                    if is_cb_reportable_failure(e):
+                        await self._scheduler.report_cb_event(p_instance_id, "failure")
                     raise
 
             p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))
@@ -892,7 +896,8 @@ class UnifiedPDRouter(BaseRouter):
             except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
             except Exception as e:
-                await self._scheduler.report_cb_event(d_instance_id, "failure")
+                if is_cb_reportable_failure(e):
+                    await self._scheduler.report_cb_event(d_instance_id, "failure")
                 return None, e
 
         d_task = attempt.register_decode_task(asyncio.create_task(decode_task()))
@@ -1048,8 +1053,9 @@ class UnifiedPDRouter(BaseRouter):
                 return result
             except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
-            except Exception:
-                await self._scheduler.report_cb_event(p_instance_id, "failure")
+            except Exception as e:
+                if is_cb_reportable_failure(e):
+                    await self._scheduler.report_cb_event(p_instance_id, "failure")
                 raise
 
         p_task = attempt.register_prefill_task(asyncio.create_task(prefill_task()))

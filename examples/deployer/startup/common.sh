@@ -97,31 +97,29 @@ if [ -n "$ENABLE_GEN_CERT" ] && [ "$ENABLE_GEN_CERT" = "true" ]; then
 fi
 
 setup_motor_log_path() {
-    if [ -n "$MOTOR_LOG_ROOT_PATH" ] && [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        chmod 750 "$MOTOR_LOG_ROOT_PATH"
-        if [ ! -d "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor" ]; then
-            mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
-        fi
+    # Default aligns with env.json motor_common_env.MOTOR_LOG_ROOT_PATH
+    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
+    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
         export MOTOR_LOG_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/motor"
     fi
 }
 
 setup_ascend_work_path() {
-    if [ -n "$MOTOR_LOG_ROOT_PATH" ] && [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        chmod 750 "$MOTOR_LOG_ROOT_PATH"
-        if [ ! -d "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path" ];then
-            mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
-        fi
+    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
+    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
         export ASCEND_WORK_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_work_path"
     fi
 }
 
 setup_ascend_cache_path() {
-    if [ -n "$MOTOR_LOG_ROOT_PATH" ] && [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
-        chmod 750 "$MOTOR_LOG_ROOT_PATH"
-        if [ ! -d "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path" ];then
-            mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
-        fi
+    MOTOR_LOG_ROOT_PATH="${MOTOR_LOG_ROOT_PATH:-/root/ascend/log}"
+    if [ -n "$MODEL_NAME" ] && [ -n "$SERVICE_ID" ]; then
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH"
+        mkdir -p -m 750 "$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
         export ASCEND_CACHE_PATH="$MOTOR_LOG_ROOT_PATH/$MODEL_NAME/$SERVICE_ID/ascend_cache_path"
     fi
 }
@@ -200,24 +198,13 @@ sync_mmc_local_config() {
     fi
     export MMC_LOCAL_CONFIG_PATH="$mmc_dst"
 
+    echo "MMC_LOCAL_CONFIG_PATH=$mmc_dst"
+
     # Replace hardcoded DNS name with the actual K8s service FQDN
     if [ -n "$KVS_MASTER_SERVICE" ]; then
         sed -i "s|tcp://[^:]*:|tcp://${KVS_MASTER_SERVICE}:|g" "$mmc_dst"
     fi
 
-    # Determine mode: env override (from deployer) → hardware default, export for daemon.py
-    local ls_mode="${MMC_LOCAL_SERVICE_MODE:-}"
-    if [ -z "$ls_mode" ]; then
-        local hw_type
-        hw_type="$(_motor_deploy_hardware_type)"
-        case "$hw_type" in
-            800I_A2|800T_A2) ls_mode="inprocess" ;;
-            *) ls_mode="standalone" ;;
-        esac
-    fi
-    export MMC_LOCAL_SERVICE_MODE="$ls_mode"
-
-    echo "MMC_LOCAL_CONFIG_PATH=$MMC_LOCAL_CONFIG_PATH (mode=$ls_mode)"
 }
 
 sync_user_config

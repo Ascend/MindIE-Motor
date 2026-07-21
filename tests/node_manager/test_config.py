@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -20,7 +18,7 @@ from unittest.mock import patch, mock_open, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from motor.config.node_manager import NodeManagerConfig
+from motor.config.node_manager import NodeManagerConfig, SingleContainerNodemanagerConfig
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import ParallelConfig, PDRole
 
@@ -544,6 +542,50 @@ def test_from_json_loads_union_config_for_hybrid():
     assert config.endpoint_config.endpoint_num == 2
 
 
+def _single_container_hybrid_user_config():
+    return {
+        "motor_deploy_config": {
+            "deploy_mode": "single_container",
+            "hardware_type": "800I_A3",
+            "hybrid_instances_num": 2,
+            "single_hybrid_instance_pod_num": 1,
+            "hybrid_pod_npu_num": 4,
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "data_parallel_size": 1,
+                "tensor_parallel_size": 2,
+                "pipeline_parallel_size": 1,
+                "data_parallel_rpc_port": 9000,
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("index", "expected_port_offset", "expected_device_offset", "expected_dp_rpc_port"),
+    [
+        (0, 0, 0, 9000),
+        (1, 1, 2, 9001),
+    ],
+)
+@patch.dict("os.environ", {"ROLE": "union"}, clear=False)
+def test_single_container_union_port_offsets_for_hybrid(
+    index, expected_port_offset, expected_device_offset, expected_dp_rpc_port
+):
+    user_config = _single_container_hybrid_user_config()
+    with patch.dict("os.environ", {"INDEX": str(index)}, clear=False):
+        config = SingleContainerNodemanagerConfig.from_json(user_config)
+
+    assert config.single_container_flag is True
+    assert config.node_manager_port_offset == expected_port_offset
+    assert config.base_port_offset == expected_port_offset * 2
+    assert config.device_offset == expected_device_offset
+    assert config.device_num == 2
+    assert config.dp_rpc_port == expected_dp_rpc_port
+
+
 def test_vllm_handoff_connector_infers_handoff_capability():
     capabilities = NodeManagerConfig._infer_dispatch_capabilities(
         {
@@ -836,3 +878,78 @@ def test_cross_node_pcp_generate_endpoint_ports():
     assert config.endpoint_config.endpoint_num == 1
     assert len(config.endpoint_config.service_ports) == 1
     assert len(config.endpoint_config.mgmt_ports) == 1
+
+
+# --- single_container port path with UCM as MultiConnector store -------------------------
+
+
+def _single_container_user_config(store_connector: dict) -> dict:
+    return {
+        "motor_deploy_config": {
+            "deploy_mode": "single_container",
+            "p_instances_num": 1,
+            "d_instances_num": 1,
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "data_parallel_rpc_port": 9000,
+                "kv_transfer_config": {
+                    "kv_connector": "MultiConnector",
+                    "kv_connector_extra_config": {
+                        "connectors": [
+                            {"kv_connector": "MooncakeConnectorV1", "kv_port": "20001"},
+                            store_connector,
+                        ]
+                    },
+                },
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {"data_parallel_rpc_port": 9000},
+        },
+    }
+
+
+def test_single_container_ucm_store_skips_lookup_rpc_port(monkeypatch):
+    """UCM connectors[1] has no lookup_rpc_port; from_json must not KeyError and leaves it None."""
+    monkeypatch.setenv("ROLE", "prefill")
+    monkeypatch.setenv("INDEX", "0")
+    ucm = {
+        "kv_connector": "UCMConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+        "kv_connector_extra_config": {"ucm_connectors": [{"ucm_connector_name": "UcmPipelineStore"}]},
+    }
+    cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(ucm))
+    assert cfg.lookup_rpc_port is None
+    assert cfg.kv_port == 20001
+
+
+def test_single_container_ascend_store_still_sets_lookup_rpc_port(monkeypatch):
+    """Regression: AscendStore connectors[1] still gets lookup_rpc_port (top-level + offset)."""
+    monkeypatch.setenv("ROLE", "prefill")
+    monkeypatch.setenv("INDEX", "0")
+    ascend = {"kv_connector": "AscendStoreConnector", "lookup_rpc_port": "26000"}
+    cfg = SingleContainerNodemanagerConfig.from_json(_single_container_user_config(ascend))
+    assert cfg.lookup_rpc_port == 26000
+    assert cfg.kv_port == 20001
+
+
+def test_single_container_malformed_multi_connectors_rejected(monkeypatch):
+    """MultiConnector connectors must be a list of >=2 dicts — validated before any indexing."""
+    monkeypatch.setenv("ROLE", "prefill")
+    monkeypatch.setenv("INDEX", "0")
+    ascend = {"kv_connector": "AscendStoreConnector", "lookup_rpc_port": "26000"}
+    bad_connectors_cases = (
+        "not-a-list",
+        [{"kv_connector": "MooncakeConnectorV1", "kv_port": "20001"}],  # too short
+        [{"kv_connector": "MooncakeConnectorV1", "kv_port": "20001"}, "not-a-dict"],
+    )
+    for bad_connectors in bad_connectors_cases:
+        user_config = _single_container_user_config(ascend)
+        kv = user_config["motor_engine_prefill_config"]["engine_config"]["kv_transfer_config"]
+        kv["kv_connector_extra_config"]["connectors"] = bad_connectors
+        with pytest.raises(ValueError, match="connectors"):
+            SingleContainerNodemanagerConfig.from_json(user_config)

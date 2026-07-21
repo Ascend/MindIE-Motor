@@ -2,6 +2,8 @@
 
 MindIE Motor的一键部署工具可以实现“将vllm-ascend社区的部署脚本转换为Motor部署配置”，以降低操作成本并保证与下游推理引擎配置一致。
 
+**同级目录下已准备常用部署模型的配置示例**，例如：[deepseek v4 flash模型配置示例](./deepseek_v4_flash)
+
 ---
 
 ## 目录简介
@@ -119,9 +121,9 @@ examples/deployer/config_tool/
     python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
     # PD混部、Atlas 800I A3 超节点服务器
     python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A3
-    # PD分离、Atlas 850 Server 推理服务器
+    # PD分离、Atlas 850 超节点服务器
     python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A5
-    # PD分离、Atlas 850 Server 推理服务器
+    # PD分离、Atlas 850 超节点服务器
     python3 deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A5
     ```
 

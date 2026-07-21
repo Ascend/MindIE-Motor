@@ -13,7 +13,6 @@ import threading
 import time
 import importlib
 from copy import copy
-from typing import Optional
 import httpx
 from motor.common.resources.dispatch import DispatchProfile, infer_vllm_dispatch_profile_from_config
 from motor.common.http.http_client import AsyncSafeHTTPSClient
@@ -30,6 +29,7 @@ logger = get_logger(__name__)
 _VIRTUAL_REQUEST_TIMEOUT_SEC = 5.0
 _VIRTUAL_WARMUP_TIMEOUT_SEC = 180.0
 _AI_CUBE_SAMPLE_WINDOW_SEC = 5.0
+_SHUTDOWN_JOIN_TIMEOUT_SEC = 5.0
 VIRTUAL_REQUEST_ID_MARKER = "_virtual"
 
 
@@ -61,7 +61,7 @@ class SimInference:
         self.args = args
         self.infer_tls_config = infer_tls_config
         self._status = constants.INIT_STATUS
-        self._health_check_task: Optional[asyncio.Task] = None
+        self._health_check_task: asyncio.Task | None = None
         self._abnormal_status_lock = threading.Lock()
         self._is_abnormal = False
         self.role = role
@@ -85,8 +85,6 @@ class SimInference:
 
         # add _max_failure_count to measure consecutive failure times
         self._failure_count = 0
-        # add flag to control failure counting, initially false
-        self._count_failure_flag = False
         self.sim_sleep = 5
         self._virtual_warmup_done = False
 
@@ -94,7 +92,9 @@ class SimInference:
         self._ai_cube_check_condition = threading.Condition()
         self._ai_cube_check_active = False
         self._ai_cube_sample_done = threading.Event()
+        self._ai_cube_stop_event = threading.Event()
         self._ai_cube_thread = None
+        self._health_check_thread = None
         self._ai_cube_sample_generation = 0
         self._ai_cube_requested_generation = 0
         self._ai_cube_completed_generation = 0
@@ -116,6 +116,9 @@ class SimInference:
                 "Virtual inference is disabled on DP rank %s (only DP0 performs virtual inference)",
                 endpoint_config.dp_rank,
             )
+        if getattr(endpoint_config, "engine_type", "vllm") == "sglang":
+            health_check_config.enable_virtual_inference = False
+            logger.info("Virtual inference is disabled for SGLang engine (not supported)")
         return health_check_config
 
     @classmethod
@@ -215,6 +218,7 @@ class SimInference:
 
         # Patch vLLM metrics for virtual inference only (filter per-request metrics of virtual requests)
         self.patch_vllm_metrics()
+        self._ai_cube_stop_event.clear()
 
         if not self._health_check_task or self._health_check_task.done():
 
@@ -232,11 +236,12 @@ class SimInference:
                 except Exception as e:
                     logger.error("Health check task error: %s", e)
                 finally:
+                    self._close_http_client_on_loop(loop)
                     if not loop.is_closed():
                         loop.close()
 
-            thread = threading.Thread(target=_run_in_thread, daemon=True)
-            thread.start()
+            self._health_check_thread = threading.Thread(target=_run_in_thread, daemon=True)
+            self._health_check_thread.start()
             logger.info(
                 "Health check task started, first virtual request warmup timeout is %ss, "
                 "then interval is 5s by default (20s when AI Cube peak >= 80%%), "
@@ -305,10 +310,13 @@ class SimInference:
             return 0, False
 
     def check_ai_cube_usage_worker(self):
-        while True:
+        while not self._ai_cube_stop_event.is_set():
             with self._ai_cube_check_condition:
-                while not self._ai_cube_check_active:
-                    self._ai_cube_check_condition.wait()
+                while not self._ai_cube_check_active and not self._ai_cube_stop_event.is_set():
+                    self._ai_cube_check_condition.wait(timeout=1.0)
+
+                if self._ai_cube_stop_event.is_set():
+                    break
 
                 self._ai_cube_check_active = False
 
@@ -407,7 +415,7 @@ class SimInference:
         if not await self._run_virtual_warmup():
             return
         self.sim_sleep = 5
-        while self._status == constants.NORMAL_STATUS:
+        while self._status == constants.NORMAL_STATUS and not self.is_abnormal():
             try:
                 timeout = httpx.Timeout(_VIRTUAL_REQUEST_TIMEOUT_SEC)
                 generation = self._trigger_ai_cube_sample()
@@ -459,26 +467,21 @@ class SimInference:
                         max_usage,
                         self.npu_usage_threshold,
                     )
-                    if self._count_failure_flag:
-                        self._failure_count += 1
-                        logger.warning(
-                            "Current failure count: %s/%s",
-                            self._failure_count,
-                            self._max_failure_count,
-                        )
-                        if self._failure_count >= self._max_failure_count:
-                            logger.warning("Reach maximum failure count, set abnormal status")
-                            self.set_abnormal_status()
+                    self._failure_count += 1
+                    logger.warning(
+                        "Current failure count: %s/%s",
+                        self._failure_count,
+                        self._max_failure_count,
+                    )
+                    if self._failure_count >= self._max_failure_count:
+                        logger.warning("Reach maximum failure count, set abnormal status")
+                        self.set_abnormal_status()
                 elif not sim_inference_success and not ai_cube_available:
                     logger.warning("Virtual request failed but AI Cube usage unavailable, skip failure count")
                 elif sim_inference_success or (ai_cube_available and max_usage >= self.npu_usage_threshold):
-                    self._count_failure_flag = True
-                    logger.debug("count_failure_flag set to True")
                     if self._failure_count > 0:
                         logger.info("Resetting failure count from %s to 0", self._failure_count)
                         self._failure_count = 0
-                    if self.is_abnormal():
-                        self.reset_abnormal_status()
             except Exception as e:
                 logger.error("Error in health check loop: %s", e)
                 self.set_abnormal_status()
@@ -503,9 +506,34 @@ class SimInference:
             self._is_abnormal = False
         logger.info("Abnormal status flag set to False")
 
+    def _close_http_client_on_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        if self._client is None or self._client.is_closed:
+            return
+        try:
+            loop.run_until_complete(self._client.aclose())
+        except Exception as e:
+            logger.error("Failed to close virtual inference HTTP client: %s", e)
+        finally:
+            self._client = None
+
     def stop_health_check(self):
         """Stop health check task"""
+        self._ai_cube_stop_event.set()
+        with self._ai_cube_check_condition:
+            self._ai_cube_check_condition.notify_all()
+
         if self._health_check_task and not self._health_check_task.done():
             self._health_check_task.cancel()
             logger.info("Health check task stopped")
-        self.reset_abnormal_status()
+
+        if self._health_check_thread and self._health_check_thread.is_alive():
+            self._health_check_thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_SEC)
+
+        if self._ai_cube_thread and self._ai_cube_thread.is_alive():
+            self._ai_cube_thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_SEC)
+
+        if self._client is not None and not self._client.is_closed:
+            logger.warning(
+                "Virtual inference HTTP client still open after health check thread join; "
+                "client should be closed by the health check thread"
+            )

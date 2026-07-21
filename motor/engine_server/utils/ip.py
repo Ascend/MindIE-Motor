@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -18,9 +16,6 @@ def ip_valid_check(ip_str: str) -> None:
         parsed_ip = ipaddress.ip_address(ip_str)
     except ValueError as e:
         raise ValueError(f"{ip_str} parse to ip failed") from e
-
-    if parsed_ip.is_unspecified:
-        raise ValueError(f"{ip_str} is all zeros ip")
 
     if parsed_ip.is_multicast:
         raise ValueError(f"{ip_str} is multicast ip")

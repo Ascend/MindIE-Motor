@@ -31,18 +31,18 @@ PD 分离模式下，Coordinator 可能将 Prefill 与 Decode 分派至不同 ro
 | 实例停止 | Controller → Node Manager    | `POST /node-manager/stop`      | Controller 下发停止指令（含故障恢复场景）  |
 | 引擎停止 | Node Manager → Engine Server | `Daemon.stop` SIGKILL          | Node Manager 对引擎子进程发送 SIGKILL      |
 
-Node Manager 经 `engine_server_api_client` 对 `{ip}:{mgmt_port}` 发起 **`GET /status`**（TLS 取自 `motor_nodemanger_config.mgmt_tls_config`）。mgmt `/status` 综合推理面 `/health` 与可选虚推结果；虚推由 `health_check_config.enable_virtual_inference` 控制，默认关闭，机制见 [虚推健康探测](../../user_guide/features/sim_inference.md)，字段见 [配置参考 health_check_config](../../user_guide/deployment/k8s/config_reference.md#health_check_config)。
+Node Manager 经 `engine_server_api_client` 对 `{ip}:{mgmt_port}` 发起 **`GET /status`**（TLS 取自 `motor_nodemanger_config.mgmt_tls_config`）。mgmt `/status` 综合推理面 `/health` 与可选虚推结果；虚推由 `health_check_config.enable_virtual_inference` 控制，默认关闭，机制见 [虚推健康探测](../../user_guide/features/sim_inference.md)，字段见 [配置参考 health_check_config](../../user_guide/configuration/config_reference.md#health_check_config)。
 
 ## 环境准备
 
-- `--config-path` 指向包含 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 `user_config.json`（与 Node Manager 挂载路径一致，见[配置文件说明](../../user_guide/deployment/k8s/config_reference.md)）。
+- `--config-path` 指向包含 `motor_engine_prefill_config` / `motor_engine_decode_config` 的 `user_config.json`（与 Node Manager 挂载路径一致，见[配置文件说明](../../user_guide/configuration/config_reference.md)）。
 - Ascend NPU 驱动/HDK、模型权重路径等运行环境要求见 [环境准备](../../user_guide/environment_preparation.md)。
 
 ## 配置说明
 
 - **引擎配置块**：`motor_engine_prefill_config` / `motor_engine_decode_config`（含可选 `health_check_config`）。
 - **节点侧交叉项**：`motor_nodemanger_config`（如 mgmt TLS，供 Node Manager 探测 Engine Server mgmt 端口）。
-- **字段权威说明**：[配置参考](../../user_guide/deployment/k8s/config_reference.md) 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 等章节。
+- **字段权威说明**：[配置参考](../../user_guide/configuration/config_reference.md) 中 `motor_engine_prefill_config` / `motor_engine_decode_config` 等章节。
 - **CLI 侧定义**：`motor/config/endpoint.py` 中 `EndpointConfig` 字段与校验逻辑。
 
 ## 使用样例（本地调试）
@@ -76,7 +76,7 @@ engine_server --dp-rank 0 --instance-id 1 --role prefill \
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `--node-rank` | int | 跨节点 PCP 节点序号，由 Controller 按注册顺序分配；传递规则见 [Node Manager 组件文档](./node_manager.md#跨节点-pcp-启动参数)。 |
+| `--node-rank` | int | 跨节点 PCP 节点序号，由 Controller 按注册顺序分配；传递规则见 [Node Manager 组件文档](./node_manager.md#跨节点-pcp)。 |
 | `--kv-port` | int | 单容器模式下 KV 相关通信端口（`Daemon.pull_engine` 在 `single_container_flag` 时追加）。 |
 | `--dp-rpc-port` | int | 单容器模式下 DP RPC 端口（同上）。 |
 | `--lookup-rpc-port` | int | 可选 lookup RPC 端口（配置存在时追加）。 |

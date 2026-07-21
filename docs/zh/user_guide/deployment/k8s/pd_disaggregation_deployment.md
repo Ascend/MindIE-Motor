@@ -18,7 +18,19 @@
    - **方式一**：下载官方完整的 PyMotor 镜像
      进入 [昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，搜索 `motor`，按设备型号选择对应 PyMotor 镜像。
    - **方式二**：在已有镜像中安装 PyMotor
-     基础镜像已安装 CANN、vLLM、vllm-ascend 等组件，可参考 [从 vllm-ascend 构建 Motor 镜像](../../../developer_guide/build_motor_image_from_vllm_ascend.md) 额外安装 PyMotor。
+     基础镜像已安装 CANN、vLLM、vllm-ascend 等组件，可参考 [从 vllm-ascend 构建 MindIE Motor 镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装 PyMotor。
+
+   获取镜像后，请使用以下命令将镜像加载至服务器：
+
+     ```bash
+     docker load -i xxxx.tar
+     ```
+
+   待镜像导入后，请使用以下命令查看docker镜像是否存在
+
+     ```bash
+     docker images
+     ```
 
 3. **准备服务启动脚本**
 
@@ -170,7 +182,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
   上述配置表示 60 秒内最多处理 10000 条请求。
 
 - **关闭**：删除 `rate_limit_config` 配置块，或将 `enable_rate_limit` 设为 `false`。
-- **注意**：字段说明见 [config_reference — motor_coordinator_config](./config_reference.md#motor_coordinator_config)。
+- **注意**：字段说明见 [config_reference — motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config)。
 
 <a id="virtual-inference-health-check"></a>
 

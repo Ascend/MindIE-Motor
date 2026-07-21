@@ -108,10 +108,27 @@ class EngineConfig:
 class HealthCheckConfig:
     """Configuration for health check"""
 
-    health_collector_timeout: int = 2
+    health_collector_timeout: int = 5
+    # Max attempts for /health probe when request times out (timeout-only retry).
+    health_collector_timeout_retry_attempts: int = 3
     npu_usage_threshold: int = 3
     enable_virtual_inference: bool = False
     max_failure_count: int = 6
+
+    @staticmethod
+    def _as_positive_int(name: str, value: Any) -> int:
+        # bool is a subclass of int; reject it to avoid true/false silently becoming 1/0.
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer, got {value!r}")
+        if value < 1:
+            raise ValueError(f"{name} must be >= 1, got {value}")
+        return value
+
+    def __post_init__(self):
+        self.health_collector_timeout = self._as_positive_int("health_collector_timeout", self.health_collector_timeout)
+        self.health_collector_timeout_retry_attempts = self._as_positive_int(
+            "health_collector_timeout_retry_attempts", self.health_collector_timeout_retry_attempts
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HealthCheckConfig":
@@ -331,19 +348,33 @@ class EndpointConfig:
         kv_config = self.deploy_config.engine_config.get(constants.KV_TRANSFER_CONFIG, {})
         if kv_config:
             if kv_config[constants.KV_CONNECTOR] == constants.MULTI_CONNECTOR:
-                connectors = kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.CONNECTORS]
+                extra_config = kv_config.get(constants.KV_CONNECTOR_EXTRA_CONFIG)
+                connectors = extra_config.get(constants.CONNECTORS) if isinstance(extra_config, dict) else None
+                if not isinstance(connectors, list) or len(connectors) < 2:
+                    raise ValueError(
+                        f"{constants.KV_TRANSFER_CONFIG}.{constants.KV_CONNECTOR_EXTRA_CONFIG}"
+                        f".{constants.CONNECTORS} must be a list of at least 2 connectors "
+                        f"(transport first, store second) when {constants.KV_CONNECTOR} is "
+                        f"{constants.MULTI_CONNECTOR}"
+                    )
+                if not all(isinstance(connector, dict) for connector in connectors[:2]):
+                    raise ValueError(
+                        f"{constants.KV_TRANSFER_CONFIG}.{constants.KV_CONNECTOR_EXTRA_CONFIG}"
+                        f".{constants.CONNECTORS} entries must be objects (connector configs)"
+                    )
                 if self.kv_port is not None:
                     connectors[0][constants.KV_PORT] = str(self.kv_port)
-                if self.lookup_rpc_port is not None:
-                    connectors[1][constants.KV_CONNECTOR_EXTRA_CONFIG][constants.LOOKUP_RPC_PORT] = str(
-                        self.lookup_rpc_port
-                    )
+                store = connectors[1]
+                # UCM store has no lookup_rpc_port; writing one would pollute its inline config.
+                # Skip only UCM; other stores keep the original direct write unchanged.
+                if store.get(constants.KV_CONNECTOR) != constants.UCM_CONNECTOR and self.lookup_rpc_port is not None:
+                    store[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.LOOKUP_RPC_PORT] = str(self.lookup_rpc_port)
             else:
                 if self.kv_port is not None:
                     kv_config[constants.KV_PORT] = str(self.kv_port)
         if self.role == "encode" and self.dp_rpc_port is not None:
             self.deploy_config.model_config.encode_parallel_config.dp_rpc_port = self.dp_rpc_port
-        if self.role == "prefill" and self.dp_rpc_port is not None:
+        if self.role in ("prefill", "union") and self.dp_rpc_port is not None:
             self.deploy_config.model_config.prefill_parallel_config.dp_rpc_port = self.dp_rpc_port
         if self.role == "decode" and self.dp_rpc_port is not None:
             self.deploy_config.model_config.decode_parallel_config.dp_rpc_port = self.dp_rpc_port

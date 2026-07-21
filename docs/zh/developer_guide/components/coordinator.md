@@ -28,11 +28,11 @@ Coordinator 进程入口为 `motor/coordinator/main.py`：异步 `main()` 中构
 ## 环境准备
 
 - 配置来源：`CoordinatorConfig.from_json()`，通常来自挂载的 `user_config.json` 中 **`motor_coordinator_config`** 等合并结果，字段定义见 `motor/config/coordinator.py`。
-- 部署与端口约定见 [配置参考：motor_coordinator_config](../../user_guide/deployment/k8s/config_reference.md) 与 [接口说明](../../user_guide/api/README.md)。
+- 部署与端口约定见 [配置参考：motor_coordinator_config](../../user_guide/configuration/config_reference.md) 与 [接口说明](../../user_guide/api/README.md)。
 
 ## 配置说明
 
-请以 [配置参考](../../user_guide/deployment/k8s/config_reference.md) 中 **`motor_coordinator_config`** 章节为权威字段说明。代码中与 Daemon 强相关的包括：
+请以 [配置参考](../../user_guide/configuration/config_reference.md) 中 **`motor_coordinator_config`** 章节为权威字段说明。代码中与 Daemon 强相关的包括：
 
 - `standby_config.enable_master_standby`：是否走主备与 Infer 启停分支。
 - `scheduler_config`：`deploy_mode`、`scheduler_type` 等，影响推理路由（见 [PD 分离](../../design/pd_disaggregation.md)）。

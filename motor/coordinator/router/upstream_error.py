@@ -73,6 +73,22 @@ class UpstreamHTTPError(Exception):
         )
 
 
+def is_cb_reportable_failure(error: BaseException) -> bool:
+    """Return True if the error is an instance-side fault that should count toward the circuit breaker.
+
+    HTTP 4xx errors are client errors (e.g. input too long → 400, bad params → 422) and must NOT
+    penalize the instance.  HTTP 5xx errors indicate instance health issues.
+    Connection-level errors always indicate instance issues.
+
+    The engine_server (serving_error.py) is the single source of truth for classifying exceptions
+    as client errors vs engine faults: it maps all known request-validation errors to 4xx before
+    they reach the coordinator.  The coordinator therefore only needs to inspect the status code.
+    """
+    if isinstance(error, UpstreamHTTPError):
+        return error.status_code >= 500
+    return True
+
+
 def is_retryable_upstream_error(error: BaseException) -> bool:
     if isinstance(error, UpstreamHTTPError):
         return error.status_code in RETRYABLE_UPSTREAM_STATUS_CODES

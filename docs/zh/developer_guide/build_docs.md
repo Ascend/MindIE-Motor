@@ -27,8 +27,8 @@ MindIE Motor/
 │       ├── index.md              # 站点首页
 │       ├── assets/               # 主题引用的静态资源（如 logo、favicon，见 mkdocs.yml）
 │       ├── user_guide/           # 用户指南等 Markdown 正文目录（按需分子目录）
-│       ├── developer_guide/
-│       ├── api_reference/
+│       ├── developer_guide/      # 开发者指南
+│       ├── design/               # 设计文档
 │       └── ...
 └── site/                         # mkdocs build 默认输出目录（通常勿提交版本库）
 ```

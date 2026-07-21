@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -126,7 +124,8 @@ def test_engine_config_set():
 def test_health_check_config_defaults():
     """Test HealthCheckConfig default values"""
     config = HealthCheckConfig()
-    assert config.health_collector_timeout == 2
+    assert config.health_collector_timeout == 5
+    assert config.health_collector_timeout_retry_attempts == 3
     assert config.npu_usage_threshold == 3
     assert config.enable_virtual_inference is False
 
@@ -134,14 +133,41 @@ def test_health_check_config_defaults():
 def test_health_check_config_from_dict():
     """Test HealthCheckConfig.from_dict"""
     data = {
-        "health_collector_timeout": 5,
+        "health_collector_timeout": 10,
+        "health_collector_timeout_retry_attempts": 5,
         "npu_usage_threshold": 20,
         "enable_virtual_inference": False,
     }
     config = HealthCheckConfig.from_dict(data)
-    assert config.health_collector_timeout == 5
+    assert config.health_collector_timeout == 10
+    assert config.health_collector_timeout_retry_attempts == 5
     assert config.npu_usage_threshold == 20
     assert config.enable_virtual_inference is False
+
+
+def test_health_check_config_rejects_non_integer_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": "abc"})
+
+
+def test_health_check_config_rejects_bool_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": True})
+
+
+def test_health_check_config_rejects_bool_timeout():
+    with pytest.raises(ValueError, match="health_collector_timeout must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout": False})
+
+
+def test_health_check_config_rejects_non_positive_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be >= 1"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": 0})
+
+
+def test_health_check_config_rejects_numeric_string_retry_attempts():
+    with pytest.raises(ValueError, match="health_collector_timeout_retry_attempts must be an integer"):
+        HealthCheckConfig.from_dict({"health_collector_timeout_retry_attempts": "4"})
 
 
 # --- DeployConfig tests ---
@@ -315,10 +341,10 @@ def test_deploy_config_load_with_role_encode(encode_engine_config_file):
 
 def test_deploy_config_load_with_health_check(simple_engine_config_file):
     """Test DeployConfig.load includes health_check_config"""
-    with open(simple_engine_config_file) as f:
+    with open(simple_engine_config_file, encoding="utf-8") as f:
         data = json.load(f)
     data["health_check_config"] = {"npu_usage_threshold": 15, "enable_virtual_inference": False}
-    with open(simple_engine_config_file, "w") as f:
+    with open(simple_engine_config_file, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
     config = DeployConfig.load(simple_engine_config_file)
@@ -608,13 +634,13 @@ def test_endpoint_config_load_deploy_config(valid_config_file_for_endpoint):
 
 def test_endpoint_config_load_deploy_config_updates_kv_port(valid_config_file_for_endpoint):
     """Test load_deploy_config updates kv_port in kv_transfer_config"""
-    with open(valid_config_file_for_endpoint) as f:
+    with open(valid_config_file_for_endpoint, encoding="utf-8") as f:
         data = json.load(f)
     data["engine_config"][constants.KV_TRANSFER_CONFIG] = {
         constants.KV_CONNECTOR: "MooncakeConnector",
         constants.KV_PORT: "20001",
     }
-    with open(valid_config_file_for_endpoint, "w") as f:
+    with open(valid_config_file_for_endpoint, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
     config = EndpointConfig(
@@ -631,6 +657,37 @@ def test_endpoint_config_load_deploy_config_updates_kv_port(valid_config_file_fo
     assert kv_config[constants.KV_PORT] == "30001"
 
 
+def test_load_deploy_config_rejects_malformed_multi_connectors(valid_config_file_for_endpoint):
+    """MultiConnector connectors must be a list of >=2 dicts — validated before any indexing."""
+    bad_extras = (
+        None,  # kv_connector_extra_config missing entirely
+        {},  # connectors key missing
+        {constants.CONNECTORS: "not-a-list"},
+        {constants.CONNECTORS: [{constants.KV_CONNECTOR: "MooncakeConnectorV1"}]},  # too short
+        {constants.CONNECTORS: [{}, "not-a-dict"]},
+    )
+    for bad_extra in bad_extras:
+        with open(valid_config_file_for_endpoint) as f:
+            data = json.load(f)
+        kv = {constants.KV_CONNECTOR: constants.MULTI_CONNECTOR}
+        if bad_extra is not None:
+            kv[constants.KV_CONNECTOR_EXTRA_CONFIG] = bad_extra
+        data["engine_config"][constants.KV_TRANSFER_CONFIG] = kv
+        with open(valid_config_file_for_endpoint, "w") as f:
+            json.dump(data, f)
+
+        config = EndpointConfig(
+            host="127.0.0.1",
+            role="union",
+            port=8000,
+            mgmt_port=9001,
+            config_path=valid_config_file_for_endpoint,
+            kv_port=30001,
+        )
+        with pytest.raises(ValueError, match="connectors"):
+            config.load_deploy_config()
+
+
 def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_prefill(valid_config_file_for_endpoint):
     """Test load_deploy_config updates dp_rpc_port for prefill role"""
     config = EndpointConfig(
@@ -644,6 +701,21 @@ def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_prefill(valid_co
     config.deploy_config = DeployConfig.load(valid_config_file_for_endpoint)
     config.load_deploy_config()
     assert config.deploy_config.model_config.prefill_parallel_config.dp_rpc_port == 9010
+
+
+def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_union(valid_config_file_for_endpoint):
+    """Test load_deploy_config updates dp_rpc_port for union role."""
+    config = EndpointConfig(
+        host="127.0.0.1",
+        role="union",
+        port=8000,
+        mgmt_port=9001,
+        config_path=valid_config_file_for_endpoint,
+        dp_rpc_port=9011,
+    )
+    config.deploy_config = DeployConfig.load(valid_config_file_for_endpoint)
+    config.load_deploy_config()
+    assert config.deploy_config.model_config.prefill_parallel_config.dp_rpc_port == 9011
 
 
 def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_decode(valid_config_file_for_endpoint):

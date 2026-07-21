@@ -28,6 +28,7 @@ D_POD_NPU_NUM = "d_pod_npu_num"
 ASCEND_910_NPU_NUM = "huawei.com/Ascend910"
 ASCEND_950_NPU_NUM = "huawei.com/npu"
 RING_CONTROLLER_ATLAS_LABEL = "ring-controller.atlas"
+INFERSERVICE_ID_LABEL = "inferserviceid"
 HUAWEI_SCHEDULE_POLICY_ANNOTATION = "huawei.com/schedule_policy"
 A5_SCHEDULE_POLICY_BY_ACCELERATOR_TYPE = {
     "350-Atlas-8": "chip1-node8",
@@ -237,6 +238,48 @@ TARGET_PORT = "targetPort"
 MOUNT_PATH = "mountPath"
 DEFAULT_WEIGHT_MOUNT_PATH = "/mnt/weight"
 JOB_NAME = "job-name"
+
+# Engine pod storage: a dynamically-provisioned PVC (motor_deploy_config.storage) mounted into
+# engine pods, plus an independent /dev/shm sizing knob (motor_deploy_config.dshm_size).
+# Used by UCM storage_backends but not UCM-specific.
+# k8s volume primitives
+PERSISTENT_VOLUME_CLAIM = "persistentVolumeClaim"
+CLAIM_NAME = "claimName"
+EMPTY_DIR = "emptyDir"
+SIZE_LIMIT = "sizeLimit"
+STORAGE_CLASS_NAME = "storageClassName"  # k8s PVC field
+ACCESS_MODES = "accessModes"  # k8s PVC field
+DSHM_VOLUME = "dshm"
+# motor_deploy_config.storage sub-keys. Each entry MUST declare a type:
+#   "pvc"      — a PVC: dynamically provisioned via storage_class_name, or an existing claim
+#                referenced by claim_name (mounted as-is; no PVC object is generated)
+#   "nfs"      — k8s-native NFS volume (server+path; no PVC / StorageClass required)
+#   "hostpath" — node-local hostPath (path; cross-node sharing only if that path is itself a
+#                shared mount, e.g. an identically-mounted NFS export, on every node)
+# Volume names (and generated-PVC names) are always auto-derived (mindie-motor-store-<i>) —
+# not user-configurable; claim_name entries mount the named existing claim instead.
+STORAGE = "storage"
+STORAGE_ENABLE = "enable"
+STORAGE_TYPE = "type"
+STORAGE_TYPE_PVC = "pvc"
+STORAGE_TYPE_NFS = "nfs"
+STORAGE_TYPE_HOSTPATH = "hostpath"
+STORAGE_CLASS = "storage_class_name"
+STORAGE_CLAIM_NAME = "claim_name"
+STORAGE_SIZE = "size"
+STORAGE_MOUNT_PATH = "mount_path"
+STORAGE_ACCESS_MODE = "access_mode"
+NFS_SERVER = "server"
+STORAGE_HOST_PATH_TYPE = "host_path_type"
+STORAGE_READ_ONLY = "read_only"
+K8S_READ_ONLY = "readOnly"
+# motor_deploy_config.dshm_size — independent /dev/shm emptyDir sizeLimit knob
+DSHM_SIZE = "dshm_size"
+# defaults (volume name == PVC name, auto-derived per entry index)
+DEFAULT_STORAGE_NAME = "mindie-motor-store"
+DEFAULT_STORAGE_MOUNT_PATH = "/mnt/store"
+DEFAULT_STORAGE_SIZE = "200Gi"
+DEFAULT_STORAGE_ACCESS_MODE = "ReadWriteMany"
 ROLES = "roles"
 SERVICES = "services"
 KIND_KEY = "kind"
