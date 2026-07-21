@@ -13,3 +13,11 @@ NODE_FAULT = "Node fault"
 CLIENT_DISCONNECT = "Client disconnected"
 DISPATCH_ABORT = "Cancelled by dispatch"
 SCOPE_ABORT = "Cancelled via cancel scope"
+
+
+class RequestCancelledError(Exception):
+    """Expected request cancellation (client disconnect, dispatch abort, etc.)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"Request cancelled because of {reason}")

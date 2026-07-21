@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, Response
 
 import motor.common.utils.error as cancel_error
+from motor.common.utils.error import RequestCancelledError
 from motor.common.resources.dispatch import (
     DispatchPlan,
     DispatchStopReason,
@@ -520,7 +521,7 @@ class UnifiedPDRouter(BaseRouter):
             reason_str, retry = check_cancel_error(error)
             reason = self._cancel_stop_reason(reason_str)
             retry = retry and allow_retry and (attempt_index < max_retry - 1)
-            error = RuntimeError(f"Unified PD cancelled because of {reason_str}")
+            error = RequestCancelledError(reason_str)
             label = f"Unified PD cancelled {attempt_index}/{max_retry}"
         else:
             reason = DispatchStopReason.PEER_FAILED

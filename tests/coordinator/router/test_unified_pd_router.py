@@ -20,6 +20,7 @@ from starlette.requests import ClientDisconnect
 
 import motor.common.utils.error as cancel_error
 from motor.common.http import HTTPClientPool
+from motor.common.logger.logger import _resolve_logger_name
 from motor.common.resources.dispatch import (
     DispatchPlan,
     DispatchStopReason,
@@ -47,6 +48,7 @@ from motor.coordinator.router.dispatch_capability import (
     DispatchPlanNotSupported,
     select_dispatch_plan_for_pair,
 )
+from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
@@ -374,6 +376,48 @@ async def _invoke_asgi_response(response) -> list[dict]:
 )
 def test_unified_pd_cancel_stop_reason_mapping(reason, expected):
     assert UnifiedPDRouter._cancel_stop_reason(reason) == expected
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_process_response_error_wraps_cancelled_as_request_cancelled_error(
+    monkeypatch,
+    caplog,
+):
+    import logging
+
+    caplog.set_level(
+        logging.WARNING,
+        logger=_resolve_logger_name("motor.coordinator.router.strategies.unified_pd"),
+    )
+
+    req_info = RequestInfo(
+        req_id="root-cancel-wrap",
+        req_data={"model": "m", "prompt": "hi"},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=3,
+    )
+    config = _config()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(),
+        request_manager=RequestManager(config),
+    )
+    monkeypatch.setattr(router, "_stop_attempt", AsyncMock(return_value=None))
+
+    attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+    error, retry = await router._process_response_error(
+        attempt,
+        0,
+        asyncio.CancelledError(cancel_error.CLIENT_DISCONNECT),
+    )
+
+    assert isinstance(error, RequestCancelledError)
+    assert error.reason == cancel_error.CLIENT_DISCONNECT
+    assert retry is False
+    assert "Unified PD cancelled" in caplog.text
+    assert cancel_error.CLIENT_DISCONNECT in caplog.text
 
 
 def test_dispatch_plan_prefers_explicit_capability_over_engine_fallback():
