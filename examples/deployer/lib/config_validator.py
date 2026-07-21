@@ -16,6 +16,7 @@ import lib.constant as C
 from lib.utils import logger, load_yaml
 from lib.generator.infer_service import get_infer_role, _find_infer_service_set_doc
 from lib.generator.k8s_utils import get_accelerator_type_from_cluster, get_deploy_mode_from_config
+from lib.update_config_whitelist import collect_changed_paths
 
 
 PD_SEPARATION_DEPLOY_KEYS = {
@@ -92,11 +93,17 @@ def strip_instance_nums(config_dict):
 
 
 def validate_only_instance_changed(current_config, baseline_config):
-    if strip_instance_nums(current_config) != strip_instance_nums(baseline_config):
-        raise ValueError(
-            "user_config changes detected beyond instance numbers. "
+    current_stripped = strip_instance_nums(current_config)
+    baseline_stripped = strip_instance_nums(baseline_config)
+
+    changed_paths = collect_changed_paths(current_stripped, baseline_stripped)
+
+    if changed_paths:
+        logger.warning(
+            "user_config changes detected beyond instance numbers: %s. "
             "Only e_instances_num/p_instances_num/d_instances_num/hybrid_instances_num "
-            "can be modified for scaling."
+            "can be modified for scaling.",
+            ", ".join(sorted(changed_paths)),
         )
 
 
