@@ -151,7 +151,6 @@ KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
 @dataclass
 class SchedulerConfig:
     scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
-    enable_pd_separation_fallback_to_hybrid: bool = True
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
     endpoint_instance_score_weight: float = 0.05
