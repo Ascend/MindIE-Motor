@@ -9,8 +9,6 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import json
-import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -19,19 +17,10 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from motor.common.logger import get_logger
-from motor.common.http.security_utils import validate_file_security
 
 from .rate_limiter import SimpleRateLimiter
 
 logger = get_logger(__name__)
-
-# Environment variable name constants
-ENV_RATE_LIMIT_ENABLED = "RATE_LIMIT_ENABLED"
-ENV_RATE_LIMIT_MAX_REQUESTS = "RATE_LIMIT_MAX_REQUESTS"
-ENV_RATE_LIMIT_WINDOW_SIZE = "RATE_LIMIT_WINDOW_SIZE"
-ENV_RATE_LIMIT_SCOPE = "RATE_LIMIT_SCOPE"
-ENV_RATE_LIMIT_SKIP_PATHS = "RATE_LIMIT_SKIP_PATHS"
-ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE = "RATE_LIMIT_MAX_REQUEST_BODY_SIZE"
 
 
 @dataclass
@@ -58,85 +47,6 @@ class SimpleRateLimitConfig:
                 "/favicon.ico",
                 "/startup",
             ]
-
-
-def load_rate_limit_config(config_file: str | None = None) -> SimpleRateLimitConfig:
-    """
-    load rate limiting config
-
-    Args:
-        config_file: Configuration file path, if None use default configuration
-
-    Returns:
-        SimpleRateLimitConfig: Rate limiting configuration
-    """
-    config = SimpleRateLimitConfig()
-
-    # load from config file first
-    if config_file and os.path.exists(config_file):
-        try:
-            validate_file_security(config_file)
-
-            with open(config_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            for key, value in data.items():
-                if hasattr(config, key):
-                    setattr(config, key, value)
-
-            logger.info(f"Loaded rate limiting configuration from file: {config_file}")
-
-        except Exception as e:
-            logger.error(f"Failed to load configuration file: {e}")
-            logger.info("Using default configuration")
-    else:
-        logger.info("Using default rate limiting configuration")
-
-    # get from env first and override (if any)
-    # RATE_LIMIT_ENABLED（enable）
-    if os.getenv(ENV_RATE_LIMIT_ENABLED) is not None:
-        config.enabled = os.getenv(ENV_RATE_LIMIT_ENABLED, "true").lower() in ("true", "1", "yes")
-
-    # RATE_LIMIT_MAX_REQUESTS（maximum number of requests）
-    if os.getenv(ENV_RATE_LIMIT_MAX_REQUESTS) is not None:
-        try:
-            config.max_requests = int(os.getenv(ENV_RATE_LIMIT_MAX_REQUESTS))
-        except (ValueError, TypeError):
-            env_value = os.getenv(ENV_RATE_LIMIT_MAX_REQUESTS)
-            logger.warning(f"Invalid {ENV_RATE_LIMIT_MAX_REQUESTS} value: {env_value}, using default")
-
-    # RATE_LIMIT_WINDOW_SIZE（time window size）
-    if os.getenv(ENV_RATE_LIMIT_WINDOW_SIZE) is not None:
-        try:
-            config.window_size = int(os.getenv(ENV_RATE_LIMIT_WINDOW_SIZE))
-        except (ValueError, TypeError):
-            env_value = os.getenv(ENV_RATE_LIMIT_WINDOW_SIZE)
-            logger.warning(f"Invalid {ENV_RATE_LIMIT_WINDOW_SIZE} value: {env_value}, using default")
-
-    # RATE_LIMIT_SCOPE（scope）
-    if os.getenv(ENV_RATE_LIMIT_SCOPE) is not None:
-        config.scope = os.getenv(ENV_RATE_LIMIT_SCOPE)
-
-    # RATE_LIMIT_SKIP_PATHS (set of skip paths)
-    if os.getenv(ENV_RATE_LIMIT_SKIP_PATHS) is not None:
-        skip_paths_str = os.getenv(ENV_RATE_LIMIT_SKIP_PATHS, "")
-        if skip_paths_str:
-            config.skip_paths = [path.strip() for path in skip_paths_str.split(",") if path.strip()]
-
-    # RATE_LIMIT_MAX_REQUEST_BODY_SIZE (maximum request body size in bytes)
-    if os.getenv(ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE) is not None:
-        try:
-            config.max_request_body_size = int(os.getenv(ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE))
-        except (ValueError, TypeError):
-            env_value = os.getenv(ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE)
-            logger.warning(f"Invalid {ENV_RATE_LIMIT_MAX_REQUEST_BODY_SIZE} value: {env_value}, using default")
-
-    logger.info(
-        f"Rate limit config: enabled={config.enabled}, "
-        f"max_requests={config.max_requests}, window_size={config.window_size}s"
-    )
-
-    return config
 
 
 @dataclass
@@ -280,7 +190,7 @@ class SimpleRateLimitMiddleware:
         max_body_size = self._config_holder.max_request_body_size
         if max_body_size > 0:
             content_length = self._get_content_length(scope)
-            if content_length == -1 or content_length > max_body_size:
+            if content_length > max_body_size:
                 self.stats["body_size_rejected_requests"] += 1
                 logger.warning(f"Request body size too large: {content_length} > {max_body_size}, path={path}")
                 error_response = {

@@ -128,7 +128,7 @@ async def test_hot_reload_max_requests_takes_effect():
 
     app = FastAPI()
 
-    @app.get("/v1/test")
+    @app.post("/v1/test")
     async def test_endpoint():
         return {"status": "ok"}
 
@@ -142,24 +142,24 @@ async def test_hot_reload_max_requests_takes_effect():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Send 3 requests, all allowed (initial max_requests=3)
         for _ in range(3):
-            resp = await client.get("/v1/test")
+            resp = await client.post("/v1/test", json={"n": _})
             assert resp.status_code == 200
 
         # The 4th request should be rate limited
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 4})
         assert resp.status_code == 429
 
         # Hot reload: increase max_requests to 5
         limiter.update_config(max_requests=5)
 
         # Send 2 more requests, should be allowed (2 additional token capacity)
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 5})
         assert resp.status_code == 200
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 6})
         assert resp.status_code == 200
 
         # The 7th request should be rate limited again
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 7})
         assert resp.status_code == 429
 
 
@@ -177,7 +177,7 @@ async def test_hot_reload_max_requests_via_config_holder():
 
     app = FastAPI()
 
-    @app.get("/v1/test")
+    @app.post("/v1/test")
     async def test_endpoint():
         return {"status": "ok"}
 
@@ -191,20 +191,20 @@ async def test_hot_reload_max_requests_via_config_holder():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Send 3 requests, all allowed (initial max_requests=3)
         for _ in range(3):
-            resp = await client.get("/v1/test")
+            resp = await client.post("/v1/test", json={"n": _})
             assert resp.status_code == 200
 
         # The 4th request should be rate limited
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 4})
         assert resp.status_code == 429
 
         # Update config via holder.rate_limiter (simulating _apply_config_changes)
         holder.rate_limiter.update_config(max_requests=5)
 
         # Send 2 more requests, should be allowed now
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 5})
         assert resp.status_code == 200
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 6})
         assert resp.status_code == 200
 
 
@@ -222,7 +222,7 @@ async def test_hot_reload_window_size_takes_effect():
 
     app = FastAPI()
 
-    @app.get("/v1/test")
+    @app.post("/v1/test")
     async def test_endpoint():
         return {"status": "ok"}
 
@@ -240,7 +240,7 @@ async def test_hot_reload_window_size_takes_effect():
 
         # Send requests to verify rate limiting works normally
         for _ in range(5):
-            resp = await client.get("/v1/test")
+            resp = await client.post("/v1/test", json={"n": _})
             assert resp.status_code == 200
 
         # Hot reload: shrink window_size to 10 (refill_rate increases from 10/60 to 1/s)
@@ -251,5 +251,5 @@ async def test_hot_reload_window_size_takes_effect():
         assert holder.rate_limiter._bucket.refill_rate == 1.0
 
         # Continue sending requests to verify it still works correctly
-        resp = await client.get("/v1/test")
+        resp = await client.post("/v1/test", json={"n": 99})
         assert resp.status_code == 200

@@ -700,7 +700,6 @@ class TestFastAPIMiddleware:
         from motor.coordinator.middleware.fastapi_middleware import (
             SimpleRateLimitMiddleware,
             SimpleRateLimitConfig,
-            load_rate_limit_config,
             create_simple_rate_limit_middleware,
         )
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
@@ -710,7 +709,6 @@ class TestFastAPIMiddleware:
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
         self.SimpleRateLimitConfig = SimpleRateLimitConfig
-        self.load_rate_limit_config = load_rate_limit_config
         self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
@@ -732,115 +730,6 @@ class TestFastAPIMiddleware:
         assert config.scope == "per_ip", "Default scope should be per_ip"
         assert config.skip_paths is not None, "skip_paths should be initialized"
         assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
-
-    def test_load_rate_limit_config_default(self):
-        """Test load_rate_limit_config with default values"""
-        import os
-
-        # Save original env if exists
-        original_enabled = os.getenv("RATE_LIMIT_ENABLED")
-        original_max = os.getenv("RATE_LIMIT_MAX_REQUESTS")
-        original_window = os.getenv("RATE_LIMIT_WINDOW_SIZE")
-
-        try:
-            # Remove env vars to test defaults
-            if "RATE_LIMIT_ENABLED" in os.environ:
-                del os.environ["RATE_LIMIT_ENABLED"]
-            if "RATE_LIMIT_MAX_REQUESTS" in os.environ:
-                del os.environ["RATE_LIMIT_MAX_REQUESTS"]
-            if "RATE_LIMIT_WINDOW_SIZE" in os.environ:
-                del os.environ["RATE_LIMIT_WINDOW_SIZE"]
-
-            config = self.load_rate_limit_config()
-            assert config.enabled, "Should use default enabled=True"
-            assert config.max_requests == 100, "Should use default max_requests=100"
-            assert config.window_size == 60, "Should use default window_size=60"
-        finally:
-            # Restore original env
-            if original_enabled:
-                os.environ["RATE_LIMIT_ENABLED"] = original_enabled
-            if original_max:
-                os.environ["RATE_LIMIT_MAX_REQUESTS"] = original_max
-            if original_window:
-                os.environ["RATE_LIMIT_WINDOW_SIZE"] = original_window
-
-    def test_load_rate_limit_config_from_env(self):
-        """Test load_rate_limit_config from environment variables"""
-        import os
-
-        # Save original env
-        original_enabled = os.getenv("RATE_LIMIT_ENABLED")
-        original_max = os.getenv("RATE_LIMIT_MAX_REQUESTS")
-        original_window = os.getenv("RATE_LIMIT_WINDOW_SIZE")
-        original_scope = os.getenv("RATE_LIMIT_SCOPE")
-        original_skip_paths = os.getenv("RATE_LIMIT_SKIP_PATHS")
-
-        try:
-            # Set env vars
-            os.environ["RATE_LIMIT_ENABLED"] = "false"
-            os.environ["RATE_LIMIT_MAX_REQUESTS"] = "200"
-            os.environ["RATE_LIMIT_WINDOW_SIZE"] = "30"
-            os.environ["RATE_LIMIT_SCOPE"] = "global"
-            os.environ["RATE_LIMIT_SKIP_PATHS"] = "/liveness,/health"
-
-            config = self.load_rate_limit_config()
-            assert not config.enabled, "Should load enabled from env"
-            assert config.max_requests == 200, "Should load max_requests from env"
-            assert config.window_size == 30, "Should load window_size from env"
-            assert config.scope == "global", "Should load scope from env"
-            assert "/liveness" in config.skip_paths, "Should load skip_paths from env"
-            assert "/health" in config.skip_paths, "Should load skip_paths from env"
-        finally:
-            # Restore original env
-            if original_enabled:
-                os.environ["RATE_LIMIT_ENABLED"] = original_enabled
-            elif "RATE_LIMIT_ENABLED" in os.environ:
-                del os.environ["RATE_LIMIT_ENABLED"]
-            if original_max:
-                os.environ["RATE_LIMIT_MAX_REQUESTS"] = original_max
-            elif "RATE_LIMIT_MAX_REQUESTS" in os.environ:
-                del os.environ["RATE_LIMIT_MAX_REQUESTS"]
-            if original_window:
-                os.environ["RATE_LIMIT_WINDOW_SIZE"] = original_window
-            elif "RATE_LIMIT_WINDOW_SIZE" in os.environ:
-                del os.environ["RATE_LIMIT_WINDOW_SIZE"]
-            if original_scope:
-                os.environ["RATE_LIMIT_SCOPE"] = original_scope
-            elif "RATE_LIMIT_SCOPE" in os.environ:
-                del os.environ["RATE_LIMIT_SCOPE"]
-            if original_skip_paths:
-                os.environ["RATE_LIMIT_SKIP_PATHS"] = original_skip_paths
-            elif "RATE_LIMIT_SKIP_PATHS" in os.environ:
-                del os.environ["RATE_LIMIT_SKIP_PATHS"]
-
-    def test_load_rate_limit_config_from_file(self):
-        """Test load_rate_limit_config from file"""
-        import os
-        import json
-        import tempfile
-
-        # Create temporary config file
-        config_data = {
-            "enabled": False,
-            "max_requests": 300,
-            "window_size": 45,
-            "scope": "per_ip",
-            "error_message": "Custom error message",
-            "error_status_code": 429,
-        }
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(config_data, f)
-            config_file = f.name
-
-        try:
-            config = self.load_rate_limit_config(config_file=config_file)
-            assert not config.enabled, "Should load enabled from file"
-            assert config.max_requests == 300, "Should load max_requests from file"
-            assert config.window_size == 45, "Should load window_size from file"
-            assert config.error_message == "Custom error message", "Should load error_message from file"
-        finally:
-            os.unlink(config_file)
 
     def test_rate_limit_middleware_skip_paths(self):
         """Test rate limit middleware skip paths"""
@@ -1517,7 +1406,6 @@ class TestFastAPIMiddlewareAdvanced:
         from motor.coordinator.middleware.fastapi_middleware import (
             SimpleRateLimitMiddleware,
             SimpleRateLimitConfig,
-            load_rate_limit_config,
         )
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
@@ -1526,7 +1414,6 @@ class TestFastAPIMiddlewareAdvanced:
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
         self.SimpleRateLimitConfig = SimpleRateLimitConfig
-        self.load_rate_limit_config = load_rate_limit_config
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
         self._report_alarms_patcher = patch(
@@ -1624,28 +1511,6 @@ class TestFastAPIMiddlewareAdvanced:
         # Second request may be rate limited
         response4 = client.get("/test")
         assert response4.status_code in [200, 429], "Second request may be rate limited"
-
-    def test_load_rate_limit_config_file_not_found(self):
-        """Test load_rate_limit_config with non-existent file"""
-        config = self.load_rate_limit_config(config_file="/nonexistent/config.json")
-        assert config is not None, "Should return default config when file not found"
-        assert config.enabled, "Should use default enabled value"
-
-    def test_load_rate_limit_config_invalid_json(self):
-        """Test load_rate_limit_config with invalid JSON file"""
-        import tempfile
-        import os
-
-        # Create temporary file with invalid JSON
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("invalid json content")
-            config_file = f.name
-
-        try:
-            config = self.load_rate_limit_config(config_file=config_file)
-            assert config is not None, "Should return default config when JSON is invalid"
-        finally:
-            os.unlink(config_file)
 
     def test_simple_rate_limit_config_post_init(self):
         """Test SimpleRateLimitConfig __post_init__"""
