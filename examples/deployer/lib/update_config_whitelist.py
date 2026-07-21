@@ -85,14 +85,14 @@ def _path_is_whitelisted(path):
     return False
 
 
-def _collect_changed_paths(current_value, baseline_value, path=""):
+def collect_changed_paths(current_value, baseline_value, path=""):
     if isinstance(current_value, Mapping) and isinstance(baseline_value, Mapping):
         changed_paths = []
         all_keys = sorted(set(current_value) | set(baseline_value))
         for key in all_keys:
             next_path = f"{path}.{key}" if path else str(key)
             changed_paths.extend(
-                _collect_changed_paths(
+                collect_changed_paths(
                     current_value.get(key),
                     baseline_value.get(key),
                     next_path,
@@ -104,28 +104,28 @@ def _collect_changed_paths(current_value, baseline_value, path=""):
         changed_paths = []
         for key in sorted(current_value):
             next_path = f"{path}.{key}" if path else str(key)
-            changed_paths.extend(_collect_changed_paths(current_value[key], None, next_path))
+            changed_paths.extend(collect_changed_paths(current_value[key], None, next_path))
         return changed_paths
 
     if current_value is None and isinstance(baseline_value, Mapping):
         changed_paths = []
         for key in sorted(baseline_value):
             next_path = f"{path}.{key}" if path else str(key)
-            changed_paths.extend(_collect_changed_paths(None, baseline_value[key], next_path))
+            changed_paths.extend(collect_changed_paths(None, baseline_value[key], next_path))
         return changed_paths
 
     if baseline_value is None and _is_non_string_sequence(current_value):
         changed_paths = []
         for index, item in enumerate(current_value):
             next_path = f"{path}[{index}]"
-            changed_paths.extend(_collect_changed_paths(item, None, next_path))
+            changed_paths.extend(collect_changed_paths(item, None, next_path))
         return changed_paths
 
     if current_value is None and _is_non_string_sequence(baseline_value):
         changed_paths = []
         for index, item in enumerate(baseline_value):
             next_path = f"{path}[{index}]"
-            changed_paths.extend(_collect_changed_paths(None, item, next_path))
+            changed_paths.extend(collect_changed_paths(None, item, next_path))
         return changed_paths
 
     if _is_non_string_sequence(current_value) and _is_non_string_sequence(baseline_value):
@@ -134,7 +134,7 @@ def _collect_changed_paths(current_value, baseline_value, path=""):
         changed_paths = []
         for index, (current_item, baseline_item) in enumerate(zip(current_value, baseline_value)):
             next_path = f"{path}[{index}]"
-            changed_paths.extend(_collect_changed_paths(current_item, baseline_item, next_path))
+            changed_paths.extend(collect_changed_paths(current_item, baseline_item, next_path))
         return changed_paths
 
     if current_value != baseline_value:
@@ -208,7 +208,7 @@ def apply_whitelist_update(user_config, baseline_config):
     Non-whitelisted changes are logged as warnings and silently ignored.
     Returns a new config dict with only whitelisted changes applied.
     """
-    changed_paths = _collect_changed_paths(user_config, baseline_config)
+    changed_paths = collect_changed_paths(user_config, baseline_config)
     whitelisted_paths = []
     non_whitelisted_paths = []
 
