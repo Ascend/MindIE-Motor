@@ -66,6 +66,7 @@ _SHELL_VAR_REF = re.compile(r"\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*|\d+)")
 
 DEFAULT_ENV_COMMON = {
     "CANN_INSTALL_PATH": "/usr/local/Ascend",
+    "MOTOR_LOG_ROOT_PATH": "/root/ascend/log",
 }
 
 DEFAULT_OUTPUT_DIR = "output_config"
