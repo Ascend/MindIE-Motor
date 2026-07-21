@@ -10,7 +10,6 @@
 
 """Tests for TokenBucket and SimpleRateLimiter parameter hot reload."""
 
-import pytest
 import threading
 import time
 

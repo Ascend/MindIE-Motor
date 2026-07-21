@@ -21,7 +21,7 @@
 
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Any
 from motor.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -119,7 +119,7 @@ class SimpleRateLimiter:
 
         logger.info(f"Initialized global rate limiter: max_requests={max_requests}, window_size={window_size}s")
 
-    def is_allowed(self, request_data: Optional[Dict[str, Any]] = None) -> tuple[bool, Dict[str, Any]]:
+    def is_allowed(self, request_data: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
         """
 
         Args:
