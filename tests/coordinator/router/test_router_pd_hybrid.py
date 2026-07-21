@@ -783,8 +783,8 @@ def _make_cancel_test_config(
         max_retry=5,
         retry_delay=0.0001,
         transport_max_retry=transport_max_retry,
-        reschedule_enabled=reschedule_enabled,
     )
+    mock_exception_config.reschedule_enabled = reschedule_enabled
     mock_api_config = MagicMock()
     mock_api_config.coordinator_api_host = "127.0.0.1"
     mock_api_config.coordinator_api_mgmt_port = 1025

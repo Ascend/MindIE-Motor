@@ -24,11 +24,12 @@ nav:
           - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
           - KV Cache Store: user_guide/features/kv_cache_store/README.md
           - 手动扩缩容: user_guide/features/manual_instance_scaling.md
-          - 主备倒换: user_guide/features/standby.md
+          - 主备倒换: user_guide/features/fault_tolerance/standby.md
           - 链路追踪: user_guide/features/tracing.md
-          - ScaleP2D 故障恢复: user_guide/features/scale_p2d.md
+          - ScaleP2D 故障恢复: user_guide/features/fault_tolerance/scale_p2d.md
           - 容器快照: user_guide/features/container_snapshot.md
           - 虚推健康探测: user_guide/features/sim_inference.md
+          - 故障场景重调度: user_guide/features/fault_tolerance/rescheduler.md
       - 服务维护:
           - 镜像制作: user_guide/maintenance/build_motor_image_from_vllm_ascend.md
           - 常用维护技巧: user_guide/maintenance/maintenance_tips.md

@@ -151,7 +151,7 @@
   ```
 
 - **关闭**：删除 `standby_config` 配置块，或将 `enable_master_standby` 设为 `false`。
-- **注意**：须提前部署 etcd（建议 3 副本）。详见 [主备特性说明](../../features/standby.md)。
+- **注意**：须提前部署 etcd（建议 3 副本）。详见 [主备特性说明](../../features/fault_tolerance/standby.md)。
 
 ### 异常实例重启
 

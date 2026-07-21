@@ -387,9 +387,11 @@ class UnifiedPDRouter(BaseRouter):
                         dispatch_plan = self._select_dispatch_plan(attempt)
                         if attempt_index > 0:
                             self.logger.warning(
-                                f"Rescheduling[{attempt_index}/{max_retry}]: "
-                                f"P=[{self._resource_label(attempt.prefill_resource)}] "
-                                f"D=[{self._resource_label(attempt.decode_resource)}]"
+                                "Rescheduling %d/%d: P=[%s], D=[%s]",
+                                attempt_index,
+                                max_retry,
+                                self._resource_label(attempt.prefill_resource),
+                                self._resource_label(attempt.decode_resource),
                             )
                         attempt.transition(AttemptState.DISPATCHING)
                         async with aclosing(self._run_stream_attempt(attempt, dispatch_plan)) as attempt_stream:
@@ -463,9 +465,11 @@ class UnifiedPDRouter(BaseRouter):
                         if attempt_index > 0:
                             self.rescheduler.retry_count = attempt_index
                             self.logger.warning(
-                                f"Rescheduling[{attempt_index}/{max_retry}]: "
-                                f"P=[{self._resource_label(attempt.prefill_resource)}] "
-                                f"D=[{self._resource_label(attempt.decode_resource)}]"
+                                "Rescheduling %d/%d: P=[%s], D=[%s]",
+                                attempt_index,
+                                max_retry,
+                                self._resource_label(attempt.prefill_resource),
+                                self._resource_label(attempt.decode_resource),
                             )
                         attempt.transition(AttemptState.DISPATCHING)
                         body = await self._run_nonstream_attempt(attempt, dispatch_plan)
