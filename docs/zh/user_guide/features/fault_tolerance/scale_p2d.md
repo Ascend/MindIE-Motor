@@ -43,7 +43,7 @@ ScaleP2D 恢复大致分为四步：
 | 3. 选择 P 实例 | 在可用 P 容量内选取待停止的 P 实例（可用节点 = `nodes_per_P × (P_count - 1)`） |
 | 4. 停止 P 实例 | 对选中 P 实例的所有 NodeManager 下发 `stop`，由 CRD 强制回收 Pod 并释放节点 |
 
-更完整的设计说明见 [ScaleP2D 设计文档](../../design/fault_tolerance/scale_p2d.md)。
+更完整的设计说明见 [ScaleP2D 设计文档](../../../design/fault_tolerance/scale_p2d.md)。
 
 ## 配置说明
 
@@ -69,7 +69,7 @@ ScaleP2D 恢复大致分为四步：
 }
 ```
 
-详见 [配置参考](../configuration/config_reference.md#motor_controller_config)。
+详见 [配置参考](../../configuration/config_reference.md#motor_controller_config)。
 
 ### InferServiceSet YAML 配置（CRD 部署）
 

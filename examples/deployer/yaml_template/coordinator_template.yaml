@@ -97,7 +97,7 @@ spec:
               memory: "4Gi"
               cpu: "16"
             limits:
-              memory: "8Gi"
+              memory: "128Gi"
               cpu: "64"
           volumeMounts:
           - name: motor-config

@@ -187,13 +187,19 @@ class PrometheusMetricsConfig:
 
 
 @dataclass
+class RescheduleConfig:
+    # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
+    # Engine-side recompute is independent of this switch.
+    enable: bool = False
+
+
+@dataclass
 class ExceptionConfig:
     """Exception handling configuration class"""
 
+    reschedule_config: RescheduleConfig = field(default_factory=RescheduleConfig)
+
     max_retry: int = 5
-    # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
-    # Engine-side recompute is independent of this switch.
-    reschedule_enabled: bool = True
     transport_max_retry: int | None = None
     retry_delay: float = 0.2
     first_token_timeout: int = 600  # 10 minutes
@@ -206,13 +212,12 @@ class ExceptionConfig:
         return self.transport_max_retry if self.transport_max_retry is not None else self.max_retry
 
     @property
-    def recompute_enabled(self) -> bool:
-        """Deprecated compatibility alias for ``reschedule_enabled``."""
-        return self.reschedule_enabled
+    def reschedule_enabled(self) -> bool:
+        return self.reschedule_config.enable
 
-    @recompute_enabled.setter
-    def recompute_enabled(self, value: bool) -> None:
-        self.reschedule_enabled = value
+    @reschedule_enabled.setter
+    def reschedule_enabled(self, value: bool) -> None:
+        self.reschedule_config.enable = value
 
 
 @dataclass
@@ -474,17 +479,17 @@ class CoordinatorConfig:
             exception_config_data = cfg.get("exception_config", {})
 
             def set_deprecated_recompute_enabled(obj, _key, value):
-                if "reschedule_enabled" in exception_config_data:
+                if "reschedule_config" in exception_config_data:
                     logger.warning(
                         "exception_config.recompute_enabled is deprecated and ignored because "
-                        "reschedule_enabled is also configured"
+                        "reschedule_config is also configured"
                     )
                     return
                 logger.warning(
-                    "exception_config.recompute_enabled is deprecated; use reschedule_enabled. "
+                    "exception_config.recompute_enabled is deprecated; use reschedule_config. "
                     "Engine-side recompute is not controlled by Coordinator."
                 )
-                obj.reschedule_enabled = value
+                obj.reschedule_config.enable = value
 
             def ignore_removed_recompute_retry(_obj, _key, _value):
                 logger.warning(
