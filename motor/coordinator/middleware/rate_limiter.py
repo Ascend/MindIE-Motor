@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 #
 # MindIE is licensed under both the Mulan PSL v2 and the Apache License, Version 2.0.
