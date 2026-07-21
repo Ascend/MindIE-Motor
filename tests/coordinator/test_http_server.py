@@ -788,7 +788,7 @@ class TestFastAPIMiddleware:
         assert middleware is not None, "Middleware should be created"
         assert middleware.rate_limiter.max_requests == 50, "Should set max_requests"
         assert middleware.rate_limiter.window_size == 30, "Should set window_size"
-        assert middleware.skip_paths is not None, "Should set skip_paths"
+        assert middleware._config_holder.skip_paths is not None, "Should set skip_paths"
 
     def test_rate_limit_middleware_stats(self):
         """Test rate limit middleware statistics"""
