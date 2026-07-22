@@ -9,43 +9,18 @@
 # See the Mulan PSL v2 for more details.
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from motor.common.logger import get_logger
+from motor.config.coordinator import default_rate_limit_skip_paths
 
 from .rate_limiter import SimpleRateLimiter
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class SimpleRateLimitConfig:
-    enabled: bool = True
-    max_requests: int = 100
-    window_size: int = 60
-    scope: str = "per_ip"  # "global", "per_ip", "per_user"
-    skip_paths: list = None
-    error_message: str = "Request too frequent, please try again later"
-    error_status_code: int = 429
-    # Maximum request body size in bytes; requests exceeding this are rejected directly. <= 0 means no limit.
-    max_request_body_size: int = 10 * 1024 * 1024  # 10MB
-
-    def __post_init__(self):
-        if self.skip_paths is None:
-            self.skip_paths = [
-                "/liveness",
-                "/ready",
-                "/metrics",
-                "/docs",
-                "/redoc",
-                "/openapi.json",
-                "/favicon.ico",
-                "/startup",
-            ]
 
 
 @dataclass
@@ -57,26 +32,12 @@ class RateLimitConfigHolder:
     to apply changes immediately.
     """
 
-    skip_paths: list = None
+    skip_paths: list = field(default_factory=default_rate_limit_skip_paths)
     error_message: str = "Request too frequent, please try again later"
     error_status_code: int = 429
     enabled: bool = True
     max_request_body_size: int = 10 * 1024 * 1024
     rate_limiter: SimpleRateLimiter = None
-
-    def __post_init__(self):
-        if self.skip_paths is None:
-            self.skip_paths = [
-                "/liveness",
-                "/ready",
-                "/metrics",
-                "/docs",
-                "/redoc",
-                "/openapi.json",
-                "/favicon.ico",
-                "/startup",
-            ]
-
 
 class SimpleRateLimitMiddleware:
     """
@@ -154,6 +115,7 @@ class SimpleRateLimitMiddleware:
 
     @staticmethod
     def _create_rate_limit_headers(limit_info: dict[str, Any]) -> dict[str, str]:
+        """Build response headers from the rate limiter info dictionary."""
         headers = {}
 
         if "available" in limit_info:
@@ -166,6 +128,7 @@ class SimpleRateLimitMiddleware:
         return headers
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """ASGI entry point: enforce body-size and rate limits for HTTP requests."""
         # Non-HTTP scopes (lifespan, websocket, etc.) are passed through unchanged
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
@@ -194,12 +157,7 @@ class SimpleRateLimitMiddleware:
                 logger.warning(f"Request body size too large: {content_length} > {max_body_size}, path={path}")
                 error_response = {
                     "error": "request_body_too_large",
-                    "message": f"Request body size ({content_length} bytes) exceeds "
-                    f"maximum allowed ({max_body_size} bytes)",
-                    "details": {
-                        "content_length": content_length,
-                        "max_allowed": max_body_size,
-                    },
+                    "message": f"Request body size ({content_length} bytes) exceeds maximum)",
                 }
                 response = JSONResponse(status_code=413, content=error_response)
                 await response(scope, receive, send)
@@ -266,44 +224,11 @@ class SimpleRateLimitMiddleware:
             await response(scope, receive, send)
             return
 
-    def update_config(
-        self,
-        skip_paths: list | None = None,
-        error_message: str | None = None,
-        error_status_code: int | None = None,
-        enabled: bool | None = None,
-        max_request_body_size: int | None = None,
-    ) -> None:
-        """Update middleware configuration at runtime (for hot reload)."""
-        if skip_paths is not None:
-            self._config_holder.skip_paths = skip_paths
-        if error_message is not None:
-            self._config_holder.error_message = error_message
-        if error_status_code is not None:
-            self._config_holder.error_status_code = error_status_code
-        if enabled is not None:
-            self._config_holder.enabled = enabled
-        if max_request_body_size is not None:
-            self._config_holder.max_request_body_size = max_request_body_size
-
     def _should_skip_path(self, path: str) -> bool:
         """Return True if the given path matches any skip-listed prefix."""
-        return any(path.startswith(skip_path) for skip_path in self._config_holder.skip_paths)
+        skip_paths = self._config_holder.skip_paths
+        if not skip_paths:
+            return False
+        return any(path.startswith(skip_path) for skip_path in skip_paths)
 
 
-def create_simple_rate_limit_middleware(
-    app: ASGIApp,
-    max_requests: int = 100,
-    window_size: int = 60,
-    max_request_body_size: int = 10 * 1024 * 1024,
-) -> SimpleRateLimitMiddleware:
-    rate_limiter = SimpleRateLimiter(max_requests=max_requests, window_size=window_size)
-
-    middleware = SimpleRateLimitMiddleware(
-        app=app,
-        rate_limiter=rate_limiter,
-        skip_paths=["/liveness", "/ready", "/metrics", "/docs", "/redoc", "/openapi.json"],
-        max_request_body_size=max_request_body_size,
-    )
-
-    return middleware

@@ -86,7 +86,7 @@ def _default_skip_paths() -> set[str]:
     }
 
 
-def _default_rate_limit_skip_paths() -> list[str]:
+def default_rate_limit_skip_paths() -> list[str]:
     return [
         "/liveness",
         "/readiness",
@@ -317,7 +317,7 @@ class RateLimitConfig:
     max_requests: int = 1000
     window_size: int = 60
     scope: str = "global"
-    skip_paths: list[str] = field(default_factory=_default_rate_limit_skip_paths)
+    skip_paths: list[str] = field(default_factory=default_rate_limit_skip_paths)
     error_message: str = "too many requests, please try again later"
     error_status_code: int = 429
     max_request_body_size: int = 10 * 1024 * 1024

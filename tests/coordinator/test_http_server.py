@@ -695,19 +695,13 @@ class TestFastAPIMiddleware:
 
     def setup_method(self):
         """Setup test fixtures"""
-        from motor.coordinator.middleware.fastapi_middleware import (
-            SimpleRateLimitMiddleware,
-            SimpleRateLimitConfig,
-            create_simple_rate_limit_middleware,
-        )
+        from motor.coordinator.middleware.fastapi_middleware import SimpleRateLimitMiddleware
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
-        self.SimpleRateLimitConfig = SimpleRateLimitConfig
-        self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
         self._report_alarms_patcher = patch(
@@ -718,16 +712,6 @@ class TestFastAPIMiddleware:
 
     def teardown_method(self):
         self._report_alarms_patcher.stop()
-
-    def test_simple_rate_limit_config(self):
-        """Test SimpleRateLimitConfig dataclass"""
-        config = self.SimpleRateLimitConfig()
-        assert config.enabled is True, "Default enabled should be True"
-        assert config.max_requests == 100, "Default max_requests should be 100"
-        assert config.window_size == 60, "Default window_size should be 60"
-        assert config.scope == "per_ip", "Default scope should be per_ip"
-        assert config.skip_paths is not None, "skip_paths should be initialized"
-        assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
 
     def test_rate_limit_middleware_skip_paths(self):
         """Test rate limit middleware skip paths"""
@@ -778,15 +762,6 @@ class TestFastAPIMiddleware:
         response = client.get("/test")
         assert response.status_code == 200, "Should allow request when error occurs"
         assert middleware.stats["allowed_requests"] > 0, "Should increment allowed_requests on error"
-
-    def test_create_simple_rate_limit_middleware(self):
-        """Test create_simple_rate_limit_middleware function"""
-        middleware = self.create_simple_rate_limit_middleware(app=self.app, max_requests=50, window_size=30)
-
-        assert middleware is not None, "Middleware should be created"
-        assert middleware.rate_limiter.max_requests == 50, "Should set max_requests"
-        assert middleware.rate_limiter.window_size == 30, "Should set window_size"
-        assert middleware._config_holder.skip_paths is not None, "Should set skip_paths"
 
     def test_rate_limit_middleware_stats(self):
         """Test rate limit middleware statistics"""
@@ -1401,17 +1376,13 @@ class TestFastAPIMiddlewareAdvanced:
 
     def setup_method(self):
         """Setup test fixtures"""
-        from motor.coordinator.middleware.fastapi_middleware import (
-            SimpleRateLimitMiddleware,
-            SimpleRateLimitConfig,
-        )
+        from motor.coordinator.middleware.fastapi_middleware import SimpleRateLimitMiddleware
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
-        self.SimpleRateLimitConfig = SimpleRateLimitConfig
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
         self._report_alarms_patcher = patch(
@@ -1509,14 +1480,6 @@ class TestFastAPIMiddlewareAdvanced:
         # Second request may be rate limited
         response4 = client.get("/test")
         assert response4.status_code in [200, 429], "Second request may be rate limited"
-
-    def test_simple_rate_limit_config_post_init(self):
-        """Test SimpleRateLimitConfig __post_init__"""
-        config = self.SimpleRateLimitConfig()
-        assert config.skip_paths is not None, "skip_paths should be initialized"
-        assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
-        assert "/ready" in config.skip_paths, "/ready should be in skip_paths"
-        assert "/metrics" in config.skip_paths, "/metrics should be in skip_paths"
 
 
 @pytest.mark.asyncio
