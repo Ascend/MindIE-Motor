@@ -39,6 +39,7 @@ class RateLimitConfigHolder:
     max_request_body_size: int = 10 * 1024 * 1024
     rate_limiter: SimpleRateLimiter = None
 
+
 class SimpleRateLimitMiddleware:
     """
     FastAPI rate limiting middleware.
@@ -230,5 +231,3 @@ class SimpleRateLimitMiddleware:
         if not skip_paths:
             return False
         return any(path.startswith(skip_path) for skip_path in skip_paths)
-
-

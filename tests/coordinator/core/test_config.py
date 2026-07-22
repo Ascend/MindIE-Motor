@@ -446,7 +446,7 @@ def test_config_validation_multiple_errors():
     with pytest.raises(ValueError) as exc_info:
         config = CoordinatorConfig()
         config.exception_config.max_retry = -1
-        config.rate_limit_config.enable_rate_limit=True
+        config.rate_limit_config.enable_rate_limit = True
         config.rate_limit_config.max_requests = -1
         config.validate_config()
     error_msg = str(exc_info.value)
