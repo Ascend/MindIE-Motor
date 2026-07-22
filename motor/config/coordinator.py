@@ -187,13 +187,19 @@ class PrometheusMetricsConfig:
 
 
 @dataclass
+class RescheduleConfig:
+    # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
+    # Engine-side recompute is independent of this switch.
+    enable: bool = False
+
+
+@dataclass
 class ExceptionConfig:
     """Exception handling configuration class"""
 
+    reschedule_config: RescheduleConfig = field(default_factory=RescheduleConfig)
+
     max_retry: int = 5
-    # Cache token IDs so a streaming request can be rescheduled after a transient transport failure.
-    # Engine-side recompute is independent of this switch.
-    reschedule_enabled: bool = True
     transport_max_retry: int | None = None
     retry_delay: float = 0.2
     first_token_timeout: int = 600  # 10 minutes
@@ -206,18 +212,17 @@ class ExceptionConfig:
         return self.transport_max_retry if self.transport_max_retry is not None else self.max_retry
 
     @property
-    def recompute_enabled(self) -> bool:
-        """Deprecated compatibility alias for ``reschedule_enabled``."""
-        return self.reschedule_enabled
+    def reschedule_enabled(self) -> bool:
+        return self.reschedule_config.enable
 
-    @recompute_enabled.setter
-    def recompute_enabled(self, value: bool) -> None:
-        self.reschedule_enabled = value
+    @reschedule_enabled.setter
+    def reschedule_enabled(self, value: bool) -> None:
+        self.reschedule_config.enable = value
 
 
 @dataclass
-class TokenSamplingConfig:
-    """Periodic token-ID and logprob sampling per PD instance group.
+class PrecisionDetectionConfig:
+    """Precision detection configuration for online token/logprob sampling per PD instance group.
 
     For each PD instance group (keyed by D instance ID or P+D instance ID pair),
     at most one full request's token_ids and logprobs are sampled within
@@ -401,7 +406,7 @@ class CoordinatorConfig:
     deploy_config: DeployConfig = field(default_factory=DeployConfig)
     tracer_config: TracerConfig = field(default_factory=TracerConfig)
     prefill_kv_event_config: PrefillKvEventConfig = field(default_factory=PrefillKvEventConfig)
-    token_sampling_config: TokenSamplingConfig = field(default_factory=TokenSamplingConfig)
+    precision_detection_config: PrecisionDetectionConfig = field(default_factory=PrecisionDetectionConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
 
     # internal fields
@@ -475,17 +480,17 @@ class CoordinatorConfig:
             exception_config_data = cfg.get("exception_config", {})
 
             def set_deprecated_recompute_enabled(obj, _key, value):
-                if "reschedule_enabled" in exception_config_data:
+                if "reschedule_config" in exception_config_data:
                     logger.warning(
                         "exception_config.recompute_enabled is deprecated and ignored because "
-                        "reschedule_enabled is also configured"
+                        "reschedule_config is also configured"
                     )
                     return
                 logger.warning(
-                    "exception_config.recompute_enabled is deprecated; use reschedule_enabled. "
+                    "exception_config.recompute_enabled is deprecated; use reschedule_config. "
                     "Engine-side recompute is not controlled by Coordinator."
                 )
-                obj.reschedule_enabled = value
+                obj.reschedule_config.enable = value
 
             def ignore_removed_recompute_retry(_obj, _key, _value):
                 logger.warning(
@@ -552,13 +557,19 @@ class CoordinatorConfig:
                 ("deploy_config", config.deploy_config, None),
                 ("tracer_config", config.tracer_config, None),
                 ("prefill_kv_event_config", config.prefill_kv_event_config, None),
-                ("token_sampling_config", config.token_sampling_config, None),
+                ("precision_detection_config", config.precision_detection_config, None),
                 ("port_allocator_config", config.port_allocator_config, None),
             ]
 
             for section_name, config_obj, special_handlers in config_mappings:
                 if section_name in cfg:
                     update_config_from_dict(config_obj, cfg[section_name], special_handlers)
+
+            if "precision_detection_config" not in cfg and "token_sampling_config" in cfg:
+                logger.warning(
+                    "token_sampling_config is deprecated; use precision_detection_config for precision detection."
+                )
+                update_config_from_dict(config.precision_detection_config, cfg["token_sampling_config"])
 
             if "aigw" in cfg:
                 config.aigw_model = dict(cfg["aigw"])
@@ -715,21 +726,22 @@ class CoordinatorConfig:
         self._validate_positive_number(self.etcd_config.etcd_timeout, "etcd_timeout")
         self._validate_ip_or_hostname(self.etcd_config.etcd_host, "etcd_host")
 
-        # Validate token_sampling_config (fields always validated for positive values)
+        # Validate precision_detection_config (fields always validated for positive values)
         self._validate_positive_number(
-            self.token_sampling_config.interval_seconds, "token_sampling_config.interval_seconds"
+            self.precision_detection_config.interval_seconds, "precision_detection_config.interval_seconds"
         )
         self._validate_positive_number(
-            self.token_sampling_config.logprobs_count, "token_sampling_config.logprobs_count"
+            self.precision_detection_config.logprobs_count, "precision_detection_config.logprobs_count"
         )
         self._validate_positive_number(
-            self.token_sampling_config.precision_issue_threshold, "token_sampling_config.precision_issue_threshold"
+            self.precision_detection_config.precision_issue_threshold,
+            "precision_detection_config.precision_issue_threshold",
         )
         self._validate_positive_number(
-            self.token_sampling_config.probe_max_attempts, "token_sampling_config.probe_max_attempts"
+            self.precision_detection_config.probe_max_attempts, "precision_detection_config.probe_max_attempts"
         )
         self._validate_positive_number(
-            self.token_sampling_config.probe_timeout_seconds, "token_sampling_config.probe_timeout_seconds"
+            self.precision_detection_config.probe_timeout_seconds, "precision_detection_config.probe_timeout_seconds"
         )
 
         # Note: TLS certificate file validation is handled by the TLS configuration's check_files flag

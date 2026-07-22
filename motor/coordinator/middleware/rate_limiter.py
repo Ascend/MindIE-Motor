@@ -93,7 +93,10 @@ class TokenBucket:
             logger.warning(
                 "Reject token bucket update due to invalid params: capacity=%s (expected >= 0), "
                 "refill_rate=%s (expected >= 0); keep current capacity=%s, refill_rate=%s",
-                capacity, refill_rate, self.capacity, self.refill_rate,
+                capacity,
+                refill_rate,
+                self.capacity,
+                self.refill_rate,
             )
             return
 
@@ -216,14 +219,18 @@ class SimpleRateLimiter:
             logger.warning(
                 "Reject rate limiter update due to invalid max_requests=%s (expected >= 0); "
                 "keep current max_requests=%s, window_size=%s",
-                max_requests, self.max_requests, self.window_size,
+                max_requests,
+                self.max_requests,
+                self.window_size,
             )
             return
         if window_size is not None and window_size <= 0:
             logger.warning(
                 "Reject rate limiter update due to invalid window_size=%s (expected > 0); "
                 "keep current max_requests=%s, window_size=%s",
-                window_size, self.max_requests, self.window_size,
+                window_size,
+                self.max_requests,
+                self.window_size,
             )
             return
 
