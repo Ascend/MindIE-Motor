@@ -14,18 +14,53 @@ from __future__ import annotations
 
 import os
 
-from motor.common.alarm.enums import (
-    Category,
-    ClearCategory,
-    Cleared,
-    EventType,
-    ServiceAffectedType,
-    Severity,
-)
-from motor.common.alarm.record import Record
+from pydantic import Field
+
+from motor.common.alarm.alarm import Alarm
+from motor.common.alarm.enums import EventType, ServiceAffectedType, Severity
 
 # OM alarm id for precision / probe pipeline (coordinator token sampling).
-PRECISION_ISSUE_ALARM_ID = "0xFC001107"
+PRECISION_ISSUE_ALARM_ID = "0xFC001009"
+
+
+class PrecisionIssueAlarm(Alarm):
+    """Precision Anomaly Alarm for Coordinator token-sampling detection.
+
+    Raised when a Decode instance repeatedly produces token-level output
+    quality anomalies (repetition, gibberish, rare characters) confirmed
+    by msprobe sampling and chat probe.
+    """
+
+    event_type: EventType = Field(default=EventType.PROCESSING_ERROR)
+    alarm_id: str = Field(default=PRECISION_ISSUE_ALARM_ID)
+    alarm_name: str = Field(default="Precision Anomaly Alarm")
+    severity: Severity = Field(default=Severity.MAJOR)
+    probable_cause: str = Field(default="1:Repeated token-level precision issues detected by sampling")
+    service_affected_type: ServiceAffectedType = Field(default=ServiceAffectedType.YES)
+
+    def __init__(
+        self,
+        *,
+        p_instance_id: int | None,
+        d_instance_id: int,
+        precision_issue_count: int,
+        probe_failure_count: int,
+        model_id: str = "",
+    ):
+        super().__init__()
+        self.instance_id = str(d_instance_id)
+        self.p_instance_id = str(p_instance_id) if p_instance_id is not None else ""
+        pod_ip = os.getenv("POD_IP", "")
+        location = f"service name=Coordinator, service ip={pod_ip}"
+        self.location = location
+        self.moi = location
+        self.native_me_dn = os.getenv("SERVICE_ID", "").strip() or os.getenv("sys_id", "").strip() or model_id.strip()
+        self.additional_information = (
+            f"precision_issue_count={precision_issue_count}, "
+            f"probe_failure_count={probe_failure_count}, "
+            f"p_instance_id={p_instance_id}, d_instance_id={d_instance_id}"
+        )
+        self.update_time()
 
 
 def build_precision_issue_alarm(
@@ -36,31 +71,16 @@ def build_precision_issue_alarm(
     probe_failure_count: int,
     model_id: str = "",
 ) -> dict:
-    """Return a dict suitable for ``ControllerApiClient.report_alarms`` / ``Record(**body)``."""
-    pod_ip = os.getenv("POD_IP", "")
-    location = f"service name=Coordinator, service ip={pod_ip}"
-    additional = (
-        f"precision_issue_count={precision_issue_count}, "
-        f"probe_failure_count={probe_failure_count}, "
-        f"p_instance_id={p_instance_id}, d_instance_id={d_instance_id}"
+    """Return a dict suitable for ``ControllerApiClient.report_alarms``.
+
+    The result is a JSON-serializable dict produced by
+    ``PrecisionIssueAlarm.model_dump(mode="json")``.
+    """
+    alarm = PrecisionIssueAlarm(
+        p_instance_id=p_instance_id,
+        d_instance_id=d_instance_id,
+        precision_issue_count=precision_issue_count,
+        probe_failure_count=probe_failure_count,
+        model_id=model_id,
     )
-    alarm = Record(
-        category=Category.ALARM,
-        cleared=Cleared.NO,
-        clear_category=ClearCategory.AUTO,
-        native_me_dn=os.getenv("SERVICE_ID", "").strip() or os.getenv("sys_id", "").strip() or model_id.strip(),
-        location=location,
-        moi=location,
-        event_type=EventType.PROCESSING_ERROR,
-        alarm_id=PRECISION_ISSUE_ALARM_ID,
-        alarm_name="Precision anomaly alarm",
-        severity=Severity.MAJOR,
-        probable_cause="1:Repeated token-level precision issues detected by sampling",
-        reason_id=0,
-        service_affected_type=ServiceAffectedType.YES,
-        additional_information=additional,
-        instance_id=str(d_instance_id),
-        p_instance_id=str(p_instance_id) if p_instance_id is not None else "",
-    )
-    alarm.update_time()
     return alarm.model_dump(mode="json")

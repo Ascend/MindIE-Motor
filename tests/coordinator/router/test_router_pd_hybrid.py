@@ -26,7 +26,9 @@ from motor.config.coordinator import (
     SchedulerType,
     ExceptionConfig,
     TracerConfig,
+    PrecisionDetectionConfig,
 )
+from motor.config.tls_config import TLSConfig
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.common.resources.instance import Endpoint, PDRole, Instance, InsStatus, ParallelConfig
@@ -783,8 +785,8 @@ def _make_cancel_test_config(
         max_retry=5,
         retry_delay=0.0001,
         transport_max_retry=transport_max_retry,
-        reschedule_enabled=reschedule_enabled,
     )
+    mock_exception_config.reschedule_enabled = reschedule_enabled
     mock_api_config = MagicMock()
     mock_api_config.coordinator_api_host = "127.0.0.1"
     mock_api_config.coordinator_api_mgmt_port = 1025
@@ -794,8 +796,22 @@ def _make_cancel_test_config(
     mock_config.api_config = mock_api_config
     mock_config.tracer_config = TracerConfig()
     mock_config.infer_tls_config = None
+    mock_config.precision_detection_config = PrecisionDetectionConfig()
     monkeypatch.setattr(CoordinatorConfig, "__new__", lambda cls: mock_config)
     return mock_config
+
+
+class _RecordingSamplingManager:
+    def __init__(self) -> None:
+        self.confirm_calls = []
+        self.samples = []
+
+    async def confirm_sample(self, key, now):
+        self.confirm_calls.append((key, now))
+        return True
+
+    async def submit_sample(self, sample):
+        self.samples.append(sample)
 
 
 class TestPDHybridCancelReschedule:
@@ -827,7 +843,12 @@ class TestPDHybridCancelReschedule:
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
 
     @staticmethod
-    def _build_router(config, req_data: dict, api: str = "v1/completions") -> PDHybridRouter:
+    def _build_router(
+        config,
+        req_data: dict,
+        api: str = "v1/completions",
+        sampling_manager=None,
+    ) -> PDHybridRouter:
         req_info = RequestInfo(
             req_id="cancel-resched-id",
             req_data=req_data.copy(),
@@ -840,6 +861,7 @@ class TestPDHybridCancelReschedule:
             config,
             scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
             request_manager=RequestManager(config),
+            sampling_manager=sampling_manager,
         )
 
     @staticmethod
@@ -1012,6 +1034,59 @@ class TestPDHybridCancelReschedule:
         assert len(calls) == 2
         assert response.status_code == status.HTTP_200_OK
         assert payload["choices"][0]["message"]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_nonstream_precision_sampling_submits_union_as_decode_id(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=1, reschedule_enabled=False)
+        config.precision_detection_config = PrecisionDetectionConfig(
+            precision_check_enabled=True,
+            interval_seconds=0.0,
+            logprobs_count=1,
+        )
+        config.infer_tls_config = TLSConfig(enable_tls=False)
+        sampling_manager = _RecordingSamplingManager()
+        forwarded_requests = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            forwarded_requests.append(req_data.copy())
+            resp = MagicMock()
+            resp.json = MagicMock(
+                return_value={
+                    "object": "text_completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "text": "ok",
+                            "finish_reason": "stop",
+                            "token_ids": [101, 102],
+                            "logprobs": {"token_logprobs": [-0.1, -0.2]},
+                        }
+                    ],
+                }
+            )
+            return resp
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hi", "stream": False},
+            sampling_manager=sampling_manager,
+        )
+
+        response = await router_obj.handle_request()
+        payload = json.loads(response.body.decode())
+
+        assert forwarded_requests[0]["logprobs"] == 1
+        assert forwarded_requests[0]["return_token_ids"] is True
+        assert sampling_manager.confirm_calls[0][0] == (None, 0)
+        assert len(sampling_manager.samples) == 1
+        sample = sampling_manager.samples[0]
+        assert sample.p_instance_id is None
+        assert sample.d_instance_id == 0
+        assert sample.output_token_ids == [101, 102]
+        assert sample.logprobs == [-0.1, -0.2]
+        assert "logprobs" not in payload["choices"][0]
+        assert "token_ids" not in payload["choices"][0]
 
     @pytest.mark.asyncio
     async def test_nonstream_client_disconnect_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):

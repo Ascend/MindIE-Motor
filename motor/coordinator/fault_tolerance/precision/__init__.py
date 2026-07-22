@@ -30,7 +30,7 @@ from motor.coordinator.fault_tolerance.precision.sample_controller import (
 if TYPE_CHECKING:
     from typing import Any
 
-    from motor.config.coordinator import CoordinatorConfig, TokenSamplingConfig
+    from motor.config.coordinator import CoordinatorConfig, PrecisionDetectionConfig
     from motor.config.tls_config import TLSConfig
     from motor.coordinator.domain import SchedulingFacade
     from motor.coordinator.domain.request_manager import RequestManager
@@ -48,7 +48,7 @@ __all__ = [
 
 
 def build_precision_reporter(
-    token_sampling_config: TokenSamplingConfig,
+    precision_detection_config: PrecisionDetectionConfig,
     infer_tls_config: TLSConfig,
     *,
     config: CoordinatorConfig,
@@ -85,12 +85,12 @@ def build_precision_reporter(
     )
     action = PrecisionAlarm(
         probe=probe,
-        probe_max_attempts=token_sampling_config.probe_max_attempts,
-        probe_timeout_seconds=token_sampling_config.probe_timeout_seconds,
+        probe_max_attempts=precision_detection_config.probe_max_attempts,
+        probe_timeout_seconds=precision_detection_config.probe_timeout_seconds,
     )
     return PrecisionReporter(
         checker=chk,
         action=action,
-        threshold=token_sampling_config.precision_issue_threshold,
+        threshold=precision_detection_config.precision_issue_threshold,
         scheduler_client=scheduler_client,
     )

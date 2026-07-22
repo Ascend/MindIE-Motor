@@ -8,10 +8,15 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from fastapi import FastAPI, Request
+import asyncio
+
+import pytest
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+import motor.common.utils.error as cancel_error
+from motor.common.logger.logger import _resolve_logger_name
 from motor.common.resources.dispatch import DispatchPlan, has_compatible_dispatch_pair
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.resources.instance import Instance, PDRole
@@ -19,6 +24,7 @@ from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router import dispatch
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
+from motor.common.utils.error import RequestCancelledError
 
 
 class _Scheduler:
@@ -299,3 +305,167 @@ def test_dispatch_preserves_upstream_http_error(monkeypatch):
     assert response.status_code == 400
     assert response.content == error_body
     assert response.headers["retry-after"] == "3"
+
+
+def test_dispatch_request_cancelled_does_not_log_error(monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(
+        logging.DEBUG,
+        logger=_resolve_logger_name("motor.coordinator.router.dispatch"),
+    )
+
+    class _CancellingUnifiedRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            pass
+
+        async def handle_request(self):
+            raise RequestCancelledError(cancel_error.CLIENT_DISCONNECT)
+
+    monkeypatch.setattr(dispatch, "UnifiedPDRouter", _CancellingUnifiedRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+        2: Instance(
+            job_name="d",
+            model_name="m",
+            id=2,
+            role=PDRole.ROLE_D.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+    }
+
+    response = TestClient(_app(_config(), _Scheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 499
+    assert cancel_error.CLIENT_DISCONNECT in response.json()["detail"]
+    assert "Error occurred in proxy server endpoint" not in caplog.text
+    assert "Request cancelled api=v1/completions" in caplog.text
+
+
+def test_dispatch_dispatch_abort_still_returns_500(monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(
+        logging.DEBUG,
+        logger=_resolve_logger_name("motor.coordinator.router.dispatch"),
+    )
+
+    class _AbortingUnifiedRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            pass
+
+        async def handle_request(self):
+            raise RequestCancelledError(cancel_error.DISPATCH_ABORT)
+
+    monkeypatch.setattr(dispatch, "UnifiedPDRouter", _AbortingUnifiedRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+        2: Instance(
+            job_name="d",
+            model_name="m",
+            id=2,
+            role=PDRole.ROLE_D.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+    }
+
+    response = TestClient(_app(_config(), _Scheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 500
+    assert cancel_error.DISPATCH_ABORT in response.json()["detail"]
+    assert "Error occurred in proxy server endpoint" not in caplog.text
+    assert "Request cancelled api=v1/completions" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_with_cancellation_disconnect_raises_http_499(caplog):
+    import logging
+
+    caplog.set_level(
+        logging.INFO,
+        logger=_resolve_logger_name("motor.coordinator.router.dispatch"),
+    )
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    @dispatch.with_cancellation
+    async def handler(raw_request: Request):
+        await asyncio.Future()
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/completions",
+            "headers": [],
+        },
+        receive=receive,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await handler(raw_request=request)
+
+    assert exc_info.value.status_code == 499
+    assert cancel_error.CLIENT_DISCONNECT in str(exc_info.value.detail)
+    assert "Client disconnected; cancelling in-flight request with HTTP 499" in caplog.text
+
+
+def test_dispatch_unexpected_exception_still_logs_error(monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(
+        logging.ERROR,
+        logger=_resolve_logger_name("motor.coordinator.router.dispatch"),
+    )
+
+    class _FailingUnifiedRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            pass
+
+        async def handle_request(self):
+            raise RuntimeError("unexpected upstream failure")
+
+    monkeypatch.setattr(dispatch, "UnifiedPDRouter", _FailingUnifiedRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+        2: Instance(
+            job_name="d",
+            model_name="m",
+            id=2,
+            role=PDRole.ROLE_D.value,
+            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        ),
+    }
+
+    response = TestClient(_app(_config(), _Scheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 500
+    assert "Error occurred in proxy server endpoint" in caplog.text

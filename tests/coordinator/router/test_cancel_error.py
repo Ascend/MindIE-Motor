@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 import motor.common.utils.error as cancel_error
+from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.strategies.base import check_cancel_error
 
 
@@ -52,3 +53,9 @@ def test_check_cancel_error(
     reason, retry = check_cancel_error(error)
     assert reason == expected_reason
     assert retry is expected_retry
+
+
+def test_request_cancelled_error_carries_reason() -> None:
+    error = RequestCancelledError(cancel_error.CLIENT_DISCONNECT)
+    assert error.reason == cancel_error.CLIENT_DISCONNECT
+    assert str(error) == f"Request cancelled because of {cancel_error.CLIENT_DISCONNECT}"

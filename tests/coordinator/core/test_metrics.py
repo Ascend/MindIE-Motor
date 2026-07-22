@@ -1142,6 +1142,24 @@ def test_filter_kvstore_metrics_memcache():
 
 
 @patch("threading.Thread.start", MagicMock())
+def test_fetch_memcache_metrics_brackets_ipv6_service():
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.enable_kv_store_metrics = True
+    config.prometheus_metrics_config.kv_store_backend = "memcache"
+    config.prometheus_metrics_config.kv_store_service = "2001:db8::10"
+    config.prometheus_metrics_config.kv_store_metrics_port = 50090
+    collector = MetricsCollector(config)
+
+    response = MagicMock()
+    response.status_code = 200
+    response.text = ""
+    with patch("motor.coordinator.metrics.metrics_collector.requests.get", return_value=response) as mock_get:
+        collector._fetch_kv_store_metrics()
+
+    mock_get.assert_called_once_with("http://[2001:db8::10]:50090/metrics", timeout=15)
+
+
+@patch("threading.Thread.start", MagicMock())
 def test_get_metrics_full_with_kv_store_append():
     _cleanup_singletons()
     config = CoordinatorConfig()

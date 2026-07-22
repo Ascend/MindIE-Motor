@@ -23,7 +23,7 @@ class TestBuildPrecisionIssueAlarm:
         )
         assert alarm["instance_id"] == "10"
         assert alarm["p_instance_id"] == "5"
-        assert alarm["alarm_name"] == "Precision anomaly alarm"
+        assert alarm["alarm_name"] == "Precision Anomaly Alarm"
         assert alarm["native_me_dn"] == "qwen-7b"
 
     def test_build_with_none_p(self) -> None:

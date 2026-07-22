@@ -48,6 +48,7 @@ from motor.common.http.security_utils import (
 )
 from motor.common.logger import get_logger
 import motor.common.utils.error as cancel_error
+from motor.common.utils.error import RequestCancelledError
 
 logger = get_logger(__name__)
 
@@ -75,7 +76,7 @@ def with_cancellation(handler_func):
 
     Runs the handler and listen_for_disconnect(request) concurrently; when one
     finishes, the other is cancelled. If the handler finishes first, its return
-    value is returned; if the client disconnects first, returns None.
+    value is returned; if the client disconnects first, raises HTTP 499.
     """
 
     @wraps(handler_func)
@@ -94,7 +95,13 @@ def with_cancellation(handler_func):
                 return handler_task.result()
             else:
                 await _cancel_tasks_and_wait(*pending, reason=cancel_error.CLIENT_DISCONNECT)
-                return None
+                logger.info("Client disconnected; cancelling in-flight request with HTTP 499")
+                raise HTTPException(
+                    status_code=499,
+                    detail=sanitize_error_message(cancel_error.CLIENT_DISCONNECT),
+                )
+        except HTTPException:
+            raise
         except (Exception, asyncio.CancelledError):
             await _cancel_tasks_and_wait(handler_task, disconnect_task, reason=cancel_error.DISPATCH_ABORT)
             raise
@@ -256,6 +263,19 @@ async def handle_request(
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.warning("Upstream inference transport failed api=%s error=%s", req_info.api, e)
         return render_transport_error(e)
+    except RequestCancelledError as e:
+        req_info.trace_obj.set_trace_error_message(str(e))
+        logger.debug(
+            "Request cancelled api=%s req_id=%s reason=%s",
+            req_info.api,
+            req_info.req_id,
+            e.reason,
+        )
+        safe_error_msg = sanitize_error_message(str(e))
+        # Client disconnect is not a server fault (nginx-style 499).
+        if e.reason == cancel_error.CLIENT_DISCONNECT:
+            raise HTTPException(status_code=499, detail=safe_error_msg) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg) from e
     except Exception as e:
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.error(

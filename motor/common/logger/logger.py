@@ -127,8 +127,18 @@ class ProcessContextFilter(logging.Filter):
 ProcessNameFilter = ProcessContextFilter
 
 
+def _collapse_for_single_line(msg: str) -> str:
+    """Collapse line breaks so a truncated record stays on one physical line."""
+    return msg.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 class MaxLengthFormatter(logging.Formatter):
-    """Wrap a formatter and cap total formatted output length."""
+    """Wrap a formatter and cap total formatted output length.
+
+    Records within ``max_length`` are returned unchanged (multi-line traceback
+    kept). Oversized records are collapsed to a single physical line, then
+    truncated using the collapsed length.
+    """
 
     def __init__(self, inner: logging.Formatter, max_length: int):
         super().__init__()
@@ -137,9 +147,12 @@ class MaxLengthFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         msg = self.inner.format(record)
-        if len(msg) > self.max_length:
-            return msg[: self.max_length] + '...'
-        return msg
+        if len(msg) <= self.max_length:
+            return msg
+        collapsed = _collapse_for_single_line(msg)
+        if len(collapsed) <= self.max_length:
+            return collapsed
+        return collapsed[: self.max_length] + '...'
 
 
 class ApiAccessFilter(logging.Filter):

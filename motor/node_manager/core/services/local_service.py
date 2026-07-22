@@ -15,6 +15,7 @@ import threading
 
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
+from motor.common.utils.net import format_address
 from motor.config.node_manager import KVCacheStoreConfig
 from motor.node_manager.core.services.registry import register_service, SERVICE_KV_STORE
 
@@ -218,8 +219,8 @@ class LocalService:
 
             config = LocalConfig()
             # --- MetaService / ConfigStore connectivity ---
-            config.meta_service_url = f"tcp://{self._kv_cfg.service}:{self._kv_cfg.port}"
-            config.config_store_url = f"tcp://{self._kv_cfg.service}:{self._kv_cfg.config_store_port}"
+            config.meta_service_url = f"tcp://{format_address(self._kv_cfg.service, self._kv_cfg.port)}"
+            config.config_store_url = f"tcp://{format_address(self._kv_cfg.service, self._kv_cfg.config_store_port)}"
             # --- General settings ---
             config.log_level = "info"
             config.world_size = 256

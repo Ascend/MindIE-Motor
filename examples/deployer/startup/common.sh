@@ -202,7 +202,12 @@ sync_mmc_local_config() {
 
     # Replace hardcoded DNS name with the actual K8s service FQDN
     if [ -n "$KVS_MASTER_SERVICE" ]; then
-        sed -i "s|tcp://[^:]*:|tcp://${KVS_MASTER_SERVICE}:|g" "$mmc_dst"
+        local mmc_master_host="$KVS_MASTER_SERVICE"
+        if [[ "$mmc_master_host" == *:* && "$mmc_master_host" != \[*\] ]]; then
+            mmc_master_host="[$mmc_master_host]"
+        fi
+        sed -E -i.bak "s|tcp://[^[:space:]]+:([0-9]+)|tcp://${mmc_master_host}:\1|g" "$mmc_dst"
+        rm -f "${mmc_dst}.bak"
     fi
 
 }

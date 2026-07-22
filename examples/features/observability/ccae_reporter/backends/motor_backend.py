@@ -122,6 +122,34 @@ class MotorBackend(BaseBackend):
             self.logger.error("terminate_instance failed: %s", e)
             return False
 
+    def check_instance_exists(self, instance_id: int) -> bool | None:
+        """Return whether *instance_id* is known to Controller; None when check is unavailable."""
+        if instance_id <= 0:
+            return True
+        if not self.is_alive():
+            self.logger.warning("Controller not ready (readiness), skip check_instance_exists")
+            return None
+        try:
+            response = self.probe_client.do_post(
+                "/controller/check_instance",
+                {"instance_id": instance_id},
+            )
+            if response.status_code != 200:
+                self.logger.error(
+                    "check_instance_exists HTTP %s: %s",
+                    response.status_code,
+                    getattr(response, "text", ""),
+                )
+                return None
+            body = response.json()
+            if not isinstance(body, dict) or "exists" not in body:
+                self.logger.error("check_instance_exists invalid body: %r", body)
+                return None
+            return bool(body["exists"])
+        except Exception as e:
+            self.logger.error("check_instance_exists failed: %s", e)
+            return None
+
     def _fetch_metrics_info(self) -> str:
         """Fetch metrics from Coordinator (all metrics are now served by Coordinator)."""
         metrics_url = "/metrics"

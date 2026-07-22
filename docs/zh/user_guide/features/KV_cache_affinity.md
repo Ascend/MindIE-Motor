@@ -210,6 +210,11 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | 配置项 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- |
 | **scheduler_type** | string | `kv_cache_affinity` | 设置为 `kv_cache_affinity` 表示采用 KV Cache 亲和性调度算法。 |
+| **kv_affinity_mode** | string | `unified` / `load_gated` | KV Cache 亲和性子策略。`unified`（默认）：单一评分融合亲和性与实时负载，选取评分最低的 endpoint；`load_gated`：先保留负载最低的 N 个 endpoint，再从中选择缓存前缀最长的 endpoint。 |
+| **kv_affinity_load_weight** | float | `[0, +∞)` | `unified` 模式下 endpoint 实时负载的权重。`1.0` 表示负载与亲和折扣后的 prefill 成本同等重要；`0` 表示纯亲和性（最长前缀优先，不感知负载）。默认值：`1.0`。 |
+| **kv_affinity_overlap_credit** | float | `[0, +∞)` | 缓存前缀对 prefill 成本的折扣系数。值越大，已有缓存前缀对 prefill 成本的折扣越高。默认值：`1.0`。 |
+| **kv_affinity_prefill_load_scale** | float | `[0, +∞)` | `unified` 模式下（经亲和折扣后的）prefill 成本权重。默认值：`1.0`。 |
+| **kv_affinity_load_gate_topn** | int | `[0, +∞)` | `load_gated` 模式下先保留负载最低的 N 个 endpoint，再从中按亲和性选择最优 endpoint。`0` 时回退为 `2`。默认值：`0`。 |
 
 **`motor_engine_prefill_config.engine_config.kv-events-config`（P 实例 KV 事件配置）**
 

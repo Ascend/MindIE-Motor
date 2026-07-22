@@ -24,7 +24,7 @@
 | 调度方 | `FaultManager` 策略中心（线程池异步执行） |
 | 策略注册 | `strategy.py` 中 `level4_strategy` / L5 / L6 |
 
-使用与配置说明见 [ScaleP2D 用户指南](../../user_guide/features/scale_p2d.md)。
+使用与配置说明见 [ScaleP2D 用户指南](../../user_guide/features/fault_tolerance/scale_p2d.md)。
 
 ---
 

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from motor.config.coordinator import CoordinatorConfig, TokenSamplingConfig
+from motor.config.coordinator import CoordinatorConfig, PrecisionDetectionConfig
 from motor.config.tls_config import TLSConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.request_manager import RequestManager
@@ -37,7 +37,7 @@ class _StubNeverIssueChecker(PrecisionChecker):
         return CheckResult(has_issue=bool(self._results.pop(0)) if self._results else False)
 
 
-def _build_rep(cfg: TokenSamplingConfig):
+def _build_rep(cfg: PrecisionDetectionConfig):
     sched = AsyncMock()
     sched.has_required_instances = AsyncMock(return_value=InstanceReadiness.REQUIRED_MET)
     return build_precision_reporter(
@@ -65,7 +65,7 @@ def _make_sample(*, p_id: int | None = None, d_id: int = 2, req_id: str = "req")
 class TestAlarmPayloadPDInstanceIds:
     @pytest.mark.asyncio
     async def test_alarm_payload_contains_both_p_and_d_instance_ids(self) -> None:
-        cfg = TokenSamplingConfig(
+        cfg = PrecisionDetectionConfig(
             precision_check_enabled=True,
             precision_issue_threshold=1,
             probe_max_attempts=1,
@@ -91,7 +91,7 @@ class TestAlarmPayloadPDInstanceIds:
                 payload = mock_report.call_args[0][0]
                 assert payload["instance_id"] == "2"
                 assert payload["p_instance_id"] == "1"
-                assert payload["alarm_name"] == "Precision anomaly alarm"
+                assert payload["alarm_name"] == "Precision Anomaly Alarm"
                 assert payload["native_me_dn"] == "test-model"
                 from motor.common.alarm.precision_issue_alarm import PRECISION_ISSUE_ALARM_ID
 
@@ -99,7 +99,7 @@ class TestAlarmPayloadPDInstanceIds:
 
     @pytest.mark.asyncio
     async def test_alarm_payload_p_instance_id_empty_when_none(self) -> None:
-        cfg = TokenSamplingConfig(
+        cfg = PrecisionDetectionConfig(
             precision_check_enabled=True,
             precision_issue_threshold=1,
             probe_max_attempts=1,

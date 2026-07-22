@@ -26,9 +26,12 @@ class NewLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         record.fileinfo = self._fileinfo(record)
         msg = super().format(record)
-        if record.message != "":
-            parts = msg.split(record.message)
-            msg = msg.replace("\n", "\r\n" + parts[0])
+        if record.message and "\n" in record.message:
+            parts = msg.split(record.message, 1)
+            if len(parts) == 2:
+                header, suffix = parts
+                expanded = record.message.replace("\n", "\r\n" + header)
+                msg = header + expanded + suffix
         return msg
 
     def _fileinfo(self, record: logging.LogRecord) -> str:

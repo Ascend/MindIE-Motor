@@ -154,8 +154,10 @@
       "kv_store_metrics_endpoint": ""
     },
     "exception_config": {
+      "reschedule_config": {
+        "enable": false
+      },
       "max_retry": 5,
-      "reschedule_enabled": true,
       "transport_max_retry": null,
       "retry_delay": 0.2,
       "first_token_timeout": 600,

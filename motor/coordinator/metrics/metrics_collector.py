@@ -21,6 +21,7 @@ from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
+from motor.common.utils.net import format_address
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_client.engine_server_api_client import EngineServerApiClient
@@ -539,7 +540,7 @@ class MetricsCollector(ThreadSafeSingleton):
                 port = str(cfg.kv_store_metrics_port)
                 if not port or port == "0":
                     port = "50088" if cfg.kv_store_backend == "mooncake" else "50090"
-                endpoint = f"http://{master}:{port}/metrics"
+                endpoint = f"http://{format_address(master, port)}/metrics"
 
         # --- determine enabled ---
         enabled = cfg.enable_kv_store_metrics or bool(cfg.kv_store_backend)

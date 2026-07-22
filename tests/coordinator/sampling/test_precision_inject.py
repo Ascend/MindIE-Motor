@@ -14,15 +14,15 @@ import logging
 
 import pytest
 
-from motor.config.coordinator import TokenSamplingConfig
+from motor.config.coordinator import PrecisionDetectionConfig
 from motor.coordinator.router.precision_sample.request import (
     inject_logprobs,
     logger as request_logger,
 )
 
 
-def _cfg(logprobs_count: int = 5) -> TokenSamplingConfig:
-    return TokenSamplingConfig(logprobs_count=logprobs_count)
+def _cfg(logprobs_count: int = 5) -> PrecisionDetectionConfig:
+    return PrecisionDetectionConfig(logprobs_count=logprobs_count)
 
 
 class TestInjectCompletion:
