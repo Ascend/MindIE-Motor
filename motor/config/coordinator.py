@@ -667,25 +667,29 @@ class CoordinatorConfig:
         # Validate host address
         self._validate_ip_or_hostname(self.api_config.coordinator_api_host, "coordinator_api_host")
 
-        # Validate rate limit configuration
-        self._validate_positive_number(self.rate_limit_config.max_requests, "max_requests")
-        self._validate_positive_number(self.rate_limit_config.window_size, "window_size")
+        # rate_limit Validate
 
-        if not (100 <= self.rate_limit_config.error_status_code <= 599):
-            self._errors.append("error_status_code must be in range 100-599")
-
-        if self.rate_limit_config.provider not in ("simple", "olc"):
-            self._errors.append(
-                f"rate_limit_config.provider must be 'simple' or 'olc', got '{self.rate_limit_config.provider}'"
-            )
-
-        if self.rate_limit_config.enable_rate_limit and self.rate_limit_config.provider == "olc":
-            if not self.rate_limit_config.olc_config_path:
-                self._errors.append("rate_limit_config.olc_config_path is required when provider is 'olc'")
-            elif not os.path.isdir(self.rate_limit_config.olc_config_path):
+        if self.rate_limit_config.enable_rate_limit:
+            if self.rate_limit_config.provider not in ("simple", "olc"):
                 self._errors.append(
-                    f"rate_limit_config.olc_config_path does not exist: {self.rate_limit_config.olc_config_path}"
+                    f"rate_limit_config.provider must be 'simple' or 'olc', got '{self.rate_limit_config.provider}'"
                 )
+
+            if self.rate_limit_config.provider == "simple":
+                # Validate rate limit configuration
+                self._validate_positive_number(self.rate_limit_config.max_requests, "max_requests")
+                self._validate_positive_number(self.rate_limit_config.window_size, "window_size")
+
+                if not (100 <= self.rate_limit_config.error_status_code <= 599):
+                    self._errors.append("error_status_code must be in range 100-599")
+
+            if self.rate_limit_config.provider == "olc":
+                if not self.rate_limit_config.olc_config_path:
+                    self._errors.append("rate_limit_config.olc_config_path is required when provider is 'olc'")
+                elif not os.path.isdir(self.rate_limit_config.olc_config_path):
+                    self._errors.append(
+                        f"rate_limit_config.olc_config_path does not exist: {self.rate_limit_config.olc_config_path}"
+                    )
 
         # Validate Prometheus metrics configuration
         self._validate_positive_number(self.prometheus_metrics_config.reuse_time, "reuse_time")

@@ -82,10 +82,21 @@ class TokenBucket:
         truncate to the new capacity. If capacity increases, add the delta to current
         tokens so that additional quota is immediately available after expansion.
 
+        Negative values are rejected: capacity must be >= 0, refill_rate must be >= 0.
+        On invalid input the current parameters are kept unchanged and a warning is logged.
+
         Args:
             capacity: New bucket capacity.
             refill_rate: New token refill rate (tokens per second).
         """
+        if capacity < 0 or refill_rate < 0:
+            logger.warning(
+                "Reject token bucket update due to invalid params: capacity=%s (expected >= 0), "
+                "refill_rate=%s (expected >= 0); keep current capacity=%s, refill_rate=%s",
+                capacity, refill_rate, self.capacity, self.refill_rate,
+            )
+            return
+
         with self._lock:
             old_capacity = self.capacity
             self.capacity = capacity
@@ -189,10 +200,33 @@ class SimpleRateLimiter:
         Update max_requests and/or window_size, and sync the TokenBucket's
         capacity and refill_rate accordingly.
 
+        Invalid values are rejected: max_requests must be >= 0, window_size must be > 0
+        (a zero window_size would cause a division by zero when computing refill_rate).
+        On invalid input the current parameters are kept unchanged and a warning is logged.
+
         Args:
             max_requests: New maximum number of requests; None means no change.
             window_size: New time window in seconds; None means no change.
         """
+        if max_requests is None and window_size is None:
+            logger.info("Skip rate limiter update: both max_requests and window_size are None")
+            return
+
+        if max_requests is not None and max_requests < 0:
+            logger.warning(
+                "Reject rate limiter update due to invalid max_requests=%s (expected >= 0); "
+                "keep current max_requests=%s, window_size=%s",
+                max_requests, self.max_requests, self.window_size,
+            )
+            return
+        if window_size is not None and window_size <= 0:
+            logger.warning(
+                "Reject rate limiter update due to invalid window_size=%s (expected > 0); "
+                "keep current max_requests=%s, window_size=%s",
+                window_size, self.max_requests, self.window_size,
+            )
+            return
+
         if max_requests is not None:
             self.max_requests = max_requests
         if window_size is not None:
