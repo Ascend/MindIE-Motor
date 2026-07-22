@@ -56,7 +56,10 @@ from motor.coordinator.router.rescheduler.rescheduler import (
 )
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.precision_sample.request import inject_logprobs
-from motor.coordinator.router.precision_sample import response as sampling_resp
+from motor.coordinator.router.adapters.stream import (
+    parse_stream_chunk_json,
+    encode_stream_chunk_bytes,
+)
 from motor.coordinator.router.stream_response import (
     CommitAwareStreamingResponse,
     StreamCommitController,
@@ -65,11 +68,6 @@ from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
     is_cb_reportable_failure,
     is_retryable_upstream_error,
-)
-from motor.coordinator.router.adapters.stream import (
-    parse_stream_chunk_json,
-    encode_stream_chunk_bytes,
-    update_token_id_cache,
 )
 
 
@@ -1090,10 +1088,10 @@ class UnifiedPDRouter(BaseRouter):
                 )
         if (
             role == PDRole.ROLE_D
-            and self.config.token_sampling_config.precision_check_enabled
+            and self.config.precision_detection_config.precision_check_enabled
             and self._sampling_manager is not None
         ):
-            inject_logprobs(req, self.config.token_sampling_config, req_id=self.req_info.req_id)
+            inject_logprobs(req, self.config.precision_detection_config, req_id=self.req_info.req_id)
         req[MOTOR_DISPATCH_KEY] = attempt.dispatch_for(role, self._DISPATCH_MODE).model_dump(mode="json")
         if prefill_result is not None:
             req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")
@@ -1637,48 +1635,6 @@ class UnifiedPDRouter(BaseRouter):
     # ------------------------------------------------------------------
     # Precision sampling helpers
     # ------------------------------------------------------------------
-
-    def _init_sampling_state(self) -> dict:
-        return {
-            "enabled": self.config.token_sampling_config.precision_check_enabled,
-            "client_logprobs": bool(self.req_info.req_data.get("logprobs")),
-            "lp_count": self.config.token_sampling_config.logprobs_count,
-            "info": {},
-        }
-
-    def _collect_logprobs_from_stream_chunk(self, chunk: bytes, sampling_state: dict) -> bytes:
-        if not sampling_state["enabled"] or not chunk:
-            return chunk
-        chunk_json = parse_stream_chunk_json(chunk, self.logger)
-        if chunk_json is None:
-            return chunk
-        update_token_id_cache(sampling_state["info"], chunk_json)
-        sampling_resp.update_logprob_cache(
-            sampling_state["info"],
-            chunk_json,
-            logprobs_count=sampling_state["lp_count"],
-        )
-        sampling_resp.strip_logprobs_for_client(
-            chunk_json,
-            client_requested_logprobs=sampling_state["client_logprobs"],
-        )
-        return encode_stream_chunk_bytes(chunk, chunk_json)
-
-    def _collect_logprobs_from_nonstream_body(self, body: dict, sampling_state: dict) -> dict:
-        if not sampling_state["enabled"]:
-            return body
-        info = sampling_state["info"]
-        update_token_id_cache(info, body)
-        sampling_resp.update_logprob_cache(info, body, logprobs_count=sampling_state["lp_count"])
-        return body
-
-    def _strip_logprobs_for_client(self, body: dict, sampling_state: dict) -> None:
-        if not sampling_state["enabled"]:
-            return
-        sampling_resp.strip_logprobs_for_client(
-            body,
-            client_requested_logprobs=sampling_state["client_logprobs"],
-        )
 
     async def _maybe_submit_sample(self, attempt: AttemptContext, sampling_state: dict) -> None:
         self.logger.debug(

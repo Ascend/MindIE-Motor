@@ -10,6 +10,7 @@
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -52,6 +53,8 @@ from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
+
+_ROUTER_LOGGER = _resolve_logger_name("motor.coordinator.router.strategies.base")
 
 
 def _instance(
@@ -197,6 +200,56 @@ class _PrefillResultClient(_Client):
             },
             request=request,
         )
+
+
+def test_collect_logprobs_removes_null_field_when_client_did_not_request_it():
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.logger = MagicMock()
+    sampling_state = {
+        "enabled": True,
+        "client_logprobs": False,
+        "lp_count": 1,
+        "info": {},
+    }
+    chunk = b'data: {"choices":[{"logprobs":null,"token_ids":[1]}]}\n\n'
+
+    out = router._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+
+    assert out is not chunk
+    assert b'"logprobs"' not in out
+
+
+def test_collect_logprobs_skips_parse_for_plain_content_chunk():
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.logger = MagicMock()
+    sampling_state = {
+        "enabled": True,
+        "client_logprobs": False,
+        "lp_count": 1,
+        "info": {},
+    }
+    chunk = b'data: {"choices":[{"delta":{"content":"hello"},"index":0}]}\n\n'
+
+    out = router._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+
+    assert out is chunk
+
+
+def test_collect_logprobs_keeps_original_bytes_when_only_token_ids_present():
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.logger = MagicMock()
+    sampling_state = {
+        "enabled": True,
+        "client_logprobs": False,
+        "lp_count": 1,
+        "info": {},
+    }
+    chunk = b'data: {"choices":[{"token_ids":[1,2,3]}]}\n\n'
+
+    out = router._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+
+    assert out is chunk
+    assert sampling_state["info"]["cached_output_token_ids"] == [1, 2, 3]
 
 
 class _StreamResponse:
@@ -1202,27 +1255,28 @@ async def test_unified_pd_release_failure_keeps_local_release_and_is_drained(cap
         assert original is not None
         original_active_kv_cache = original.active_kv_cache
 
-        submitted = await router._release_attempt_resource(
-            attempt.prefill_resource,
-            attempt.attempt_seq,
-            WorkloadAction.RELEASE_KV,
-            attempt,
-            wait=False,
-        )
-        assert submitted is True
-        await router._drain_release_tasks()
+        with caplog.at_level(logging.DEBUG, logger=_ROUTER_LOGGER):
+            submitted = await router._release_attempt_resource(
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_KV,
+                attempt,
+                wait=False,
+            )
+            assert submitted is True
+            await router._drain_release_tasks()
 
-        current = await request_manager.get_req_attempt_workload(
-            req_info.req_id,
-            attempt.attempt_seq,
-            PDRole.ROLE_P,
-        )
-        assert current is not None
-        assert current.active_kv_cache < original_active_kv_cache
-        assert not attempt.release_flags.prefill_kv
-        assert scheduler.update_workload.await_count == 3
-        assert "Release workload background task failed" in caplog.text
-        assert "Release workload rolled back locally" not in caplog.text
+            current = await request_manager.get_req_attempt_workload(
+                req_info.req_id,
+                attempt.attempt_seq,
+                PDRole.ROLE_P,
+            )
+            assert current is not None
+            assert current.active_kv_cache < original_active_kv_cache
+            assert not attempt.release_flags.prefill_kv
+            assert scheduler.update_workload.await_count == 3
+            assert "Release workload background task failed" in caplog.text
+            assert "Release workload rolled back locally" not in caplog.text
     finally:
         await request_manager.del_req_info(req_info.req_id)
 
@@ -1254,19 +1308,20 @@ async def test_unified_pd_release_cancel_propagates_and_cleans_tracking(caplog):
     await request_manager.add_req_info(req_info)
     try:
         attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
-        with pytest.raises(asyncio.CancelledError):
-            await router._release_attempt_resource(
-                attempt.prefill_resource,
-                attempt.attempt_seq,
-                WorkloadAction.RELEASE_TOKENS,
-                attempt,
-            )
+        with caplog.at_level(logging.DEBUG, logger=_ROUTER_LOGGER):
+            with pytest.raises(asyncio.CancelledError):
+                await router._release_attempt_resource(
+                    attempt.prefill_resource,
+                    attempt.attempt_seq,
+                    WorkloadAction.RELEASE_TOKENS,
+                    attempt,
+                )
 
-        assert scheduler.update_workload.await_count == 1
-        assert not attempt.release_flags.prefill_tokens
-        assert not router._release_records
-        assert not router._release_inflight
-        assert "Release workload task cancelled stage=release_p_tokens" in caplog.text
+            assert scheduler.update_workload.await_count == 1
+            assert not attempt.release_flags.prefill_tokens
+            assert not router._release_records
+            assert not router._release_inflight
+            assert "Release workload task cancelled stage=release_p_tokens" in caplog.text
     finally:
         await request_manager.del_req_info(req_info.req_id)
 
@@ -1298,22 +1353,23 @@ async def test_unified_pd_background_release_cancel_is_logged_and_drained(caplog
     await request_manager.add_req_info(req_info)
     try:
         attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
-        submitted = await router._release_attempt_resource(
-            attempt.prefill_resource,
-            attempt.attempt_seq,
-            WorkloadAction.RELEASE_TOKENS,
-            attempt,
-            wait=False,
-        )
-        assert submitted is True
+        with caplog.at_level(logging.DEBUG, logger=_ROUTER_LOGGER):
+            submitted = await router._release_attempt_resource(
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+                wait=False,
+            )
+            assert submitted is True
 
-        await router._drain_release_tasks()
+            await router._drain_release_tasks()
 
-        assert scheduler.update_workload.await_count == 1
-        assert not attempt.release_flags.prefill_tokens
-        assert not router._release_records
-        assert not router._release_inflight
-        assert "Release workload background task cancelled stage=release_p_tokens" in caplog.text
+            assert scheduler.update_workload.await_count == 1
+            assert not attempt.release_flags.prefill_tokens
+            assert not router._release_records
+            assert not router._release_inflight
+            assert "Release workload background task cancelled stage=release_p_tokens" in caplog.text
     finally:
         await request_manager.del_req_info(req_info.req_id)
 
@@ -1890,15 +1946,16 @@ async def test_unified_pd_stop_attempt_drains_release_failures(monkeypatch, capl
     try:
         attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
 
-        await router._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
+        with caplog.at_level(logging.DEBUG, logger=_ROUTER_LOGGER):
+            await router._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
 
-        assert attempt.state == AttemptState.STOPPED
-        assert scheduler.update_workload.await_count == 9
-        assert "Release workload background task failed stage=release_p_tokens" in caplog.text
-        assert "Release workload background task failed stage=release_p_kv" in caplog.text
-        assert "Release workload background task failed stage=release_d_tokens" in caplog.text
-        assert not router._release_records
-        assert not router._release_inflight
+            assert attempt.state == AttemptState.STOPPED
+            assert scheduler.update_workload.await_count == 9
+            assert "Release workload background task failed stage=release_p_tokens" in caplog.text
+            assert "Release workload background task failed stage=release_p_kv" in caplog.text
+            assert "Release workload background task failed stage=release_d_tokens" in caplog.text
+            assert not router._release_records
+            assert not router._release_inflight
     finally:
         await request_manager.del_req_info(req_info.req_id)
 

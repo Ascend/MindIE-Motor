@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -19,6 +18,37 @@ from typing import Any
 import msgspec
 
 from motor.coordinator.models.constants import OpenAIField
+
+PROMPT_TOKEN_IDS = OpenAIField.PROMPT_TOKEN_IDS.value
+TOKEN_IDS = OpenAIField.TOKEN_IDS.value
+_JSON_FIELD_TOKEN_IDS = f'"{TOKEN_IDS}"'.encode()
+_JSON_FIELD_PROMPT_TOKEN_IDS = f'"{PROMPT_TOKEN_IDS}"'.encode()
+_JSON_FIELD_LOGPROBS = b'"logprobs"'
+_JSON_WHITESPACE = b" \t\r\n"
+
+
+def _contains_json_field(chunk: bytes, field: bytes) -> bool:
+    """Return whether ``field`` occurs as a JSON object key, not as text content."""
+    offset = 0
+    while True:
+        index = chunk.find(field, offset)
+        if index < 0:
+            return False
+        cursor = index + len(field)
+        while cursor < len(chunk) and chunk[cursor] in _JSON_WHITESPACE:
+            cursor += 1
+        if cursor < len(chunk) and chunk[cursor] == ord(":"):
+            return True
+        offset = index + 1
+
+
+def stream_chunk_needs_sampling_parse(chunk: bytes) -> bool:
+    """Return True when a chunk may carry precision-sampling fields worth parsing."""
+    return (
+        _contains_json_field(chunk, _JSON_FIELD_TOKEN_IDS)
+        or _contains_json_field(chunk, _JSON_FIELD_PROMPT_TOKEN_IDS)
+        or _contains_json_field(chunk, _JSON_FIELD_LOGPROBS)
+    )
 
 
 def _compact_json_bytes(obj: Any) -> bytes:
