@@ -110,8 +110,8 @@ def test_default_config_initialization():
     assert config.logging_config.log_max_line_length == 8192
     assert config.prometheus_metrics_config.reuse_time == 3
     assert config.exception_config.max_retry == 5
-    assert config.exception_config.reschedule_enabled is True
-    assert config.exception_config.recompute_enabled is True
+    assert config.exception_config.reschedule_enabled is False
+    assert not hasattr(config.exception_config, "recompute_enabled")
     assert config.exception_config.first_token_timeout == 600
     assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.scheduler_config.scheduler_type.value == "load_balance"
@@ -177,7 +177,7 @@ def test_new_reschedule_config_takes_precedence_over_deprecated_alias(_temp_json
     test_config = {
         "exception_config": {
             "recompute_enabled": False,
-            "reschedule_enabled": True,
+            "reschedule_config": {"enable": True},
         }
     }
     with open(_temp_json_file, 'w', encoding="utf-8") as f:
@@ -264,8 +264,46 @@ def test_from_json_file_not_found():
     assert config.api_config.coordinator_api_infer_port == 1025  # default value
 
 
-def test_from_json_loads_token_sampling_config_top_level(_temp_json_file):
-    """``token_sampling_config`` merges from flat coordinator JSON."""
+def test_from_json_loads_precision_detection_config_top_level(_temp_json_file):
+    """``precision_detection_config`` merges from flat coordinator JSON."""
+    test_config = {
+        "precision_detection_config": {
+            "precision_check_enabled": True,
+            "interval_seconds": 45.5,
+            "logprobs_count": 3,
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.precision_detection_config.precision_check_enabled is True
+    assert config.precision_detection_config.interval_seconds == 45.5
+    assert config.precision_detection_config.logprobs_count == 3
+
+
+def test_from_json_loads_precision_detection_config_motor_coordinator_wrapper(_temp_json_file):
+    """``precision_detection_config`` loads from ``motor_coordinator_config`` user config shape."""
+    wrapped = {
+        "motor_coordinator_config": {
+            "precision_detection_config": {
+                "precision_check_enabled": True,
+                "interval_seconds": 60.0,
+                "logprobs_count": 2,
+            }
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(wrapped, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.precision_detection_config.precision_check_enabled is True
+    assert config.precision_detection_config.interval_seconds == 60.0
+    assert config.precision_detection_config.logprobs_count == 2
+
+
+def test_from_json_loads_deprecated_token_sampling_config(_temp_json_file):
+    """``token_sampling_config`` remains accepted for old user config files."""
     test_config = {
         "token_sampling_config": {
             "precision_check_enabled": True,
@@ -277,63 +315,73 @@ def test_from_json_loads_token_sampling_config_top_level(_temp_json_file):
         json.dump(test_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
-    assert config.token_sampling_config.precision_check_enabled is True
-    assert config.token_sampling_config.interval_seconds == 45.5
-    assert config.token_sampling_config.logprobs_count == 3
+    assert config.precision_detection_config.precision_check_enabled is True
+    assert config.precision_detection_config.interval_seconds == 45.5
+    assert config.precision_detection_config.logprobs_count == 3
 
 
-def test_from_json_loads_token_sampling_config_motor_coordinator_wrapper(_temp_json_file):
-    """``token_sampling_config`` loads from ``motor_coordinator_config`` user config shape."""
-    wrapped = {
-        "motor_coordinator_config": {
-            "token_sampling_config": {
-                "precision_check_enabled": True,
-                "interval_seconds": 60.0,
-                "logprobs_count": 2,
-            }
-        }
+def test_from_json_precision_detection_config_precedes_deprecated_token_sampling_config(_temp_json_file):
+    """New user-facing config wins when both old and new names are present."""
+    test_config = {
+        "precision_detection_config": {
+            "precision_check_enabled": True,
+            "interval_seconds": 60.0,
+            "logprobs_count": 5,
+        },
+        "token_sampling_config": {
+            "precision_check_enabled": False,
+            "interval_seconds": 10.0,
+            "logprobs_count": 1,
+        },
     }
     with open(_temp_json_file, "w", encoding="utf-8") as f:
-        json.dump(wrapped, f)
+        json.dump(test_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
-    assert config.token_sampling_config.precision_check_enabled is True
-    assert config.token_sampling_config.interval_seconds == 60.0
-    assert config.token_sampling_config.logprobs_count == 2
+    assert config.precision_detection_config.precision_check_enabled is True
+    assert config.precision_detection_config.interval_seconds == 60.0
+    assert config.precision_detection_config.logprobs_count == 5
 
 
-def test_token_sampling_config_validation_non_positive_interval():
-    with pytest.raises(ValueError, match="token_sampling_config.interval_seconds"):
+def test_to_dict_uses_precision_detection_config_name():
+    config_dict = CoordinatorConfig().to_dict()
+
+    assert "precision_detection_config" in config_dict
+    assert "token_sampling_config" not in config_dict
+
+
+def test_precision_detection_config_validation_non_positive_interval():
+    with pytest.raises(ValueError, match="precision_detection_config.interval_seconds"):
         c = CoordinatorConfig()
-        c.token_sampling_config.interval_seconds = 0
+        c.precision_detection_config.interval_seconds = 0
         c.validate_config()
 
 
-def test_token_sampling_config_validation_non_positive_logprobs():
-    with pytest.raises(ValueError, match="token_sampling_config.logprobs_count"):
+def test_precision_detection_config_validation_non_positive_logprobs():
+    with pytest.raises(ValueError, match="precision_detection_config.logprobs_count"):
         c = CoordinatorConfig()
-        c.token_sampling_config.logprobs_count = 0
+        c.precision_detection_config.logprobs_count = 0
         c.validate_config()
 
 
-def test_token_sampling_config_validation_non_positive_precision_threshold():
-    with pytest.raises(ValueError, match="token_sampling_config.precision_issue_threshold"):
+def test_precision_detection_config_validation_non_positive_precision_threshold():
+    with pytest.raises(ValueError, match="precision_detection_config.precision_issue_threshold"):
         c = CoordinatorConfig()
-        c.token_sampling_config.precision_issue_threshold = 0
+        c.precision_detection_config.precision_issue_threshold = 0
         c.validate_config()
 
 
-def test_token_sampling_config_validation_non_positive_probe_attempts():
-    with pytest.raises(ValueError, match="token_sampling_config.probe_max_attempts"):
+def test_precision_detection_config_validation_non_positive_probe_attempts():
+    with pytest.raises(ValueError, match="precision_detection_config.probe_max_attempts"):
         c = CoordinatorConfig()
-        c.token_sampling_config.probe_max_attempts = 0
+        c.precision_detection_config.probe_max_attempts = 0
         c.validate_config()
 
 
-def test_token_sampling_config_validation_non_positive_probe_timeout():
-    with pytest.raises(ValueError, match="token_sampling_config.probe_timeout_seconds"):
+def test_precision_detection_config_validation_non_positive_probe_timeout():
+    with pytest.raises(ValueError, match="precision_detection_config.probe_timeout_seconds"):
         c = CoordinatorConfig()
-        c.token_sampling_config.probe_timeout_seconds = 0
+        c.precision_detection_config.probe_timeout_seconds = 0
         c.validate_config()
 
 
@@ -373,7 +421,7 @@ def test_config_validation_errors(param, value, expected_error):
     """Test various configuration validation errors"""
     with pytest.raises(ValueError, match=expected_error):
         config = CoordinatorConfig()
-        config.rate_limit_config.enable_rate_limit=True
+        config.rate_limit_config.enable_rate_limit = True
         if param in ["log_max_line_length"]:
             setattr(config.logging_config, param, value)
         elif param in ["max_retry", "retry_delay", "first_token_timeout", "infer_timeout"]:
@@ -439,7 +487,7 @@ def test_to_dict():
     # Check enum serialization
     assert 'deploy_mode' not in config_dict['scheduler_config']
     assert config_dict['scheduler_config']['scheduler_type'] == 'load_balance'
-    assert config_dict['exception_config']['reschedule_enabled'] is True
+    assert config_dict['exception_config']['reschedule_config']['enable'] is False
     assert 'recompute_enabled' not in config_dict['exception_config']
     assert 'recompute_max_retry' not in config_dict['exception_config']
 
