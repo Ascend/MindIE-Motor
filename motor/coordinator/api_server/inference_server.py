@@ -161,7 +161,7 @@ class InferenceServer(BaseCoordinatorServer):
             build_precision_reporter,
         )
 
-        sampling_cfg = self.coordinator_config.token_sampling_config
+        sampling_cfg = self.coordinator_config.precision_detection_config
         TracerManager(self.coordinator_config)
         await self._scheduler_connection.connect()
         if sampling_cfg.precision_check_enabled:
