@@ -19,14 +19,14 @@ from typing import TYPE_CHECKING
 from motor.common.logger import get_logger
 
 if TYPE_CHECKING:
-    from motor.config.coordinator import TokenSamplingConfig
+    from motor.config.coordinator import PrecisionDetectionConfig
 
 logger = get_logger(__name__)
 
 
 def inject_logprobs(
     req_data: dict,
-    config: "TokenSamplingConfig",
+    config: "PrecisionDetectionConfig",
     *,
     req_id: str = "",
 ) -> None:

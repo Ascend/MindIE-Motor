@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from motor.common.logger import get_logger
 
 if TYPE_CHECKING:
-    from motor.config.coordinator import TokenSamplingConfig
+    from motor.config.coordinator import PrecisionDetectionConfig
     from motor.coordinator.fault_tolerance.precision.reporter import PrecisionReporter
 
 logger = get_logger(__name__)
@@ -68,7 +68,7 @@ class SampleController:
 
     def __init__(
         self,
-        config: "TokenSamplingConfig",
+        config: "PrecisionDetectionConfig",
         precision: "PrecisionReporter",
         *,
         scheduler_client: Any | None = None,

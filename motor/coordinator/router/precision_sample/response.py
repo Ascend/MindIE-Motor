@@ -86,7 +86,7 @@ def update_logprob_cache(
 
     Args:
         logprobs_count: same field that drives ``top_logprobs`` injection
-            (``TokenSamplingConfig.logprobs_count``). 1 → only top-1 fallback;
+            (``PrecisionDetectionConfig.logprobs_count``). 1 → only top-1 fallback;
             >1 → parse ``content[].top_logprobs`` (Chat) or
             ``top_logprobs[i]`` (Completion) for multi-key views.
     """

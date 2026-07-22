@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from motor.config.coordinator import CoordinatorConfig, TokenSamplingConfig
+from motor.config.coordinator import CoordinatorConfig, PrecisionDetectionConfig
 from motor.config.tls_config import TLSConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.request_manager import RequestManager
@@ -87,7 +87,7 @@ def reset_stub_debug_sequence(results: list[bool] | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_rep(cfg: TokenSamplingConfig, **kwargs):
+def _build_rep(cfg: PrecisionDetectionConfig, **kwargs):
     sched = AsyncMock()
     sched.has_required_instances = AsyncMock(return_value=InstanceReadiness.REQUIRED_MET)
     return build_precision_reporter(
@@ -132,7 +132,7 @@ async def test_stub_sequential_consumption_and_exhausted_fail_open() -> None:
 @pytest.mark.asyncio
 async def test_false_resets_consecutive_streak() -> None:
     reset_stub_debug_sequence([True, True, False, True])
-    cfg = TokenSamplingConfig(
+    cfg = PrecisionDetectionConfig(
         precision_check_enabled=True,
         precision_issue_threshold=3,
         probe_max_attempts=1,
@@ -152,7 +152,7 @@ async def test_false_resets_consecutive_streak() -> None:
 @pytest.mark.asyncio
 async def test_ten_trues_triggers_probe_once() -> None:
     reset_stub_debug_sequence([True] * 10)
-    cfg = TokenSamplingConfig(
+    cfg = PrecisionDetectionConfig(
         precision_check_enabled=True,
         precision_issue_threshold=10,
         probe_max_attempts=3,
@@ -224,3 +224,58 @@ async def test_module_stub_debug_sequence() -> None:
     assert (await stub.check([], [], [])).has_issue is True
     assert (await stub.check([], [], [])).has_issue is False
     assert _precision_debug_index == 2
+
+
+@pytest.mark.asyncio
+async def test_action_finish_resets_scheduler_streak_for_next_cycle() -> None:
+    """After probe+alarm action, finish_precision_action clears streak; next issue starts at 1."""
+    from motor.coordinator.fault_tolerance.precision.reporter import PrecisionReporter
+    from motor.coordinator.fault_tolerance.precision.streak_result import PrecisionStreakResult
+
+    action = AsyncMock()
+    checker = StubChecker(results=[True, True, True, True])
+    sched = AsyncMock()
+    state = {"probing": False, "count": 0}
+    threshold = 3
+
+    async def record_side_effect(key, has_issue, th):
+        if state["probing"]:
+            return PrecisionStreakResult(skip=True, consecutive=state["count"])
+        if has_issue:
+            state["count"] += 1
+            if state["count"] >= th:
+                state["probing"] = True
+                return PrecisionStreakResult(
+                    threshold_hit=True,
+                    consecutive=state["count"],
+                    action_token="action-token-1",
+                )
+            return PrecisionStreakResult(consecutive=state["count"])
+        state["count"] = 0
+        return PrecisionStreakResult(consecutive=0)
+
+    async def finish_side_effect(key, action_token):
+        state["probing"] = False
+        state["count"] = 0
+        return True
+
+    sched.record_precision_result = AsyncMock(side_effect=record_side_effect)
+    sched.finish_precision_action = AsyncMock(side_effect=finish_side_effect)
+
+    rep = PrecisionReporter(checker, action, threshold=threshold, scheduler_client=sched)
+
+    for i in range(threshold):
+        await rep.handle(_sample(req_id=str(i)))
+
+    for _ in range(100):
+        if action.execute.await_count and sched.finish_precision_action.await_count:
+            break
+        await asyncio.sleep(0.01)
+
+    assert action.execute.await_count == 1
+    sched.finish_precision_action.assert_awaited_once()
+
+    await rep.handle(_sample(req_id="restart"))
+    last = sched.record_precision_result.await_args_list[-1]
+    assert last.args[1] is True  # has_issue
+    assert state["count"] == 1

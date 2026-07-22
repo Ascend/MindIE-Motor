@@ -42,12 +42,12 @@ def _make_config() -> MagicMock:
     cfg.exception_config.max_retry = 1
     cfg.exception_config.retry_delay = 0.0001
     cfg.exception_config.reschedule_enabled = False
-    cfg.token_sampling_config.precision_check_enabled = True
-    cfg.token_sampling_config.interval_seconds = 30.0
-    cfg.token_sampling_config.logprobs_count = 1
-    cfg.token_sampling_config.precision_issue_threshold = 3
-    cfg.token_sampling_config.probe_max_attempts = 2
-    cfg.token_sampling_config.probe_timeout_seconds = 600.0
+    cfg.precision_detection_config.precision_check_enabled = True
+    cfg.precision_detection_config.interval_seconds = 30.0
+    cfg.precision_detection_config.logprobs_count = 1
+    cfg.precision_detection_config.precision_issue_threshold = 3
+    cfg.precision_detection_config.probe_max_attempts = 2
+    cfg.precision_detection_config.probe_timeout_seconds = 600.0
     return cfg
 
 

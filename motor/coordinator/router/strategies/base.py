@@ -44,6 +44,13 @@ from motor.coordinator.router.precision_sample.sample_builder import (
     build_decode_sample,
     _log_sample_submission,
 )
+from motor.coordinator.router.precision_sample import response as sampling_resp
+from motor.coordinator.router.adapters.stream import (
+    parse_stream_chunk_json,
+    encode_stream_chunk_bytes,
+    stream_chunk_needs_sampling_parse,
+    update_token_id_cache,
+)
 from motor.common.resources.instance import Instance
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain.request_manager import RequestManager
@@ -744,6 +751,55 @@ class BaseRouter(ABC):
             await self._sampling_manager.submit_sample(sample)
         except Exception as e:
             self.logger.warning("_submit_token_sample failed: %s", e)
+
+    def _init_sampling_state(self) -> dict:
+        return {
+            "enabled": self.config.precision_detection_config.precision_check_enabled,
+            "client_logprobs": bool(self.req_info.req_data.get("logprobs")),
+            "lp_count": self.config.precision_detection_config.logprobs_count,
+            "info": {},
+        }
+
+    def _collect_logprobs_from_stream_chunk(self, chunk: bytes, sampling_state: dict) -> bytes:
+        if not sampling_state["enabled"] or not chunk:
+            return chunk
+        if not stream_chunk_needs_sampling_parse(chunk):
+            return chunk
+        chunk_json = parse_stream_chunk_json(chunk, self.logger)
+        if chunk_json is None:
+            return chunk
+        update_token_id_cache(sampling_state["info"], chunk_json)
+        sampling_resp.update_logprob_cache(
+            sampling_state["info"],
+            chunk_json,
+            logprobs_count=sampling_state["lp_count"],
+        )
+        has_logprobs_field = any(isinstance(ch, dict) and "logprobs" in ch for ch in chunk_json.get("choices") or [])
+        sampling_resp.strip_logprobs_for_client(
+            chunk_json,
+            client_requested_logprobs=sampling_state["client_logprobs"],
+        )
+        if not sampling_state["client_logprobs"] and not has_logprobs_field:
+            return chunk
+        if sampling_state["client_logprobs"]:
+            return chunk
+        return encode_stream_chunk_bytes(chunk, chunk_json)
+
+    def _collect_logprobs_from_nonstream_body(self, body: dict, sampling_state: dict) -> dict:
+        if not sampling_state["enabled"]:
+            return body
+        info = sampling_state["info"]
+        update_token_id_cache(info, body)
+        sampling_resp.update_logprob_cache(info, body, logprobs_count=sampling_state["lp_count"])
+        return body
+
+    def _strip_logprobs_for_client(self, body: dict, sampling_state: dict) -> None:
+        if not sampling_state["enabled"]:
+            return
+        sampling_resp.strip_logprobs_for_client(
+            body,
+            client_requested_logprobs=sampling_state["client_logprobs"],
+        )
 
     def _log_request_details(self):
         current_time = time.time()

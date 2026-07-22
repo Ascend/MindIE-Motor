@@ -34,6 +34,7 @@ METRICS_STR = "metrics"
 
 PRECISION_CONTROL_URL = "/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol"
 PRECISION_COMMAND_DETECTION = "precision_detection"
+PRECISION_COMPLETED_REPORT_LIMIT = 10
 
 DEBUG_HOOK_ENABLED_ENV = "CCAE_DEBUG_HOOK_ENABLED"
 DEBUG_HOOK_PORT_ENV = "CCAE_DEBUG_HOOK_PORT"
@@ -128,7 +129,8 @@ class _PrecisionControlTask:
     """
 
     control_code: str
-    status: str = "Initial"  # Initial | Completed
+    status: str = "Initial"  # Initial | Completed | Failed
+    completed_report_count: int = 0
     last_precision_command: str | None = None
     last_switch_control: str | None = None
     last_immediate_delivery: bool | None = None
@@ -225,12 +227,77 @@ class CCAEReporter(BaseReporter):
         return os.getenv("MODEL_NAME") or ""
 
     @staticmethod
-    def _parse_instance_ids_from_control_code(code: str) -> tuple[int, int]:
+    def _parse_instance_ids_from_control_code(code: str) -> tuple[int, int] | None:
         """Parse P/D instance IDs from controlCode format ``...-pId=m-dId=n``."""
         m = re.search(r"pId=(\d+)-dId=(\d+)", code)
         if not m:
-            return 0, 0
+            return None
         return int(m.group(1)), int(m.group(2))
+
+    def _validate_precision_control_code(self, code: str) -> tuple[tuple[int, int] | None, str | None]:
+        """Return ``((p_id, d_id), None)`` when valid; ``(None, reason)`` when illegal."""
+        parsed = self._parse_instance_ids_from_control_code(code)
+        if parsed is None:
+            return None, "controlCode parse failed"
+        p_id, d_id = parsed
+        if p_id == 0 and d_id == 0:
+            return None, "controlCode has no instance ids"
+        checker = getattr(self.backend, "check_instance_exists", None)
+        if checker is None:
+            return parsed, None
+        for label, instance_id in (("p", p_id), ("d", d_id)):
+            if instance_id <= 0:
+                continue
+            exists = checker(instance_id)
+            if exists is None:
+                return parsed, None
+            if not exists:
+                return None, f"{label}_instance_id={instance_id} not found"
+        return parsed, None
+
+    def _upsert_precision_task(
+        self,
+        mid: str,
+        code: str,
+        *,
+        status: str,
+        p_cmd: object,
+        switch_ctrl: object,
+        immediate: object,
+    ) -> None:
+        with self._precision_lock:
+            self._precision_tasks[mid] = _PrecisionControlTask(
+                control_code=str(code),
+                status=status,
+                last_precision_command=str(p_cmd) if p_cmd is not None else None,
+                last_switch_control=str(switch_ctrl) if switch_ctrl is not None else None,
+                last_immediate_delivery=bool(immediate) if immediate is not None else None,
+            )
+
+    def _mark_precision_task_failed(
+        self,
+        mid: str,
+        code: str,
+        *,
+        reason: str,
+        p_cmd: object,
+        switch_ctrl: object,
+        immediate: object,
+    ) -> None:
+        self._upsert_precision_task(
+            mid,
+            code,
+            status="Failed",
+            p_cmd=p_cmd,
+            switch_ctrl=switch_ctrl,
+            immediate=immediate,
+        )
+        self.logger.error(
+            "CCAE precision control FAILED: modelID=%s reason=%s controlCode=%s",
+            mid,
+            reason,
+            code,
+        )
 
     def _apply_req_list_item(self, item: dict) -> None:
         """Update state from one ``reqList`` entry (after a successful POST)."""
@@ -251,12 +318,11 @@ class CCAEReporter(BaseReporter):
         )
 
         if item.get("controlStatusRespond") is True:
-            with self._precision_lock:
-                self._precision_tasks.pop(mid, None)
             self.logger.info(
-                "precision task removed due to controlStatusRespond for modelID=%s, remaining tasks=%s",
+                "precision task ignoring controlStatusRespond for modelID=%s;"
+                " will keep reporting Completed until %s successful posts",
                 mid,
-                list(self._precision_tasks.keys()),
+                PRECISION_COMPLETED_REPORT_LIMIT,
             )
             return
 
@@ -285,14 +351,27 @@ class CCAEReporter(BaseReporter):
             switch_ctrl = ipc.get("switchControl")
             immediate = ipc.get("immediateDelivery")
 
-        p_id, d_id = self._parse_instance_ids_from_control_code(str(code))
+        parsed, fail_reason = self._validate_precision_control_code(str(code))
+        if fail_reason is not None:
+            self._mark_precision_task_failed(
+                mid,
+                str(code),
+                reason=fail_reason,
+                p_cmd=p_cmd,
+                switch_ctrl=switch_ctrl,
+                immediate=immediate,
+            )
+            return
+        assert parsed is not None
+        p_id, d_id = parsed
 
         with self._precision_lock:
             existing = self._precision_tasks.get(mid)
             if existing and existing.control_code == str(code):
-                if existing.status == "Completed":
+                if existing.status in ("Completed", "Failed"):
                     self.logger.info(
-                        "precision task already completed for controlCode=%s modelID=%s, updating fields only",
+                        "precision task already terminal (%s) for controlCode=%s modelID=%s, updating fields only",
+                        existing.status,
                         code,
                         mid,
                     )
@@ -330,14 +409,6 @@ class CCAEReporter(BaseReporter):
                     d_id,
                 )
 
-        if not d_id:
-            self.logger.warning(
-                "CCAE precision control: controlCode=%s has no valid instance IDs, modelID=%s",
-                code,
-                mid,
-            )
-            return
-
         if self.identity != "Controller":
             self.logger.warning(
                 "CCAE precision control: termination skipped, identity=%s is not Controller, modelID=%s",
@@ -353,9 +424,9 @@ class CCAEReporter(BaseReporter):
             p_id,
             mid,
         )
-        d_ok = self.backend.terminate_instance(d_id, "ccae_precision_control")
+        d_ok = self.backend.terminate_instance(d_id, "ccae_precision_control") if d_id > 0 else True
         p_ok = True
-        if p_id:
+        if p_id > 0:
             p_ok = self.backend.terminate_instance(p_id, "ccae_precision_control")
 
         with self._precision_lock:
@@ -421,6 +492,30 @@ class CCAEReporter(BaseReporter):
             return None
         return response_json
 
+    def _record_completed_report_success(self, model_ids: list[str]) -> None:
+        """Count successful terminal (Completed/Failed) heartbeats; remove task after the limit."""
+        if not model_ids:
+            return
+        with self._precision_lock:
+            for model_id in model_ids:
+                task = self._precision_tasks.get(model_id)
+                if not task or task.status not in ("Completed", "Failed"):
+                    continue
+                task.completed_report_count += 1
+                self.logger.info(
+                    "precision completed report success: modelID=%s count=%s/%s",
+                    model_id,
+                    task.completed_report_count,
+                    PRECISION_COMPLETED_REPORT_LIMIT,
+                )
+                if task.completed_report_count >= PRECISION_COMPLETED_REPORT_LIMIT:
+                    self._precision_tasks.pop(model_id, None)
+                    self.logger.info(
+                        "precision task removed after %s completed reports for modelID=%s",
+                        PRECISION_COMPLETED_REPORT_LIMIT,
+                        model_id,
+                    )
+
     def precision_control_periodic(self) -> None:
         if self.identity != "Controller":
             return
@@ -434,6 +529,7 @@ class CCAEReporter(BaseReporter):
                 list(self._precision_tasks.keys()),
             )
             model_infos: list[dict] = []
+            terminal_model_ids: list[str] = []
             for model_id, _ in self.model_id_period.items():
                 task = self._precision_tasks.get(model_id)
                 if task is None:
@@ -462,6 +558,8 @@ class CCAEReporter(BaseReporter):
                             "controlStatus": task.status,
                         }
                     )
+                    if task.status in ("Completed", "Failed"):
+                        terminal_model_ids.append(model_id)
             request_data = {
                 "timeStamp": int(time.time() * 1000),
                 "modelServiceInfo": model_infos,
@@ -471,6 +569,7 @@ class CCAEReporter(BaseReporter):
         if response_json is None:
             return
 
+        self._record_completed_report_success(terminal_model_ids)
         self._parse_precision_response(response_json)
 
     def fetch_version_info(self) -> str:

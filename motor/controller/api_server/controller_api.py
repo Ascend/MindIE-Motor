@@ -236,6 +236,7 @@ class ControllerAPI:
         app.add_api_route("/controller/register", self._register, methods=post_methods)
         app.add_api_route("/controller/reregister", self._reregister, methods=post_methods)
         app.add_api_route("/controller/terminate_instance", self._terminate_instance, methods=post_methods)
+        app.add_api_route("/controller/check_instance", self._check_instance, methods=post_methods)
 
         app.add_api_route("/startup", self._startup, methods=get_methods)
         app.add_api_route("/readiness", self._readiness, methods=get_methods)
@@ -318,6 +319,13 @@ class ControllerAPI:
         if not terminate_instance_for_recovery(terminate_instance_msg.instance_id, terminate_instance_msg.reason):
             return {"error": "Instance not found or terminate failed"}
         return {"result": "Terminate instance succeed!"}
+
+    async def _check_instance(self, request: Request) -> dict:
+        body = await request.json()
+        instance_id = body.get("instance_id")
+        if not isinstance(instance_id, int) or isinstance(instance_id, bool):
+            return {"error": "Invalid instance_id"}
+        return {"exists": InstanceManager().get_instance(instance_id) is not None}
 
     async def _readiness(self) -> dict:
         """
