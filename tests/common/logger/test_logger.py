@@ -74,51 +74,83 @@ class TestLogFormatter:
         assert "%(processName)s pid=%(process)d)" in fmt
         assert "[%(name)s][%(fileinfo)s:%(lineno)d]" in fmt
 
-    def test_max_length_formatter_keeps_multiline_traceback(self):
+    def test_newline_formatter_multiline_message(self, record):
         config = LoggingConfig()
+        formatter = NewLineFormatter(config.log_format, datefmt=config.log_date_format)
+        record.msg = record.message = "line one\nline two"
+        output = formatter.format(record)
+        # User message lines still get a header prefix each; only traceback suffix is exempt.
+        assert output.count("INFO") == 2
+        assert "line one" in output
+        assert "line two" in output
+        assert output.count("[engine_server][main.py:31]") == 2
 
-        def _capture_exc_info():
-            try:
-                raise ValueError("boom")
-            except ValueError:
-                return sys.exc_info()
-            raise AssertionError("expected ValueError")
+    def test_newline_formatter_without_message_placeholder(self, record):
+        formatter = NewLineFormatter("%(levelname)s")
+        record.msg = record.message = "line1\nline2"
+        output = formatter.format(record)
+        assert output == "INFO"
+        assert "line1" not in output
+        assert "line2" not in output
 
-        exc_info = _capture_exc_info()
-
-        record = logging.LogRecord(
-            name="engine_server",
-            level=logging.ERROR,
-            pathname="/app/motor/engine_server/cli/dispatch.py",
-            lineno=223,
-            msg="Error occurred",
-            args=(),
-            exc_info=exc_info,
-        )
+    def test_newline_formatter_exc_info_no_repeated_header(self, record):
+        config = LoggingConfig()
+        formatter = NewLineFormatter(config.log_format, datefmt=config.log_date_format)
+        record.levelno = logging.ERROR
+        record.levelname = "ERROR"
+        record.name = "router"
+        record.pathname = "/app/motor/coordinator/router/dispatch.py"
         record.filename = "dispatch.py"
-        record.processName = "MainProcess"
-        record.process = 47
-
-        formatter = MaxLengthFormatter(
-            NewLineFormatter(config.log_format, datefmt=config.log_date_format),
-            config.log_max_line_length,
+        record.lineno = 209
+        record.processName = "InferenceWorker-1"
+        record.process = 45
+        try:
+            raise RuntimeError("Client disconnected")
+        except RuntimeError:
+            record.exc_info = sys.exc_info()
+        record.msg = record.message = (
+            "Error occurred in proxy server endpoint: /v1/chat/completions, "
+            "error: Unified PD cancelled because of Client disconnected"
         )
         output = formatter.format(record)
+        assert output.count("ERROR") == 1
+        assert output.count("[router][dispatch.py:209]") == 1
+        assert "Traceback" in output
 
-        assert "\\r\\n" not in output
-        assert "Traceback (most recent call last):" in output
-        assert output.count("\n") >= 2
-        assert output.count("(MainProcess pid=47) ERROR ") >= 2
-
-    def test_max_length_formatter_truncates_long_output(self, record):
+    def test_max_length_formatter_keeps_newlines_when_under_limit(self, record):
         config = LoggingConfig()
-        formatter = MaxLengthFormatter(
-            NewLineFormatter(config.log_format, datefmt=config.log_date_format),
-            max_length=80,
-        )
+        inner = NewLineFormatter(config.log_format, datefmt=config.log_date_format)
+        formatter = MaxLengthFormatter(inner, max_length=8192)
+        record.levelno = logging.ERROR
+        record.levelname = "ERROR"
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            record.exc_info = sys.exc_info()
+        record.msg = record.message = "proxy failed"
         output = formatter.format(record)
-        assert len(output) == 83
+        assert "\n" in output
+        assert "Traceback" in output
+        assert output.count("ERROR") == 1
+
+    def test_max_length_formatter_collapses_newlines_before_truncate(self, record):
+        inner = logging.Formatter("%(message)s")
+        formatter = MaxLengthFormatter(inner, max_length=20)
+        record.msg = record.message = "line1\nline2\n" + ("x" * 100)
+        output = formatter.format(record)
+        assert "\n" not in output
+        assert "\\n" not in output
         assert output.endswith("...")
+        assert len(output) == 20 + len("...")
+        assert output.startswith("line1 line2 ")
+
+    def test_max_length_formatter_no_ellipsis_when_collapse_fits(self, record):
+        inner = logging.Formatter("%(message)s")
+        formatter = MaxLengthFormatter(inner, max_length=11)
+        record.msg = record.message = "12345\r\n67890"
+        output = formatter.format(record)
+        assert output == "12345 67890"
+        assert not output.endswith("...")
 
 
 class TestThirdPartySuppression:
