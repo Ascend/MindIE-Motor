@@ -34,6 +34,66 @@
 
 ## 基于vllm-ascend/sglang镜像安装MindIE Motor
 
+本文提供以下两种镜像制作方式：
+
+- 使用项目提供的 Dockerfile 构建，适合联网环境下的日常开发和测试。
+- 在容器内手动安装并通过 `docker commit` 保存，适合离线环境或临时验证。
+
+### 使用 Dockerfile 构建（推荐）
+
+项目中的 Dockerfile 分为两类：
+
+- `docker/mindie-motor-vllm/<tag>/Dockerfile`：绑定发布版本、硬件和操作系统，适合构建可复现的发布镜像。
+- `docker/mindie-motor-vllm/master/Dockerfile`：使用当前工作区源码，适合验证 master 分支或尚未提交的本地改动。
+
+在项目根目录执行以下命令，构建当前平台的开发测试镜像并加载到本地 Docker：
+
+```bash
+make build-pymotor-image
+```
+
+默认生成 `mindie-motor-vllm:master`，基础镜像为 Ubuntu A2 版本。构建其他硬件或操作系统时通过 `BASE_IMAGE` 指定基础镜像，不需要修改 Dockerfile：
+
+```bash
+# Ubuntu A3
+make build-pymotor-image \
+  BASE_IMAGE=quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3 \
+  PLATFORMS=linux/arm64 \
+  TAG=master-a3
+
+# openEuler A3
+make build-pymotor-image \
+  BASE_IMAGE=quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler \
+  PLATFORMS=linux/arm64 \
+  TAG=master-a3-openeuler
+```
+
+基础镜像的常用选择如下：
+
+| 硬件 | 操作系统 | `BASE_IMAGE` |
+|---|---|---|
+| A2 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` |
+| A3 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3` |
+| A2 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-openeuler` |
+| A3 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler` |
+
+需要构建多架构镜像并推送到镜像仓库时，先登录仓库，再执行：
+
+```bash
+docker login example.com
+
+make build-pymotor-image \
+  REGISTRY=example.com/team \
+  TAG=master \
+  PLATFORMS=linux/amd64,linux/arm64 \
+  OUTPUT=type=registry
+```
+
+> [!NOTE]说明
+> `master` Dockerfile 会把当前工作区中的 `motor`、`scripts` 和 `examples` 复制到镜像中，因此未提交的代码修改也会进入镜像。构建过程需要访问基础镜像仓库和 Python 软件源；离线环境请使用后文的手动方式。
+
+### 手动构建
+
 ### 依赖下载（可选）
 
 >[!NOTE]说明
@@ -91,7 +151,7 @@
 
      将`/mnt/MindIE-PyMotor.tar.gz`拷贝到制作镜像机器的`/mnt/`路径下。
 
-### 获取基础镜像，以vLLM-Ascend为例
+#### 获取基础镜像，以vLLM-Ascend为例
 
 获取方法：打开[RED HAT](https://quay.io/repository/ascend/vllm-ascend?tab=tags)，点击需要下载的版本。
 以v0.13.0版本为例，下载命令为：
@@ -103,7 +163,7 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
 >[!NOTE]说明
 >为提高下载速度，可将`quay.io`替换为`quay.nju.edu.cn`。
 
-### 安装MindIE Motor
+#### 安装MindIE Motor
 
 1. 查看镜像。
 
