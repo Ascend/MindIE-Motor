@@ -166,7 +166,7 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
          pip install -r requirements.txt
 
          bash build.sh
-         pip install --force-reinstall ./dist/motor-0.1.0-py3-none-any.whl
+         pip install --force-reinstall ./dist/motor-*.whl
 
          mkdir -p /tmp/motor/
          cp -r ./examples/ /tmp/motor/
@@ -184,7 +184,7 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
          pip install /mnt/packages-offline/*.whl --force-reinstall --no-index -v
 
          # 安装motor
-         pip install --force-reinstall /mnt/MindIE-PyMotor/dist/motor-0.1.0-py3-none-any.whl --no-index -v
+         pip install --force-reinstall /mnt/MindIE-PyMotor/dist/motor-*.whl --no-index -v
 
          # 拷贝examples
          mkdir -p /tmp/motor/

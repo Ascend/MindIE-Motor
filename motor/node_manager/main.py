@@ -23,6 +23,7 @@ from motor.node_manager.core.heartbeat_manager import HeartbeatManager
 from motor.common.utils.config_runtime import log_configuration_summary, start_config_file_watcher
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.utils.env import Env
+from motor.common.utils.startup_banner import log_startup_banner
 
 set_process_title("NodeManager")
 
@@ -124,6 +125,9 @@ def main() -> int:
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # kill
+
+    role = f"NodeManager.{Env.role}" if Env.role else "NodeManager"
+    log_startup_banner(logger, role)
 
     # Initialize all modules
     # Prefer mounted user_config when provided, fallback to CONFIG_PATH
