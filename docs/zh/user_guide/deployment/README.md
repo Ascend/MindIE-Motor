@@ -8,6 +8,8 @@ MindIE Motor 支持以下两种部署方式，均为最佳实践，可根据自�
 
 → 从 [部署模式说明](k8s/README.md) 开始
 
+需要在集群内通过 Job 执行 deployer 时，可使用[云原生部署与 Helm Chart](../../../../examples/cloud_native_deploy/README.zh.md)。社区 Chart 支持直接 `helm install/upgrade`。
+
 ## Docker 部署
 
 适用于单机或无 K8s 环境的场景，仅需 Docker 容器 + 宿主机挂载配置即可拉起推理服务，轻量快速。

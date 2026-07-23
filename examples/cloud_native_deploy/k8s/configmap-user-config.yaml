@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mindie-pymotor-user-config
+  namespace: mindie
+data:
+  user_config.json: |
+    {
+      "version": "v2.0",
+      "motor_deploy_config": {
+        "p_instances_num": 1,
+        "d_instances_num": 1,
+        "single_p_instance_pod_num": 1,
+        "single_d_instance_pod_num": 1,
+        "p_pod_npu_num": 16,
+        "d_pod_npu_num": 16,
+        "image_name": "",
+        "job_id": "mindie",
+        "hardware_type": "800I_A3",
+        "deploy_mode": "multi_deployment",
+        "weight_mount_path": "/mnt/weight/",
+        "scheduling_queue": "default",
+        "coordinator_service_name": "mindie-motor-coordinator-infer",
+        "coordinator_infer_node_port": "-",
+        "controller_node_selector": {},
+        "coordinator_node_selector": {},
+        "prefill_node_selector": {
+          "node-role.kubernetes.io/prefill": "true"
+        },
+        "decode_node_selector": {
+          "node-role.kubernetes.io/decode": "true"
+        },
+        "kv_pool_node_selector": {},
+        "kv_conductor_node_selector": {}
+      },
+      "motor_controller_config": {},
+      "motor_coordinator_config": {},
+      "motor_engine_prefill_config": {
+        "engine_type": "vllm",
+        "motor_nodemanger_config": {},
+        "enable_multi_endpoints": true,
+        "model_config": {
+          "model_name": "qwen3-8B",
+          "model_path": "/mnt/weight/qwen3_8B",
+          "npu_mem_utils": 0.9,
+          "parallel_config": {
+            "dp_size": 1,
+            "tp_size": 2,
+            "pp_size": 1,
+            "enable_ep": false,
+            "dp_rpc_port": 9000,
+            "world_size": 4
+          }
+        },
+        "engine_config": {
+          "enforce-eager": true,
+          "max_model_len": 2048
+        }
+      },
+      "motor_engine_decode_config": {
+        "engine_type": "vllm",
+        "motor_nodemanger_config": {},
+        "enable_multi_endpoints": true,
+        "model_config": {
+          "model_name": "qwen3-8B",
+          "model_path": "/mnt/weight/qwen3_8B",
+          "npu_mem_utils": 0.9,
+          "parallel_config": {
+            "dp_size": 1,
+            "tp_size": 2,
+            "pp_size": 1,
+            "enable_ep": false,
+            "dp_rpc_port": 9000,
+            "world_size": 4
+          }
+        },
+        "engine_config": {
+          "max_model_len": 2048
+        }
+      }
+    }
+  env.json: |
+    {
+      "version": "2.0.0",
+      "motor_common_env": {
+        "CANN_INSTALL_PATH": "/usr/local/Ascend",
+        "MOTOR_LOG_ROOT_PATH": "/root/ascend/log"
+      },
+      "motor_controller_env": {},
+      "motor_coordinator_env": {},
+      "motor_engine_prefill_env": {
+        "HCCL_BUFFSIZE": 200,
+        "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+        "HCCL_OP_EXPANSION_MODE": "AIV",
+        "OMP_PROC_BIND": "false",
+        "OMP_NUM_THREADS": 100,
+        "ASCEND_BUFFER_POOL": "0:0"
+      },
+      "motor_engine_decode_env": {
+        "HCCL_BUFFSIZE": 200,
+        "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+        "HCCL_OP_EXPANSION_MODE": "AIV",
+        "OMP_PROC_BIND": "false",
+        "OMP_NUM_THREADS": 100,
+        "ASCEND_BUFFER_POOL": "0:0"
+      },
+      "motor_kv_cache_pool_env": {},
+      "motor_kv_conductor_env": {}
+    }

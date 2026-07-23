@@ -94,4 +94,4 @@
 
 CLI 参数与 `engine_config` 键名的完整映射关系详见：
 
-👉 **[CLI 参数与 engine_config 映射指南](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/user_guide/operations/cli_to_engine_config_guide.md)**
+👉 **[CLI 参数与 engine_config 映射指南](CLI 参数完整定义与校验见 `motor/config/endpoint.py` 中 `EndpointConfig.parse_cli_args`)**

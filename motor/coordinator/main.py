@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -17,6 +16,7 @@ from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.daemon.coordinator_daemon import CoordinatorDaemon
 from motor.common.utils.config_runtime import log_configuration_summary
 from motor.common.utils.port_allocator import apply_coordinator_ports, run_port_setup_or_exit
+from motor.common.utils.startup_banner import log_startup_banner
 from motor.common.logger import get_logger, reconfigure_logging
 
 logger = get_logger(__name__)
@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 
 async def main() -> None:
     try:
+        log_startup_banner(logger, "coordinator")
         logger.info("Starting Motor Coordinator Daemon...")
 
         config = CoordinatorConfig.from_json()

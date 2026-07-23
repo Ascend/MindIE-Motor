@@ -20,6 +20,8 @@
 # See the respective licenses for more details.
 
 import asyncio
+import string
+import uuid
 from functools import wraps
 
 import httpx
@@ -51,6 +53,53 @@ import motor.common.utils.error as cancel_error
 from motor.common.utils.error import RequestCancelledError
 
 logger = get_logger(__name__)
+
+_TRACEPARENT_TRACE_ID_INDEX = 1
+_TRACE_ID_LENGTH = 32
+_ZERO_TRACE_ID = "0" * _TRACE_ID_LENGTH
+
+
+def _is_valid_trace_id(trace_id: str) -> bool:
+    return (
+        len(trace_id) == _TRACE_ID_LENGTH
+        and trace_id != _ZERO_TRACE_ID
+        and all(char in string.hexdigits for char in trace_id)
+    )
+
+
+def _extract_trace_id_from_traceparent(traceparent: str | None) -> str:
+    if not traceparent:
+        return ""
+    parts = traceparent.strip().split("-")
+    if len(parts) < 4:
+        logger.warning("Invalid traceparent header format, fallback to request id generation")
+        return ""
+    trace_id = parts[_TRACEPARENT_TRACE_ID_INDEX].lower()
+    if not _is_valid_trace_id(trace_id):
+        logger.warning("Invalid trace id in traceparent header, fallback to request id generation")
+        return ""
+    return trace_id
+
+
+def _append_unique_request_id_suffix(upstream_id: str) -> str:
+    # Upstream ids are useful for correlation, but they can be reused across requests
+    # or supplied by untrusted clients. Keep them as a prefix and append a short
+    # local suffix so Motor's internal request id remains unique.
+    return f"{upstream_id}-{uuid.uuid4().hex[:8]}"
+
+
+# Resolve request id from traceparent or x-request-id header, or generate a new one
+# so we can ensure that the request id is unique and can be used to track the request
+async def _resolve_request_id(raw_request: Request, request_manager: RequestManager) -> str:
+    trace_id = _extract_trace_id_from_traceparent(raw_request.headers.get("traceparent"))
+    if trace_id:
+        return _append_unique_request_id_suffix(trace_id)
+
+    request_id = (raw_request.headers.get("x-request-id") or "").strip()
+    if request_id:
+        return _append_unique_request_id_suffix(request_id)
+
+    return await request_manager.generate_request_id()
 
 
 async def listen_for_disconnect(request: Request) -> None:
@@ -307,7 +356,7 @@ async def __create_request_info(
     filtered_headers = filter_sensitive_headers(raw_request.headers)
     filtered_body = build_safe_body_structure(request_json)
     logger.debug("Got request headers: %s, body: %s", filtered_headers, filtered_body)
-    req_id = await request_manager.generate_request_id()
+    req_id = await _resolve_request_id(raw_request, request_manager)
     req_len = len(request_body)
     api = validate_and_sanitize_path(raw_request.url.path)
 

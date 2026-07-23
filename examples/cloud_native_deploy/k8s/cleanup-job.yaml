@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mindie-pymotor-cleanup
+  namespace: mindie
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: mindie-pymotor-deployer
+      restartPolicy: Never
+      containers:
+        - name: cleanup
+          image: mindie-pymotor-deployer:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/app/examples/cloud_native_deploy/entrypoint-cleanup.sh"]
+          env:
+            - name: NAMESPACE
+              value: mindie

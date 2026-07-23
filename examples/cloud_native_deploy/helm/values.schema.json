@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["operation", "image", "userConfig", "envConfig"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["deploy", "scale", "cleanup"]
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "pullSecrets": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "userConfig": {"type": "string"},
+    "envConfig": {"type": "string"}
+  }
+}

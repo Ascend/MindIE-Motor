@@ -16,6 +16,9 @@ fi
 
 setup_jemalloc
 
+# Multiple components start in one container; disable ASCII logo to avoid log spam.
+export MOTOR_DISABLE_LOG_LOGO=1
+
 export CONTROLLER_SERVICE="$POD_IP"
 export COORDINATOR_SERVICE="$POD_IP"
 

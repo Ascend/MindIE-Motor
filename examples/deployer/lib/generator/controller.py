@@ -9,7 +9,14 @@
 # See the Mulan PSL v2 for more details.
 
 import lib.constant as C
-from lib.utils import generate_unique_id, load_yaml, write_yaml, logger, modify_log_mount
+from lib.utils import (
+    apply_node_selector_override,
+    generate_unique_id,
+    load_yaml,
+    logger,
+    modify_log_mount,
+    write_yaml,
+)
 from lib.generator import k8s_utils
 from lib.generator.engine import apply_a5_dns_config
 from lib.generator.k8s_utils import extract_resources, set_rbac_namespace, set_services_namespace
@@ -55,6 +62,8 @@ def modify_controller_deployment(deployment_data, user_config):
     )
 
     modify_controller_replicas(deployment_data, user_config)
+    pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    apply_node_selector_override(pod_spec, deploy_config, C.CONTROLLER_NODE_SELECTOR)
     apply_a5_dns_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], deploy_config)
     modify_log_mount(deployment_data, user_config, "mindie-motor-controller")
 

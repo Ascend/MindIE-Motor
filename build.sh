@@ -24,12 +24,22 @@ rm -rf dist/
 echo "Generating protobuf files..."
 ./scripts/generate_proto.sh
 
+# Keep motor_version in sync with motor/__init__.py::__version__ (single source of truth).
+# Support both double- and single-quoted __version__ assignments (aligned with setup.py).
+MOTOR_VERSION="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ./motor/__init__.py | head -n1)"
+if [[ -z "${MOTOR_VERSION}" ]]; then
+  MOTOR_VERSION="$(sed -n "s/^__version__[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" ./motor/__init__.py | head -n1)"
+fi
+if [[ -z "${MOTOR_VERSION}" ]]; then
+  echo "Error: failed to read __version__ from ./motor/__init__.py" >&2
+  exit 1
+fi
+
 touch ./motor/version.info
 cat>./motor/version.info<<EOF
-motor_version : 1.0.0
-vllm_version : 0.13.0
-vllm_ascend_version : 0.13.0
+motor_version : ${MOTOR_VERSION}
 EOF
+echo "Using motor_version=${MOTOR_VERSION}"
 
 echo "Building wheel package with pip wheel (PEP517)... (VERBOSE=${VERBOSE})"
 

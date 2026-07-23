@@ -13,7 +13,13 @@ import shutil
 import subprocess
 
 import lib.constant as C
-from lib.utils import logger, safe_exec_cmd, load_yaml, pipe_kubectl
+from lib.utils import (
+    get_coordinator_service_name,
+    logger,
+    safe_exec_cmd,
+    load_yaml,
+    pipe_kubectl,
+)
 
 g_controller_service = "mindie-motor-controller-service"
 g_coordinator_service = "mindie-motor-coordinator-mgmt"
@@ -51,7 +57,10 @@ def build_kv_store_env_items():
     if g_kv_store_backend == C.MMC_STORE_BACKEND:
         # memcache C++ layer reads this env var directly at engine startup
         items.append(
-            {C.NAME: C.ENV_MMC_LOCAL_CONFIG_PATH, C.VALUE: C.DEFAULT_MMC_LOCAL_CONFIG_PATH},
+            {
+                C.NAME: C.ENV_MMC_LOCAL_CONFIG_PATH,
+                C.VALUE: C.DEFAULT_MMC_LOCAL_CONFIG_PATH,
+            },
         )
     return items
 
@@ -201,7 +210,8 @@ def init_service_domain_name(paths, deploy_config):
     mgmt_svc = coord_services.get(1026)
     obs_svc = coord_services.get(1027)
     if infer_svc:
-        set_coordinator_infer_service(f"{infer_svc[C.METADATA][C.NAME]}.{ns}.svc.cluster.local")
+        infer_service_name = get_coordinator_service_name(deploy_config)
+        set_coordinator_infer_service(f"{infer_service_name}.{ns}.svc.cluster.local")
     if mgmt_svc:
         set_coordinator_service(f"{mgmt_svc[C.METADATA][C.NAME]}.{ns}.svc.cluster.local")
     if obs_svc:
@@ -299,7 +309,11 @@ def get_accelerator_type_from_cluster(hardware_type):
             )
         accelerator_type = _resolve_accelerator_type_from_nodes(nodes, hardware_type)
     else:
-        known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
+        known = [
+            *sorted(C.HARDWARE_TYPE_A2),
+            *sorted(C.HARDWARE_TYPE_A3),
+            *C.HARDWARE_TYPE_950I_A5,
+        ]
         raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
 
     logger.info(
@@ -316,7 +330,16 @@ def get_baseline_config_from_configmap(job_id):
     """Get current deployed user_config from cluster ConfigMap. Returns None if CM missing or no user_config."""
     try:
         out = run_cmd_get_output(
-            ["kubectl", "get", "configmap", C.MOTOR_CONFIG_CONFIGMAP_NAME, "-n", job_id, "-o", "json"]
+            [
+                "kubectl",
+                "get",
+                "configmap",
+                C.MOTOR_CONFIG_CONFIGMAP_NAME,
+                "-n",
+                job_id,
+                "-o",
+                "json",
+            ]
         )
         data = json.loads(out)
         if C.DATA not in data or "user_config.json" not in data[C.DATA]:
@@ -504,6 +527,27 @@ def exec_all_kubectl_singer(deploy_config, yaml_file):
     safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
 
 
+def get_engine_deployment_name(node_type, index):
+    return f"{g_engine_base_name}-{node_type}{index}"
+
+
+def delete_engine_deployment(job_id, node_type, index, yaml_path):
+    deployment_name = get_engine_deployment_name(node_type, index)
+    safe_exec_cmd(
+        [
+            "kubectl",
+            "delete",
+            "deployment",
+            deployment_name,
+            "-n",
+            job_id,
+            "--ignore-not-found=true",
+        ]
+    )
+    if os.path.exists(yaml_path):
+        os.remove(yaml_path)
+
+
 def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, node_type):
     """Scale engine instances by type (p, d or u)."""
     from lib.utils import obtain_engine_instance_total
@@ -521,9 +565,7 @@ def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_
         logger.info("Scale-in %s instance, %s -> %s", node_type, base, total)
         for index in reversed(range(total, base)):
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{node_type}{index}.yaml")
-            safe_exec_cmd(["kubectl", "delete", "-f", yaml_path, "-n", job_id])
-            if os.path.exists(yaml_path):
-                os.remove(yaml_path)
+            delete_engine_deployment(job_id, node_type, index, yaml_path)
     if total > base:
         logger.info("Scale-out %s instance, %s -> %s", node_type, base, total)
         for index in range(base, total):
@@ -541,14 +583,18 @@ def scale_engine_e_by_type(deploy_config, baseline_deploy_config, out_deploy_yam
     if total < base:
         logger.info("Scale-in %s instance, %s -> %s", C.NODE_TYPE_E, base, total)
         for index in reversed(range(total, base)):
-            yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{C.NODE_TYPE_E}{index}.yaml")
-            safe_exec_cmd(["kubectl", "delete", "-f", yaml_path, "-n", job_id])
-            if os.path.exists(yaml_path):
-                os.remove(yaml_path)
+            yaml_path = os.path.join(
+                out_deploy_yaml_path,
+                f"{g_engine_base_name}_{C.NODE_TYPE_E}{index}.yaml",
+            )
+            delete_engine_deployment(job_id, C.NODE_TYPE_E, index, yaml_path)
     if total > base:
         logger.info("Scale-out %s instance, %s -> %s", C.NODE_TYPE_E, base, total)
         for index in range(base, total):
-            yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{C.NODE_TYPE_E}{index}.yaml")
+            yaml_path = os.path.join(
+                out_deploy_yaml_path,
+                f"{g_engine_base_name}_{C.NODE_TYPE_E}{index}.yaml",
+            )
             safe_exec_cmd(["kubectl", "apply", "-f", yaml_path, "-n", job_id])
 
 

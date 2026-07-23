@@ -10,6 +10,7 @@
 
 import lib.constant as C
 from lib.utils import (
+    apply_node_selector_override,
     generate_unique_id,
     load_yaml,
     write_yaml,
@@ -17,6 +18,7 @@ from lib.utils import (
     modify_log_mount,
     obtain_engine_instance_total,
     obtain_engine_e_instance_total,
+    apply_volcano_queue_annotations,
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num
@@ -155,6 +157,7 @@ def set_engine_metadata(deployment_data, deploy_config, index, node_type, job_na
     deployment_data[C.SPEC][C.SELECTOR][C.MATCHLABELS][C.APP] = unique_name
     deployment_data[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS][C.APP] = unique_name
     deployment_data[C.METADATA][C.LABELS][C.JOB_NAME] = job_name
+    apply_volcano_queue_annotations(deployment_data[C.SPEC][C.TEMPLATE][C.METADATA], deploy_config)
 
 
 def set_engine_env(container, deploy_config, node_type, job_name):
@@ -245,6 +248,24 @@ def apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type):
         )
 
 
+# In certain cloud-based multi-tenant environments, machines in the same cluster
+# are often labeled with tenant-specific tags to support tenant-isolated
+# deployment of inference services.
+# Therefore, in addition to NPU node selectors such as
+# "accelerator-type": "module-910b-8", user-defined custom node selectors are
+# also required.
+# These two selector sets are then merged to determine the final scheduling of
+# the inference service.
+def apply_engine_node_selector_overrides(pod_spec, deploy_config, node_type):
+    selector_key = {
+        C.NODE_TYPE_P: C.PREFILL_NODE_SELECTOR,
+        C.NODE_TYPE_D: C.DECODE_NODE_SELECTOR,
+    }.get(node_type)
+    if not selector_key:
+        return
+    apply_node_selector_override(pod_spec, deploy_config, selector_key)
+
+
 def set_engine_node_selector(deployment_data, deploy_config, node_type):
     modify_sp_block_num(deployment_data, node_type, deploy_config)
     hardware_type = deploy_config[C.HARDWARE_TYPE]
@@ -252,6 +273,7 @@ def set_engine_node_selector(deployment_data, deploy_config, node_type):
     pod_spec[C.NODE_SELECTOR] = pod_spec.get(C.NODE_SELECTOR, {})
     apply_node_selector_by_hardware(pod_spec, hardware_type)
     apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type)
+    apply_engine_node_selector_overrides(pod_spec, deploy_config, node_type)
 
 
 def set_weight_mount(pod_spec, container, weight_mount_path):

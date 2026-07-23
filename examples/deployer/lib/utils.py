@@ -234,6 +234,62 @@ def modify_log_mount(deployment_data, user_config, app_type):
             volume["hostPath"]["path"] = host_log_dir
 
 
+def get_scheduling_queue(deploy_config):
+    queue_name = deploy_config.get(C.SCHEDULING_QUEUE)
+    if isinstance(queue_name, str):
+        queue_name = queue_name.strip()
+    return queue_name or None
+
+
+def apply_volcano_queue_annotations(metadata, deploy_config):
+    queue_name = get_scheduling_queue(deploy_config)
+    if not queue_name:
+        return
+    annotations = metadata.setdefault(C.ANNOTATIONS, {})
+    annotations[C.VOLCANO_QUEUE_ANNOTATION] = queue_name
+
+
+def get_coordinator_service_name(deploy_config):
+    service_name = deploy_config.get(C.COORDINATOR_SERVICE_NAME)
+    if isinstance(service_name, str):
+        service_name = service_name.strip()
+    return service_name or "mindie-motor-coordinator-infer"
+
+
+def get_coordinator_infer_node_port(deploy_config):
+    node_port = deploy_config.get(C.COORDINATOR_INFER_NODE_PORT, 31015)
+    if isinstance(node_port, str):
+        node_port = node_port.strip()
+        if node_port == "-":
+            return None
+        if not node_port:
+            return 31015
+    try:
+        return int(node_port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{C.MOTOR_DEPLOY_CONFIG}.{C.COORDINATOR_INFER_NODE_PORT} must be an integer or '-'") from exc
+
+
+def apply_coordinator_infer_node_port(service_data, deploy_config):
+    ports = service_data.get(C.SPEC, {}).get(C.PORTS, [])
+    if not ports:
+        raise ValueError("Coordinator infer service ports not found")
+    node_port = get_coordinator_infer_node_port(deploy_config)
+    if node_port is None:
+        ports[0].pop(C.NODE_PORT, None)
+    else:
+        ports[0][C.NODE_PORT] = node_port
+
+
+def apply_node_selector_override(pod_spec, deploy_config, selector_key):
+    selector = deploy_config.get(selector_key, {})
+    if not selector:
+        return
+    if not isinstance(selector, dict):
+        raise ValueError(f"{C.MOTOR_DEPLOY_CONFIG}.{selector_key} must be a JSON object")
+    pod_spec.setdefault(C.NODE_SELECTOR, {}).update(selector)
+
+
 def set_env_to_shell(user_config, env_config_path, deploy_mode):
     if not env_config_path or not os.path.exists(env_config_path):
         logger.error("env_config_path %s does not exist!", env_config_path)

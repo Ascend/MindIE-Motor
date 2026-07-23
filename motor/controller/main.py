@@ -21,6 +21,7 @@ from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.logger import get_logger, reconfigure_logging
 from motor.config.controller import ControllerConfig
 from motor.common.utils.port_allocator import apply_controller_ports, run_port_setup_or_exit
+from motor.common.utils.startup_banner import log_startup_banner
 from motor.controller.api_server import ControllerAPI
 from motor.controller.core import InstanceAssembler, InstanceManager, EventPusher
 
@@ -262,6 +263,7 @@ def parse_arguments():
 def main() -> None:
     global config, config_watcher, previous_fault_tolerance_enabled, standby_manager
 
+    log_startup_banner(logger, "controller")
     args = parse_arguments()
 
     if args.config:

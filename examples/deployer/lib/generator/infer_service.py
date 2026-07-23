@@ -11,12 +11,16 @@ import os
 
 import lib.constant as C
 from lib.utils import (
+    apply_coordinator_infer_node_port,
+    apply_node_selector_override,
     generate_unique_id,
+    get_coordinator_service_name,
     load_yaml,
     logger,
     write_yaml,
     obtain_engine_instance_total,
     obtain_engine_e_instance_total,
+    apply_volcano_queue_annotations,
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
@@ -40,9 +44,13 @@ from lib.generator.engine import (
     apply_a5_workload,
     apply_a5_engine_pod_config,
     apply_a5_dns_config,
+    apply_engine_node_selector_overrides,
+)
+from lib.generator.kv_cache_store import (
+    normalize_kv_cache_store_config,
+    gen_kv_store_env,
 )
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
-from lib.generator.kv_cache_store import normalize_kv_cache_store_config, gen_kv_store_env
 from lib.generator.kv_conductor import normalize_kv_conductor_config
 
 
@@ -87,6 +95,12 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     workload_spec[C.REPLICAS] = replicas
     template = workload_spec.setdefault(C.TEMPLATE, {})
     pod_spec = template.setdefault(C.SPEC, {})
+    selector_key = {
+        C.CONTROLLER: C.CONTROLLER_NODE_SELECTOR,
+        C.COORDINATOR: C.COORDINATOR_NODE_SELECTOR,
+    }.get(role_name)
+    if selector_key:
+        apply_node_selector_override(pod_spec, deploy_config, selector_key)
     containers = pod_spec.get(C.CONTAINERS, [])
     if not containers:
         return None
@@ -105,13 +119,26 @@ def _configure_controller_role(infer_doc, user_config):
 
 
 def _configure_coordinator_role(infer_doc, user_config):
+    deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
+    role = get_infer_role(infer_doc, C.COORDINATOR)
+    if role:
+        services = role.get(C.SERVICES, [])
+        if services:
+            services[0][C.NAME] = get_coordinator_service_name(deploy_config)
+            apply_coordinator_infer_node_port(services[0], deploy_config)
+
     container = _configure_control_role(infer_doc, user_config, C.COORDINATOR, C.MOTOR_COORDINATOR_CONFIG)
     if not container:
         return
 
     coordinator_env = list(k8s_utils.build_kv_store_env_items())
     if k8s_utils.g_kv_conductor_enabled:
-        coordinator_env.append({C.NAME: C.ENV_KV_CONDUCTOR_SERVICE, C.VALUE: k8s_utils.g_kv_conductor_service})
+        coordinator_env.append(
+            {
+                C.NAME: C.ENV_KV_CONDUCTOR_SERVICE,
+                C.VALUE: k8s_utils.g_kv_conductor_service,
+            }
+        )
 
     disaggregation_bootstrap_port = (
         user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG, {})
@@ -120,7 +147,10 @@ def _configure_coordinator_role(infer_doc, user_config):
     )
     if disaggregation_bootstrap_port:
         coordinator_env.append(
-            {C.NAME: C.ENV_DISAGGREGATION_BOOTSTRAP_PORT, C.VALUE: str(disaggregation_bootstrap_port)}
+            {
+                C.NAME: C.ENV_DISAGGREGATION_BOOTSTRAP_PORT,
+                C.VALUE: str(disaggregation_bootstrap_port),
+            }
         )
 
     if coordinator_env:
@@ -155,6 +185,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     role = get_infer_role(infer_doc, role_name)
     if not role:
         return
+    prefix = None
     if role_name == C.ROLE_UNION:
         instances_key = C.HYBRID_INSTANCES_NUM
         pods_key = C.SINGLE_HYBRID_INSTANCE_POD_NUM
@@ -179,6 +210,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     selector[C.APP] = infer_name
     template = workload_spec.setdefault(C.TEMPLATE, {})
     template.setdefault(C.METADATA, {}).setdefault(C.LABELS, {})[C.APP] = infer_name
+    apply_volcano_queue_annotations(template.setdefault(C.METADATA, {}), deploy_config)
     pod_spec = template.setdefault(C.SPEC, {})
     containers = pod_spec.get(C.CONTAINERS, [])
     if not containers:
@@ -200,6 +232,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     apply_dshm_size(pod_spec, user_config)
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
     _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name)
+    apply_engine_node_selector_overrides(pod_spec, deploy_config, prefix)
 
 
 def _set_role_primary_service_port(role, service_port):
@@ -221,6 +254,7 @@ def _configure_kv_store_role(infer_doc, user_config):
     workload_spec = role.setdefault(C.SPEC, {})
     template = workload_spec.setdefault(C.TEMPLATE, {})
     pod_spec = template.setdefault(C.SPEC, {})
+    apply_node_selector_override(pod_spec, deploy_config, C.KV_POOL_NODE_SELECTOR)
     containers = pod_spec.get(C.CONTAINERS, [])
     if containers:
         containers[0][C.IMAGE] = deploy_config[C.IMAGE_NAME]
@@ -261,6 +295,7 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     workload_spec = role.setdefault(C.SPEC, {})
     template = workload_spec.setdefault(C.TEMPLATE, {})
     pod_spec = template.setdefault(C.SPEC, {})
+    apply_node_selector_override(pod_spec, deploy_config, C.KV_CONDUCTOR_NODE_SELECTOR)
     containers = pod_spec.get(C.CONTAINERS, [])
     if containers:
         containers[0][C.IMAGE] = deploy_config[C.IMAGE_NAME]
@@ -276,7 +311,10 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     if not containers:
         return
     container = containers[0]
-    set_container_env(container, [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}])
+    set_container_env(
+        container,
+        [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}],
+    )
 
 
 def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
@@ -357,6 +395,11 @@ def init_infer_service_domain_name(infer_service_template_yaml, deploy_config):
             for port_entry in svc.get("spec", {}).get("ports", []):
                 port = port_entry.get("port")
                 if port in (1025, 1026, 1027):
+                    if port == 1025:
+                        svc = {
+                            **svc,
+                            C.NAME: get_coordinator_service_name(deploy_config),
+                        }
                     result[port] = _build_fqdn(svc, role_name_val)
                     break
         return result

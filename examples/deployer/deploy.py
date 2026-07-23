@@ -93,7 +93,7 @@ def handle_update_config(user_config):
     logger.info("Configmap refreshed.")
 
 
-def handle_update_instance_num(user_config):
+def handle_update_instance_num(user_config, env_config_path=None):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
@@ -113,10 +113,18 @@ def handle_update_instance_num(user_config):
 
     update_kv_store_enabled_flag(user_config)
     update_engine_base_name(user_config)
+    set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
 
     k8s_utils.g_generate_yaml_list = []
     paths = get_deploy_paths()
 
+    if deploy_mode_arg == C.DEPLOY_MODE_SINGLE_CONTAINER:
+        generate_yaml_single_container(
+            paths["single_container_input_yaml"], paths["single_container_output_yaml"], user_config
+        )
+        exec_all_kubectl_singer(deploy_config, paths["single_container_output_yaml"])
+        logger.info("instance num update end.")
+        return
     if deploy_mode_arg == C.DEPLOY_MODE_INFER_SERVICE_SET:
         infer_input = paths["infer_service_input_yaml"]
         infer_output = paths["infer_service_output_yaml"]
@@ -439,7 +447,7 @@ def main():
         handle_update_config(user_config)
         return
     if args.update_instance_num:
-        handle_update_instance_num(user_config)
+        handle_update_instance_num(user_config, env_config_path)
         return
 
     deploy_services(user_config, env_config_path, dry_run=args.dry_run, auto_log_collect=args.auto_log_collect)
