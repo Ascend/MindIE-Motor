@@ -1,8 +1,6 @@
 # 常用维护技巧
 
----
-
-## 如何在同一套集群部署多个Motor服务（如何修改业务推理端口）？
+## 同一套集群部署多个Motor服务
 
 如果同一套k8s集群部署了多套PD实例，对应的会有多套Coordinator和Controller实例，那么需要为不同的Coordinator实例配置不同的端口，以避免端口冲突。
 
@@ -10,7 +8,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
 
   1. 进入yaml指定文件夹并打开对应文件：
 
-      ```yaml
+      ```bash
       cd examples/deployer/yaml_template/
       vim infer_service_template.yaml
       ```
@@ -78,31 +76,29 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
             ...
       ```
 
-  >[!NOTE]说明
-  > 若`user_config.json`中配置了`"deploy_mode": "multi_deployment"`，则使用传统多YAML方式部署，需修改的内容上文相同，但需要修改的文件不同：
-  >
-  > - Coordinator端口：修改`coordinator_template.yaml`中的`nodePort`字段。
-  > - Controller端口：修改`controller_template.yaml`中的`nodePort`字段。
-  >
-  > 示例命令如下
-  >
-  > ```bash
-  > cd examples/deployer/yaml_template/
-  > vim coordinator_template.yaml
-  > vim controller_template.yaml
-  > ```
+      >[!NOTE]说明
+      > 若`user_config.json`中配置了`"deploy_mode": "multi_deployment"`，则使用传统多YAML方式部署，需修改的内容上文相同，但需要修改的文件不同：
+      >
+      > - Coordinator端口：修改`coordinator_template.yaml`中的`nodePort`字段。
+      > - Controller端口：修改`controller_template.yaml`中的`nodePort`字段。
+      >
+      > 示例命令如下
+      >
+      > ```bash
+      > cd examples/deployer/yaml_template/
+      > vim coordinator_template.yaml
+      > vim controller_template.yaml
+      > ```
 
----
+## 如何将coordinator/controller/推理Pod部署在固定的服务器？
 
-## 如何将coordinator/controller/推理pod部署在固定的服务器？
-
-默认情况下，Coordinator、Controller和推理pod将在k8s集群中的服务器之间随机分配，如果希望这些pod部署在固定服务器，可参考以下操作。
+默认情况下，Coordinator、Controller和推理Pod将在k8s集群中的服务器之间随机分配，如果希望这些Pod部署在固定服务器，可参考以下操作。
 
 ### PD分离场景
 
   1. 在k8s的master节点，执行以下命令，为服务器中的各个服务器打标签。
 
-      ```yaml
+      ```bash
       kubectl label node {node_name} key=value
       ```
 
@@ -182,7 +178,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
 
   4. 修改推理Pod的初始化文件。
 
-     执行`vim infer_service_template.yaml`命令，分别搜索`name: prefill`和`name: decode`，在各自的`template.spec.nodeSelector`中追加角色标签（`motor_role`的值与是第一步中创建的标签名和标签值保持一致）：
+     执行`vim infer_service_template.yaml`命令，分别搜索`name: prefill`和`name: decode`，在各自的`template.spec.nodeSelector`中追加角色标签（`motor_role`的值与第一步中创建的标签名和标签值保持一致）：
 
       ```yaml
       ...
@@ -236,7 +232,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
 
 ### PD混部场景
 
-  1. 在k8s的master节点，执行以下命令，为服务器中的各个服务器打标签。
+  1. 在K8s的master节点，执行以下命令，为集群中的各个服务器打标签。
 
       ```bash
       kubectl label node {node_name} key=value

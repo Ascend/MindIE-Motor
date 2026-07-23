@@ -85,7 +85,7 @@
 
 Motor 服务框架需为实例节点 Pod 配置 Kubernetes Readiness Probe，供 MindCluster 查询实例节点是否到达稳态点。MindCluster 在实例节点到达稳态点后执行 checkpoint，保存容器 Host 快照镜像。
 
-MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md)。
+MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md)。
 
 **容器快照特性在实例重调度应用场景下的约束**：
 
@@ -106,7 +106,7 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
 在 `infer_service_template.yaml` 中修改配置。以下以 Union 实例为例，仅展示改动点；YAML 基准配置请参见 `examples/deployer/yaml_template`：
 
 ```yaml
-......
+...
     - name: union
       replicas: 4
       workload:
@@ -154,7 +154,7 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
                 # 具体详见资料描述: MindIE Motor/examples/features/pod_permission_guide/README.md
                 seccompProfile:
                   type: Unconfined
-              # --------TODO 3: 启用readiness探针用于Mindcluster探测稳态点--------
+              # --------TODO 3: 启用readiness探针用于MindCluster探测稳态点--------
               readinessProbe:
                 exec:
                   command:
@@ -296,5 +296,5 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
               hostPath:
                 path: /usr/local/bin/npu-smi
             # ---------------------------------------
-......
+...
 ```

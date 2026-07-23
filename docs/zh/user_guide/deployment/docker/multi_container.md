@@ -17,7 +17,7 @@
 
 ### 准备user_config.json和env.json配置文件
 
-根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../k8s/config_reference.md)。
+根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../../configuration/config_reference.md)。
 
 Coordinator、Controller 和 Engine 容器部署在不同节点时可使用默认端口；同一节点部署多个角色时，推荐显式配置以下端口：
 
@@ -25,47 +25,47 @@ Coordinator、Controller 和 Engine 容器部署在不同节点时可使用默�
 - Controller 管理和可观测端口使用 `2026`、`2027`。
 - union / Prefill NodeManager 从 `3026` 起规划；Decode NodeManager 从 `4026` 起规划。
 
-#### PD 分离配置
+**PD 分离配置**
 
 ```json
 {
   "motor_deploy_config": {
-    ...
-    "p_instances_num": 1,
-    "d_instances_num": 1,
-    "single_p_instance_pod_num": 2,
-    "single_d_instance_pod_num": 4
+ ...
+ "p_instances_num": 1,
+ "d_instances_num": 1,
+ "single_p_instance_pod_num": 2,
+ "single_d_instance_pod_num": 4
   },
   "motor_controller_config": {
-    ...
-    "api_config": {
-      "controller_api_port": 2026,
-      "observability_api_port": 2027
-    }
+ ...
+ "api_config": {
+ "controller_api_port": 2026,
+ "observability_api_port": 2027
+ }
   },
   "motor_coordinator_config": {
-    ...
-    "api_config": {
-      "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026,
-      "coordinator_obs_port": 1027
-    }
+ ...
+ "api_config": {
+ "coordinator_api_infer_port": 1025,
+ "coordinator_api_mgmt_port": 1026,
+ "coordinator_obs_port": 1027
+ }
   },
   "motor_engine_prefill_config": {
-    ...
-    "motor_nodemanger_config": {
-      "api_config": {
-        "node_manager_port": 3026
-      }
-    }
+ ...
+ "motor_nodemanger_config": {
+ "api_config": {
+   "node_manager_port": 3026
+ }
+ }
   },
   "motor_engine_decode_config": {
-    ...
-    "motor_nodemanger_config": {
-      "api_config": {
-        "node_manager_port": 4026
-      }
-    }
+ ...
+ "motor_nodemanger_config": {
+ "api_config": {
+   "node_manager_port": 4026
+ }
+ }
   },
   ...
 }
@@ -73,39 +73,39 @@ Coordinator、Controller 和 Engine 容器部署在不同节点时可使用默�
 
 `env.json` 分别使用 `motor_engine_prefill_env` 和 `motor_engine_decode_env`。同时须在 P/D engine 配置中正确设置 `kv_transfer_config`；启用 KV Cache Store 时，还需准备对应环境变量。
 
-#### PD 混部配置
+**PD 混部配置**
 
 ```json
 {
   "motor_deploy_config": {
-    ...
-    "hybrid_instances_num": 1,
-    "single_hybrid_instance_pod_num": 2,
-    "hybrid_pod_npu_num": 2
+ ...
+ "hybrid_instances_num": 1,
+ "single_hybrid_instance_pod_num": 2,
+ "hybrid_pod_npu_num": 2
   },
   "motor_controller_config": {
-    ...
-    "api_config": {
-      "controller_api_port": 2026,
-      "observability_api_port": 2027
-    }
+ ...
+ "api_config": {
+ "controller_api_port": 2026,
+ "observability_api_port": 2027
+ }
   },
   "motor_coordinator_config": {
-    ...
-    "api_config": {
-      "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026,
-      "coordinator_obs_port": 1027
-    },
+ ...
+ "api_config": {
+ "coordinator_api_infer_port": 1025,
+ "coordinator_api_mgmt_port": 1026,
+ "coordinator_obs_port": 1027
+ },
   },
   "motor_engine_union_config": {
-    "engine_type": "vllm",
-    ...
-    "motor_nodemanger_config": {
-      "api_config": {
-        "node_manager_port": 3026
-      }
-    }
+ "engine_type": "vllm",
+ ...
+ "motor_nodemanger_config": {
+ "api_config": {
+   "node_manager_port": 3026
+ }
+ }
   },
   ...
 }
@@ -189,18 +189,18 @@ IMAGE_NAME="xxx" # 镜像名
 WEIGHT_MOUNT_PATH="xxx" # 宿主机权重目录，必须使用绝对路径
 
 if [ "$ENABLE_IPC_HOST" = "enable" ]; then
-    SET_IPC_HOST_STR="--ipc=host"
+ SET_IPC_HOST_STR="--ipc=host"
 fi
 
 # 从环境变量读取可见卡，默认自动检测主机昇腾卡，用逗号拼接，如"0,1,2,3"
 if [ -z "$ASCEND_VISIBLE_DEVICES" ]; then
-    ASCEND_VISIBLE_DEVICES=$(ls /dev/davinci[0-9]* 2>/dev/null | sed 's/[^0-9]//g' | paste -sd "," -)
+ ASCEND_VISIBLE_DEVICES=$(ls /dev/davinci[0-9]* 2>/dev/null | sed 's/[^0-9]//g' | paste -sd "," -)
 fi
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/devmm_svm --device=/dev/hisi_hdc"
 # 循环挂载ASCEND_VISIBLE_DEVICES指定卡
 IFS=',' read -ra ADDR <<< "$ASCEND_VISIBLE_DEVICES"
 for i in "${ADDR[@]}"; do
-    ASCEND_DEVICES="$ASCEND_DEVICES --device=/dev/davinci$i"
+ ASCEND_DEVICES="$ASCEND_DEVICES --device=/dev/davinci$i"
 done
 
 docker run -u root --rm --name $CONTAINER_NAME --net=host $SET_IPC_HOST_STR \
@@ -233,25 +233,25 @@ bash -c "source \$CONFIGMAP_PATH/boot.sh"
 
 环境变量说明：
 
-| 变量名                                 | 含义                        | 取值                                                                                                |
+| 变量名   | 含义  | 取值   |
 | :------------------------------------- | :-------------------------- | :-------------------------------------------------------------------------------------------------- |
-| CONFIGMAP_PATH                         | 启动脚本路径                | 与2.2小节保持一致，需挂载到容器中                                                                   |
-| IMAGE_NAME                             | 镜像名                      | 版本镜像，确保docker images能查询到                                                                 |
-| WEIGHT_MOUNT_PATH                      | 模型权重宿主机路径          | 与`user_config.json`中`weight_mount_path`及模型路径保持一致，必须使用绝对路径                       |
-| CONTAINER_NAME                         | 容器名                      | 不限                                                                                                |
-| ASCEND_VISIBLE_DEVICES                 | 可见卡                      | 指定挂载卡，如"0,1,2,3"，默认自动检测主机昇腾卡                                                     |
-| ENABLE_IPC_HOST                        | 是否使能--ipc=host          | enable或其他                                                                                        |
-| ROLE                                   | 部署角色                    | coordinator / controller / union / prefill / decode / kv_store                                      |
-| JOB_NAME                               | Engine 实例任务名           | union / prefill / decode 需设置，每个实例具有唯一性                                                 |
-| COORDINATOR_SERVICE                    | Coordinator 地址            | 设置为 Coordinator 部署节点 IP                                                                      |
-| CONTROLLER_SERVICE                     | Controller 地址             | 设置为 Controller 部署节点 IP                                                                       |
-| POD_IP                                 | 容器 IP                     | 使用 host 网络，取值为宿主机 IP                                                                     |
-| KV_STORE_BACKEND                       | KV Cache Store 后端         | PD 分离启用 Mooncake 时设置为`mooncake`；不启用或使用 PD 混部时设置为空                           |
-| KVS_MASTER_SERVICE                     | KV Cache Store 地址         | PD 分离启用时设置为 KV Cache Store 所在节点 IP；不启用或使用 PD 混部时设置为空                      |
-| KV_CACHE_STORE_PORT                    | KV Cache Store 端口         | 启用时设置有效端口，如 50088                                                                        |
-| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | KV Cache Store 高水位比例   | 启用时取值 0～1                                                                                     |
-| KV_STORE_EVICTION_RATIO                | KV Cache Store 逐出比例     | 启用时取值 0～1                                                                                     |
-| DEFAULT_KV_LEASE_TTL                   | KV 对象默认租约 TTL（毫秒） | 配置值须大于`env.json` 中的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT`，默认 11000 |
+| CONFIGMAP_PATH   | 启动脚本路径  | 与2.2小节保持一致，需挂载到容器中 |
+| IMAGE_NAME  | 镜像名   | 版本镜像，确保docker images能查询到  |
+| WEIGHT_MOUNT_PATH   | 模型权重宿主机路径  | 与`user_config.json`中`weight_mount_path`及模型路径保持一致，必须使用绝对路径 |
+| CONTAINER_NAME   | 容器名   | 不限   |
+| ASCEND_VISIBLE_DEVICES   | 可见卡   | 指定挂载卡，如"0,1,2,3"，默认自动检测主机昇腾卡 |
+| ENABLE_IPC_HOST  | 是否使能--ipc=host  | enable或其他  |
+| ROLE  | 部署角色 | coordinator / controller / union / prefill / decode / kv_store   |
+| JOB_NAME | Engine 实例任务名   | union / prefill / decode 需设置，每个实例具有唯一性  |
+| COORDINATOR_SERVICE | Coordinator 地址  | 设置为 Coordinator 部署节点 IP   |
+| CONTROLLER_SERVICE  | Controller 地址   | 设置为 Controller 部署节点 IP |
+| POD_IP   | 容器 IP  | 使用 host 网络，取值为宿主机 IP  |
+| KV_STORE_BACKEND | KV Cache Store 后端 | PD 分离启用 Mooncake 时设置为`mooncake`；不启用或使用 PD 混部时设置为空   |
+| KVS_MASTER_SERVICE  | KV Cache Store 地址 | PD 分离启用时设置为 KV Cache Store 所在节点 IP；不启用或使用 PD 混部时设置为空   |
+| KV_CACHE_STORE_PORT | KV Cache Store 端口 | 启用时设置有效端口，如 50088  |
+| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | KV Cache Store 高水位比例   | 启用时取值 0～1  |
+| KV_STORE_EVICTION_RATIO  | KV Cache Store 逐出比例  | 启用时取值 0～1  |
+| DEFAULT_KV_LEASE_TTL  | KV 对象默认租约 TTL（毫秒） | 配置值须大于`env.json` 中的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT`，默认 11000 |
 
 两种模式均先启动 Coordinator 和 Controller：
 
@@ -260,7 +260,7 @@ COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="" ROLE="coordin
 COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="" ROLE="controller" POD_IP="<IP1>" CONTAINER_NAME="docker_controller" sh start_docker.sh
 ```
 
-#### 启动 PD 分离实例
+**启动 PD 分离实例**
 
 以下示例部署 1P1D：P 占用 `<IP0>`、`<IP1>`，D 占用 `<IP2>`～`<IP5>`。相同实例的多个容器需一起拉起。
 
@@ -279,7 +279,7 @@ COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENA
 
 启用 KV Cache Store 时，Prefill/Decode 启动命令中的 `KV_STORE_BACKEND` 也须设置为 `mooncake`，`KVS_MASTER_SERVICE` 设置为 KV Cache Store 节点 IP，并按需要设置 `ENABLE_IPC_HOST=enable`。
 
-#### 启动 PD 混部实例
+**启动 PD 混部实例**
 
 以下示例部署 1 个 union 实例，占用 `<IP0>`、`<IP1>` 两个节点：
 
@@ -296,15 +296,15 @@ COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="u0" ROLE="union
 curl -X POST http://<IP0>:1025/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3-8B",
-    "messages": [
-      {
-        "role": "user",
-        "content": "who are you?"
-      }
-    ],
-    "max_tokens": 36,
-    "stream": true
+ "model": "qwen3-8B",
+ "messages": [
+ {
+   "role": "user",
+   "content": "who are you?"
+ }
+ ],
+ "max_tokens": 36,
+ "stream": true
   }'
 ```
 

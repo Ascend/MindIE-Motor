@@ -77,10 +77,10 @@ curl -X GET "http://{IP}:{Port}/metrics?type=instance"
 # 所有角色的聚合指标（返回 dict，key 为角色名，value 为 Prometheus 文本）
 curl -X GET "http://{IP}:{Port}/metrics?type=role"
 
-# 仅 Prefill 角色的聚合指标
+# 仅 prefill 角色的聚合指标
 curl -X GET "http://{IP}:{Port}/metrics?type=role&role=prefill"
 
-# 仅 Decode 角色的聚合指标
+# 仅 decode 角色的聚合指标
 curl -X GET "http://{IP}:{Port}/metrics?type=role&role=decode"
 ```
 

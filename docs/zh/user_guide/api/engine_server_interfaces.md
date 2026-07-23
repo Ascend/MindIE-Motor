@@ -193,7 +193,7 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 - CDP分离场景，透传P节点响应内容：
 
-  ```JSON
+  ```json
   {
     "id": "chatcmpl-xxx12",
     "object": "chat.completion",
@@ -219,7 +219,7 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 - PD分离场景，透传D节点响应内容：
 
-  ```JSON
+  ```json
   {
     "id": "chatcmpl-xxx",
     "object": "chat.completion",

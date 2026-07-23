@@ -1,4 +1,4 @@
-# motor支持https加密通信
+# MindIE Motor支持HTTPS加密通信
 
 ## 快速开始
 
@@ -10,13 +10,13 @@
 > - **在多节点集群环境中**，`/mnt`目录必须是**共享存储**（如NFS、CephFS等），确保所有节点都能访问相同的证书文件
 > - 如果使用本地存储，需要确保每个节点都执行以下步骤，或者使用共享存储方案
 
-1. **在宿主机上创建证书脚本目录**：
+1. 在宿主机上创建证书脚本目录。
 
    ```sh
    mkdir -p /mnt/cert_scripts # you can specific your cert scripts dir
    ```
 
-2. **拷贝证书生成脚本到宿主机的/mnt/cert_scripts/目录**：
+2. 拷贝证书生成脚本到宿主机的/mnt/cert_scripts/目录。
 
    ```sh
    cp openssl_gen_ca.sh /mnt/cert_scripts/ # path could be specific
@@ -24,13 +24,13 @@
    chmod +x /mnt/cert_scripts/*.sh
    ```
 
-3. **在宿主机上生成CA证书**：
+3. 在宿主机上生成CA证书。
 
    ```sh
    bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/ # path could be specific
    ```
 
-4. **配置相关环境变量**：
+4. 配置相关环境变量。
 
    在部署配置文件（如`env.json`）的`motor_common_env`中添加：
 
@@ -55,20 +55,20 @@
      - `etcd`和`grpc`证书为可选，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要配置
    - `GEN_CERT_SCRIPT`: 证书生成脚本路径（默认：`/mnt/cert_scripts/openssl_gen_cert.sh`）
 
-5. **配置证书路径**：
+5. 配置证书路径。
 
-   在`user_config.json`中配置TLS证书路径，详见 [3. 配置证书](#3-配置证书)
+   在`user_config.json`中配置TLS证书路径，详情请参见 [配置证书](#配置证书)。
 
-6. **启动服务**，系统会自动生成所需证书
+6. 启动服务，系统会自动生成所需证书。
 
 ## 详细说明
 
-### 1. 准备证书生成环境
+### 准备证书生成环境
 
 **前提条件**：
 
-- YAML配置中已通过hostPath方式挂载宿主机的`/mnt`目录到容器
-- 需要在宿主机上准备证书生成脚本和CA证书
+- YAML配置中已通过hostPath方式挂载宿主机的`/mnt`目录到容器。
+- 需要在宿主机上准备证书生成脚本和CA证书。
 
 **在宿主机上执行**：
 
@@ -85,13 +85,13 @@ chmod +x /mnt/cert_scripts/*.sh
 bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 ```
 
-### 2. 生成服务端证书
+### 生成服务端证书
 
 通过`openssl_gen_cert.sh`生成服务端证书，将其拷贝到`/mnt/cert_scripts`目录下。
 
 证书生成逻辑已集成到`common.sh`中，会自动根据环境变量`ENABLE_GEN_CERT`判断是否生成证书。
 
-#### 2.1 配置ENABLE_GEN_CERT环境变量
+#### 配置ENABLE_GEN_CERT环境变量
 
 在部署配置文件（如`env.json`）中添加`ENABLE_GEN_CERT`环境变量：
 
@@ -108,12 +108,12 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 
 **说明：**
 
-- 在`motor_common_env`中添加`"ENABLE_GEN_CERT": "true"`即可启用TLS证书自动生成
-- 当`ENABLE_GEN_CERT`设置为`true`时，`common.sh`会在服务启动时自动调用证书生成函数
-- 证书会生成到`/usr/local/Ascend/pyMotor/conf/security/`目录下
-- 生成的证书包括：infer、mgmt、etcd、grpc四种类型
+- 在`motor_common_env`中添加`"ENABLE_GEN_CERT": "true"`即可启用TLS证书自动生成。
+- 当`ENABLE_GEN_CERT`设置为`true`时，`common.sh`会在服务启动时自动调用证书生成函数。
+- 证书会生成到`/usr/local/Ascend/pyMotor/conf/security/`目录下。
+- 生成的证书包括：infer、mgmt、etcd、grpc四种类型。
 
-#### 2.2 自定义证书路径配置（可选）
+#### 自定义证书路径配置（可选）
 
 如果需要自定义证书路径，可通过以下环境变量配置：
 
@@ -145,10 +145,10 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 
 **使用场景：**
 
-- 自定义CA证书存储位置
-- 修改证书生成目录
-- 调整需要生成的证书类型
-- 使用非标准路径的证书生成脚本
+- 自定义CA证书存储位置。
+- 修改证书生成目录。
+- 调整需要生成的证书类型。
+- 使用非标准路径的证书生成脚本。
 
 **生成的文件：**
 对于每个cert_name，会在`${BASE_CERT_PATH}/${cert_name}/`目录下生成：
@@ -158,11 +158,11 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 - `decrypt.cert.key.pem` - 未加密的私钥（用于配置中的key_file）
 - `cert.conf` - OpenSSL配置文件
 
-### 3. 配置证书
+### 配置证书
 
-在`user_config.json`中增加如下配置项，`enable`设置成`true`，同时证书路径要配置正确
+在`user_config.json`中增加如下配置项，`enable`设置成`true`，同时证书路径要配置正确。
 
-> 限制：当前只支持解密的`key_file`, `passwd_file`和`tls_crl`为预留字段
+> 限制：当前只支持解密的`key_file`, `passwd_file`和`tls_crl`为预留字段。
 
 ```json
 {
@@ -207,11 +207,11 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 
 **说明**：
 
-- `infer_tls_config`和`mgmt_tls_config`：默认启用TLS加密通信
-- `etcd_tls_config`和`grpc_tls_config`：默认禁用，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要启用
+- `infer_tls_config`和`mgmt_tls_config`：默认启用TLS加密通信。
+- `etcd_tls_config`和`grpc_tls_config`：默认禁用，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要启用。
 - 如需启用etcd和grpc的TLS，需要：
-  1. 在`env.json`中设置`CERT_NAMES`环境变量包含`etcd grpc`（如：`"CERT_NAMES": "infer mgmt etcd grpc"`）
-  2. 将对应的`enable_tls`设置为`true`
+  1. 在`env.json`中设置`CERT_NAMES`环境变量包含`etcd grpc`（如：`"CERT_NAMES": "infer mgmt etcd grpc"`）。
+  2. 将对应的`enable_tls`设置为`true`。
 
 ## 注意事项
 

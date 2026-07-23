@@ -1,18 +1,18 @@
-# tracing能力部署
+# Tracing能力部署
 
 ## 特性介绍
 
-MindIE Motor tracing能力基于三方件`opentelemetry`能力，`opentelemetry`文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
+MindIE Motor Tracing能力基于第三方组件`opentelemetry`的能力，`opentelemetry`文档资料可参考[文档|OpenTelemetry](https://opentelemetry.io/zh/docs/)。
 
 通过修改env.json配置文件和user_config.json配置文件后即可通过deploy.py脚本完成服务部署。
 
 ## 部署流程
 
-MindIE Motor开启tracing能力需修改env.json配置文件和user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
+MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
 
 ### 配置env.json
 
-以[MindIE Motor快速开始](../quick_start.md)中实例env.json为参考基线，适配打开tracing能力后的配置文件示例如下：
+以[MindIE Motor快速开始](../quick_start.md)中实例env.json为参考基线，适配打开Tracing能力后的配置文件示例如下：
 
 ```json
 {
@@ -46,11 +46,11 @@ MindIE Motor开启tracing能力需修改env.json配置文件和user_config.json�
 
 - `OTEL_SERVICE_NAME`上报数据的服务名称，根据模块名称定义，建议参考样例。
 - `OTEL_EXPORTER_OTLP_TRACES_INSECURE`是否开启非安全协议，生产环境建议设置为`false`。
-- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`上报数据协议，可选`grpc`和``http/protobuf``。根据实际开发习惯设置。
+- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`上报数据协议，可选`grpc`和`http/protobuf`。根据实际开发习惯设置。
 
 ### 配置user_config.json
 
-以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配打开tracing能力后的配置文件示例如下：
+以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配打开Tracing能力后的配置文件示例如下：
 
 ```json
 {
@@ -128,8 +128,8 @@ MindIE Motor开启tracing能力需修改env.json配置文件和user_config.json�
 }
 ```
 
-- 需要在`motor_coordinator_config`下新增`tracer_config`，`tracer_config`下的`endpoint`配置为开启tracing能力必填，填写内容根据env.json中的 `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`配置，可选： `http://xx.xx.xx.xx:4318/v1/traces`或`grpc://xx.xx.xx.xx:4317`
-- `motor_engine_prefill_config`、`motor_engine_decode_config`的`engine_config`下新增`otlp-traces-endpoint`配置，填写方法同`endpoint`
+- 需要在`motor_coordinator_config`下新增`tracer_config`，`tracer_config`下的`endpoint`配置为开启Tracing能力必填，填写内容根据env.json中的 `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`配置，可选： `http://xx.xx.xx.xx:4318/v1/traces`或`grpc://xx.xx.xx.xx:4317`。
+- `motor_engine_prefill_config`、`motor_engine_decode_config`的`engine_config`下新增`otlp-traces-endpoint`配置，填写方法同`endpoint`。
 
 ### 部署服务
 

@@ -10,7 +10,7 @@ MemCache 为默认池化后端，基于 [memcache_hybrid](https://gitcode.com/As
 "backend": "memcache"
 ```
 
-`kv_cache_store_config` 中配置 `"backend": "memcache"`，可选配置 MetaService 端口、LocalService 部署模式及单进程 DRAM 池化内存：
+`kv_cache_store_config` 中配置 `"backend": "memcache"`，可选配置 MetaService 端口、LocalService 部署模式及单节点 DRAM 池化内存：
 
 ```json
 "kv_cache_store_config": {

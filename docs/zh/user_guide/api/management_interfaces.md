@@ -230,4 +230,3 @@ curl -X GET "http://{IP}:{Port}/"
 | `version` | string | 服务版本号。 |
 | `description` | string | 服务描述。 |
 | `endpoints` | object | 接口索引信息，以 `HTTP方法 路径` 为键，说明为值。 |
-| `timestamp` | string | 服务时间戳。 |

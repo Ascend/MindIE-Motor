@@ -2,7 +2,7 @@
 
 ## 功能介绍
 
-允许P/D实例通过KV缓存池共享KV Cache，P实例将计算好的KV Cache推入缓存池，D实例从缓存池拉取并复用，从而在PD分离场景下提升显存利用率和推理吞吐。
+允许P/D（Prefill/Decode）实例通过KV缓存池共享KV Cache，P实例将计算好的KV Cache推入缓存池，D实例从缓存池拉取并复用，从而在PD分离场景下提升显存利用率和推理吞吐。
 
 MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和环境依赖可参考[vllm-ascend池化文档](https://docs.vllm.ai/projects/ascend/zh-cn/main/user_guide/feature_guide/kv_pool.html)。
 
@@ -10,7 +10,7 @@ MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和
 
 ## 前置说明
 
-- 必须已使用 motor 部署 PD 分离推理服务，KV 池化在该服务基础上开启，不会对 controller 和 coordinator 产生影响。
+- 必须已使用 MindIE Motor 部署 PD 分离推理服务，KV 池化在该服务基础上开启，不会对 Controller 和 Coordinator 产生影响。
 - KV 池化能力的约束条件，详情参考：[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)。
 - 开启池化能力前请先参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 - **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打补丁**（见下方应用补丁章节）；`v0.17.0rc2` 及以上版本请直接跳过补丁步骤。
@@ -30,7 +30,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 > 注意：开启池化能力前请参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 
-### 1. kv_transfer_config（P/D 实例 engine_config 内）
+### kv_transfer_config（P/D 实例 engine_config 内）
 
 池化通过 `MultiConnector` 组合传输连接器（`connectors[0]`）与池化后端连接器（`connectors[1]`）实现。以 `MooncakeLayerwiseConnector`（layerwise P/D 协同）+ `AscendStoreConnector`（KV 池后端）为例：
 
@@ -106,7 +106,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 > `lookup_rpc_port` 无需手动填写，每个 DP 实例的值由 Motor 自动适配。
 
-其中 `AscendStoreConnector` 的 `backend` 字段决定使用的池化后端。各后端之间其余结构完全相同，**仅 `backend` 取值不同**：
+其中 `AscendStoreConnector` 的 `backend` 字段决定使用的池化后端。各后端之间其余结构完全一致，**仅 `backend` 取值不同**：
 
 | 池化后端 | `backend` 值 | 说明 |
 |----------|-------------|------|
@@ -116,7 +116,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 > 关于 Connector 的更多原理，以及识别白名单与 `dispatch_profile` 逃生口，请参见 [PD 分离特性说明](../../../design/pd_disaggregation.md#connector-驱动执行计划)。
 
-### 2. kv_cache_store_config（全局配置）
+### kv_cache_store_config（全局配置）
 
 `kv_cache_store_config` 为 KV 池化全局配置，P/D 实例共享（以默认后端 MemCache 为例）：
 
@@ -164,7 +164,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 ## 部署服务
 
-在 `examples/deployer` 目录下通过 deploy.py 脚本部署服务：
+在 `examples/deployer` 目录下通过 `deploy.py` 脚本部署服务：
 
 ```bash
 cd examples/deployer
@@ -204,21 +204,6 @@ MindIE Motor KV 池化能力基于 vllm-ascend 的 KV 传输层实现。整体�
 4. **P/D 协同**：P 与 D 实例之间通过配置相同的 `kv_port` 和 `kv_connector` 建立连接，通过 `kv_role` 区分生产者/消费者角色。
 
 池化后端通过 `AscendStoreConnector` 的 `backend` 字段切换。MemCache 后端由 deployer 自动拉起 MetaService 进程管理缓存池元数据，Mooncake 后端则使用 `mooncake_master` 进程。各后端的详细说明见对应的后端文档。
-
-### 部署流程
-
-在 `examples/deployer` 目录下执行全量部署：
-
-```bash
-cd examples/deployer
-python deploy.py --config_dir ../infer_engines/vllm
-```
-
-完成后：
-
-- 集群中会创建/更新 ConfigMap `motor-config`（内容来自当前输入的 `user_config.json`），后续扩缩容与刷新的基线。
-- `output/deployment/` 下会生成各服务 YAML。
-- P 与 D 实例会根据 `kv_cache_store_config` 自动拉起对应后端的 master 进程，管理共享显存池。
 
 ### 关键配置调优建议
 
