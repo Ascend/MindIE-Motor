@@ -11,7 +11,19 @@
 
 set_kv_conductor_env
 
-export CONDUCTOR_CONFIG_PATH="$CONFIG_PATH/kv_conductor_config.json"
-python3 "$CONFIGMAP_PATH/mooncake_config.py" conductor "$CONDUCTOR_CONFIG_PATH" "$USER_CONFIG_PATH"
+KV_CONDUCTOR_PORT=${KV_CONDUCTOR_PORT:-13333}
+KV_CONDUCTOR_HOST=${KV_CONDUCTOR_HOST:-0.0.0.0}
 
-mooncake_conductor
+# If KV_CONDUCTOR_PORT is a full URL (e.g. "tcp://10.98.27.88:13333"),
+# extract just the trailing port number for the --port argument.
+if [[ "$KV_CONDUCTOR_PORT" == *":"* ]]; then
+    KV_CONDUCTOR_PORT="${KV_CONDUCTOR_PORT##*:}"
+fi
+
+echo "Starting KV Conductor on ${KV_CONDUCTOR_HOST}:${KV_CONDUCTOR_PORT}"
+
+# kv-conductor is bundled inside the motor Python package.
+# RUST_LOG can be set via env to control tracing verbosity (default: info).
+exec python -m motor.kv_conductor \
+    --host "$KV_CONDUCTOR_HOST" \
+    --port "$KV_CONDUCTOR_PORT"

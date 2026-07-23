@@ -21,7 +21,7 @@ nav:
           - 推理引擎对接说明: user_guide/features/supported_inference_engines.md
           - EPD 分离: user_guide/features/EPD_disaggregation.md
           - PD 分离: user_guide/features/pd_disaggregation.md
-          - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
+          - KV Cache 亲和: user_guide/features/kvcache_affinity.md
           - KV Cache Store: user_guide/features/kv_cache_store/README.md
           - 手动扩缩容: user_guide/features/manual_instance_scaling.md
           - 主备倒换: user_guide/features/fault_tolerance/standby.md

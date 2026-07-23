@@ -420,9 +420,9 @@ class InstanceManager:
             return
 
         if is_register:
-            ConductorApiClient().register_kv_instance(instances)
+            ConductorApiClient.register_kv_instance(instances)
         else:
-            ConductorApiClient().unregister_kv_instance(instances)
+            ConductorApiClient.unregister_kv_instance(instances)
 
     def _add_instances(self, instances: list[Instance]) -> bool:
         """Add instances to pool. Return True if at least one instance was actually added (pool modified)."""

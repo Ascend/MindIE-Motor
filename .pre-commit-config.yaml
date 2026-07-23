@@ -85,6 +85,25 @@ repos:
           - "--verbose"
           - "-i"
 
+  # ---------- Rust checks (kv-conductor) ----------
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt (Rust code formatter)
+        entry: cargo fmt --manifest-path motor/kv_conductor/Cargo.toml --all
+        language: system
+        types: [rust]
+        files: ^motor/kv_conductor/
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy (Rust linter)
+        entry: cargo clippy --manifest-path motor/kv_conductor/Cargo.toml -- -D warnings
+        language: system
+        types: [rust]
+        files: ^motor/kv_conductor/
+        pass_filenames: false
+
   # ======== Local custom hooks ========
   - repo: local
     hooks:

@@ -973,6 +973,8 @@ spec:
               volumeMounts:
               - name: motor-config
                 mountPath: /mnt/configmap
+              - name: mnt
+                mountPath: /mnt
               - name: coredump
                 mountPath: /var/coredump
             volumes:
@@ -980,6 +982,9 @@ spec:
               configMap:
                 name: motor-config
                 defaultMode: 360
+            - name: mnt
+              hostPath:
+                path: /mnt
             - name: coredump
               hostPath:
                 path: /var/coredump

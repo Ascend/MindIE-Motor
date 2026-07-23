@@ -70,6 +70,9 @@ docs/_build/
 # PyBuilder
 target/
 
+# kv-conductor build output (bundled binary in whl, built by build.sh)
+motor/kv_conductor/bin/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -119,3 +122,8 @@ examples/deployer/output_yamls/*
 examples/features/observability/stack/loki/.build/
 examples/features/observability/stack/generated/
 examples/features/observability/stack/.native-runtime/
+motor/kv_conductor/Cargo.lock
+motor/kv_conductor/curl.sh
+Dockerfile.motor-e2e-kv
+motor/kv_conductor/.cargo/
+motor/kv_conductor/mock/

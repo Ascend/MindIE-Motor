@@ -698,14 +698,14 @@ def test_from_json_maps_union_kv_events_to_prefill_kv_event_config(_temp_json_fi
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
-    pk = config.prefill_kv_event_config
+    kr = config.scheduler_config.kv_conductor_config
 
     assert config.scheduler_config.scheduler_type.value == "kv_cache_affinity"
-    assert pk.endpoint == "tcp://*:5557"
-    assert pk.replay_endpoint == "tcp://*:6667"
-    assert pk.model_path == "/mnt/weight/qwen3_8B"
-    assert pk.http_server_port == 14444
-    assert pk.block_size == 64
+    assert kr.endpoint == "tcp://*:5557"
+    assert kr.replay_endpoint == "tcp://*:6667"
+    assert kr.model_path == "/mnt/weight/qwen3_8B"
+    assert kr.http_server_port == 14444
+    assert kr.block_size == 64
 
 
 def test_from_json_prefill_kv_event_prefers_prefill_over_union(_temp_json_file):
@@ -738,11 +738,11 @@ def test_from_json_prefill_kv_event_prefers_prefill_over_union(_temp_json_file):
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
-    pk = config.prefill_kv_event_config
+    kr = config.scheduler_config.kv_conductor_config
 
-    assert pk.endpoint == "tcp://*:1111"
-    assert pk.replay_endpoint == "tcp://*:2222"
-    assert pk.model_path == "/prefill/model"
+    assert kr.endpoint == "tcp://*:1111"
+    assert kr.replay_endpoint == "tcp://*:2222"
+    assert kr.model_path == "/prefill/model"
 
 
 def test_from_json_union_without_kv_events_skips_auto_merge(_temp_json_file):
@@ -762,8 +762,8 @@ def test_from_json_union_without_kv_events_skips_auto_merge(_temp_json_file):
 
     config = CoordinatorConfig.from_json(_temp_json_file)
 
-    assert config.prefill_kv_event_config.endpoint == ""
-    assert config.prefill_kv_event_config.model_path == ""
+    assert config.scheduler_config.kv_conductor_config.endpoint == ""
+    assert config.scheduler_config.kv_conductor_config.model_path == ""
 
 
 def test_from_json_maps_prefill_kv_events_regression(_temp_json_file):
@@ -786,10 +786,10 @@ def test_from_json_maps_prefill_kv_events_regression(_temp_json_file):
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
-    pk = config.prefill_kv_event_config
+    kr = config.scheduler_config.kv_conductor_config
 
-    assert pk.endpoint == "tcp://*:5557"
-    assert pk.replay_endpoint == "tcp://*:6667"
-    assert pk.model_path == "/mnt/weight/qwen3_8B"
-    assert pk.http_server_port == 15555
-    assert pk.block_size == 32
+    assert kr.endpoint == "tcp://*:5557"
+    assert kr.replay_endpoint == "tcp://*:6667"
+    assert kr.model_path == "/mnt/weight/qwen3_8B"
+    assert kr.http_server_port == 15555
+    assert kr.block_size == 32

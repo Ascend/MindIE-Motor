@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import os
 import re
 from pathlib import Path
 
@@ -26,6 +27,17 @@ def _read_version() -> str:
     return match.group(1)
 
 
+# Conditionally include the kv-conductor binary when it was built (see build.sh).
+# When the Rust toolchain is unavailable, the binary does not exist and the
+# wheel is packaged without it — the Python runtime handles this gracefully.
+_package_data: dict[str, list[str]] = {
+    "motor": ["version.info"],
+}
+
+_kv_bin = os.path.join("motor", "kv_conductor", "bin", "kv-conductor")
+if os.path.isfile(_kv_bin):
+    _package_data["motor.kv_conductor"] = ["bin/kv-conductor"]
+
 setup(
     name="motor",
     version=_read_version(),
@@ -33,9 +45,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.11",
     install_requires=[],
-    package_data={
-        "motor": ["version.info"],
-    },
+    package_data=_package_data,
     include_package_data=True,
     zip_safe=False,
     entry_points={

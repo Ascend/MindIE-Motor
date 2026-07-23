@@ -151,7 +151,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 }
 ```
 
-启用 KV Cache 亲和时，在 `examples/infer_engines/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../../features/KV_cache_affinity.md)。
+启用 KV Cache 亲和时，在 `examples/infer_engines/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../../features/kvcache_affinity.md)。
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
@@ -201,7 +201,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 | engine_config.enable_expert_parallel | bool | 是否启用 EP |
 | engine_config.data_parallel_rpc_port | int | DP 侧 RPC 端口 |
 | engine_config.max_model_len | int | 最大模型上下文长度 |
-| engine_config.kv-events-config | object | 启用 KV Cache 亲和时配置 KV 事件发布（见 [KV Cache 亲和部署](../../features/KV_cache_affinity.md)） |
+| engine_config.kv-events-config | object | 启用 KV Cache 亲和时配置 KV 事件发布（见 [KV Cache 亲和部署](../../features/kvcache_affinity.md)） |
 | engine_config.enable-prefix-caching | bool | 启用 KV Cache 亲和时建议开启前缀缓存 |
 | 其它键 | - | 引擎原生参数，按所选引擎文档直接填写 |
 
