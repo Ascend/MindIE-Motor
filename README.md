@@ -1,7 +1,7 @@
 # MindIE Motor
 
 <p align="center">
-    <img alt="MindIE PyMotor" src="./docs/zh/imgs/mindie_pymotor_title.png">
+    <img alt="MindIE Motor" src="./docs/zh/imgs/MindIE-Motor.png">
 </p>
 
 <p align="center">
