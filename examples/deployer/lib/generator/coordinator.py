@@ -9,7 +9,16 @@
 # See the Mulan PSL v2 for more details.
 
 import lib.constant as C
-from lib.utils import generate_unique_id, load_yaml, write_yaml, logger, modify_log_mount
+from lib.utils import (
+    apply_coordinator_infer_node_port,
+    apply_node_selector_override,
+    generate_unique_id,
+    get_coordinator_service_name,
+    load_yaml,
+    logger,
+    modify_log_mount,
+    write_yaml,
+)
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import extract_resources, set_rbac_namespace, set_services_namespace
 from lib.generator.engine import apply_a5_dns_config, set_engine_weight_mount
@@ -69,6 +78,8 @@ def modify_coordinator_deployment(deployment_data, user_config):
         )
 
     modify_coordinator_replicas(deployment_data, user_config)
+    pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    apply_node_selector_override(pod_spec, deploy_config, C.COORDINATOR_NODE_SELECTOR)
     apply_a5_dns_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], deploy_config)
     modify_log_mount(deployment_data, user_config, "mindie-motor-coordinator")
 
@@ -79,6 +90,20 @@ def modify_coordinator_yaml(data, user_config):
     deployment_data, service_list, rbac_resources = extract_resources(data)
     set_rbac_namespace(rbac_resources, namespace)
     modify_coordinator_deployment(deployment_data, user_config)
+    # In some cloud-based multi-tenant environments, inference services from different
+    # tenants are deployed within the same cluster.
+    # Consequently, the externally facing service must differentiate between tenants
+    # and support customized naming.
+    # For example, the inference service entrypoint for Tenant A might be
+    # mindie-ms-coordinator-infer-tenant-A, while Tenant B uses
+    # mindie-ms-coordinator-infer-tenant-B.
+    # An upper-layer gateway then routes requests based on these tenant-specific
+    # service endpoints.
+    coordinator_service_name = get_coordinator_service_name(deploy_config)
+    for service_data in service_list:
+        if service_data[C.METADATA][C.NAME] == "mindie-motor-coordinator-infer":
+            service_data[C.METADATA][C.NAME] = coordinator_service_name
+            apply_coordinator_infer_node_port(service_data, deploy_config)
     set_services_namespace(service_list, namespace)
     container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     set_engine_weight_mount(deployment_data, container, deploy_config)

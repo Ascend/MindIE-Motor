@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import lib.constant as C
-from lib.utils import load_yaml, write_yaml, logger
+from lib.utils import apply_node_selector_override, load_yaml, write_yaml, logger
 from lib.generator import k8s_utils
 
 
@@ -40,6 +40,9 @@ def generate_yaml_kv_conductor(input_yaml, output_file, user_config, kv_conducto
 
     if C.ENV not in container:
         container[C.ENV] = []
+
+    pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    apply_node_selector_override(pod_spec, deploy_config, C.KV_CONDUCTOR_NODE_SELECTOR)
 
     for svc in service_list:
         svc[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]

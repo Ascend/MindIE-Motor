@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mindie-pymotor-deploy
+  namespace: mindie
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: mindie-pymotor-deployer
+      restartPolicy: Never
+      containers:
+        - name: deployer
+          image: mindie-pymotor-deployer:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONFIG_DIR
+              value: /config
+          volumeMounts:
+            - name: deploy-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: deploy-config
+          configMap:
+            name: mindie-pymotor-user-config
+            items:
+              - key: user_config.json
+                path: user_config.json
+              - key: env.json
+                path: env.json

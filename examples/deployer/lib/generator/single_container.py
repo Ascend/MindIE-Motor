@@ -11,7 +11,15 @@
 import os
 
 import lib.constant as C
-from lib.utils import generate_unique_id, load_yaml, write_yaml, logger
+from lib.utils import (
+    apply_coordinator_infer_node_port,
+    apply_volcano_queue_annotations,
+    generate_unique_id,
+    get_coordinator_service_name,
+    load_yaml,
+    logger,
+    write_yaml,
+)
 from lib.generator import k8s_utils
 from lib.generator.engine import (
     set_engine_weight_mount,
@@ -43,12 +51,14 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     deployment_data[C.SPEC][C.SELECTOR][C.MATCHLABELS][C.APP] = app_name
     deployment_data[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS][C.APP] = app_name
     deployment_data[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]
+    apply_volcano_queue_annotations(deployment_data[C.SPEC][C.TEMPLATE][C.METADATA], deploy_config)
 
     container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     container[C.IMAGE] = deploy_config[C.IMAGE_NAME]
 
     service_data = data[1]
-    service_data[C.METADATA][C.NAME] = f"{job_id}-coordinator-service"
+    service_data[C.METADATA][C.NAME] = get_coordinator_service_name(deploy_config)
+    apply_coordinator_infer_node_port(service_data, deploy_config)
     service_data[C.METADATA][C.LABELS][C.APP] = app_name
     service_data[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]
     service_data[C.SPEC][C.SELECTOR][C.APP] = app_name

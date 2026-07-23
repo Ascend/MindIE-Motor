@@ -136,6 +136,36 @@ examples/infer_engines/
 - `motor_engine_decode_config`: Decode 引擎配置
 - `kv_cache_store_config`: KV 缓存池配置
 
+`motor_deploy_config` 支持按组件配置调度标签和 Coordinator 对外端口：
+
+| 字段 | 说明 |
+|------|------|
+| `coordinator_infer_node_port` | Coordinator 推理 Service 的 NodePort。缺省为 `31015`；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
+| `controller_node_selector` | Controller Pod 的自定义 `nodeSelector`。 |
+| `coordinator_node_selector` | Coordinator Pod 的自定义 `nodeSelector`。 |
+| `prefill_node_selector` | Prefill Pod 的自定义 `nodeSelector`。 |
+| `decode_node_selector` | Decode Pod 的自定义 `nodeSelector`。 |
+| `kv_pool_node_selector` | KV Pool Pod 的自定义 `nodeSelector`。 |
+| `kv_conductor_node_selector` | KV Conductor Pod 的自定义 `nodeSelector`。 |
+
+Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `hardware_type` 生成的硬件标签合并，例如：
+
+这些组件级字段适用于 `multi_deployment` 和 `infer_service_set` 等组件分别运行在不同 Pod 的部署模式。`single_container` 模式下所有组件共享一个 Pod，因此不应用独立的组件级 node selector。
+
+```json
+{
+  "motor_deploy_config": {
+    "coordinator_infer_node_port": "-",
+    "controller_node_selector": {"label1": "value1"},
+    "coordinator_node_selector": {"label1": "value1"},
+    "prefill_node_selector": {"label1": "value1"},
+    "decode_node_selector": {"label1": "value1"},
+    "kv_pool_node_selector": {"label1": "value1"},
+    "kv_conductor_node_selector": {"label1": "value1"}
+  }
+}
+```
+
 ### env.json
 
 包含环境变量配置，主要字段：
@@ -170,4 +200,4 @@ examples/infer_engines/
 
 CLI 参数与 `engine_config` 键名的完整映射关系详见：
 
-👉 **[CLI 参数与 engine_config 映射指南](../../docs/zh/user_guide/operations/cli_to_engine_config_guide.md)**
+👉 **[CLI 参数与 engine_config 映射指南](CLI 参数完整定义与校验见 `motor/config/endpoint.py` 中 `EndpointConfig.parse_cli_args`)**

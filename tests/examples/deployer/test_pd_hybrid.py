@@ -386,8 +386,22 @@ def test_elastic_distributed_engine_deploy_scales_out_hybrid_instances(tmp_path,
     k8s_utils.elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, str(tmp_path))
 
     assert commands == [
-        ["kubectl", "apply", "-f", str(tmp_path / "mindie_server_u1.yaml"), "-n", "pd-hybrid"],
-        ["kubectl", "apply", "-f", str(tmp_path / "mindie_server_u2.yaml"), "-n", "pd-hybrid"],
+        [
+            "kubectl",
+            "apply",
+            "-f",
+            str(tmp_path / "mindie_server_u1.yaml"),
+            "-n",
+            "pd-hybrid",
+        ],
+        [
+            "kubectl",
+            "apply",
+            "-f",
+            str(tmp_path / "mindie_server_u2.yaml"),
+            "-n",
+            "pd-hybrid",
+        ],
     ]
 
 
@@ -405,8 +419,24 @@ def test_elastic_distributed_engine_deploy_scales_in_hybrid_instances(tmp_path, 
     k8s_utils.elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, str(tmp_path))
 
     assert commands == [
-        ["kubectl", "delete", "-f", str(tmp_path / "mindie_server_u2.yaml"), "-n", "pd-hybrid"],
-        ["kubectl", "delete", "-f", str(tmp_path / "mindie_server_u1.yaml"), "-n", "pd-hybrid"],
+        [
+            "kubectl",
+            "delete",
+            "deployment",
+            "mindie_server-u2",
+            "-n",
+            "pd-hybrid",
+            "--ignore-not-found=true",
+        ],
+        [
+            "kubectl",
+            "delete",
+            "deployment",
+            "mindie_server-u1",
+            "-n",
+            "pd-hybrid",
+            "--ignore-not-found=true",
+        ],
     ]
     assert not yaml_to_remove.exists()
 
@@ -506,7 +536,16 @@ def test_handle_update_instance_num_scales_hybrid_via_crd_when_current_omits_dep
 
     deploy_module.handle_update_instance_num(current_config)
 
-    assert commands == [["kubectl", "apply", "-f", paths["infer_service_output_yaml"], "-n", "pd-hybrid"]]
+    assert commands == [
+        [
+            "kubectl",
+            "apply",
+            "-f",
+            paths["infer_service_output_yaml"],
+            "-n",
+            "pd-hybrid",
+        ]
+    ]
     all_docs = load_yaml(paths["infer_service_output_yaml"], False)
     infer_doc = _find_infer_service_set_doc(all_docs)
     assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
@@ -534,7 +573,16 @@ def test_handle_update_instance_num_scales_hybrid_via_crd(tmp_path, monkeypatch)
 
     deploy_module.handle_update_instance_num(current_config)
 
-    assert commands == [["kubectl", "apply", "-f", paths["infer_service_output_yaml"], "-n", "pd-hybrid"]]
+    assert commands == [
+        [
+            "kubectl",
+            "apply",
+            "-f",
+            paths["infer_service_output_yaml"],
+            "-n",
+            "pd-hybrid",
+        ]
+    ]
     all_docs = load_yaml(paths["infer_service_output_yaml"], False)
     infer_doc = _find_infer_service_set_doc(all_docs)
     assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
