@@ -47,7 +47,7 @@
 
 ### 准备user_config.json和env.json配置文件
 
-根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../k8s/config_reference.md)。
+根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../../configuration/config_reference.md)。
 
 两种模式均须配置：
 

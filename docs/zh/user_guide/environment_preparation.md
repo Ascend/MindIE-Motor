@@ -52,10 +52,9 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     vim /etc/docker/daemon.json
     ```
 
-    检查必配项（配置完成后直接保存）
-    - 查看"exec-opts"配置项，必须为native.cgroupdriver=systemd；
-    - 查看"insecure-registries"配置项，必须包含swr.cn-north-4.myhuaweicloud.com、registry.cn-hangzhou.aliyuncs.com。
-    - 示例如下（未说明项目不做要求）
+    检查必配项（配置完成后直接保存），示例如下：
+    - 查看"exec-opts"配置项，必须为`native.cgroupdriver=systemd`；
+    - 查看"insecure-registries"配置项，必须包含`swr.cn-north-4.myhuaweicloud.com`、`registry.cn-hangzhou.aliyuncs.com`。
 
     ```bash
     {
@@ -123,27 +122,28 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     修改脚本配置文件env.conf，需要配置内容如下。
 
       ```bash
-      # 当前节点 IP
+      # HOST_IP 为当前节点 IP，格式：HOST_IP=<IP地址>
+
       HOST_IP="141.61.73.111"
 
     # Calico 网卡自动探测正则表达式
     # 查询主网卡命令：ip route | grep default
     #
     # 原理说明：
-    # calico会运行在集群中的每一个服务器上（只在管理节点配置calico，该配置会应用于集群中的所有节点），因此，述表达式要保证calico能够在集群中的每台服务器都找到网卡：
+    # calico会运行在集群中的每一个服务器上（只在管理节点配置calico，该配置会应用于集群中的所有节点），因此，上述表达式要保证calico能够在集群中的每台服务器都找到网卡：
     # 如果整个集群所有节点的主网卡名称(通过ip route | grep default查找)前缀相同，例如：集群各节点主网卡名称分别为enp1（master）、enp2（worker1节点）、enp115235(worker节点2)，可以填写为enp.*。
     # 如果各节点主网卡名称不一致，需用 | 把各节点的命名规则都写进表达式。例如：多数节点主网卡为 enp 开头，个别节点主网卡 virbr0 上，可填写为 enp.*|virbr0。
       IP_AUTODETECTION_IFACE="xxx"
 
       # ---------- 网络代理（可选；脚本会先测直连、再测代理，哪条通用哪条） ----------
-      HTTP_PROXY="http://90.255.12.94:6666"
-      HTTPS_PROXY="http://90.255.12.94:6666"
+      HTTP_PROXY="http://<proxy_server>:<proxy_port>"
+      HTTPS_PROXY="http://<proxy_server>:<proxy_port>"
       NO_PROXY="127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,141.61.0.0/16"
       ```
 
 3. 预检查。
 
-    执行以下命令，脚本将检测：docker配置、窗口网络连通性、docker网络连通性、根目录使用率。如果检查不通过，请排查环境对应功能是否正常。
+    执行以下命令，脚本将检测：docker配置、外网网络连通性、docker网络连通性、根目录使用率。如果检查不通过，请排查环境对应功能是否正常。
 
       ```bash
       source env.conf && sudo -E bash deploy_k8s.sh precheck
@@ -187,7 +187,7 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
       cat > /etc/yum.repos.d/kubernetes.repo << 'EOF'
       [kubernetes]
       name=Kubernetes
-      baseurl=http://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-aarch64/
+      baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-aarch64/
       enabled=1
       gpgcheck=0
       EOF
@@ -270,10 +270,10 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
 
 4. 初始化kubeadm。
 
-    使用以下命令初始化Kubernetes集群，当出现如[图4 Kubernetes集群初始化成功](#fig17764145015239)所示回显时，表示初始化成功。
+    使用以下命令初始化Kubernetes集群，当出现下图所示回显时，表示初始化成功。
 
     ```bash
-    kubeadm init --kubernetes-version={参数1kubelet_version} --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address={参数2host_ip}
+    kubeadm init --kubernetes-version={参数1：kubelet_version} --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address={参数2host_ip}
     mkdir -p $HOME/.kube;
     cp -f /etc/kubernetes/admin.conf $HOME/.kube/config;
     chown $(id -u):$(id -g) $HOME/.kube/config
@@ -291,17 +291,17 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     >
     >kubeadm init --kubernetes-version=v1.23.0 --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address=141.88.99.101。
 
-    **图 4**  Kubernetes集群初始化成功<a name="fig17764145015239"></a>
+    **图 4**  Kubernetes集群初始化成功
 
-    ![](../imgs/k8sinitializd_successfully_.png)
+    ![](../imgs/k8sinitialized_successfully_.png)
 
-5. <a id="step0001"></a>执行以下命令查看当前默认启动项状态是否正常，如[图5 查看状态](#fig669924115221)所示，coredns开头的pod应为pending状态，其余pod应为running状态。
+5. <a id="step0001"></a>执行以下命令查看当前默认启动项状态是否正常，如下图所示，coredns开头的pod应为pending状态，其余pod应为running状态。
 
     ```bash
     kubectl get pods -A
     ```
 
-    **图 5** 查看状态<a name="fig669924115221"></a>
+    **图 5** 查看状态
 
     ![](../imgs/k8s_deploy_coredns_pending.png)
 
@@ -445,7 +445,7 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
 
 根据服务器类型，在管理节点执行以下操作，为集群统一设置标签
 
-1. A2服务器。
+1. Atlas 800I A2 推理服务器。
 
    ```bash
     master=$(kubectl get nodes  | grep  master| grep -v NAME| awk '{print $1}')
@@ -475,7 +475,7 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     done
    ```
 
-2. A3服务器。
+2. Atlas 800I A3 超节点服务器。
 
    ```bash
     master=$(kubectl get nodes  | grep  master| grep -v NAME| awk '{print $1}')

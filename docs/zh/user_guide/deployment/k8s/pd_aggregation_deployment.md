@@ -304,7 +304,7 @@ python3 deploy.py --config_dir ../infer_engines/vllm/pd_hybrid --dry-run
 
 - 查看日志可使用 `show_log.sh`：
 
-  1. 配置 `log_collect/log_config.ini`，设置 `name_sapce` 属性为实际的命名空间，此处为 `mindie-motor`。
+  1. 配置 `log_collect/log_config.ini`，设置 `name_space` 属性为实际的命名空间，此处为 `mindie-motor`。
 
   2. 在 `examples/deployer` 目录下执行 `show_log.sh` 获取/查看日志。
 

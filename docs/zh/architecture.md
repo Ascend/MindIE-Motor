@@ -34,7 +34,7 @@ MindIE Motor核心组件定义如下：
 
 作为用户推理请求的**统一入口**，负责接收高并发请求，执行请求调度、管理与转发，是整个集群的数据流枢纽。
 
-- **Endpoint**：对外提供 RESTful 接口，包括业务面接口OpenAI接口; 管理面接口：健康探针、Metrics等。
+- **Endpoint**：对外提供 RESTful 接口，包括业务面接口 OpenAI 接口; 管理面接口：健康探针、Metrics等。
 - **Router**：提供请求路由转发能力。
 - **Scheduler**：负载均衡调度器。
 - **RequestManager**：请求管理器，请求全局信息统计与管理。

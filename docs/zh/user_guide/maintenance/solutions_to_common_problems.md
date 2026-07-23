@@ -1,6 +1,6 @@
 # MindIE Motor部署推理服务常见问题
 
-## Kubernetes节点间pod网络不通
+## Kubernetes节点间Pod网络不通
 
 **问题描述**
 
@@ -10,25 +10,25 @@
 
 **原因分析**
 
-大规模专家并行方案中包括通算节点和智算节点，一般情况下集群master节点和集群服务节点采用通算节点，可能会出现由于通算节点和智算节点网卡名不同，导致calico配置文件中的网卡名不适用于所有节点，因此当现场Kubernetes集群不同节点的pod出现网络不通问题时，可以参考以下思路排查处理。
+大规模专家并行方案中包括通算节点和智算节点，一般情况下集群master节点和集群服务节点采用通算节点，可能会出现由于通算节点和智算节点网卡名不同，导致calico配置文件中的网卡名不适用于所有节点，因此当现场Kubernetes集群不同节点的Pod出现网络不通问题时，可以参考以下思路排查处理。
 
   <br>
 
 **解决方案**
 
-在master节点执行kubectl get pod -A -owide命令，查看calico和kube-proxy的pod状态是否出现异常。
+在master节点执行kubectl get pod -A -owide命令，查看calico和kube-proxy的Pod状态是否出现异常。
 ![](../../imgs/example_normal_calico.png)
 
-- 网络相关pod无异常（READY：1/1 + STATUS：Running，如上图所示）：
-  如果calico和kube-proxy的pod状态无任何异常，可以尝试重启pod（直接在master节点执行以下命令，删除网络相关pod，几秒钟后对应pod会重新启动）。
+- 网络相关Pod无异常（READY：1/1 + STATUS：Running，如上图所示）：
+  如果calico和kube-proxy的Pod状态无任何异常，可以尝试重启Pod（直接在master节点执行以下命令，删除网络相关Pod，几秒钟后对应Pod会重新启动）。
 
   ```bash
   kubectl get pods -n kube-system | grep calico | awk '{print $1}' | xargs kubectl delete pod -n kube-system
   kubectl get pods -n kube-system | grep kube-proxy | awk '{print $1}' | xargs kubectl delete pod -n kube-system
   ```
 
-- 网络相关pod出现异常（READY：0/1）：
-  如果pod状态出现异常，例如：某个calico的pod持续显示为ready 0/1。可以查看集群中所有节点（包括master和worker节点）的网卡名称。如果所有节点具有相同名称的网卡，如enp189s0f0，则在master节点执行kubectl edit ds -n kube-system calico-node命令，修改如下的网卡名（如果现场网卡做了bond，则填写bond名，如bond4）：
+- 网络相关Pod出现异常（READY：0/1）：
+  如果Pod状态出现异常，例如：某个calico的Pod持续显示为ready 0/1。可以查看集群中所有节点（包括master和worker节点）的网卡名称。如果所有节点具有相同名称的网卡，如enp189s0f0，则在master节点执行kubectl edit ds -n kube-system calico-node命令，修改如下的网卡名（如果现场网卡做了bond，则填写bond名，如bond4）：
 
   ```yaml
   - name: IP_AUTODETECTION_METHOD
@@ -42,23 +42,23 @@
     value: interface=enp189s0f0,enp125s0f0
   ```
 
-如果上述方法均无法解决问题，可在master节点执行kubectl describe pod -n [pod命名空间] [pod名称]以及kubectl logs -n [pod命名空间] [pod名称]查看对应pod的信息和日志，分析具体原因并解决。
+如果上述方法均无法解决问题，可在master节点执行kubectl describe pod -n [Pod命名空间] [Pod名称]以及kubectl logs -n [Pod命名空间] [Pod名称]查看对应Pod的信息和日志，分析具体原因并解决。
 
 ## 部署服务时，发现日志报错 Get ACL JitCompile default value failed
 
 **问题描述**
-服务调用torch_npu失败，查看P或者D节点的日志，出现如下报错：
+服务调用torch_npu失败，查看P（Prefill）或者D（Decode）节点的日志，出现如下报错：
 
 ![](../../imgs/example_abnormal_getACL.png)
 
 <br>
 
 **原因分析**
-pod内无法使用NPU，可能CANN组件无法调用，进入pod内尝试set_device操作，通常会出现同样报错。
+Pod内无法使用NPU，可能CANN组件无法调用，进入Pod内尝试set_device操作，通常会出现同样报错。
 
 ![](../../imgs/example_abnormal_set_device.png)
 
-在pod内查看plog，进入路径~/ascend/log/debug/plog。在该目录下执行ll -rt命令筛查出最新的plog，并执行`cat [最新plog文件名]`命令查看最新的plog，发现运行权限不足。
+在Pod内查看plog，进入路径~/ascend/log/debug/plog。在该目录下执行ll -rt命令筛查出最新的plog，并执行`cat [最新plog文件名]`命令查看最新的plog，发现运行权限不足。
 
 ![](../../imgs/example_abnormal_plog.png)
 
@@ -66,11 +66,11 @@ pod内无法使用NPU，可能CANN组件无法调用，进入pod内尝试set_dev
 
 可参考昇腾社区[故障案例](https://www.hiascend.com/developer/blog/details/0297201752127535078)。
 
-## HCCL链接异常
+## HCCL连接异常
 
 **问题描述**
 
-HCCL链接失败，查看P或者D节点的日志，出现如下报错：
+HCCL连接失败，查看P或者D节点的日志，出现如下报错：
 
 ![](../../imgs/example_abnormal_hccl.png)
 
@@ -87,10 +87,10 @@ HCCL链接失败，查看P或者D节点的日志，出现如下报错：
 
 - 如上述操作无法解决问题，可参考昇腾社区相关[故障诊断](https://www.hiascend.com/document/detail/zh/canncommercial/850/commlib/hcclug/hcclug_000048.html)文档定位问题。
 
-## docker中存在对应镜像，但是在pod创建阶段显示拉取镜像失败
+## docker中存在对应镜像，但是在Pod创建阶段显示拉取镜像失败
 
 **问题描述**
-    <br>执行kubectl get pod -A -owide命令，看到mindie-motor命名空间下的pod处于ErrImagePull状态
+    <br>执行kubectl get pod -A -owide命令，看到mindie-motor命名空间下的Pod处于ErrImagePull状态
 ![](../../imgs/example_abnormal_pull_image.png)
 
 **原因分析**

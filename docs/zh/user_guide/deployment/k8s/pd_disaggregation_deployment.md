@@ -2,8 +2,6 @@
 
 本文档通过**完整详细**的部署案例，指导开发者体验基于 Motor 的 PD 分离服务部署，并指导生产环境配置优化实践。
 
-<a id="setup-and-image-preparation"></a>
-
 ## 获取启动脚本 (Setup and Image Preparation)
 
 1. **环境要求**
@@ -77,7 +75,7 @@
 
    ```bash
    # 查看 Pod 状态：<namespace> 与上文 job_id 一致
-   kubectl get pods -n <namespace> -owide
+   kubectl get pods -n <namespace> -o wide
    ```
 
    回显中各 `Pod` / `Deployment` 的命名可能随模板与 `engine_type` 变化，可按以下方式识别：
@@ -166,15 +164,15 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
 
 限制推理入口 Coordinator 在单位时间内的最大请求数，防止服务过载。
 
-- **原理**：Coordinator 记录一段时间内接收到的请求数量，达到阈值后停止接受外部请求。
+- **原理**：Coordinator 记录一段时间内接收到的请求数量，达到阈值后停止接收外部请求。
 - **开启**：
 
   ```json
   "motor_coordinator_config": {
     "rate_limit_config": {
-      "enable_rate_limit": true,  // 开启限流
-      "max_requests": 10000,      // 最大请求数量
-      "window_size": 60           // 时间窗口
+      "enable_rate_limit": true,
+      "max_requests": 10000,
+      "window_size": 60
     }
   }
   ```
@@ -182,9 +180,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
   上述配置表示 60 秒内最多处理 10000 条请求。
 
 - **关闭**：删除 `rate_limit_config` 配置块，或将 `enable_rate_limit` 设为 `false`。
-- **注意**：字段说明见 [config_reference — motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config)。
-
-<a id="virtual-inference-health-check"></a>
+- **注意**：字段详细说明请参见[motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config)中的**rate_limit_config字段**。
 
 ### 虚推健康检查 (Virtual Inference Health Check)
 
@@ -192,19 +188,19 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
 
 - **原理**：业务流量较小时发送轻量级推理请求；业务流量较大时查看 NPU 计算核心使用率。不健康的 P/D 实例会被重启以消除静默故障。
 - **开启**：
+   P 和 D 实例需要单独开启虚推功能：P 实例虚推健康检查开启方式如下，D 实例的开启方式相同。
 
   ```json
-  // P 和 D 实例需要单独开启虚推功能：P 实例虚推健康检查开启方式如下，D 实例的开启方式相同
   "motor_engine_prefill_config": {
     "health_check_config": {
-      "enable_virtual_inference": true,  // 开启虚推
-      "npu_usage_threshold": 10          // 业务流量较大时，NPU 计算核心的使用率超过 10% 就认为服务健康
+      "enable_virtual_inference": true,
+      "npu_usage_threshold": 10
     }
   }
   ```
 
 - **关闭**：删除 `health_check_config` 配置块，或将 `enable_virtual_inference` 设为 `false`。
-- **注意**：详见 [虚推健康检查](../../features/sim_inference.md)。
+- **注意**：该功能使用详情请参见[虚推健康检查](../../features/sim_inference.md)。
 
 ### KV Cache 亲和调度
 
@@ -212,13 +208,14 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
 
 - **原理**：PyMotor KV Cache 亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到缓存了对应 KV 的实例，从而减少 KV Cache 跨实例传输开销，提升推理吞吐与响应速度。
 - **开启**：
+  - motor_coordinator_config字段：开启 KV 亲和性调度。
+  - motor_engine_prefill_config字段：开启 KV 事件发布、开启 prefix cache 特性。
+  - kv_conductor_config字段：kv conductor 配置，与motor_engine_prefill_config 处于同一层级。
 
   ```json
-  // 开启 KV 亲和性调度
   "motor_coordinator_config": {
     "scheduler_config": { "scheduler_type": "kv_cache_affinity" }
   },
-  // 开启 KV 事件发布、开启 prefix cache 特性
   "motor_engine_prefill_config": {
     "engine_config": {
       "kv-events-config": {
@@ -231,7 +228,6 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
       "enable-prefix-caching": true
     }
   },
-  // kv conductor 配置，与 motor_engine_prefill_config 处于同一层级
   "kv_conductor_config": {
     "kvevent_instance": { "mooncake_master": { "type": "Mooncake" } },
     "http_server_port": 13333
@@ -239,7 +235,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
   ```
 
 - **关闭**：删除上述配置项。
-- **注意**：需要确保镜像中已安装 KV Conductor 组件，详见 [KV Cache 亲和性调度](../../features/KV_cache_affinity.md)。
+- **注意**：需要确保镜像中已安装 KV Conductor 组件，该功能使用详情请参见[KV Cache 亲和性调度](../../features/KV_cache_affinity.md)。
 
 ### KV 池化
 

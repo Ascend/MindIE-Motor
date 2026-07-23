@@ -4,8 +4,6 @@ MindIE Motor的一键部署工具可以实现“将vllm-ascend社区的部署脚
 
 **同级目录下已准备常用部署模型的配置示例**，例如：[deepseek v4 flash模型配置示例](./deepseek_v4_flash)
 
----
-
 ## 目录简介
 
 配置生成脚本存放于[examples/deployer/config_tool/](../../../deployer/config_tool/)目录下，各文件功能如下。
@@ -20,8 +18,6 @@ examples/deployer/config_tool/
     ├── user_config.json
     └── env.json
 ```
-
----
 
 ## 注意事项
 
@@ -43,8 +39,6 @@ examples/deployer/config_tool/
 
 3. 生成的Motor配置仅支撑基础推理服务成功部署，**Motor特性调整（例如：主备倒换、KV 亲和性调度、服务限流）需要用户手动修改配置**。
 4. 当前不支持单容器PD分离和单容器PD混部的场景。
-
----
 
 ## 使用方法
 
