@@ -421,7 +421,6 @@ def test_config_validation_errors(param, value, expected_error):
     """Test various configuration validation errors"""
     with pytest.raises(ValueError, match=expected_error):
         config = CoordinatorConfig()
-        config.rate_limit_config.enable_rate_limit = True
         if param in ["log_max_line_length"]:
             setattr(config.logging_config, param, value)
         elif param in ["max_retry", "retry_delay", "first_token_timeout", "infer_timeout"]:
@@ -446,7 +445,6 @@ def test_config_validation_multiple_errors():
     with pytest.raises(ValueError) as exc_info:
         config = CoordinatorConfig()
         config.exception_config.max_retry = -1
-        config.rate_limit_config.enable_rate_limit = True
         config.rate_limit_config.max_requests = -1
         config.validate_config()
     error_msg = str(exc_info.value)

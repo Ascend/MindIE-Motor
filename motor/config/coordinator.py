@@ -681,6 +681,8 @@ class CoordinatorConfig:
         # Validate rate limit configuration
         self._validate_positive_number(self.rate_limit_config.max_requests, "max_requests")
         self._validate_positive_number(self.rate_limit_config.window_size, "window_size")
+        if self.rate_limit_config.max_request_body_size < 0:
+            self._errors.append("max_request_body_size cannot be negative")
 
         if not (100 <= self.rate_limit_config.error_status_code <= 599):
             self._errors.append("error_status_code must be in range 100-599")

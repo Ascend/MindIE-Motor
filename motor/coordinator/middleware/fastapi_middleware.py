@@ -158,7 +158,7 @@ class SimpleRateLimitMiddleware:
                 logger.warning(f"Request body size too large: {content_length} > {max_body_size}, path={path}")
                 error_response = {
                     "error": "request_body_too_large",
-                    "message": f"Request body size ({content_length} bytes) exceeds maximum)",
+                    "message": f"Request body size ({content_length} bytes) exceeds maximum",
                 }
                 response = JSONResponse(status_code=413, content=error_response)
                 await response(scope, receive, send)
