@@ -172,7 +172,7 @@ class SimpleRateLimiter:
                 )
                 event = ReqCongestionEvent(
                     reason_id=RequestCongestionReason.DEALING_WITH_CONGESTION,
-                    additional_information=additional_information
+                    additional_information=additional_information,
                 )
                 ControllerApiClient.report_alarms(event.model_dump())
 
@@ -183,7 +183,7 @@ class SimpleRateLimiter:
                 "limit": self.max_requests,
                 "window_size": self.window_size,
                 "scope": "global",
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
 
             if not allowed:

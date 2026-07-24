@@ -37,6 +37,7 @@ from motor.config.config_utils import (
     _update_tls_config,
     _update_instances_num,
     _update_prefill_kv_event_config,
+    _redirect_prefill_kv_event_config,
     MGMT_TLS_CONFIG,
     INFER_TLS_CONFIG,
     ETCD_TLS_CONFIG,
@@ -149,6 +150,74 @@ KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
 
 
 @dataclass
+class KvConductorConfig:
+    """KV cache event registration configuration for kv-conductor.
+
+    Controls how the Coordinator connects to and registers endpoints with
+    the kv-conductor.  Behaviour varies by ``store_backend``:
+
+    - Mooncake / Memcache: register the pool once (``pool_endpoint``) +
+      per-DP HBM via ``xpu_endpoint``.
+    - YuanRong: per-DP multi-port via ``xpu/cpu/disk_endpoint`` patterns.
+
+    Endpoint patterns use ``*`` as IP placeholder and add ``dp_rank``
+    to the port, e.g. ``"tcp://*:15557"`` resolves to
+    ``tcp://<endpoint_ip>:<15557 + dp_rank>``.
+
+    This config replaces the legacy ``prefill_kv_event_config`` —
+    connection info (``conductor_service``, ``http_server_port``) and
+    engine metadata (``engine_type``, ``model_path``) are now part of
+    this unified config.
+    """
+
+    # ── Conductor connection ──────────────────────────────────────────
+    conductor_service: str = field(default_factory=lambda: Env.conductor_service or "")
+    """kv-conductor hostname / IP. Empty disables the KV conductor."""
+
+    http_server_port: int = 13333
+    """kv-conductor HTTP API port."""
+
+    # ── KV cache identity ─────────────────────────────────────────────
+    store_backend: str = ""
+    """KV cache pooling backend: "Mooncake", "Memcache", "YuanRong"."""
+
+    block_size: int = 128
+    """KV block size in tokens — determines token→hash granularity.
+    Must match the engine's ``--block-size``.  Default 128."""
+
+    engine_type: str = "vLLM"
+    """Inference engine type, sent to conductor on registration."""
+
+    model_path: str = ""
+    """Model path / name, used as ``modelname`` in registration."""
+
+    # ── Endpoint patterns ─────────────────────────────────────────────
+    pool_endpoint: str = ""
+    """Pool service endpoint for centralized backends, e.g. "tcp://kvp-master:5557"."""
+
+    xpu_endpoint: str = ""
+    """Per-DP HBM ZMQ PUB endpoint pattern, e.g. "tcp://*:50090"."""
+
+    cpu_endpoint: str = ""
+    """Per-DP CPU/DDR ZMQ PUB endpoint pattern, e.g. "tcp://*:15558"."""
+
+    disk_endpoint: str = ""
+    """Per-DP DISK/SSD ZMQ PUB endpoint pattern, e.g. "tcp://*:15558"."""
+
+    endpoint: str = ""
+    """Legacy fallback endpoint pattern for all media."""
+
+    replay_endpoint: str = ""
+    """Per-DP replay endpoint pattern, e.g. "tcp://*:6667".
+    vLLM's ZMQ ROUTER for re-broadcasting buffered KV events on
+    conductor restart recovery. Resolved via IP + dp_rank like other endpoints."""
+
+    re_register_interval_sec: int = 0
+    """Interval in seconds for periodic KV instance re-registration.
+    0 or negative disables the re-registration timer."""
+
+
+@dataclass
 class SchedulerConfig:
     scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
     enable_pd_separation_fallback_to_hybrid: bool = True
@@ -171,6 +240,8 @@ class SchedulerConfig:
     # Number of least-loaded endpoints kept by the "load_gated" mode before the affinity
     # tie-break. Only used when kv_affinity_mode="load_gated"; 0 (default) falls back to 2.
     kv_affinity_load_gate_topn: int = 0
+    # KV event registration config for kv-conductor.
+    kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
 
 
 @dataclass
@@ -445,6 +516,7 @@ class CoordinatorConfig:
                         ]
                         _update_tls_config(tls_configs, cfg, raw)
                         _update_instances_num(cfg, raw)
+                        _redirect_prefill_kv_event_config(cfg, raw)
                         _update_prefill_kv_event_config(cfg, raw)
                         _merge_kv_store_metrics_config(cfg, raw)
         except (json.JSONDecodeError, Exception) as e:
