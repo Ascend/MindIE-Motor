@@ -284,7 +284,7 @@ motor_coordinator_config字段配置样例如下所示：
     ],
     "error_message": "too many requests, please try again later",
     "error_status_code": 429,
-    "max_request_body_size": 10485760,
+    "max_request_body_size": 0,
     "olc_config_path": ""
   },
   "standby_config": {
@@ -411,7 +411,7 @@ motor_coordinator_config字段配置样例如下所示：
 | skip_paths | array | 不参与限流统计的路径列表（如 `/liveness`、`/readiness`、`/metrics`），可自定义 |
 | error_message | string | 触发限流时返回给客户端的提示文案。默认值：`too many requests, please try again later` |
 | error_status_code | int | 触发限流时返回的 HTTP 状态码，通常为 4xx（如 429）。默认值：`429` |
-| max_request_body_size | int | 请求体最大大小（字节），超过则直接拒绝并返回 413，不消耗限流令牌。`<= 0` 表示不限制。默认：`10485760`（10MB） |
+| max_request_body_size | float | 请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`<= 0` 表示不限制。支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 字节）。默认：`0`（不限制） |
 | olc_config_path |string|OLC规则配置目录的绝对路径或相对于服务启动目录的相对路径。目录下需包含overload-config.properties和olc.json。|
 | **standby_config字段** |-|-|
 | enable_master_standby | bool | 是否开启 Coordinator 主备。可选：`true` / `false`。默认值：`false` |

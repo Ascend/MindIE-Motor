@@ -320,7 +320,8 @@ class RateLimitConfig:
     skip_paths: list[str] = field(default_factory=default_rate_limit_skip_paths)
     error_message: str = "too many requests, please try again later"
     error_status_code: int = 429
-    max_request_body_size: int = 10 * 1024 * 1024
+    # 请求体最大大小，单位为 MB（1MB = 1024*1024 字节），支持小数（如 0.5 表示 0.5MB）；<= 0 表示不限制
+    max_request_body_size: float = 0
 
     olc_config_path: str = ""
 

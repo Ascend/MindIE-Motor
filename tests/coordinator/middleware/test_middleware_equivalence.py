@@ -29,7 +29,8 @@ from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
 
 KB = 1024
 MB = 1024 * 1024
-DEFAULT_MAX_BODY_SIZE = 10 * MB
+KB_AS_MB = 1 / 1024  # 1 KB 以 MB 表示（max_request_body_size 单位现为 MB）
+DEFAULT_MAX_BODY_SIZE = 10  # 10 MB
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +44,7 @@ def _patch_report_alarms():
 
 
 def _build_app_and_middleware(
-    max_request_body_size: int = DEFAULT_MAX_BODY_SIZE,
+    max_request_body_size: float = DEFAULT_MAX_BODY_SIZE,
     max_requests: int = 1000,
     window_size: int = 60,
     skip_paths: list | None = None,
@@ -92,7 +93,7 @@ class TestRequestBodySizeCheck:
 
     def test_body_within_limit_returns_200(self):
         """Content-Length = 1KB, max = 10KB -> 200, body_size_rejected_requests = 0."""
-        app, middleware, _ = _build_app_and_middleware(max_request_body_size=10 * KB)
+        app, middleware, _ = _build_app_and_middleware(max_request_body_size=10 * KB_AS_MB)
         client = TestClient(middleware)
 
         response = client.post("/test", content=b"x" * KB)
@@ -102,7 +103,7 @@ class TestRequestBodySizeCheck:
 
     def test_body_exceeds_limit_returns_413(self):
         """Content-Length = 2KB, max = 1KB -> 413, body_size_rejected_requests = 1."""
-        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB)
+        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
         response = client.post("/test", content=b"x" * (2 * KB))
@@ -112,7 +113,7 @@ class TestRequestBodySizeCheck:
 
     def test_body_equal_limit_returns_200(self):
         """Content-Length = 1KB, max = 1KB -> 200 (only strictly greater is rejected)."""
-        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB)
+        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
         response = client.post("/test", content=b"x" * KB)
@@ -122,7 +123,7 @@ class TestRequestBodySizeCheck:
 
     def test_no_content_length_header_returns_200(self):
         """Request without Content-Length header -> 200 (check skipped)."""
-        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB)
+        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
         # GET requests typically have no body and no Content-Length header
@@ -142,7 +143,7 @@ class TestRequestBodySizeCheck:
         assert result == -1
 
         # Verify that -1 does not trigger the body size rejection
-        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB)
+        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
         # Use GET (no body) to simulate a request where Content-Length is absent
@@ -167,7 +168,7 @@ class TestBodySizePriorityAndBypass:
         """Token exhausted + body exceeds limit -> 413 (not 429), token not consumed."""
         # max_requests=1: first request consumes the only token
         app, middleware, _ = _build_app_and_middleware(
-            max_request_body_size=1 * KB,
+            max_request_body_size=1 * KB_AS_MB,
             max_requests=1,
             window_size=60,
         )
@@ -186,7 +187,7 @@ class TestBodySizePriorityAndBypass:
     def test_skip_path_bypasses_body_size_check(self):
         """Skip path + oversized body -> 200 (all checks skipped)."""
         app, middleware, _ = _build_app_and_middleware(
-            max_request_body_size=1 * KB,
+            max_request_body_size=1 * KB_AS_MB,
             skip_paths=["/liveness"],
         )
         client = TestClient(middleware)
@@ -199,7 +200,7 @@ class TestBodySizePriorityAndBypass:
     def test_middleware_disabled_bypasses_body_size_check(self):
         """enabled = False + oversized body -> 200 (all checks skipped)."""
         app, middleware, _ = _build_app_and_middleware(
-            max_request_body_size=1 * KB,
+            max_request_body_size=1 * KB_AS_MB,
             enabled=False,
         )
         client = TestClient(middleware)
@@ -215,7 +216,7 @@ class TestResponse413Structure:
 
     def test_413_response_body_structure(self):
         """Verify 413 JSON response contains 'error' and 'message' fields."""
-        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB)
+        app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
         response = client.post("/test", content=b"x" * (2 * KB))
@@ -233,7 +234,7 @@ class TestRuntimeThresholdUpdate:
 
     def test_runtime_update_threshold_takes_effect(self):
         """Modify max_request_body_size via config_holder -> new threshold takes effect."""
-        app, middleware, holder = _build_app_and_middleware(max_request_body_size=10 * KB)
+        app, middleware, holder = _build_app_and_middleware(max_request_body_size=10 * KB_AS_MB)
         client = TestClient(middleware)
 
         # Initially: 2KB is within the 10KB limit
@@ -241,7 +242,7 @@ class TestRuntimeThresholdUpdate:
         assert resp1.status_code == 200
 
         # Update threshold to 1KB at runtime
-        holder.max_request_body_size = 1 * KB
+        holder.max_request_body_size = 1 * KB_AS_MB
 
         # Now: 2KB exceeds the new 1KB limit
         resp2 = client.post("/test", content=b"x" * (2 * KB))
@@ -250,7 +251,7 @@ class TestRuntimeThresholdUpdate:
 
     def test_runtime_disable_body_check_takes_effect(self):
         """Set max_request_body_size = 0 at runtime -> body check disabled."""
-        app, middleware, holder = _build_app_and_middleware(max_request_body_size=1 * KB)
+        app, middleware, holder = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
         # Initially: 2KB exceeds 1KB limit
@@ -267,7 +268,7 @@ class TestRuntimeThresholdUpdate:
     def test_runtime_enable_middleware_takes_effect(self):
         """Toggle enabled flag at runtime -> middleware respects new state."""
         app, middleware, holder = _build_app_and_middleware(
-            max_request_body_size=1 * KB,
+            max_request_body_size=1 * KB_AS_MB,
             enabled=False,
         )
         client = TestClient(middleware)

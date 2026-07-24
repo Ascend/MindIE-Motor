@@ -153,7 +153,6 @@ class SimpleRateLimiter:
             from motor.common.alarm.req_congestion_event import ReqCongestionEvent, RequestCongestionReason
             from motor.coordinator.api_client.controller_api_client import ControllerApiClient
 
-            additional_information = ""
             if not self._congestion_alarm_sent and available >= req_congestion_trigger_threshold:
                 self._congestion_alarm_sent = True
                 additional_information = (
@@ -173,7 +172,7 @@ class SimpleRateLimiter:
                 )
                 event = ReqCongestionEvent(
                     reason_id=RequestCongestionReason.DEALING_WITH_CONGESTION,
-                    additional_information=additional_information,
+                    additional_information=additional_information
                 )
                 ControllerApiClient.report_alarms(event.model_dump())
 
@@ -184,7 +183,7 @@ class SimpleRateLimiter:
                 "limit": self.max_requests,
                 "window_size": self.window_size,
                 "scope": "global",
-                "timestamp": time.time(),
+                "timestamp": time.time()
             }
 
             if not allowed:

@@ -36,7 +36,8 @@ class RateLimitConfigHolder:
     error_message: str = "Request too frequent, please try again later"
     error_status_code: int = 429
     enabled: bool = True
-    max_request_body_size: int = 10 * 1024 * 1024
+    # Maximum request body size, in MB (1 MB = 1024*1024 bytes), supports decimal values; <= 0 means no limit.
+    max_request_body_size: float = 0
     rate_limiter: SimpleRateLimiter = None
 
 
@@ -52,7 +53,7 @@ class SimpleRateLimitMiddleware:
         skip_paths: list | None = None,
         error_message: str = "Request too frequent, please try again later",
         error_status_code: int = 429,
-        max_request_body_size: int = 10 * 1024 * 1024,
+        max_request_body_size: float = 0,
         config_holder: "RateLimitConfigHolder | None" = None,
     ):
         """
@@ -64,8 +65,8 @@ class SimpleRateLimitMiddleware:
             skip_paths: List of paths to skip rate limiting.
             error_message: Rate limit error message.
             error_status_code: Rate limit error status code.
-            max_request_body_size: Maximum request body size in bytes; requests exceeding this
-                are rejected. <= 0 means no limit.
+            max_request_body_size: Maximum request body size in MB (1MB = 1024*1024 bytes);
+                requests exceeding this are rejected. Supports decimals (e.g. 0.5). <= 0 means no limit.
             config_holder: Hot-reloadable configuration holder. If None, created internally
                 from the other parameters.
         """
@@ -150,12 +151,14 @@ class SimpleRateLimitMiddleware:
             return
 
         # Request body size check (based on Content-Length header, without reading the body)
-        max_body_size = self._config_holder.max_request_body_size
-        if max_body_size > 0:
+        max_body_size_mb = self._config_holder.max_request_body_size
+        if max_body_size_mb > 0:
+            # max_request_body_size is configured in MB (float); when comparing, it is converted to bytes.
+            max_body_size_bytes = int(max_body_size_mb * 1024 * 1024)
             content_length = self._get_content_length(scope)
-            if content_length > max_body_size:
+            if content_length > max_body_size_bytes:
                 self.stats["body_size_rejected_requests"] += 1
-                logger.warning(f"Request body size too large: {content_length} > {max_body_size}, path={path}")
+                logger.warning(f"Request body size too large: {content_length} > {max_body_size_bytes}, path={path}")
                 error_response = {
                     "error": "request_body_too_large",
                     "message": f"Request body size ({content_length} bytes) exceeds maximum",
