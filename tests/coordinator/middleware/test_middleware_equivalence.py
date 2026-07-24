@@ -29,7 +29,7 @@ from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
 
 KB = 1024
 MB = 1024 * 1024
-KB_AS_MB = 1 / 1024  # 1 KB 以 MB 表示（max_request_body_size 单位现为 MB）
+KB_AS_MB = 1 / 1024
 DEFAULT_MAX_BODY_SIZE = 10  # 10 MB
 
 
