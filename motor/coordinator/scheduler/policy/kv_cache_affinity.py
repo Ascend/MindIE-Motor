@@ -225,7 +225,7 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         skip (no behavior change) rather than raising on the selection hot path.
         """
         try:
-            bs = int(ConductorApiClient.coordinator_config.prefill_kv_event_config.block_size)
+            bs = int(ConductorApiClient.coordinator_config.scheduler_config.kv_conductor_config.block_size)
             return bs if bs > 0 else 0
         except Exception as e:  # pragma: no cover - config shape guard
             logger.debug("Could not read conductor block_size: %s", e)
@@ -258,10 +258,18 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             # get_all_endpoints() is the canonical accessor: it flattens the per-DP map and
             # already excludes headless endpoints / respects enable_multi_endpoints.
             for ep in instance.get_all_endpoints():
-                matched = dp_map.get(f"{ep.id}", 0)
-                # Conductor reports per-DP hits already in TOKENS (see Mooncake indexer
-                # /query spec); cap at the prompt length as a safety bound, since a matched
-                # prefix cannot be longer than the prompt itself.
+                matched_raw = dp_map.get(f"{ep.id}", 0)
+                # Conductor reports per-DP match data. Since the multi-medium scoring
+                # revision (DpScoring struct), the value is a dict with a "matched_tokens"
+                # key (plus "XPU"/"CPU"/"DISK" per-medium breakdown for future
+                # medium-aware scheduling); older conductors returned a plain int.
+                # Handle both.
+                if isinstance(matched_raw, dict):
+                    matched = matched_raw.get("matched_tokens", 0)
+                else:
+                    matched = matched_raw
+                # Cap at the prompt length as a safety bound, since a matched prefix
+                # cannot be longer than the prompt itself.
                 matched_tokens = min(matched, isl) if isl > 0 else 0
                 prefill_cost = max(0.0, isl - overlap_credit * matched_tokens)
                 load_cost = ep.workload.calculate_workload_score(PDRole.ROLE_P)
@@ -447,7 +455,7 @@ class TokenizerManager(ThreadSafeSingleton):
         self.tokenizer = None
         self._is_dsv4 = False
 
-        kv_config = config.prefill_kv_event_config
+        kv_config = config.scheduler_config.kv_conductor_config
         if kv_config.conductor_service == "":
             logger.info("conductor_service is empty. disable TokenizerManager!")
             return

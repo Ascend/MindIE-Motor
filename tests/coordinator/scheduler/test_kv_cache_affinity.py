@@ -267,6 +267,70 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
 
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_select_endpoint_dpscoring_dict_format(self, mock_tokenizer_manager, mock_query_conductor):
+        """New DpScoring format: DP values are dicts with matched_tokens, not plain ints."""
+        ep_a = _make_endpoint(0, active_tokens=50.0)
+        ep_b = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_a, 1: ep_b}}
+        mock_instance.get_all_endpoints.return_value = (ep_a, ep_b)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        # New DpScoring format: DP values are dicts with matched_tokens
+        mock_query_conductor.return_value = {
+            TENANT_ID: {
+                "vllm-prefill-inst": {
+                    "DP": {
+                        "0": {"XPU": 2400, "CPU": 0, "DISK": 0, "total": 2400, "matched_tokens": 800},
+                        "1": {"XPU": 0, "CPU": 200, "DISK": 0, "total": 200, "matched_tokens": 100},
+                    }
+                }
+            }
+        }
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info, load_weight=1.0)
+
+        self.assertIsNotNone(result)
+        # Both have equal load; ep 0 has longer cached prefix (800 > 100 tokens) → lower prefill cost → chosen.
+        self.assertEqual(result[1].id, 0)
+
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_select_endpoint_mixed_dp_format_old_and_new(self, mock_tokenizer_manager, mock_query_conductor):
+        """Backward-compat: old int format and new dict format both work, depending on conductor version."""
+        ep_a = _make_endpoint(0, active_tokens=10.0)
+        ep_b = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_a, 1: ep_b}}
+        mock_instance.get_all_endpoints.return_value = (ep_a, ep_b)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(500))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        # Old conductor: plain int. The matched value is 200 tokens for both endpoints,
+        # so affinity ties; then load breaks the tie → ep_a (load=10) wins.
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-inst": {"DP": {"0": 200, "1": 200}}}}
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info, load_weight=1.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1].id, 0)  # lighter load
+
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_load_aware_breaks_tie_by_load(self, mock_tokenizer_manager, mock_query_conductor):
         """load_weight > 0: equally-matched endpoints are tie-broken by lighter workload."""
         ep_a = _make_endpoint(0, active_tokens=100.0)
@@ -912,8 +976,8 @@ class TestTokenizerManagerFunction(unittest.TestCase):
     def test_init_with_model_path(self, mock_auto_tokenizer, mock_config_class):
         """Test tokenizer manager"""
         mock_config = Mock()
-        mock_config.prefill_kv_event_config.conductor_service = "test_service"
-        mock_config.prefill_kv_event_config.model_path = "/path/to/model"
+        mock_config.scheduler_config.kv_conductor_config.conductor_service = "test_service"
+        mock_config.scheduler_config.kv_conductor_config.model_path = "/path/to/model"
         mock_config_class.return_value = mock_config
 
         # Mock tokenizer
@@ -993,7 +1057,7 @@ class TestTokenizerManagerInitialize(unittest.TestCase):
     def test_init_with_empty_conductor_service(self, mock_config_class):
         """Test initialize - null conductor_service"""
         mock_config = Mock()
-        mock_config.prefill_kv_event_config.conductor_service = ""
+        mock_config.scheduler_config.kv_conductor_config.conductor_service = ""
         mock_config_class.return_value = mock_config
 
         # Create TokenizerManager
@@ -1302,8 +1366,8 @@ def _build_tokenizer_manager(
     _reset_tokenizer_manager_singleton()
     config = Mock()
     config.tracer_config.endpoint = ""
-    config.prefill_kv_event_config.conductor_service = "stub-conductor"
-    config.prefill_kv_event_config.model_path = ""
+    config.scheduler_config.kv_conductor_config.conductor_service = "stub-conductor"
+    config.scheduler_config.kv_conductor_config.model_path = ""
 
     with patch.dict("os.environ", {"OPENAI_STANDARD": openai_standard}, clear=False):
         manager = TokenizerManager(config)

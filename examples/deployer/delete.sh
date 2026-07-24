@@ -76,4 +76,9 @@ sed -i '/^function set_kv_conductor_env()/,/^}/d' ./startup/roles/all_combine_in
 sed -i '/^function set_mf_store_env()/,/^}/d' ./startup/roles/mf_store.sh
 sed -i '/./,$!d' ./startup/common.sh
 
+# Kill the log_monitor background process for this namespace (if running).
+if pkill -f "log_monitor:$NAMESPACE" 2>/dev/null; then
+    echo "Stopped log_monitor for namespace '$NAMESPACE'."
+fi
+
 echo "Delete completed."

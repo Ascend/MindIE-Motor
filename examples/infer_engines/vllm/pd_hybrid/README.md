@@ -7,7 +7,7 @@
 - `user_config.json`：PD 混部 `user_config` 示例（使用 `motor_engine_union_config` 与 `hybrid_*` 字段）
 - `env.json`：部署环境变量示例（包含 `motor_engine_union_env`）
 
-完整部署流程、配置项说明和故障排查请参考 [PD 混部服务部署](../../../../docs/zh/user_guide/service_deployment/pd_hybrid_deployment.md)。如需启用 KV Cache 亲和调度，在同一 `user_config.json` 中按 [KV Cache 亲和部署](../../../../docs/zh/user_guide/KV_cache_affinity_deployment.md) 的 PD 混部说明修改配置即可。
+完整部署流程、配置项说明和故障排查请参考 [PD 混部服务部署](../../../../docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md)。如需启用 KV Cache 亲和调度，在同一 `user_config.json` 中按 [KV Cache 亲和部署](../../../../docs/zh/user_guide/features/kvcache_affinity.md) 的 PD 混部说明修改配置即可。
 
 ## 使用方式
 

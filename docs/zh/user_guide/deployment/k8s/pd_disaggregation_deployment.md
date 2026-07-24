@@ -235,7 +235,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
   ```
 
 - **关闭**：删除上述配置项。
-- **注意**：需要确保镜像中已安装 KV Conductor 组件，该功能使用详情请参见[KV Cache 亲和性调度](../../features/KV_cache_affinity.md)。
+- **注意**：需要确保镜像中已安装 KV Conductor 组件，该功能使用详情请参见 [KV Cache 亲和性调度](../../features/kvcache_affinity.md)。
 
 ### KV 池化
 

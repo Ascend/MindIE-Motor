@@ -256,14 +256,19 @@
       "local_parent_sampled": 1.0,
       "local_parent_not_sampled": 1.0
     },
-    "prefill_kv_event_config": {
+    "kv_event_registration": {
       "conductor_service": "",
       "http_server_port": 13333,
+      "store_backend": "Mooncake",
+      "model_path": "",
       "block_size": 128,
+      "engine_type": "vLLM",
+      "pool_endpoint": "",
+      "xpu_endpoint": "",
+      "cpu_endpoint": "",
+      "disk_endpoint": "",
       "endpoint": "",
       "replay_endpoint": "",
-      "engine_type": "vLLM",
-      "model_path": "",
       "re_register_interval_sec": 0
     },
     "token_sampling_config": {

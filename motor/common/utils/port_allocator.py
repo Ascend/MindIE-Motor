@@ -210,7 +210,7 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
     )
     rows.append(_row("Coordinator", host, api.coordinator_obs_port, "auto", "observability API"))
 
-    kv_cfg = config.prefill_kv_event_config
+    kv_cfg = config.scheduler_config.kv_conductor_config
     if kv_cfg.conductor_service:
         cond_host, cond_port = _parse_host_port(kv_cfg.conductor_service, kv_cfg.http_server_port)
         if cond_host:

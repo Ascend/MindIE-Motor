@@ -25,7 +25,7 @@
   - [CCAE-reporter数据上报工具]()
   - [支持HTTPS加密通信](../../../examples/features/http/enable_tls/README.md)
   - [KV池化能力部署](../user_guide/features/kv_cache_store/README.md)
-  - [KV Cache亲和性调度能力部署](../user_guide/features/KV_cache_affinity.md)
+  - [KV Cache 亲和性调度](../user_guide/features/kvcache_affinity.md)
   - [Tracing能力部署](../user_guide/features/tracing.md)
   - [主备倒换特性](../user_guide/features/fault_tolerance/standby.md)
   - [手动扩缩容](../user_guide/features/manual_instance_scaling.md)

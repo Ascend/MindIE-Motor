@@ -23,6 +23,16 @@
 
 ## 支持的 Tags 及 Dockerfile 链接
 
+### master 开发镜像
+
+[`mindie-motor-vllm/master/Dockerfile`](./mindie-motor-vllm/master/Dockerfile) 使用当前工作区源码构建，适合 master 分支和本地改动的开发测试。可在项目根目录执行：
+
+```bash
+make build-pymotor-image
+```
+
+通过 `BASE_IMAGE` 可选择 A2/A3、Ubuntu/openEuler 基础镜像；具体参数见[开发者指南](../docs/zh/developer_guide/build_motor_image_from_vllm_ascend.md)。发布和交付镜像仍应使用下方固定版本的 Dockerfile。
+
 ### Tag 规范
 
 官方预构建镜像 Tag 遵循以下格式：

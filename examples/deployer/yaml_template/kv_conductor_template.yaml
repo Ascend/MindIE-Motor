@@ -41,6 +41,8 @@ spec:
               value: /usr/local/Ascend/pyMotor/conf
             - name: ROLE
               value: kv_conductor
+            - name: RUST_LOG
+              value: info
           command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
           resources:
             requests:
@@ -52,6 +54,8 @@ spec:
           volumeMounts:
             - name: motor-config
               mountPath: /mnt/configmap
+            - name: mnt
+              mountPath: /mnt
             - name: coredump
               mountPath: /var/coredump
             - name: ascend-driver
@@ -61,6 +65,9 @@ spec:
           configMap:
             name: motor-config
             defaultMode: 0550
+        - name: mnt
+          hostPath:
+            path: /mnt
         - name: coredump
           hostPath:
             path: /var/coredump

@@ -1,5 +1,86 @@
 # 基于vllm-ascend/sglang镜像安装MindIE Motor
 
+## 构建开发测试镜像
+
+项目提供 `docker/mindie-motor-vllm/master/Dockerfile`，用于将当前工作区源码构建到 vLLM-Ascend 基础镜像中。该 Dockerfile 与发布镜像 Dockerfile 的定位不同：
+
+| 类型 | 路径 | 源码来源 | 适用场景 |
+|---|---|---|---|
+| 开发镜像 | `docker/mindie-motor-vllm/master/Dockerfile` | 当前工作区 | master 分支、本地改动和 CI 验证 |
+| 发布镜像 | `docker/mindie-motor-vllm/<tag>/Dockerfile` | 固定分支和 commit | 发布版本的可复现构建 |
+
+### 本地单架构构建
+
+在项目根目录执行：
+
+```bash
+make build-pymotor-image
+```
+
+该命令默认使用 A2 Ubuntu 基础镜像，构建 `linux/arm64` 镜像并通过 `type=docker` 加载为 `mindie-motor-vllm:master`。A3 开发环境可以执行：
+
+```bash
+make build-pymotor-image \
+  BASE_IMAGE=quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3 \
+  PLATFORMS=linux/arm64 \
+  TAG=master-a3
+```
+
+### 多架构构建和推送
+
+同一个 `build-pymotor-image` 目标也支持多架构构建。推送到镜像仓库时，将 `OUTPUT` 设置为 `type=registry`，并提供 `REGISTRY`：
+
+```bash
+docker login example.com
+
+make build-pymotor-image \
+  REGISTRY=example.com/team \
+  TAG=master \
+  PLATFORMS=linux/amd64,linux/arm64 \
+  OUTPUT=type=registry
+```
+
+最终镜像名为 `example.com/team/mindie-motor-vllm:master`。
+
+> [!NOTE]说明
+> `type=docker` 只能将单架构镜像加载到本地 Docker。`PLATFORMS` 包含多个平台时，应使用 `OUTPUT=type=registry` 推送多架构镜像。
+
+### Make 变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DOCKERFILE` | `docker/mindie-motor-vllm/master/Dockerfile` | 构建使用的 Dockerfile |
+| `BASE_IMAGE` | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` | vLLM-Ascend 基础镜像 |
+| `IMAGE_NAME` | `mindie-motor-vllm` | 镜像名称 |
+| `TAG` | `master` | 镜像标签 |
+| `REGISTRY` | 空 | 多架构推送的仓库及命名空间 |
+| `PLATFORMS` | `linux/arm64` | 构建平台；多架构时使用逗号分隔 |
+| `PIP_INDEX_URL` | 华为云 PyPI 镜像 | Python 软件源 |
+| `PIP_TRUSTED_HOST` | `repo.huaweicloud.com` | Python 软件源信任主机 |
+| `OUTPUT` | `type=docker` | buildx 输出类型；多架构推送使用 `type=registry` |
+
+常用基础镜像如下：
+
+| 硬件 | 操作系统 | `BASE_IMAGE` |
+|---|---|---|
+| A2 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` |
+| A3 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3` |
+| A2 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-openeuler` |
+| A3 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler` |
+
+Dockerfile 的构建过程包括：
+
+1. 按基础系统选择 `apt-get`、`dnf` 或 `yum` 安装 `pciutils`。
+2. 安装项目 Python 依赖。
+3. 从当前工作区构建并安装 `motor` wheel 包。
+4. 构建并安装 `ccae_reporter` 可观测组件。
+5. 将示例复制到 `/tmp/motor/examples`，并生成容器入口脚本和使用协议。
+
+> [!NOTE]说明
+> 当前工作区中的未提交修改也会被复制到镜像中。开发构建不固定源码 commit；正式交付应使用 `docker/mindie-motor-vllm/<tag>/Dockerfile`。
+
+## 手动安装和离线构建
+
 ## 依赖下载（可选）
 
 >[!NOTE]说明

@@ -1,0 +1,44 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+[package]
+name = "kv-conductor"
+description = "KV Conductor - Radix tree based KV cache indexer for MindIE-PyMotor"
+version = "0.1.0"
+edition = "2021"
+authors = ["MindIE Team"]
+license = "Mulan PSL v2"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"
+rustc-hash = "2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rayon = "1"
+dashmap = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+time = "0.3"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+zmq = "0.10"
+rmp-serde = "1"
+rmpv = { version = "1", features = ["with-serde"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+rstest = "0.18"
+serde-transcode = "1.1.1"
