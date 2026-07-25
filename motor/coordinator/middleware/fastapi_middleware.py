@@ -116,6 +116,61 @@ class SimpleRateLimitMiddleware:
         return -1
 
     @staticmethod
+    async def _read_body_with_limit(receive: Receive, max_bytes: int) -> tuple[bytes, bool]:
+        """Read the full request body while enforcing a byte limit.
+
+        Iterates ASGI http.request messages from `receive` and accumulates body
+        bytes. Stops as soon as the accumulated size exceeds `max_bytes`.
+
+        Args:
+            receive: Original ASGI receive callable.
+            max_bytes: Maximum allowed body size in bytes (inclusive; equal is allowed).
+
+        Returns:
+            Tuple (body, over_limit). When over_limit is True, body is discarded
+            (returns b"") and the caller should reject with 413 without consuming
+            more of the body. On http.disconnect the loop terminates and the
+            partial body collected so far is returned with over_limit=False.
+        """
+        chunks: list[bytes] = []
+        received = 0
+        while True:
+            message = await receive()
+            mtype = message.get("type")
+            if mtype == "http.request":
+                chunk = message.get("body", b"") or b""
+                received += len(chunk)
+                if received > max_bytes:
+                    return b"", True
+                chunks.append(chunk)
+                if not message.get("more_body", False):
+                    break
+            elif mtype == "http.disconnect":
+                break
+            else:
+                break
+        return b"".join(chunks), False
+
+    @staticmethod
+    def _make_replay_receive(original_receive: Receive, body: bytes) -> Receive:
+        """Build a receive callable that replays a buffered body then delegates.
+
+        The first call returns a single http.request message containing the full
+        `body` with more_body=False. Subsequent calls delegate to
+        `original_receive` so that downstream messages (e.g. http.disconnect)
+        are delivered normally.
+        """
+        replayed = [False]
+
+        async def replay_receive() -> Message:
+            if not replayed[0]:
+                replayed[0] = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await original_receive()
+
+        return replay_receive
+
+    @staticmethod
     def _create_rate_limit_headers(limit_info: dict[str, Any]) -> dict[str, str]:
         """Build response headers from the rate limiter info dictionary."""
         headers = {}
@@ -150,11 +205,18 @@ class SimpleRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Request body size check (based on Content-Length header, without reading the body)
+        # Request body size check.
+        # Two layers: (1) fast reject based on Content-Length header without reading
+        # the body; (2) pre-read the actual body bytes to guard against chunked,
+        # missing, or under-reported Content-Length. Both happen BEFORE the rate
+        # limiter so that body rejection does not consume a rate-limit token.
         max_body_size_mb = self._config_holder.max_request_body_size
+        effective_receive: Receive = receive
         if max_body_size_mb > 0:
             # max_request_body_size is configured in MB (float); when comparing, it is converted to bytes.
             max_body_size_bytes = int(max_body_size_mb * 1024 * 1024)
+
+            # Fast path: reject based on Content-Length header without reading the body.
             content_length = self._get_content_length(scope)
             if content_length > max_body_size_bytes:
                 self.stats["body_size_rejected_requests"] += 1
@@ -167,6 +229,26 @@ class SimpleRateLimitMiddleware:
                 await response(scope, receive, send)
                 return
 
+            # Actual-byte enforcement: pre-read the body to guard against chunked,
+            # missing, or under-reported Content-Length.
+            body, over_limit = await self._read_body_with_limit(receive, max_body_size_bytes)
+            if over_limit:
+                self.stats["body_size_rejected_requests"] += 1
+                logger.warning(
+                    f"Request body size too large (actual bytes): "
+                    f"exceeds {max_body_size_bytes}, path={path}"
+                )
+                error_response = {
+                    "error": "request_body_too_large",
+                    "message": f"Request body size exceeds maximum ({max_body_size_bytes} bytes)",
+                }
+                response = JSONResponse(status_code=413, content=error_response)
+                await response(scope, receive, send)
+                return
+
+            # Body within limit: replay it to the downstream app via a synthetic receive.
+            effective_receive = self._make_replay_receive(receive, body)
+
         # Check rate limiting — only the limiter call is guarded so that
         # downstream exceptions (including those raised mid-stream) propagate
         # naturally instead of being caught and triggering a second response.
@@ -177,7 +259,7 @@ class SimpleRateLimitMiddleware:
             logger.error(f"Error in rate limiting middleware processing request: {e}")
             # Allow request by default when error occurs
             self.stats["allowed_requests"] += 1
-            await self.app(scope, receive, send)
+            await self.app(scope, effective_receive, send)
             return
 
         if allowed:
@@ -190,7 +272,7 @@ class SimpleRateLimitMiddleware:
 
             if not header_pairs:
                 # No headers to inject, skip the send wrapper to minimize overhead
-                await self.app(scope, receive, send)
+                await self.app(scope, effective_receive, send)
                 return
 
             async def send_with_rate_limit_headers(message: Message) -> None:
@@ -201,7 +283,7 @@ class SimpleRateLimitMiddleware:
                     message = {**message, "headers": existing}
                 await send(message)
 
-            await self.app(scope, receive, send_with_rate_limit_headers)
+            await self.app(scope, effective_receive, send_with_rate_limit_headers)
             return
         else:
             # Request rate limited, increment counter

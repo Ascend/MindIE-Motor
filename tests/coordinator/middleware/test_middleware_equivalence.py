@@ -15,6 +15,8 @@ body-size-priority-over-rate-limit, 413 response structure, and runtime threshol
 update via RateLimitConfigHolder.
 """
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -88,6 +90,102 @@ def _build_app_and_middleware(
     return app, middleware, holder
 
 
+async def _echo_app(scope, receive, send):
+    """Dummy ASGI app: read the full request body and echo it back as a 200 response.
+
+    Used to validate that the middleware's replay receive correctly hands the
+    buffered body to the downstream app.
+    """
+    body = b""
+    while True:
+        message = await receive()
+        if message.get("type") == "http.request":
+            body += message.get("body", b"") or b""
+            if not message.get("more_body", False):
+                break
+        elif message.get("type") == "http.disconnect":
+            break
+        else:
+            break
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"application/octet-stream")],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+def _recording_app(record):
+    """Return a dummy ASGI app that records whether it was ever invoked."""
+
+    async def app(scope, receive, send):
+        record["called"] = True
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"application/octet-stream")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+
+    return app
+
+
+def _make_scope(method="POST", path="/test", headers=None):
+    """Build a minimal but complete ASGI http scope for raw driving.
+
+    `headers` is a list of (name_bytes, value_bytes) tuples. Omit content-length
+    to simulate chunked / no-Content-Length requests.
+    """
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("latin-1"),
+        "query_string": b"",
+        "headers": list(headers) if headers else [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+
+
+def _make_body_receive(chunks):
+    """Build a receive callable yielding `chunks` as http.request messages, then http.disconnect.
+
+    Each chunk is sent as a separate http.request message; all but the last have
+    more_body=True, the last has more_body=False. After exhausting chunks,
+    http.disconnect is returned indefinitely.
+    """
+    idx = [0]
+
+    async def receive():
+        if idx[0] < len(chunks):
+            i = idx[0]
+            idx[0] += 1
+            more = i < len(chunks) - 1
+            return {"type": "http.request", "body": chunks[i], "more_body": more}
+        return {"type": "http.disconnect"}
+
+    return receive
+
+
+def _drive(middleware, scope, receive):
+    """Run the middleware as an ASGI app synchronously and return the sent messages."""
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(middleware(scope, receive, send))
+    return sent
+
+
 class TestRequestBodySizeCheck:
     """Tests for request body size validation in SimpleRateLimitMiddleware."""
 
@@ -122,7 +220,12 @@ class TestRequestBodySizeCheck:
         assert middleware.stats["body_size_rejected_requests"] == 0
 
     def test_no_content_length_header_returns_200(self):
-        """Request without Content-Length header -> 200 (check skipped)."""
+        """GET with no body and no Content-Length -> 200 (pre-reads empty body, within limit).
+
+        Note: this covers the GET-no-body case, NOT a POST with a body but absent
+        Content-Length (the latter is enforced by actual-byte pre-read, covered in
+        TestChunkedAndActualByteEnforcement).
+        """
         app, middleware, _ = _build_app_and_middleware(max_request_body_size=1 * KB_AS_MB)
         client = TestClient(middleware)
 
@@ -133,7 +236,12 @@ class TestRequestBodySizeCheck:
         assert middleware.stats["body_size_rejected_requests"] == 0
 
     def test_invalid_content_length_value_returns_200(self):
-        """Content-Length = "not-a-number" -> 200 (check skipped, _get_content_length returns -1)."""
+        """Content-Length = "not-a-number" -> 200 (falls back to actual-byte pre-read).
+
+        _get_content_length returns -1 for an unparseable header, so the fast path
+        is skipped; the body is then pre-read. For a GET with no body the pre-read
+        yields an empty body, which is within the limit, so the request is allowed.
+        """
         # Test the static method directly since TestClient auto-sets Content-Length
         scope = {
             "type": "http",
@@ -314,3 +422,124 @@ class TestShouldSkipPath:
         assert middleware._should_skip_path("/liveness/sub") is True
         assert middleware._should_skip_path("/metrics") is True
         assert middleware._should_skip_path("/test") is False
+
+
+class TestChunkedAndActualByteEnforcement:
+    """Tests for actual-byte body enforcement against chunked / no-Content-Length
+    / under-reported Content-Length requests.
+
+    These drive the middleware directly as an ASGI app (via _drive) to precisely
+    control the scope headers and the receive message stream, independent of
+    httpx/TestClient normalization.
+    """
+
+    def test_no_content_length_post_exceeds_limit_returns_413(self):
+        """No Content-Length + 2KB body (max 1KB) -> 413, app not called, no token consumed."""
+        record = {"called": False}
+        rate_limiter = SimpleRateLimiter(max_requests=10, window_size=60)
+        middleware = SimpleRateLimitMiddleware(
+            app=_recording_app(record),
+            rate_limiter=rate_limiter,
+            max_request_body_size=1 * KB_AS_MB,
+        )
+
+        scope = _make_scope(headers=[])  # no content-length header
+        receive = _make_body_receive([b"x" * KB, b"x" * KB])  # 2KB total
+        sent = _drive(middleware, scope, receive)
+
+        assert sent[0]["status"] == 413
+        assert record["called"] is False, "Downstream app must not be called on oversized body"
+        assert middleware.stats["body_size_rejected_requests"] == 1
+        assert middleware.stats["blocked_requests"] == 0
+
+    def test_content_length_under_reported_body_exceeds_returns_413(self):
+        """Content-Length=100 but actual body 2KB (max 1KB) -> 413 (defends against lying CL)."""
+        record = {"called": False}
+        rate_limiter = SimpleRateLimiter(max_requests=10, window_size=60)
+        middleware = SimpleRateLimitMiddleware(
+            app=_recording_app(record),
+            rate_limiter=rate_limiter,
+            max_request_body_size=1 * KB_AS_MB,
+        )
+
+        scope = _make_scope(headers=[(b"content-length", b"100")])
+        receive = _make_body_receive([b"x" * KB, b"x" * KB])  # actual 2KB, claims 100
+        sent = _drive(middleware, scope, receive)
+
+        assert sent[0]["status"] == 413
+        assert record["called"] is False, "Downstream app must not be called on oversized body"
+        assert middleware.stats["body_size_rejected_requests"] == 1
+        assert middleware.stats["blocked_requests"] == 0
+
+    def test_pre_read_replays_body_within_limit(self):
+        """No Content-Length + 500B body (max 1KB) -> 200, app receives the full body via replay."""
+        rate_limiter = SimpleRateLimiter(max_requests=10, window_size=60)
+        middleware = SimpleRateLimitMiddleware(
+            app=_echo_app,
+            rate_limiter=rate_limiter,
+            max_request_body_size=1 * KB_AS_MB,
+        )
+
+        body = b"x" * 500
+        scope = _make_scope(headers=[])  # no content-length header
+        receive = _make_body_receive([body])
+        sent = _drive(middleware, scope, receive)
+
+        assert sent[0]["status"] == 200
+        body_messages = [m for m in sent if m.get("type") == "http.response.body"]
+        assert body_messages, "Expected an http.response.body message"
+        assert body_messages[-1].get("body") == body, "Downstream app must receive the replayed body"
+        assert middleware.stats["body_size_rejected_requests"] == 0
+
+    def test_chunked_multi_chunk_within_limit_returns_200(self):
+        """No Content-Length + multi-chunk 700B body (max 1KB) -> 200, body replayed correctly."""
+        rate_limiter = SimpleRateLimiter(max_requests=10, window_size=60)
+        middleware = SimpleRateLimitMiddleware(
+            app=_echo_app,
+            rate_limiter=rate_limiter,
+            max_request_body_size=1 * KB_AS_MB,
+        )
+
+        chunk_a, chunk_b, chunk_c = b"x" * 300, b"y" * 200, b"z" * 200
+        scope = _make_scope(headers=[])  # no content-length header
+        receive = _make_body_receive([chunk_a, chunk_b, chunk_c])
+        sent = _drive(middleware, scope, receive)
+
+        assert sent[0]["status"] == 200
+        body_messages = [m for m in sent if m.get("type") == "http.response.body"]
+        assert body_messages, "Expected an http.response.body message"
+        assert body_messages[-1].get("body") == chunk_a + chunk_b + chunk_c
+        assert middleware.stats["body_size_rejected_requests"] == 0
+
+    def test_chunked_priority_over_rate_limit(self):
+        """Token exhausted + 2KB chunked body (max 1KB) -> 413, token not consumed.
+
+        Extends the body-size-priority-over-rate-limit contract to the chunked /
+        no-Content-Length path: the over-limit body is rejected before the rate
+        limiter is invoked, so blocked_requests stays 0.
+        """
+        record = {"called": False}
+        rate_limiter = SimpleRateLimiter(max_requests=1, window_size=60)
+        middleware = SimpleRateLimitMiddleware(
+            app=_recording_app(record),
+            rate_limiter=rate_limiter,
+            max_request_body_size=1 * KB_AS_MB,
+        )
+
+        # First request: 100B with Content-Length, consumes the only token.
+        scope1 = _make_scope(headers=[(b"content-length", b"100")])
+        receive1 = _make_body_receive([b"x" * 100])
+        sent1 = _drive(middleware, scope1, receive1)
+        assert sent1[0]["status"] == 200
+        assert record["called"] is True
+
+        # Second request: 2KB chunked (no Content-Length), tokens exhausted.
+        record["called"] = False
+        scope2 = _make_scope(headers=[])  # no content-length header
+        receive2 = _make_body_receive([b"x" * KB, b"x" * KB])
+        sent2 = _drive(middleware, scope2, receive2)
+
+        assert sent2[0]["status"] == 413, "Chunked oversized body should take priority over rate limit"
+        assert record["called"] is False
+        assert middleware.stats["body_size_rejected_requests"] == 1
+        assert middleware.stats["blocked_requests"] == 0, "Rate limiter must not be invoked"
