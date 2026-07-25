@@ -220,7 +220,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     return
 
             self._sync_instance_nodes(instance)
-        elif event == ObserverEvent.INSTANCE_SEPERATED:
+        elif event == ObserverEvent.INSTANCE_SEPARATED:
             self._refresh_instance_fault_level(instance.id)
         elif event == ObserverEvent.INSTANCE_REMOVED:
             with self.lock:

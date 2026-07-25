@@ -443,7 +443,7 @@ class InstanceManager(ThreadSafeSingleton):
                 if instance.status == InsStatus.ACTIVE:
                     old_status = instance.status
                     instance.update_instance_status(InsStatus.INACTIVE)
-                    self.notify(instance, ObserverEvent.INSTANCE_SEPERATED)
+                    self.notify(instance, ObserverEvent.INSTANCE_SEPARATED)
 
                     # Trigger persistence on state change
                     with self.config_lock:
@@ -654,7 +654,7 @@ class InstanceManager(ThreadSafeSingleton):
 
         if condition_event == InsConditionEvent.INSTANCE_ABNORMAL:
             instance.update_instance_status(InsStatus.INACTIVE)
-            self.notify(instance, ObserverEvent.INSTANCE_SEPERATED)
+            self.notify(instance, ObserverEvent.INSTANCE_SEPARATED)
             return
 
         if condition_event == InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT:
@@ -671,7 +671,7 @@ class InstanceManager(ThreadSafeSingleton):
             # directly query once using ip+port when heartbeat times out to avoid such situations.]
             if self._check_node_managers_status(instance):
                 instance.update_instance_status(InsStatus.INACTIVE)
-                self.notify(instance, ObserverEvent.INSTANCE_SEPERATED)
+                self.notify(instance, ObserverEvent.INSTANCE_SEPARATED)
                 self._report_inst_alarm(instance)
                 self._report_coordinator_alarm(instance)
             else:
