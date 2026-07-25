@@ -179,38 +179,43 @@ sync_user_config() {
 }
 
 sync_mmc_local_config() {
-    # ConfigMap files are symlinks; memcache rejects symlinks, so copy to a real file.
-    # dram.size, max.dram.size, and protocol are set at runtime by daemon.py.
-    local mmc_dst="$CONFIG_PATH/mmc-local.conf"
+    # ConfigMap files are symlinks; memcache rejects symlinks, so copy to real files.
+    # Sync both templates unconditionally — the daemon selects the right path at runtime.
+    _sync_one_mmc_conf() {
+        local _template="$1"
+        local _dst="$CONFIG_PATH/mmc-$_template.conf"
+        local _src="$CONFIGMAP_PATH/kv_store_backends.memcache.mmc-$_template.conf"
 
-    # Single unified template — protocol (rdma/sdma) chosen by Python daemon
-    local mmc_src="$CONFIGMAP_PATH/kv_store_backends.memcache.mmc-local.conf"
-
-    if [ ! -f "$mmc_src" ]; then
-        echo "Warning: mmc local config not found in ConfigMap ($mmc_src)"
-        return
-    fi
-
-    # Copy to real file (vLLM / in-process LocalService reads this)
-    if [ ! -f "$mmc_dst" ] || ! cmp -s "$mmc_src" "$mmc_dst"; then
-        cp -f "$mmc_src" "$mmc_dst"
-        chmod 640 "$mmc_dst"
-    fi
-    export MMC_LOCAL_CONFIG_PATH="$mmc_dst"
-
-    echo "MMC_LOCAL_CONFIG_PATH=$mmc_dst"
-
-    # Replace hardcoded DNS name with the actual K8s service FQDN
-    if [ -n "$KVS_MASTER_SERVICE" ]; then
-        local mmc_master_host="$KVS_MASTER_SERVICE"
-        if [[ "$mmc_master_host" == *:* && "$mmc_master_host" != \[*\] ]]; then
-            mmc_master_host="[$mmc_master_host]"
+        if [ ! -f "$_src" ]; then
+            echo "Warning: mmc config template not found ($_src)"
+            return 1
         fi
-        sed -E -i.bak "s|tcp://[^[:space:]]+:([0-9]+)|tcp://${mmc_master_host}:\1|g" "$mmc_dst"
-        rm -f "${mmc_dst}.bak"
-    fi
+
+        if [ ! -f "$_dst" ] || ! cmp -s "$_src" "$_dst"; then
+            cp -f "$_src" "$_dst"
+            chmod 640 "$_dst"
+        fi
+
+        # Replace hardcoded DNS name with the actual K8s service FQDN
+        if [ -n "$KVS_MASTER_SERVICE" ]; then
+            local _host="$KVS_MASTER_SERVICE"
+            if [[ "$_host" == *:* && "$_host" != \[*\] ]]; then
+                _host="[$_host]"
+            fi
+            sed -E -i.bak "s|tcp://[^[:space:]]+:([0-9]+)|tcp://${_host}:\1|g" "$_dst"
+            rm -f "${_dst}.bak"
+        fi
+    }
+
+    _sync_one_mmc_conf "local-inprocess" || return
+    _sync_one_mmc_conf "local-standalone"
+
+    # Default path for vLLM workers; standalone LS overrides at runtime.
+    export MMC_LOCAL_CONFIG_PATH="$CONFIG_PATH/mmc-local-inprocess.conf"
+    echo "MMC_LOCAL_CONFIG_PATH=$MMC_LOCAL_CONFIG_PATH"
 
 }
+
 
 sync_user_config
 if [ -f "$USER_CONFIG_FILE" ]; then

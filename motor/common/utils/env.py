@@ -117,10 +117,6 @@ class _Environment:
         return os.getenv("MMC_LOCAL_SERVICE_MODE", "")
 
     @property
-    def mmc_dram_size(self):
-        return os.getenv("MMC_DRAM_SIZE", "")
-
-    @property
     def mmc_config_store_url(self):
         return os.getenv("MMC_CONFIG_STORE_URL", "")
 

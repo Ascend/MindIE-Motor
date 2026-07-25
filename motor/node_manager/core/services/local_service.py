@@ -9,13 +9,12 @@
 # See the Mulan PSL v2 for more details.
 
 import os
-import re
+import signal
 import subprocess
-import threading
+import sys
 
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
-from motor.common.utils.net import format_address
 from motor.config.node_manager import KVCacheStoreConfig
 from motor.node_manager.core.services.registry import register_service, SERVICE_KV_STORE
 
@@ -42,8 +41,9 @@ class LocalService:
     """Manage memcache LocalService lifecycle: conf, start, health-check, restart.
 
     In ``inprocess`` mode the LocalService runs inside vLLM — only the
-    ``mmc-local.conf`` is prepared.  In ``standalone`` mode a dedicated
-    daemon thread is started via the ``memcache_hybrid`` Python API.
+    ``mmc-local-inprocess.conf`` is prepared.  In ``standalone`` mode a
+    dedicated subprocess is started via ``subprocess.Popen``, mirroring
+    how engine processes are launched.
     """
 
     def __init__(
@@ -60,27 +60,17 @@ class LocalService:
 
         self._endpoints_count: int = 0  # updated by prepare()
 
-        self._ls_thread: threading.Thread | None = None
-        self._ls_stop: threading.Event | None = None
+        self._ls_process: subprocess.Popen | None = None
 
     # ------------------------------------------------------------------
-    # properties
-    # ------------------------------------------------------------------
-
-    @property
-    def _worker_count(self) -> int:
-        """Total vLLM worker processes on this node."""
-        return max(1, self._endpoints_count * self._local_world_size)
-
-    # ------------------------------------------------------------------
-    # mmc-local.conf preparation
+    # mmc-local-inprocess.conf preparation
     # ------------------------------------------------------------------
 
     def prepare(self, **kwargs) -> None:
-        """Modify ``mmc-local.conf`` before engines start (PreparableService protocol).
+        """Ensure mmc-local-inprocess.conf exists and enforce hardware-mode constraints.
 
-        Sets ``dram.size`` based on local_service_mode and DP count.
-        ``protocol`` is user-configured in mmc-local.conf and left as-is.
+        Does NOT modify conf file content — all memcache settings are
+        user-managed in mmc-local-inprocess.conf.
 
         Keyword Args:
             endpoints_count: Number of DP endpoints on this node.
@@ -109,52 +99,18 @@ class LocalService:
             ls_mode = "inprocess"
             self._kv_cfg.local_service_mode = "inprocess"
 
-        with open(conf_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        # dram.size: 0GB for standalone (vLLM uses 0), per-process for inprocess
-        if ls_mode == "standalone":
-            dram_val = "0GB"
-        else:
-            per_node = self._kv_cfg.dram_size
-            if per_node:
-                # User configured — trust it; skip expensive mem_scan.stat()
-                configured_gb = self._parse_dram_size_gb(per_node)
-                clamped_gb = configured_gb
-            else:
-                clamped_gb = self._scan_node_available_dram_gb()
-            per_process_gb = max(1, clamped_gb // self._worker_count)
-            dram_val = f"{per_process_gb}GB"
-
-        content = self._set_conf_key(content, "ock.mmc.local_service.dram.size", dram_val)
-        content = self._set_conf_key(content, "ock.mmc.local_service.max.dram.size", "1024GB")
-        content = self._set_conf_key(content, "ock.mmc.local_service.protocol", self._kv_cfg.protocol)
-
-        with open(conf_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        # vLLM workers read MMC_LOCAL_CONFIG_PATH to locate their conf file.
+        os.environ["MMC_LOCAL_CONFIG_PATH"] = conf_path
 
         logger.info(
-            "Prepared mmc-local.conf: mode=%s, protocol=%s, dram.size=%s, endpoints=%d",
+            "Prepared mmc-local-inprocess.conf: mode=%s, path=%s, endpoints=%d",
             ls_mode,
-            self._kv_cfg.protocol,
-            dram_val,
+            conf_path,
             self._endpoints_count,
         )
 
-    @staticmethod
-    def _set_conf_key(content: str, key: str, value: str) -> str:
-        """Replace *key* in *content* with *value*; append the line if missing."""
-        if not re.search(r'^' + re.escape(key) + r'\s*=', content, flags=re.MULTILINE):
-            return content + "\n" + key + " = " + value + "\n"
-        return re.sub(
-            r'^' + re.escape(key) + r'\s*=\s*.*',
-            key + ' = ' + value,
-            content,
-            flags=re.MULTILINE,
-        )
-
     # ------------------------------------------------------------------
-    # standalone LS launch
+    # standalone LS launch (subprocess)
     # ------------------------------------------------------------------
 
     def should_launch(self) -> bool:
@@ -167,135 +123,89 @@ class LocalService:
         return True
 
     def pull(self) -> None:
-        """Start standalone LS in a daemon thread (if not already running).
+        """Start standalone LS as a subprocess (if not already running).
 
         Called both after engine spawn (concurrent with warmup) and by the
         process monitor on restart.
         """
         if not self.should_launch():
             return
-        if self._ls_thread is not None and self._ls_thread.is_alive():
+        if self.is_alive():
             return
-        self._ls_stop = threading.Event()
-        self._ls_thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="ls_standalone",
-        )
-        self._ls_thread.start()
+
+        try:
+            # Switch MMC_LOCAL_CONFIG_PATH to the standalone conf so the
+            # subprocess picks up standalone-specific settings.
+            conf_dir = os.path.dirname(self._kv_cfg.local_config_path)
+            standalone_path = os.path.join(conf_dir, "mmc-local-standalone.conf")
+            if not os.path.exists(standalone_path):
+                logger.error("Standalone conf not found: %s", standalone_path)
+                return
+
+            env = os.environ.copy()
+            env["MMC_LOCAL_CONFIG_PATH"] = standalone_path
+
+            # Long-running daemon process — cannot use `with Popen` because
+            # __exit__ calls wait() which would block the caller forever.
+            py_exe = os.environ.get("PYTHON_EXEC_PATH", sys.executable)
+            cmd = [
+                py_exe,
+                "-c",
+                "from motor.common.utils.process_utils import set_process_title; "
+                "set_process_title('local_service_standalone'); "
+                "from memcache_hybrid import DistributedObjectStore; "
+                "import threading; "
+                "DistributedObjectStore().init(0); "
+                "threading.Event().wait()",
+            ]
+            logger.info("Starting standalone LocalService")
+            self._ls_process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
+            if self._ls_process.poll() is not None:
+                raise RuntimeError("LocalService process exited immediately with code %s" % self._ls_process.returncode)
+        except Exception as e:
+            logger.error("Failed to start standalone LocalService: %s", e)
+            self._ls_process = None
 
     def stop(self) -> None:
-        if self._ls_stop is not None:
-            self._ls_stop.set()
-        if self._ls_thread is not None and self._ls_thread.is_alive():
-            self._ls_thread.join(timeout=2.0)
-        self._ls_thread = None
-        self._ls_stop = None
+        if self._ls_process is None:
+            return
+        pid = self._ls_process.pid
+        try:
+            os.kill(pid, signal.SIGKILL)
+            self._ls_process.wait(timeout=5.0)
+            logger.info("LocalService process terminated (pid=%s)", pid)
+        except ProcessLookupError:
+            logger.info("LocalService process %s already terminated", pid)
+        except subprocess.TimeoutExpired:
+            logger.warning("LocalService process %s did not terminate in time", pid)
+        except Exception as e:
+            logger.error("Failed to kill LocalService process %s: %s", pid, e)
+        finally:
+            self._ls_process = None
 
     def is_started(self) -> bool:
-        return self._ls_thread is not None
+        return self._ls_process is not None
 
     def is_alive(self) -> bool:
-        return self._ls_thread is not None and self._ls_thread.is_alive()
+        if self._ls_process is None:
+            return False
+        return self._ls_process.poll() is None
 
     def mark_dead(self) -> None:
-        self._ls_thread = None
+        if self._ls_process is not None:
+            try:
+                self._ls_process.wait(timeout=0)
+            except (ProcessLookupError, ChildProcessError, subprocess.TimeoutExpired):
+                pass
+        self._ls_process = None
 
     def health_check(self) -> None:
-        """Check LS thread health; restart if dead (DaemonService protocol)."""
+        """Check LS process health; restart if dead (DaemonService protocol)."""
         if self.is_started() and not self.is_alive():
             logger.warning(
-                "LocalService thread died (restart_local_service=%s)",
+                "LocalService process died (restart_local_service=%s)",
                 self.restart_local_service,
             )
             self.mark_dead()
             if self.restart_local_service:
                 self.pull()
-
-    def _run(self) -> None:
-        """Entry point for the standalone LS daemon thread."""
-        try:
-            from memcache_hybrid import LocalConfig, DistributedObjectStore  # noqa: PLC0415
-
-            config = LocalConfig()
-            # --- MetaService / ConfigStore connectivity ---
-            config.meta_service_url = f"tcp://{format_address(self._kv_cfg.service, self._kv_cfg.port)}"
-            config.config_store_url = f"tcp://{format_address(self._kv_cfg.service, self._kv_cfg.config_store_port)}"
-            # --- General settings ---
-            config.log_level = "info"
-            config.world_size = 256
-            # --- Protocol ---
-            config.protocol = self._kv_cfg.protocol
-            # --- DRAM pool size ---
-            per_node = self._kv_cfg.dram_size
-            if per_node:
-                config.dram_size = per_node
-            else:
-                config.dram_size = f"{self._scan_node_available_dram_gb()}GB"
-            config.max_dram_size = "1024GB"
-            config.protocol = self._kv_cfg.protocol
-
-            logger.info(
-                "Starting standalone LocalService (dram=%s, protocol=%s)",
-                config.dram_size,
-                config.protocol,
-            )
-
-            store = DistributedObjectStore()
-            res = store.setup(config)
-            if res != 0:
-                raise RuntimeError("DistributedObjectStore.setup() failed with code %s" % res)
-            res = store.init(0)
-            if res != 0:
-                raise RuntimeError("DistributedObjectStore.init() failed with code %s" % res)
-
-            logger.info("Standalone LocalService initialized successfully")
-            self._ls_stop.wait()
-        except Exception as e:
-            logger.error("Failed to start standalone LocalService: %s", e)
-            self._ls_thread = None
-            self._ls_stop = None
-
-    # ------------------------------------------------------------------
-    # DRAM / memory helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_dram_size_gb(dram_size_str: str) -> int:
-        dram_size_str = dram_size_str.strip().upper()
-        if dram_size_str.endswith("GB"):
-            return int(dram_size_str[:-2])
-        raise ValueError("Invalid DRAM size format: '%s'. Expected e.g. '100GB'." % dram_size_str)
-
-    @staticmethod
-    def _scan_node_available_dram_gb() -> int:
-        """Return available DRAM in GB (floor at 5) using ``free -b``.
-
-        Uses the ``free`` column (truly unused memory) as a conservative
-        estimate.  Reserves 20 % for overhead.
-        """
-        RESERVE_RATIO = 0.8
-        MIN_GB = 5
-
-        try:
-            proc = subprocess.run(["/usr/bin/free", "-b"], capture_output=True, text=True, timeout=5, check=False)
-            if proc.returncode == 0:
-                for line in proc.stdout.splitlines():
-                    stripped = line.strip()
-                    if stripped.startswith("Mem:"):
-                        parts = stripped.split()
-                        free_bytes = int(parts[3])
-                        free_gb = free_bytes // (1024 * 1024 * 1024)
-                        if free_gb > 0:
-                            result = max(MIN_GB, int(free_gb * RESERVE_RATIO))
-                            logger.info(
-                                "free -b scan: %d GB free, reserved=%d GB",
-                                free_gb,
-                                result,
-                            )
-                            return result
-        except Exception:
-            logger.warning("Failed to run `free -b` for DRAM scan", exc_info=True)
-
-        logger.warning("Cannot determine available DRAM, using minimum %d GB", MIN_GB)
-        return MIN_GB

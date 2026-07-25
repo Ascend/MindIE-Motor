@@ -25,34 +25,40 @@ fi
 echo -e "NOW EXECUTING [kubectl delete] COMMANDS. THE RESULT IS: \n\n"
 echo "Namespace: $NAMESPACE"
 
-kubectl delete cm motor-config -n "$NAMESPACE"
-
 YAML_DIR=./output_yamls
 
+# Step 1: Delete workloads first so pods enter graceful termination
+# before their ConfigMap dependency is removed.
 for yaml_file in "$YAML_DIR"/*.yaml; do
     if [ -f "$yaml_file" ]; then
         kubectl delete -f "$yaml_file"
     fi
 done
 
-# Poll pod termination — exit as soon as all pods are fully gone
-MAX_WAIT=10
-for ((elapsed=MAX_WAIT; elapsed>=1; elapsed--)); do
+# Step 2: Wait for all pods to be fully gone (will exit early if done sooner).
+MAX_WAIT=30
+for ((elapsed=0; elapsed<MAX_WAIT; elapsed++)); do
     remaining=$(kubectl get pods -n "$NAMESPACE" -o name --no-headers 2>/dev/null | wc -l)
     if [ "$remaining" -le 0 ]; then
-        printf "\r\033[KAll pods terminated after %ds\n" "$((MAX_WAIT - elapsed))"
+        printf "\r\033[KAll pods terminated after %ds\n" "$elapsed"
         break
     fi
-    printf "\r\033[KWaiting for %d pod(s) to terminate... %ds elapsed" "$remaining" "$elapsed"
+    printf "\r\033[KWaiting for %d pod(s) to terminate (%ds / %ds max)..." "$remaining" "$elapsed" "$MAX_WAIT"
     sleep 1
 done
 echo ""
 
-# Terminating is not a status.phase value; stuck terminating pods have metadata.deletionTimestamp set.
+# Fallback: force-delete any pod still stuck in Terminating after the wait above.
+# (Terminating is not a status.phase value; stuck terminating pods have metadata.deletionTimestamp set.)
 kubectl get pods -n "$NAMESPACE" -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}' | while read -r pod; do
     [ -z "$pod" ] && continue
+    echo "Force-deleting stuck terminating pod: $pod"
     kubectl delete pod "$pod" -n "$NAMESPACE" --force --grace-period=0
 done
+
+# Step 3: Delete ConfigMap after all workloads and pods have been cleaned up.
+echo "Deleting ConfigMap motor-config in namespace $NAMESPACE"
+kubectl delete cm motor-config -n "$NAMESPACE" --ignore-not-found
 
 sed -i '/^# patch_begin/,/^# patch_end/d' ./startup/boot.sh
 sed -i '/^function set_controller_env()/,/^}/d' ./startup/roles/controller.sh

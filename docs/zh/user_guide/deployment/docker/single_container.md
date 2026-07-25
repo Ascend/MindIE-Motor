@@ -35,7 +35,7 @@
     ├── kv_store_backends.mooncake.mooncake_config.py
     ├── kv_store_backends.memcache.memcache.sh
     ├── kv_store_backends.memcache.memcache_meta_service.py
-    ├── kv_store_backends.memcache.mmc-local.conf
+    ├── kv_store_backends.memcache.mmc-local-inprocess.conf
     ├── mf_store.sh
     ├── user_config.json
     └── env.json
@@ -47,7 +47,7 @@
 
 ### 准备user_config.json和env.json配置文件
 
-根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../k8s/config_reference.md)。
+根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../../configuration/config_reference.md)。
 
 两种模式均须配置：
 
@@ -181,7 +181,7 @@ cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/mooncake/mooncake.
 cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/mooncake/mooncake_config.py $CONFIGMAP_PATH/kv_store_backends.mooncake.mooncake_config.py
 cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/memcache.sh $CONFIGMAP_PATH/kv_store_backends.memcache.memcache.sh
 cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/memcache_meta_service.py $CONFIGMAP_PATH/kv_store_backends.memcache.memcache_meta_service.py
-cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/mmc-local.conf $CONFIGMAP_PATH/kv_store_backends.memcache.mmc-local.conf
+cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/mmc-local-inprocess.conf $CONFIGMAP_PATH/kv_store_backends.memcache.mmc-local-inprocess.conf
 
 # 将准备好的user_config.json和env.json配置文件拷贝到$CONFIGMAP_PATH目录下
 cp -f $USER_CONFIG_PATH $CONFIGMAP_PATH/user_config.json

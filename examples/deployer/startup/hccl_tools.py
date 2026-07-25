@@ -18,7 +18,7 @@ import logging
 import subprocess
 from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Any
+from typing import Any
 from enum import Enum
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -86,6 +86,11 @@ def _run_command(cmd_args):
         check=False,
         timeout=30,
     )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or f"exit code {result.returncode}"
+        raise RuntimeError(f"'{' '.join(cmd_args)}' failed: {detail}")
     if result.stdout:
         return result.stdout.splitlines(keepends=True)
     return []
@@ -116,11 +121,21 @@ def retry_command(cmd_args):
     raise ValueError(f"Command failed after {MAX_RETRIES} attempts: {cmd_args}")
 
 
+def _parse_kv_line(lines, device_id, label):
+    """Extract value from ``key: value`` output line; raise on unexpected format."""
+    if not lines:
+        raise ValueError(f"Device {device_id}: {label} command returned no output")
+    line = lines[0].strip()
+    if ":" not in line:
+        raise ValueError(f"Device {device_id}: {label} output has unexpected format: {line!r}")
+    return line.split(":", 1)[1].strip()
+
+
 def _query_device_ip(device_id):
     """Query single device IP via hccn_tool (runs in parallel per device)."""
     ret_ip = retry_command(["hccn_tool", "-i", str(device_id), "-ip", "-g"])
     logging.info("device_id: %s, device_ip_info: %s", device_id, str(ret_ip))
-    device_ip = ret_ip[0].split(":")[1].replace('\n', '').replace(' ', '')
+    device_ip = _parse_kv_line(ret_ip, device_id, "device IP")
     return device_id, device_ip
 
 
@@ -130,11 +145,12 @@ def _query_device_sdid(device_id):
     chip_id = int(device_id) % 2
     ret_sdid = retry_command(["npu-smi", "info", "-t", "spod-info", "-i", str(card_id), "-c", str(chip_id)])
     logging.info("device_id: %s, super_device_id: %s", device_id, str(ret_sdid))
-    device_sdid = ret_sdid[0].split(":")[1].replace('\n', '').replace(' ', '')
+    device_sdid = _parse_kv_line(ret_sdid, device_id, "super device ID")
     return device_id, device_sdid
 
 
 def main():
+    logging.warning("hccl_tools.py (ranktable generation) is deprecated and will be removed in a future release.")
     logging.info("start %s", __file__)
     args = parse_args()
 
@@ -151,8 +167,8 @@ def main():
     logging.info('host_ip: %s', host_ip)
     logging.info('pod_ip: %s', pod_ip)
 
-    device_ips: Dict[Any, Any] = {}
-    device_sdids: Dict[Any, Any] = {}
+    device_ips: dict[Any, Any] = {}
+    device_sdids: dict[Any, Any] = {}
     max_workers = min(len(visible_devices), 16)
 
     # Phase 1: query device IPs in parallel
