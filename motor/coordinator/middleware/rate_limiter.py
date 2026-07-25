@@ -101,7 +101,14 @@ class TokenBucket:
             return
 
         with self._lock:
+            now = time.time()
             old_capacity = self.capacity
+            # 按旧速率结算已累积的 Token
+            elapsed = now - self.last_refill
+            if elapsed > 0:
+                self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+            self.last_refill = now
+
             self.capacity = capacity
             self.refill_rate = refill_rate
 
