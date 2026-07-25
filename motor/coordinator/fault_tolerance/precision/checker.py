@@ -55,7 +55,20 @@ def _normalize_ill_type(v: Any) -> int:
 
 @dataclass
 class CheckResult:
+    """Result of a single precision check.
+
+    Attributes:
+        has_issue: Whether the check detected a precision anomaly.
+        valid: Whether the checker itself ran successfully. When ``False``
+            (fail-open, e.g. msprobe internal error), the result does NOT
+            count toward either issue-streak or normal-streak counters.
+        issue_type: OM issue type code when ``has_issue`` is True.
+        confidence: Detector confidence score.
+        detail: Optional diagnostic payload from the checker.
+    """
+
     has_issue: bool
+    valid: bool = True
     issue_type: int = 0
     confidence: float = 0.0
     detail: dict = field(default_factory=dict)
@@ -145,7 +158,7 @@ class MsprobeChecker(PrecisionChecker):
     ) -> CheckResult:
         _ = prompt_token_ids  # msprobe's signature takes prompt only via tk2cat lookup
         if not output_token_ids:
-            return CheckResult(has_issue=False)
+            return CheckResult(has_issue=False, valid=True)
 
         topk = topk_logprobs if topk_logprobs else None
         if not topk:
@@ -162,7 +175,7 @@ class MsprobeChecker(PrecisionChecker):
                 reason,
                 detail,
             )
-            return CheckResult(has_issue=False)
+            return CheckResult(has_issue=False, valid=False)
 
         try:
             detector = _get_msprobe_detector()
@@ -188,7 +201,7 @@ class MsprobeChecker(PrecisionChecker):
             results = await asyncio.to_thread(_run_with_lock)
         except Exception as e:
             logger.warning("MsprobeChecker: detector.run failed (fail-open): %s", e)
-            return CheckResult(has_issue=False)
+            return CheckResult(has_issue=False, valid=False)
 
         if not results or not results[0]:
             logger.info(
@@ -196,7 +209,7 @@ class MsprobeChecker(PrecisionChecker):
                 len(output_token_ids),
                 model_config,
             )
-            return CheckResult(has_issue=False)
+            return CheckResult(has_issue=False, valid=True)
         is_ill, ill_type = results[0]
         normalized = _normalize_ill_type(ill_type)
         logger.info(
@@ -208,5 +221,6 @@ class MsprobeChecker(PrecisionChecker):
         )
         return CheckResult(
             has_issue=bool(is_ill),
+            valid=True,
             issue_type=normalized,
         )

@@ -46,15 +46,18 @@ class Observability(ThreadSafeSingleton):
         logger.info("Stopping observability...")
 
     def add_alarm(self, record: Record) -> bool:
+        return self.add_alarms([record])
+
+    def add_alarms(self, records: list[Record]) -> bool:
         try:
-            is_succeed = self.alarm_store.add_alarm(record)
+            is_succeed = self.alarm_store.add_alarms(records)
             if is_succeed:
-                logger.debug("Alarm added successfully via observability, %s", str(record))
+                logger.debug("Alarms added successfully via observability, count=%s", len(records))
             else:
-                logger.warning("Alarm added failed via observability, %s", str(record))
+                logger.warning("Alarms add failed via observability, count=%s", len(records))
             return is_succeed
         except Exception as e:
-            logger.error("Failed to add alarm via observability: %s", e)
+            logger.error("Failed to add alarms via observability: %s", e)
             return False
 
     def get_alarms(self, source_id: str = None) -> list[list[dict]]:

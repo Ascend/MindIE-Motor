@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You may use this software according to the terms and conditions of the Mulan PSL v2.
-# You may obtain a copy of the Mulan PSL v2 at:
+# You may obtain a copy of Mulan PSL v2 at:
 #         http://license.coscl.org.cn/MulanPSL2
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
@@ -21,6 +21,29 @@ from motor.common.alarm.enums import EventType, ServiceAffectedType, Severity
 
 # OM alarm id for precision / probe pipeline (coordinator token sampling).
 PRECISION_ISSUE_ALARM_ID = "0xFC001009"
+
+_POD_IP: str | None = None
+
+
+def _get_pod_ip() -> str:
+    global _POD_IP
+    if _POD_IP is None:
+        _POD_IP = os.getenv("POD_IP", "")
+    return _POD_IP
+
+
+def build_precision_moi(
+    *,
+    p_instance_id: int | None,
+    d_instance_id: int,
+    pod_ip: str | None = None,
+) -> str:
+    """Build stable moi for a PD group (raise and clear must match exactly)."""
+    ip = pod_ip if pod_ip is not None else _get_pod_ip()
+    base = f"service name=Coordinator, service ip={ip}"
+    if p_instance_id is not None:
+        return f"{base}, pId={p_instance_id}, instanceId={d_instance_id}"
+    return f"{base}, instanceId={d_instance_id}"
 
 
 class PrecisionIssueAlarm(Alarm):
@@ -46,6 +69,7 @@ class PrecisionIssueAlarm(Alarm):
         precision_issue_count: int,
         probe_failure_count: int,
         model_id: str = "",
+        alarm_moi: str | None = None,
     ):
         super().__init__()
         self.instance_id = str(d_instance_id)
@@ -53,7 +77,15 @@ class PrecisionIssueAlarm(Alarm):
         pod_ip = os.getenv("POD_IP", "")
         location = f"service name=Coordinator, service ip={pod_ip}"
         self.location = location
-        self.moi = location
+        self.moi = (
+            alarm_moi
+            if alarm_moi is not None
+            else build_precision_moi(
+                p_instance_id=p_instance_id,
+                d_instance_id=d_instance_id,
+                pod_ip=pod_ip,
+            )
+        )
         self.native_me_dn = os.getenv("SERVICE_ID", "").strip() or os.getenv("sys_id", "").strip() or model_id.strip()
         self.additional_information = (
             f"precision_issue_count={precision_issue_count}, "
@@ -83,4 +115,27 @@ def build_precision_issue_alarm(
         probe_failure_count=probe_failure_count,
         model_id=model_id,
     )
+    return alarm.model_dump(mode="json")
+
+
+def build_precision_issue_clear_alarm(
+    *,
+    p_instance_id: int | None,
+    d_instance_id: int,
+    alarm_moi: str,
+    precision_issue_count: int = 0,
+    probe_failure_count: int = 0,
+    model_id: str = "",
+) -> dict:
+    """Build a CLEAR payload reusing the exact moi from the original raise alarm."""
+    alarm = PrecisionIssueAlarm(
+        p_instance_id=p_instance_id,
+        d_instance_id=d_instance_id,
+        precision_issue_count=precision_issue_count,
+        probe_failure_count=probe_failure_count,
+        model_id=model_id,
+        alarm_moi=alarm_moi,
+    )
+    alarm.clear()
+    alarm.update_time()
     return alarm.model_dump(mode="json")

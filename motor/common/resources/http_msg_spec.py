@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -127,6 +126,11 @@ class TerminateInstanceMsg(BaseModel):
 
     instance_id: int = Field(..., description="Instance id")
     reason: str = Field(..., description="The reason for terminating the instance")
+    p_instance_id: int | None = Field(default=None, description="Optional paired P instance id for PD-group recovery")
+    precision_alarm_clear: bool = Field(
+        default=False,
+        description="Whether to clear active precision alarm after terminating the PD group",
+    )
 
 
 class EventType(str, Enum):

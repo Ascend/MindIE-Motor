@@ -37,6 +37,7 @@ class SchedulerRequestType(str, Enum):
     CONFIRM_SAMPLE = "confirm_sample"  # cross-worker precision sampling exit gate
     RECORD_PRECISION_RESULT = "record_precision_result"  # global consecutive + probing
     FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm
+    DISMISS_PRECISION_ALARM_STATE = "dismiss_precision_alarm_state"  # external recovery cleared alarm
     CIRCUIT_BREAKER_REPORT = "circuit_breaker_report"  # worker reports instance failure/success
 
 

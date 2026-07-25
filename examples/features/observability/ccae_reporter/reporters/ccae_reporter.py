@@ -17,7 +17,7 @@ import re
 import socketserver
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from ccae_reporter.common.util import safe_open
@@ -35,6 +35,7 @@ METRICS_STR = "metrics"
 PRECISION_CONTROL_URL = "/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol"
 PRECISION_COMMAND_DETECTION = "precision_detection"
 PRECISION_COMPLETED_REPORT_LIMIT = 10
+PRECISION_CONTROL_REPORT_WINDOW_SEC = 600
 
 DEBUG_HOOK_ENABLED_ENV = "CCAE_DEBUG_HOOK_ENABLED"
 DEBUG_HOOK_PORT_ENV = "CCAE_DEBUG_HOOK_PORT"
@@ -131,6 +132,7 @@ class _PrecisionControlTask:
     control_code: str
     status: str = "Initial"  # Initial | Completed | Failed
     completed_report_count: int = 0
+    started_at: float = field(default_factory=time.monotonic)
     last_precision_command: str | None = None
     last_switch_control: str | None = None
     last_immediate_delivery: bool | None = None
@@ -173,6 +175,7 @@ class CCAEReporter(BaseReporter):
             self.component_type = 0
         self._precision_lock = threading.Lock()
         self._precision_tasks: dict[str, _PrecisionControlTask] = {}
+        self._expired_control_codes: dict[str, str] = {}
         self._maybe_start_debug_hook()
 
     def _maybe_start_debug_hook(self) -> None:
@@ -269,10 +272,44 @@ class CCAEReporter(BaseReporter):
             self._precision_tasks[mid] = _PrecisionControlTask(
                 control_code=str(code),
                 status=status,
+                started_at=time.monotonic(),
                 last_precision_command=str(p_cmd) if p_cmd is not None else None,
                 last_switch_control=str(switch_ctrl) if switch_ctrl is not None else None,
                 last_immediate_delivery=bool(immediate) if immediate is not None else None,
             )
+
+    def _finish_precision_task(self, mid: str, control_code: str, reason: str) -> None:
+        """End a precision task and suppress the same controlCode until a new one arrives."""
+        self._expired_control_codes[mid] = control_code
+        self._precision_tasks.pop(mid, None)
+        self.logger.info(
+            "precision task ended: modelID=%s controlCode=%s reason=%s",
+            mid,
+            control_code,
+            reason,
+        )
+
+    def _cleanup_expired_tasks(self) -> None:
+        """Remove tasks that exceeded the report window since first receiving controlCode."""
+        now = time.monotonic()
+        expired_mids = [
+            mid
+            for mid, task in self._precision_tasks.items()
+            if now - task.started_at >= PRECISION_CONTROL_REPORT_WINDOW_SEC
+        ]
+        for mid in expired_mids:
+            task = self._precision_tasks.get(mid)
+            if task is None:
+                continue
+            self._finish_precision_task(
+                mid,
+                task.control_code,
+                f"report window expired after {PRECISION_CONTROL_REPORT_WINDOW_SEC}s",
+            )
+        active_mids = set(self.model_id_period.keys())
+        stale = [mid for mid in self._expired_control_codes if mid not in active_mids]
+        for mid in stale:
+            self._expired_control_codes.pop(mid, None)
 
     def _mark_precision_task_failed(
         self,
@@ -309,7 +346,7 @@ class CCAEReporter(BaseReporter):
             self.logger.warning("precision reqList entry missing valid modelID: %r", item)
             return
 
-        self.logger.info(
+        self.logger.debug(
             "precision reqList item: modelID=%s hasControlStatusRespond=%s precisionCommand=%s hasControlCode=%s",
             mid,
             item.get("controlStatusRespond"),
@@ -344,6 +381,19 @@ class CCAEReporter(BaseReporter):
                 )
             return
 
+        code_str = str(code)
+        with self._precision_lock:
+            expired_code = self._expired_control_codes.get(mid)
+            if expired_code == code_str:
+                self.logger.debug(
+                    "precision task ignoring expired controlCode=%s for modelID=%s",
+                    code_str,
+                    mid,
+                )
+                return
+            if expired_code is not None and expired_code != code_str:
+                self._expired_control_codes.pop(mid, None)
+
         ipc = item.get("inferencePrecisionControl")
         switch_ctrl = None
         immediate = None
@@ -369,7 +419,7 @@ class CCAEReporter(BaseReporter):
             existing = self._precision_tasks.get(mid)
             if existing and existing.control_code == str(code):
                 if existing.status in ("Completed", "Failed"):
-                    self.logger.info(
+                    self.logger.debug(
                         "precision task already terminal (%s) for controlCode=%s modelID=%s, updating fields only",
                         existing.status,
                         code,
@@ -381,7 +431,7 @@ class CCAEReporter(BaseReporter):
                         existing.last_immediate_delivery = bool(immediate)
                     existing.last_precision_command = str(p_cmd)
                     return
-                self.logger.info(
+                self.logger.debug(
                     "precision task retrying termination: modelID=%s controlCode=%s status=%s",
                     mid,
                     code,
@@ -392,11 +442,12 @@ class CCAEReporter(BaseReporter):
                 self._precision_tasks[mid] = _PrecisionControlTask(
                     control_code=str(code),
                     status="Initial",
+                    started_at=time.monotonic(),
                     last_precision_command=str(p_cmd),
                     last_switch_control=str(switch_ctrl) if switch_ctrl is not None else None,
                     last_immediate_delivery=bool(immediate) if immediate is not None else None,
                 )
-                self.logger.info(
+                self.logger.debug(
                     "precision task CREATED: modelID=%s controlCode=%s"
                     " modelID_in_model_id_period=%s"
                     " model_id_period_keys=%s"
@@ -424,10 +475,21 @@ class CCAEReporter(BaseReporter):
             p_id,
             mid,
         )
-        d_ok = self.backend.terminate_instance(d_id, "ccae_precision_control") if d_id > 0 else True
+        d_ok = True
         p_ok = True
-        if p_id > 0:
-            p_ok = self.backend.terminate_instance(p_id, "ccae_precision_control")
+        if d_id > 0:
+            d_ok = self.backend.terminate_instance(
+                d_id,
+                "ccae_precision_control",
+                p_instance_id=p_id if p_id > 0 else None,
+                precision_alarm_clear=True,
+            )
+        elif p_id > 0:
+            p_ok = self.backend.terminate_instance(
+                p_id,
+                "ccae_precision_control",
+                precision_alarm_clear=True,
+            )
 
         with self._precision_lock:
             task = self._precision_tasks.get(mid)
@@ -448,8 +510,11 @@ class CCAEReporter(BaseReporter):
             self.logger.warning("precision response is not dict: %r", data)
             return
         req_list = data.get("reqList")
+        if req_list is None:
+            self.logger.debug("precision response has no reqList: %r", data)
+            return
         if not isinstance(req_list, list):
-            self.logger.info("precision response has no reqList or reqList is not list: %r", data)
+            self.logger.warning("precision response reqList is not list: %r", data)
             return
         self.logger.debug(
             "precision response reqList length=%d, entries=%s",
@@ -509,11 +574,10 @@ class CCAEReporter(BaseReporter):
                     PRECISION_COMPLETED_REPORT_LIMIT,
                 )
                 if task.completed_report_count >= PRECISION_COMPLETED_REPORT_LIMIT:
-                    self._precision_tasks.pop(model_id, None)
-                    self.logger.info(
-                        "precision task removed after %s completed reports for modelID=%s",
-                        PRECISION_COMPLETED_REPORT_LIMIT,
+                    self._finish_precision_task(
                         model_id,
+                        task.control_code,
+                        f"completed {PRECISION_COMPLETED_REPORT_LIMIT} successful terminal reports",
                     )
 
     def precision_control_periodic(self) -> None:
@@ -523,6 +587,7 @@ class CCAEReporter(BaseReporter):
             return
 
         with self._precision_lock:
+            self._cleanup_expired_tasks()
             self.logger.debug(
                 "precision heartbeat tick: model_id_period_keys=%s precision_task_keys=%s",
                 list(self.model_id_period.keys()),

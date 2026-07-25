@@ -11,8 +11,9 @@
 import pytest
 
 from motor.common.alarm.coordinator_exception_alarm import COORDINATOR_EXCEPTION_ALARM_ID
-from motor.common.alarm.enums import Cleared
+from motor.common.alarm.enums import Category, Cleared
 from motor.common.alarm.instance_exception_alarm import INSTANCE_EXCEPTION_ALARM_ID
+from motor.common.alarm.precision_issue_alarm import PRECISION_ISSUE_ALARM_ID
 from motor.common.alarm.record import Record
 from motor.controller.observability.alarm.alarm_store import AlarmStore
 
@@ -29,6 +30,7 @@ def alarm_store(monkeypatch):
     # Ensure clean internal state.
     store._alarms = {"np1": []}
     store._recoverable_alarms = {}
+    store._active_precision_alarms = {}
     return store
 
 
@@ -95,3 +97,88 @@ def test_coordinator_exception_alarm_uses_same_recovery_semantics(alarm_store):
     # Duplicate NO should be suppressed.
     assert alarm_store.add_alarm(record_no) is True
     assert alarm_store.get_alarms("np1") == []
+
+
+def test_precision_issue_alarm_tracks_active_until_cleared(alarm_store):
+    moi = "service name=Coordinator, service ip=1.2.3.4, pId=1, instanceId=2"
+    record_no = Record(
+        alarm_id=PRECISION_ISSUE_ALARM_ID,
+        instance_id="2",
+        p_instance_id="1",
+        moi=moi,
+        category=Category.ALARM,
+        cleared=Cleared.NO,
+    )
+    assert alarm_store.add_alarm(record_no) is True
+    assert moi in alarm_store._active_precision_alarms
+    assert len(alarm_store.get_alarms("np1")[0]) == 1
+
+    duplicate = Record(
+        alarm_id=PRECISION_ISSUE_ALARM_ID,
+        instance_id="2",
+        p_instance_id="1",
+        moi=moi,
+        category=Category.ALARM,
+        cleared=Cleared.NO,
+    )
+    assert alarm_store.add_alarm(duplicate) is True
+    assert alarm_store.get_alarms("np1") == []
+
+    record_yes = Record(
+        alarm_id=PRECISION_ISSUE_ALARM_ID,
+        instance_id="2",
+        p_instance_id="1",
+        moi=moi,
+        category=Category.CLEAR,
+        cleared=Cleared.YES,
+    )
+    assert alarm_store.add_alarm(record_yes) is True
+    assert moi not in alarm_store._active_precision_alarms
+    cleared = alarm_store.get_alarms("np1")
+    assert len(cleared) == 1
+    assert cleared[0][0]["cleared"] == Cleared.YES.value
+
+
+def test_find_active_precision_alarm_matches_pd_group(alarm_store):
+    moi = "service name=Coordinator, service ip=1.2.3.4, pId=1, instanceId=2"
+    record_no = Record(
+        alarm_id=PRECISION_ISSUE_ALARM_ID,
+        instance_id="2",
+        p_instance_id="1",
+        moi=moi,
+        category=Category.ALARM,
+        cleared=Cleared.NO,
+    )
+    alarm_store.add_alarm(record_no)
+    found = alarm_store.find_active_precision_alarm(1, 2)
+    assert found is record_no
+    assert alarm_store.find_active_precision_alarm(2, 2) is None
+
+
+def test_add_alarms_batches_raise_and_clear_in_one_fetch(alarm_store):
+    moi = "service name=Coordinator, service ip=1.2.3.4, pId=1, instanceId=2"
+    record_no = Record(
+        alarm_id=PRECISION_ISSUE_ALARM_ID,
+        instance_id="2",
+        p_instance_id="1",
+        moi=moi,
+        category=Category.ALARM,
+        cleared=Cleared.NO,
+    )
+    record_yes = Record(
+        alarm_id=PRECISION_ISSUE_ALARM_ID,
+        instance_id="2",
+        p_instance_id="1",
+        moi=moi,
+        category=Category.CLEAR,
+        cleared=Cleared.YES,
+    )
+
+    assert alarm_store.add_alarms([record_no, record_yes]) is True
+    assert moi not in alarm_store._active_precision_alarms
+
+    alarms = alarm_store.get_alarms("np1")
+    assert len(alarms) == 1
+    assert len(alarms[0]) == 2
+    assert alarms[0][0]["cleared"] == Cleared.NO.value
+    assert alarms[0][1]["cleared"] == Cleared.YES.value

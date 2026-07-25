@@ -92,5 +92,6 @@ def build_precision_reporter(
         checker=chk,
         action=action,
         threshold=precision_detection_config.precision_issue_threshold,
+        clear_threshold=precision_detection_config.precision_clear_threshold,
         scheduler_client=scheduler_client,
     )

@@ -229,16 +229,18 @@ async def test_module_stub_debug_sequence() -> None:
 @pytest.mark.asyncio
 async def test_action_finish_resets_scheduler_streak_for_next_cycle() -> None:
     """After probe+alarm action, finish_precision_action clears streak; next issue starts at 1."""
+    from motor.coordinator.fault_tolerance.alarm.base import AlarmReportOutcome
     from motor.coordinator.fault_tolerance.precision.reporter import PrecisionReporter
     from motor.coordinator.fault_tolerance.precision.streak_result import PrecisionStreakResult
 
     action = AsyncMock()
+    action.execute = AsyncMock(return_value=AlarmReportOutcome(success=True, moi="moi-test"))
     checker = StubChecker(results=[True, True, True, True])
     sched = AsyncMock()
     state = {"probing": False, "count": 0}
     threshold = 3
 
-    async def record_side_effect(key, has_issue, th):
+    async def record_side_effect(key, has_issue, th, *, clear_threshold, check_valid):
         if state["probing"]:
             return PrecisionStreakResult(skip=True, consecutive=state["count"])
         if has_issue:
@@ -254,7 +256,9 @@ async def test_action_finish_resets_scheduler_streak_for_next_cycle() -> None:
         state["count"] = 0
         return PrecisionStreakResult(consecutive=0)
 
-    async def finish_side_effect(key, action_token):
+    async def finish_side_effect(
+        key, action_token, *, action_type, success, alarm_moi=None, auto_recovery_cleared=False
+    ):
         state["probing"] = False
         state["count"] = 0
         return True

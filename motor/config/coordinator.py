@@ -237,6 +237,7 @@ class PrecisionDetectionConfig:
     # 1 → repetition; >=3 → +garbled; >=5 → +rare characters (requires multiple keys)
     precision_check_enabled: bool = False  # Master switch: enables sampling + precision detection/probe/alarm
     precision_issue_threshold: int = 10  # Consecutive precision anomaly count before triggering probe and alarm
+    precision_clear_threshold: int = 10  # Consecutive valid normal samples before clearing an active alarm
     probe_max_attempts: int = 3  # Number of probe attempts
     probe_timeout_seconds: float = (
         600.0  # Single probe request timeout (seconds); no extra interval between consecutive probes
@@ -731,6 +732,10 @@ class CoordinatorConfig:
         self._validate_positive_number(
             self.precision_detection_config.precision_issue_threshold,
             "precision_detection_config.precision_issue_threshold",
+        )
+        self._validate_positive_number(
+            self.precision_detection_config.precision_clear_threshold,
+            "precision_detection_config.precision_clear_threshold",
         )
         self._validate_positive_number(
             self.precision_detection_config.probe_max_attempts, "precision_detection_config.probe_max_attempts"

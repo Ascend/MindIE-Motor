@@ -1098,6 +1098,60 @@ class TestCoordinatorServerAdvanced:
         # Should return 400 for no body
         assert response.status_code == 400, f"Expected 400 for no body, got: {response.status_code}"
 
+    def test_precision_alarm_cleared_success(self):
+        """Test precision alarm clear returns dismissed when scheduler state is cleared."""
+        scheduler_client = MagicMock()
+        scheduler_client.dismiss_precision_alarm_state = AsyncMock(return_value=True)
+        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
+
+        response = self.mgmt_client.post(
+            "/precision/alarm_cleared",
+            json={"p_instance_id": 1, "d_instance_id": 2},
+        )
+
+        assert response.status_code == 200, f"Expected 200, got: {response.status_code}"
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["data"]["dismissed"] is True
+        scheduler_client.dismiss_precision_alarm_state.assert_awaited_once_with(
+            p_instance_id=1,
+            d_instance_id=2,
+        )
+
+    def test_precision_alarm_cleared_fails_without_scheduler_client(self):
+        """Test precision alarm clear does not report success when scheduler client is unavailable."""
+        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = None
+
+        response = self.mgmt_client.post(
+            "/precision/alarm_cleared",
+            json={"p_instance_id": 1, "d_instance_id": 2},
+        )
+
+        assert response.status_code == 503, f"Expected 503, got: {response.status_code}"
+
+    def test_precision_alarm_cleared_fails_when_scheduler_rejects(self):
+        """Test precision alarm clear does not report success when scheduler rejects the request."""
+        scheduler_client = MagicMock()
+        scheduler_client.dismiss_precision_alarm_state = AsyncMock(return_value=False)
+        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
+
+        response = self.mgmt_client.post(
+            "/precision/alarm_cleared",
+            json={"p_instance_id": 1, "d_instance_id": 2},
+        )
+
+        assert response.status_code == 503, f"Expected 503, got: {response.status_code}"
+
+    def test_precision_alarm_cleared_rejects_non_object_body(self):
+        """Test precision alarm clear returns 400 when body is not a JSON object."""
+        response = self.mgmt_client.post(
+            "/precision/alarm_cleared",
+            content=b"[1, 2]",
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 400, f"Expected 400, got: {response.status_code}"
+
     def test_create_unified_app(self):
         """Test create_unified_app method"""
         unified_app = self.coordinator_server.create_unified_app()

@@ -71,6 +71,8 @@ def _build_readiness_response(message: str, ready: bool) -> dict[str, Any]:
 
 INSTANCE_REFRESH = "instance_refresh"
 INSTANCE_REFRESH_URL = "/instances/refresh"
+PRECISION_ALARM_CLEARED = "precision_alarm_cleared"
+PRECISION_ALARM_CLEARED_URL = "/precision/alarm_cleared"
 
 
 class ManagementServer(BaseCoordinatorServer):
@@ -344,6 +346,27 @@ class ManagementServer(BaseCoordinatorServer):
                 )
                 raise
 
+        @self.management_app.post("/precision/alarm_cleared", response_model=RequestResponse)
+        @self.timeout_handler()
+        async def precision_alarm_cleared(request: Request) -> RequestResponse:
+            try:
+                result = await self._handle_precision_alarm_cleared(request)
+                log_audit_event(
+                    request=request,
+                    event_type=PRECISION_ALARM_CLEARED,
+                    resource_name=PRECISION_ALARM_CLEARED_URL,
+                    event_result="success",
+                )
+                return result
+            except Exception as e:
+                log_audit_event(
+                    request=request,
+                    event_type=PRECISION_ALARM_CLEARED,
+                    resource_name=PRECISION_ALARM_CLEARED_URL,
+                    event_result=f"failed: {sanitize_error_message(str(e))[:100]}",
+                )
+                raise
+
         @self.management_app.get("/")
         async def root():
             return {
@@ -355,8 +378,88 @@ class ManagementServer(BaseCoordinatorServer):
                     "GET /startup": "startup probe",
                     "GET /readiness": "readiness check",
                     "POST /instances/refresh": "refresh instances",
+                    "POST /precision/alarm_cleared": "clear precision alarm scheduler state",
                 },
             }
+
+    async def _handle_precision_alarm_cleared(self, request: Request) -> RequestResponse:
+        try:
+            raw_body = await request.body()
+            if not raw_body:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Request body cannot be empty",
+                )
+            body = json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON format: {str(e)}",
+            ) from e
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request body must be a JSON object",
+            )
+
+        d_raw = body.get("d_instance_id")
+        if d_raw is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing required field: d_instance_id",
+            )
+        try:
+            d_id = int(d_raw)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid d_instance_id: {e}",
+            ) from e
+        p_id: int | None = None
+        p_raw = body.get("p_instance_id")
+        if p_raw is not None:
+            try:
+                p_val = int(p_raw)
+                p_id = p_val if p_val > 0 else None
+            except (TypeError, ValueError) as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid p_instance_id: {e}",
+                ) from e
+
+        await self._scheduler_connection.ensure_connected()
+        client = self._scheduler_connection.get_client()
+        if client is None:
+            logger.warning(
+                "Precision alarm state clear failed: scheduler client unavailable pd_group=(%s,%s)",
+                p_id,
+                d_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Scheduler client unavailable",
+            )
+        dismissed = await client.dismiss_precision_alarm_state(
+            p_instance_id=p_id,
+            d_instance_id=d_id,
+        )
+        if not dismissed:
+            logger.warning(
+                "Precision alarm state clear failed: scheduler rejected pd_group=(%s,%s)",
+                p_id,
+                d_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to clear precision alarm scheduler state",
+            )
+
+        return RequestResponse(
+            request_id="precision_alarm_cleared",
+            status="success",
+            message="Precision alarm state cleared",
+            data={"dismissed": True},
+        )
 
     async def _handle_refresh_instances(self, request: Request) -> RequestResponse:
         try:

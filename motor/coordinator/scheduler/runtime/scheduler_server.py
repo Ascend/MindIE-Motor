@@ -221,6 +221,7 @@ class _SchedulerRequestDispatcher:
             SchedulerRequestType.CONFIRM_SAMPLE.value: self._handle_confirm_sample,
             SchedulerRequestType.RECORD_PRECISION_RESULT.value: self._handle_record_precision_result,
             SchedulerRequestType.FINISH_PRECISION_ACTION.value: self._handle_finish_precision_action,
+            SchedulerRequestType.DISMISS_PRECISION_ALARM_STATE.value: self._handle_dismiss_precision_alarm_state,
             SchedulerRequestType.CIRCUIT_BREAKER_REPORT.value: self._handle_circuit_breaker_report,
         }
         handler = handlers.get(request.request_type)
@@ -449,16 +450,26 @@ class _SchedulerRequestDispatcher:
         d_instance_id = data.get("d_instance_id")
         has_issue = data.get("has_issue")
         threshold = data.get("threshold")
-        if d_instance_id is None or has_issue is None or threshold is None:
+        clear_threshold = data.get("clear_threshold")
+        check_valid = data.get("check_valid")
+        if (
+            d_instance_id is None
+            or has_issue is None
+            or threshold is None
+            or clear_threshold is None
+            or check_valid is None
+        ):
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
                 request_id=request.request_id,
-                error="Missing d_instance_id, has_issue, or threshold in request data",
+                error="Missing d_instance_id, has_issue, threshold, clear_threshold, or check_valid",
             )
         try:
             d_id = int(d_instance_id)
             threshold_i = int(threshold)
+            clear_threshold_i = int(clear_threshold)
             has_issue_b = bool(has_issue)
+            check_valid_b = bool(check_valid)
         except (TypeError, ValueError) as e:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
@@ -483,6 +494,8 @@ class _SchedulerRequestDispatcher:
             d_instance_id=d_id,
             has_issue=has_issue_b,
             threshold=threshold_i,
+            clear_threshold=clear_threshold_i,
+            check_valid=check_valid_b,
         )
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
@@ -494,6 +507,10 @@ class _SchedulerRequestDispatcher:
         data = request.data or {}
         d_instance_id = data.get("d_instance_id")
         action_token = data.get("action_token")
+        action_type = data.get("action_type", "raise")
+        success = data.get("success", True)
+        alarm_moi = data.get("alarm_moi")
+        auto_recovery_cleared = data.get("auto_recovery_cleared", False)
         if d_instance_id is None or not action_token:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
@@ -525,11 +542,56 @@ class _SchedulerRequestDispatcher:
             p_instance_id=p_id,
             d_instance_id=d_id,
             action_token=str(action_token),
+            action_type=str(action_type),
+            success=bool(success),
+            alarm_moi=str(alarm_moi) if alarm_moi is not None else None,
+            auto_recovery_cleared=bool(auto_recovery_cleared),
         )
         return SchedulerResponse(
             response_type=SchedulerResponseType.SUCCESS,
             request_id=request.request_id,
             data={"finished": ok},
+        )
+
+    async def _handle_dismiss_precision_alarm_state(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        d_instance_id = data.get("d_instance_id")
+        if d_instance_id is None:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error="Missing d_instance_id in request data",
+            )
+        try:
+            d_id = int(d_instance_id)
+        except (TypeError, ValueError) as e:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error=f"Invalid dismiss_precision_alarm_state fields: {e}",
+            )
+        p_raw = data.get("p_instance_id")
+        p_id: int | None
+        if p_raw is None:
+            p_id = None
+        else:
+            try:
+                p_val = int(p_raw)
+                p_id = p_val if p_val > 0 else None
+            except (TypeError, ValueError):
+                return SchedulerResponse(
+                    response_type=SchedulerResponseType.ERROR,
+                    request_id=request.request_id,
+                    error="Invalid p_instance_id",
+                )
+        ok = await self._scheduler.dismiss_precision_alarm_state(
+            p_instance_id=p_id,
+            d_instance_id=d_id,
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"dismissed": ok},
         )
 
     async def _handle_circuit_breaker_report(self, request: SchedulerRequest) -> SchedulerResponse:

@@ -77,8 +77,13 @@ class Scheduler:
         # Global per-PD-group precision state (shared across inference workers).
         self._sample_exit_last_time: dict[tuple[int | None, int], float] = {}
         self._precision_streak_counts: dict[tuple[int | None, int], int] = {}
-        self._precision_probing: dict[tuple[int | None, int], bool] = {}
-        self._precision_action_tokens: dict[tuple[int | None, int], str] = {}
+        self._precision_raise_probing: dict[tuple[int | None, int], bool] = {}
+        self._precision_raise_tokens: dict[tuple[int | None, int], str] = {}
+        self._precision_clear_probing: dict[tuple[int | None, int], bool] = {}
+        self._precision_clear_tokens: dict[tuple[int | None, int], str] = {}
+        self._precision_alarm_active: dict[tuple[int | None, int], bool] = {}
+        self._precision_alarm_moi: dict[tuple[int | None, int], str] = {}
+        self._precision_normal_streak_counts: dict[tuple[int | None, int], int] = {}
         self._sample_exit_locks: dict[tuple[int | None, int], asyncio.Lock] = {}
         logger.info("Scheduler started.")
 
@@ -285,6 +290,35 @@ class Scheduler:
                 return True
         return False
 
+    def _clear_precision_group_state(self, key: tuple[int | None, int]) -> None:
+        """Remove all precision alarm/streak state for a PD group."""
+        self._precision_streak_counts.pop(key, None)
+        self._precision_raise_probing.pop(key, None)
+        self._precision_raise_tokens.pop(key, None)
+        self._precision_clear_probing.pop(key, None)
+        self._precision_clear_tokens.pop(key, None)
+        self._precision_alarm_active.pop(key, None)
+        self._precision_alarm_moi.pop(key, None)
+        self._precision_normal_streak_counts.pop(key, None)
+
+    async def dismiss_precision_alarm_state(
+        self,
+        *,
+        p_instance_id: int | None,
+        d_instance_id: int,
+    ) -> bool:
+        """Drop precision alarm/streak state after external recovery (auto-recovery / CCAE manual)."""
+        key = (p_instance_id, d_instance_id)
+        lock = self._sample_exit_lock(key)
+        async with lock:
+            self._clear_precision_group_state(key)
+            logger.info(
+                "Scheduler: dismiss_precision_alarm_state ok pd_group=(%s,%s)",
+                key[0],
+                key[1],
+            )
+            return True
+
     async def record_precision_result(
         self,
         *,
@@ -292,25 +326,88 @@ class Scheduler:
         d_instance_id: int,
         has_issue: bool,
         threshold: int,
+        clear_threshold: int,
+        check_valid: bool,
     ) -> dict[str, int | bool | str | None]:
-        """Atomically update global consecutive count and probing for one PD group."""
+        """Atomically update global consecutive count, alarm-active normal streak, and probing."""
         key = (p_instance_id, d_instance_id)
         lock = self._sample_exit_lock(key)
         async with lock:
-            if self._precision_probing.get(key):
+            if self._precision_raise_probing.get(key) or self._precision_clear_probing.get(key):
+                consecutive = self._precision_normal_streak_counts.get(key, 0)
+                if not self._precision_alarm_active.get(key):
+                    consecutive = self._precision_streak_counts.get(key, 0)
                 return {
                     "skip": True,
                     "threshold_hit": False,
-                    "consecutive": self._precision_streak_counts.get(key, 0),
+                    "clear_threshold_hit": False,
+                    "consecutive": consecutive,
                     "action_token": None,  # nosec B105
+                    "alarm_moi": None,
                 }
+
+            if not check_valid:
+                consecutive = self._precision_normal_streak_counts.get(key, 0)
+                if not self._precision_alarm_active.get(key):
+                    consecutive = self._precision_streak_counts.get(key, 0)
+                return {
+                    "skip": False,
+                    "threshold_hit": False,
+                    "clear_threshold_hit": False,
+                    "consecutive": consecutive,
+                    "action_token": None,  # nosec B105
+                    "alarm_moi": None,
+                }
+
+            if self._precision_alarm_active.get(key):
+                if has_issue:
+                    self._precision_normal_streak_counts[key] = 0
+                    return {
+                        "skip": False,
+                        "threshold_hit": False,
+                        "clear_threshold_hit": False,
+                        "consecutive": 0,
+                        "action_token": None,  # nosec B105
+                        "alarm_moi": None,
+                    }
+                count = self._precision_normal_streak_counts.get(key, 0) + 1
+                self._precision_normal_streak_counts[key] = count
+                if count >= clear_threshold:
+                    token = str(uuid.uuid4())
+                    self._precision_clear_probing[key] = True
+                    self._precision_clear_tokens[key] = token
+                    alarm_moi = self._precision_alarm_moi.get(key, "")
+                    logger.debug(
+                        "Scheduler: precision clear threshold pd_group=(%s,%s) count=%s moi=%s",
+                        key[0],
+                        key[1],
+                        count,
+                        alarm_moi,
+                    )
+                    return {
+                        "skip": False,
+                        "threshold_hit": False,
+                        "clear_threshold_hit": True,
+                        "consecutive": count,
+                        "action_token": token,
+                        "alarm_moi": alarm_moi,
+                    }
+                return {
+                    "skip": False,
+                    "threshold_hit": False,
+                    "clear_threshold_hit": False,
+                    "consecutive": count,
+                    "action_token": None,  # nosec B105
+                    "alarm_moi": None,
+                }
+
             if has_issue:
                 count = self._precision_streak_counts.get(key, 0) + 1
                 self._precision_streak_counts[key] = count
                 if count >= threshold:
                     token = str(uuid.uuid4())
-                    self._precision_probing[key] = True
-                    self._precision_action_tokens[key] = token
+                    self._precision_raise_probing[key] = True
+                    self._precision_raise_tokens[key] = token
                     logger.debug(
                         "Scheduler: precision threshold pd_group=(%s,%s) count=%s",
                         key[0],
@@ -320,21 +417,27 @@ class Scheduler:
                     return {
                         "skip": False,
                         "threshold_hit": True,
+                        "clear_threshold_hit": False,
                         "consecutive": count,
                         "action_token": token,
+                        "alarm_moi": None,
                     }
                 return {
                     "skip": False,
                     "threshold_hit": False,
+                    "clear_threshold_hit": False,
                     "consecutive": count,
                     "action_token": None,  # nosec B105
+                    "alarm_moi": None,
                 }
             self._precision_streak_counts[key] = 0
             return {
                 "skip": False,
                 "threshold_hit": False,
+                "clear_threshold_hit": False,
                 "consecutive": 0,
                 "action_token": None,  # nosec B105
+                "alarm_moi": None,
             }
 
     async def finish_precision_action(
@@ -343,25 +446,80 @@ class Scheduler:
         p_instance_id: int | None,
         d_instance_id: int,
         action_token: str,
+        action_type: str,
+        success: bool,
+        alarm_moi: str | None = None,
+        auto_recovery_cleared: bool = False,
     ) -> bool:
-        """Clear probing and streak after probe/alarm; rejects stale action_token."""
+        """Commit raise/clear action result; rejects stale action_token."""
         key = (p_instance_id, d_instance_id)
         lock = self._sample_exit_lock(key)
         async with lock:
-            expected = self._precision_action_tokens.get(key)
+            if action_type == "clear":
+                expected = self._precision_clear_tokens.get(key)
+                if not expected or expected != action_token:
+                    logger.warning(
+                        "Scheduler: finish_precision_action clear token mismatch pd_group=(%s,%s)",
+                        key[0],
+                        key[1],
+                    )
+                    return False
+                self._precision_clear_probing[key] = False
+                self._precision_clear_tokens.pop(key, None)
+                if success:
+                    self._clear_precision_group_state(key)
+                    logger.debug(
+                        "Scheduler: finish_precision_action clear ok pd_group=(%s,%s)",
+                        key[0],
+                        key[1],
+                    )
+                else:
+                    logger.warning(
+                        "Scheduler: finish_precision_action clear failed pd_group=(%s,%s)",
+                        key[0],
+                        key[1],
+                    )
+                    self._precision_normal_streak_counts[key] = 0
+                return True
+
+            if auto_recovery_cleared:
+                # Controller dismiss may have already removed raise token/state.
+                self._clear_precision_group_state(key)
+                logger.debug(
+                    "Scheduler: finish_precision_action auto-recovery cleared pd_group=(%s,%s)",
+                    key[0],
+                    key[1],
+                )
+                return True
+
+            expected = self._precision_raise_tokens.get(key)
             if not expected or expected != action_token:
                 logger.warning(
-                    "Scheduler: finish_precision_action token mismatch pd_group=(%s,%s)",
+                    "Scheduler: finish_precision_action raise token mismatch pd_group=(%s,%s)",
                     key[0],
                     key[1],
                 )
                 return False
-            self._precision_probing[key] = False
+            self._precision_raise_probing[key] = False
+            self._precision_raise_tokens.pop(key, None)
+            if not success:
+                logger.warning(
+                    "Scheduler: finish_precision_action raise failed pd_group=(%s,%s)",
+                    key[0],
+                    key[1],
+                )
+                self._precision_streak_counts[key] = 0
+                self._precision_normal_streak_counts[key] = 0
+                return True
+            if alarm_moi:
+                self._precision_alarm_active[key] = True
+                self._precision_alarm_moi[key] = alarm_moi
             self._precision_streak_counts[key] = 0
-            self._precision_action_tokens.pop(key, None)
+            self._precision_normal_streak_counts[key] = 0
             logger.debug(
-                "Scheduler: finish_precision_action ok pd_group=(%s,%s)",
+                "Scheduler: finish_precision_action raise ok alarm_active pd_group=(%s,%s) moi=%s",
                 key[0],
                 key[1],
+                alarm_moi,
             )
             return True
