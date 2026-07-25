@@ -246,10 +246,7 @@ class SimpleRateLimitMiddleware:
         body, over_limit = await self._read_body_with_limit(receive, max_body_size_bytes)
         if over_limit:
             self.stats["body_size_rejected_requests"] += 1
-            logger.warning(
-                f"Request body size too large (actual bytes): "
-                f"exceeds {max_body_size_bytes}, path={path}"
-            )
+            logger.warning(f"Request body size too large (actual bytes): exceeds {max_body_size_bytes}, path={path}")
             error_response = {
                 "error": "request_body_too_large",
                 "message": f"Request body size exceeds maximum ({max_body_size_bytes} bytes)",
