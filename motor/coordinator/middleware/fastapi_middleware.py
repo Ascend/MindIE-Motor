@@ -184,6 +184,82 @@ class SimpleRateLimitMiddleware:
 
         return headers
 
+    async def _enforce_body_size_limit(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        path: str,
+    ) -> Receive | None:
+        """Enforce the request body size limit and return the receive to forward.
+
+        Two mutually exclusive paths based on Content-Length presence:
+        - Content-Length present (>=0): trust it (the ASGI server delivers
+          exactly CL bytes to the app), reject by header value without
+          reading the body.
+        - Content-Length absent/invalid (-1, e.g. chunked): pre-read the
+          actual body bytes and enforce the limit.
+
+        Runs BEFORE the rate limiter so body rejection does not consume a token.
+
+        Args:
+            scope: ASGI scope.
+            receive: Original ASGI receive callable.
+            send: ASGI send callable (used to emit 413 when rejected).
+            path: Request path (for logging).
+
+        Returns:
+            The receive callable to forward to the downstream app when the
+            request is allowed (the original `receive` for the Content-Length
+            path, or a replay receive for the pre-read path); None when the
+            request has been rejected with a 413 response already sent via
+            `send`, in which case the caller must return immediately.
+        """
+        max_body_size_mb = self._config_holder.max_request_body_size
+        # <= 0 means the body size check is disabled; pass through unchanged.
+        if max_body_size_mb <= 0:
+            return receive
+
+        # max_request_body_size is configured in MB (float); convert to bytes for comparison.
+        max_body_size_bytes = int(max_body_size_mb * 1024 * 1024)
+        content_length = self._get_content_length(scope)
+
+        if content_length >= 0:
+            # Path A: Content-Length present. Trust the header value; do not pre-read.
+            if content_length > max_body_size_bytes:
+                self.stats["body_size_rejected_requests"] += 1
+                logger.warning(
+                    f"Request body size too large (Content-Length): "
+                    f"{content_length} > {max_body_size_bytes}, path={path}"
+                )
+                error_response = {
+                    "error": "request_body_too_large",
+                    "message": f"Request body size ({content_length} bytes) exceeds maximum",
+                }
+                response = JSONResponse(status_code=413, content=error_response)
+                await response(scope, receive, send)
+                return None
+            # CL within limit: pass through the original receive (no pre-read, no replay).
+            return receive
+
+        # Path B: no Content-Length (chunked / missing / invalid). Pre-read actual bytes.
+        body, over_limit = await self._read_body_with_limit(receive, max_body_size_bytes)
+        if over_limit:
+            self.stats["body_size_rejected_requests"] += 1
+            logger.warning(
+                f"Request body size too large (actual bytes): "
+                f"exceeds {max_body_size_bytes}, path={path}"
+            )
+            error_response = {
+                "error": "request_body_too_large",
+                "message": f"Request body size exceeds maximum ({max_body_size_bytes} bytes)",
+            }
+            response = JSONResponse(status_code=413, content=error_response)
+            await response(scope, receive, send)
+            return None
+        # Body within limit: replay it to the downstream app via a synthetic receive.
+        return self._make_replay_receive(receive, body)
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """ASGI entry point: enforce body-size and rate limits for HTTP requests."""
         # Non-HTTP scopes (lifespan, websocket, etc.) are passed through unchanged
@@ -205,49 +281,12 @@ class SimpleRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Request body size check.
-        # Two layers: (1) fast reject based on Content-Length header without reading
-        # the body; (2) pre-read the actual body bytes to guard against chunked,
-        # missing, or under-reported Content-Length. Both happen BEFORE the rate
-        # limiter so that body rejection does not consume a rate-limit token.
-        max_body_size_mb = self._config_holder.max_request_body_size
-        effective_receive: Receive = receive
-        if max_body_size_mb > 0:
-            # max_request_body_size is configured in MB (float); when comparing, it is converted to bytes.
-            max_body_size_bytes = int(max_body_size_mb * 1024 * 1024)
-
-            # Fast path: reject based on Content-Length header without reading the body.
-            content_length = self._get_content_length(scope)
-            if content_length > max_body_size_bytes:
-                self.stats["body_size_rejected_requests"] += 1
-                logger.warning(f"Request body size too large: {content_length} > {max_body_size_bytes}, path={path}")
-                error_response = {
-                    "error": "request_body_too_large",
-                    "message": f"Request body size ({content_length} bytes) exceeds maximum",
-                }
-                response = JSONResponse(status_code=413, content=error_response)
-                await response(scope, receive, send)
-                return
-
-            # Actual-byte enforcement: pre-read the body to guard against chunked,
-            # missing, or under-reported Content-Length.
-            body, over_limit = await self._read_body_with_limit(receive, max_body_size_bytes)
-            if over_limit:
-                self.stats["body_size_rejected_requests"] += 1
-                logger.warning(
-                    f"Request body size too large (actual bytes): "
-                    f"exceeds {max_body_size_bytes}, path={path}"
-                )
-                error_response = {
-                    "error": "request_body_too_large",
-                    "message": f"Request body size exceeds maximum ({max_body_size_bytes} bytes)",
-                }
-                response = JSONResponse(status_code=413, content=error_response)
-                await response(scope, receive, send)
-                return
-
-            # Body within limit: replay it to the downstream app via a synthetic receive.
-            effective_receive = self._make_replay_receive(receive, body)
+        # Request body size check (runs before the rate limiter so a rejection
+        # does not consume a token). Returns the receive to forward, or None
+        # when a 413 has already been sent.
+        effective_receive = await self._enforce_body_size_limit(scope, receive, send, path)
+        if effective_receive is None:
+            return
 
         # Check rate limiting — only the limiter call is guarded so that
         # downstream exceptions (including those raised mid-stream) propagate

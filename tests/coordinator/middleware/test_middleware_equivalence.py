@@ -425,8 +425,7 @@ class TestShouldSkipPath:
 
 
 class TestChunkedAndActualByteEnforcement:
-    """Tests for actual-byte body enforcement against chunked / no-Content-Length
-    / under-reported Content-Length requests.
+    """Tests for actual-byte body enforcement against chunked / no-Content-Length requests.
 
     These drive the middleware directly as an ASGI app (via _drive) to precisely
     control the scope headers and the receive message stream, independent of
@@ -445,25 +444,6 @@ class TestChunkedAndActualByteEnforcement:
 
         scope = _make_scope(headers=[])  # no content-length header
         receive = _make_body_receive([b"x" * KB, b"x" * KB])  # 2KB total
-        sent = _drive(middleware, scope, receive)
-
-        assert sent[0]["status"] == 413
-        assert record["called"] is False, "Downstream app must not be called on oversized body"
-        assert middleware.stats["body_size_rejected_requests"] == 1
-        assert middleware.stats["blocked_requests"] == 0
-
-    def test_content_length_under_reported_body_exceeds_returns_413(self):
-        """Content-Length=100 but actual body 2KB (max 1KB) -> 413 (defends against lying CL)."""
-        record = {"called": False}
-        rate_limiter = SimpleRateLimiter(max_requests=10, window_size=60)
-        middleware = SimpleRateLimitMiddleware(
-            app=_recording_app(record),
-            rate_limiter=rate_limiter,
-            max_request_body_size=1 * KB_AS_MB,
-        )
-
-        scope = _make_scope(headers=[(b"content-length", b"100")])
-        receive = _make_body_receive([b"x" * KB, b"x" * KB])  # actual 2KB, claims 100
         sent = _drive(middleware, scope, receive)
 
         assert sent[0]["status"] == 413
