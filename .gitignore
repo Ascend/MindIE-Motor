@@ -127,3 +127,6 @@ motor/kv_conductor/curl.sh
 Dockerfile.motor-e2e-kv
 motor/kv_conductor/.cargo/
 motor/kv_conductor/mock/
+
+# gitleaks
+gitleaks

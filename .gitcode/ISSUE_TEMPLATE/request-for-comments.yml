@@ -1,0 +1,74 @@
+name: 💻 Request for comments (RFC)
+description: 如果您需要实现一个新需求，请使用此模板。
+title: "[RFC]: "
+labels: ["RFC"]
+body:
+  - type: textarea
+    attributes:
+      label: 需求描述
+      description: 请描述本需求的背景，要实现什么特性，期望解决什么问题等
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 功能要点
+      description: 请分条列出本需求要实现的具体功能点，通过复选框的形式展现
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 上下游影响与接口诉求
+      description: |
+        请分别描述本需求对 Motor 上游组件、Motor 本身、Motor 下游组件需要支持的能力，并具体到相关接口能力诉求。
+        需说明涉及的接口、调用方/被调用方、输入输出、兼容性、支持规格、是否需要支持多线程、是否需要支持并发、性能诉求、资源约束、异常处理和可观测性要求。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 对外 API 变更
+      description: |
+        请说明本需求是否涉及对外 API 变更；若涉及，请列出新增、修改、废弃或行为变化的公开接口。
+        需覆盖 C/C++/Python 接口、公开头文件、配置项、结构体字段、枚举/错误码、回调、环境变量、命令行参数、文档示例等外部可见变更。
+        需说明接口兼容性、ABI 影响、默认行为、参数取值范围、错误返回、版本迁移方式，以及是否需要同步更新对外接口文档。
+        若不涉及对外 API 变更，请明确填写“不涉及”并说明原因。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 对外 API 使用示例
+      description: |
+        请提供本需求涉及的对外 API 使用示例，示例应能体现新增或变化后的接口用法。
+        需包含最小可用示例、典型参数配置和预期结果；涉及多个入口时需分别给出示例，例如 C/C++/Python 接口、配置文件、环境变量或命令行参数。
+        若不涉及对外 API 变更，请填写“不涉及”并说明无需示例的原因。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 技术方案
+      description: 请描述下各功能点的技术实现思路。涉及跨组件调用、异步流程、并发流程或状态流转时，需要附上时序图；也可补充伪代码、类图等。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 相关文档
+      description: 若本需求涉及新增文档或文档更新，请在此处描述新增或改动内容
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: 测试方案
+      description: 请描述本需求需要验证的测试场景
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 验收标准
+      description: 请描述本需求验收需达到的标准，通过复选框的形式展现
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 备注
+      description: 可以在此处描述本需求涉及到的任何其他内容
+    validations:
+      required: false
