@@ -292,15 +292,19 @@ class NodeManagerFaultToleranceConfig:
 class KVCacheStoreConfig:
     """KV cache store configuration — parsed from ``kv_cache_store_config``."""
 
-    enable: bool = False  # True when kv_cache_store_config is present
+    # --- common (all backends) ---
+    enable: bool = False
+    # True when kv_cache_store_config is present.
     backend: str = "memcache"
-    service: str = ""  # default from $KVS_MASTER_SERVICE
-    local_service_mode: str = ""  # "standalone" / "inprocess"
-    protocol: str = ""  # "device_rdma" / "device_sdma" / "device_urma"
-    dram_size: str = ""  # e.g. "100GB"
-    port: int = 50088  # RPC port
-    config_store_port: int = 50089  # ConfigStore TCP port
-    local_config_path: str = "/usr/local/Ascend/pyMotor/conf/mmc-local.conf"
+    service: str = ""
+    # Default from $KVS_MASTER_SERVICE.
+    port: int = 50088
+    # MetaService RPC port.
+
+    # --- MemCache ---
+    local_service_mode: str = ""
+    # "standalone" / "inprocess" — the only user-facing config key for memcache.
+    local_config_path: str = "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
 
 
 @dataclass
@@ -618,10 +622,6 @@ class NodeManagerConfig:
             kcfg.service = kv.get("service", "") or os.getenv("KVS_MASTER_SERVICE", "")
         if not kcfg.local_service_mode:
             kcfg.local_service_mode = kv.get("local_service_mode", "") or os.getenv("MMC_LOCAL_SERVICE_MODE", "")
-        if not kcfg.dram_size:
-            kcfg.dram_size = kv.get("dram_size", "") or os.getenv("MMC_DRAM_SIZE", "")
-        if not kcfg.protocol:
-            kcfg.protocol = kv.get("protocol", "") or os.getenv("MMC_LOCAL_SERVICE_PROTOCOL", "")
         port = kv.get("port", 0)
         if port:
             kcfg.port = int(port)
@@ -629,9 +629,6 @@ class NodeManagerConfig:
             env_port = os.getenv("KV_CACHE_STORE_PORT", "")
             if env_port:
                 kcfg.port = int(env_port)
-        cs_port = kv.get("config_store_port", 0)
-        if cs_port:
-            kcfg.config_store_port = int(cs_port)
         config_path = kv.get("local_config_path", "") or os.getenv("MMC_LOCAL_CONFIG_PATH", "")
         if config_path:
             kcfg.local_config_path = config_path
@@ -813,9 +810,7 @@ class NodeManagerConfig:
             f"    ├─ Backend:              {self.kv_cache_store_config.backend}\n"
             f"    ├─ Service:              {self.kv_cache_store_config.service or '(env: KVS_MASTER_SERVICE)'}\n"
             f"    ├─ Mode:                 {self.kv_cache_store_config.local_service_mode or '(default)'}\n"
-            f"    ├─ DRAM Size:            {self.kv_cache_store_config.dram_size or '(default)'}\n"
             f"    ├─ Port:                 {self.kv_cache_store_config.port}\n"
-            f"    ├─ ConfigStore Port:     {self.kv_cache_store_config.config_store_port}\n"
             f"    └─ Local Config Path:    {self.kv_cache_store_config.local_config_path}\n"
             f"{'=' * 80}"
         )

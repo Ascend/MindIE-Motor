@@ -43,6 +43,7 @@ def main():
     config.metrics_url = f"http://{_format_address(pod_ip, metrics_port)}"
     config.ha_enable = False
     config.log_level = "info"
+    config.log_output_target = "both"
 
     MetaService.setup(config)
     MetaService.main()

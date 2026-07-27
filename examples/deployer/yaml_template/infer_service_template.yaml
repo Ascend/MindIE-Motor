@@ -86,7 +86,7 @@ spec:
               deploy-name: mindie-motor-controller
           spec:
             serviceAccountName: mindie-motor-controller
-            terminationGracePeriodSeconds: 0
+            terminationGracePeriodSeconds: 5
             securityContext:
               fsGroup: 1001
             tolerations:
@@ -216,7 +216,7 @@ spec:
             labels:
               app: mindie-motor-coordinator
           spec:
-            terminationGracePeriodSeconds: 0
+            terminationGracePeriodSeconds: 5
             automountServiceAccountToken: false
             securityContext:
               fsGroup: 1001
@@ -841,7 +841,7 @@ spec:
               app: mindie-motor-kv-store
               deploy-name: mindie-motor-kv-store
           spec:
-            terminationGracePeriodSeconds: 0
+            terminationGracePeriodSeconds: 5
             automountServiceAccountToken: false
             securityContext:
               fsGroup: 1001
@@ -937,7 +937,7 @@ spec:
               app: mindie-motor-kv-conductor
               deploy-name: mindie-motor-kv-conductor
           spec:
-            terminationGracePeriodSeconds: 0
+            terminationGracePeriodSeconds: 5
             automountServiceAccountToken: false
             securityContext:
               fsGroup: 1001

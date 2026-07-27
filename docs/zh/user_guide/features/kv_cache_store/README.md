@@ -32,7 +32,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 ### kv_transfer_config（P/D 实例 engine_config 内）
 
-池化通过 `MultiConnector` 组合传输连接器（`connectors[0]`）与池化后端连接器（`connectors[1]`）实现。以 `MooncakeLayerwiseConnector`（layerwise P/D 协同）+ `AscendStoreConnector`（KV 池后端）为例：
+池化通过 `MultiConnector` 组合传输连接器（`connectors[0]`）与池化后端连接器（`connectors[1]`）实现。以 `MooncakeConnectorV1`（P/D 协同）+ `AscendStoreConnector`（KV 池后端）为例：
 
 **P 实例（motor_engine_prefill_config）：**
 
@@ -45,15 +45,11 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
       "kv_connector": "MultiConnector",
       "kv_role": "kv_producer",
       "kv_connector_extra_config": {
-        "use_layerwise": true,
         "connectors": [
           {
-            "kv_connector": "MooncakeLayerwiseConnector",
+            "kv_connector": "MooncakeConnectorV1",
             "kv_role": "kv_producer",
-            "kv_port": "30001",
-            "kv_connector_extra_config": {
-              "send_type": "PUT"
-            }
+            "kv_port": "30001"
           },
           {
             "kv_connector": "AscendStoreConnector",
@@ -80,15 +76,11 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
       "kv_connector": "MultiConnector",
       "kv_role": "kv_consumer",
       "kv_connector_extra_config": {
-        "use_layerwise": true,
         "connectors": [
           {
-            "kv_connector": "MooncakeLayerwiseConnector",
+            "kv_connector": "MooncakeConnectorV1",
             "kv_role": "kv_consumer",
-            "kv_port": "30001",
-            "kv_connector_extra_config": {
-              "send_type": "PUT"
-            }
+            "kv_port": "30002"
           },
           {
             "kv_connector": "AscendStoreConnector",
@@ -124,7 +116,6 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 "kv_cache_store_config": {
   "backend": "memcache",
   "local_service_mode": "standalone",
-  "dram_size": "100GB"
 }
 ```
 
@@ -135,17 +126,17 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `backend` | string | `memcache` | 池化后端：`mooncake`、`memcache`；未配置时默认 `memcache` |
+
+**Mooncake 专属参数**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
 | `metadata_server` | string | `P2PHANDSHAKE` | 元数据服务器模式，默认为点对点握手模式 |
 | `protocol` | string | `ascend` | 底层传输协议 |
 | `device_name` | string | `""` | 指定绑定的网卡名称，为空则自动选择 |
 | `global_segment_size` | string | `1GB` | 全局共享显存段大小 |
 | `port` | int（可选） | `50088` | KV Pool 服务端口；未配置时 deploy.py 将按默认值补齐 |
 | `default_kv_lease_ttl` | int（可选） | `11000` | KV 对象默认租约 TTL（毫秒）；配置值需大于 `env.json` 中 vllm 实例的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT` |
-
-**Mooncake 专属参数**
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
 | `eviction_high_watermark_ratio` | float | 0.9 | 池化空间高水位驱逐线，传递给 `mooncake_master` 进程 |
 | `eviction_ratio` | float | 0.1 | 单次驱逐比例，传递给 `mooncake_master` 进程 |
 
@@ -153,12 +144,9 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `config_store_port` | int（可选） | `50089` | MemCache MetaService 配置存储端口 |
-| `metrics_port` | int（可选） | `50090` | MemCache MetaService 监控上报端口 |
-| `local_service_mode` | string（可选） | A2：`inprocess`，A3/A5：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
-| `dram_size` | string（可选） | `"10GB"` | **每个节点**贡献给 KV 池化的 DRAM 总内存大小。`inprocess` 模式下 daemon 会自动除以本节点 DP 数得到单进程 `dram.size`；`standalone` 模式下独立 LS 直接使用该值。格式如 `"100GB"`。默认 10GB，后续版本将通过 `memfabric_hybrid.mem_scan.stat()` 自动扫描 |
+| `local_service_mode` | string（可选） | A2/A5：`inprocess`，A3：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
-> 使用 MemCache 后端时，deploy.py 会自动启动 MemCache MetaService（对标 Mooncake 的 `mooncake_master`），无需手动干预。
+> **所有 memcache 内部配置项**（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户直接在 `mmc-local-inprocess.conf` 中管理，无需在 `user_config.json` 中配置。详见 [MemCache 后端文档](backend/memcache.md)。
 
 ---
 
@@ -204,14 +192,6 @@ MindIE Motor KV 池化能力基于 vllm-ascend 的 KV 传输层实现。整体�
 4. **P/D 协同**：P 与 D 实例之间通过配置相同的 `kv_port` 和 `kv_connector` 建立连接，通过 `kv_role` 区分生产者/消费者角色。
 
 池化后端通过 `AscendStoreConnector` 的 `backend` 字段切换。MemCache 后端由 deployer 自动拉起 MetaService 进程管理缓存池元数据，Mooncake 后端则使用 `mooncake_master` 进程。各后端的详细说明见对应的后端文档。
-
-### 关键配置调优建议
-
-- **`global_segment_size`**：根据模型大小和并发量调整，过小会导致频繁驱逐；过大则浪费显存。建议设为模型 KV Cache 预估大小的 1.5~2 倍。
-- **`eviction_high_watermark_ratio`** 与 **`eviction_ratio`**（Mooncake 专属）：当池化空间使用率达到 `eviction_high_watermark_ratio` 时触发驱逐，每次驱逐 `eviction_ratio` 比例的空间。高并发场景可适度降低驱逐比例以减少抖动。
-- **`default_kv_lease_ttl`**：控制 KV 对象的租约有效期，需确保大于传输超时时间（`ASCEND_CONNECT_TIMEOUT` / `ASCEND_TRANSFER_TIMEOUT`），避免租约在传输完成前过期。
-
----
 
 ## 常见问题
 

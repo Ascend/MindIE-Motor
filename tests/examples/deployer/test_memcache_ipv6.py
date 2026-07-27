@@ -65,8 +65,8 @@ def test_sync_mmc_local_config_brackets_ipv6_master(tmp_path):
     config_path = tmp_path / "config"
     configmap_path.mkdir()
     config_path.mkdir()
-    source_config = DEPLOYER_ROOT / "startup" / "roles" / "kv_store_backends" / "memcache" / "mmc-local.conf"
-    (configmap_path / "kv_store_backends.memcache.mmc-local.conf").write_text(
+    source_config = DEPLOYER_ROOT / "startup" / "roles" / "kv_store_backends" / "memcache" / "mmc-local-inprocess.conf"
+    (configmap_path / "kv_store_backends.memcache.mmc-local-inprocess.conf").write_text(
         source_config.read_text(encoding="utf-8"), encoding="utf-8"
     )
 
