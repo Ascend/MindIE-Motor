@@ -65,7 +65,7 @@ motor/coordinator/metrics/
 | `QUEUE_GAUGE` | Sum | `num_requests_waiting` |
 | `CACHE_METRIC` | Mean | `kv_cache_usage_perc` |
 | `HOTSPOT_RESOURCE_GAUGE` | Max | `kv_cache_usage_perc_max` |
-| `METADATA_GAUGE` | Passthrough | `process_max_fds`、所有 `motor_*` 指标 |
+| `METADATA_GAUGE` | Passthrough | `process_max_fds`、所有 `motor:*` 指标 |
 | `HISTOGRAM_LATENCY` | Histogram Merge | `e2e_request_latency_seconds` 等 |
 | `SLA_METRIC` | Histogram Merge + 分位数 | `time_to_first_token_seconds` 等 |
 | `RATIO_NUMERATOR` / `RATIO_DENOMINATOR` | Sum | `prefix_cache_hits_total` / `queries_total` |
@@ -134,7 +134,7 @@ get_metrics("full")
 ```python
 @dataclass
 class ComputedMetricDef:
-    name: str                        # 指标名，如 "motor_generation_tokens_per_second"
+    name: str                        # 指标名，如 "motor:generation_tokens_per_second"
     help: str                        # HELP 文本
     phase: str                       # "pre_aggregation"（DP 级）| "post_aggregation"（Service 级）
     compute_type: str                # "counter_rate" | "worker_count" | 未来扩展
@@ -168,7 +168,7 @@ class MotorMetricComputer:
 _MOTOR_COMPUTED_METRICS: list[ComputedMetricDef] = [
     # -- DP 级: counter rate → tokens-per-second --
     ComputedMetricDef(
-        name="motor_prompt_tokens_per_second",
+        name="motor:prompt_tokens_per_second",
         help="Prompt tokens per second computed from vllm:prompt_tokens_total counter deltas",
         phase="pre_aggregation",
         compute_type="counter_rate",
@@ -176,7 +176,7 @@ _MOTOR_COMPUTED_METRICS: list[ComputedMetricDef] = [
         role_filter=None,
     ),
     ComputedMetricDef(
-        name="motor_generation_tokens_per_second",
+        name="motor:generation_tokens_per_second",
         help="Generation tokens per second computed from vllm:generation_tokens_total counter deltas",
         phase="pre_aggregation",
         compute_type="counter_rate",
@@ -185,7 +185,7 @@ _MOTOR_COMPUTED_METRICS: list[ComputedMetricDef] = [
     ),
     # -- Service 级: worker 计数 --
     ComputedMetricDef(
-        name="motor_active_prefill_workers",
+        name="motor:active_prefill_workers",
         phase="post_aggregation",
         compute_type="worker_count",
         role_filter=["prefill"],
@@ -229,7 +229,7 @@ Motor 使用 `(job_name, dp_rank)` 作为稳定标识（`job_name` 跨重启不�
 
 ### 场景一：新增 DP 级 counter rate 指标
 
-例如，新增一个 `motor_new_tokens_per_second` 指标，基于 `vllm:new_tokens_total` 计算速率。
+例如，新增一个 `motor:new_tokens_per_second` 指标，基于 `vllm:new_tokens_total` 计算速率。
 
 **Step 1：在 `_MOTOR_COMPUTED_METRICS` 注册表中添加定义**
 
@@ -237,7 +237,7 @@ Motor 使用 `(job_name, dp_rank)` 作为稳定标识（`job_name` 跨重启不�
 
 ```python
 ComputedMetricDef(
-    name="motor_new_tokens_per_second",
+    name="motor:new_tokens_per_second",
     help="New tokens per second computed from vllm:new_tokens_total counter deltas",
     phase="pre_aggregation",
     compute_type="counter_rate",
@@ -251,7 +251,7 @@ ComputedMetricDef(
 编辑 `motor/coordinator/metrics/metric_registry.py`，在 `_VLLM_METRIC_REGISTRY` 末尾添加：
 
 ```python
-"motor_new_tokens_per_second": MetricSemanticConfig(
+"motor:new_tokens_per_second": MetricSemanticConfig(
     semantic=MetricSemantic.METADATA_GAUGE,
 ),
 ```
@@ -260,13 +260,13 @@ ComputedMetricDef(
 
 ### 场景二：新增 Service 级聚合指标
 
-例如，新增一个 `motor_decode_queue_depth` 指标，统计 decode 实例的总排队请求数。
+例如，新增一个 `motor:decode_queue_depth` 指标，统计 decode 实例的总排队请求数。
 
 **Step 1：在 `_MOTOR_COMPUTED_METRICS` 注册表中添加定义**
 
 ```python
 ComputedMetricDef(
-    name="motor_decode_queue_depth",
+    name="motor:decode_queue_depth",
     help="Total requests waiting in decode queue",
     phase="post_aggregation",
     compute_type="gauge_sum_by_role",
