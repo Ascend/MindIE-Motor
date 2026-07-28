@@ -1,4 +1,4 @@
-# 基于vllm-ascend/sglang镜像安装MindIE Motor
+# 基于vllm-ascend镜像安装MindIE Motor
 
 ## 依赖下载（可选）
 
@@ -7,7 +7,7 @@
 
 在有网的环境执行如下步骤：
 
-### 1. 下载pciutils
+### 下载pciutils
 
 ```sh
 mkdir -p /mnt/pciutils-offline
@@ -22,7 +22,7 @@ tar -czvf pciutils-offline.tar.gz pciutils-offline
 
 将`/mnt/pciutils-offline.tar.gz`拷贝到制作镜像机器的`/mnt/`路径下
 
-### 2. 下载whl依赖
+### 下载whl依赖
 
 下载MindIE Motor代码到`/mnt/`路径下
 
@@ -43,7 +43,7 @@ tar -czvf packages-offline.tar.gz packages-offline
 
 将`/mnt/packages-offline.tar.gz`拷贝到制作镜像机器的`/mnt/`路径下
 
-### 3. 构建MindIE Motor的whl包
+### 构建MindIE Motor的whl包
 
 ```bash
 cd /mnt/MindIE-PyMotor
@@ -71,33 +71,33 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
 
 ## 安装MindIE Motor
 
-### 1. 查看镜像
+### 查看镜像
 
 ```bash
 docker images
 ```
 
-### 2. 创建容器，并挂载mnt目录
+### 创建容器，并挂载mnt目录
 
 ```bash
 docker run -d --name docker-vllm-ascend -v /mnt/:/mnt/ <镜像名称>
 ```
 
-### 3. 启动容器
+### 启动容器
 
 ```bash
 docker start docker-vllm-ascend
 ```
 
-### 4. 进入容器
+### 进入容器
 
 ```bash
 docker exec -it docker-vllm-ascend bash
 ```
 
-### 5. 安装MindIE Motor及其依赖
+### 安装MindIE Motor及其依赖
 
-#### 5.1 安装 pciutils
+#### 安装 pciutils
 
 - 在线安装：
 
@@ -115,7 +115,7 @@ cd pciutils-offline
 dpkg -i *.deb
 ```
 
-#### 5.2 安装whl依赖
+#### 安装whl依赖
 
 - 在线安装：
 
@@ -160,7 +160,7 @@ dpkg -i *.deb
     exit
     ```
 
-### 6. 保存镜像
+### 保存镜像
 
 ```bash
 docker commit -m "add motor"  docker-vllm-ascend  mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64
@@ -168,13 +168,13 @@ docker commit -m "add motor"  docker-vllm-ascend  mindie-motor-vllm:dev-800I-A3-
 
 保存后，`mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64`镜像就是制作好之后带MindIE Motor的镜像。
 
-### 7. 打包镜像
+### 打包镜像
 
 ```bash
 docker save -o /mnt/motor-vllm-ascend.tar mindie-motor-vllm:dev-800I-A3-py311-lts-aarch64
 ```
 
-### 8. 导入带有MindIE Motor的镜像
+### 导入带有MindIE Motor的镜像
 
 在非制作镜像的节点导入镜像
 

@@ -145,8 +145,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | choices[].message.content | string | 生成内容。 |
   | choices[].finish_reason | string/null | 结束原因，如`stop`、`length`等。 |
 
----
-
 ## OpenAI Completion 接口
 
 **接口功能**
@@ -258,8 +256,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | choices[].index | integer | 序号。 |
   | choices[].text | string | 生成文本。 |
   | choices[].finish_reason | string/null | 结束原因，如`stop`、`length`等。 |
-
----
 
 ## Anthropic Messages 接口
 
@@ -432,8 +428,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | `content_block_stop` | 内容块结束。 |
   | `message_delta` | 消息增量，包含 `stop_reason` 和最终 usage。 |
   | `message_stop` | 消息结束。 |
-
----
 
 ## Anthropic Count Tokens 接口
 

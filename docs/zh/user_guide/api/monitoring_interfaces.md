@@ -29,8 +29,6 @@ curl -X GET "http://{IP}:{Port}/health"
 { "status": "ok", "timestamp": "2026-07-02T10:00:00Z" }
 ```
 
----
-
 ## 指标查询接口
 
 **接口功能**
@@ -77,10 +75,10 @@ curl -X GET "http://{IP}:{Port}/metrics?type=instance"
 # 所有角色的聚合指标（返回 dict，key 为角色名，value 为 Prometheus 文本）
 curl -X GET "http://{IP}:{Port}/metrics?type=role"
 
-# 仅 Prefill 角色的聚合指标
+# 仅 prefill 角色的聚合指标
 curl -X GET "http://{IP}:{Port}/metrics?type=role&role=prefill"
 
-# 仅 Decode 角色的聚合指标
+# 仅 decode 角色的聚合指标
 curl -X GET "http://{IP}:{Port}/metrics?type=role&role=decode"
 ```
 
@@ -155,11 +153,9 @@ vllm:num_requests_running{role="decode",model_name="Qwen2.5-7B-Instruct"} 10.0
 vllm:kv_cache_usage_perc{role="decode",model_name="Qwen2.5-7B-Instruct"} 0.635
 ```
 
----
-
 ## 实例指标查询接口（已弃用）
 
-> [!WARNING] 已弃用
+> [!NOTE]说明
 > `GET /instance/metrics` 接口已弃用，请使用 `GET /metrics?type=instance` 代替。调用本接口将返回 HTTP 410 Gone。
 
 **接口格式**

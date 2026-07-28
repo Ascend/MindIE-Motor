@@ -1,14 +1,10 @@
 # KV Cache亲和性调度能力部署
 
----
-
 ## 功能介绍
 
 MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到缓存了对应 KV 的实例，从而减少 KV Cache 跨实例传输开销，提升推理吞吐与响应速度。相关能力和接口的介绍可参考 [Mooncake Conductor 介绍文档](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md)。
 
 通过修改 `user_config.json` 配置文件后即可通过 `deploy.py` 脚本完成服务部署。
-
----
 
 ## 前置说明
 
@@ -16,8 +12,6 @@ MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Con
 - 开启亲和性调度能力前请先参考 [MindIE Motor 快速开始](../quick_start.md)，确保环境能正常完成基础的服务部署。
 - 当前 Mooncake Conductor 组件相关代码还未上库主线分支，当前镜像中不含 Mooncake Conductor，**需要基于现有镜像额外安装 Mooncake Conductor 服务组件**（见快速实践步骤二）。
 - 后续所有操作只在 k8s 集群的管理节点（master 节点）执行。
-
----
 
 ## 快速实践
 
@@ -100,16 +94,14 @@ MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Con
 5. 验证结果
 
    ```bash
-   kubectl get pod -A -owide
+   kubectl get pod -A -o wide
    ```
 
    预期 P/D 实例启动成功，服务正常运行。
 
----
-
 ## 典型配置
 
-### 1. PD 分离配置示例
+### PD 分离配置示例
 
 以 [MindIE Motor 快速开始](../quick_start.md) 中的 `user_config.json` 为基线，开启 KV Cache 亲和性调度后的完整配置示例如下：
 
@@ -151,12 +143,9 @@ MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Con
 }
 ```
 
-### 2. PD 混部配置示例
+### PD 混部配置示例
 
-PD 混部不使用 `motor_engine_prefill_config`，应将 `kv-events-config` 与
-`enable-prefix-caching` 配置在 `motor_engine_union_config.engine_config` 中；Coordinator
-启动时会从 union 引擎段自动合并 `prefill_kv_event_config`（`endpoint`、`replay_endpoint`、
-`model_path` 等），无需手写 prefill 段配置。
+PD 混部不使用 `motor_engine_prefill_config`，应将 `kv-events-config` 与`enable-prefix-caching` 配置在 `motor_engine_union_config.engine_config` 中；Coordinator启动时会从 union 引擎段自动合并 `prefill_kv_event_config`（`endpoint`、`replay_endpoint`、`model_path` 等），无需手写 prefill 段配置。
 
 ```json
 {
@@ -193,7 +182,7 @@ PD 混部不使用 `motor_engine_prefill_config`，应将 `kv-events-config` 与
 
 PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)。
 
-### 3. 参数说明
+### 参数说明
 
 各项参数功能说明：
 
@@ -201,7 +190,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 | 配置项 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- |
-| **kvevent_instance** | dict | - | KV 事件实例配置，当前仅支持 `Mooncake` 类型。 |
+| kvevent_instance | dict | - | KV 事件实例配置，当前仅支持 `Mooncake` 类型。 |
 | kvevent_instance.mooncake_master.type | string | `Mooncake` | KV 事件后端类型，固定为 `Mooncake`。 |
 | http_server_port | int | 1024~65535 | KV Conductor 的 HTTP 服务端口；未配置时 `deploy.py` 默认补充为 `13333`。 |
 
@@ -226,13 +215,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | **topic** | string | 自定义 | 事件主题。 |
 | **replay_endpoint** | string | `tcp://*:<port>` | 事件回放端点。 |
 
-> **关于 Connector**：示例中 `kv_connector` 使用 `MultiConnector`，其中 `connectors[0]`
-（`MooncakeLayerwiseConnector`，传输层）决定 P/D 协同 capability，`connectors[1]`
-（`AscendStoreConnector`，KV 池后端）不参与判定、无需在识别白名单中。识别白名单与
-`dispatch_profile` 逃生口详见
-[PD 分离特性说明](../../design/pd_disaggregation.md#connector-驱动执行计划)。
-
----
+> **关于 Connector**：示例中 `kv_connector` 使用 `MultiConnector`，其中 `connectors[0]`（`MooncakeLayerwiseConnector`，传输层）决定 P/D 协同 capability，`connectors[1]`（`AscendStoreConnector`，KV 池后端）不参与判定、无需在识别白名单中。识别白名单与`dispatch_profile` 逃生口详见 [PD 分离特性说明](../../design/pd_disaggregation.md#connector-驱动执行计划)。
 
 ## 原理说明
 
@@ -271,8 +254,6 @@ python deploy.py --config_dir ../infer_engines/vllm
 - **`http_server_port`**：KV Conductor 服务端口，需确保不与集群中其他服务端口冲突，默认 `13333`。
 - **`endpoint` 与 `replay_endpoint`**：P 实例的事件发布与回放端口，需确保 P/D 实例间网络互通，且端口未被占用。
 - **`use_layerwise`**：在 KV Cache 亲和性调度场景下，建议设置为 `false`，由 Conductor 管理全局 KV Cache 位置信息，无需按 layer 粒度单独传输。
-
----
 
 ## 常见问题
 

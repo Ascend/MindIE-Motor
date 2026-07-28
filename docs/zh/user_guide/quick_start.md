@@ -1,24 +1,17 @@
 # 快速入门
 
-本文档通过**简单快速**的部署案例（以Atlas 800I A2服务器、Qwen3-8B模型、P/D实例各一个的场景为例）指导开发者体验基于MindIE-Motor的PD分离服务部署流程。
+本文档通过**简单快速**的部署案例（以Atlas 800I A2推理服务器、Qwen3-8B模型、P/D实例各一个的场景为例）指导开发者体验基于MindIE Motor的PD分离服务部署流程。
 
-如果详细的PD分离部署指导，请参考[PD分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
-
----
+如需详细的PD分离部署指导，请参考[PD分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
 
 ## 什么是PD分离？
 
-模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参见[PD分离部署](./features/pd_disaggregation.md)。
-
----
+模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参见[PD分离说明](./features/pd_disaggregation.md)。
 
 ## 环境要求
 
-- 支持Atlas 800I A2或者Atlas 800 A3 超节点服务器。
-
+- 支持Atlas 800I A2推理服务器、Atlas 800 A3 超节点服务器和Atlas 850 超节点服务器。
 - 至少需要1台已完成[环境准备](./environment_preparation.md)的服务器。
-
----
 
 ## 模型下载
 
@@ -28,40 +21,39 @@
    chmod -R 755 /mnt/weight
    ```
 
----
-
 ## 镜像准备
 
-进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE-Motor镜像。
-
----
+- 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE-Motor镜像。
+- 方式二：参考[准备MindIE Motor镜像](../../zh/developer_guide/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
 
 ## 服务部署
 
-1. **准备服务启动脚本**。
+1. 准备服务启动脚本。
 
-     MindIE-Motor官方完整镜像内已保存服务启动脚本（`/tmp/motor/examples`），可通过以下命令将镜像内的文件拷贝至宿主机。
+     MindIE Motor官方完整镜像内已保存服务启动脚本（`/tmp/motor/examples`），可通过以下命令将镜像内的文件拷贝至宿主机。
 
-       ```bash
-       IMAGE="<镜像名或镜像ID>"
+      ```bash
+      IMAGE="<镜像名或镜像ID>"
 
-       cid=$(docker create "$IMAGE")
-       docker cp "$cid:/tmp/motor/examples" ./examples
-       docker rm "$cid"
-       ```
+      cid=$(docker create "$IMAGE")
+      docker cp "$cid:/tmp/motor/examples" ./examples
+      docker rm "$cid"
+      ```
 
-    请将上述脚本目录（examples目录）上传至**k8s集群的管理节点（master节点），后续部署操作均在管理节点执行**。
+    请将上述脚本目录（examples目录）上传至k8s集群的管理节点（master节点），后续部署操作均在管理节点执行。
 
-2. **配置服务化参数**。
-
+2. 配置服务化参数。
    在管理节点执行以下命令，进入服务启动脚本所在目录并修改配置文件。
 
-     ```bash
-     cd examples/deployer/
-     vim ../infer_engines/vllm/user_config.json
-     ```
+   ```bash
+   cd examples/deployer/
+   vim ../infer_engines/vllm/user_config.json
+   ```
 
-   user_config.json文件**完整示例**如下（可直接复制使用，5项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./configuration/config_reference.md)。）：
+   >[!NOTE]说明
+   >当使用Atlas 850 超节点服务器时，其配置文件请参考[deepseek_v4_flash](../../../examples/infer_engines/vllm/models/deepseek_v4_flash/)中的配置示例进行配置。
+
+   user_config.json文件完整示例如下（可直接复制使用，5项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./configuration/config_reference.md)。）：
 
       ```json
       {
@@ -134,7 +126,7 @@
       }
       ```
 
-3. **配置环境变量**。
+3. 配置环境变量。
 
    执行以下命令修改环境变量配置文件。
 
@@ -142,9 +134,9 @@
      vim ../infer_engines/vllm/env.json
      ```
 
-   env.json文件**完整示例**如下（可直接复制使用）：
+   env.json文件完整示例如下（可直接复制使用）：
 
-     ```bash
+     ```json
     {
       "version": "2.0.0",
       "motor_common_env": {
@@ -174,7 +166,7 @@
     }
      ```
 
-4. **启动与终止服务**
+4. 启动与终止服务。
 
    创建命名空间（namespace），namespace 的值必须与 `user_config.json` 中的 `job_id`字段相同（默认值为mindie-motor）。
 
@@ -194,7 +186,7 @@
    bash delete.sh 命名空间(填入手动创建的命名空间名称，例如：mindie-motor)
    ```
 
-5. **查看日志**。
+5. 查看日志。
 
    执行 `vim log_collect/log_config.ini` 命令，将 `name_space` 填写为命名空间名称（例如：mindie-motor），然后执行以下命令收集日志：
 
@@ -203,8 +195,6 @@
    ```
 
    所有业务日志（controller、coordinator、P/D实例）均会保存于 `examples/deployer/log_collect/log`目录下，并持续刷新，直到服务被终止。
-
----
 
 ## 推理验证
 
@@ -230,7 +220,7 @@
         }'
 ```
 
-返回结果如果如下，则说明尚未启动就绪：
+如果返回如下结果，则说明尚未启动就绪：
 
    ```json
    {"detail":"Service is not available"}

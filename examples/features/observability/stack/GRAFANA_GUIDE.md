@@ -1,4 +1,4 @@
-# pyMotor 可观测性栈 · Grafana 使用指导
+# MindIE Motor 可观测性栈 · Grafana 使用指导
 
 本指导说明栈内 Grafana 的页面设计、内置看板与数据源，并提供「如何在看板中新增其他 metrics 指标」的可复现步骤。
 
@@ -44,7 +44,7 @@
 
 | 看板 | UID | 文件 | 内容 |
 |------|-----|------|------|
-| **pyMotor Metrics · 指标总览** | `motor-all-metrics` | `motor-all-metrics.json` | 集群概览、PD Role / Instance 分组、吞吐与延迟 |
+| **MindIE Motor Metrics · 指标总览** | `motor-all-metrics` | `motor-all-metrics.json` | 集群概览、PD Role / Instance 分组、吞吐与延迟 |
 | **KV 缓存** | `motor-kv-cache` | `motor-kv-cache.json` | vLLM KV cache 使用率、prefix cache 命中率 |
 | **引擎性能剖析** | `motor-vllm-profiling` | `motor-vllm-profiling.json` | `vllm_profiling_*` 性能剖析（显存、forward/execute/scheduler 时延等） |
 
@@ -178,15 +178,15 @@ python3 grafana/scripts/build-profiling-dashboard.py \
 
 ---
 
-## 5. Trace 与 Profiling 数据接入（pyMotor 侧）
+## 5. Trace 与 Profiling 数据接入（MindIE Motor 侧）
 
-要让 Tempo / profiling 面板有数据，需在 pyMotor 侧开启上报；**需要在拉起栈之前完成的 pyMotor 配置清单见 [SERVICE_GUIDE.md §1.4](SERVICE_GUIDE.md)**。本节为操作要点速查。
+要让 Tempo / profiling 面板有数据，需在 MindIE Motor 侧开启上报；**需要在拉起栈之前完成的 MindIE Motor 配置清单见 [SERVICE_GUIDE.md §1.4](SERVICE_GUIDE.md)**。本节为操作要点速查。
 
-> 基础指标（指标总览 / KV 缓存）无需改 pyMotor 配置即可生效；当前方案不使用 Controller metrics 接口，相关配置可忽略。
+> 基础指标（指标总览 / KV 缓存）无需改 MindIE Motor 配置即可生效；当前方案不使用 Controller metrics 接口，相关配置可忽略。
 
 ### 5.1 Tracing
 
-pyMotor 建议配置（`<obs-host>` 为观测主机，参考 `config/tracing.example.json`）：
+MindIE Motor 建议配置（`<obs-host>` 为观测主机，参考 `config/tracing.example.json`）：
 
 - Coordinator：`tracer_config.endpoint = http://<obs-host>:4318/v1/traces`
 - Engine：`engine_config.otlp-traces-endpoint = http://<obs-host>:4318/v1/traces`

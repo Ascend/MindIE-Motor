@@ -1,6 +1,6 @@
 # D2D 权重加载
 
-D2D权重加载是 PyMotor 提供的**模型权重启动加速**能力。新实例启动时，可从集群内已就绪（ACTIVE）的同角色实例通过网络直接拉取权重，替代全量从磁盘加载，从而缩短启动时间。
+D2D权重加载是 MindIE Motor 提供的**模型权重启动加速**能力。新实例启动时，可从集群内已就绪（ACTIVE）的同角色实例通过网络直接拉取权重，替代全量从磁盘加载，从而缩短启动时间。
 
 当前仅 **vLLM** 引擎支持该特性。
 
@@ -75,11 +75,11 @@ Controller 判定 D2D 开启需同时满足：
 
 ## 已测试模型
 
-以下模型已在 PyMotor 示例配置中验证 D2D 启动加速：
+以下模型已在 MindIE Motor 示例配置中验证 D2D 启动加速：
 
 | 模型 | 配置目录 |
 |------|----------|
 | Qwen3-30B | `examples/infer_engines/vllm/models/qwen/3/30b/` |
 | DeepSeek-V3.1 | `examples/infer_engines/vllm/models/deepseek/v3_1/` |
 
-其他未测试模型如有问题，欢迎至官方提 [ISSUE](https://gitcode.com/Ascend/MindIE-PyMotor/issues)。
+其他未测试模型如有问题，欢迎至官方提 [ISSUE](https://gitcode.com/Ascend/MindIE-Motor/issues)。

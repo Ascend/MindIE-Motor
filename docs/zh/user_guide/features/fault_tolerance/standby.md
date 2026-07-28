@@ -2,13 +2,13 @@
 
 主备倒换特性主要通过ETCD分布式锁实现，确保系统高可用性。包括Controller主备和Coordinator主备。
 
-# Controller主备倒换
+## Controller主备倒换
 
-## 特性介绍
+### 特性介绍
 
 本特性通过ETCD分布式锁机制实现Kubernetes集群中Controller的主备倒换功能，确保系统高可用性。开启Controller主备倒换特性开关后，系统会在初始化阶段拉起两个Controller实例，通过ETCD分布式锁竞争来实现主备身份选举，当主Controller发生故障时，备用Controller能在设定时间间隔后自动接管工作。
 
-了解主备详细设计请参考[主备倒换特性设计文档](../../design/standby.md)。
+了解主备详细设计请参考[主备倒换特性设计文档](../../../design/standby.md)。
 
 **限制与约束**
 
@@ -17,19 +17,19 @@
 - 特性生效依赖ETCD服务端正确部署，服务端至少需要3个副本，以保证ETCD集群的可靠性。
 - Coordinator、Controller主备倒换特性可以共用一套ETCD；多套大EP集群可以共用一套ETCD，通过命名空间区分。
 
-## 部署流程
+### 部署流程
 
-### 生成ETCD安全证书（可选）
+#### 生成ETCD安全证书（Controller主备倒换可选）
 
-Controller主备倒换依赖ETCD分布式锁功能，涉及集群内不同POD间通信，建议使用CA证书做双向认证，证书配置请参考[证书生成](#生成etcd安全证书可选)。
+Controller主备倒换依赖ETCD分布式锁功能，涉及集群内不同POD间通信，建议使用CA证书做双向认证，证书配置请参考[生成ETCD安全证书](#生成etcd安全证书etcd集群部署可选)。
 >[!NOTE]说明
 >如果不使用CA证书做双向认证加密通信，则服务间将进行明文传输，可能会存在较高的网络安全风险。
 
-### 部署ETCD服务端
+#### 部署ETCD服务端
 
 ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
 
-### 配置K8s管理端（可选）
+#### 配置K8s管理端（可选）
 
 当硬件出现故障时（如机器重启），K8s集群无法迅速感知容器Pod的状态，导致推理业务无法在指定时间内恢复，可通过执行如下步骤以加快业务恢复速度。
 
@@ -87,12 +87,10 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
     --node-monitor-grace-period=20s
     ```
 
-### 配置Motor
+#### 配置MindIE Motor
 
-1. 配置Controller侧证书挂载。
-
-    <b>如果不开启CA证书，请跳过此步骤。</b><br>
-    如果需要开启证书CA认证，根据[3.1](#生成etcd安全证书可选)生成的相关证书文件，将证书文件的生成路径挂载至Controller容器内。在deployment/controller_init.yaml文件中的volumeMounts和volumes中添加如下内容（controller-ca为挂载的证书目录）：
+1. 配置Controller侧证书挂载。(**如果不开启CA证书，请跳过此步骤**)
+    如果需要开启证书CA认证，根据[生成etcd安全证书](#生成etcd安全证书etcd集群部署可选)生成的相关证书文件，将证书文件的生成路径挂载至Controller容器内。在deployment/controller_init.yaml文件中的volumeMounts和volumes中添加如下内容（controller-ca为挂载的证书目录）：
 
     ```yaml
     ...
@@ -109,9 +107,7 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
     ...
     ```
 
-2. 配置user_config.json配置文件，开启TLS认证。
-
-    <b>如果不开启CA证书，请跳过此步骤。</b><br>
+2. 配置user_config.json配置文件，开启TLS认证。(**如果不开启CA证书，请跳过此步骤**)
     开启CA证书认证：
     - 设置tls_config/etcd_tls_config的"enable_tls"为true；
     - 设置ca_file/cert_file/key_file/passwd_file/tls_crl为对应的文件路径。
@@ -137,7 +133,7 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
 
     ```json
     ...
-       "motor_Controller_config": {
+       "motor_controller_config": {
           "standby_config": {
              "enable_master_standby": true
           }
@@ -164,7 +160,7 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
     > ...
     > ```
 
-### 启动vLLM
+#### 启动vLLM
 
 1. 在 `examples/deployer` 目录下执行以下命令启动。支持指定配置目录或单独指定配置文件：
 
@@ -190,7 +186,7 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
 
     使用物理机IP和端口号方式样例：
 
-    ```json
+    ```bash
     #!/bin/bash
     url="http://{物理机IP地址}:31015/v1/chat/completions"
     data='{
@@ -213,9 +209,9 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
     ...
     ```
 
-# Coordinator主备倒换
+## Coordinator主备倒换
 
-## 特性介绍
+### 特性介绍
 
 本特性通过ETCD分布式锁机制实现Kubernetes集群中Coordinator的主备倒换功能，确保系统高可用性。开启Coordinator主备倒换特性开关时，初始化时拉起两个Coordinator，通过ETCD分布式锁竞争来实现主备身份确认，当主Coordinator发生故障时，备用Coordinator能在一定时间间隔后自动接管工作。
 
@@ -226,20 +222,20 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
 - 特性生效依赖ETCD服务端正确部署，服务端至少需要3个副本，以保证ETCD集群的可靠性。
 - Coordinator、Controller主备倒换特性可以共用一套ETCD；多套大EP集群可以共用一套ETCD，通过命名空间区分。
 
-## 部署流程
+### 部署流程
 
-### 生成ETCD安全证书（可选）
+#### 生成ETCD安全证书（Coordinator主备倒换可选）
 
-Coordinator主备倒换依赖ETCD分布式锁功能，涉及集群内不同POD间通信，建议使用CA证书做双向认证，证书配置请参考[证书生成](#生成etcd安全证书可选)。
+Coordinator主备倒换依赖ETCD分布式锁功能，涉及集群内不同POD间通信，建议使用CA证书做双向认证，证书配置请参考[证书生成](#生成etcd安全证书etcd集群部署可选)。
 <b>如果不开启CA证书，请跳过此步骤。</b>
 
-### 部署ETCD服务端
+#### 部署ETCD服务端
 
 ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
 >[!NOTE]说明
 >Coordinator、Controller主备倒换特性可以共用一套ETCD；多套大EP集群可以共用一套ETCD，通过命名空间区分。
 
-### 配置K8s管理端（可选）
+#### 配置K8s管理端（可选）
 
 当硬件出现故障时（如机器重启），K8s集群无法迅速感知容器Pod的状态，导致推理业务无法在指定时间内恢复，可通过执行如下步骤以加快业务恢复速度。
 
@@ -297,12 +293,10 @@ ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
     --node-monitor-grace-period=20s
     ```
 
-### 配置Motor
+#### 配置MindIE Motor
 
-1. 配置Coordinator侧证书挂载。
-
-    <b>如果不开启CA证书，请跳过此步骤。</b><br>
-    如果需要开启证书CA认证，根据[3.1](#生成etcd安全证书可选)生成的证书文件，将证书文件的生成路径挂载至Coordinator容器内。在 `examples/deployer/yaml_template/coordinator_template.yaml` 文件中的 volumeMounts 和 volumes 中添加如下内容（coordinator-ca 为挂载的证书目录）：
+1. （可选）配置Coordinator侧证书挂载。(**如果不开启CA证书，请跳过此步骤**)
+    如果需要开启证书CA认证，根据[生成etcd安全证书](#生成etcd安全证书etcd集群部署可选)生成的证书文件，将证书文件的生成路径挂载至Coordinator容器内。在 `examples/deployer/yaml_template/coordinator_template.yaml` 文件中的 volumeMounts 和 volumes 中添加如下内容（coordinator-ca 为挂载的证书目录）：
 
     ```yaml
     ...
@@ -334,8 +328,7 @@ ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
     ...
     ```
 
-2. 配置user_config.json配置文件，开启TLS认证。<br>
-    <b>如果不开启CA证书，请跳过此步骤。</b><br>
+2. （可选）配置user_config.json配置文件，开启TLS认证。(**如果不开启CA证书，请跳过此步骤**)
     开启CA证书认证：
     - 设置tls_config/etcd_tls_config的"enable_tls"为true；
     - 设置ca_file/cert_file/key_file/passwd_file/tls_crl为对应的文件路径。
@@ -388,7 +381,7 @@ ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
     > ...
     > ```
 
-### 启动vLLM
+#### 启动vLLM
 
 1. 在 `examples/deployer` 目录下执行以下命令启动。支持指定配置目录或单独指定配置文件：
 
@@ -402,8 +395,8 @@ ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
     ```
 
     >[!NOTE]说明
-    > * 可通过查询对应节点日志判断Coordinator主备节点，如果日志中出现"Role changed from standby to master"，表明当前节点抢到ETCD分布式锁，为主节点。
-    > * 可通过K8s命令"kubectl get pod -A -owide"查看pod列表，有且仅有一个Coordinator pod READY状态为1/1，表示该节点为Coordinator主节点。
+    > - 可通过查询对应节点日志判断Coordinator主备节点，如果日志中出现"Role changed from standby to master"，表明当前节点抢到ETCD分布式锁，为主节点。
+    > - 可通过K8s命令"kubectl get pod -A -owide"查看pod列表，有且仅有一个Coordinator pod READY状态为1/1，表示该节点为Coordinator主节点。
 
 2. 发送请求验证服务是否启动成功。
 
@@ -436,11 +429,11 @@ ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
     ...
     ```
 
-# ETCD集群部署
+## ETCD集群部署
 
 ETCD集群部署包含两部分：生成ETCD安全证书和部署ETCD服务端。
 
-## 生成ETCD安全证书（可选）
+### 生成ETCD安全证书（ETCD集群部署可选）
 
 >[!NOTE]说明
 >如果不使用CA证书做双向认证加密通信，则服务间将进行明文传输，可能会存在较高的网络安全风险。
@@ -645,7 +638,7 @@ ETCD集群部署包含两部分：生成ETCD安全证书和部署ETCD服务端�
     > chmod 0400 ./*.pem
     >  ```
 
-## 部署ETCD服务端
+### 部署ETCD服务端
 
 部署参考样例如下:
 
@@ -777,7 +770,7 @@ ETCD集群部署包含两部分：生成ETCD安全证书和部署ETCD服务端�
         vim etcd.yaml
         ```
 
-        根据[3.1](standby.md#生成etcd安全证书可选)生成的证书，将文件生成路径挂载至ETCD容器内，并配置ETCD使用加密通信，指定使用ca.pem、server.pem和server.key进行通信。
+        根据[生成etcd安全证书](#生成etcd安全证书etcd集群部署可选)生成的证书，将文件生成路径挂载至ETCD容器内，并配置ETCD使用加密通信，指定使用ca.pem、server.pem和server.key进行通信。
 
         ```yaml
         # etcd.yaml 在3个节点上创建同步的ETCD数据库
@@ -867,7 +860,7 @@ ETCD集群部署包含两部分：生成ETCD安全证书和部署ETCD服务端�
                     - --data-dir=/data # 数据存储路径
                     - --wal-dir=/data/wal
                     - --listen-peer-urls=https://0.0.0.0:2380 # 监听节点间通信
-                    - --listen-client-urls=https://0.0.0.0:2379 # 监管客户端请求
+                    - --listen-client-urls=https://0.0.0.0:2379 # 监听客户端请求
                     - --advertise-client-urls=https://$(HOSTNAME).$(SERVICE_NAME):2379  # 客户端地址
                     - --initial-cluster-state=new # 新集群初始化模式
                     - --initial-cluster-token=etcd-$(K8S_NAMESPACE) # 集群唯一标识

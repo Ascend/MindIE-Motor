@@ -106,7 +106,7 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
 在 `infer_service_template.yaml` 中修改配置。以下以 Union 实例为例，仅展示改动点；YAML 基准配置请参见 `examples/deployer/yaml_template`：
 
 ```yaml
-......
+...
     - name: union
       replicas: 4
       workload:
@@ -154,7 +154,7 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
                 # 具体详见资料描述: MindIE Motor/examples/features/pod_permission_guide/README.md
                 seccompProfile:
                   type: Unconfined
-              # --------TODO 3: 启用readiness探针用于Mindcluster探测稳态点--------
+              # --------TODO 3: 启用readiness探针用于MindCluster探测稳态点--------
               readinessProbe:
                 exec:
                   command:
@@ -296,5 +296,5 @@ MindCluster 侧的环境要求、组件部署和使用流程请参见[容器快�
               hostPath:
                 path: /usr/local/bin/npu-smi
             # ---------------------------------------
-......
+...
 ```

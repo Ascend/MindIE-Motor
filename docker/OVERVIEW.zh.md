@@ -9,17 +9,13 @@
 - 从哪里获取帮助
 
     - [MindIE 镜像仓库](https://www.hiascend.com/developer/ascendhub/detail/af85b724a7e5469ebd7ea13c3439d48f)
-    - [MindIE-Motor 文档](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/index.md)
+    - [MindIE-Motor 文档](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/docs/zh/index.md)
     - [昇腾开发者社区](https://www.hiascend.com/developer)
-    - [问题反馈](https://gitcode.com/Ascend/MindIE-PyMotor/issues)
-
----
+    - [问题反馈](https://gitcode.com/Ascend/MindIE-Motor/issues)
 
 ## MindIE-Motor
 
 提供一键式 PD 分离部署，基于云原生插件化架构灵活适配多种推理引擎（vLLM、SGLang），结合高性能调度与负载均衡能力，构建高可用、可扩展的大规模推理服务。
-
----
 
 ## 支持的 Tags 及 Dockerfile 链接
 
@@ -60,8 +56,6 @@ docker/mindie-motor-vllm/<tag>/Dockerfile
 
 每个 Dockerfile 均已内置对应的基础镜像（vllm-ascend v0.18.0 系列）、目标平台、镜像 Tag、入口脚本与使用协议，无需额外脚本、外部 docker 文件或环境变量选择。
 
----
-
 ## 快速开始
 
 ### 前置要求（可选）
@@ -70,8 +64,6 @@ docker/mindie-motor-vllm/<tag>/Dockerfile
 
 - 宿主机上已经安装好固件与驱动，具体可参考[安装驱动和固件](https://www.hiascend.com/document/detail/zh/mindie/100/envdeployment/instg/mindie_instg_0006.html)。
 - 宿主机上已经安装好 Docker。
-
----
 
 ### 构建 MindIE-Motor 镜像
 
@@ -93,12 +85,12 @@ docker build --network=host \
 
 | 镜像版本 | 仓库 | 分支 | Commit |
 |---|---|---|---|
-| `3.0.0` | `https://gitcode.com/Ascend/MindIE-PyMotor.git` | `v3.0.0` | `383d1787ed3fc27aaad2db9cc5506d40c258c279` |
+| `3.0.0` | `https://gitcode.com/Ascend/MindIE-Motor.git` | `v3.0.0` | `383d1787ed3fc27aaad2db9cc5506d40c258c279` |
 
 构建过程依次完成：
 
 1. 拉取对应 vllm-ascend 基础镜像。
-2. Clone 指定分支与 commit 的 MindIE-PyMotor 源码到 `/opt/MindIE-PyMotor`。
+2. Clone 指定分支与 commit 的 MindIE-Motor 源码到 `/opt/MindIE-PyMotor`。
 3. 安装依赖、编译并安装 `motor` wheel 包。
 4. 编译并安装 `ccae_reporter` 可观测组件。
 5. 在 Dockerfile 内联生成容器入口脚本与使用协议。
@@ -179,16 +171,12 @@ RUN apt update -y && \
     apt install gcc ...
 ```
 
----
-
 ## 支持的硬件
 
 | 芯片系列 | 产品示例 | 架构 |
 |---|---|---|
 | 昇腾 910B | Atlas 800T A2、Atlas 900 A2 PoD | ARM64 / x86_64 |
 | 昇腾 A3 | Atlas 800T A3 | ARM64 / x86_64 |
-
----
 
 ## 镜像版本说明
 
@@ -198,6 +186,6 @@ RUN apt update -y && \
 
 ## 许可证
 
-查看这些镜像中包含的 Motor 的[许可证信息](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/LICENSE.md)。
+查看这些镜像中包含的 Motor 的[许可证信息](https://gitcode.com/Ascend/MindIE-Motor/blob/master/LICENSE.md)。
 
 与所有容器镜像一样，预装软件包（Python、系统库等）可能受其自身许可证约束。

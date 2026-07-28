@@ -14,17 +14,13 @@ MindIE Motor主要提供以下两个方面的能力：
 1. **PD分离的请求调度**：主要将外部的客户请求分发到负载最低的 Prefill/Decode 实例上，起到**负载均衡**的作用。
 2. **RAS（Reliability, Availability and Serviceability）**：增强 PD 分离服务的**可靠性、可用性和可服务性**。
 
----
-
 ## 系统架构
 
 MindIE Motor 及其周边组件的交互架构图如下所示：
 
 **图1 MindIE Motor架构图**
 
-![架构图](./imgs/MindIE_PyMotor_Architecture.jpg)
-
----
+![架构图](./imgs/MindIE_Motor_Architecture.jpg)
 
 ## 关键组件与模块说明
 
@@ -34,7 +30,7 @@ MindIE Motor核心组件定义如下：
 
 作为用户推理请求的**统一入口**，负责接收高并发请求，执行请求调度、管理与转发，是整个集群的数据流枢纽。
 
-- **Endpoint**：对外提供 RESTful 接口，包括业务面接口OpenAI接口; 管理面接口：健康探针、Metrics等。
+- **Endpoint**：对外提供 RESTful 接口，包括业务面接口 OpenAI 接口; 管理面接口：健康探针、Metrics等。
 - **Router**：提供请求路由转发能力。
 - **Scheduler**：负载均衡调度器。
 - **RequestManager**：请求管理器，请求全局信息统计与管理。

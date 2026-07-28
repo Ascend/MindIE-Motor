@@ -1,4 +1,4 @@
-# docker-only部署单容器PD指南
+# docker-only部署单容器PD服务
 
 ## 特性介绍
 
@@ -324,9 +324,9 @@ curl -X POST http://<IP>:31015/v1/chat/completions \
 >
 >HTTP 协议存在安全风险，生产环境建议开启 HTTPS。接口和 TLS 配置请参考[业务接口](../../api/service_interfaces.md)。
 
-### A5 环境额外修改内容
+### Atlas 800I A3 超节点服务器 环境额外修改内容
 
-A5创建容器时，需做如下调整：
+Atlas 800I A3 超节点服务器创建容器时，需做如下调整：
 
 **网络**：使用 `--network host`，替代 `-p` 端口映射。此时服务验证使用 `http://<IP>:1025/v1/chat/completions`。
 
@@ -334,7 +334,7 @@ A5创建容器时，需做如下调整：
 
 | 宿主机路径 | 容器路径 | 说明 |
 | :--- | :--- | :--- |
-| `/dev/ummu` | `/dev/ummu` | A5 卡间 UB 互联内存设备，UB 内存池访问依赖此通路 |
+| `/dev/ummu` | `/dev/ummu` |  卡间 UB 互联内存设备，UB 内存池访问依赖此通路 |
 | `/dev/uburma` | `/dev/uburma` | 服务器间 UB RDMA 通信设备节点 |
 | `/usr/lib64` | `/usr/lib64` | 提供 `liburma` 等 UB 用户态通信库 |
 | `/etc/hixlep` | `/etc/hixlep` | UB 链路拓扑结构 |
@@ -342,7 +342,7 @@ A5创建容器时，需做如下调整：
 | `/usr/local/bin/npu-smi` | `/usr/local/bin/npu-smi` | NPU 管理工具 |
 | `/usr/local/dcmi` | `/usr/local/dcmi` | DCMI 库目录 |
 
-A5 启动示例片段：
+Atlas 800I A3 超节点服务器 启动示例片段：
 
 ```shell
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"

@@ -10,11 +10,11 @@
 
 建议在正式部署前先阅读上述文档，按文档完成环境准备与配置后再使用本目录中的工具进行部署。
 
-## deploy.py 使用方法
+## `deploy.py` 使用方法
 
 ### 参数说明
 
-Motor**服务部署**参数说明
+MindIE Motor服务部署参数说明如下所示：
 
 | 参数 | 简写 | 说明 |
 |------|------|------|
@@ -156,7 +156,7 @@ examples/infer_engines/
 
 ## Motor 自动管理的 vLLM 原生参数
 
-以下 vLLM 原生 CLI 参数由 PyMotor 在注册、组装、拉起过程中自动推导和注入，**无需在 `engine_config` 中手动指定**：
+以下 vLLM 原生 CLI 参数由 MindIE Motor 在注册、组装、拉起过程中自动推导和注入，**无需在 `engine_config` 中手动指定**：
 
 | 参数 | 自动管理方式 |
 |------|-------------|
@@ -166,8 +166,7 @@ examples/infer_engines/
 | `master-addr` | EngineServer 在检测到跨节点 PCP 模式（`nnodes > 1` 且 `master-port` 存在）时，自动将 `master-dp-ip` 作为 `--master-addr` 注入 vLLM |
 | `headless` | EngineServer 在跨节点 PCP 模式下，对 `node-rank != 0` 的从节点自动追加 `--headless` |
 
-> **注意**：跨节点 PCP 场景下，用户仅需在 `engine_config` 中配置 `nnodes` 和 `master-port`，其余参数由 Motor 自动处理。
+>[!NOTE]说明
+>跨节点 PCP 场景下，用户仅需在 `engine_config` 中配置 `nnodes` 和 `master-port`，其余参数由 Motor 自动处理。
 
-CLI 参数与 `engine_config` 键名的完整映射关系详见：
-
-👉 **[CLI 参数与 engine_config 映射指南](../../docs/zh/user_guide/operations/cli_to_engine_config_guide.md)**
+CLI 参数与 `engine_config` 键名的完整映射关系详见[endpoint.py](../../motor/config/endpoint.py)中 EndpointConfig.parse_cli_args字段。

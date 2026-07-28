@@ -21,7 +21,7 @@
 
 ### 1.2 获取ras_monitor脚本及其依赖文件
 
-从[链接](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/features/fault_tolerance/ras_monitor/ras_monitor.py)获取最新的ras_monitor脚本
+从[链接](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/features/fault_tolerance/ras_monitor/ras_monitor.py)获取最新的ras_monitor脚本
 
 ## 2. 部署步骤
 
@@ -38,7 +38,7 @@ nohup python3 ras_monitor.py --config_dir ../infer_engines/vllm > ras_monitor_re
 ### 参数说明
 
 由于故障发生一段时间后，ras_monitor 执行服务重拉时将调用 deploy.py，上述2.2中 ras_monitor 的输入参数建议与服务拉起时执行 deploy.py 脚本的输入参数保持一致，否则可能导致重拉失败。
-具体 deploy.py 的参数介绍见[链接](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/README.md) 。
+具体 deploy.py 的参数介绍见[链接](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/README.md) 。
 
 ### 其他
 

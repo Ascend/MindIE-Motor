@@ -2,10 +2,6 @@
 
 故障场景重调度功能开启时，在推理节点发生故障，或者`Coordinator`与推理节点之间异常断链，导致推理过程异常中断的故障场景，`Coordinator`将推理请求重调度到其他正常的推理节点，继续完成推理任务。
 
->[!NOTE]说明
->
-> 故障场景重调度功能，默认关闭。
-
 ## 配置参数
 
 故障场景重调度功能使用[`user_config.json`](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的以下配置参数：
@@ -60,8 +56,8 @@
 - 最大并发数配置，参考[`user_config.json`](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的`max_requests`配置参数；
 
 - `Coordinator`内存占用上限设置，需要修改`yaml`文件中`coordinator`容器中`resources.limits.memory`配置项；
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
-  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/coordinator_template.yaml)。
 
 参考示例如下：
 

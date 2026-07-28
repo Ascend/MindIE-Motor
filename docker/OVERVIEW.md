@@ -9,9 +9,9 @@
 - Where to get help
 
     - [MindIE Image Registry](https://www.hiascend.com/developer/ascendhub/detail/af85b724a7e5469ebd7ea13c3439d48f)
-    - [MindIE-Motor Documentation](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/index.md)
+    - [MindIE-Motor Documentation](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/docs/zh/index.md)
     - [Atlas Developer Community](https://www.hiascend.com/developer)
-    - [Report an Issue](https://gitcode.com/Ascend/MindIE-PyMotor/issues)
+    - [Report an Issue](https://gitcode.com/Ascend/MindIE-Motor/issues)
 
 ---
 
@@ -93,7 +93,7 @@ Each Dockerfile header comment contains the exact `--platform` value, source rep
 
 | Image Version | Repository | Branch | Commit |
 |---|---|---|---|
-| `3.0.0` | `https://gitcode.com/Ascend/MindIE-PyMotor.git` | `v3.0.0` | `383d1787ed3fc27aaad2db9cc5506d40c258c279` |
+| `3.0.0` | `https://gitcode.com/Ascend/MindIE-Motor.git` | `v3.0.0` | `383d1787ed3fc27aaad2db9cc5506d40c258c279` |
 
 The build process:
 
@@ -198,6 +198,6 @@ RUN apt update -y && \
 
 ## License
 
-See the [Motor license](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/LICENSE.md) for license information included in these images.
+See the [Motor license](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/LICENSE.md) for license information included in these images.
 
 As with all container images, pre-installed software packages (Python, system libraries, etc.) may be subject to their own licenses.

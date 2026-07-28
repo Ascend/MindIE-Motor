@@ -19,7 +19,7 @@
 
 ```txt
 .
-├── ModelArts_GLM5_yuanrong_PyMotor_8Node_BigEP_Deployment_Guide.md #方案部署测试指导文档
+├── ModelArts_GLM5_yuanrong_Motor_8Node_BigEP_Deployment_Guide.md #方案部署测试指导文档
 ├── auto_deployment_scripts/ #MA自动化部署脚本代码
 │   ├── start.sh #MA统一启动脚本
 │   ├── PyMotor/ #PyMotor启动部署脚本

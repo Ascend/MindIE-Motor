@@ -17,8 +17,6 @@ Engine Server 快照接口使用推理端口：
 
 IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
----
-
 ### 设备侧快照保存接口
 
 **接口功能**
@@ -49,8 +47,6 @@ curl -X POST "http://{EngineIP}:{推理端口}/suspend?model_save_path=/snapshot
 - 成功：HTTP `200`，响应体为空。
 - 失败：缺少必填参数 `model_save_path` 时返回 `400`；当前引擎未实现 `suspend` / `resume` 时返回 `501`。
 
----
-
 ### 设备解锁接口
 
 **接口功能**
@@ -78,8 +74,6 @@ curl -X POST "http://{EngineIP}:{推理端口}/device_unlock"
 
 - 成功：HTTP `200`，响应体为空。
 - 失败：当前引擎未实现 `device_unlock` 时返回 `501`。
-
----
 
 ### 设备侧快照恢复接口
 
@@ -111,8 +105,6 @@ curl -X POST "http://{EngineIP}:{推理端口}/resume?data_parallel_master_ip=10
 
 - 成功：HTTP `200`，响应体为空。
 - 失败：缺少必填参数 `data_parallel_master_ip` 或 `model_path` 时返回 `400`；当前引擎未实现 `suspend` / `resume` 时返回 `501`。
-
----
 
 ## MetaServer转发接口
 
@@ -193,7 +185,7 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 - CDP分离场景，透传P节点响应内容：
 
-  ```JSON
+  ```json
   {
     "id": "chatcmpl-xxx12",
     "object": "chat.completion",
@@ -219,7 +211,7 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 - PD分离场景，透传D节点响应内容：
 
-  ```JSON
+  ```json
   {
     "id": "chatcmpl-xxx",
     "object": "chat.completion",

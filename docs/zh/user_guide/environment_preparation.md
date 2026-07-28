@@ -27,20 +27,14 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
 |Ascend Docker Runtime|提供docker或containerd的昇腾容器化支持，自动挂载所需文件和设备依赖。|Y|Y|
 |Infer Operator|创建推理实例Workload与Service，提供推理实例的手动扩缩容能力。|Y|N|
 
----
-
 ## Ascend HDK与Docker安装
 
  1. 所有服务器已经安装过Ascend HDK。如未安装，请参考[Ascend HDK安装部署指导](https://support.huawei.com/enterprise/zh/ascend-computing/ascend-hdk-pid-252764743?category=installation-upgrade&subcategory=software-deployment-guide)，根据产品系列和型号选择对应版本驱动。
  2. 用户在宿主机自行安装Docker（版本要求大于或等于24.x.x）。Docker的安装可参见[Docker安装指导](https://docs.docker.com/get-started/get-docker/)。
 
----
-
 ## Kubernetes安装
 
 基于镜像源安装 Kubernetes。当前支持自动化脚本安装和手动安装两种方式，推荐使用自动化脚本进行安装。也可参考 [Kubernetes 官网](https://kubernetes.io/zh-cn/docs/setup/) 进行安装。
-
----
 
 ### 前置检查
 
@@ -52,10 +46,9 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     vim /etc/docker/daemon.json
     ```
 
-    检查必配项（配置完成后直接保存）
-    - 查看"exec-opts"配置项，必须为native.cgroupdriver=systemd；
-    - 查看"insecure-registries"配置项，必须包含swr.cn-north-4.myhuaweicloud.com、registry.cn-hangzhou.aliyuncs.com。
-    - 示例如下（未说明项目不做要求）
+    检查必配项（配置完成后直接保存），示例如下：
+    - 查看"exec-opts"配置项，必须为`native.cgroupdriver=systemd`；
+    - 查看"insecure-registries"配置项，必须包含`swr.cn-north-4.myhuaweicloud.com`、`registry.cn-hangzhou.aliyuncs.com`。
 
     ```bash
     {
@@ -108,11 +101,9 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     df -h
     ```
 
----
-
 ### 自动安装（推荐）
 
-脚本默认安装 1.23.0 版本的 kubernetes、3.24.5 版本的 calico，该版本组合能够支持 motor 的正常部署。
+脚本默认安装 1.23.0 版本的 kubernetes、3.24.5 版本的 calico，该版本组合能够支持 MindIE Motor 的正常部署。
 
 1. 准备脚本。
 
@@ -123,27 +114,27 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     修改脚本配置文件env.conf，需要配置内容如下。
 
       ```bash
-      # 当前节点 IP
+      # HOST_IP 为当前节点 IP，格式：HOST_IP=<IP地址>
       HOST_IP="141.61.73.111"
 
     # Calico 网卡自动探测正则表达式
     # 查询主网卡命令：ip route | grep default
     #
     # 原理说明：
-    # calico会运行在集群中的每一个服务器上（只在管理节点配置calico，该配置会应用于集群中的所有节点），因此，述表达式要保证calico能够在集群中的每台服务器都找到网卡：
+    # calico会运行在集群中的每一个服务器上（只在管理节点配置calico，该配置会应用于集群中的所有节点），因此，上述表达式要保证calico能够在集群中的每台服务器都找到网卡：
     # 如果整个集群所有节点的主网卡名称(通过ip route | grep default查找)前缀相同，例如：集群各节点主网卡名称分别为enp1（master）、enp2（worker1节点）、enp115235(worker节点2)，可以填写为enp.*。
     # 如果各节点主网卡名称不一致，需用 | 把各节点的命名规则都写进表达式。例如：多数节点主网卡为 enp 开头，个别节点主网卡 virbr0 上，可填写为 enp.*|virbr0。
       IP_AUTODETECTION_IFACE="xxx"
 
       # ---------- 网络代理（可选；脚本会先测直连、再测代理，哪条通用哪条） ----------
-      HTTP_PROXY="http://90.255.12.94:6666"
-      HTTPS_PROXY="http://90.255.12.94:6666"
+      HTTP_PROXY="http:<proxy_server>:<proxy_port>"
+      HTTPS_PROXY="http:<proxy_server>:<proxy_port>"
       NO_PROXY="127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,141.61.0.0/16"
       ```
 
 3. 预检查。
 
-    执行以下命令，脚本将检测：docker配置、窗口网络连通性、docker网络连通性、根目录使用率。如果检查不通过，请排查环境对应功能是否正常。
+    执行以下命令，脚本将检测：docker配置、外网网络连通性、docker网络连通性、根目录使用率。如果检查不通过，请排查环境对应功能是否正常。
 
       ```bash
       source env.conf && sudo -E bash deploy_k8s.sh precheck
@@ -161,8 +152,6 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
       ```
 
     安装完毕后，无需关注[手动安装]小节，直接跳转至「创建集群」章节。
-
----
 
 ### 手动安装
 
@@ -187,7 +176,7 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
       cat > /etc/yum.repos.d/kubernetes.repo << 'EOF'
       [kubernetes]
       name=Kubernetes
-      baseurl=http://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-aarch64/
+      baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-aarch64/
       enabled=1
       gpgcheck=0
       EOF
@@ -270,10 +259,10 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
 
 4. 初始化kubeadm。
 
-    使用以下命令初始化Kubernetes集群，当出现如[图4 Kubernetes集群初始化成功](#fig17764145015239)所示回显时，表示初始化成功。
+    使用以下命令初始化Kubernetes集群，当出现如下图所示回显时，表示初始化成功。
 
     ```bash
-    kubeadm init --kubernetes-version={参数1kubelet_version} --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address={参数2host_ip}
+    kubeadm init --kubernetes-version={参数1：kubelet_version} --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address={参数2host_ip}
     mkdir -p $HOME/.kube;
     cp -f /etc/kubernetes/admin.conf $HOME/.kube/config;
     chown $(id -u):$(id -g) $HOME/.kube/config
@@ -291,17 +280,17 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     >
     >kubeadm init --kubernetes-version=v1.23.0 --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address=141.88.99.101。
 
-    **图 4**  Kubernetes集群初始化成功<a name="fig17764145015239"></a>
+    **图 4**  Kubernetes集群初始化成功
 
     ![](../imgs/k8sinitializd_successfully_.png)
 
-5. <a id="step0001"></a>执行以下命令查看当前默认启动项状态是否正常，如[图5 查看状态](#fig669924115221)所示，coredns开头的pod应为pending状态，其余pod应为running状态。
+5. <a id="step0001"></a>执行以下命令查看当前默认启动项状态是否正常，如下图所示，coredns开头的pod应为pending状态，其余pod应为running状态。
 
     ```bash
     kubectl get pods -A
     ```
 
-    **图 5** 查看状态<a name="fig669924115221"></a>
+    **图 5** 查看状态
 
     ![](../imgs/k8s_deploy_coredns_pending.png)
 
@@ -376,8 +365,6 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
 
         ![](../imgs/k8s_deploy_done.png)
 
----
-
 ### 创建集群
 
 通过以下步骤将计算节点接入管理节点，从而形成集群。
@@ -420,26 +407,22 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     >[!NOTE]说明
     >重复执行步骤2、3，直到所有计算节点加入管理节点。
 
----
-
 ## MindCluster组件安装
 
 集群管理组件依赖MindCluster中的Ascend Docker Runtime、Ascend Device Plugin、ClusterD、Volcano和Infer Operator组件。其中，**管理节点需要安装全部组件，计算节点仅需要构建Ascend Device Plugin的镜像**。推荐安装26.0.0及之后的版本。
 
-1. 请参考《MindCluster  集群调度用户指南》的[安装前准备](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md)章节完成创建用户、创建日志目录、构建镜像和创建命名空间。
-2. 请参考《MindCluster  集群调度用户指南》的[Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/02_ascend_docker_runtime.md)章节安装Ascend Docker Runtime。
-3. 请参考《MindCluster  集群调度用户指南》的[Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/04_ascend_device_plugin.md)章节安装Ascend Device Plugin，使用device-plugin-_xxx_-v\{version\}.yaml文件进行安装。
+1. 请参考《MindCluster  集群调度用户指南》的[安装前准备](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/01_preparing_for_installation.md)章节完成创建用户、创建日志目录、构建镜像和创建命名空间。
+2. 请参考《MindCluster  集群调度用户指南》的[Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/02_ascend_docker_runtime.md)章节安装Ascend Docker Runtime。
+3. 请参考《MindCluster  集群调度用户指南》的[Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/04_ascend_device_plugin.md)章节安装Ascend Device Plugin，使用device-plugin-_xxx_-v\{version\}.yaml文件进行安装。
     >[!NOTE]说明
     >当Ascend Device Plugin启动时，_xxx_.yaml配置文件中useAscendDocker参数配置为true且用户已安装Ascend Docker Runtime并生效，会自动挂载在“/usr/local/Ascend”下驱动相关目录。
-4. 请参考《MindCluster  集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/05_volcano.md)章节安装Volcano。
+4. 请参考《MindCluster  集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano。
 
     >[!NOTE]说明
-    >在单机场景下，参考《MindCluster  集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/05_volcano.md)章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的volcano-v1.7.0目录下的volcano-v1.7.0.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
+    >在单机场景下，参考《MindCluster  集群调度用户指南》的[Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md)章节安装Volcano时，在执行“Volcano”章节中的步骤9前，需要修改Volcano解压后生成的volcano-v1.7.0目录下的volcano-v1.7.0.yaml文件，搜索"useClusterInfoManager"字段并将该值改为"false"，如下图所示，修改完成后，再执行“Volcano”章节中的步骤9。
     >![](../imgs/volcano.png)
-5. 请参考《MindCluster  集群调度用户指南》的[infer_Operator](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/07_infer_operator.md)章节安装Infer Operator。
-6. 请参考《MindCluster  集群调度用户指南》的[ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/06_clusterd.md)章节安装ClusterD。
-
----
+5. 请参考《MindCluster  集群调度用户指南》的[infer_Operator](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md)章节安装Infer Operator。
+6. 请参考《MindCluster  集群调度用户指南》的[ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/06_clusterd.md)章节安装ClusterD。
 
 ## 设置节点标签
 

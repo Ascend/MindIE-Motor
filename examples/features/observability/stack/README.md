@@ -1,4 +1,4 @@
-# pyMotor 可观测性一键栈
+# MindIE Motor可观测性一键栈
 
 本目录提供 Prometheus、Grafana、Tempo、OTel Collector 等组件的一键发现与拉起能力。
 

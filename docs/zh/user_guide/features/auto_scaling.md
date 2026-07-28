@@ -4,7 +4,7 @@
 
 自动弹性扩缩容功能支持根据推理实例的实时负载自动调整 Prefill 和 Decode 实例数量。当请求量上升时自动扩容，当负载回落时自动缩容，在保障服务 SLA 的同时提升资源利用率。
 
-核心机制：Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，HPA 通过 External Metrics Adaptor 获取 PyMotor 汇聚的引擎级负载指标（如排队请求数、TPS、KV Cache 使用率等），按用户配置的扩缩容阈值自动调整实例副本数。
+核心机制：Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，HPA 通过 External Metrics Adaptor 获取 MindIE Motor 汇聚的引擎级负载指标（如排队请求数、TPS、KV Cache 使用率等），按用户配置的扩缩容阈值自动调整实例副本数。
 
 ## 原理说明
 
@@ -19,14 +19,14 @@
 │         ^                                        │               │
 │         │                                        │               │
 │         │        ┌──────────────────┐            │               │
-│         │        │     PyMotor      │            │               │
+│         │        │   MindIE Motor      │            │               │
 │         └────────│   Coordinator    │<───────────┘               │
 │   (External      │ (aggregation/TPS)│   /metrics                 │
 │    Metrics API)  └──────────────────┘                            │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 
-1. PyMotor Coordinator 从所有引擎 Pod 采集 Prometheus 指标，按语义聚合后通过 `/metrics` 端点暴露。
+1. MindIE Motor Coordinator 从所有引擎 Pod 采集 Prometheus 指标，按语义聚合后通过 `/metrics` 端点暴露。
 2. External Metrics Adaptor 周期性从 Coordinator 拉取指标，转换为 Kubernetes External Metrics API。
 3. HPA 从 External Metrics API 获取负载数据，与用户配置的目标阈值对比。
 4. 当指标持续超出阈值时，HPA 通知 Infer Operator 增加副本；低于阈值时减少副本。
@@ -39,12 +39,12 @@
 ## 前置条件
 
 - 已完成 Infer Operator 的安装部署。
-- 已完成 PyMotor 推理服务的部署（PD 分离或 PD 混部模式）。
-- 已部署 External Metrics Adaptor，用于将 PyMotor 指标转换为 Kubernetes External Metrics。可直接使用 [mindcluster-deploy 提供的 Metrics Adaptor 示例](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor)进行部署。
+- 已完成 MindIE Motor 推理服务的部署（PD 分离或 PD 混部模式）。
+- 已部署 External Metrics Adaptor，用于将 MindIE Motor 指标转换为 Kubernetes External Metrics。可直接使用 [mindcluster-deploy 提供的 Metrics Adaptor 示例](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor)进行部署。
 
-## 配置 PyMotor 暴露 Metrics
+## 配置 MindIE Motor 暴露 Metrics
 
-PyMotor Coordinator 默认通过 `/metrics` 端点暴露聚合后的引擎指标，无需额外配置即可使用。
+MindIE Motor Coordinator 默认通过 `/metrics` 端点暴露聚合后的引擎指标，无需额外配置即可使用。
 
 Coordinator `/metrics` 端点提供多种聚合视图，通过 `type` 参数切换：
 
@@ -147,7 +147,7 @@ roles:
 | `scalingPolicy.spec.metrics[].external.target.averageValue` | 目标平均值阈值 | 按指标量纲设定 |
 
 > [!NOTE]
-> `scalingPolicy.spec.metrics[].external.metric.name` 需填写 External Metrics Adaptor 暴露的指标名。Adaptor 可能对 PyMotor 原始 Prometheus 指标名（如 `vllm:num_requests_waiting`）做映射或重命名。部署 Adaptor 后，可通过以下命令查看实际暴露的指标列表：
+> `scalingPolicy.spec.metrics[].external.metric.name` 需填写 External Metrics Adaptor 暴露的指标名。Adaptor 可能对 MindIE Motor 原始 Prometheus 指标名（如 `vllm:num_requests_waiting`）做映射或重命名。部署 Adaptor 后，可通过以下命令查看实际暴露的指标列表：
 >
 > ```bash
 > kubectl get --raw /apis/external.metrics.k8s.io/v1beta1 | grep -E "vllm:|motor:"
@@ -159,7 +159,7 @@ roles:
 
 ## 推荐的扩缩容指标
 
-PyMotor `/metrics` 端点提供了丰富的引擎级指标，下表列出推荐用于自动扩缩容的关键指标：
+MindIE Motor `/metrics` 端点提供了丰富的引擎级指标，下表列出推荐用于自动扩缩容的关键指标：
 
 ### Prefill 扩缩容推荐指标
 
@@ -183,7 +183,7 @@ PyMotor `/metrics` 端点提供了丰富的引擎级指标，下表列出推荐�
 
 > [!NOTE]说明
 >
->- `motor:prompt_tokens_per_second` 和 `motor:generation_tokens_per_second` 是 PyMotor Coordinator 计算的服务级指标，基于 vLLM 原始 counter 计算 delta rate 得到，更准确反映实时吞吐。
+>- `motor:prompt_tokens_per_second` 和 `motor:generation_tokens_per_second` 是 MindIE Motor Coordinator 计算的服务级指标，基于 vLLM 原始 counter 计算 delta rate 得到，更准确反映实时吞吐。
 >- Histogram 类型指标（如 `vllm:e2e_request_latency_seconds`）需要在 Adaptor 侧计算分位数（p50/p95/p99）后作为独立指标暴露。
 >- 建议为 Prefill 和 Decode 分别配置不同的扩缩容指标，以匹配各自的计算特征（Prefill 为计算密集型，Decode 为访存密集型）。
 
@@ -268,11 +268,11 @@ kubectl get hpa -n {namespace} --watch
 - 扩容的新实例没有 KV Cache 缓存，Prefix Cache 特性会逐步重建缓存，因此新实例的推理性能可能出现小幅度劣化并在一段时间后恢复。
 - External Metrics Adaptor 需持续运行并正确配置 Coordinator 地址。若 Adaptor 异常，HPA 将无法获取指标，可能导致扩缩容失效。
 - 建议 `minReplicas` 至少设为 1，避免缩容到 0 导致服务完全不可用。
-- Counter 类型指标（如 token 总数）不会因 `/metrics` 请求而重置，建议优先使用 Gauge 类型指标或 PyMotor 计算的 TPS 指标作为扩缩容依据。
+- Counter 类型指标（如 token 总数）不会因 `/metrics` 请求而重置，建议优先使用 Gauge 类型指标或 MindIE Motor 计算的 TPS 指标作为扩缩容依据。
 - 若使用不带 `type` 参数的 `/metrics` 端点（默认 `full`），HPA 获取到的是全局聚合值。如需按 Prefill/Decode 角色独立扩缩容，Adaptor 需分别请求 `/metrics?type=role&role=prefill` 和 `/metrics?type=role&role=decode`。
 
 ## 参考文档
 
 - [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
-- [Metrics 可观测性指标设计文档](../../design/metrics.md) — PyMotor Metrics 子系统架构与指标说明
-- [监控接口](../api/monitoring_interfaces.md) — PyMotor `/metrics` 端点使用说明
+- [Metrics 可观测性指标设计文档](../../design/metrics.md) — MindIE Motor Metrics 子系统架构与指标说明
+- [监控接口](../api/monitoring_interfaces.md) — MindIE Motor `/metrics` 端点使用说明

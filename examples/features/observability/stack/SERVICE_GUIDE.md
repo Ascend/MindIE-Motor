@@ -1,6 +1,6 @@
-# pyMotor 可观测性栈 · 服务拉起与停止指导
+# MindIE Motor 可观测性栈 · 服务拉起与停止指导
 
-本指导面向需要在已部署 pyMotor 的节点上拉起 / 停止可观测性栈（Prometheus + Grafana + Tempo + OTel Collector + Loki）的使用者，提供可逐步复现的完整操作步骤。
+本指导面向需要在已部署 MindIE Motor 的节点上拉起 / 停止可观测性栈（Prometheus + Grafana + Tempo + OTel Collector + Loki）的使用者，提供可逐步复现的完整操作步骤。
 
 > 配套文档：Grafana 页面设计与看板指标扩展见 [GRAFANA_GUIDE.md](GRAFANA_GUIDE.md)。
 
@@ -22,13 +22,13 @@
 | Python | 已安装 `python3`（用于运行 `scripts/discover-targets.py`） |
 | Kubernetes | 能访问目标集群 API，`kubectl get pods -n <namespace>` 可正常返回 |
 | Docker（推荐） | 安装 Docker，且支持 Docker Compose **v2**（`docker compose version` 可用）；无 Docker 时可用 `--native` 走原生二进制 |
-| 网络 | 观测机到 pyMotor Coordinator / Engine 的 **NodePort**，或经主机端口转发的 **PodIP** 可达 |
+| 网络 | 观测机到 MindIE Motor Coordinator / Engine 的 **NodePort**，或经主机端口转发的 **PodIP** 可达 |
 
 ### 1.2 业务侧就绪
 
 - 目标 **namespace** 内 Coordinator、Engine（含 `vllm-p0` / `vllm-d0` 等命名）Pod 已处于 **Running**。
 - 切换 `mindie-*` 等不同环境时，先执行 `./stop.sh` 再重新 `./launch.sh`，避免复用其他 namespace 的旧 `generated/discovered.env`。
-- 可选：准备 pyMotor 的 `user_config.json` 路径，用于从 `motor_deploy_config.job_id` 推断 namespace。
+- 可选：准备 MindIE Motor 的 `user_config.json` 路径，用于从 `motor_deploy_config.job_id` 推断 namespace。
 
 ### 1.3 配置文件
 
@@ -49,11 +49,11 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
 | `MOTOR_PORT_FORWARD_BASE` | Docker 需要 PodIP 桥接转发时使用的起始主机端口（默认 `19000`） |
 | `PROXY_SH` | **可选**。Native runtime 从 GitHub / Grafana CDN 下载二进制时使用的代理配置文件路径；留空则不加载（见 [§2.4 代理配置](#24-代理配置)） |
 
-### 1.4 需要调整 pyMotor 配置才能生效的能力（重要，请提前配置）
+### 1.4 需要调整 MindIE Motor 配置才能生效的能力（重要，请提前配置）
 
-部分观测能力需要在 **pyMotor 侧**（`env.json` / `user_config.json`，或引擎运行环境）提前配置，否则观测栈拉起后对应看板会无数据。请在拉起栈**之前**对照下表完成配置：
+部分观测能力需要在 **MindIE Motor 侧**（`env.json` / `user_config.json`，或引擎运行环境）提前配置，否则观测栈拉起后对应看板会无数据。请在拉起栈**之前**对照下表完成配置：
 
-| 观测能力 | 是否需改 pyMotor 配置 | 需要的配置 |
+| 观测能力 | 是否需改 MindIE Motor 配置 | 需要的配置 |
 |----------|----------------------|-----------|
 | Coordinator 基础指标（指标总览 / KV 缓存的请求数、KV、吞吐、延迟等） | **否** | Coordinator 默认在管理端口暴露 `/metrics`、`/instance/metrics`，无需额外配置；只需保证该端口可被观测机或主机端口转发访问 |
 | Engine / vLLM 指标 | **否**（默认开启） | Engine 在管理端口（默认 `10001`）暴露 `/metrics`；保证端口可达即可 |
@@ -315,7 +315,7 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --native
 |------|------|
 | `--namespace <ns>` | Kubernetes namespace / job_id，等同环境变量 `MOTOR_NAMESPACE` |
 | `--node-ip <ip>` | NodePort 访问使用的节点 IP，等同 `MOTOR_NODE_IP` |
-| `--user-config <path>` | pyMotor `user_config.json` 路径，等同 `MOTOR_USER_CONFIG` |
+| `--user-config <path>` | MindIE Motor `user_config.json` 路径，等同 `MOTOR_USER_CONFIG` |
 | `--minimal` | 启动 minimal Docker 栈（Prometheus / Grafana / Tempo / OTel） |
 | `--full` | 启动 full Docker 栈（额外含 Loki / node-exporter / cAdvisor） |
 | `--discover-only` | 只运行目标发现，写出 `generated/*`，不启动栈 |
@@ -330,7 +330,7 @@ export MOTOR_NAMESPACE=<namespace>          # K8s namespace / job_id
 export MOTOR_NODE_IP=<node-ip>              # NodePort 访问 IP
 export MOTOR_USER_CONFIG=/path/user_config.json
 export MOTOR_ENGINE_MGMT_PORT=10001         # Engine /metrics 管理端口，默认 10001
-export OBS_HOST=<obs-host>                  # pyMotor 上报 tracing / OTLP 的观测主机
+export OBS_HOST=<obs-host>                  # MindIE Motor 上报 tracing / OTLP 的观测主机
 export OBS_STACK_MODE=minimal|full          # 未传 --minimal/--full 时生效
 export PROXY_SH=/path/to/pymotor-proxy.env  # native runtime 下载二进制（dotenv 格式，可选；见 §2.4）
 ```

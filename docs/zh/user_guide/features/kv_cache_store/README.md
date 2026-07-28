@@ -2,7 +2,7 @@
 
 ## 功能介绍
 
-允许P/D实例通过KV缓存池共享KV Cache，P实例将计算好的KV Cache推入缓存池，D实例从缓存池拉取并复用，从而在PD分离场景下提升显存利用率和推理吞吐。
+允许P/D（Prefill/Decode）实例通过KV缓存池共享KV Cache，P实例将计算好的KV Cache推入缓存池，D实例从缓存池拉取并复用，从而在PD分离场景下提升显存利用率和推理吞吐。
 
 MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和环境依赖可参考[vllm-ascend池化文档](https://docs.vllm.ai/projects/ascend/zh-cn/main/user_guide/feature_guide/kv_pool.html)。
 
@@ -10,7 +10,7 @@ MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和
 
 ## 前置说明
 
-- 必须已使用 motor 部署 PD 分离推理服务，KV 池化在该服务基础上开启，不会对 controller 和 coordinator 产生影响。
+- 必须已使用MindIE Motor 部署 PD 分离推理服务，KV 池化在该服务基础上开启，不会对 Controller 和 Coordinator 产生影响。
 - KV 池化能力的约束条件，详情参考：[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)。
 - 开启池化能力前请先参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 - **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打补丁**（见下方应用补丁章节）；`v0.17.0rc2` 及以上版本请直接跳过补丁步骤。
@@ -22,7 +22,7 @@ MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和
 > **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打此补丁。**
 > 如果您的 `vllm-ascend` 版本为 `v0.17.0rc2` 及以上，补丁已合入主干，**请直接跳过本节内容，无需进行打补丁操作**。
 
-由于vllm代码的layerwise KV-cache传输叠加KV池化存在推理bug，需要应用vllm_multi_connector.patch补丁，具体操作步骤可参考[MindIE Motor应用补丁](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/patch/README.md)。
+由于vllm代码的layerwise KV-cache传输叠加KV池化存在推理bug，需要应用vllm_multi_connector.patch补丁，具体操作步骤可参考[MindIE Motor应用补丁](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/patch/README.md)。
 
 ## 配置 user_config.json
 
@@ -30,7 +30,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 > 注意：开启池化能力前请参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 
-### 1. kv_transfer_config（P/D 实例 engine_config 内）
+### kv_transfer_config（P/D 实例 engine_config 内）
 
 池化通过 `MultiConnector` 组合传输连接器（`connectors[0]`）与池化后端连接器（`connectors[1]`）实现。以 `MooncakeConnectorV1`（P/D 协同）+ `AscendStoreConnector`（KV 池后端）为例：
 
@@ -98,7 +98,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 > `lookup_rpc_port` 无需手动填写，每个 DP 实例的值由 Motor 自动适配。
 
-其中 `AscendStoreConnector` 的 `backend` 字段决定使用的池化后端。各后端之间其余结构完全相同，**仅 `backend` 取值不同**：
+其中 `AscendStoreConnector` 的 `backend` 字段决定使用的池化后端。各后端之间其余结构完全一致，**仅 `backend` 取值不同**：
 
 | 池化后端 | `backend` 值 | 说明 |
 |----------|-------------|------|
@@ -108,7 +108,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 > 关于 Connector 的更多原理，以及识别白名单与 `dispatch_profile` 逃生口，请参见 [PD 分离特性说明](../../../design/pd_disaggregation.md#connector-驱动执行计划)。
 
-### 2. kv_cache_store_config（全局配置）
+### kv_cache_store_config（全局配置）
 
 `kv_cache_store_config` 为 KV 池化全局配置，P/D 实例共享（以默认后端 MemCache 为例）：
 
@@ -144,7 +144,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `local_service_mode` | string（可选） | A2/A5：`inprocess`，A3：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
+| `local_service_mode` | string（可选） | <ul><li>Atlas 800I A2 推理服务器/Atlas 850 超节点服务器：`inprocess`</li><li>Atlas 800I A3 超节点服务器：`standalone`</li></ul> | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
 > **所有 memcache 内部配置项**（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户直接在 `mmc-local-inprocess.conf` 中管理，无需在 `user_config.json` 中配置。详见 [MemCache 后端文档](backend/memcache.md)。
 
@@ -152,7 +152,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 ## 部署服务
 
-在 `examples/deployer` 目录下通过 deploy.py 脚本部署服务：
+在 `examples/deployer` 目录下通过 `deploy.py` 脚本部署服务：
 
 ```bash
 cd examples/deployer
@@ -177,8 +177,6 @@ python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env
 | Mooncake | [backend/mooncake.md](backend/mooncake.md) |
 | MemCache | [backend/memcache.md](backend/memcache.md) |
 | Yuanrong | TODO：后续版本支持 |
-
----
 
 ## 原理说明
 

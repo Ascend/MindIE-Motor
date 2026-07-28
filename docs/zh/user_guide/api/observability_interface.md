@@ -18,8 +18,6 @@ Observability 查询接口使用独立端口：
 > - 主备模式下，仅主 Controller 对外提供 Observability 查询能力；备 Controller 收到查询请求时返回内部错误。
 > - 当 `observability_config.observability_enable=false` 时，查询类接口返回内部错误，错误信息为 `Observability is not enabled.`。
 
----
-
 ## 模型服务清单查询接口
 
 **接口功能**
@@ -215,8 +213,6 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 >[!NOTE]说明
 >响应示例仅展示部分 Pod、NPU 与 DPGroup 内容。实际返回数量以运行时实例数、Pod 数、Endpoint 数和设备数为准。
 
----
-
 ## 监控指标查询接口
 
 **接口功能**
@@ -260,8 +256,6 @@ curl -X GET "http://{IP}:{Port}/observability/metrics"
 
 >[!NOTE]说明
 >该接口返回的是标准响应结构，Prometheus 文本位于 `data` 字段中。
-
----
 
 ## 告警查询接口
 
@@ -350,8 +344,6 @@ curl -X GET "http://{IP}:{Port}/observability/alarms?source_id={source_id}"
 | reasonId | integer | 原因 ID。 |
 | serviceAffectedType | integer | 服务影响状态：`0` 不影响，`1` 影响。 |
 | additionalInformation | string | 附加信息，输出时会追加 `pod id={nativeMeDn}`。 |
-
----
 
 ## 对接 CCAE 前端平台
 

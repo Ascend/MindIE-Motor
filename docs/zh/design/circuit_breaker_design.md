@@ -4,7 +4,7 @@
 
 ### 1.1 背景
 
-MindIE-PyMotor 的 Coordinator 承担请求路由职责，将推理请求转发到后端推理实例（P/D/U）。在生产环境中，推理实例可能因进程崩溃、OOM、网络分区等原因发生故障。
+MindIE Motor 的 Coordinator 承担请求路由职责，将推理请求转发到后端推理实例（P/D/U）。在生产环境中，推理实例可能因进程崩溃、OOM、网络分区等原因发生故障。
 
 传统做法依赖 Controller 感知故障后推送实例变更事件（SET/DEL），再由 Coordinator 停止路由到故障实例。这一链路存在以下问题：
 

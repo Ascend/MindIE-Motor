@@ -1,7 +1,7 @@
 # MindIE Motor
 
 <p align="center">
-    <img alt="MindIE PyMotor" src="./docs/zh/imgs/mindie_pymotor_title.png">
+    <img alt="MindIE Motor" src="./docs/zh/imgs/mindie_motor_title.png">
 </p>
 
 <p align="center">
@@ -51,9 +51,9 @@ MindIE 系列 TC/SIG 会议安排，请查看 [Ascend会议中心](https://meeti
 
 # 问题反馈
 
-如果您在使用过程中发现异常，建议先查看仓库的 [Issues 列表](https://gitcode.com/wumingjing/MindIE-PyMotor-README/issues)，确认是否已有相同或相近的问题。
+如果您在使用过程中发现异常，建议先查看仓库的 [Issues 列表](https://gitcode.com/Ascend/MindIE-Motor/issues)，确认是否已有相同或相近的问题。
 
-如果现有问题列表中没有对应项，可以直接 [创建新的 Issue](https://gitcode.com/wumingjing/MindIE-PyMotor-README/issues/create/choose)，并尽量补充完整的问题现象、复现步骤、日志片段和环境信息，便于快速定位。
+如果现有问题列表中没有对应项，可以直接 [创建新的 Issue](https://gitcode.com/Ascend/MindIE-Motor/issues/create/choose)，并尽量补充完整的问题现象、复现步骤、日志片段和环境信息，便于快速定位。
 
 如果问题涉及安全风险，请不要通过公开 Issue 直接披露，建议按照 [security.md](./security.md) 中的方式联系项目维护者。
 

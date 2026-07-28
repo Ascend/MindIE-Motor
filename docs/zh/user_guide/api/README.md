@@ -25,8 +25,8 @@ MindIE Motor提供下列推理业务接口：
 **推理业务接口端口**
 
 - 使用Kubernetes部署时，推理业务接口端口使用`yaml`文件中`mindie-motor-coordinator-infer`元数据定义的`nodePort`，默认值为`31015`。
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
-  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/coordinator_template.yaml)。
 - 在Kubernetes集群内，推理业务接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_api_infer_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1025`。
 
@@ -78,8 +78,8 @@ MindIE Motor提供下列监控接口：
 **监控接口端口**
 
 - 使用Kubernetes部署时，监控接口端口使用`yaml`文件中`mindie-motor-coordinator-obs`元数据定义的`nodePort`，默认值为`31017`。
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
-  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/coordinator_template.yaml)。
 - 在Kubernetes集群内，监控接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_coordinator_config)配置文件中`coordinator_obs_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
 
@@ -105,8 +105,8 @@ MindIE Motor提供下列观测接口：
 **观测接口端口**
 
 - 使用Kubernetes部署时，观测接口端口使用`yaml`文件中`mindie-motor-observability`元数据定义的`nodePort`，默认值为`31027`。
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
-  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/controller_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/controller_template.yaml)。
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/controller_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/deployer/yaml_template/controller_template.yaml)。
 - 在Kubernetes集群内，观测接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_controller_config)配置文件中`observability_api_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
 

@@ -32,8 +32,6 @@ curl -X GET "http://{IP}:{Port}/startup"
 { "status": "ok", "message": "Coordinator is starting up" }
 ```
 
----
-
 ## 存活探针接口
 
 **接口功能**
@@ -63,8 +61,6 @@ curl -X GET "http://{IP}:{Port}/liveness"
 ```JSON
 { "status": "ok", "message": "Coordinator is alive" }
 ```
-
----
 
 ## 就绪探针接口
 
@@ -96,8 +92,6 @@ curl -X GET "http://{IP}:{Port}/readiness"
 
 >[!NOTE]说明
 >若启用主备模式且当前节点非主节点，返回 `503`，并提示 `Coordinator is not master`。
-
----
 
 ## 实例刷新接口
 
@@ -182,8 +176,6 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 | data.event_type | string | 事件类型，与请求`event`对应。 |
 | data.instance_count | integer | 实例数量。 |
 
----
-
 ## 根路径服务信息接口
 
 **接口功能**
@@ -230,4 +222,3 @@ curl -X GET "http://{IP}:{Port}/"
 | `version` | string | 服务版本号。 |
 | `description` | string | 服务描述。 |
 | `endpoints` | object | 接口索引信息，以 `HTTP方法 路径` 为键，说明为值。 |
-| `timestamp` | string | 服务时间戳。 |
