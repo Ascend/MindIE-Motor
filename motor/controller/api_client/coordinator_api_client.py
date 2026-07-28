@@ -11,6 +11,8 @@
 import threading
 import time
 
+import requests
+
 from motor.common.resources import InsEventMsg
 from motor.common.http.http_client import ConnectionMode, SafeHTTPSClient
 from motor.common.logger import get_logger
@@ -135,6 +137,63 @@ class CoordinatorApiClient:
             window_sec=60,
         )
         return False
+
+    @staticmethod
+    def notify_precision_alarm_cleared(
+        p_instance_id: int | None,
+        d_instance_id: int,
+    ) -> bool:
+        """Ask Coordinator to drop precision alarm state for a PD group."""
+        client_args = CoordinatorApiClient._generate_client_args()
+        payload = {
+            "p_instance_id": p_instance_id,
+            "d_instance_id": d_instance_id,
+        }
+        try:
+            with SafeHTTPSClient(timeout=3, **client_args) as client:
+                response = client.do_post("/precision/alarm_cleared", data=payload)
+                if response.status_code != 200:
+                    logger.warning(
+                        "Coordinator precision alarm_cleared HTTP %s pd_group=(%s,%s)",
+                        response.status_code,
+                        p_instance_id,
+                        d_instance_id,
+                    )
+                    return False
+                body = response.json()
+                data = body.get("data") if isinstance(body, dict) else None
+                dismissed = isinstance(data, dict) and bool(data.get("dismissed"))
+                if not dismissed:
+                    logger.warning(
+                        "Coordinator precision alarm_cleared not dismissed pd_group=(%s,%s) body=%s",
+                        p_instance_id,
+                        d_instance_id,
+                        body,
+                    )
+                    return False
+                logger.info(
+                    "Coordinator precision alarm_cleared ok pd_group=(%s,%s)",
+                    p_instance_id,
+                    d_instance_id,
+                )
+                return True
+        except requests.HTTPError as e:
+            status_code = getattr(e.response, "status_code", "unknown")
+            logger.warning(
+                "Coordinator precision alarm_cleared HTTP %s pd_group=(%s,%s)",
+                status_code,
+                p_instance_id,
+                d_instance_id,
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                "Coordinator precision alarm_cleared failed pd_group=(%s,%s): %s",
+                p_instance_id,
+                d_instance_id,
+                e,
+            )
+            return False
 
     @staticmethod
     def query_status(params: dict[str, str] | None = None) -> dict[str, str]:

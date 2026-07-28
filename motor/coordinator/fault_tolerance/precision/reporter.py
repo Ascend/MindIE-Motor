@@ -44,15 +44,21 @@ class PrecisionReporter:
         action: AlarmAction,
         *,
         threshold: int,
+        clear_threshold: int = 10,
         scheduler_client: Any | None = None,
     ) -> None:
         self._checker = checker
         self._action = action
         self._threshold = threshold
+        self._clear_threshold = clear_threshold
         self._scheduler_client = scheduler_client
         # Local fallback when scheduler_client is None (unit tests only).
         self._local_counter = ConsecutiveCounter(threshold)
-        self._local_probing: dict[PDGroupKey, bool] = {}
+        self._local_normal_counter = ConsecutiveCounter(clear_threshold)
+        self._local_raise_probing: dict[PDGroupKey, bool] = {}
+        self._local_clear_probing: dict[PDGroupKey, bool] = {}
+        self._local_alarm_active: dict[PDGroupKey, bool] = {}
+        self._local_alarm_moi: dict[PDGroupKey, str] = {}
         self._probe_locks: dict[PDGroupKey, asyncio.Lock] = {}
 
     @property
@@ -68,6 +74,8 @@ class PrecisionReporter:
     async def handle(self, sample: "DecodeSample") -> None:
         key: PDGroupKey = (sample.p_instance_id, sample.d_instance_id)
         lock = self._lock(key)
+        clear_action: tuple[PDGroupKey, int, dict, str | None, str | None] | None = None
+        raise_action: tuple[PDGroupKey, int, dict, str | None] | None = None
         async with lock:
             model = (sample.extra or {}).get("model") or None
             result = await self._checker.check(
@@ -78,7 +86,7 @@ class PrecisionReporter:
                 model=model,
             )
 
-            streak = await self._record_streak(key, result.has_issue)
+            streak = await self._record_streak(key, result.has_issue, check_valid=result.valid)
             if streak is None:
                 logger.warning(
                     "PrecisionReporter: streak record failed pd_group=(%s,%s), skip",
@@ -94,14 +102,13 @@ class PrecisionReporter:
                 )
                 return
 
-            if result.has_issue:
+            if result.has_issue and result.valid:
                 logger.debug(
                     "PrecisionReporter: issue detected pd_group=(%s,%s) consecutive=%s",
                     key[0],
                     key[1],
                     streak.consecutive,
                 )
-                # Create a precision-anomaly span under the originating request's trace.
                 self._trace_precision_anomaly(
                     sample=sample,
                     key=key,
@@ -109,54 +116,110 @@ class PrecisionReporter:
                     consecutive=streak.consecutive,
                     threshold_hit=streak.threshold_hit,
                 )
-            else:
+            elif result.valid and not result.has_issue:
                 logger.debug(
-                    "PrecisionReporter: check ok pd_group=(%s,%s), streak reset",
+                    "PrecisionReporter: check ok pd_group=(%s,%s) consecutive=%s",
                     key[0],
                     key[1],
+                    streak.consecutive,
                 )
 
-            if not streak.threshold_hit:
-                return
+            if streak.clear_threshold_hit:
+                extra = dict(sample.extra or {})
+                extra.setdefault("model", extra.get("model") or "")
+                clear_action = (
+                    key,
+                    streak.consecutive,
+                    extra,
+                    streak.action_token,
+                    streak.alarm_moi,
+                )
+            elif streak.threshold_hit:
+                extra = dict(sample.extra or {})
+                extra.setdefault("d_infer_base_url", extra.get("d_infer_base_url") or "")
+                extra.setdefault("model", extra.get("model") or "")
+                raise_action = (key, streak.consecutive, extra, streak.action_token)
 
-            issue_count = streak.consecutive
-            action_token = streak.action_token
-            extra = dict(sample.extra or {})
-            extra.setdefault("d_infer_base_url", extra.get("d_infer_base_url") or "")
-            extra.setdefault("model", extra.get("model") or "")
+        if clear_action:
+            action_key, issue_count, extra, action_token, alarm_moi = clear_action
+            asyncio.create_task(
+                self._run_action(
+                    key=action_key,
+                    issue_count=issue_count,
+                    extra=extra,
+                    action_token=action_token,
+                    action="clear",
+                    alarm_moi=alarm_moi,
+                ),
+                name=f"precision-clear-{action_key}",
+            )
+            return
 
-        logger.warning(
-            "PrecisionReporter: threshold reached pd_group=(%s,%s) count=%s, launch action",
-            key[0],
-            key[1],
-            issue_count,
-        )
-        asyncio.create_task(
-            self._run_action(
-                key=key,
-                issue_count=issue_count,
-                extra=extra,
-                action_token=action_token,
-            ),
-            name=f"precision-action-{key}",
-        )
+        if raise_action:
+            action_key, issue_count, extra, action_token = raise_action
+            logger.warning(
+                "PrecisionReporter: threshold reached pd_group=(%s,%s) count=%s, launch action",
+                action_key[0],
+                action_key[1],
+                issue_count,
+            )
+            asyncio.create_task(
+                self._run_action(
+                    key=action_key,
+                    issue_count=issue_count,
+                    extra=extra,
+                    action_token=action_token,
+                    action="raise",
+                ),
+                name=f"precision-action-{action_key}",
+            )
 
-    async def _record_streak(self, key: PDGroupKey, has_issue: bool):
+    async def _record_streak(self, key: PDGroupKey, has_issue: bool, *, check_valid: bool):
         from motor.coordinator.fault_tolerance.precision.streak_result import (
             PrecisionStreakResult,
         )
 
         if self._scheduler_client is not None:
-            return await self._scheduler_client.record_precision_result(key, has_issue, self._threshold)
-
-        if self._local_probing.get(key):
-            return PrecisionStreakResult(
-                skip=True,
-                consecutive=self._local_counter.get_count(key),
+            return await self._scheduler_client.record_precision_result(
+                key,
+                has_issue,
+                self._threshold,
+                clear_threshold=self._clear_threshold,
+                check_valid=check_valid,
             )
+
+        if self._local_raise_probing.get(key) or self._local_clear_probing.get(key):
+            consecutive = self._local_normal_counter.get_count(key)
+            if not self._local_alarm_active.get(key):
+                consecutive = self._local_counter.get_count(key)
+            return PrecisionStreakResult(skip=True, consecutive=consecutive)
+
+        if not check_valid:
+            consecutive = self._local_normal_counter.get_count(key)
+            if not self._local_alarm_active.get(key):
+                consecutive = self._local_counter.get_count(key)
+            return PrecisionStreakResult(consecutive=consecutive)
+
+        if self._local_alarm_active.get(key):
+            if has_issue:
+                await self._local_normal_counter.reset(key)
+                return PrecisionStreakResult(consecutive=0)
+            clear_hit = await self._local_normal_counter.record(key, True)
+            if clear_hit:
+                self._local_clear_probing[key] = True
+                return PrecisionStreakResult(
+                    clear_threshold_hit=True,
+                    consecutive=self._local_normal_counter.get_count(key),
+                    action_token=_LOCAL_ACTION_LABEL,
+                    alarm_moi=self._local_alarm_moi.get(key),
+                )
+            return PrecisionStreakResult(
+                consecutive=self._local_normal_counter.get_count(key),
+            )
+
         threshold_hit = await self._local_counter.record(key, has_issue)
         if threshold_hit:
-            self._local_probing[key] = True
+            self._local_raise_probing[key] = True
             return PrecisionStreakResult(
                 threshold_hit=True,
                 consecutive=self._local_counter.get_count(key),
@@ -194,9 +257,6 @@ class PrecisionReporter:
             propagator = TraceContextTextMapPropagator()
             parent_ctx = propagator.extract(sample.trace_headers)
         else:
-            # No external trace context (e.g. no W3C traceparent header from
-            # the client) — fall back to the current OTEL context so the
-            # anomaly span is still recorded.
             parent_ctx = otel_context.get_current()
 
         span_name = "PrecisionAnomaly"
@@ -214,8 +274,6 @@ class PrecisionReporter:
                 span.set_attribute("precision.request_structure", sample.request_structure)
             if sample.output_structure:
                 span.set_attribute("precision.output_structure", sample.output_structure)
-            # Precision anomaly is always an error condition — mark the span
-            # accordingly so Tempo/Grafana can filter/alert on error spans.
             span.set_status(Status(StatusCode.ERROR, "Precision anomaly detected"))
             span.add_event(
                 "Precision anomaly detected",
@@ -234,32 +292,74 @@ class PrecisionReporter:
         issue_count: int,
         extra: dict,
         action_token: str | None,
+        action: str = "raise",
+        alarm_moi: str | None = None,
     ) -> None:
+        outcome_success = False
+        outcome_moi = alarm_moi or ""
+        auto_recovery_cleared = False
         try:
             ctx = AlarmContext(
                 p_instance_id=key[0],
                 d_instance_id=key[1],
                 issue_count=issue_count,
                 extra=extra,
+                action=action,
+                alarm_moi=alarm_moi,
             )
-            await self._action.execute(ctx)
+            outcome = await self._action.execute(ctx)
+            outcome_success = outcome.success
+            outcome_moi = outcome.moi or outcome_moi
+            auto_recovery_cleared = outcome.auto_recovery_cleared
         except Exception as e:
-            logger.warning("PrecisionReporter: action failed pd_group=%s: %s", key, e)
+            logger.warning("PrecisionReporter: action failed pd_group=%s action=%s: %s", key, action, e)
         finally:
             if self._scheduler_client is not None and action_token:
-                finished = await self._scheduler_client.finish_precision_action(key, action_token)
+                finished = await self._scheduler_client.finish_precision_action(
+                    key,
+                    action_token,
+                    action_type=action,
+                    success=outcome_success,
+                    alarm_moi=outcome_moi if action == "raise" else None,
+                    auto_recovery_cleared=auto_recovery_cleared,
+                )
                 if not finished:
                     logger.warning(
-                        "PrecisionReporter: finish_precision_action failed pd_group=%s",
+                        "PrecisionReporter: finish_precision_action failed pd_group=%s action=%s",
                         key,
+                        action,
                     )
             else:
                 lock = self._lock(key)
                 async with lock:
-                    self._local_probing[key] = False
-                    await self._local_counter.reset(key)
+                    if action == "clear":
+                        self._local_clear_probing[key] = False
+                        if outcome_success:
+                            self._local_alarm_active.pop(key, None)
+                            self._local_alarm_moi.pop(key, None)
+                            await self._local_normal_counter.reset(key)
+                        else:
+                            await self._local_normal_counter.reset(key)
+                    else:
+                        self._local_raise_probing[key] = False
+                        if outcome_success and auto_recovery_cleared:
+                            self._local_alarm_active.pop(key, None)
+                            self._local_alarm_moi.pop(key, None)
+                            await self._local_counter.reset(key)
+                            await self._local_normal_counter.reset(key)
+                        elif outcome_success:
+                            self._local_alarm_active[key] = True
+                            if outcome_moi:
+                                self._local_alarm_moi[key] = outcome_moi
+                            await self._local_counter.reset(key)
+                            await self._local_normal_counter.reset(key)
+                        else:
+                            await self._local_counter.reset(key)
+                            await self._local_normal_counter.reset(key)
             logger.info(
-                "PrecisionReporter: action finished pd_group=(%s,%s)",
+                "PrecisionReporter: action finished pd_group=(%s,%s) action=%s success=%s",
                 key[0],
                 key[1],
+                action,
+                outcome_success,
             )

@@ -81,6 +81,7 @@ Coordinator 侧配置类为 `PrecisionDetectionConfig`：
 | `interval_seconds` | `30.0` | 实例组级采样送检间隔 |
 | `logprobs_count` | `1` | 注入 top-k 宽度；1 支持重复，>=3 支持乱码，>=5 支持生僻字 |
 | `precision_issue_threshold` | `10` | 连续异常触发拨测/告警的阈值 |
+| `precision_clear_threshold` | `10` | 活动告警下连续有效正常样本触发清除的阈值 |
 | `probe_max_attempts` | `3` | 拨测次数 |
 | `probe_timeout_seconds` | `600.0` | 单次拨测超时时间 |
 
@@ -144,17 +145,41 @@ Controller 在 `_maybe_precision_auto_recover()` 中处理精度告警：
 2. 若 `precision_auto_recovery_enabled=false`，直接返回。
 3. 解析 `record.instance_id` 为 D 实例 ID，调用 `terminate_instance_for_recovery(d_id, "precision_alarm")`。
 4. 若 `record.p_instance_id` 非空，解析为 P 实例 ID 并调用同一恢复服务。
+5. 若全部目标实例终止成功，Controller 深拷贝原 Alarm 并调用 `clear()`，依次上报产生告警与清除告警；Coordinator 据此删除该 PD Group 的活动告警状态。
 
 `terminate_instance_for_recovery()` 先通过 `InstanceManager.separate_instance()` 将实例从调度池隔离，再遍历实例的 NodeManager 执行 `NodeManagerApiClient.stop()`。
 
+### 告警清除
+
+精度告警有三条清除路径，均通过 `category=CLEAR` 的 Record 上报 OM：
+
+| 路径 | 触发时机 | 说明 |
+|------|----------|------|
+| auto-recovery 清除 | Controller 终止原 P/D 全部成功 | 原实例已不存在，立即清除对应告警；新实例按新 PD Group 重新检测 |
+| CCAE 手动清除 | CCAE 下发 precision control 且 Controller 终止 P/D 全部成功 | 与 auto-recovery 共用 `complete_precision_pd_group_recovery`：清除 OM 告警并通知 Coordinator 删除 Scheduler 活动状态 |
+| 连续正常清除 | 未开启 auto-recovery，或告警仍活动 | 同一 PD Group 累计 `precision_clear_threshold` 次**有效正常**检测后，Coordinator 上报 CLEAR |
+
+清除告警必须与产生告警使用完全相同的 `moi`：
+
+| 场景 | `moi` 格式 |
+|------|------------|
+| 有 P 实例 | `service name=Coordinator, service ip=..., pId={p_id}, instanceId={d_id}` |
+| 无 P 实例 | `service name=Coordinator, service ip=..., instanceId={d_id}` |
+
+Scheduler 在产生告警成功后保存原始 `moi`；后续清除直接复用，禁止重新拼接。各 PD Group 的告警/正常计数彼此隔离。Controller 通知 Coordinator 删除 Scheduler 活动告警状态后，会在恢复结果中返回 `scheduler_state_cleared`；该字段用于暴露状态清理是否成功，不改变实例终止成功的判定。
+
 ### CCAE 北向 Completed 上报
 
-Controller 侧 CCAE Reporter（`examples/features/observability/ccae_reporter/reporters/ccae_reporter.py`）在收到 CCAE 下发的 `controlCode` 并完成实例终止后，将 precision task 状态置为 `Completed`，并在后续周期心跳中继续上报 `controlStatus=Completed`。
+Controller 侧 CCAE Reporter（`examples/features/observability/ccae_reporter/reporters/ccae_reporter.py`）在收到 CCAE 下发的 `controlCode` 后，调用 Controller `POST /controller/terminate_instance`，请求体携带 `instance_id={d_id}`、`p_instance_id={p_id}` 和 `precision_alarm_clear=true`。Controller 在同一进程内完成 P/D 实例终止，并复用 `complete_precision_pd_group_recovery` 清除 OM 精度告警、通知 Coordinator 删除 Scheduler 活动状态；随后 Reporter 将 precision task 状态置为 `Completed`，并在后续周期心跳中继续上报 `controlStatus=Completed`。
 
 | 规则 | 说明 |
 |------|------|
-| 成功上报计数 | 仅统计 HTTP POST 成功且 body 携带 `controlStatus=Completed` 的周期上报 |
-| 停止条件 | 累计成功上报 10 次后删除 task，恢复普通心跳 |
+| 上报窗口 | 从首次收到 `controlCode` 起算，最多持续上报 **10 分钟**（600 秒）；窗口内按周期继续上报 `controlStatus` |
+| 窗口到期 | 10 分钟内未进入终态或终态上报未结束时，删除 task 并恢复普通裸心跳（不再携带 `controlCode/controlStatus`） |
+| 同码抑制 | task 因窗口到期或终态成功上报 10 次而结束后，后续重复下发的**相同** `controlCode` 一律忽略，不再重启计时 |
+| 新码重启 | 收到**不同** `controlCode` 时解除抑制，重新创建 task 并从零开始 10 分钟计时 |
+| 成功上报计数 | 仅统计 HTTP POST 成功且 body 携带 `controlStatus=Completed` 或 `Failed` 的周期上报 |
+| 停止条件 | `Completed`/`Failed` 累计成功上报 10 次后删除 task；或距首次收到 `controlCode` 已满 10 分钟 |
 | 提前 ack | CCAE 返回 `controlStatusRespond=true` 不提前删除 task |
 | 失败重试 | HTTP 失败不计入次数，下一周期继续上报 |
 
@@ -303,6 +328,7 @@ classDiagram
 | `event_type` | `PROCESSING_ERROR` | 事件类型 |
 | `instance_id` | D 实例 ID 字符串 | Controller 自动恢复的主对象 |
 | `p_instance_id` | P 实例 ID 字符串或空 | 非空时 Controller 同步终止 P |
+| `moi` | 见上文告警清除节 | 产生与清除必须逐字符一致，作为实例组告警关联键 |
 | `additional_information` | `precision_issue_count=..., probe_failure_count=..., p_instance_id=..., d_instance_id=...` | 检测与拨测统计 |
 
 ---
@@ -315,8 +341,9 @@ classDiagram
 4. **msprobe 串行化**：`MsprobeChecker` 使用进程级 `threading.Lock` 包住 `ILLDetector.run()`，避免 msprobe 内部可变状态并发竞争。
 5. **拨测防递归**：`InternalRouterProbe` 构造 Router 时传入 `sampling_manager=None`，拨测请求不会再次进入采样链。
 6. **Controller 恢复隔离**：终止前先 `separate_instance()`，阻止后续新请求继续调度到异常实例。
-7. **告警 action 后计数清零**：拨测+告警 action 结束后，`PrecisionReporter` 调用 `FINISH_PRECISION_ACTION`；Scheduler 清除 probing 与 streak，下一轮连续异常从 1 重新计数。
-8. **CCAE Completed 生命周期**：实例终止成功后继续向 CCAE 成功上报 `Completed` 10 次；提前 ack 不停止，HTTP 失败不计数。
+7. **告警 action 后状态提交**：raise action 成功后，若 auto-recovery 已清除则删除整组状态；否则进入 `alarm_active` 并保存 `moi`。clear action 成功后删除活动告警状态。无效检测（fail-open）不计入连续正常。
+8. **CLEAR 不触发 auto-recovery**：仅 `category=ALARM` 且 `cleared=NO` 的精度告警会触发实例终止。
+9. **CCAE Completed 生命周期**：实例终止成功后继续向 CCAE 成功上报 `Completed` 10 次；提前 ack 不停止，HTTP 失败不计数。
 
 ---
 

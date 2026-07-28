@@ -437,4 +437,7 @@ Reporter 的主要交互流程如下：
 | 告警 | `/observability/alarms?source_id={NORTH_PLATFORM}` | `/rest/ccaeommgmt/v1/managers/mindie/events` |
 | 实例清单 | `/observability/inventory` | `/rest/ccaeommgmt/v1/managers/mindie/inventory` |
 | 指标 | `/observability/metrics` | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
+| 精度控制 | `/controller/check_instance`、`/controller/terminate_instance` | `/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol` |
 | 日志 | 本地日志采集 | CCAE 返回的 Kafka topic |
+
+Controller 侧 CCAE Reporter 处理 precision control 时复用 `/controller/terminate_instance`。请求体除必填 `instance_id`、`reason` 外，可携带 `p_instance_id` 和 `precision_alarm_clear=true`：`instance_id` 对应告警中的 D 实例，`p_instance_id` 对应告警中的 P 实例；Controller 在终止 P/D 实例组后附加清除该实例组的精度告警。`precision_alarm_clear` 为可选字段，普通实例终止请求无需携带。

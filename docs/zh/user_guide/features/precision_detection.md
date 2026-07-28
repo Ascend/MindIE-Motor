@@ -40,6 +40,7 @@
       "interval_seconds": 30.0,
       "logprobs_count": 5,
       "precision_issue_threshold": 10,
+      "precision_clear_threshold": 10,
       "probe_max_attempts": 3,
       "probe_timeout_seconds": 600.0
     }
@@ -53,6 +54,7 @@
 | `interval_seconds` | `30.0` | 每个实例组允许送检一条完整请求样本的最小间隔，单位秒 |
 | `logprobs_count` | `1` | 注入到 Decode 请求的 top-k 宽度；值越大检测能力越强，引擎侧开销也越高 |
 | `precision_issue_threshold` | `10` | 同一实例组连续检测异常达到该次数后触发拨测与告警 |
+| `precision_clear_threshold` | `10` | 活动告警下连续有效正常样本达到该次数后上报清除告警 |
 | `probe_max_attempts` | `3` | 精度拨测请求次数 |
 | `probe_timeout_seconds` | `600.0` | 单次拨测超时时间，单位秒 |
 
@@ -95,8 +97,9 @@ python deploy.py --config_dir ../infer_engines/vllm
 4. `PrecisionReporter` 调用 `MsprobeChecker` 检测样本，并通过 Scheduler 记录跨 Worker 的连续异常次数。
 5. 连续异常达到 `precision_issue_threshold` 后，`InternalRouterProbe` 固定问答拨测目标实例组。
 6. `PrecisionAlarm` 构造精度异常告警并上报 Controller。
-7. Controller 根据 `precision_auto_recovery_enabled` 决定是否调用恢复服务终止实例。
-8. 若部署 CCAE Reporter，Controller 在实例终止成功后会继续向 CCAE 成功上报 `controlStatus=Completed` 共 10 次，之后才停止该 precision task 的上报。
+7. Controller 根据 `precision_auto_recovery_enabled` 决定是否调用恢复服务终止实例；终止成功后 Controller 上报 CLEAR 并通知 Coordinator 清理 Scheduler 活动状态。
+8. 活动告警下，Coordinator 连续 `precision_clear_threshold` 次**有效正常**检测后，自动上报 CLEAR 清除告警（不依赖 auto-recovery，适用于关闭自动恢复或告警仍活动的场景）。
+9. 若部署 CCAE Reporter，Controller 侧 Reporter 会调用 Controller 既有接口 `/controller/terminate_instance` 终止 D 实例；请求体可携带 `p_instance_id` 和 `precision_alarm_clear=true`，由 Controller 在终止 P/D 实例组后附加清除精度告警，并继续向 CCAE 成功上报 `controlStatus=Completed` 共 10 次，之后才停止该 precision task 的上报。
 
 ## 验证方法
 

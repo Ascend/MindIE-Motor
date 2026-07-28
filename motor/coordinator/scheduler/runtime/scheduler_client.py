@@ -1043,6 +1043,9 @@ class AsyncSchedulerClient:
         key: tuple[int | None, int],
         has_issue: bool,
         threshold: int,
+        *,
+        clear_threshold: int,
+        check_valid: bool,
     ) -> PrecisionStreakResult | None:
         if not self._transport.connected:
             logger.warning("record_precision_result: scheduler transport not connected")
@@ -1056,6 +1059,8 @@ class AsyncSchedulerClient:
                 "d_instance_id": key[1],
                 "has_issue": has_issue,
                 "threshold": threshold,
+                "clear_threshold": clear_threshold,
+                "check_valid": check_valid,
             },
         )
         response = await self._transport.send_request(request)
@@ -1064,8 +1069,10 @@ class AsyncSchedulerClient:
             return PrecisionStreakResult(
                 skip=bool(data.get("skip", False)),
                 threshold_hit=bool(data.get("threshold_hit", False)),
+                clear_threshold_hit=bool(data.get("clear_threshold_hit", False)),
                 consecutive=int(data.get("consecutive", 0)),
                 action_token=data.get("action_token"),
+                alarm_moi=data.get("alarm_moi"),
             )
         if response:
             logger.warning(
@@ -1081,6 +1088,11 @@ class AsyncSchedulerClient:
         self,
         key: tuple[int | None, int],
         action_token: str,
+        *,
+        action_type: str,
+        success: bool,
+        alarm_moi: str | None = None,
+        auto_recovery_cleared: bool = False,
     ) -> bool:
         if not self._transport.connected:
             logger.warning("finish_precision_action: scheduler transport not connected")
@@ -1093,6 +1105,10 @@ class AsyncSchedulerClient:
                 "p_instance_id": key[0],
                 "d_instance_id": key[1],
                 "action_token": action_token,
+                "action_type": action_type,
+                "success": success,
+                "alarm_moi": alarm_moi,
+                "auto_recovery_cleared": auto_recovery_cleared,
             },
         )
         response = await self._transport.send_request(request)
@@ -1106,6 +1122,42 @@ class AsyncSchedulerClient:
             )
         else:
             logger.warning("finish_precision_action: no response pd_group=%s", key)
+        return False
+
+    async def dismiss_precision_alarm_state(
+        self,
+        *,
+        p_instance_id: int | None,
+        d_instance_id: int,
+    ) -> bool:
+        if not self._transport.connected:
+            logger.warning("dismiss_precision_alarm_state: scheduler transport not connected")
+            return False
+        request_id = self._next_request_id()
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.DISMISS_PRECISION_ALARM_STATE,
+            request_id=request_id,
+            data={
+                "p_instance_id": p_instance_id,
+                "d_instance_id": d_instance_id,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            return bool((response.data or {}).get("dismissed", False))
+        if response:
+            logger.warning(
+                "dismiss_precision_alarm_state failed pd_group=(%s,%s) error=%s",
+                p_instance_id,
+                d_instance_id,
+                response.error,
+            )
+        else:
+            logger.warning(
+                "dismiss_precision_alarm_state: no response pd_group=(%s,%s)",
+                p_instance_id,
+                d_instance_id,
+            )
         return False
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:

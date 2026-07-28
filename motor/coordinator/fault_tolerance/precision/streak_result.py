@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-#
 # MindIE is licensed under Mulan PSL v2.
-# You may use this software according to the terms and conditions of the Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
 #         http://license.coscl.org.cn/MulanPSL2
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
@@ -22,5 +21,7 @@ class PrecisionStreakResult:
 
     skip: bool = False
     threshold_hit: bool = False
+    clear_threshold_hit: bool = False
     consecutive: int = 0
     action_token: str | None = None
+    alarm_moi: str | None = None

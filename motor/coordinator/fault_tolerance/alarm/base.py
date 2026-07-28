@@ -24,8 +24,17 @@ class AlarmContext:
     issue_count: int
     alarm_id: str = ""
     extra: dict = field(default_factory=dict)
+    action: str = "raise"  # "raise" | "clear"
+    alarm_moi: str | None = None
+
+
+@dataclass(frozen=True)
+class AlarmReportOutcome:
+    success: bool
+    moi: str = ""
+    auto_recovery_cleared: bool = False
 
 
 class AlarmAction(ABC):
     @abstractmethod
-    async def execute(self, ctx: AlarmContext) -> None: ...
+    async def execute(self, ctx: AlarmContext) -> AlarmReportOutcome: ...

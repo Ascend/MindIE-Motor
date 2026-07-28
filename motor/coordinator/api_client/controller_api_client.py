@@ -23,24 +23,36 @@ class ControllerApiClient:
     coordinator_config = CoordinatorConfig.from_json()
 
     @classmethod
-    def report_alarms(cls, params: dict):
+    def report_alarms(cls, params: dict) -> dict:
+        """POST alarm payload; return ``{ok, precision_alarm_cleared_by_auto_recovery}``."""
         client_args = {}
+        default_outcome = {
+            "ok": False,
+            "precision_alarm_cleared": False,
+            "precision_alarm_cleared_by_auto_recovery": False,
+        }
         try:
             if cls.coordinator_config.standby_config.enable_master_standby:
                 if not is_master_from_role_shm():
                     logger.debug("The standby coordinator does not need to report alarms.")
-                    return True
+                    return {
+                        "ok": True,
+                        "precision_alarm_cleared": False,
+                        "precision_alarm_cleared_by_auto_recovery": False,
+                    }
 
             client_args = ControllerApiClient._generate_client_args()
             alarm_id = params.get("alarm_id", "")
             alarm_name = params.get("alarm_name", "")
             instance_id = params.get("instance_id", "")
             p_instance_id = params.get("p_instance_id", "")
+            category = params.get("category", "")
             logger.info(
-                "Reporting alarm to controller: alarm_id=%s alarm_name=%s "
+                "Reporting alarm to controller: alarm_id=%s alarm_name=%s category=%s "
                 "instance_id=%s p_instance_id=%s controller=%s",
                 alarm_id,
                 alarm_name,
+                category,
                 instance_id,
                 p_instance_id,
                 client_args.get("address", "unknown"),
@@ -54,12 +66,34 @@ class ControllerApiClient:
                     p_instance_id,
                     response.status_code,
                 )
-                return response.status_code == 200
+                if response.status_code != 200:
+                    return default_outcome
+                try:
+                    body = response.json()
+                except Exception:
+                    return {
+                        "ok": True,
+                        "precision_alarm_cleared": False,
+                        "precision_alarm_cleared_by_auto_recovery": False,
+                    }
+                data = body.get("data") if isinstance(body, dict) else None
+                if not isinstance(data, dict):
+                    data = {}
+                cleared = bool(
+                    data.get("precision_alarm_cleared") or data.get("precision_alarm_cleared_by_auto_recovery")
+                )
+                return {
+                    "ok": True,
+                    "precision_alarm_cleared": cleared,
+                    "precision_alarm_cleared_by_auto_recovery": bool(
+                        data.get("precision_alarm_cleared_by_auto_recovery")
+                    ),
+                }
         except Exception as e:
             logger.error(
-                "Exception occurred while reporting alarms at %s: %s", client_args.get('address', 'unknown'), e
+                "Exception occurred while reporting alarms at %s: %s", client_args.get("address", "unknown"), e
             )
-            return False
+            return default_outcome
 
     @classmethod
     def _generate_client_args(cls) -> dict[str, str]:

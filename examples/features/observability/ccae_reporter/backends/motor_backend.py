@@ -97,14 +97,26 @@ class MotorBackend(BaseBackend):
             self.logger.error("Failed to check liveness from %s: %s", url, e)
             return False
 
-    def terminate_instance(self, instance_id: int, reason: str) -> bool:
+    def terminate_instance(
+        self,
+        instance_id: int,
+        reason: str,
+        *,
+        p_instance_id: int | None = None,
+        precision_alarm_clear: bool = False,
+    ) -> bool:
         if not self.is_alive():
             self.logger.warning("Controller not ready (readiness), skip terminate_instance")
             return False
         try:
+            payload = {"instance_id": instance_id, "reason": reason}
+            if p_instance_id is not None:
+                payload["p_instance_id"] = p_instance_id
+            if precision_alarm_clear:
+                payload["precision_alarm_clear"] = True
             response = self.probe_client.do_post(
                 "/controller/terminate_instance",
-                {"instance_id": instance_id, "reason": reason},
+                payload,
             )
             if response.status_code != 200:
                 self.logger.error(
@@ -117,6 +129,14 @@ class MotorBackend(BaseBackend):
             if isinstance(body, dict) and body.get("error"):
                 self.logger.error("terminate_instance error: %s", body.get("error"))
                 return False
+            data = body.get("data") if isinstance(body, dict) else None
+            if precision_alarm_clear and isinstance(data, dict) and not data.get("precision_alarm_cleared"):
+                self.logger.warning(
+                    "terminate_instance: precision alarm not cleared instance_id=%s p_id=%s data=%s",
+                    instance_id,
+                    p_instance_id,
+                    data,
+                )
             return True
         except Exception as e:
             self.logger.error("terminate_instance failed: %s", e)
