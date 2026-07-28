@@ -321,20 +321,21 @@ def main() -> None:
     logger.info("Press Ctrl+C or type 'stop' to exit.")
     try:
         while not stop_event.is_set():
+            # Use select + readline to avoid CPU spinning when stdin is
+            # /dev/null (systemd) or a closed pipe (k8s).
             try:
-                # Use select to make input non-blocking with timeout
                 if select.select([sys.stdin], [], [], 1.0)[0]:
-                    user_input = input().strip().lower()
+                    line = sys.stdin.readline()
+                    if not line:  # EOF (/dev/null, closed pipe)
+                        stop_event.wait(1)
+                        continue
+                    user_input = line.strip().lower()
                     if user_input == 'stop':
                         stop_event.set()
                         break
                     if user_input:
                         logger.error("Unknown command: %s", user_input)
-            except EOFError:
-                # In non-interactive environment, just continue
-                pass
             except OSError:
-                # select not available or stdin not available
                 stop_event.wait(1)
     except KeyboardInterrupt:
         stop_event.set()

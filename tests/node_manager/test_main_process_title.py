@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -10,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import importlib
+import sys
 from unittest.mock import MagicMock, patch
 
 
@@ -41,13 +41,10 @@ def test_main_runs_without_resetting_process_title(mock_init, mock_log, mock_sto
 
     mock_init.side_effect = fake_init
 
-    def fake_input():
-        nm_main._should_exit = True
-        return "stop"
-
-    with patch("motor.node_manager.main.input", side_effect=fake_input):
-        with patch("motor.node_manager.main.HeartbeatManager") as mock_hb:
-            mock_hb.return_value.should_suicide.return_value = False
-            nm_main.main()
+    with patch("select.select", return_value=([sys.stdin], [], [])):
+        with patch("sys.stdin.readline", return_value="stop\n"):
+            with patch("motor.node_manager.main.HeartbeatManager") as mock_hb:
+                mock_hb.return_value.should_suicide.return_value = False
+                nm_main.main()
 
     mock_init.assert_called_once()

@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import select
 import signal
 import time
 import sys
@@ -155,13 +156,21 @@ def main() -> int:
                 suicide_procedure()
                 return -1
 
+            # Use select to make input non-blocking — avoids CPU spinning
+            # when stdin is /dev/null (systemd) or a closed pipe (k8s).
             try:
-                user_input = input().strip().lower()
-                if user_input == 'stop':
-                    _should_exit = True
-                elif user_input:
-                    logger.warning("Unknown command: %s", user_input)
-            except EOFError:
+                if select.select([sys.stdin], [], [], 1.0)[0]:
+                    line = sys.stdin.readline()
+                    if not line:  # EOF (/dev/null, closed pipe)
+                        if not _should_exit:
+                            time.sleep(1)
+                        continue
+                    user_input = line.strip().lower()
+                    if user_input == 'stop':
+                        _should_exit = True
+                    elif user_input:
+                        logger.warning("Unknown command: %s", user_input)
+            except (EOFError, OSError):
                 if not _should_exit:
                     time.sleep(1)
     except KeyboardInterrupt:
