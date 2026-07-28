@@ -8,17 +8,15 @@
 
 ## 配置参数
 
-故障场景重调度功能使用`user_config.json`配置文件中的以下配置参数：
+故障场景重调度功能使用[`user_config.json`](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的以下配置参数：
 
-- 故障场景重调度功能开关：使用`reschedule_enabled`配置参数，默认为`false`；
+- 故障场景重调度功能开关：使用`reschedule_config`中的`enable`配置参数，默认为`false`；
   - `false`：故障场景重调度功能关闭；
   - `true`：故障场景重调度功能开启。
 - 重调度次数：使用`transport_max_retry`配置参数；
   - 当`transport_max_retry`配置参数为空时，使用`max_retry`配置参数。
 - 重调度间隔：使用`retry_delay`参数，浮点值，单位为秒；
   - 重调度间隔算法：每个推理任务，第一次故障等待`retry_delay`秒后进行重调度，后续每次重调度间隔是上一次重调度间隔的2倍。
-
-`user_config.json`配置文件参考[`examples/features/config_sample.json`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/features/config_sample.json)。
 
 故障场景重调度功能配置示例如下所示：
 
@@ -59,7 +57,7 @@
 
 当故障场景重调度功能开启时，建议根据`最大并发数`和`上下文长度`，按照上述公式计算内存占用上限，并修改`Coordinator`的内存配置。
 
-- 最大并发数配置，参考[`user_config.json`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/features/config_sample.json)配置文件中的`max_requests`配置参数；
+- 最大并发数配置，参考[`user_config.json`](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的`max_requests`配置参数；
 
 - `Coordinator`内存占用上限设置，需要修改`yaml`文件中`coordinator`容器中`resources.limits.memory`配置项；
   - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；

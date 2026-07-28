@@ -165,7 +165,7 @@ motor_controller_config字段配置样例如下所示：
 | enable_scale_p2d | bool | 是否启用ScaleP2D弹性扩缩容，默认值：false。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
 | enable_token_reinference | bool | 是否启用Token Reinference 故障恢复，默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
 | scale_p2d_d_instance_reinit_wait_timeout |int|ScaleP2D执行抢占前，等待D实例自恢复（重初始化）的最长时间，单位：秒，默认值：60。<br>等待期间若D实例恢复为initial/active，则不再执行ScaleP2D；超时后若D实例仍处于inactive等可抢占状态，则继续后续P实例选择流程。|
-|**observability_config字段**|-|-|
+| **observability_config字段**|-|-|
 | observability_enable |bool|是否启用可观测性，默认值：false。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul>|
 | metrics_ttl |int|metrics查询间隔，单位：秒，默认值：5。|
 | **standby_config字段**|-|-|
@@ -219,8 +219,10 @@ motor_coordinator_config字段配置样例如下所示：
     "kv_store_metrics_endpoint": ""
   },
   "exception_config": {
+    "reschedule_config": {
+      "enable": false
+    },
     "max_retry": 5,
-    "reschedule_enabled": true,
     "transport_max_retry": null,
     "retry_delay": 0.2,
     "first_token_timeout": 600,
@@ -358,7 +360,7 @@ motor_coordinator_config字段配置样例如下所示：
 | log_max_line_length | int | 单行日志最大长度，超过则截断。默认值：8192 |
 | log_format | string | 日志格式模板，支持 Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s" |
 | log_date_format | string | 日志日期格式。默认值："%m-%d %H:%M:%S" |
-|host_log_dir| string | 日志存储路径，默认值："/root/ascend/log"。|
+| host_log_dir| string | 日志存储路径，默认值："/root/ascend/log"。|
 | log_rotation_size | int | 日志转储文件大小，默认值：20。|
 | log_rotation_count | int |日志转储文件个数，默认值：10。|
 | log_compress |bool| 是否启动日志压缩，默认值：false。|
@@ -372,12 +374,13 @@ motor_coordinator_config字段配置样例如下所示：
 | kv_store_metrics_endpoint |string|KV 池化 metrics 的 URL。配置了 `kv_cache_store_config` 时自动拼接（`http://{KVS_MASTER_SERVICE}:{KV_CACHE_STORE_PORT}/metrics`），无需手动配置；该字段仅在需要显式覆盖自动生成的 URL 时使用，默认值为空。|
 | **exception_config字段** |-|-|
 | max_retry | int | 请求失败后的最大重试次数。默认值：`5` |
-| reschedule_enabled | bool | 是否缓存流式响应 token ID，以便瞬时传输故障后重调度并续接请求。该配置不控制引擎侧 recompute，默认值：`true`。 <br>`recompute_enabled` 仅作为 `reschedule_enabled` 的旧配置兼容别名；`recompute_max_retry` 已移除并会被忽略。模型重计算由引擎侧负责。<br> 流式请求会在上游接受请求后再提交 HTTP 200；Unified PD 模式需等待 Prefill 和 Decode 两路均接受请求。提交前的引擎错误会保留原 HTTP 状态码、受限大小的响应体以及安全响应头；提交后 HTTP 状态码已不可修改，引擎 JSON 错误体会作为 SSE `data` 事件返回。|
 | transport_max_retry | int/null | Coordinator 传输失败的最大尝试次数；`null` 时使用 `max_retry`。默认值：`null` |
 | retry_delay | float | 每次重试前的等待时间（秒）。默认值：`0.2` |
 | first_token_timeout | int | 等待首 token 返回的超时时间（秒）。默认值：`600` |
 | infer_timeout | int | 单次推理请求的总超时时间（秒）。默认值：`3600` |
 | upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认值：`65536` |
+| **reschedule_config字段** |-|-|
+| enable | bool | 故障场景重调度功能开关。默认：`false`。<br>模型重计算由引擎侧负责，该配置不控制引擎侧重计算；`recompute_enabled`仅作为`reschedule_enabled`的旧配置兼容别名；`recompute_max_retry`已移除并会被忽略。 |
 | **scheduler_config字段** |-|-|
 | scheduler_type | string | 调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
 | enable_pd_separation_fallback_to_hybrid | bool | PD分离场景下，当D实例不可用或P/D实例不满足调度条件时，是否允许降级使用混部路由，默认值为 `true` |
