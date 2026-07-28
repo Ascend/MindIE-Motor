@@ -28,6 +28,20 @@
 
     `exception_config.infer_timeout`：单次推理请求的总超时时间，单位为秒。
 
+    `rate_limit_config.max_requests`：限流时间窗口内允许的最大请求数。热更新时会按旧速率结算令牌桶中已累积的令牌，再以新参数继续累积。
+
+    `rate_limit_config.window_size`：限流统计的时间窗口长度，单位为秒。热更新后会与 `max_requests` 一起重新计算令牌桶的填充速率。
+
+    `rate_limit_config.skip_paths`：不参与限流统计的路径列表，可自定义。热更新后立即对后续请求生效。
+
+    `rate_limit_config.error_message`：触发限流时返回给客户端的提示文案。
+
+    `rate_limit_config.error_status_code`：触发限流时返回的 HTTP 状态码，通常为 4xx（如 429）。
+
+    `rate_limit_config.max_request_body_size`：请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`<= 0` 表示不限制，支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 字节）。
+
+    注意：`rate_limit_config.enable_rate_limit` `rate_limit_config.provider`、`rate_limit_config.scope`、`rate_limit_config.olc_config_path` 仅在服务启动时读取，不支持热更新。如需切换限流提供者（simple/olc）或修改 OLC 规则路径，请重启服务。
+
 - **motor_nodemanger_config**
 
     `logging_config.log_level`：NodeManager 日志等级，可选 `DEBUG`、`INFO`、`WARNING`、`ERROR` 等
