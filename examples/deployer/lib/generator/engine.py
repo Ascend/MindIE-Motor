@@ -49,7 +49,11 @@ def _append_a5_host_path_volumes(pod_spec, container):
     for volume_def in C.A5_HOST_PATH_VOLUMES:
         volume_name = volume_def[C.NAME]
         if volume_name not in existing_volume_names:
-            pod_spec[C.VOLUMES].append({C.NAME: volume_name, C.HOST_PATH: {C.PATH: volume_def[C.PATH]}})
+            host_path_source = {C.PATH: volume_def[C.PATH]}
+            host_path_type = volume_def.get("type")
+            if host_path_type:
+                host_path_source["type"] = host_path_type
+            pod_spec[C.VOLUMES].append({C.NAME: volume_name, C.HOST_PATH: host_path_source})
             existing_volume_names.add(volume_name)
         if volume_name not in existing_mount_names:
             container[C.VOLUME_MOUNTS].append(
