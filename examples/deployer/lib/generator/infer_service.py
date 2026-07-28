@@ -110,14 +110,14 @@ def _configure_coordinator_role(infer_doc, user_config):
         set_container_env(container, coordinator_env)
 
 
-def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, npu_key):
+def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key):
     hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
     pod_spec[C.NODE_SELECTOR] = pod_spec.get(C.NODE_SELECTOR, {})
     apply_node_selector_by_hardware(pod_spec, hardware_type)
 
     if hardware_type == C.HARDWARE_TYPE_800I_A3:
         # CRD uses StatefulSet; MindCluster sp-block differs from Deployment (see engine.py multi_deployment)
-        sp_block_num = int(deploy_config.get(npu_key, 1))
+        sp_block_num = int(deploy_config.get(pods_key, 1)) * int(deploy_config.get(npu_key, 1))
         apply_sp_block_annotation(template.setdefault(C.METADATA, {}), sp_block_num, hardware_type)
 
 
@@ -157,7 +157,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     set_container_npu(container, npu_num)
     weight_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     set_weight_mount(pod_spec, container, weight_path)
-    _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, npu_key)
+    _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key)
 
 
 def _set_role_primary_service_port(role, service_port):

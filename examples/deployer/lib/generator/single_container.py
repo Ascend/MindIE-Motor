@@ -62,10 +62,10 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     hardware_type = deploy_config[C.HARDWARE_TYPE]
     if hardware_type == C.HARDWARE_TYPE_800I_A2:
         deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_910B
-        del deployment_data[C.METADATA][C.ANNOTATIONS]
+        del deployment_data[C.SPEC][C.TEMPLATE][C.METADATA][C.ANNOTATIONS]
     elif hardware_type == C.HARDWARE_TYPE_800I_A3:
         deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR][C.ACCELERATOR_TYPE] = C.ACCELERATOR_TYPE_A3
-        deployment_data[C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
+        deployment_data[C.SPEC][C.TEMPLATE][C.METADATA][C.ANNOTATIONS][C.SP_BLOCK] = f"{npu_num}"
 
     set_engine_weight_mount(deployment_data, container, deploy_config)
 

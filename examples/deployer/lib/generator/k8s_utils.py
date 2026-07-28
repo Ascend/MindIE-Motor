@@ -238,8 +238,8 @@ def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
 def modify_sp_block_num(data, pd_flag, config):
     hardware_type = config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
     if hardware_type == C.HARDWARE_TYPE_800I_A2:
-        if C.ANNOTATIONS in data[C.METADATA]:
-            del data[C.METADATA][C.ANNOTATIONS]
+        if C.ANNOTATIONS in data[C.SPEC][C.TEMPLATE][C.METADATA]:
+            del data[C.SPEC][C.TEMPLATE][C.METADATA][C.ANNOTATIONS]
         return
     if pd_flag == C.NODE_TYPE_D:
         sp_block_num = int(config[C.SINGER_D_INSTANCES_NUM]) * int(config[C.D_POD_NPU_NUM])
@@ -247,7 +247,7 @@ def modify_sp_block_num(data, pd_flag, config):
         sp_block_num = int(config[C.SINGER_P_INSTANCES_NUM]) * int(config[C.P_POD_NPU_NUM])
     else:
         return
-    apply_sp_block_annotation(data[C.METADATA], sp_block_num, hardware_type)
+    apply_sp_block_annotation(data[C.SPEC][C.TEMPLATE][C.METADATA], sp_block_num, hardware_type)
 
 
 def create_motor_config_configmap(job_id):
