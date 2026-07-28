@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -37,7 +35,7 @@ from motor.common.http.key_encryption import encrypt_api_key, set_default_key_en
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.middleware.fastapi_middleware import (
     SimpleRateLimitMiddleware,
-    create_simple_rate_limit_middleware,
+    RateLimitConfigHolder,
 )
 
 
@@ -81,18 +79,25 @@ def create_unified_app_for_test(
     if not getattr(unified.state, "request_manager", None):
         unified.state.request_manager = inf._request_manager
     if rate_limit_config and rate_limit_config.enable_rate_limit:
-        middleware = create_simple_rate_limit_middleware(
-            app=unified,
-            max_requests=rate_limit_config.max_requests,
-            window_size=rate_limit_config.window_size,
-        )
-        unified.add_middleware(
-            SimpleRateLimitMiddleware,
-            rate_limiter=middleware.rate_limiter,
+        from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
+
+        holder = RateLimitConfigHolder(
             skip_paths=rate_limit_config.skip_paths,
             error_message=rate_limit_config.error_message,
             error_status_code=rate_limit_config.error_status_code,
+            max_request_body_size=rate_limit_config.max_request_body_size,
         )
+        rate_limiter = SimpleRateLimiter(
+            max_requests=rate_limit_config.max_requests,
+            window_size=rate_limit_config.window_size,
+        )
+        holder.rate_limiter = rate_limiter
+        unified.add_middleware(
+            SimpleRateLimitMiddleware,
+            rate_limiter=rate_limiter,
+            config_holder=holder,
+        )
+        inf._rate_limit_config = holder
     return unified
 
 
@@ -690,21 +695,13 @@ class TestFastAPIMiddleware:
 
     def setup_method(self):
         """Setup test fixtures"""
-        from motor.coordinator.middleware.fastapi_middleware import (
-            SimpleRateLimitMiddleware,
-            SimpleRateLimitConfig,
-            load_rate_limit_config,
-            create_simple_rate_limit_middleware,
-        )
+        from motor.coordinator.middleware.fastapi_middleware import SimpleRateLimitMiddleware
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
-        self.SimpleRateLimitConfig = SimpleRateLimitConfig
-        self.load_rate_limit_config = load_rate_limit_config
-        self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
         self._report_alarms_patcher = patch(
@@ -715,125 +712,6 @@ class TestFastAPIMiddleware:
 
     def teardown_method(self):
         self._report_alarms_patcher.stop()
-
-    def test_simple_rate_limit_config(self):
-        """Test SimpleRateLimitConfig dataclass"""
-        config = self.SimpleRateLimitConfig()
-        assert config.enabled is True, "Default enabled should be True"
-        assert config.max_requests == 100, "Default max_requests should be 100"
-        assert config.window_size == 60, "Default window_size should be 60"
-        assert config.scope == "per_ip", "Default scope should be per_ip"
-        assert config.skip_paths is not None, "skip_paths should be initialized"
-        assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
-
-    def test_load_rate_limit_config_default(self):
-        """Test load_rate_limit_config with default values"""
-        import os
-
-        # Save original env if exists
-        original_enabled = os.getenv("RATE_LIMIT_ENABLED")
-        original_max = os.getenv("RATE_LIMIT_MAX_REQUESTS")
-        original_window = os.getenv("RATE_LIMIT_WINDOW_SIZE")
-
-        try:
-            # Remove env vars to test defaults
-            if "RATE_LIMIT_ENABLED" in os.environ:
-                del os.environ["RATE_LIMIT_ENABLED"]
-            if "RATE_LIMIT_MAX_REQUESTS" in os.environ:
-                del os.environ["RATE_LIMIT_MAX_REQUESTS"]
-            if "RATE_LIMIT_WINDOW_SIZE" in os.environ:
-                del os.environ["RATE_LIMIT_WINDOW_SIZE"]
-
-            config = self.load_rate_limit_config()
-            assert config.enabled, "Should use default enabled=True"
-            assert config.max_requests == 100, "Should use default max_requests=100"
-            assert config.window_size == 60, "Should use default window_size=60"
-        finally:
-            # Restore original env
-            if original_enabled:
-                os.environ["RATE_LIMIT_ENABLED"] = original_enabled
-            if original_max:
-                os.environ["RATE_LIMIT_MAX_REQUESTS"] = original_max
-            if original_window:
-                os.environ["RATE_LIMIT_WINDOW_SIZE"] = original_window
-
-    def test_load_rate_limit_config_from_env(self):
-        """Test load_rate_limit_config from environment variables"""
-        import os
-
-        # Save original env
-        original_enabled = os.getenv("RATE_LIMIT_ENABLED")
-        original_max = os.getenv("RATE_LIMIT_MAX_REQUESTS")
-        original_window = os.getenv("RATE_LIMIT_WINDOW_SIZE")
-        original_scope = os.getenv("RATE_LIMIT_SCOPE")
-        original_skip_paths = os.getenv("RATE_LIMIT_SKIP_PATHS")
-
-        try:
-            # Set env vars
-            os.environ["RATE_LIMIT_ENABLED"] = "false"
-            os.environ["RATE_LIMIT_MAX_REQUESTS"] = "200"
-            os.environ["RATE_LIMIT_WINDOW_SIZE"] = "30"
-            os.environ["RATE_LIMIT_SCOPE"] = "global"
-            os.environ["RATE_LIMIT_SKIP_PATHS"] = "/liveness,/health"
-
-            config = self.load_rate_limit_config()
-            assert not config.enabled, "Should load enabled from env"
-            assert config.max_requests == 200, "Should load max_requests from env"
-            assert config.window_size == 30, "Should load window_size from env"
-            assert config.scope == "global", "Should load scope from env"
-            assert "/liveness" in config.skip_paths, "Should load skip_paths from env"
-            assert "/health" in config.skip_paths, "Should load skip_paths from env"
-        finally:
-            # Restore original env
-            if original_enabled:
-                os.environ["RATE_LIMIT_ENABLED"] = original_enabled
-            elif "RATE_LIMIT_ENABLED" in os.environ:
-                del os.environ["RATE_LIMIT_ENABLED"]
-            if original_max:
-                os.environ["RATE_LIMIT_MAX_REQUESTS"] = original_max
-            elif "RATE_LIMIT_MAX_REQUESTS" in os.environ:
-                del os.environ["RATE_LIMIT_MAX_REQUESTS"]
-            if original_window:
-                os.environ["RATE_LIMIT_WINDOW_SIZE"] = original_window
-            elif "RATE_LIMIT_WINDOW_SIZE" in os.environ:
-                del os.environ["RATE_LIMIT_WINDOW_SIZE"]
-            if original_scope:
-                os.environ["RATE_LIMIT_SCOPE"] = original_scope
-            elif "RATE_LIMIT_SCOPE" in os.environ:
-                del os.environ["RATE_LIMIT_SCOPE"]
-            if original_skip_paths:
-                os.environ["RATE_LIMIT_SKIP_PATHS"] = original_skip_paths
-            elif "RATE_LIMIT_SKIP_PATHS" in os.environ:
-                del os.environ["RATE_LIMIT_SKIP_PATHS"]
-
-    def test_load_rate_limit_config_from_file(self):
-        """Test load_rate_limit_config from file"""
-        import os
-        import json
-        import tempfile
-
-        # Create temporary config file
-        config_data = {
-            "enabled": False,
-            "max_requests": 300,
-            "window_size": 45,
-            "scope": "per_ip",
-            "error_message": "Custom error message",
-            "error_status_code": 429,
-        }
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(config_data, f)
-            config_file = f.name
-
-        try:
-            config = self.load_rate_limit_config(config_file=config_file)
-            assert not config.enabled, "Should load enabled from file"
-            assert config.max_requests == 300, "Should load max_requests from file"
-            assert config.window_size == 45, "Should load window_size from file"
-            assert config.error_message == "Custom error message", "Should load error_message from file"
-        finally:
-            os.unlink(config_file)
 
     def test_rate_limit_middleware_skip_paths(self):
         """Test rate limit middleware skip paths"""
@@ -884,15 +762,6 @@ class TestFastAPIMiddleware:
         response = client.get("/test")
         assert response.status_code == 200, "Should allow request when error occurs"
         assert middleware.stats["allowed_requests"] > 0, "Should increment allowed_requests on error"
-
-    def test_create_simple_rate_limit_middleware(self):
-        """Test create_simple_rate_limit_middleware function"""
-        middleware = self.create_simple_rate_limit_middleware(app=self.app, max_requests=50, window_size=30)
-
-        assert middleware is not None, "Middleware should be created"
-        assert middleware.rate_limiter.max_requests == 50, "Should set max_requests"
-        assert middleware.rate_limiter.window_size == 30, "Should set window_size"
-        assert middleware.skip_paths is not None, "Should set skip_paths"
 
     def test_rate_limit_middleware_stats(self):
         """Test rate limit middleware statistics"""
@@ -1436,11 +1305,8 @@ class TestCoordinatorServerAdvanced:
 
     def test_setup_rate_limiting_with_exception(self):
         """Test setup_rate_limiting exception handling"""
-        # Mock create_simple_rate_limit_middleware to raise exception
-        with patch(
-            "motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware"
-        ) as mock_create:
-            mock_create.side_effect = Exception("Test exception")
+        with patch("motor.coordinator.api_server.inference_server.SimpleRateLimiter") as mock_limiter:
+            mock_limiter.side_effect = Exception("Test exception")
             coordinator_server = _TestServerShell(config=CoordinatorConfig())
             coordinator_server.instance_manager = MagicMock()
             coordinator_server.setup_rate_limiting()
@@ -1448,11 +1314,8 @@ class TestCoordinatorServerAdvanced:
 
     def test_create_unified_app_with_exception(self):
         """Test create_unified_app exception handling"""
-        # Mock create_simple_rate_limit_middleware to raise exception
-        with patch(
-            "motor.coordinator.middleware.fastapi_middleware.create_simple_rate_limit_middleware"
-        ) as mock_create:
-            mock_create.side_effect = Exception("Test exception")
+        with patch("motor.coordinator.api_server.inference_server.SimpleRateLimiter") as mock_limiter:
+            mock_limiter.side_effect = Exception("Test exception")
             unified_app = self.coordinator_server.create_unified_app()
             assert unified_app is not None, "Unified app should be created even with exceptions"
 
@@ -1513,21 +1376,13 @@ class TestFastAPIMiddlewareAdvanced:
 
     def setup_method(self):
         """Setup test fixtures"""
-        from motor.coordinator.middleware.fastapi_middleware import (
-            SimpleRateLimitMiddleware,
-            SimpleRateLimitConfig,
-            load_rate_limit_config,
-            create_simple_rate_limit_middleware,
-        )
+        from motor.coordinator.middleware.fastapi_middleware import SimpleRateLimitMiddleware
         from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         self.app = FastAPI()
         self.SimpleRateLimitMiddleware = SimpleRateLimitMiddleware
-        self.SimpleRateLimitConfig = SimpleRateLimitConfig
-        self.load_rate_limit_config = load_rate_limit_config
-        self.create_simple_rate_limit_middleware = create_simple_rate_limit_middleware
         self.SimpleRateLimiter = SimpleRateLimiter
         self.TestClient = TestClient
         self._report_alarms_patcher = patch(
@@ -1625,44 +1480,6 @@ class TestFastAPIMiddlewareAdvanced:
         # Second request may be rate limited
         response4 = client.get("/test")
         assert response4.status_code in [200, 429], "Second request may be rate limited"
-
-    def test_load_rate_limit_config_file_not_found(self):
-        """Test load_rate_limit_config with non-existent file"""
-        config = self.load_rate_limit_config(config_file="/nonexistent/config.json")
-        assert config is not None, "Should return default config when file not found"
-        assert config.enabled, "Should use default enabled value"
-
-    def test_load_rate_limit_config_invalid_json(self):
-        """Test load_rate_limit_config with invalid JSON file"""
-        import tempfile
-        import os
-
-        # Create temporary file with invalid JSON
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("invalid json content")
-            config_file = f.name
-
-        try:
-            config = self.load_rate_limit_config(config_file=config_file)
-            assert config is not None, "Should return default config when JSON is invalid"
-        finally:
-            os.unlink(config_file)
-
-    def test_simple_rate_limit_config_post_init(self):
-        """Test SimpleRateLimitConfig __post_init__"""
-        config = self.SimpleRateLimitConfig()
-        assert config.skip_paths is not None, "skip_paths should be initialized"
-        assert "/liveness" in config.skip_paths, "/liveness should be in skip_paths"
-        assert "/ready" in config.skip_paths, "/ready should be in skip_paths"
-        assert "/metrics" in config.skip_paths, "/metrics should be in skip_paths"
-
-    def test_create_simple_rate_limit_middleware_defaults(self):
-        """Test create_simple_rate_limit_middleware with default parameters"""
-        middleware = self.create_simple_rate_limit_middleware(app=self.app)
-
-        assert middleware is not None, "Middleware should be created"
-        assert middleware.rate_limiter.max_requests == 100, "Should use default max_requests"
-        assert middleware.rate_limiter.window_size == 60, "Should use default window_size"
 
 
 @pytest.mark.asyncio

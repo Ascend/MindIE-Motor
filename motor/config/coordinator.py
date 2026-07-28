@@ -87,7 +87,7 @@ def _default_skip_paths() -> set[str]:
     }
 
 
-def _default_rate_limit_skip_paths() -> list[str]:
+def default_rate_limit_skip_paths() -> list[str]:
     return [
         "/liveness",
         "/readiness",
@@ -388,9 +388,11 @@ class RateLimitConfig:
     max_requests: int = 1000
     window_size: int = 60
     scope: str = "global"
-    skip_paths: list[str] = field(default_factory=_default_rate_limit_skip_paths)
+    skip_paths: list[str] = field(default_factory=default_rate_limit_skip_paths)
     error_message: str = "too many requests, please try again later"
     error_status_code: int = 429
+    # Maximum request body size, in MB (1 MB = 1024*1024 bytes), supports decimal values (e.g., 0.5 means 0.5 MB); <= 0 means no limit.
+    max_request_body_size: float = 0
 
     olc_config_path: str = ""
 
@@ -752,6 +754,8 @@ class CoordinatorConfig:
         # Validate rate limit configuration
         self._validate_positive_number(self.rate_limit_config.max_requests, "max_requests")
         self._validate_positive_number(self.rate_limit_config.window_size, "window_size")
+        if self.rate_limit_config.max_request_body_size < 0:
+            self._errors.append("max_request_body_size cannot be negative")
 
         if not (100 <= self.rate_limit_config.error_status_code <= 599):
             self._errors.append("error_status_code must be in range 100-599")
