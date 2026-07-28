@@ -802,7 +802,10 @@ class InstanceManager(ThreadSafeSingleton):
             event = InsConditionEvent.INSTANCE_PAUSED
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_all_endpoints_ready():
-            event = InsConditionEvent.INSTANCE_NORMAL
+            if from_state == InsStatus.PAUSED:
+                event = InsConditionEvent.INSTANCE_RESUMED
+            else:
+                event = InsConditionEvent.INSTANCE_NORMAL
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_have_one_endpoint_abnormal():
             event = InsConditionEvent.INSTANCE_ABNORMAL
