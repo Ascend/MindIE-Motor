@@ -93,7 +93,7 @@ ENV_CONFIG_KEY_ORDER = (
     "motor_coordinator_env",
     "motor_engine_prefill_env",
     "motor_engine_decode_env",
-    "motor_kv_cache_pool_env",
+    "motor_kv_cache_store_env",
 )
 
 HYBRID_ENV_CONFIG_KEY_ORDER = (
@@ -102,7 +102,7 @@ HYBRID_ENV_CONFIG_KEY_ORDER = (
     "motor_controller_env",
     "motor_coordinator_env",
     "motor_engine_union_env",
-    "motor_kv_cache_pool_env",
+    "motor_kv_cache_store_env",
 )
 
 UNION_ENV_KEY_ORDER = (
@@ -964,7 +964,7 @@ def build_env_config(
             "motor_coordinator_env": {},
             "motor_engine_prefill_env": format_role_env(prefill_env, role="prefill"),
             "motor_engine_decode_env": format_role_env(decode_env, role="decode"),
-            "motor_kv_cache_pool_env": {},
+            "motor_kv_cache_store_env": {},
         },
         ENV_CONFIG_KEY_ORDER,
     )
@@ -978,7 +978,7 @@ def build_hybrid_env_config(script_env: dict[str, Any]) -> dict[str, Any]:
             "motor_controller_env": {},
             "motor_coordinator_env": {},
             "motor_engine_union_env": format_role_env(script_env, role="hybrid"),
-            "motor_kv_cache_pool_env": {},
+            "motor_kv_cache_store_env": {},
         },
         HYBRID_ENV_CONFIG_KEY_ORDER,
     )

@@ -1106,7 +1106,7 @@ env.json内容如下
     "DS_H2D_MEMCPY_POLICY": "direct",
     "DS_D2H_MEMCPY_POLICY": "direct"
   },
-  "motor_kv_cache_pool_env": {},
+  "motor_kv_cache_store_env": {},
   "motor_kv_conductor_env": {}
 }
 
