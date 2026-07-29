@@ -42,6 +42,7 @@ A5_SCHEDULE_POLICY_BY_ACCELERATOR_TYPE = {
 A5_HOST_PATH_VOLUMES = [
     {"name": "host-lib64", "path": "/usr/lib64"},
     {"name": "hixlep", "path": "/etc/hixlep"},
+    {"name": "route-conf", "path": "/lib/route.conf"},
     {"name": "urma-admin", "path": "/usr/bin/urma_admin", "type": "File"},
 ]
 HOST_NETWORK = "hostNetwork"
