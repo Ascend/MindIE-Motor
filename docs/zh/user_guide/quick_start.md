@@ -8,7 +8,7 @@ MindIE PyMotor是面向通用大模型PD分离部署场景的推理服务化框�
 
 | 特性       | 说明              |
 | ------------ | ----------------- |
-| **PD分离部署** | 模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的机器资源上同时进行推理，提升推理性能，其特性介绍详情请参见[PD分离部署](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/user_guide/service_deployment/pd_separation_service_deployment.md)。 |
+| **PD分离部署** | 模型推理的Prefill阶段和Decode阶段分别实例化部署在不同的机器资源上同时进行推理，提升推理性能，其特性介绍详情请参见[PD分离部署](./service_deployment/pd_disaggregation_deployment.md)。 |
 
 ## 快速开始
 
