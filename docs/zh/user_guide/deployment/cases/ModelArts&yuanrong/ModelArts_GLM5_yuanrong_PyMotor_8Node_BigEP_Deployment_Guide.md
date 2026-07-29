@@ -28,7 +28,7 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image2.png)
 
-详细信息请参考开源链接：https://gitcode.com/Ascend/MindIE-PyMotor?source_module=search_project&tab=md#markdown-card-anchor
+详细信息请参考开源链接：https://gitcode.com/Ascend/MindIE-Motor
 
 ## 整体架构介绍
 
@@ -438,7 +438,6 @@ start_base_yr.sh脚本内容如下：
 
 ```bash
 #!/bin/bash
-
 # 获取集群节点信息
 MS_GLOBAL_RANKTABLE_TABLE=/user/global/config/global_rank_table.json
 SCRIPT_PATH=/workspace/scripts
@@ -518,7 +517,6 @@ start_etcd.sh内容如下：
 
 ```bash
 #!/bin/bash
-
 host_IP=$(hostname -I | xargs)
 echo "host_IP = $host_IP"
 
@@ -600,7 +598,6 @@ echo "yr worker start finished"
 
 ```bash
 #!/bin/bash
-
 # 获取集群节点信息
 MS_GLOBAL_RANKTABLE_TABLE=/user/global/config/global_rank_table.json
 SCRIPT_PATH=/workspace/scripts
@@ -1132,8 +1129,8 @@ dpkg -i $MOTOR_SCRIPT_PATH/pciutils-offline/*.deb
 # install libzmq
 dpkg -i $MOTOR_SCRIPT_PATH/libzmq-offline/*.deb
 # install motor
-pip install $MOTOR_SCRIPT_PATH/MindIE-PyMotor/dist/motor-*.whl
-echo "pymotor install succeed"
+pip install $MOTOR_SCRIPT_PATH/MindIE-Motor/dist/motor-*.whl
+echo "motor install succeed"
 # copy conductor
 cp $MOTOR_SCRIPT_PATH/mooncake_conductor /usr/local/bin/
 # export env

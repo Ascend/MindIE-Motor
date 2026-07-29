@@ -60,8 +60,8 @@
 - 最大并发数配置，参考[`user_config.json`](../../configuration/config_reference.md#motor_coordinator_config)配置文件中的`max_requests`配置参数；
 
 - `Coordinator`内存占用上限设置，需要修改`yaml`文件中`coordinator`容器中`resources.limits.memory`配置项；
-  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
-  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
+  - 当使用CRD模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/infer_service_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/infer_service_template.yaml)；
+  - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/coordinator_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/coordinator_template.yaml)。
 
 参考示例如下：
 

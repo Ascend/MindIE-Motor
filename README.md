@@ -8,6 +8,9 @@
     <a href="./LICENSE.md">
         <img alt="License" src="https://img.shields.io/badge/License-Mulan-blue">
     </a>
+    <a href="https://mindie-motor.readthedocs.io/">
+        <img alt="Documentation" src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF">
+    </a>
     <a href="https://meeting.ascend.osinfra.cn/">
         <img alt="TC and SIG Meetings" src="https://img.shields.io/badge/Meetings-TC%2FSIG-0A7B83">
     </a>
@@ -22,13 +25,15 @@
 
 # 快速开始
 
+**在线文档**：[MindIE Motor 文档](https://mindie-motor.readthedocs.io/)
+
 **以下是代码仓库智能体，点击 "Ask AI" ，即可开启智能代码学习与问答体验！它们将帮助您更深入地理解 MindIE Motor 的运行原理，并协助解决使用过程中遇到的问题与错误！**
 
 <p align="center">
-    <a href="https://zread.ai/verylucky01/MindIE-PyMotor">
+    <a href="https://zread.ai/Ascend/MindIE-Motor">
         <img alt="Zread Ask AI" src="https://img.shields.io/badge/Zread-Ask%20AI-2F66F6">
     </a>
-    <a href="https://deepwiki.com/verylucky01/MindIE-PyMotor">
+    <a href="https://deepwiki.com/Ascend/MindIE-Motor">
         <img alt="DeepWiki Ask AI" src="https://img.shields.io/badge/DeepWiki-Ask%20AI-2F66F6">
     </a>
 </p>
@@ -51,9 +56,9 @@ MindIE 系列 TC/SIG 会议安排，请查看 [Ascend会议中心](https://meeti
 
 # 问题反馈
 
-如果您在使用过程中发现异常，建议先查看仓库的 [Issues 列表](https://gitcode.com/wumingjing/MindIE-PyMotor-README/issues)，确认是否已有相同或相近的问题。
+如果您在使用过程中发现异常，建议先查看仓库的 [Issues 列表](https://gitcode.com/Ascend/MindIE-Motor/issues)，确认是否已有相同或相近的问题。
 
-如果现有问题列表中没有对应项，可以直接 [创建新的 Issue](https://gitcode.com/wumingjing/MindIE-PyMotor-README/issues/create/choose)，并尽量补充完整的问题现象、复现步骤、日志片段和环境信息，便于快速定位。
+如果现有问题列表中没有对应项，可以直接 [创建新的 Issue](https://gitcode.com/Ascend/MindIE-Motor/issues/create/choose)，并尽量补充完整的问题现象、复现步骤、日志片段和环境信息，便于快速定位。
 
 如果问题涉及安全风险，请不要通过公开 Issue 直接披露，建议按照 [security.md](./security.md) 中的方式联系项目维护者。
 

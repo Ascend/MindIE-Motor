@@ -24,7 +24,7 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 
 ### 故障等级
 
-故障按严重程度分为 7 个等级，由原始故障类型映射而来（[fault_types.py](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/motor/controller/fault_tolerance/fault_types.py)）：
+故障按严重程度分为 7 个等级，由原始故障类型映射而来（[fault_types.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/fault_tolerance/fault_types.py)）：
 
 | 等级 | 枚举 | 原始故障类型 | 含义 |
 |------|------|-------------|------|
@@ -106,12 +106,12 @@ InstanceManager 收到心跳 → 状态机: INITIAL → ACTIVE
 
 ### 关键组件交互
 
-**NodeManager 侧（[engine_manager.py](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/motor/node_manager/core/engine_manager.py)）**：
+**NodeManager 侧（[engine_manager.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/node_manager/core/engine_manager.py)）**：
 
 - `_register()`：NodeManager 启动后自动向 Controller 发送 `RegisterMsg`（含 job_name、role、pod_ip、parallel_config、device_num、ranktable 等），最多重试 5 次。
 - `parse_start_cmd()`：接收 Controller 的 `StartCmdMsg`，校验参数后存储 `instance_id` 和 `endpoints`，并将 ranktable 写入本地文件供引擎使用。
 
-**Controller 侧（[instance_assembler.py](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/motor/controller/core/instance_assembler.py)）**：
+**Controller 侧（[instance_assembler.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/core/instance_assembler.py)）**：
 
 - `register()`：根据 `_eval_register_status()` 判断当前状态——若 `InstanceManager` 中已存在 ACTIVE 实例则跳过；若已在组装中则更新时间戳；否则创建新 `Instance` 并加入组装队列。
 - `_assemble_instance()`：检查各 NodeManager 是否存活、端点数量是否满足并行配置要求（`is_endpoints_enough()`），满足则标记为 `ASSEMBLED`。
@@ -172,11 +172,11 @@ scale_p2d()：选择一个 P 实例，释放其占用的节点资源
 - **模式退化**：Decode 故障期间，Coordinator 调度层检测 `readiness == ONLY_PREFILL`，自动将路由模式回退为 `SINGLE_NODE`（参见 [PD 分离—实例就绪与回退](../pd_disaggregation.md)）。此过程对业务无感知，推理请求正常处理，仅延迟增加。
 - **模式恢复**：新 Decode 实例心跳上报就绪后，Coordinator 感知到 P/D 均可用，自动恢复 PD 分离路由。
 - **策略方向**：缩P保D 是单向的——只有 Decode 故障时才需要“借用” Prefill 的节点资源。Prefill 角色的 L4+ 故障不会触发此策略。
-- **策略代码**：[scale_p2d.py](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/motor/controller/fault_tolerance/strategy/scale_p2d.py)
+- **策略代码**：[scale_p2d.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/fault_tolerance/strategy/scale_p2d.py)
 
 ### 策略路由
 
-[strategy.py](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/motor/controller/fault_tolerance/strategy/strategy.py) 中的策略映射：
+[strategy.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/fault_tolerance/strategy/strategy.py) 中的策略映射：
 
 ```python
 # L4 → ScaleP2DStrategy（仅 decode 角色，非 decode 返回 None）
@@ -237,7 +237,7 @@ FaultManager 感知故障清除 → 实例恢复 HEALTHY
 - **白名单机制**：仅特定故障码 `0x00f1fef5` 和 `0x08520003` 触发该策略，非白名单内的 L2 故障不执行恢复策略。
 - **不可中断**：策略 `stop()` 不执行任何操作——token级重推需要等待网络自行恢复或故障升级，不应被人为中断。
 - **故障检测来源**：同时支持 `DeviceInfoCfg`（卡间网络故障 `CardNetworkUnhealthy`）和 `SwitchInfoCfg`（交换机故障）两条检测路径。
-- **策略代码**：[token_reinference.py](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/motor/controller/fault_tolerance/strategy/token_reinference.py)
+- **策略代码**：[token_reinference.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/fault_tolerance/strategy/token_reinference.py)
 
 ---
 

@@ -63,13 +63,13 @@ engine_server --dp-rank 0 --instance-id 1 --role prefill \
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `--dp-rank` | int | 数据并行组内 endpoint 序号，默认 `0`。Node Manager 拉起时取 `endpoint.id`，并映射为 vLLM `data-parallel-rank`（见 [examples/deployer/README.md](../../../../examples/deployer/README.md)）。 |
+| `--dp-rank` | int | 数据并行组内 endpoint 序号，默认 `0`。Node Manager 拉起时取 `endpoint.id`，并映射为 vLLM `data-parallel-rank`（见 [examples/deployer/README.md](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/README.md)）。 |
 | `--instance-id` | int | 实例 ID，由 Controller 组装后随 `StartCmdMsg` 下发，默认 `0`。 |
 | `--role` | string | PD 分离角色：`prefill`、`decode` 或 `union`（混部）。 |
 | `--host` | string | 推理面与管理面监听地址（bind IP）。 |
 | `--port` | int | 推理业务端口，对外提供 `/v1/*`、`/health` 等 infer 接口。 |
 | `--mgmt-port` | int | 管理面端口，对外提供 `GET /status` 及 Prometheus 路由。 |
-| `--master-dp-ip` | string | DP master 节点 IP，用于分布式推理组网（对应 vLLM `data-parallel-address` 来源，见 [examples/deployer/README.md](../../../../examples/deployer/README.md)）。 |
+| `--master-dp-ip` | string | DP master 节点 IP，用于分布式推理组网（对应 vLLM `data-parallel-address` 来源，见 [examples/deployer/README.md](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/README.md)）。 |
 | `--config-path` | string | `user_config.json` 路径，须含与 `--role` 匹配的引擎配置块。 |
 
 单容器或跨节点等场景可能额外传入下表参数（本地最小示例可不填）：

@@ -55,8 +55,8 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
     "inventories": {
       "PInstanceList": [
         {
-          "ID": "mindie-pymotor-p0-123456",
-          "Name": "mindie-pymotor-p0-123456",
+          "ID": "mindie-motor-p0-123456",
+          "Name": "mindie-motor-p0-123456",
           "InstanceStatus": "running",
           "podInfoList": [
             {
@@ -82,8 +82,8 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
       ],
       "DInstanceList": [
         {
-          "ID": "mindie-pymotor-d0-123456",
-          "Name": "mindie-pymotor-d0-123456",
+          "ID": "mindie-motor-d0-123456",
+          "Name": "mindie-motor-d0-123456",
           "InstanceStatus": "running",
           "podInfoList": [
             {
@@ -108,7 +108,7 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
               "DPID": 0,
               "DPName": "",
               "DPRole": "Central",
-              "PDInstID": "mindie-pymotor-p0-123456",
+              "PDInstID": "mindie-motor-p0-123456",
               "podInfoList": [
                 {
                   "podID": "192.168.222.211",

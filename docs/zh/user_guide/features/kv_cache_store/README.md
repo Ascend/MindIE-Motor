@@ -22,7 +22,7 @@ MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和
 > **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打此补丁。**
 > 如果您的 `vllm-ascend` 版本为 `v0.17.0rc2` 及以上，补丁已合入主干，**请直接跳过本节内容，无需进行打补丁操作**。
 
-由于vllm代码的layerwise KV-cache传输叠加KV池化存在推理bug，需要应用vllm_multi_connector.patch补丁，具体操作步骤可参考[MindIE Motor应用补丁](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/patch/README.md)。
+由于vllm代码的layerwise KV-cache传输叠加KV池化存在推理bug，需要应用vllm_multi_connector.patch补丁，具体操作步骤可参考[MindIE Motor应用补丁](https://gitcode.com/Ascend/MindIE-Motor/blob/master/patch/README.md)。
 
 ## 配置 user_config.json
 
