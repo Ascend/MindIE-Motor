@@ -1,10 +1,10 @@
-site_name: MindIE-PyMotor-Doc
-site_url: https://mindie-pymotor.readthedocs.io/zh-cn/latest/
-site_author: MindIE-PyMotor Team
+site_name: MindIE-Motor
+site_url: https://mindie-motor.readthedocs.io/
+site_author: MindIE-Motor Team
 site_description: 华为昇腾大语言模型推理引擎文档
 docs_dir: docs/zh
-repo_url: https://gitcode.com/Ascend/MindIE-PyMotor
-repo_name: MindIE-PyMotor
+repo_url: https://gitcode.com/Ascend/MindIE-Motor
+repo_name: MindIE-Motor
 
 theme:
   name: material
@@ -94,6 +94,9 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - toc:
       permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
 
 extra_css:
   - mkdocs/stylesheets/extra.css

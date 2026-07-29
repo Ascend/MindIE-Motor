@@ -8,6 +8,9 @@
     <a href="./LICENSE.md">
         <img alt="License" src="https://img.shields.io/badge/License-Mulan-blue">
     </a>
+    <a href="https://mindie-motor.readthedocs.io/">
+        <img alt="Documentation" src="https://img.shields.io/badge/Docs-Read%20the%20Docs-8CA1AF">
+    </a>
     <a href="https://meeting.ascend.osinfra.cn/">
         <img alt="TC and SIG Meetings" src="https://img.shields.io/badge/Meetings-TC%2FSIG-0A7B83">
     </a>
@@ -22,13 +25,15 @@
 
 # 快速开始
 
+**在线文档**：[MindIE Motor 文档](https://mindie-motor.readthedocs.io/)
+
 **以下是代码仓库智能体，点击 "Ask AI" ，即可开启智能代码学习与问答体验！它们将帮助您更深入地理解 MindIE Motor 的运行原理，并协助解决使用过程中遇到的问题与错误！**
 
 <p align="center">
-    <a href="https://zread.ai/verylucky01/MindIE-PyMotor">
+    <a href="https://zread.ai/Ascend/MindIE-Motor">
         <img alt="Zread Ask AI" src="https://img.shields.io/badge/Zread-Ask%20AI-2F66F6">
     </a>
-    <a href="https://deepwiki.com/verylucky01/MindIE-PyMotor">
+    <a href="https://deepwiki.com/Ascend/MindIE-Motor">
         <img alt="DeepWiki Ask AI" src="https://img.shields.io/badge/DeepWiki-Ask%20AI-2F66F6">
     </a>
 </p>

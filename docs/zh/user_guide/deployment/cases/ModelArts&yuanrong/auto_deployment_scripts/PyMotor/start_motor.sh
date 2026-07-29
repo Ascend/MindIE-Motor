@@ -5,8 +5,8 @@ dpkg -i $MOTOR_SCRIPT_PATH/pciutils-offline/*.deb
 # install libzmq
 dpkg -i $MOTOR_SCRIPT_PATH/libzmq-offline/*.deb
 # install motor
-pip install $MOTOR_SCRIPT_PATH/MindIE-PyMotor/dist/motor-*.whl
-echo "pymotor install succeed"
+pip install $MOTOR_SCRIPT_PATH/MindIE-Motor/dist/motor-*.whl
+echo "motor install succeed"
 # copy conductor
 cp $MOTOR_SCRIPT_PATH/mooncake_conductor /usr/local/bin/
 # export env

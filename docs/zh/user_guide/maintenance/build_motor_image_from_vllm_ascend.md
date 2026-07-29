@@ -67,9 +67,9 @@
      mkdir -p /mnt/packages-offline
 
      # 镜像已自带 transformers，下载前删除该依赖，避免版本冲突
-     sed -i '/^transformers/d' /mnt/MindIE-PyMotor/requirements.txt
+     sed -i '/^transformers/d' /mnt/MindIE-Motor/requirements.txt
 
-     pip download -r /mnt/MindIE-PyMotor/requirements.txt -d /mnt/packages-offline -i https://pypi.tuna.tsinghua.edu.cn/simple
+     pip download -r /mnt/MindIE-Motor/requirements.txt -d /mnt/packages-offline -i https://pypi.tuna.tsinghua.edu.cn/simple
 
      cd /mnt/
      tar -czvf packages-offline.tar.gz packages-offline
@@ -80,16 +80,17 @@
 3. 构建MindIE Motor的whl包。
 
      ```bash
-     cd /mnt/MindIE-PyMotor
+     cd /mnt/MindIE-Motor
 
-     # 构建好的whl包在/mnt/MindIE-PyMotor/dist/路径下
+     # 构建好的whl包在/mnt/MindIE-Motor/dist/路径下
+
      bash build.sh
 
      cd /mnt/
-     tar -czvf MindIE-PyMotor.tar.gz MindIE-PyMotor
+     tar -czvf MindIE-Motor.tar.gz MindIE-Motor
      ```
 
-     将`/mnt/MindIE-PyMotor.tar.gz`拷贝到制作镜像机器的`/mnt/`路径下。
+     将`/mnt/MindIE-Motor.tar.gz`拷贝到制作镜像机器的`/mnt/`路径下。
 
 ### 获取基础镜像，以vLLM-Ascend为例
 
@@ -158,7 +159,7 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
          cd /mnt/
          git clone <motor的git链接>
 
-         cd /mnt/MindIE-PyMotor
+         cd /mnt/MindIE-Motor
 
          # 镜像已自带 transformers，安装前删除该依赖，避免版本冲突
          sed -i '/^transformers/d' requirements.txt
@@ -184,11 +185,11 @@ docker pull quay.io/ascend/vllm-ascend:v0.13.0
          pip install /mnt/packages-offline/*.whl --force-reinstall --no-index -v
 
          # 安装motor
-         pip install --force-reinstall /mnt/MindIE-PyMotor/dist/motor-*.whl --no-index -v
+         pip install --force-reinstall /mnt/MindIE-Motor/dist/motor-*.whl --no-index -v
 
          # 拷贝examples
          mkdir -p /tmp/motor/
-         cp -r /mnt/MindIE-PyMotor/examples/ /tmp/motor/
+         cp -r /mnt/MindIE-Motor/examples/ /tmp/motor/
 
          # 退出容器
          exit
