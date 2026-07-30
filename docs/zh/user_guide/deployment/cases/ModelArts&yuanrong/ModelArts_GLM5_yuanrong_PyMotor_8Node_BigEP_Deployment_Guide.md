@@ -1,8 +1,8 @@
 # ModelArts环境部署8机A2大EP+GLM5.1模型+元戎多级缓存+MindIE Motor综合调度指导手册
 
-# 整体方案介绍
+## 整体方案介绍
 
-## 元戎数据系统介绍
+### 元戎数据系统介绍
 
 元戎数据系统（YuanRong）是一个分布式缓存系统，旨在充分利用计算集群中的HBM、DRAM和SSD资源，构建近计算侧的多级缓存体系，全面提升模型训练与推理、大数据分析以及微服务等场景下的数据访问效率。在推理场景中，元戎作为高性能分布式多级缓存，依托DRAM和SSD构建缓存层，支持应用实例通过共享内存实现免拷贝读取DRAM数据，显著降低数据访问延迟。同时，系统提供高效的H2D（Host
 to Device）和D2H（Device to
@@ -14,7 +14,7 @@ Host）数据传输接口，支持HBM与DRAM之间的快速数据交换，进一
 
 详细信息请参考开源链接：https://pages.openeuler.openatom.cn/openyuanrong-datasystem/docs/zh-cn/latest/index.html
 
-## MindIE Motor介绍
+### MindIE Motor介绍
 
 MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结合高性能调度与负载均衡能力，构建高可用、可扩展的大规模推理服务。主要包含以下核心能力：
 
@@ -30,7 +30,7 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 详细信息请参考开源链接：https://gitcode.com/Ascend/MindIE-Motor
 
-## 整体架构介绍
+### 整体架构介绍
 
 基于HCS ModelArts 8.5.1（后续简称MA）平台进行GLM5.1模型大EP部署，支持推理服务级KV cache池化缓存、EP实例内亲和调度（DP域粒度）、EP实例级故障恢复，主要特性如下：
 
@@ -48,9 +48,9 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image3.JPG)
 
-# MA配置启动指导
+## MA配置启动指导
 
-## 硬件资源配置
+### 硬件资源配置
 
 建议配置如下（Atlas 800I A2推理服务器8机）：
 
@@ -72,7 +72,7 @@ MA典型配置如下图所示（MA控制台-开发生产-模型部署-在线服�
 
 ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image33.png)
 
-## 模型管理配置
+### 模型管理配置
 
 完整的模型管理内容一般至少包含以下3个版本：
 
@@ -110,9 +110,9 @@ test_start.sh实现如下，建议使用MindIE镜像，自带ais_bench工具：
 python -m http.server 1025
 ```
 
-## 服务启动指导
+### 服务启动指导
 
-### ETCD池化启动
+#### ETCD池化启动
 
 操作指导如下步骤：
 
@@ -182,7 +182,7 @@ python -m http.server 1025
 
     > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image23.png)
 
-### ModelArts模型服务启动
+#### ModelArts模型服务启动
 
 1. 进入ModelArts界面，选定工作空间后点击"模型管理 \> 创建模型"；
 
@@ -228,15 +228,15 @@ python -m http.server 1025
 
     ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image28.png)
 
-# 自动化部署脚本资料
+## 自动化部署脚本资料
 
-## 脚本概述及目录架构
+### 脚本概述及目录架构
 
 自动化部署包含内容及目录架构如下所示：
 
 ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image29.png)
 
-## ModelArts统一启动脚本
+### ModelArts统一启动脚本
 
 统一入口脚本不区分主从节点，命名start.sh，为MA自动拉起(模型管理-使用约束)提供统一执行入口，执行操作如下：
 
@@ -384,9 +384,9 @@ sleep 36000000
 
 - 脚本结尾sleep字段为MA推理1.0场景下必需保留；
 
-## yuanrong多级缓存自动化部署脚本
+### yuanrong多级缓存自动化部署脚本
 
-### 目录架构总览
+#### 目录架构总览
 
 Yuanrong多级缓存自动化部署包含两种方式，分别为ETCD单实例模式、ETCD池化模式。其中ETCD单实例模式需要脚本自行拉起一个ETCD实例，ETCD池化模式直接使用已经部署好的ETCD集群。部署方案脚本如下图所示：
 
@@ -410,7 +410,7 @@ Yuanrong多级缓存自动化部署包含两种方式，分别为ETCD单实例�
 使用注意事项：执行时需要把三个脚本放在同一目录，按实际情况修改start_base_yr.sh中依赖文件的目录，最后通过bash
 start_base_yr.sh执行。
 
-### 安装包准备
+#### 安装包准备
 
 从以下地址下载元戎whl安装包进行离线安装：
 
@@ -432,7 +432,7 @@ v3.5.10版本，建议从quay.io下载镜像：
 docker pull quay.io/coreos/etcd:v3.5.10
 ```
 
-### 部署方案一(ETCD单实例模式)
+#### 部署方案一(ETCD单实例模式)
 
 start_base_yr.sh脚本内容如下：
 
@@ -592,7 +592,7 @@ echo "yr worker start finished"
 
 ```
 
-### 部署方案二(ETCD池化模式)
+#### 部署方案二(ETCD池化模式)
 
 该方案依赖提前完成资源集群的ETCD部署，参考3.5章节-[ETCD池化部署方案](#etcd池化部署方案)。start_base_yr.sh脚本内容如下：
 
@@ -715,9 +715,9 @@ dsc1 start -t 600 -w \
 echo "yr worker start finished"
 ```
 
-## MindIE-Motor自动化部署脚本
+### MindIE-Motor自动化部署脚本
 
-### 目录架构总览
+#### 目录架构总览
 
 本教程基于ModelArts对大EP实例级调度进行部署，MindIE-Motor基于大EP实例内DP域进行亲和调度。集群部署及可靠性概览如下图：
 
@@ -726,7 +726,7 @@ echo "yr worker start finished"
 在上述ModelArts集群部署形态下，单EP实例内部的MindIE-Motor部署如下图：
 ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image32.png)
 
-### 基于vllm镜像安装包准备
+#### 基于vllm镜像安装包准备
 
 离线下载motor及其依赖，主要包含以下部分：
 
@@ -741,7 +741,7 @@ echo "yr worker start finished"
 - motor源码，用于拷贝examples目录，将examples目录放到
   /mnt/obs/scripts/PyMotor路径下
 
-### 基于motor镜像安装包准备
+#### 基于motor镜像安装包准备
 
 从容器中拷贝examples目录
 
@@ -755,7 +755,7 @@ docker rm "$cid"
 
 ```
 
-### 准备启动脚本
+#### 准备启动脚本
 
 使用prepare.sh生成启动脚本，prepare.sh脚本内容如下
 
@@ -796,7 +796,7 @@ python $EXAMPLES_PATH/deployer/startup/set_env_docker.py --configmap_path $CONFI
 
 ```
 
-### 修改user_config.json和env.json
+#### 修改user_config.json和env.json
 
 模型：GLM5.1
 
@@ -1109,7 +1109,7 @@ env.json内容如下
 
 ```
 
-### 增加start_motor.sh脚本
+#### 增加start_motor.sh脚本
 
 作为motor启动的入口，主要作用如下：
 
@@ -1194,9 +1194,9 @@ fi
 
 ```
 
-## ETCD池化部署方案
+### ETCD池化部署方案
 
-### 部署方案介绍
+#### 部署方案介绍
 
 在使用元戎的跨节点KV缓存池化方案中，需要使用ETCD作为中心管理节点，进行计算节点信息、业务数据信息的处理与转发。ETCD部署需要满足以下要求：
 
@@ -1210,7 +1210,7 @@ fi
 基于上述要求，部署方案制定为在MA资源租户内，使用CCE部署ETCD容器，ETCD间通过headless
 service通信， 外部访问通过clusterIP实现；
 
-### 部署脚本实现
+#### 部署脚本实现
 
 etcd-all.yaml脚本实现如下，第22行镜像地址需根据实际镜像修改(字段：swr.cn...)
 
@@ -1368,9 +1368,9 @@ spec:
 
 ```
 
-# 健康检查配置
+## 健康检查配置
 
-## 总体介绍
+### 总体介绍
 
 本教程的大EP部署场景中(ModelArts推理1.0)，包含以下健康检测能力：
 
@@ -1386,7 +1386,7 @@ spec:
 
 - 就绪探针、存活探针任一失败超过最大次数均会触发MA服务重启
 
-## 就绪探针检查脚本
+### 就绪探针检查脚本
 
 就绪探针脚本不区分主从节点，命名vllm_probe.py，执行如下操作：
 
@@ -1460,7 +1460,7 @@ if __name__ == "__main__":
 
 ```
 
-## 存活探针检查脚本
+### 存活探针检查脚本
 
 存活探针脚本不区分主从节点，命名vllm_probe_yr.py，执行如下操作：
 
@@ -1643,7 +1643,7 @@ if __name__ == "__main__":
     logging.info(f"health check success, response: {response.text}")
 ```
 
-## 关键注意事项
+### 关键注意事项
 
 1. 健康检查脚本只有正常返回sys.exit(0)值，才代表执行成功；而返回sys.exit(1)或者抛error等，都代表健康检查失败，可在收到执行完检查后，通过echo \$?命令，查看刚刚脚本退出值，只有0才正确，并且应当有success打印（仅手动调试过程中有该打印）。
 
@@ -1651,11 +1651,11 @@ if __name__ == "__main__":
 
 3. 执行健康检查报无法识别"\\r"命令：先尝试dos2unix utils.sh，如果容器报错无dos2unix指令，则使用以下指令: sed -i "s/\\r//" utils.sh，该命令为将文件中所有\\r字符替换为空白。
 
-# 测试指导
+## 测试指导
 
-## 基于vLLM bench serve性能测试
+### 基于vLLM bench serve性能测试
 
-### 手动快速测试
+#### 手动快速测试
 
 使用vllm bench serve对已启动的OpenAI兼容服务进行快速压测，脚本示例如下：
 
@@ -1701,7 +1701,7 @@ vllm bench serve \
 |--port|指定压测服务自身运行的端口。
 |--max-concurrency|最大并发请求数
 
-### 自动深度测试
+#### 自动深度测试
 
 通过已构建的shell自动化脚本，调用vllm bench
 serve能力对模型进行深度自动化压测、性能测试。自动化脚本可灵活组合测试并发数、输入长度、前缀重复比例、输出长度、测试数据集大小等。测试过程中脚本通过vllm
@@ -1917,11 +1917,11 @@ echo "  📁 结果汇总报表已保存至: ${CSV_FILE}"
 echo "=========================================================="
 ```
 
-## 基于ais_bench精度测试
+### 基于ais_bench精度测试
 
 本指导使用ais_bench对模型服务进行精度测试，主要使用gpqa、aime等测试数据集，基于ais_bench在github或gitee开源仓的使用指导构建即可。工具使用指导请参考：https://github.com/AISBench/benchmark/blob/master/README.md
 
-# FAQ-关键问题
+## FAQ-关键问题
 
 1. 压测过程中MA就绪/存活探针检查失败：
 

@@ -1,3 +1,8 @@
+---
+hide:
+  - navigation
+---
+
 # MindIE Motor架构
 
 ## MindIE Motor简介
@@ -22,7 +27,7 @@ MindIE Motor 及其周边组件的交互架构图如下所示：
 
 **图1 MindIE Motor架构图**
 
-![架构图](./imgs/MindIE_PyMotor_Architecture.jpg)
+![架构图](./imgs/MindIE_Motor_Architecture.jpg)
 
 ---
 
