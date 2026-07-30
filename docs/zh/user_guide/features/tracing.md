@@ -12,7 +12,7 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
 ### 配置env.json
 
-以[MindIE Motor快速开始](../quick_start.md)中实例env.json为参考基线，适配打开Tracing能力后的配置文件示例如下：
+以[MindIE Motor快速开始](../quick_start_motor.md)中实例env.json为参考基线，适配打开Tracing能力后的配置文件示例如下：
 
 ```json
 {
@@ -50,7 +50,7 @@ MindIE Motor开启Tracing能力需修改env.json配置文件和user_config.json�
 
 ### 配置user_config.json
 
-以[MindIE Motor快速开始](../quick_start.md)中实例user_config.json为参考基线，适配打开Tracing能力后的配置文件示例如下：
+以[MindIE Motor快速开始](../quick_start_motor.md)中实例user_config.json为参考基线，适配打开Tracing能力后的配置文件示例如下：
 
 ```json
 {

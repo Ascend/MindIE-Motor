@@ -3,7 +3,7 @@ nav:
   - 架构: architecture.md
   - 版本说明: release_note.md
   - 用户指南:
-      - 快速开始: user_guide/quick_start.md
+      - 快速开始: user_guide/quick_start_motor.md
       - 环境准备: user_guide/environment_preparation.md
       - 通信矩阵: user_guide/communication_matrix.md
       - 服务部署:

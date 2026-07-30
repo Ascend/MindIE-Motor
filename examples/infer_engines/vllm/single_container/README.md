@@ -9,7 +9,7 @@ MindIE Motor支持单个容器内启动PD分离服务:Coordinator/controller/PD�
 MindIE Motor修改user_config.json配置文件后，通过deploy.py脚本即可完成服务部署，具体流程如下。
 
 1. 配置user_config.json。
-   以[快速入门](../../../../docs/zh/user_guide/quick_start.md)中示例 `user_config.json` 为参考基线，相关适配点如下：
+   以[快速入门](../../../../docs/zh/user_guide/quick_start_motor.md)中示例 `user_config.json` 为参考基线，相关适配点如下：
 
     ```json
       "motor_deploy_config": {
