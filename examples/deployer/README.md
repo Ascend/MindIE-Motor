@@ -140,7 +140,7 @@ examples/infer_engines/
 
 | 字段 | 说明 |
 |------|------|
-| `coordinator_infer_node_port` | Coordinator 推理 Service 的 NodePort。缺省为 `31015`；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
+| `coordinator_infer_node_port` | Coordinator 推理 Service 的 NodePort。缺省时保留模板中的 `nodePort`（当前模板默认 `31015`）；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
 | `controller_node_selector` | Controller Pod 的自定义 `nodeSelector`。 |
 | `coordinator_node_selector` | Coordinator Pod 的自定义 `nodeSelector`。 |
 | `prefill_node_selector` | Prefill Pod 的自定义 `nodeSelector`。 |

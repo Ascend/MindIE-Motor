@@ -36,8 +36,8 @@ DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [
-        (None, 31015),
-        ("", 31015),
+        (None, None),
+        ("", None),
         ("-", None),
         (" 32015 ", 32015),
         (32016, 32016),
@@ -51,12 +51,45 @@ def test_get_coordinator_infer_node_port(configured, expected):
     assert get_coordinator_infer_node_port(deploy_config) == expected
 
 
+@pytest.mark.parametrize(
+    ("deploy_config", "expected"),
+    [
+        ({}, 32015),
+        ({C.COORDINATOR_INFER_NODE_PORT: None}, 32015),
+        ({C.COORDINATOR_INFER_NODE_PORT: ""}, 32015),
+        ({C.COORDINATOR_INFER_NODE_PORT: "-"}, None),
+        ({C.COORDINATOR_INFER_NODE_PORT: "32016"}, 32016),
+    ],
+)
+def test_get_coordinator_infer_node_port_uses_template_default(deploy_config, expected):
+    assert get_coordinator_infer_node_port(deploy_config, default=32015) == expected
+
+
 def test_apply_coordinator_infer_node_port_removes_fixed_port():
     service = {C.SPEC: {C.PORTS: [{C.PORT: 1025, C.NODE_PORT: 31015}]}}
 
     apply_coordinator_infer_node_port(service, {C.COORDINATOR_INFER_NODE_PORT: "-"})
 
     assert C.NODE_PORT not in service[C.SPEC][C.PORTS][0]
+
+
+@pytest.mark.parametrize(
+    "deploy_config", [{}, {C.COORDINATOR_INFER_NODE_PORT: ""}, {C.COORDINATOR_INFER_NODE_PORT: None}]
+)
+def test_apply_coordinator_infer_node_port_keeps_template_port_when_unset(deploy_config):
+    service = {C.SPEC: {C.PORTS: [{C.PORT: 1025, C.NODE_PORT: 32015}]}}
+
+    apply_coordinator_infer_node_port(service, deploy_config)
+
+    assert service[C.SPEC][C.PORTS][0][C.NODE_PORT] == 32015
+
+
+def test_apply_coordinator_infer_node_port_overrides_template_port_when_configured():
+    service = {C.SPEC: {C.PORTS: [{C.PORT: 1025, C.NODE_PORT: 31015}]}}
+
+    apply_coordinator_infer_node_port(service, {C.COORDINATOR_INFER_NODE_PORT: "32015"})
+
+    assert service[C.SPEC][C.PORTS][0][C.NODE_PORT] == 32015
 
 
 def test_get_coordinator_infer_node_port_rejects_invalid_value():

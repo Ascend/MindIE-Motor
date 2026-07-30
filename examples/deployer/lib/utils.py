@@ -256,14 +256,16 @@ def get_coordinator_service_name(deploy_config):
     return service_name or "mindie-motor-coordinator-infer"
 
 
-def get_coordinator_infer_node_port(deploy_config):
-    node_port = deploy_config.get(C.COORDINATOR_INFER_NODE_PORT, 31015)
+def get_coordinator_infer_node_port(deploy_config, default=None):
+    node_port = deploy_config.get(C.COORDINATOR_INFER_NODE_PORT, default)
+    if node_port is None:
+        return default
     if isinstance(node_port, str):
         node_port = node_port.strip()
         if node_port == "-":
             return None
         if not node_port:
-            return 31015
+            return default
     try:
         return int(node_port)
     except (TypeError, ValueError) as exc:
@@ -274,7 +276,7 @@ def apply_coordinator_infer_node_port(service_data, deploy_config):
     ports = service_data.get(C.SPEC, {}).get(C.PORTS, [])
     if not ports:
         raise ValueError("Coordinator infer service ports not found")
-    node_port = get_coordinator_infer_node_port(deploy_config)
+    node_port = get_coordinator_infer_node_port(deploy_config, default=ports[0].get(C.NODE_PORT))
     if node_port is None:
         ports[0].pop(C.NODE_PORT, None)
     else:

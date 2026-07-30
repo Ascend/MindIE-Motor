@@ -45,7 +45,7 @@ Optional:
 
 - Set `motor_deploy_config.scheduling_queue` to control the Volcano queue.
 - Set `motor_deploy_config.coordinator_service_name` to override the external inference Service name.
-- Set `motor_deploy_config.coordinator_infer_node_port` to override the inference Service NodePort. Use `"-"` for Kubernetes allocation; omitting it preserves the legacy default `31015`.
+- Set `motor_deploy_config.coordinator_infer_node_port` to override the inference Service NodePort. Use `"-"` for Kubernetes allocation; omitting it keeps the `nodePort` configured in the template, which currently defaults to `31015`.
 - Set `motor_deploy_config.prefill_node_selector` and `motor_deploy_config.decode_node_selector` to control Prefill/Decode node placement separately.
 - Set `motor_deploy_config.controller_node_selector` and `motor_deploy_config.coordinator_node_selector` to control Controller/Coordinator placement separately.
 - Set `motor_deploy_config.kv_pool_node_selector` and `motor_deploy_config.kv_conductor_node_selector` to control KV Pool/KV Conductor placement separately.

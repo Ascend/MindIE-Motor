@@ -45,7 +45,7 @@ make buildx-cloud-native-deployer TAG=latest
 
 - `motor_deploy_config.scheduling_queue`：指定 Volcano 队列。
 - `motor_deploy_config.coordinator_service_name`：覆盖默认的对外推理 Service 名称。
-- `motor_deploy_config.coordinator_infer_node_port`：覆盖对外推理 Service 的 NodePort。配置 `"-"` 时由 Kubernetes 自动分配，字段缺省时保持原默认值 `31015`。
+- `motor_deploy_config.coordinator_infer_node_port`：覆盖对外推理 Service 的 NodePort。配置 `"-"` 时由 Kubernetes 自动分配，字段缺省时保留模板中的 `nodePort`，当前模板默认值为 `31015`。
 - `motor_deploy_config.prefill_node_selector` 和 `motor_deploy_config.decode_node_selector`：分别控制 Prefill / Decode 的节点调度标签。
 - `motor_deploy_config.controller_node_selector` 和 `motor_deploy_config.coordinator_node_selector`：分别控制 Controller / Coordinator 的节点调度标签。
 - `motor_deploy_config.kv_pool_node_selector` 和 `motor_deploy_config.kv_conductor_node_selector`：分别控制 KV Pool / KV Conductor 的节点调度标签。
