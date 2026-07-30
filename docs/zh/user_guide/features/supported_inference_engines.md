@@ -7,7 +7,7 @@ MindIE PyMotor（以下简称 PyMotor）采用控制面（Controller/Coordinator
 | 推理引擎 | 支持状态 | 说明 |
 | --- | --- | --- |
 | **vLLM** | 已支持（推荐） | 配合 `vllm-ascend` 使用；文档与示例最完整，为当前主推引擎。 |
-| **SGLang** | 已支持 | 可通过 `engine_type: sglang` 部署。部分高级能力与 vLLM 的覆盖范围可能不同，以对应特性文档与示例为准。 |
+| **SGLang** | 已支持（POC） | 可通过 `engine_type: sglang` 部署。部分高级能力与 vLLM 的覆盖范围可能不同，以对应特性文档与示例为准。 |
 
 在 `user_config.json` 的 `motor_engine_prefill_config` / `motor_engine_decode_config`（或混部场景的 `motor_engine_union_config`）中设置 `engine_type`，即可选择底层引擎。`engine_config` 与引擎启动命令参数对应，转换方法见 [user_config 全量参数说明](../configuration/config_reference.md)。
 

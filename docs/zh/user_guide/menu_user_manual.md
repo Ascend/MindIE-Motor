@@ -2,7 +2,7 @@
 
 - [简介](../architecture.md)
 - [版本说明](../release_note.md)
-- [快速入门](./quick_start.md)
+- [快速入门](./quick_start_motor.md)
 - [安装指南](./maintenance/build_motor_image_from_vllm_ascend.md)
 - [基础环境准备](./environment_preparation.md)
 - [准备MindIE Motor镜像](../developer_guide/build_motor_image_from_vllm_ascend.md)

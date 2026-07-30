@@ -40,7 +40,7 @@
 
 **环境准备**：安装前的相关软硬件环境准备，以及安装步骤，请参见[环境准备](./docs/zh/user_guide/environment_preparation.md)。
 
-**快速部署**：快速体验启动服务、接口调用、精度&性能测试和停止服务全流程，请参见[快速部署](./docs/zh/user_guide/quick_start.md)。
+**快速部署**：快速体验启动服务、接口调用、精度&性能测试和停止服务全流程，请参见[快速部署](./docs/zh/user_guide/quick_start_motor.md)。
 
 **最佳实践**：PD 分离部署请参见[PD 分离服务部署详细指导](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md)，PD 混部部署请参见[PD 混部服务部署详细指导](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md)。
 

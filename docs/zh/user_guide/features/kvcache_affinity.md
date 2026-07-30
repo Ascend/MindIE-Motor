@@ -22,7 +22,7 @@ kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 w
 ## 前置说明
 
 - 已使用 MindIE Motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
-- 开启前请参考 [MindIE Motor 快速开始](../quick_start.md)，确保基础服务部署正常。
+- 开启前请参考 [MindIE Motor 快速开始](../quick_start_motor.md)，确保基础服务部署正常。
 - 镜像需包含 kv-conductor 二进制。若使用官方发布镜像，二进制已随 motor wheel 打包；若自行构建，需 Rust 工具链（cargo），详见 [构建说明](#镜像构建)。
 - 后续操作均在 K8s 集群管理节点（master 节点）执行。
 
@@ -98,7 +98,7 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
 
 ### PD 分离配置
 
-以 [快速开始](../quick_start.md) 的 PD 分离配置为基线，仅展示增量部分（`...` 为已有不变配置）：
+以 [快速开始](../quick_start_motor.md) 的 PD 分离配置为基线，仅展示增量部分（`...` 为已有不变配置）：
 
 ```json
 {

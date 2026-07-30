@@ -10,7 +10,7 @@ pyMotor修改user_config.json配置文件后，通过deploy.py脚本即可完成
 
 ### 配置user_config.json
 
-以[PyMotor快速开始](../../../../docs/zh/user_guide/quick_start.md)中示例 `user_config.json` 为参考基线，相关适配点如下：
+以[PyMotor快速开始](../../../../docs/zh/user_guide/quick_start_motor.md)中示例 `user_config.json` 为参考基线，相关适配点如下：
 
 ```json
   "motor_deploy_config": {
