@@ -13,7 +13,7 @@ import sys
 from unittest.mock import patch, MagicMock
 
 from motor.config.node_manager import KVCacheStoreConfig
-from motor.node_manager.core.services.local_service import LocalService
+from motor.node_manager.core.services.memcache.lifecycle import LocalService
 
 
 # ---------------------------------------------------------------------------
@@ -128,15 +128,13 @@ def test_pull_launches_standalone_as_subprocess(mock_popen):
         ls._kv_cfg.local_config_path = "/tmp/mmc-local-inprocess.conf"
         ls.pull()
 
-        # Verify Popen was called with inline python3 -c
+        # Verify Popen was called with sys.executable -m
         mock_popen.assert_called_once()
         call_args, call_kwargs = mock_popen.call_args
         cmd = call_args[0]
         assert cmd[0] == sys.executable
-        assert cmd[1] == "-c"
-        assert "DistributedObjectStore" in cmd[2]
-        assert "set_process_title" in cmd[2]
-        assert "threading.Event().wait()" in cmd[2]
+        assert cmd[1] == "-m"
+        assert cmd[2] == "motor.node_manager.core.services.memcache.worker"
         assert call_kwargs["shell"] is False
         # Env should have standalone conf path
         assert call_kwargs["env"]["MMC_LOCAL_CONFIG_PATH"] == "/tmp/mmc-local-standalone.conf"

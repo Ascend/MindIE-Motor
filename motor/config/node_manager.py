@@ -115,6 +115,8 @@ class BasicConfig:
 
     # Heartbeat sending configuration
     heartbeat_interval_seconds: int = 3
+    # Daemon loop check interval (suicide poll, etc.)
+    daemon_loop_interval: float = 5.0
 
     # Device information
     device_num: int = 0
@@ -296,6 +298,9 @@ class KVCacheStoreConfig:
     enable: bool = False
     # True when kv_cache_store_config is present.
     backend: str = "memcache"
+    mode: str = "combined"
+    # "combined" (default): engine + KV in the same pod.
+    # "separated":         KV runs in a dedicated pod (no engine, no heartbeat).
     service: str = ""
     # Default from $KVS_MASTER_SERVICE.
     port: int = 50088
@@ -618,6 +623,14 @@ class NodeManagerConfig:
         # --- populate from config first, env var as fallback ---
         if "backend" in kv:
             kcfg.backend = kv["backend"]
+        if "mode" in kv:
+            kcfg.mode = kv["mode"]
+        if kcfg.mode not in ("combined", "separated"):
+            logger.warning(
+                "kv_cache_store_config.mode=%r is invalid, falling back to 'combined'",
+                kcfg.mode,
+            )
+            kcfg.mode = "combined"
         if not kcfg.service:
             kcfg.service = kv.get("service", "") or os.getenv("KVS_MASTER_SERVICE", "")
         if not kcfg.local_service_mode:
@@ -809,7 +822,8 @@ class NodeManagerConfig:
             f"    ├─ Enabled:              {self.kv_cache_store_config.enable}\n"
             f"    ├─ Backend:              {self.kv_cache_store_config.backend}\n"
             f"    ├─ Service:              {self.kv_cache_store_config.service or '(env: KVS_MASTER_SERVICE)'}\n"
-            f"    ├─ Mode:                 {self.kv_cache_store_config.local_service_mode or '(default)'}\n"
+            f"    ├─ Deploy Mode:          {self.kv_cache_store_config.mode}\n"
+            f"    ├─ Runtime Mode:         {self.kv_cache_store_config.local_service_mode or '(default)'}\n"
             f"    ├─ Port:                 {self.kv_cache_store_config.port}\n"
             f"    └─ Local Config Path:    {self.kv_cache_store_config.local_config_path}\n"
             f"{'=' * 80}"

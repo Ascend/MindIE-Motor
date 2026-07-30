@@ -47,7 +47,7 @@ def _create_engine(hardware_type: str, config):
     )
 
 
-@register_service(SERVICE_ENGINE, factory=_create_engine)
+@register_service(SERVICE_ENGINE, backend="engine", factory=_create_engine)
 class EngineService:
     """Manage engine subprocess lifecycle: start, track PIDs, stop."""
 
@@ -207,7 +207,22 @@ class EngineService:
                 self.engine_pids.remove(pid)
 
     def health_check(self) -> None:
-        """Check engine PIDs; trigger pod restart on failure (DaemonService protocol)."""
+        """Check engine PIDs; trigger pod restart on failure (DaemonService protocol).
+
+        Two-layer suicide strategy:
+        1. Fast path (here): individual engine subprocess death → immediate SIGTERM
+           to own process, controlled by ``Env.motor_restart_engine``.  This gives
+           ~5 s detection latency via the Daemon process monitor loop.
+
+        2. Slow path (HeartbeatManager): after 5 consecutive abnormal heartbeats,
+           HeartbeatManager sets its ``should_suicide`` flag; the main loop calls
+           ``suicide_procedure()`` which returns exit code -1 (pod rescheduling).
+           This catches controller-level node unhealthiness that may not involve
+           an individual engine PID dying.
+
+        These two paths are independent: the fast path handles local engine crashes
+        immediately; the slow path handles orchestration-level failure detection.
+        """
         for pid in self.pid_list():
             try:
                 os.kill(pid, 0)

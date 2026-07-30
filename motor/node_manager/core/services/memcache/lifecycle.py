@@ -8,6 +8,14 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+"""Daemon-side lifecycle manager for memcache LocalService.
+
+The *actual* LocalService worker runs in a subprocess; its entry point is
+:mod:`motor.node_manager.core.services.memcache.worker`.  This module only
+handles the daemon-side lifecycle (start / stop / health_check) and is
+registered with the daemon via ``@register_service``.
+"""
+
 import os
 import signal
 import subprocess
@@ -42,7 +50,7 @@ class LocalService:
 
     In ``inprocess`` mode the LocalService runs inside vLLM — only the
     ``mmc-local-inprocess.conf`` is prepared.  In ``standalone`` mode a
-    dedicated subprocess is started via ``subprocess.Popen``, mirroring
+    dedicated subprocess is started via ``sys.executable -m``, mirroring
     how engine processes are launched.
     """
 
@@ -58,9 +66,23 @@ class LocalService:
         self._local_world_size = local_world_size
         self.restart_local_service = restart_local_service
 
-        self._endpoints_count: int = 0  # updated by prepare()
-
         self._ls_process: subprocess.Popen | None = None
+
+    # ------------------------------------------------------------------
+    # conditional launch
+    # ------------------------------------------------------------------
+
+    @property
+    def _can_launch(self) -> bool:
+        """True when this service should manage a standalone LS subprocess."""
+        return (
+            self._kv_cfg.enable
+            and self._kv_cfg.backend == "memcache"
+            and self._kv_cfg.local_service_mode == "standalone"
+        )
+
+    def should_launch(self) -> bool:
+        return self._can_launch
 
     # ------------------------------------------------------------------
     # mmc-local-inprocess.conf preparation
@@ -73,9 +95,8 @@ class LocalService:
         user-managed in mmc-local-inprocess.conf.
 
         Keyword Args:
-            endpoints_count: Number of DP endpoints on this node.
+            endpoints_count: Number of DP endpoints on this node (informational only).
         """
-        self._endpoints_count = kwargs.get("endpoints_count", 0)
         if not self._kv_cfg.enable:
             return
         if self._kv_cfg.backend != "memcache":
@@ -102,33 +123,31 @@ class LocalService:
         # vLLM workers read MMC_LOCAL_CONFIG_PATH to locate their conf file.
         os.environ["MMC_LOCAL_CONFIG_PATH"] = conf_path
 
+        endpoints_count = kwargs.get("endpoints_count", 0)
         logger.info(
             "Prepared mmc-local-inprocess.conf: mode=%s, path=%s, endpoints=%d",
             ls_mode,
             conf_path,
-            self._endpoints_count,
+            endpoints_count,
         )
 
     # ------------------------------------------------------------------
     # standalone LS launch (subprocess)
     # ------------------------------------------------------------------
 
-    def should_launch(self) -> bool:
-        if not self._kv_cfg.enable:
-            return False
-        if self._kv_cfg.backend != "memcache":
-            return False
-        if self._kv_cfg.local_service_mode != "standalone":
-            return False
-        return True
-
     def pull(self) -> None:
         """Start standalone LS as a subprocess (if not already running).
+
+        Uses ``sys.executable -m`` to launch the worker entry point in
+        :mod:`motor.node_manager.core.services.memcache.worker`.  Each
+        subprocess gets its own env dict (``subprocess.Popen(env=...)``)
+        so the standalone conf path does not leak to sibling processes
+        (e.g. engine subprocesses that need the inprocess conf path).
 
         Called both after engine spawn (concurrent with warmup) and by the
         process monitor on restart.
         """
-        if not self.should_launch():
+        if not self._can_launch:
             return
         if self.is_alive():
             return
@@ -145,19 +164,7 @@ class LocalService:
             env = os.environ.copy()
             env["MMC_LOCAL_CONFIG_PATH"] = standalone_path
 
-            # Long-running daemon process — cannot use `with Popen` because
-            # __exit__ calls wait() which would block the caller forever.
-            py_exe = os.environ.get("PYTHON_EXEC_PATH", sys.executable)
-            cmd = [
-                py_exe,
-                "-c",
-                "from motor.common.utils.process_utils import set_process_title; "
-                "set_process_title('local_service_standalone'); "
-                "from memcache_hybrid import DistributedObjectStore; "
-                "import threading; "
-                "DistributedObjectStore().init(0); "
-                "threading.Event().wait()",
-            ]
+            cmd = [sys.executable, "-m", "motor.node_manager.core.services.memcache.worker"]
             logger.info("Starting standalone LocalService")
             self._ls_process = subprocess.Popen(cmd, shell=False, env=env)  # pylint: disable=consider-using-with
             if self._ls_process.poll() is not None:
@@ -192,11 +199,9 @@ class LocalService:
         return self._ls_process.poll() is None
 
     def mark_dead(self) -> None:
+        """Non-blocking check and reap of the LS subprocess."""
         if self._ls_process is not None:
-            try:
-                self._ls_process.wait(timeout=0)
-            except (ProcessLookupError, ChildProcessError, subprocess.TimeoutExpired):
-                pass
+            self._ls_process.poll()
         self._ls_process = None
 
     def health_check(self) -> None:

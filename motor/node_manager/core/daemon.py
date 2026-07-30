@@ -15,11 +15,10 @@ from motor.common.resources.endpoint import Endpoint
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.logger import get_logger
 from motor.config.node_manager import NodeManagerConfig
+from motor.node_manager.core.services.protocols import DaemonService, PreparableService
 from motor.node_manager.core.services.registry import (
     SERVICE_ENGINE,
     SERVICE_KV_STORE,
-    DaemonService,
-    PreparableService,
     registry,
 )
 
@@ -43,21 +42,26 @@ class Daemon(ThreadSafeSingleton):
         if config is None:
             config = NodeManagerConfig.from_json()
 
+        # --- Determine which services to activate ---
+        # Derived from kv_cache_store_config in user_config.json:
+        #   mode="combined" (default): engine + KV in same pod
+        #   mode="separated":         KV-only pod (no engine, no heartbeat)
+        #   no kv config:             engine-only pod
+        kv_cfg = config.kv_cache_store_config
+        if not kv_cfg.enable:
+            services = "engine"
+        elif kv_cfg.mode == "separated":
+            services = kv_cfg.backend
+        else:
+            services = f"engine,{kv_cfg.backend}"
+
         # --- Discover & instantiate all active services ---
-        registry.discover()
-        active = registry.get_active()
+        registry.discover(services=services)
         self._services: dict[str, DaemonService] = {}
 
         hardware_type = str(config.basic_config.hardware_type)
 
-        def _sort_key(name: str) -> tuple[bool, int]:
-            reg = active[name]
-            if reg.prepare_priority is not None:
-                return (False, reg.prepare_priority)
-            return (True, 0)
-
-        for name in sorted(active, key=_sort_key):
-            reg = active[name]
+        for name, reg in registry.get_active_sorted():
             self._services[name] = reg.instantiate(
                 hardware_type=hardware_type,
                 config=config,
@@ -115,6 +119,11 @@ class Daemon(ThreadSafeSingleton):
         if engine is not None:
             return engine.pid_list()  # type: ignore[attr-defined]
         return []
+
+    @property
+    def has_engine(self) -> bool:
+        """True when the engine service is active (i.e. this pod runs inference)."""
+        return SERVICE_ENGINE in self._services
 
     def stop(self) -> None:
         self._monitor_stop.set()

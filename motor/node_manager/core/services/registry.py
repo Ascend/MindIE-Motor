@@ -14,13 +14,17 @@ Usage::
 
     from motor.node_manager.core.services.registry import register_service
 
-    @register_service("engine")
+    @register_service("engine", backend="engine")
     class EngineService:
         ...
 
     @register_service("kv_store", backend="memcache", prepare_priority=10)
     class LocalService:
         ...
+
+Set ``KV_STORE_BACKEND`` to a comma-separated list of backend tags, e.g.
+``"engine,memcache"`` (both), ``"engine"`` (inference only), or ``"memcache"``
+(KV only).  Empty / unset defaults to ``"engine"`` for backward compatibility.
 
 The Daemon discovers active services at init time via :func:`registry.get_active`
 and instantiates them.  Non-matching backends are never instantiated.
@@ -29,10 +33,10 @@ and instantiates them.  Non-matching backends are never instantiated.
 import importlib
 import threading
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import cast
 
 from motor.common.logger import get_logger
-from motor.common.utils.env import Env
+from motor.node_manager.core.services.protocols import DaemonService
 
 logger = get_logger(__name__)
 
@@ -41,54 +45,13 @@ SERVICE_ENGINE: str = "engine"
 SERVICE_KV_STORE: str = "kv_store"
 
 # --- Module discovery: backend → modules to import for @register_service ---
-# ``None`` key = always-active modules (imported unconditionally).
-_MODULE_MAP: dict[str | None, list[str]] = {
-    None: ["motor.node_manager.core.services.engine"],
-    "memcache": ["motor.node_manager.core.services.local_service"],
-    # Future: "mooncake": ["motor.node_manager.core.services.mooncake"],
-    # Future: "yuanrong": ["motor.node_manager.core.services.yuanrong"],
+# Each key is a backend tag; ``discover()`` imports the listed modules when
+# that backend appears in the ``Env.kv_store_backend`` list (comma-separated).
+# ``None`` key = always-active (imported unconditionally).
+_DEFAULT_MODULE_MAP: dict[str | None, list[str]] = {
+    "engine": ["motor.node_manager.core.services.engine"],
+    "memcache": ["motor.node_manager.core.services.memcache.lifecycle"],
 }
-
-
-# ---------------------------------------------------------------------------
-# Protocols
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class DaemonService(Protocol):
-    """Minimal interface every daemon-managed service must satisfy.
-
-    ``stop()`` must be safe to call multiple times (idempotent).
-    ``health_check()`` is called periodically by the Daemon process monitor;
-    each service encapsulates its own failure detection and self-restart logic.
-    """
-
-    def stop(self) -> None:
-        """Stop the service.  Must be idempotent."""
-        ...
-
-    def health_check(self) -> None:
-        """Check service health and self-restart if needed.
-
-        Called by the Daemon process monitor on every tick (~5 s).
-        The implementation handles its own failure detection and recovery
-        (e.g. ``os.kill`` for subprocess PIDs, ``thread.is_alive`` for threads).
-        """
-        ...
-
-
-@runtime_checkable
-class PreparableService(DaemonService, Protocol):
-    """A service that needs pre-flight preparation before the engine starts."""
-
-    def prepare(self, **kwargs) -> None:
-        """Run before ``EngineService.pull()``.
-
-        *kwargs* include ``endpoints_count`` (int) so the service can
-        divide per-node DRAM across DP ranks.
-        """
-        ...
 
 
 # ---------------------------------------------------------------------------
@@ -98,15 +61,6 @@ class PreparableService(DaemonService, Protocol):
 
 class _ServiceRegistration:
     """Internal record for one registered service."""
-
-    __slots__ = (
-        "name",
-        "service_class",
-        "backend",
-        "prepare_priority",
-        "factory",
-        "instance",
-    )
 
     def __init__(
         self,
@@ -124,17 +78,24 @@ class _ServiceRegistration:
         self.factory = factory  # None = use service_class(**kwargs)
         self.instance: DaemonService | None = None
 
-    @property
-    def is_active(self) -> bool:
-        """True when the service's backend matches the current configuration."""
+    def _is_active(self, active_backends: list[str]) -> bool:
+        """True when this service's *backend* appears in *active_backends*.
+
+        ``backend=None`` means always active regardless of config.
+        """
         if self.backend is None:
             return True
-        return Env.kv_store_backend == self.backend
+        return self.backend in active_backends
 
     def instantiate(self, **kwargs) -> DaemonService:
         """Create and store the service instance.
 
         Uses *factory* when provided, otherwise calls ``service_class(**kwargs)``.
+
+        Note: this is NOT idempotent by design — each call creates a fresh
+        instance.  The Daemon's own singleton pattern (``_initialized`` guard)
+        is the sole protection against double-instantiation.  This allows
+        tests to construct multiple Daemon instances with different configs.
         """
         if self.factory is not None:
             self.instance = self.factory(**kwargs)
@@ -159,28 +120,56 @@ class _ServiceRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._registrations: dict[str, _ServiceRegistration] = {}
+        self._module_map: dict[str | None, list[str]] = dict(_DEFAULT_MODULE_MAP)
+        self._active_backends: list[str] = ["engine"]  # resolved by discover()
 
     # ------------------------------------------------------------------
-    # Discovery
+    # Module discovery
     # ------------------------------------------------------------------
 
-    def discover(self) -> None:
-        """Import service modules so ``@register_service`` decorators fire.
+    def add_discovery_path(self, backend: str | None, *module_paths: str) -> None:
+        """Add module paths for *backend* into the discovery map.
 
-        Always-active modules are imported unconditionally; backend-specific
-        modules are imported only when ``Env.kv_store_backend`` matches.
+        ``backend=None`` means always-active (imported unconditionally).
+        Call before :meth:`discover`.
+        """
+        with self._lock:
+            self._module_map.setdefault(backend, []).extend(module_paths)
+
+    @staticmethod
+    def _parse_backends(raw: str) -> list[str]:
+        """Parse a comma-separated services string into a list of backend tags.
+
+        Supports comma-separated values (e.g. ``"engine,memcache"``).
+        Defaults to ``["engine"]`` when empty, preserving backward compatibility.
+        """
+        if not raw or not raw.strip():
+            return ["engine"]
+        return [b.strip() for b in raw.split(",") if b.strip()]
+
+    def discover(self, services: str) -> None:
+        """Import modules registered via :meth:`add_discovery_path`.
+
+        *services* is a comma-separated list of backend tags (e.g.
+        ``"engine,memcache"``), derived from user_config.
+
+        Always-active modules (``backend=None``) are imported unconditionally;
+        backend-specific modules are imported for each matching tag.
+        Importing the module causes ``@register_service`` decorators to fire,
+        populating the registry.
 
         Called once by the Daemon before :meth:`get_active`.
         """
-        backend = Env.kv_store_backend
-        for mod_path in _MODULE_MAP.get(None, []):
+        backends = self._parse_backends(services)
+        self._active_backends = backends
+        for mod_path in self._module_map.get(None, []):
             importlib.import_module(mod_path)
-        if backend:
-            for mod_path in _MODULE_MAP.get(backend, []):
+        for backend in backends:
+            for mod_path in self._module_map.get(backend, []):
                 importlib.import_module(mod_path)
         logger.debug(
-            "Service discovery complete (backend=%s, registered=%d)",
-            backend or "<none>",
+            "Service discovery complete (backends=%s, registered=%d)",
+            backends,
             len(self._registrations),
         )
 
@@ -250,16 +239,33 @@ class _ServiceRegistry:
     # ------------------------------------------------------------------
 
     def get_active(self) -> dict[str, _ServiceRegistration]:
-        """Return registrations whose backend matches the current environment."""
+        """Return registrations whose backend matches the active backends."""
         with self._lock:
-            return {name: reg for name, reg in self._registrations.items() if reg.is_active}
+            active_backends = self._active_backends
+            return {name: reg for name, reg in self._registrations.items() if reg._is_active(active_backends)}
 
     def get_preparable(self) -> list[_ServiceRegistration]:
         """Active, preparable registrations sorted by priority (ascending)."""
         active = self.get_active().values()
         preparable = [r for r in active if r.prepare_priority is not None]
-        preparable.sort(key=lambda r: r.prepare_priority)  # type: ignore[arg-type,return-value]
+        preparable.sort(key=lambda r: cast(int, r.prepare_priority))
         return preparable
+
+    def get_active_sorted(self) -> list[tuple[str, _ServiceRegistration]]:
+        """Active registrations sorted for instantiation.
+
+        PreparableServices come first (by priority, ascending), followed by
+        non-preparable services in insertion order.
+        """
+        active = self.get_active()
+
+        def _sort_key(item: tuple[str, _ServiceRegistration]) -> tuple[int, int]:
+            _name, reg = item
+            if reg.prepare_priority is not None:
+                return (0, cast(int, reg.prepare_priority))
+            return (1, 0)
+
+        return sorted(active.items(), key=_sort_key)
 
     def get_instance(self, name: str) -> DaemonService | None:
         """Return the instantiated service by name, or *None*."""

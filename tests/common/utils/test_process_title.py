@@ -8,13 +8,51 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+"""Tests for :func:`motor.common.utils.process_utils.set_process_title`."""
+
 import importlib
 import sys
 from unittest.mock import MagicMock, call, patch
 
 
+# ===========================================================================
+# NodeManager
+# ===========================================================================
+
+
+@patch("motor.config.node_manager.NodeManagerConfig.from_json", return_value=MagicMock())
 @patch("motor.common.utils.process_utils.set_process_title")
-def test_module_sets_engine_server_title_on_import(mock_set_title):
+def test_node_manager_sets_title_on_import(mock_set_title, _mock_cfg):
+    import motor.node_manager.main as nm_main
+
+    importlib.reload(nm_main)
+    mock_set_title.assert_called_with("NodeManager")
+
+
+@patch("motor.node_manager.main.run_port_setup_or_exit")
+@patch("motor.node_manager.main.reconfigure_logging")
+@patch("motor.node_manager.main.NodeManagerConfig")
+def test_node_manager_main_does_not_reset_title(mock_cfg_cls, _mock_log, _mock_ports):
+    mock_config = MagicMock()
+    mock_cfg_cls.from_json.return_value = mock_config
+
+    import motor.node_manager.main as nm_main
+
+    with patch("motor.node_manager.main.NodeManager.run", return_value=0):
+        with patch("motor.common.utils.process_utils.set_process_title") as mock_set_title:
+            nm_main.main()
+
+    # set_process_title was already called during import — main() must not re-call it
+    mock_set_title.assert_not_called()
+
+
+# ===========================================================================
+# EngineServer
+# ===========================================================================
+
+
+@patch("motor.common.utils.process_utils.set_process_title")
+def test_engine_server_sets_title_on_import(mock_set_title):
     old_argv = sys.argv
     try:
         sys.argv = ["engine_server", "--dp-rank", "2"]
@@ -30,7 +68,7 @@ def test_module_sets_engine_server_title_on_import(mock_set_title):
 @patch("motor.engine_server.cli.main.EndpointFactory")
 @patch("motor.engine_server.cli.main.ConfigFactory")
 @patch("motor.config.endpoint.EndpointConfig.init_endpoint_config")
-def test_main_runs_without_resetting_process_title(
+def test_engine_server_main_does_not_reset_title(
     mock_init_endpoint_config,
     mock_config_factory_cls,
     mock_endpoint_factory_cls,

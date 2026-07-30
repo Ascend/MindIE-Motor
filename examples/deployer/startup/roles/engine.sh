@@ -76,15 +76,5 @@ else
     echo "Skip set_logic_superpod_id_per_node (HCCL_INTER_HCCS_DISABLE=${HCCL_INTER_HCCS_DISABLE:-unset}; keep HCCS SuperPod)"
 fi
 
-python3 -m motor.node_manager.main &
-pid=$!
 echo "pull up $ROLE instance"
-wait $pid
-exit_code=$?
-
-if [ $exit_code -ne 0 ]; then
-    echo "Error: mindie daemon exited with code $exit_code"
-    exit 1
-fi
-echo "All processes finished successfully."
-exit 0
+python3 -m motor.node_manager.main

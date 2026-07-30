@@ -2,7 +2,7 @@
 
 ## 功能介绍
 
-Node Manager 是部署在推理节点上的管理进程，负责连接 Controller 与本节点的 Engine Server。进程入口为 `motor/node_manager/main.py`，主要职责如下：
+Node Manager 是部署在推理节点上的管理进程，负责连接 Controller 与本节点的 Engine Server。进程入口为 `motor/node_manager/main.py`，核心逻辑在 `motor/node_manager/node_manager.py`（`NodeManager` 类），继承自 `motor/common/app/application.py`（`Application` 基类）。主要职责如下：
 
 1. 加载节点配置，完成端口分配并启动管理面 HTTP 服务。
 2. 向 Controller 注册节点，接收 Controller 下发的实例启动命令。
@@ -14,31 +14,35 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
 
 | 对象 | 源码 | 职责 |
 |------|------|------|
+| `Application` | `motor/common/app/application.py` | 基类：模块管理、配置热更新传播、daemon loop、信号处理，封装 Controller / NodeManager 共享的 boilerplate |
+| `NodeManager` | `motor/node_manager/node_manager.py` | `Application` 子类：组装模块并运行 daemon loop，每 tick 检查自杀标志 |
 | `NodeManagerConfig` | `motor/config/node_manager.py` | 加载、校验和重载节点配置，推导 endpoint 数量与端口 |
 | `NodeManagerAPI` | `motor/node_manager/api_server/node_manager_api.py` | 在后台线程中运行 FastAPI/uvicorn，提供启动、停止和探针接口 |
-| `Daemon` | `motor/node_manager/core/daemon.py` | 组装 `engine_server` 命令，拉起子进程并维护 PID |
+| `Daemon` | `motor/node_manager/core/daemon.py` | 服务编排器：根据配置发现并实例化 Engine 和 KV-store 服务，维护进程监控器 |
+| `EngineService` | `motor/node_manager/core/services/engine.py` | Engine 子进程生命周期管理：组装命令、拉起/追踪/停止 `engine_server` 进程 |
+| `LocalService` | `motor/node_manager/core/services/memcache/lifecycle.py` | memcache 后端生命周期管理：配置准备、子进程拉起（通过 `memcache/worker.py`）、健康检查与重启 |
 | `EngineManager` | `motor/node_manager/core/engine_manager.py` | 注册/重注册、校验启动命令、处理 ranktable、快照元数据和故障上报 |
 | `HeartbeatManager` | `motor/node_manager/core/heartbeat_manager.py` | 轮询 endpoint 状态、上报心跳、维护暂停/恢复状态并触发异常自杀 |
 | `FaultReporter` | `motor/node_manager/core/fault_reporter.py` | 订阅 Engine Server 的 ZMQ 软件故障消息并转发给 Controller |
 | `ControllerApiClient` | `motor/node_manager/api_client/controller_api_client.py` | 调用 Controller 的注册、重注册、心跳和故障上报接口 |
 | `EngineServerApiClient` | `motor/node_manager/api_client/engine_server_api_client.py` | 调用 Engine Server 管理面的 `GET /status` |
 
-`Daemon`、`EngineManager` 和 `HeartbeatManager` 均为线程安全单例。HTTP 路由和后台线程通过这些单例共享实例、endpoint 和进程状态。
+`Daemon`、`EngineManager` 和 `HeartbeatManager` 均为线程安全单例。HTTP 路由和后台线程通过这些单例共享实例、endpoint 和进程状态。`Application` 和 `NodeManager` 不是单例，由 `main.py` 显式创建。
 
 ## 生命周期
 
 ### 启动
 
-`main()` 的启动顺序如下：
+启动流程由 `Application.run()` 模板方法驱动，`main.py` 仅负责配置加载和入口调用：
 
-1. 注册 `SIGINT` 和 `SIGTERM` 信号处理函数，并将进程名设置为 `NodeManager`。
-2. 从 `Env.user_config_path or Env.config_path` 加载 `NodeManagerConfig`。
-3. 配置日志并执行 Node Manager 端口分配。
-4. 依次创建 `NodeManagerAPI`、`Daemon`、`EngineManager` 和 `HeartbeatManager`。
-5. `NodeManagerAPI` 在 `nm_api_server` 后台线程中启动；FastAPI lifespan 就绪后设置 API ready 事件。
-6. `EngineManager` 的 `engine_register` 线程最多等待 API ready 30 秒，然后向 Controller 注册。
-7. 非快照模式下启动配置文件 watcher；快照模式不使用 inotify，因此禁用 watcher。
-8. 主线程持续检查退出信号和 `HeartbeatManager.should_suicide()`。
+1. 模块级 `set_process_title("NodeManager")` 设置进程名。
+2. `main()` 加载 `NodeManagerConfig`，配置日志，执行端口分配。
+3. 创建 `NodeManager(config)` 并调用 `run()`，内部执行：
+   a. `init_modules()` — 根据 `Daemon.has_engine` 动态注册模块：`Daemon`、`NodeManagerAPI`，以及有 Engine 时才注册的 `EngineManager` 和 `HeartbeatManager`。
+   b. `_start_config_watcher()` — 非快照模式下启动配置文件 watcher；快照模式跳过。
+   c. `setup_signal_handlers()` — 注册 SIGINT / SIGTERM。
+   d. `_daemon_loop()` — select-based 主循环，每 `daemon_loop_interval` 秒检查自杀标志和 stdin 输入。
+4. 各模块的初始化行为不变：`NodeManagerAPI.__init__` 在后台线程中启动 FastAPI，`EngineManager.__init__` 启动注册线程，`Daemon.__init__` 启动进程监控线程。
 
 首次注册最多尝试 5 次，重试间隔为 2、4、8、16 秒。连续失败后，`EngineManager` 向当前进程发送 `SIGTERM`。
 
@@ -58,10 +62,10 @@ Controller 调用 `POST /node-manager/start` 后，处理流程为：
 
 ### 停止与重调度
 
-- 收到 `SIGINT`、`SIGTERM` 或标准输入命令 `stop` 时，Node Manager 停止配置 watcher，并按初始化的逆序停止模块。
-- `Daemon.stop()` 对记录的 Engine Server PID 发送 `SIGKILL`，随后清空 PID 列表。
-- 任一 endpoint 连续 5 个心跳周期保持 `ABNORMAL` 时，`HeartbeatManager` 设置自杀标志。主线程执行清理后返回 `-1`，用于触发重调度。
-- 当前 `main()` 正常退出路径同样返回 `-1`；源码注释约定 `-1` 表示 rescheduling、`0` 表示 restart。
+- 收到 `SIGINT`、`SIGTERM` 或标准输入命令 `stop` 时，`Application._handle_signal()` 设置 `stop_event`，daemon loop 退出后执行 `shutdown()`：按注册逆序调用每个模块的 `stop()`，然后停止配置 watcher。
+- `Daemon.stop()` 遍历所有 service 调用 `stop()`：`EngineService.stop()` 对记录的 Engine Server PID 发送 `SIGKILL`；`LocalService.stop()` 对 memcache worker 子进程发送 `SIGKILL`。
+- 任一 endpoint 连续 5 个心跳周期保持 `ABNORMAL` 时，`HeartbeatManager` 设置自杀标志。daemon loop 每 tick 检查该标志，触发后 `stop_event.set()` 并返回 `-1`，用于触发重调度。
+- `exit_code` 默认返回 `-1`，与旧行为一致（-1 表示 rescheduling）。
 
 ## Node Manager HTTP API
 
@@ -177,8 +181,10 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 | `api_config.node_manager_port` | `1026` | Node Manager 管理端口 |
 | `endpoint_config.base_port` | `10000` | Engine Server 端口基址；业务/管理端口按偶数/奇数生成 |
 | `basic_config.heartbeat_interval_seconds` | `3` | 向 Controller 上报心跳的周期 |
+| `basic_config.daemon_loop_interval` | `5.0` | daemon loop 检查间隔（秒），控制自杀标志轮询和 stdin 检查频率，支持热更新 |
 | `basic_config.enable_multi_endpoints` | `true` | 是否按 DP 和设备数创建多个 endpoint |
 | `basic_config.nnodes` | `1` | 从 `engine_config.nnodes` 派生的跨节点数量 |
+| `kv_cache_store_config.mode` | `combined` | 部署模式：`combined` 表示 Engine 与 KV-store 在同一 Pod，`separated` 表示 KV-store 独立 Pod（不拉 Engine、不注册、不心跳） |
 | `mgmt_tls_config.enable_tls` | `false` | Node Manager、Controller 和 Engine Server 管理面通信是否启用 TLS |
 | `fault_tolerance_config.enable_fault_tolerance` | `false` | 是否启动软件故障订阅线程 |
 | `fault_tolerance_config.zmq_pub_port` | `0` | ZMQ PUB 基础端口；每个 endpoint 使用 `base_port + endpoint.id` |
@@ -192,11 +198,76 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 
 ### 配置热更新
 
-非快照模式下，配置 watcher 检测到文件变化后调用各模块的 `update_config()`：
+非快照模式下，配置 watcher 检测到文件变化后通过 `Application.on_config_updated()` 集中处理：
 
-- `HeartbeatManager` 动态更新 `heartbeat_interval_seconds`。
-- `EngineManager` 更新配置，并根据 `enable_fault_tolerance`、endpoint、Pod IP 或 `zmq_pub_port` 的变化启停或重建 `FaultReporter`。
-- API 监听地址、监听端口、TLS 和 `Daemon` 已缓存的设备参数不会热重启，修改后需要重启 Node Manager。
+1. `_refresh_check_interval()` — 从配置刷新 daemon loop 间隔。
+2. 遍历所有模块调用 `update_config()`：
+   - `HeartbeatManager` 动态更新 `heartbeat_interval_seconds`。
+   - `EngineManager` 更新配置，并根据 `enable_fault_tolerance`、endpoint、Pod IP 或 `zmq_pub_port` 的变化启停或重建 `FaultReporter`。
+3. 打印更新后的配置摘要 `log_configuration_summary()`。
+4. API 监听地址、监听端口、TLS 和 `Daemon` 已缓存的设备参数不会热重启，修改后需要重启 Node Manager。
+
+## 服务发现与后端扩展
+
+Node Manager 使用基于装饰器的服务注册机制管理 Engine 和 KV-store 服务。相关代码位于 `motor/node_manager/core/services/`。
+
+### 目录结构
+
+```text
+services/
+  __init__.py
+  protocols.py        ← DaemonService, PreparableService（接口契约）
+  registry.py         ← _ServiceRegistry（服务发现与注册中心）
+  engine.py           ← EngineService（Engine 子进程生命周期）
+  memcache/
+    __init__.py
+    worker.py         ← memcache worker 子进程入口（DistributedObjectStore）
+    lifecycle.py      ← daemon 侧生命周期管理（@register_service）
+```
+
+### 服务注册
+
+每个服务通过 `@register_service` 装饰器注册，指定名字、后端标签和可选的准备优先级：
+
+```python
+from motor.node_manager.core.services.registry import register_service
+
+@register_service("engine", backend="engine")
+class EngineService:
+    ...
+
+@register_service("kv_store", backend="memcache", prepare_priority=10)
+class LocalService:
+    ...
+```
+
+`DaemonService` 和 `PreparableService` 是 Protocol 接口（`motor/node_manager/core/services/protocols.py`），定义了 `stop()`、`health_check()` 和 `prepare()` 合约。
+
+### 后端激活
+
+`Daemon.__init__` 根据 `kv_cache_store_config` 决定激活哪些服务：
+
+- `mode="combined"`（默认）：`services = "engine,<backend>"`，Engine 和 KV-store 在同一 Pod。
+- `mode="separated"`：`services = "<backend>"`，仅 KV-store，不拉 Engine、不向 Controller 注册、不上报心跳。
+- 无 `kv_cache_store_config`：`services = "engine"`，仅推理。
+
+`registry.discover(services)` 解析逗号分隔的服务列表，导入对应模块的 `@register_service` 触发注册。
+
+### 新增后端
+
+新增 KV 后端只需两步，无需修改现有代码：
+
+```python
+# 1. 创建服务模块并注册
+from motor.node_manager.core.services.registry import register_service, SERVICE_KV_STORE
+
+@register_service(SERVICE_KV_STORE, backend="new_backend", prepare_priority=10)
+class NewBackendService:
+    ...
+
+# 2. 注册模块发现路径
+registry.add_discovery_path("new_backend", "path.to.new_backend_module")
+```
 
 ## 软件故障上报
 
