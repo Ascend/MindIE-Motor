@@ -389,23 +389,26 @@ class InstanceManager:
         )
         logger.info("Instance dispatch_capabilities: %s", summary or "(none)")
 
-        if self._prefill_pool and self._decode_pool:
-            if not has_compatible_dispatch_pair(self._prefill_pool.values(), self._decode_pool.values()):
-                if self._hybrid_pool:
-                    logger.warning(
-                        "P/D instances are online but advertise no shared dispatch capability; "
-                        "requests will fall back to PDHybridRouter via union instances. "
-                        "Check the engine kv_connector is recognized or set dispatch_profile explicitly. "
-                        "capabilities: %s",
-                        summary or "(none)",
-                    )
-                else:
-                    logger.warning(
-                        "P/D instances are online but advertise no shared dispatch capability "
-                        "(readiness will report instances_status=unknown). Check the engine kv_connector "
-                        "is recognized or set dispatch_profile explicitly. capabilities: %s",
-                        summary or "(none)",
-                    )
+        if (
+            self._prefill_pool
+            and self._decode_pool
+            and not has_compatible_dispatch_pair(self._prefill_pool.values(), self._decode_pool.values())
+        ):
+            if self._hybrid_pool:
+                logger.warning(
+                    "P/D instances are online but advertise no shared dispatch capability; "
+                    "requests will fall back to PDHybridRouter via union instances. "
+                    "Check the engine kv_connector is recognized or set dispatch_profile explicitly. "
+                    "capabilities: %s",
+                    summary or "(none)",
+                )
+            else:
+                logger.warning(
+                    "P/D instances are online but advertise no shared dispatch capability "
+                    "(readiness will report instances_status=unknown). Check the engine kv_connector "
+                    "is recognized or set dispatch_profile explicitly. capabilities: %s",
+                    summary or "(none)",
+                )
 
     def _find_available_pool(self, instance_id: int) -> dict[int, Instance] | None:
         # This is a private method that should only be called within locked contexts
@@ -424,11 +427,34 @@ class InstanceManager:
         else:
             ConductorApiClient().unregister_kv_instance(instances)
 
+    def _find_instance_by_job_name(self, job_name: str) -> Instance | None:
+        """Find an instance by job_name across all pools (available, unavailable, paused)."""
+        for pool in (self._available_pool, self._unavailable_pool, self._paused_pool):
+            for inst in pool.values():
+                if inst.job_name == job_name:
+                    return inst
+        return None
+
+    def _remove_instance_from_all_pools(self, instance_id: int) -> bool:
+        """Remove an instance from whichever pool (available, unavailable, or paused) it belongs to."""
+        if instance_id in self._available_pool:
+            return self._delete_instance_from_available_pool(instance_id)
+        if instance_id in self._unavailable_pool:
+            del self._unavailable_pool[instance_id]
+            logger.debug("Removed instance ID %d from unavailable pool", instance_id)
+            return True
+        if instance_id in self._paused_pool:
+            del self._paused_pool[instance_id]
+            logger.debug("Removed instance ID %d from paused pool", instance_id)
+            return True
+        return False
+
     def _add_instances(self, instances: list[Instance]) -> bool:
         """Add instances to pool. Return True if at least one instance was actually added (pool modified)."""
         # This is a private method that should only be called within locked contexts
         modified = False
         instances_tmp = []
+        replaced_instances = []
         for instance in instances:
             if instance.id in self._unavailable_pool:
                 logger.warning(
@@ -439,6 +465,25 @@ class InstanceManager:
                     instance.job_name,
                 )
                 continue
+
+            # Guard: a job_name must map to at most one active instance. If an instance
+            # with the same job_name but a different ID already exists (e.g. after a pod
+            # restart assigned a new instance ID), remove the stale entry before adding
+            # the replacement so the pools never contain two instances for one job_name.
+            existing = self._find_instance_by_job_name(instance.job_name)
+            if existing is not None and existing.id != instance.id:
+                logger.warning(
+                    "Instance with job_name '%s' already exists (existing ID: %d, role: %s), "
+                    "removing stale instance and refreshing with new instance ID %d (role: %s)",
+                    instance.job_name,
+                    existing.id,
+                    existing.role,
+                    instance.id,
+                    instance.role,
+                )
+                self._remove_instance_from_all_pools(existing.id)
+                replaced_instances.append(existing)
+
             if not self._add_instance_to_available_pool(instance):
                 logger.warning(
                     "Failed to add instance ID %d (role: %s, job_name: %s) to available pool, while adding instance",
@@ -467,6 +512,7 @@ class InstanceManager:
             instances_tmp.append(instance)
 
         self._register_kv_instance(instances_tmp)
+        self._register_kv_instance(replaced_instances, False)
         return modified
 
     def _delete_instances(self, instances: list[Instance]) -> bool:
@@ -515,22 +561,106 @@ class InstanceManager:
             )
         return modified
 
+    @staticmethod
+    def _instance_needs_update(existing: Instance, new: Instance) -> bool:
+        """Compare structural fields (excluding runtime state) to detect if SET should update.
+
+        Runtime state (workload, heartbeat timestamps, endpoint status) is ignored because
+        it is managed by the coordinator, not by SET events.
+        """
+        structural_fields = [
+            'job_name',
+            'model_name',
+            'engine_type',
+            'dispatch_capabilities',
+            'role',
+            'parallel_config',
+            'enable_multi_endpoints',
+        ]
+        for field in structural_fields:
+            if getattr(existing, field) != getattr(new, field):
+                return True
+
+        # Compare node_managers by identity fields (not object identity)
+        existing_nms = [(nm.pod_ip, nm.port, nm.device_num) for nm in (existing.node_managers or [])]
+        new_nms = [(nm.pod_ip, nm.port, nm.device_num) for nm in (new.node_managers or [])]
+        if existing_nms != new_nms:
+            return True
+
+        # Compare endpoints structurally: (pod_ip, endpoint_id, ip, business_port, mgmt_port).
+        # Runtime fields (workload, hb_timestamp, status) are ignored.
+        def _ep_sig(eps: dict[str, dict[int, object]] | None) -> set[tuple]:
+            if not eps:
+                return set()
+            return {
+                (pod_ip, ep.id, ep.ip, ep.business_port, ep.mgmt_port)
+                for pod_ip, pod_eps in eps.items()
+                for ep in (pod_eps or {}).values()
+            }
+
+        return _ep_sig(existing.endpoints) != _ep_sig(new.endpoints)
+
     def _compute_set_diff(self, instances: list[Instance]) -> tuple[list[Instance], list[Instance]]:
-        """Compute to_add and to_remove for SET: (ids in new not in current, ids in current not in new).
+        """Compute to_add and to_remove for SET event.
+
+        SET must faithfully make the pools contain exactly the given instances
+        (no more, no less, and with the same structural information).
+
+        Three categories:
+          1. IDs in current but not in new  → remove (stale / deleted).
+          2. IDs in new but not in current  → add (new).
+          3. IDs in both but struct differs   → remove old + add new (update in-place).
+
         Must be called within _lock.
         """
         current_ids = (
             set(self._available_pool.keys()) | set(self._unavailable_pool.keys()) | set(self._paused_pool.keys())
         )
-        new_ids = {inst.id for inst in instances}
-        to_remove_ids = current_ids - new_ids
-        to_add_ids = new_ids - current_ids
-        to_remove = []
-        for iid in to_remove_ids:
-            inst = self._available_pool.get(iid) or self._unavailable_pool.get(iid)
+        new_inst_by_id = {inst.id: inst for inst in instances}
+        new_ids = set(new_inst_by_id.keys())
+
+        to_remove_ids: set[int] = current_ids - new_ids
+        to_add_ids: set[int] = new_ids - current_ids
+
+        # Detect same-ID instances that need updating or moving to available pool.
+        # Cases that require remove+add:
+        #   a) Instance is in unavailable or paused pool → must move to available.
+        #   b) Instance is in available pool but structural fields differ → update in-place.
+        common_ids = current_ids & new_ids
+        updated_count = 0
+        for inst_id in common_ids:
+            existing = (
+                self._available_pool.get(inst_id)
+                or self._unavailable_pool.get(inst_id)
+                or self._paused_pool.get(inst_id)
+            )
+            if existing is None:
+                continue
+            # Instance in unavailable/paused pool → always move to available.
+            # Instance in available pool but structural fields differ → update in-place.
+            if inst_id not in self._available_pool or self._instance_needs_update(existing, new_inst_by_id[inst_id]):
+                to_remove_ids.add(inst_id)
+                to_add_ids.add(inst_id)
+                updated_count += 1
+
+        to_remove: list[Instance] = []
+        for inst_id in to_remove_ids:
+            inst = (
+                self._available_pool.get(inst_id)
+                or self._unavailable_pool.get(inst_id)
+                or self._paused_pool.get(inst_id)
+            )
             if inst is not None:
                 to_remove.append(inst)
-        to_add = [inst for inst in instances if inst.id in to_add_ids]
+
+        to_add = [new_inst_by_id[inst_id] for inst_id in to_add_ids if inst_id in new_inst_by_id]
+
+        if updated_count:
+            logger.info(
+                "SET: %d instance(s) with same ID will be refreshed (moved to available / structural update)",
+                updated_count,
+            )
+
         return (to_add, to_remove)
 
     def _apply_set_diff(self, instances: list[Instance]) -> bool:

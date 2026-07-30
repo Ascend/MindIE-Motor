@@ -589,7 +589,9 @@ class TestCoordinatorInstanceManagerPrestop:
     # -- _compute_set_diff with paused pool --
 
     def test_compute_set_diff_includes_paused_pool(self):
-        """SET event should NOT treat paused instances as to-be-deleted."""
+        """SET with empty list removes instances from paused pool too
+        (SET faithfully makes pools match the event — no instance survives outside the event).
+        """
         inst = _make_instance(1, "job-1", role=PDRole.ROLE_P)
         self.im._available_pool[inst.id] = inst
         self.im._prefill_pool[inst.id] = inst
@@ -597,12 +599,12 @@ class TestCoordinatorInstanceManagerPrestop:
         # Simulate pause
         self.im._pause_instances([inst])
 
-        # SET event with empty list (no ACTIVE instances)
+        # SET event with empty list (no instances)
         to_add, to_remove = self.im._compute_set_diff([])
 
-        # paused instance should NOT appear in to_remove
+        # paused instance IS discovered and WILL be removed (SET is authoritative)
         paused_ids = {i.id for i in to_remove}
-        assert inst.id not in paused_ids
+        assert inst.id in paused_ids
 
     # -- refresh_instances with PAUSE / RESUME (async) --
 
