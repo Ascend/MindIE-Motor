@@ -595,6 +595,370 @@ class TestInstanceManager:
         assert len(self.instance_manager._decode_pool) == 0
         assert len(self.instance_manager._available_pool) == 0
 
+    # --- _find_instance_by_job_name tests ---
+
+    def test_find_instance_by_job_name_found_in_available_pool(self):
+        """_find_instance_by_job_name finds instance in available pool by job_name."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        found = self.instance_manager._find_instance_by_job_name("test-prefill")
+        assert found is not None
+        assert found.id == 1
+        assert found.job_name == "test-prefill"
+
+    def test_find_instance_by_job_name_found_in_unavailable_pool(self):
+        """_find_instance_by_job_name finds instance in unavailable pool by job_name."""
+        self.instance_manager._unavailable_pool[1] = self.prefill_instance
+        found = self.instance_manager._find_instance_by_job_name("test-prefill")
+        assert found is not None
+        assert found.id == 1
+
+    def test_find_instance_by_job_name_found_in_paused_pool(self):
+        """_find_instance_by_job_name finds instance in paused pool by job_name."""
+        self.instance_manager._paused_pool[1] = self.prefill_instance
+        found = self.instance_manager._find_instance_by_job_name("test-prefill")
+        assert found is not None
+        assert found.id == 1
+
+    def test_find_instance_by_job_name_not_found(self):
+        """_find_instance_by_job_name returns None when no instance has the given job_name."""
+        found = self.instance_manager._find_instance_by_job_name("nonexistent-job")
+        assert found is None
+
+    # --- _remove_instance_from_all_pools tests ---
+
+    def test_remove_instance_from_all_pools_from_available(self):
+        """_remove_instance_from_all_pools removes instance from available pool (incl. role sub-pool)."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        assert 1 in self.instance_manager._available_pool
+        assert 1 in self.instance_manager._prefill_pool
+
+        result = self.instance_manager._remove_instance_from_all_pools(1)
+        assert result is True
+        assert 1 not in self.instance_manager._available_pool
+        assert 1 not in self.instance_manager._prefill_pool
+
+    def test_remove_instance_from_all_pools_from_unavailable(self):
+        """_remove_instance_from_all_pools removes instance from unavailable pool."""
+        self.instance_manager._unavailable_pool[1] = self.prefill_instance
+        result = self.instance_manager._remove_instance_from_all_pools(1)
+        assert result is True
+        assert 1 not in self.instance_manager._unavailable_pool
+
+    def test_remove_instance_from_all_pools_from_paused(self):
+        """_remove_instance_from_all_pools removes instance from paused pool."""
+        self.instance_manager._paused_pool[1] = self.prefill_instance
+        result = self.instance_manager._remove_instance_from_all_pools(1)
+        assert result is True
+        assert 1 not in self.instance_manager._paused_pool
+
+    def test_remove_instance_from_all_pools_not_found(self):
+        """_remove_instance_from_all_pools returns False when instance not in any pool."""
+        result = self.instance_manager._remove_instance_from_all_pools(999)
+        assert result is False
+
+    # --- _add_instances job_name dedup tests ---
+
+    def test_add_instances_same_job_name_different_id_replaces_stale(self, caplog):
+        """When a new instance has the same job_name but different ID as an existing available
+        instance (e.g. pod restart), the stale old instance is removed and the new one is added.
+        """
+        # Pre-populate with an instance having job_name "test-prefill", id=1
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        assert 1 in self.instance_manager._available_pool
+        assert 1 in self.instance_manager._prefill_pool
+
+        # New instance: same job_name, different ID (simulating pod restart)
+        restarted = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=100,
+            role=PDRole.ROLE_P,
+            endpoints={},
+        )
+        self.instance_manager._add_instances([restarted])
+
+        # Old instance (id=1) must be removed
+        assert 1 not in self.instance_manager._available_pool
+        assert 1 not in self.instance_manager._prefill_pool
+        # New instance (id=100) must be present
+        assert 100 in self.instance_manager._available_pool
+        assert 100 in self.instance_manager._prefill_pool
+        assert self.instance_manager._available_pool[100].job_name == "test-prefill"
+        # Warning about stale removal must be logged
+        assert "job_name 'test-prefill' already exists" in caplog.text
+        assert "removing stale instance" in caplog.text
+
+    def test_add_instances_same_job_name_different_id_from_unavailable_pool(self, caplog):
+        """Stale instance with same job_name is removed from unavailable pool before adding new."""
+        self.instance_manager._unavailable_pool[1] = self.prefill_instance
+
+        restarted = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=100,
+            role=PDRole.ROLE_P,
+            endpoints={},
+        )
+        self.instance_manager._add_instances([restarted])
+
+        # Old instance removed from unavailable pool
+        assert 1 not in self.instance_manager._unavailable_pool
+        # New instance added to available pool
+        assert 100 in self.instance_manager._available_pool
+        assert 100 in self.instance_manager._prefill_pool
+
+    def test_add_instances_same_job_name_different_id_from_paused_pool(self, caplog):
+        """Stale instance with same job_name is removed from paused pool before adding new."""
+        self.instance_manager._paused_pool[1] = self.prefill_instance
+
+        restarted = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=100,
+            role=PDRole.ROLE_P,
+            endpoints={},
+        )
+        self.instance_manager._add_instances([restarted])
+
+        # Old instance removed from paused pool
+        assert 1 not in self.instance_manager._paused_pool
+        # New instance added to available pool
+        assert 100 in self.instance_manager._available_pool
+        assert 100 in self.instance_manager._prefill_pool
+
+    def test_add_instances_same_job_name_and_id_skips_as_duplicate(self, caplog):
+        """When an instance with the same job_name AND same ID already exists, the duplicate-ID
+        check in _add_instance_to_available_pool still applies (no regression).
+        """
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+
+        # Same job_name AND same ID
+        duplicate = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={},
+        )
+        self.instance_manager._add_instances([duplicate])
+
+        # Instance should still be there (not removed, not duplicated)
+        assert 1 in self.instance_manager._available_pool
+        assert "already exists in available pool" in caplog.text
+
+    def test_add_instances_same_job_name_multiple_new_instances(self, caplog):
+        """Multiple new instances with unique job_names are all added; no cross-talk."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+
+        new_a = Instance(job_name="new-a", model_name="test-model", id=10, role=PDRole.ROLE_P, endpoints={})
+        new_b = Instance(job_name="new-b", model_name="test-model", id=20, role=PDRole.ROLE_D, endpoints={})
+        self.instance_manager._add_instances([new_a, new_b])
+
+        # Existing instance unchanged
+        assert 1 in self.instance_manager._available_pool
+        # New instances added
+        assert 10 in self.instance_manager._available_pool
+        assert 20 in self.instance_manager._available_pool
+        assert 10 in self.instance_manager._prefill_pool
+        assert 20 in self.instance_manager._decode_pool
+
+    # --- _instance_needs_update tests ---
+
+    def test_instance_needs_update_endpoints_differ(self):
+        """_instance_needs_update returns True when endpoint keys differ."""
+        existing = Instance(
+            job_name="test",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.1": {1: Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")}},
+        )
+        new = Instance(
+            job_name="test",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.2": {2: Endpoint(id=2, ip="10.0.0.2", business_port="8080", mgmt_port="8080")}},
+        )
+        assert InstanceManager._instance_needs_update(existing, new) is True
+
+    def test_instance_needs_update_role_differs(self):
+        """_instance_needs_update returns True when role differs."""
+        existing = Instance(job_name="test", model_name="m", id=1, role=PDRole.ROLE_P, endpoints={})
+        new = Instance(job_name="test", model_name="m", id=1, role=PDRole.ROLE_D, endpoints={})
+        assert InstanceManager._instance_needs_update(existing, new) is True
+
+    def test_instance_needs_update_job_name_differs(self):
+        """_instance_needs_update returns True when job_name differs."""
+        existing = Instance(job_name="old-name", model_name="m", id=1, role=PDRole.ROLE_P, endpoints={})
+        new = Instance(job_name="new-name", model_name="m", id=1, role=PDRole.ROLE_P, endpoints={})
+        assert InstanceManager._instance_needs_update(existing, new) is True
+
+    def test_instance_needs_update_same_structure(self):
+        """_instance_needs_update returns False when structural fields are identical
+        (runtime state like workload is ignored).
+        """
+        ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")
+        # Existing instance has accumulated runtime workload
+        existing = Instance(
+            job_name="test",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.1": {1: ep}},
+        )
+        existing.gathered_workload = Workload(active_tokens=100, active_kv_cache=200)
+        ep.workload = Workload(active_tokens=100, active_kv_cache=200)
+
+        # New instance from SET event has no workload
+        new_ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")
+        new = Instance(
+            job_name="test",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.1": {1: new_ep}},
+        )
+        # Runtime workload difference should NOT trigger update
+        assert InstanceManager._instance_needs_update(existing, new) is False
+
+    def test_instance_needs_update_node_managers_differ(self):
+        """_instance_needs_update returns True when node_managers differ."""
+        from motor.common.resources.instance import NodeManagerInfo
+
+        existing = Instance(
+            job_name="test",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={},
+            node_managers=[NodeManagerInfo(pod_ip="10.0.0.1", port="8080", device_num=8)],
+        )
+        new = Instance(
+            job_name="test",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={},
+            node_managers=[NodeManagerInfo(pod_ip="10.0.0.2", port="8080", device_num=8)],
+        )
+        assert InstanceManager._instance_needs_update(existing, new) is True
+
+    # --- SET diff with same-ID-but-different-structure scenarios ---
+
+    @pytest.mark.asyncio
+    async def test_set_diff_updates_same_id_different_endpoints(self, caplog):
+        """SET with same instance ID but different endpoints should update the instance."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        assert 1 in self.instance_manager._available_pool
+
+        # Same ID, same job_name, but now WITH endpoints
+        updated = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.1": {self.endpoint.id: self.endpoint}},
+        )
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [updated])
+        assert changed is True
+        assert "1 instance(s) with same ID will be refreshed" in caplog.text
+        assert 1 in self.instance_manager._available_pool
+        # Endpoints should now be present
+        stored = self.instance_manager._available_pool[1]
+        assert stored.endpoints == {"10.0.0.1": {self.endpoint.id: self.endpoint}}
+
+    @pytest.mark.asyncio
+    async def test_set_diff_updates_same_id_different_role(self, caplog):
+        """SET with same instance ID but different role should update in-place."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        assert 1 in self.instance_manager._prefill_pool
+
+        # Same ID, same job_name, different role
+        updated = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_D,
+            endpoints={},
+        )
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [updated])
+        assert changed is True
+        # Old role pool empty, new role pool has it
+        assert 1 not in self.instance_manager._prefill_pool
+        assert 1 in self.instance_manager._decode_pool
+        assert 1 in self.instance_manager._available_pool
+
+    @pytest.mark.asyncio
+    async def test_set_diff_no_update_same_structure(self):
+        """SET with same ID and identical structural info should NOT trigger an update
+        (no unnecessary churn).
+        """
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        assert changed is False
+        # Instance should remain in pool unchanged
+        assert 1 in self.instance_manager._available_pool
+        assert 1 in self.instance_manager._prefill_pool
+
+    @pytest.mark.asyncio
+    async def test_set_diff_removes_instance_from_paused_pool(self, caplog):
+        """SET diff correctly finds and removes instances that are in paused pool."""
+        self.instance_manager._paused_pool[1] = self.prefill_instance
+
+        # SET with empty list → paused instance should be removed
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [])
+        assert changed is True
+        assert 1 not in self.instance_manager._paused_pool
+
+    @pytest.mark.asyncio
+    async def test_set_diff_handles_pod_restart_new_id_same_job_name(self, caplog):
+        """SET with a new ID but same job_name (pod restart): old removed, new added."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+
+        # Pod restart: new ID, same job_name
+        restarted = Instance(
+            job_name="test-prefill",
+            model_name="test-model",
+            id=100,
+            role=PDRole.ROLE_P,
+            endpoints={},
+        )
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [restarted])
+        assert changed is True
+        # Old instance removed
+        assert 1 not in self.instance_manager._available_pool
+        # New instance added
+        assert 100 in self.instance_manager._available_pool
+        assert 100 in self.instance_manager._prefill_pool
+
+    @pytest.mark.asyncio
+    async def test_set_diff_moves_instance_from_unavailable_to_available(self, caplog):
+        """SET moves an instance from unavailable pool back to available pool,
+        even when structural fields are identical (SET always puts instances in available).
+        """
+        # Instance is in unavailable pool
+        self.instance_manager._unavailable_pool[1] = self.prefill_instance
+
+        # SET includes the same instance → should move to available
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        assert changed is True
+        assert 1 not in self.instance_manager._unavailable_pool
+        assert 1 in self.instance_manager._available_pool
+        assert 1 in self.instance_manager._prefill_pool
+        assert "1 instance(s) with same ID will be refreshed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_set_diff_moves_instance_from_paused_to_available(self, caplog):
+        """SET moves an instance from paused pool back to available pool."""
+        self.instance_manager._paused_pool[1] = self.prefill_instance
+
+        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        assert changed is True
+        assert 1 not in self.instance_manager._paused_pool
+        assert 1 in self.instance_manager._available_pool
+        assert 1 in self.instance_manager._prefill_pool
+
 
 class TestInstanceManagerThreadSafety:
     """Thread safety test cases for InstanceManager"""
