@@ -1,3 +1,8 @@
+---
+hide:
+  - navigation
+---
+
 # MindIE Motor架构
 
 ## MindIE Motor简介
@@ -14,6 +19,8 @@ MindIE Motor主要提供以下两个方面的能力：
 - PD分离的请求调度：主要将外部的客户请求分发到负载最低的 Prefill/Decode 实例上，起到负载均衡的作用。
 - RAS（Reliability, Availability and Serviceability）：增强 PD 分离服务的可靠性、可用性和可服务性。
 
+---
+
 ## 系统架构
 
 MindIE Motor 及其周边组件的交互架构图如下所示：
@@ -21,6 +28,8 @@ MindIE Motor 及其周边组件的交互架构图如下所示：
 **图1 MindIE Motor架构图**
 
 ![架构图](./imgs/MindIE_Motor_Architecture.jpg)
+
+---
 
 ## 关键组件与模块说明
 

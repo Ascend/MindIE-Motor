@@ -25,6 +25,7 @@
 │    Metrics API)  └──────────────────┘                            │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
+```
 
 1. MindIE Motor Coordinator 从所有引擎 Pod 采集 Prometheus 指标，按语义聚合后通过 `/metrics` 端点暴露。
 2. External Metrics Adaptor 周期性从 Coordinator 拉取指标，转换为 Kubernetes External Metrics API。

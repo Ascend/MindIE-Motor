@@ -1,12 +1,15 @@
 nav:
   - 首页: index.md
   - 架构: architecture.md
-  - 版本说明: release_note.md
+  - 版本说明: release_note_motor.md
   - 用户指南:
+      - 简介: user_guide/README.md
+      - 用户手册目录: user_guide/menu_user_manual.md
       - 快速开始: user_guide/quick_start_motor.md
       - 环境准备: user_guide/environment_preparation.md
-      - 通信矩阵: user_guide/communication_matrix.md
+      - 通信矩阵: user_guide/communication_matrix_motor.md
       - 服务部署:
+          - 部署概述: user_guide/deployment/README.md
           - K8s 部署:
               - 部署模式说明: user_guide/deployment/k8s/README.md
               - PD分离服务部署: user_guide/deployment/k8s/pd_disaggregation_deployment.md
@@ -14,6 +17,10 @@ nav:
           - Docker 部署:
               - 单容器部署: user_guide/deployment/docker/single_container.md
               - 多容器部署: user_guide/deployment/docker/multi_container.md
+          - 部署案例:
+              - ModelArts 与元戎:
+                  - 简介: user_guide/deployment/cases/ModelArts&yuanrong/README.md
+                  - GLM5 8机大EP部署: user_guide/deployment/cases/ModelArts&yuanrong/ModelArts_GLM5_yuanrong_Motor_8Node_BigEP_Deployment_Guide.md
       - 配置说明:
           - 全量配置参数说明: user_guide/configuration/config_reference.md
           - 热更新配置项说明: user_guide/configuration/update_config_whitelist.md
@@ -22,7 +29,11 @@ nav:
           - EPD 分离: user_guide/features/EPD_disaggregation.md
           - PD 分离: user_guide/features/pd_disaggregation.md
           - KV Cache 亲和: user_guide/features/KV_cache_affinity.md
-          - KV Cache Store: user_guide/features/kv_cache_store/README.md
+          - KV Cache Store:
+              - 概述: user_guide/features/kv_cache_store/README.md
+              - MemCache 后端: user_guide/features/kv_cache_store/backend/memcache.md
+              - Mooncake 后端: user_guide/features/kv_cache_store/backend/mooncake.md
+              - Yuanrong 后端: user_guide/features/kv_cache_store/backend/yuanrong.md
           - 自动弹性扩缩容: user_guide/features/auto_scaling.md
           - 手动扩缩容: user_guide/features/manual_scaling.md
           - 主备倒换: user_guide/features/fault_tolerance/standby.md
@@ -31,28 +42,35 @@ nav:
           - 容器快照: user_guide/features/container_snapshot.md
           - 虚推健康探测: user_guide/features/sim_inference.md
           - 故障场景重调度: user_guide/features/fault_tolerance/rescheduler.md
+          - 精度检测: user_guide/features/precision_detection.md
       - 服务维护:
           - 镜像制作: user_guide/maintenance/build_motor_image_from_vllm_ascend.md
           - 常用维护技巧: user_guide/maintenance/maintenance_tips.md
           - 故障案例排查: user_guide/maintenance/solutions_to_common_problems.md
       - API 参考:
+          - 接口说明: user_guide/api/README.md
           - 服务接口: user_guide/api/service_interfaces.md
           - 管理接口: user_guide/api/management_interfaces.md
           - 健康检查与 Metrics观测接口: user_guide/api/monitoring_interfaces.md
           - 服务运行状态观测接口: user_guide/api/observability_interface.md
           - 容器快照内部接口: user_guide/api/engine_server_interfaces.md
   - 设计文档:
+      - 概述: design/README.md
       - PD 分离: design/pd_disaggregation.md
       - 可靠性:
           - 能力总览: design/fault_tolerance/overview.md
           - ScaleP2D 故障恢复: design/fault_tolerance/scale_p2d.md
           - FaultManager 设计: design/fault_tolerance/fault_manager.md
+          - 主备倒换: design/standby.md
+          - 精度检测: design/fault_tolerance/precision_detection.md
       - 手动扩缩容: design/manual_scaling.md
       - CRD 部署设计: design/crd_deployment.md
       - Metrics 可观测性: design/metrics.md
       - 熔断设计: design/circuit_breaker_design.md
   - 开发者指南:
+      - 概述: developer_guide/README.md
       - 本地构建文档: developer_guide/build_docs.md
+      - 镜像制作: developer_guide/build_motor_image_from_vllm_ascend.md
       - 组件设计:
           - Controller: developer_guide/components/controller.md
           - Coordinator: developer_guide/components/coordinator.md

@@ -24,7 +24,7 @@
 ## 镜像准备
 
 - 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE-Motor镜像。
-- 方式二：参考[准备MindIE Motor镜像](../../zh/developer_guide/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
+- 方式二：参考[准备MindIE Motor镜像](./maintenance/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
 
 ## 服务部署
 
@@ -51,7 +51,7 @@
    ```
 
    >[!NOTE]说明
-   >当使用Atlas 850 超节点服务器时，其配置文件请参考[deepseek_v4_flash](../../../examples/infer_engines/vllm/models/deepseek_v4_flash/)中的配置示例进行配置。
+   >当使用Atlas 850 超节点服务器时，其配置文件请参考[deepseek_v4_flash](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/deepseek_v4_flash/)中的配置示例进行配置。
 
    user_config.json文件完整示例如下（可直接复制使用，5项xxxxxx内容需用户自行修改，如需了解各字段含义可参考 [user_config 全量参数说明](./configuration/config_reference.md)。）：
 

@@ -1,3 +1,8 @@
+---
+hide:
+  - navigation
+---
+
 # MindIE Motor 文档
 
 欢迎使用 MindIE Motor 中文文档。本站点涵盖架构说明、用户指南、设计文档及开发者指南。
@@ -9,4 +14,4 @@
 - [设计文档](design/pd_disaggregation.md) — 特性原理与设计说明：PD 分离、可靠性、扩缩容、CRD、Metrics
 - [开发者指南](developer_guide/build_docs.md) — 软件设计与实现：类图、数据流、组件内部实现、文档构建
 
-从左侧目录可浏览全部页面。
+请使用顶部导航栏或下方链接浏览全部页面。
