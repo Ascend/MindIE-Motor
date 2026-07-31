@@ -142,7 +142,9 @@ def fault_manager():
     """Create a basic FaultManager instance for testing"""
     with patch("motor.controller.fault_tolerance.fault_manager.K8sClient"):
         config = ControllerConfig()
-        yield FaultManager(config)
+        mgr = FaultManager(config)
+        yield mgr
+        mgr.executor.shutdown(wait=True)
 
 
 @pytest.fixture
@@ -177,6 +179,7 @@ def fault_manager_with_instances():
         )
 
         yield manager
+        manager.executor.shutdown(wait=True)
 
 
 @pytest.fixture

@@ -147,6 +147,8 @@ class ControllerConfig:
     standby_config: StandbyConfig = field(default_factory=StandbyConfig)
     etcd_config: EtcdConfig = field(default_factory=EtcdConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
+    # Daemon loop check interval (seconds)
+    daemon_loop_interval: float = 5.0
     # Token sampling precision alarm: when True, controller terminates decode instance on precision alarm
     precision_auto_recovery_enabled: bool = field(default=False)
 
@@ -232,6 +234,9 @@ class ControllerConfig:
             if 'precision_auto_recovery_enabled' in cfg:
                 config.precision_auto_recovery_enabled = bool(cfg['precision_auto_recovery_enabled'])
 
+            if 'daemon_loop_interval' in cfg:
+                config.daemon_loop_interval = float(cfg['daemon_loop_interval'])
+
             apply_config_path_metadata(config, config_path)
             if not config_path:
                 config.last_modified = None
@@ -303,6 +308,10 @@ class ControllerConfig:
         if self.standby_config.master_standby_check_interval <= 0:
             errors.append("master_standby_check_interval must be greater than 0")
 
+        # Validate daemon configuration
+        if self.daemon_loop_interval <= 0:
+            errors.append("daemon_loop_interval must be greater than 0")
+
         # Validate ETCD configuration
         if not (1 <= self.etcd_config.etcd_port <= 65535):
             errors.append("etcd_port must be in range 1-65535")
@@ -373,6 +382,9 @@ class ControllerConfig:
             f"    ├─ Management TLS:      {'Enabled' if self.mgmt_tls_config.enable_tls else 'Disabled'}\n"
             f"    └─ Observability TLS:   {'Enabled' if self.observability_tls_config.enable_tls else 'Disabled'}\n"
             "\n"
+            "  Daemon:\n"
+            f"    └─ Loop Interval:        {self.daemon_loop_interval} seconds\n"
+            "\n"
             "  Instance Management:\n"
             f"    ├─ Assemble Timeout:     {self.instance_config.instance_assemble_timeout} seconds\n"
             f"    ├─ Heartbeat Timeout:    {self.instance_config.instance_heartbeat_timeout} seconds\n"
@@ -387,12 +399,14 @@ class ControllerConfig:
             f"    │   ├─ Host:             {self.etcd_config.etcd_host}\n"
             f"    │   ├─ Port:             {self.etcd_config.etcd_port}\n"
             f"    │   └─ Timeout:          {self.etcd_config.etcd_timeout} seconds\n"
-            f"    ├─ Observability:        {'Enabled' if enable_observability else 'Disabled'}\n"
-            f"    │   └─ Metrics TTL:      {metrics_ttl} seconds\n"
             f"    └─ Master/Standby:       {'Enabled' if self.standby_config.enable_master_standby else 'Disabled'}\n"
             f"        ├─ Check Interval:   {master_standby_check_interval} seconds\n"
             f"        ├─ Lock TTL:         {master_lock_ttl} seconds\n"
             f"        └─ Lock Key:         {master_lock_key}\n"
+            "\n"
+            "  Observability:\n"
+            f"    ├─ Enabled:               {'Yes' if enable_observability else 'No'}\n"
+            f"    └─ Metrics TTL:           {metrics_ttl} seconds\n"
             "\n"
             "  Configuration:\n"
             f"    └─ Config Path:         {self.config_path or 'Not set'}\n"
