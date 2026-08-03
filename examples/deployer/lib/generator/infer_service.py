@@ -28,7 +28,6 @@ from lib.generator.k8s_utils import (
     set_coordinator_service,
     set_coordinator_infer_service,
     set_coordinator_obs_service,
-    set_kv_store_service,
     set_kv_conductor_service,
     set_rbac_namespace,
     extract_rbac_resources,
@@ -264,6 +263,11 @@ def _configure_kv_store_role(infer_doc, user_config):
         return
 
     kv_store_config = normalize_kv_cache_store_config(user_config)
+    if not k8s_utils.g_kv_store_deploy_pod:
+        role[C.REPLICAS] = 0
+        workload_spec[C.REPLICAS] = 1
+        return
+
     role[C.REPLICAS] = 1
     workload_spec[C.REPLICAS] = 1
     _set_role_primary_service_port(role, kv_store_config[C.KV_CACHE_STORE_PORT])
@@ -354,7 +358,7 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     k8s_utils.g_generate_yaml_list.append(output_file)
 
 
-def init_infer_service_domain_name(infer_service_template_yaml, deploy_config):
+def init_infer_service_domain_name(infer_service_template_yaml, deploy_config, user_config=None):
     """
     Set g_controller_service and g_coordinator_*_service for CRD InferServiceSet mode.
     CRD creates services with naming: {service_name}-{infer_service_set_name}-0-{role_name}
@@ -413,9 +417,15 @@ def init_infer_service_domain_name(infer_service_template_yaml, deploy_config):
     set_coordinator_infer_service(coord_fqdns.get(1025, ""))
     set_coordinator_obs_service(coord_fqdns.get(1027, ""))
 
-    kv_store_service = get_service_fqdn_for_role(C.ROLE_KV_STORE)
-    if kv_store_service:
-        set_kv_store_service(kv_store_service)
+    kv_store_role = get_infer_role(infer_doc, C.ROLE_KV_STORE)
+    if kv_store_role and kv_store_role.get(C.SERVICES):
+        from lib.generator.kv_cache_store import apply_kv_store_service_domain  # pylint: disable=cyclic-import
+
+        apply_kv_store_service_domain(
+            deploy_config,
+            user_config,
+            infer_service_template_yaml=infer_service_template_yaml,
+        )
 
     kv_conductor_service = get_service_fqdn_for_role(C.ROLE_KV_CONDUCTOR)
     if kv_conductor_service:

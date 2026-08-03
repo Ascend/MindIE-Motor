@@ -15,6 +15,91 @@ from lib.utils import apply_node_selector_override, load_yaml, write_yaml, logge
 from lib.generator import k8s_utils
 
 
+def resolve_kv_store_target_job_id(kv_config, current_job_id):
+    """Return target job_id when reuse is requested; otherwise None."""
+    target = kv_config.get(C.TARGET_JOB_ID)
+    if not target or target == current_job_id:
+        return None
+    return target
+
+
+def get_multi_deployment_kv_store_service_name(paths):
+    kv_store_data = load_yaml(paths["kv_store_input_yaml"], False)
+    for doc in kv_store_data:
+        if doc.get(C.KIND) == C.SERVICE:
+            return doc[C.METADATA][C.NAME]
+    raise ValueError("KV store service not found in kv_cache_store_template.yaml")
+
+
+def get_infer_service_kv_store_service_name(infer_service_template_yaml):
+    all_docs = load_yaml(infer_service_template_yaml, False)
+    if not isinstance(all_docs, list):
+        all_docs = [all_docs]
+    infer_doc = None
+    for doc in all_docs:
+        if doc.get(C.KIND) == "InferServiceSet":
+            infer_doc = doc
+            break
+    if infer_doc is None:
+        raise ValueError("InferServiceSet document not found in infer_service_template.yaml")
+    roles = infer_doc.get(C.SPEC, {}).get(C.TEMPLATE, {}).get(C.ROLES, [])
+    role = None
+    for r in roles:
+        if r.get(C.NAME) == C.ROLE_KV_STORE:
+            role = r
+            break
+    if not role:
+        raise ValueError(f"Role '{C.ROLE_KV_STORE}' not found in infer_service_template.yaml")
+    services = role.get(C.SERVICES, [])
+    if not services:
+        raise ValueError(f"Missing services for role '{C.ROLE_KV_STORE}' in infer_service_template.yaml")
+    service_name = services[0].get(C.NAME, "")
+    infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
+    role_name_val = role.get(C.NAME, C.ROLE_KV_STORE)
+    return f"{service_name}-{infer_name}-0-{role_name_val}"
+
+
+def build_kv_store_service_fqdn(service_name, job_id):
+    return f"{service_name}.{job_id}.svc.cluster.local"
+
+
+def apply_kv_store_service_domain(deploy_config, user_config, *, paths=None, infer_service_template_yaml=None):
+    """Configure kv_store service FQDN and whether to deploy a local kv_store pod."""
+    current_job_id = deploy_config[C.CONFIG_JOB_ID]
+    kv_config = user_config.get(C.KV_CACHE_STORE_CONFIG, {}) if user_config else {}
+    if not isinstance(kv_config, dict):
+        kv_config = {}
+
+    if infer_service_template_yaml:
+        service_name = get_infer_service_kv_store_service_name(infer_service_template_yaml)
+    elif paths:
+        service_name = get_multi_deployment_kv_store_service_name(paths)
+    else:
+        service_name = k8s_utils.g_kv_store_service.split(".")[0]
+
+    target_job_id = resolve_kv_store_target_job_id(kv_config, current_job_id)
+    if target_job_id and k8s_utils.kv_store_reusable(target_job_id, service_name):
+        fqdn = build_kv_store_service_fqdn(service_name, target_job_id)
+        k8s_utils.set_kv_store_service(fqdn)
+        k8s_utils.g_kv_store_deploy_pod = False
+        logger.info(
+            "Reusing kv_store service %s from target_job_id '%s'",
+            fqdn,
+            target_job_id,
+        )
+        return
+
+    if target_job_id:
+        logger.warning(
+            "target_job_id '%s' kv_store service '%s' or running pod not found in cluster, deploying new kv_store pod",
+            target_job_id,
+            service_name,
+        )
+
+    k8s_utils.set_kv_store_service(build_kv_store_service_fqdn(service_name, current_job_id))
+    k8s_utils.g_kv_store_deploy_pod = True
+
+
 def normalize_kv_cache_store_config(user_config):
     kv_config = user_config.get(C.KV_CACHE_STORE_CONFIG)
     if not isinstance(kv_config, dict):

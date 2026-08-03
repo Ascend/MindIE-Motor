@@ -131,12 +131,13 @@ def handle_update_instance_num(user_config, env_config_path=None):
         if os.path.exists(infer_output):
             update_infer_service_replicas_only(infer_output, deploy_config)
         else:
-            init_service_domain_name(paths, deploy_config)
+            init_service_domain_name(paths, deploy_config, user_config, skip_kv_store=True)
             if not os.path.exists(infer_input):
                 raise FileNotFoundError(f"InferServiceSet template yaml not found: {infer_input}.")
-            init_infer_service_domain_name(infer_input, deploy_config)
+            init_infer_service_domain_name(infer_input, deploy_config, user_config)
             generate_yaml_infer_service_set(infer_input, infer_output, user_config)
     else:
+        init_service_domain_name(paths, deploy_config, user_config)
         if k8s_utils.g_kv_store_enabled:
             normalize_kv_cache_store_config(user_config)
         generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
@@ -147,7 +148,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
 
 def deploy_services_multi_yaml(paths, user_config, dry_run=False):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
-    init_service_domain_name(paths, deploy_config)
+    init_service_domain_name(paths, deploy_config, user_config)
     generate_yaml_controller(paths["controller_input_yaml"], paths["controller_output_yaml"], user_config)
     generate_yaml_coordinator(paths["coordinator_input_yaml"], paths["coordinator_output_yaml"], user_config)
     # normalize_kv_cache_store_config must be called before generate_yaml_engine
@@ -161,7 +162,7 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False):
         generate_yaml_storage_pvc(
             paths["storage_pvc_input_yaml"], paths["storage_pvc_output_yaml"], user_config, storage_entries
         )
-    if kv_store_config is not None:
+    if kv_store_config is not None and k8s_utils.g_kv_store_deploy_pod:
         generate_yaml_kv_store(
             paths["kv_store_input_yaml"], paths["kv_store_output_yaml"], user_config, kv_store_config
         )
@@ -178,14 +179,14 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False):
 
 def deploy_services_infer_service_set(paths, user_config, dry_run=False):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
-    init_service_domain_name(paths, deploy_config)
+    init_service_domain_name(paths, deploy_config, user_config, skip_kv_store=True)
     infer_input = paths["infer_service_input_yaml"]
     if not os.path.exists(infer_input):
         raise FileNotFoundError(
             f"InferServiceSet template yaml not found: {infer_input}. "
             "Please ensure infer_service_template.yaml exists in yaml_template folder."
         )
-    init_infer_service_domain_name(infer_input, deploy_config)
+    init_infer_service_domain_name(infer_input, deploy_config, user_config)
     generate_yaml_infer_service_set(infer_input, paths["infer_service_output_yaml"], user_config)
     storage_entries = get_storage_entries(user_config)
     if storage_entries:

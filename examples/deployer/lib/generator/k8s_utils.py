@@ -28,6 +28,7 @@ g_coordinator_obs_service = "mindie-motor-coordinator-obs"
 g_kv_store_service = "mindie-motor-kvs-master"
 g_kv_conductor_service = "kv-conductor"
 g_kv_store_enabled = False
+g_kv_store_deploy_pod = True
 g_kv_conductor_enabled = False
 g_kv_cache_store_port = C.DEFAULT_KV_CACHE_STORE_PORT
 g_kv_store_backend = C.DEFAULT_KV_STORE_BACKEND
@@ -110,13 +111,44 @@ def set_engine_base_name(engine_name):
 
 def update_kv_store_enabled_flag(user_config):
     global g_kv_store_enabled
+    global g_kv_store_deploy_pod
     g_kv_store_enabled = False
+    g_kv_store_deploy_pod = True
 
     engine_section = user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG) or user_config.get(C.MOTOR_ENGINE_UNION_CONFIG, {})
     kv_connector = engine_section.get(C.ENGINE_CONFIG, {}).get(C.KV_TRANSFER_CONFIG, {}).get(C.KV_CONNECTOR, "")
     kv_store_cfg = user_config.get(C.KV_CACHE_STORE_CONFIG)
     if kv_connector == C.MULTI_CONNECTOR or (isinstance(kv_store_cfg, dict) and kv_store_cfg):
         g_kv_store_enabled = True
+
+
+def kv_store_reusable(namespace, service_name):
+    """Return True if kv_store Service and at least one Running Pod exist in namespace."""
+    try:
+        kubectl = _get_kubectl_path()
+        run_cmd_get_output([kubectl, "get", "svc", service_name, "-n", namespace, "-o", "name"])
+        pods = run_cmd_get_output(
+            [
+                kubectl,
+                "get",
+                "pods",
+                "-l",
+                f"app={C.KV_STORE_APP_LABEL}",
+                "-n",
+                namespace,
+                "--field-selector",
+                "status.phase=Running",
+                "-o",
+                "name",
+            ]
+        )
+        return bool(pods)
+    except FileNotFoundError:
+        logger.warning("kubectl executable not found, cannot check kv_store reusability")
+        return False
+    except RuntimeError as exc:
+        logger.warning("kubectl command failed while checking kv_store reusability: %s", exc)
+        return False
 
 
 def update_kv_conductor_enabled_flag(user_config):
@@ -172,10 +204,9 @@ def _pick_coordinator_services(docs: list[dict]):
     return result
 
 
-def init_service_domain_name(paths, deploy_config):
+def init_service_domain_name(paths, deploy_config, user_config=None, skip_kv_store=False):
     controller_data = load_yaml(paths["controller_input_yaml"], False)
     coordinator_data = load_yaml(paths["coordinator_input_yaml"], False)
-    kv_store_data = load_yaml(paths["kv_store_input_yaml"], False)
     kv_conductor_data = load_yaml(paths["kv_conductor_input_yaml"], False)
     mf_store_data = load_yaml(paths["mf_store_input_yaml"], False)
 
@@ -186,12 +217,6 @@ def init_service_domain_name(paths, deploy_config):
             break
 
     coord_services = _pick_coordinator_services(coordinator_data)
-
-    kv_store_service_data = None
-    for doc in kv_store_data:
-        if doc.get(C.KIND) == C.SERVICE:
-            kv_store_service_data = doc
-            break
 
     kv_conductor_service_data = None
     for doc in kv_conductor_data:
@@ -220,8 +245,10 @@ def init_service_domain_name(paths, deploy_config):
     if obs_svc:
         set_coordinator_obs_service(f"{obs_svc[C.METADATA][C.NAME]}.{ns}.svc.cluster.local")
 
-    kv_store_svc_name = kv_store_service_data[C.METADATA][C.NAME]
-    set_kv_store_service(f"{kv_store_svc_name}.{deploy_config[C.CONFIG_JOB_ID]}.svc.cluster.local")
+    if not skip_kv_store:
+        from lib.generator.kv_cache_store import apply_kv_store_service_domain  # pylint: disable=cyclic-import
+
+        apply_kv_store_service_domain(deploy_config, user_config, paths=paths)
     kv_conductor_name = kv_conductor_service_data[C.METADATA][C.NAME]
     set_kv_conductor_service(f"{kv_conductor_name}.{deploy_config[C.CONFIG_JOB_ID]}.svc.cluster.local")
     mf_store_name = mf_store_service_data[C.METADATA][C.NAME]
