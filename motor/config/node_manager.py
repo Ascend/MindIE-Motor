@@ -441,20 +441,29 @@ class NodeManagerConfig:
             config_data[BASIC_CONFIG_KEY]["parallel_config"] = resolver.get_parallel_config()
             config_data[BASIC_CONFIG_KEY][ENABLE_MULTI_ENDPOINTS_KEY] = resolver.get_enable_multi_endpoints()
 
-        # Adjust local_world_size for cross-node PCP: each node contributes pcp/nnodes PCP ranks
+        # Adjust local_world_size for cross-node PCP/PP. Only PCP and PP ranks can span
+        # nodes (TP stays intra-node), so nnodes must divide their product (pcp*pp). The
+        # per-node device count is the full per-DP world (pcp*tp*pp) divided once by nnodes.
         nnodes = config_data[BASIC_CONFIG_KEY].get("nnodes", 1)
         pc = config_data[BASIC_CONFIG_KEY].get("parallel_config", {})
         pcp_size = pc.get("pcp_size", 1)
-        if isinstance(nnodes, int) and nnodes > 1 and pcp_size > 1 and pcp_size % nnodes == 0:
-            per_node_pcp = pcp_size // nnodes
-            per_node_tp = pc.get("tp_size", 1)
-            per_node_pp = pc.get("pp_size", 1)
-            pc["local_world_size"] = per_node_pcp * per_node_tp * per_node_pp
+        pp_size = pc.get("pp_size", 1)
+        tp_size = pc.get("tp_size", 1)
+        node_spanning = pcp_size * pp_size
+        if isinstance(nnodes, int) and nnodes > 1 and node_spanning > 1:
+            if node_spanning % nnodes != 0:
+                raise ValueError(
+                    f"Cross-node parallel size pcp*pp ({node_spanning}) must be divisible by nnodes ({nnodes})"
+                )
+            old_local_world_size = pc.get("local_world_size")
+            pc["local_world_size"] = (pcp_size * tp_size * pp_size) // nnodes
             logger.info(
-                "Cross-node PCP detected (nnodes=%d, pcp=%d): per-node local_world_size adjusted from %d to %d",
+                "Cross-node parallel detected (nnodes=%d, pcp=%d, pp=%d): "
+                "per-node local_world_size adjusted from %s to %d",
                 nnodes,
                 pcp_size,
-                pcp_size * per_node_tp * per_node_pp,
+                pp_size,
+                old_local_world_size,
                 pc["local_world_size"],
             )
 

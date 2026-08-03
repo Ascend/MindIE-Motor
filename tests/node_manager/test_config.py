@@ -878,3 +878,136 @@ def test_cross_node_pcp_generate_endpoint_ports():
     assert config.endpoint_config.endpoint_num == 1
     assert len(config.endpoint_config.service_ports) == 1
     assert len(config.endpoint_config.mgmt_ports) == 1
+
+
+# ===== Cross-Node PP Tests =====
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_cross_node_pp_adjusts_local_world_size():
+    """When nnodes > 1 and pp_size > 1, local_world_size is folded per-node (covers PP)."""
+    user_config = {
+        "motor_deploy_config": {
+            "hardware_type": "800I-A3",
+            "p_instances_num": 1,
+            "single_p_instance_pod_num": 2,
+            "p_pod_npu_num": 16,
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "enable_multi_endpoints": True,
+            "engine_config": {
+                "model": "/mnt/weight/test",
+                "data_parallel_size": 1,
+                "tensor_parallel_size": 16,
+                "pipeline_parallel_size": 2,
+                "nnodes": 2,
+                "master_port": 7060,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {"model": "/mnt/weight/test"},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(user_config, f)
+        temp_path = f.name
+
+    try:
+        config = NodeManagerConfig.from_json(temp_path)
+    finally:
+        os.unlink(temp_path)
+
+    # PP=2, TP=16, nnodes=2: per-node PP=1, local_world_size=1*16*1=16
+    assert config.basic_config.parallel_config.pp_size == 2  # global PP unchanged
+    assert config.basic_config.parallel_config.tp_size == 16
+    assert config.basic_config.parallel_config.local_world_size == 16  # per-node adjusted
+    assert config.basic_config.parallel_config.world_size == 32  # global: 1*1*16*2
+    assert config.basic_config.nnodes == 2
+    assert config.basic_config.device_num == 16
+    # endpoint_num: min(dp=1, 16//16=1) = 1
+    assert config.endpoint_config.endpoint_num == 1
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_cross_node_pp_and_pcp_both_adjusted():
+    """When both PCP and PP span nodes, local_world_size = pcp*tp*pp // nnodes."""
+    user_config = {
+        "motor_deploy_config": {
+            "hardware_type": "800I-A3",
+            "p_instances_num": 1,
+            "single_p_instance_pod_num": 2,
+            "p_pod_npu_num": 32,
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "enable_multi_endpoints": True,
+            "engine_config": {
+                "model": "/mnt/weight/test",
+                "data_parallel_size": 1,
+                "tensor_parallel_size": 8,
+                "pipeline_parallel_size": 2,
+                "prefill_context_parallel_size": 2,
+                "nnodes": 2,
+                "master_port": 7060,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {"model": "/mnt/weight/test"},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(user_config, f)
+        temp_path = f.name
+
+    try:
+        config = NodeManagerConfig.from_json(temp_path)
+    finally:
+        os.unlink(temp_path)
+
+    # pcp=2, pp=2, tp=8, nnodes=2: local = 2*8*2 // 2 = 16 (NOT 8)
+    assert config.basic_config.parallel_config.local_world_size == 16
+    assert config.basic_config.parallel_config.world_size == 32
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_cross_node_pp_not_divisible_raises():
+    """pp*pcp not divisible by nnodes must fail loudly, not yield a wrong local_world_size."""
+    user_config = {
+        "motor_deploy_config": {
+            "hardware_type": "800I-A3",
+            "p_instances_num": 1,
+            "single_p_instance_pod_num": 2,
+            "p_pod_npu_num": 16,
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "enable_multi_endpoints": True,
+            "engine_config": {
+                "model": "/mnt/weight/test",
+                "data_parallel_size": 1,
+                "tensor_parallel_size": 16,
+                "pipeline_parallel_size": 3,
+                "nnodes": 2,
+                "master_port": 7060,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {"model": "/mnt/weight/test"},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(user_config, f)
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ValueError):
+            NodeManagerConfig.from_json(temp_path)
+    finally:
+        os.unlink(temp_path)

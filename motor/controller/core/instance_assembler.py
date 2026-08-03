@@ -638,9 +638,15 @@ class InstanceAssembler(ThreadSafeSingleton):
         # node_rank within PCP group = registration_index % nnodes.
         # Re-registration not handled here — _start_commmand_sender skips re-registered instances.
         nnodes = metadata.nnodes
+        sent = 0
         for rank, node_mgr in enumerate(node_managers):
             endpoints = metadata.instance.get_endpoints(node_mgr.pod_ip)
             if not endpoints:
+                logger.error(
+                    "Skip start command for instance %s node %s: no endpoints registered",
+                    metadata.instance.job_name,
+                    node_mgr.pod_ip,
+                )
                 continue
 
             d2d_peer_ips = None
@@ -666,7 +672,36 @@ class InstanceAssembler(ThreadSafeSingleton):
                 node_rank=rank % nnodes if nnodes > 1 else rank,
             )
 
-            is_succeed = NodeManagerApiClient.send_start_command(node_mgr, start_cmd_msg) and is_succeed
+            ok = NodeManagerApiClient.send_start_command(node_mgr, start_cmd_msg)
+            if not ok:
+                logger.error(
+                    "Failed to send start command for instance %s to node %s (node_rank=%s)",
+                    metadata.instance.job_name,
+                    node_mgr.pod_ip,
+                    start_cmd_msg.node_rank,
+                )
+            is_succeed = ok and is_succeed
+            sent += 1
+
+        if sent == 0:
+            logger.error(
+                "No start command sent for instance %s: node_managers=%d have no endpoints",
+                metadata.instance.job_name,
+                len(node_managers),
+            )
+            return False
+        # Cross-node PP/PCP requires every registered node manager to receive start;
+        # a partial send would leave a missing stage that never retries.
+        if nnodes > 1 and sent < len(node_managers):
+            logger.error(
+                "Incomplete start for instance %s: sent=%d/%d node managers "
+                "(nnodes=%d); refusing partial cross-node start",
+                metadata.instance.job_name,
+                sent,
+                len(node_managers),
+                nnodes,
+            )
+            return False
         return is_succeed
 
     _D2D_SOURCE_SENTINEL = "auto"

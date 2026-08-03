@@ -152,17 +152,29 @@ class VLLMConfig(IConfig):
 
         if constants.KV_CONNECTOR_EXTRA_CONFIG not in kv_config:
             kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG] = {}
+        extra_config = kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG]
 
-        kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.KV_PREFILL] = {
-            constants.DP_SIZE: prefill_parallel.dp_size,
-            constants.TP_SIZE: prefill_parallel.tp_size,
-            constants.PP_SIZE: prefill_parallel.pp_size,
-        }
-        kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.KV_DECODE] = {
-            constants.DP_SIZE: decode_parallel.dp_size,
-            constants.TP_SIZE: decode_parallel.tp_size,
-            constants.PP_SIZE: decode_parallel.pp_size,
-        }
+        # Merge parallel sizes into any existing role config so user-provided keys
+        # (e.g. pp_layer_partition) are preserved rather than overwritten.
+        prefill_extra = dict(extra_config.get(constants.KV_PREFILL) or {})
+        prefill_extra.update(
+            {
+                constants.DP_SIZE: prefill_parallel.dp_size,
+                constants.TP_SIZE: prefill_parallel.tp_size,
+                constants.PP_SIZE: prefill_parallel.pp_size,
+            }
+        )
+        extra_config[constants.KV_PREFILL] = prefill_extra
+
+        decode_extra = dict(extra_config.get(constants.KV_DECODE) or {})
+        decode_extra.update(
+            {
+                constants.DP_SIZE: decode_parallel.dp_size,
+                constants.TP_SIZE: decode_parallel.tp_size,
+                constants.PP_SIZE: decode_parallel.pp_size,
+            }
+        )
+        extra_config[constants.KV_DECODE] = decode_extra
 
     def _process_store_connector(self, kv_config):
         role = self.endpoint_config.role
@@ -276,11 +288,16 @@ class VLLMConfig(IConfig):
             node_rank = self.endpoint_config.node_rank
             master_dp_ip = self.endpoint_config.master_dp_ip
             logger.info("Cross-node PCP active: node_rank=%d, master_addr=%s", node_rank, master_dp_ip)
-            flattened.setdefault("node_rank", node_rank)
+            # Force runtime values to win over any static placeholder / node_rank=0 the user
+            # may have left in engine_config; setdefault would keep tcp://placeholder and fail DNS.
+            flattened["node_rank"] = node_rank
             if master_dp_ip:
-                flattened.setdefault("master_addr", master_dp_ip)
+                flattened["master_addr"] = master_dp_ip
             if node_rank != 0:
-                flattened.setdefault("headless", True)
+                flattened["headless"] = True
+            else:
+                # Drop stale headless=True left in engine_config so master keeps API ports.
+                flattened.pop("headless", None)
         else:
             logger.info(
                 "Cross-node PCP NOT active: nnodes_int=%d, master_port=%s",
