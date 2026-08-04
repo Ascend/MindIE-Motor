@@ -455,7 +455,7 @@ motor_coordinator_config字段配置样例如下所示：
 | **prefill_kv_event_config字段** |-|-|
 | conductor_service |string|conductor服务IP或域名，默认为空。|
 | http_server_port |int|KV Conductor的HTTP服务端口，默认值：13333，取值范围：[1024,65535]。|
-| block_size |int|KV Cache块大小，默认值：128。|
+| block_size |int|KV Cache块大小，默认值：128。DeepSeek V4 须设为 512，并与引擎 `--block-size` 保持一致。|
 | endpoint |string|P实例发布事件端点，默认为空，取值示例：tcp://*:\<port>。|
 | replay_endpoint |string|事件回放端点，默认为空，取值示例：tcp://*:\<port>。|
 | engine_type |string|引擎类型，默认值：vLLM。|
