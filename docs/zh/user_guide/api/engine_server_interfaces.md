@@ -1,6 +1,6 @@
 # Engine Server 内部接口
 
->[!NOTE]说明
+> [!NOTE]说明
 >
 > Engine Server 内部接口挂载在 Engine Server 推理面，**不在** Coordinator 推理接口上提供服务。
 
@@ -28,14 +28,15 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 **接口格式**
 
 请求类型：**POST**
+
 > URL：`http(s)://{EngineIP}:{推理端口}/suspend?model_save_path={模型落盘路径}`
 
 IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 **请求参数**
 
-| 参数名 | 类型 | 说明 |
-| --- | --- | --- |
+| 参数名               | 类型     | 说明                        |
+| ----------------- | ------ | ------------------------- |
 | `model_save_path` | string | 必选；Query 参数。模型权重等数据的落盘目录。 |
 
 **使用样例**
@@ -60,6 +61,7 @@ curl -X POST "http://{EngineIP}:{推理端口}/suspend?model_save_path=/snapshot
 **接口格式**
 
 请求类型：**POST**
+
 > URL：`http(s)://{EngineIP}:{推理端口}/device_unlock`
 
 IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
@@ -90,16 +92,17 @@ curl -X POST "http://{EngineIP}:{推理端口}/device_unlock"
 **接口格式**
 
 请求类型：**POST**
+
 > URL：`http(s)://{EngineIP}:{推理端口}/resume?data_parallel_master_ip={DP主节点IP}&model_path={模型路径}`
 
 IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 **请求参数**
 
-| 参数名 | 类型 | 说明 |
-| --- | --- | --- |
+| 参数名                       | 类型     | 说明                          |
+| ------------------------- | ------ | --------------------------- |
 | `data_parallel_master_ip` | string | 必选；Query 参数。数据并行（DP）主节点 IP。 |
-| `model_path` | string | 必选；Query 参数。模型加载路径。 |
+| `model_path`              | string | 必选；Query 参数。模型加载路径。         |
 
 **使用样例**
 
@@ -123,25 +126,26 @@ curl -X POST "http://{EngineIP}:{推理端口}/resume?data_parallel_master_ip=10
 **接口格式**
 
 请求类型：**POST**
+
 > URL：`http(s)://{EngineIP}:{推理端口}/v1/metaserver`
 
 IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 
 **请求参数**
 
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `model` | string | 必选；模型名称，透传至目标节点。 |
-| `messages` | array | 与 `prompt` 二选一；Chat输入。 |
-| `prompt` | string | 与 `messages` 二选一；Completion 输入。 |
-| `stream` | boolean | 可选；是否流式返回，透传至目标节点。 |
-| `kv_transfer_params` | object | 必选；转发控制参数。 |
-| `kv_transfer_params.request_id` | string | 必选；请求标识，用于跨节点跟踪与关联。 |
-| `kv_transfer_params.do_remote_decode` | boolean | 可选；是否在目标节点执行 Decode。 |
-| `kv_transfer_params.do_remote_prefill` | boolean | 可选；是否在目标节点执行 Prefill。 |
-| `kv_transfer_params.remote_engine_id` | string | 必选；目标节点引擎 ID。 |
-| `kv_transfer_params.remote_host` | string | 必选；目标节点地址（IP 或域名）。 |
-| `kv_transfer_params.remote_port` | string | 必选；目标节点端口。 |
+| 参数                                     | 类型      | 说明                              |
+| -------------------------------------- | ------- | ------------------------------- |
+| `model`                                | string  | 必选；模型名称，透传至目标节点。                |
+| `messages`                             | array   | 与 `prompt` 二选一；Chat输入。          |
+| `prompt`                               | string  | 与 `messages` 二选一；Completion 输入。 |
+| `stream`                               | boolean | 可选；是否流式返回，透传至目标节点。              |
+| `kv_transfer_params`                   | object  | 必选；转发控制参数。                      |
+| `kv_transfer_params.request_id`        | string  | 必选；请求标识，用于跨节点跟踪与关联。             |
+| `kv_transfer_params.do_remote_decode`  | boolean | 可选；是否在目标节点执行 Decode。            |
+| `kv_transfer_params.do_remote_prefill` | boolean | 可选；是否在目标节点执行 Prefill。           |
+| `kv_transfer_params.remote_engine_id`  | string  | 必选；目标节点引擎 ID。                   |
+| `kv_transfer_params.remote_host`       | string  | 必选；目标节点地址（IP 或域名）。              |
+| `kv_transfer_params.remote_port`       | string  | 必选；目标节点端口。                      |
 
 **使用样例**
 
@@ -246,18 +250,42 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 **输出说明**
 该示例为非流式 `chat.completion`的输出说明：
 
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `id` | string | 响应 ID。 |
-| `object` | string | 响应对象类型，示例为 `chat.completion`。 |
-| `created` | integer | 响应创建时间（Unix 时间戳）。 |
-| `model` | string | 实际使用的模型名称。 |
-| `choices` | array | 生成结果列表。 |
-| `choices[].index` | integer | 结果序号。 |
-| `choices[].message.role` | string | 角色，示例为 `assistant`。 |
-| `choices[].message.content` | string | 生成内容。 |
-| `choices[].finish_reason` | string | 结束原因，如 `stop`、`length` 等。 |
-| `usage` | object | Token 统计信息。 |
-| `usage.prompt_tokens` | integer | 输入 Token 数量。 |
-| `usage.completion_tokens` | integer | 输出 Token 数量。 |
-| `usage.total_tokens` | integer | 总 Token 数量。 |
+| 参数                          | 类型      | 说明                            |
+| --------------------------- | ------- | ----------------------------- |
+| `id`                        | string  | 响应 ID。                        |
+| `object`                    | string  | 响应对象类型，示例为 `chat.completion`。 |
+| `created`                   | integer | 响应创建时间（Unix 时间戳）。             |
+| `model`                     | string  | 实际使用的模型名称。                    |
+| `choices`                   | array   | 生成结果列表。                       |
+| `choices[].index`           | integer | 结果序号。                         |
+| `choices[].message.role`    | string  | 角色，示例为 `assistant`。           |
+| `choices[].message.content` | string  | 生成内容。                         |
+| `choices[].finish_reason`   | string  | 结束原因，如 `stop`、`length` 等。     |
+| `usage`                     | object  | Token 统计信息。                   |
+| `usage.prompt_tokens`       | integer | 输入 Token 数量。                  |
+| `usage.completion_tokens`   | integer | 输出 Token 数量。                  |
+| `usage.total_tokens`        | integer | 总 Token 数量。                   |
+
+---
+
+## Native 拉起与 SGLang PD 约定
+
+当 EngineServer 启用 native CLI 拉起时：
+
+- **业务口**由原生引擎进程占用（`vllm serve` / `sglang.launch_server`），不再经过 Motor InferEndpoint。
+- **管理口**仍由 EngineServer 提供 `/status`、`/metrics`。
+
+### SGLang PD
+
+Coordinator 在识别到实例 `engine_type=sglang` 时，会在发往业务口的请求中直接注入原生字段：
+
+- `bootstrap_host`：Prefill 实例 IP
+- `bootstrap_port`：环境变量 `DISAGGREGATION_BOOTSTRAP_PORT`（Coordinator 与引擎 Pod 需一致）
+- `bootstrap_room`：由 `pair_id` + `attempt_seq` 稳定派生
+
+此时**不会**再附带 `_motor_dispatch`。因此 Coordinator 对 SGLang 存在引擎协议耦合；vLLM PD 仍走 `_motor_dispatch` / InferEndpoint（非 native）路径。
+
+### 取消 / stop
+
+- `/v1/dispatch/stop`：由 Motor InferEndpoint 提供；vLLM 等非 native 路径仍走该接口。
+- SGLang pure-native：业务口无 `/v1/dispatch/stop`。Coordinator 改为调用引擎原生 `POST /abort_request`，`rid` 与下发请求中的 `request_id`（`{root_request_id}#a{attempt_seq}`）对齐；失败时仅记录日志，不阻断 Coordinator 侧清理（best-effort）。

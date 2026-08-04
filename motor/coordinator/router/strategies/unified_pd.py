@@ -47,6 +47,10 @@ from motor.coordinator.router.dispatch_session import (
     PDDispatchSession,
 )
 from motor.coordinator.router.dispatch_capability import select_dispatch_plan_for_pair
+from motor.coordinator.router.sglang_native_dispatch import (
+    inject_sglang_pd_fields,
+    is_sglang_resource,
+)
 from motor.coordinator.router.stop_client import DispatchStopClient
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
@@ -1092,6 +1096,14 @@ class UnifiedPDRouter(BaseRouter):
             and self._sampling_manager is not None
         ):
             inject_logprobs(req, self.config.precision_detection_config, req_id=self.req_info.req_id)
+        # SGLang pure-native: stock launch_server needs bootstrap_* on the business
+        # port. Do not attach _motor_dispatch (no InferEndpoint adapter in native mode).
+        # Prefill endpoint must still be held here so Decode-leg inject can read
+        # bootstrap_host from attempt.prefill_resource.
+        target = attempt.prefill_resource if role == PDRole.ROLE_P else attempt.decode_resource
+        if is_sglang_resource(target):
+            inject_sglang_pd_fields(req, attempt)
+            return (req, api)
         req[MOTOR_DISPATCH_KEY] = attempt.dispatch_for(role, self._DISPATCH_MODE).model_dump(mode="json")
         if prefill_result is not None:
             req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")

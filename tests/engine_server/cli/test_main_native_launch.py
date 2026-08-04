@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -210,10 +209,21 @@ class TestMainNativeLaunchRouting:
         self._mgmt_cls().return_value.run.assert_called_once()
         self._ef().return_value.get_infer_endpoint.assert_not_called()
 
-    # -- NATIVE_LAUNCH_ENABLED=False (default) → goes invasive path -------
+    @patch("motor.engine_server.cli.main._run_native")
+    def test_native_enabled_sglang_also_calls_run_native(self, mock_run_native):
+        """SGLang native uses pure CLI launch (no InferEndpoint PD shim)."""
+        endpoint_cfg = sys.modules["motor.config.endpoint"].EndpointConfig
+        ep = endpoint_cfg.init_endpoint_config.return_value
+        ep.engine_type = "sglang"
+        with patch.object(self._es, "NATIVE_LAUNCH_ENABLED", True):
+            self._es.main()
+        mock_run_native.assert_called_once()
+        self._ef().return_value.get_infer_endpoint.assert_not_called()
+        ep.engine_type = "vllm"
 
     def test_native_disabled_goes_invasive(self):
-        self._es.main()
+        with patch.object(self._es, "NATIVE_LAUNCH_ENABLED", False):
+            self._es.main()
         self._mgmt_cls().return_value.run.assert_called_once()
         self._ef().return_value.get_infer_endpoint.return_value.run.assert_called_once()
 

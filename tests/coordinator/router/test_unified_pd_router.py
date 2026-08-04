@@ -419,8 +419,6 @@ async def test_unified_pd_process_response_error_wraps_cancelled_as_request_canc
     monkeypatch,
     caplog,
 ):
-    import logging
-
     caplog.set_level(
         logging.WARNING,
         logger=_resolve_logger_name("motor.coordinator.router.strategies.unified_pd"),
@@ -608,13 +606,13 @@ async def test_unified_pd_dual_dispatch_uses_dispatch_context_not_bootstrap_fiel
     monkeypatch,
 ):
     req_info = RequestInfo(
-        req_id="root-sglang",
+        req_id="root-vllm-concurrent",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
         api="v1/completions",
         entry_api="v1/completions",
         req_len=10,
     )
-    scheduler = _Scheduler()
+    scheduler = _Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm")
     router = UnifiedPDRouter(
         req_info,
         _config(),
@@ -640,6 +638,48 @@ async def test_unified_pd_dual_dispatch_uses_dispatch_context_not_bootstrap_fiel
         assert "bootstrap_port" not in request_body
         assert "bootstrap_room" not in request_body
         assert request_body[MOTOR_DISPATCH_KEY]["dispatch_mode"] == "pd_pair"
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_sglang_injects_bootstrap_fields_not_motor_dispatch(
+    monkeypatch,
+):
+    """SGLang pure-native PD: Coordinator injects stock bootstrap_* on both legs."""
+    monkeypatch.setenv("DISAGGREGATION_BOOTSTRAP_PORT", "9100")
+    req_info = RequestInfo(
+        req_id="root-sglang",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(prefill_engine_type="sglang", decode_engine_type="sglang")
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _Client("prefill")
+    d_client = _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    await router.handle_request()
+
+    for request_body in (p_client.requests[0], d_client.requests[0]):
+        assert MOTOR_DISPATCH_KEY not in request_body
+        assert request_body["bootstrap_host"] == "127.0.0.1"
+        assert request_body["bootstrap_port"] == "9100"
+        assert isinstance(request_body["bootstrap_room"], int)
+    assert p_client.requests[0]["bootstrap_room"] == d_client.requests[0]["bootstrap_room"]
 
 
 @pytest.mark.asyncio
@@ -874,6 +914,7 @@ async def test_unified_pd_stream_prefill_rejection_is_returned_before_first_deco
 
 @pytest.mark.asyncio
 async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
+    monkeypatch.setenv("DISAGGREGATION_BOOTSTRAP_PORT", "9100")
     req_info = RequestInfo(
         req_id="root-cpcd-sglang",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -911,7 +952,8 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
     assert len(p_client.requests) == 1
     assert len(d_client.requests) == 1
     assert MOTOR_PREFILL_RESULT_KEY not in d_client.requests[0]
-    assert d_client.requests[0][MOTOR_DISPATCH_KEY]["dispatch_mode"] == "pd_pair"
+    assert MOTOR_DISPATCH_KEY not in d_client.requests[0]
+    assert d_client.requests[0]["bootstrap_port"] == "9100"
     assert scheduler.update_workload.await_count == 3
 
 

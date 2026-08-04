@@ -18,12 +18,18 @@ from motor.common.resources.dispatch import (
     DispatchStopReason,
     DispatchStopRequest,
     DispatchStopResponse,
+    DispatchStopState,
 )
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.router.dispatch_session import AttemptContext
+from motor.coordinator.router.sglang_native_dispatch import is_sglang_resource
 
 logger = get_logger(__name__)
+
+
+def _engine_request_id(attempt: AttemptContext) -> str:
+    return f"{attempt.root_request_id}#a{attempt.attempt_seq}"
 
 
 class DispatchStopClient:
@@ -40,10 +46,78 @@ class DispatchStopClient:
         if not resource or not resource.endpoint:
             return None
 
+        if is_sglang_resource(resource):
+            return await self._stop_sglang_native(resource, attempt, reason, timeout)
+        return await self._stop_motor_dispatch(resource, attempt, reason, timeout)
+
+    async def _stop_sglang_native(
+        self,
+        resource: ScheduledResource,
+        attempt: AttemptContext,
+        reason: DispatchStopReason,
+        timeout: float,
+    ) -> DispatchStopResponse | None:
+        """Abort via stock SGLang ``POST /abort_request`` (no InferEndpoint stop API)."""
+        endpoint = resource.endpoint
+        engine_request_id = _engine_request_id(attempt)
+        try:
+            client = await HTTPClientPool().get_client(
+                ip=endpoint.ip,
+                port=endpoint.business_port,
+                tls_config=self._config.infer_tls_config,
+            )
+            response = await client.post(
+                "/abort_request",
+                json={"rid": engine_request_id},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            logger.info(
+                "SGLang abort_request accepted root_request_id=%s attempt_seq=%s endpoint=%s:%s rid=%s reason=%s",
+                attempt.root_request_id,
+                attempt.attempt_seq,
+                endpoint.ip,
+                endpoint.business_port,
+                engine_request_id,
+                reason.value,
+            )
+            return DispatchStopResponse(
+                root_request_id=attempt.root_request_id,
+                attempt_seq=attempt.attempt_seq,
+                accepted=True,
+                state=DispatchStopState.STOPPED,
+                message="sglang:/abort_request",
+            )
+        except httpx.HTTPError as e:
+            logger.warning(
+                "SGLang abort_request failed root_request_id=%s attempt_seq=%s endpoint=%s:%s rid=%s error=%s",
+                attempt.root_request_id,
+                attempt.attempt_seq,
+                endpoint.ip,
+                endpoint.business_port,
+                engine_request_id,
+                e,
+            )
+        except Exception as e:
+            logger.warning(
+                "SGLang abort_request unexpected error root_request_id=%s attempt_seq=%s error=%s",
+                attempt.root_request_id,
+                attempt.attempt_seq,
+                e,
+            )
+        return None
+
+    async def _stop_motor_dispatch(
+        self,
+        resource: ScheduledResource,
+        attempt: AttemptContext,
+        reason: DispatchStopReason,
+        timeout: float,
+    ) -> DispatchStopResponse | None:
         endpoint = resource.endpoint
         request = DispatchStopRequest(
             root_request_id=attempt.root_request_id,
-            engine_request_id=f"{attempt.root_request_id}#a{attempt.attempt_seq}",
+            engine_request_id=_engine_request_id(attempt),
             attempt_seq=attempt.attempt_seq,
             pair_id=attempt.pair_id,
             reason=reason.value,
