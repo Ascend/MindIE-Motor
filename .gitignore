@@ -130,3 +130,5 @@ motor/kv_conductor/mock/
 
 # gitleaks
 gitleaks
+.claude/
+docs/skill_pr_description.md
