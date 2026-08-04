@@ -68,6 +68,7 @@ def test_register_post_uses_union_conductor_id_for_role_u() -> None:
     mock_config.scheduler_config.kv_conductor_config.conductor_service = "kv-conductor"
     mock_config.scheduler_config.kv_conductor_config.http_server_port = 13333
     mock_config.scheduler_config.kv_conductor_config.endpoint = "tcp://*:5557"
+    mock_config.scheduler_config.kv_conductor_config.npu_endpoint = ""
     mock_config.scheduler_config.kv_conductor_config.xpu_endpoint = ""
     mock_config.scheduler_config.kv_conductor_config.cpu_endpoint = ""
     mock_config.scheduler_config.kv_conductor_config.disk_endpoint = ""
@@ -101,6 +102,7 @@ def test_register_post_formats_ipv6_endpoint_and_conductor_address() -> None:
     mock_config.scheduler_config.kv_conductor_config.model_path = ""
     mock_config.scheduler_config.kv_conductor_config.conductor_service = "2001:db8::10"
     mock_config.scheduler_config.kv_conductor_config.http_server_port = 13333
+    mock_config.scheduler_config.kv_conductor_config.npu_endpoint = ""
     mock_config.scheduler_config.kv_conductor_config.xpu_endpoint = ""
     mock_config.scheduler_config.kv_conductor_config.cpu_endpoint = ""
     mock_config.scheduler_config.kv_conductor_config.disk_endpoint = ""
@@ -118,9 +120,9 @@ def test_register_post_formats_ipv6_endpoint_and_conductor_address() -> None:
     mock_http_client.assert_called_once()
     assert mock_http_client.call_args.kwargs["address"] == "[2001:db8::10]:13333"
     register_payload = mock_http_client.return_value.__enter__.return_value.post.call_args[0][1]
-    # Endpoints are now wrapped in medium_endpoints dict (xpu/cpu/disk).
+    # Endpoints are now wrapped in medium_endpoints dict (npu/cpu/disk).
     # When per-medium fields are empty, all fall back to the legacy "endpoint".
-    assert register_payload["medium_endpoints"]["xpu"] == "tcp://[2001:db8::1]:5559"
+    assert register_payload["medium_endpoints"]["npu"] == "tcp://[2001:db8::1]:5559"
     assert register_payload["replay_endpoint"] == "tcp://[2001:db8::1]:6669"
 
 

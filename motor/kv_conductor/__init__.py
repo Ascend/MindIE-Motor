@@ -74,9 +74,6 @@ def is_available() -> bool:
 def start(
     host: str = "::",
     port: int = 13333,
-    hbm_weight: int = 3,
-    cpu_weight: int = 2,
-    disk_weight: int = 1,
     extra_args: list[str] | None = None,
 ) -> subprocess.Popen:
     """Launch kv-conductor as a subprocess.
@@ -87,12 +84,6 @@ def start(
         Bind address (default ``::`` — dual-stack IPv4/IPv6).
     port:
         HTTP listen port.
-    hbm_weight:
-        Score per matched HBM/XPU block (scoring config).
-    cpu_weight:
-        Score per matched CPU block.
-    disk_weight:
-        Score per matched disk block.
     extra_args:
         Additional CLI arguments forwarded to the binary.
 
@@ -118,12 +109,6 @@ def start(
         host,
         "--port",
         str(port),
-        "--hbm-weight",
-        str(hbm_weight),
-        "--cpu-weight",
-        str(cpu_weight),
-        "--disk-weight",
-        str(disk_weight),
     ]
     if extra_args:
         cmd.extend(extra_args)

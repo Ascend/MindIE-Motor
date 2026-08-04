@@ -268,7 +268,7 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_dpscoring_dict_format(self, mock_tokenizer_manager, mock_query_conductor):
-        """New DpScoring format: DP values are dicts with matched_tokens, not plain ints."""
+        """New DpBlocks format: DP values are dicts with matched_tokens, not plain ints."""
         ep_a = _make_endpoint(0, active_tokens=50.0)
         ep_b = _make_endpoint(1, active_tokens=50.0)
         mock_instance = Mock()
@@ -284,13 +284,13 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         mock_tokenizer.encode.return_value = list(range(1000))
         mock_tokenizer_manager.return_value = mock_tokenizer
 
-        # New DpScoring format: DP values are dicts with matched_tokens
+        # New DpBlocks format: DP values are dicts with matched_tokens
         mock_query_conductor.return_value = {
             TENANT_ID: {
                 "vllm-prefill-inst": {
                     "DP": {
-                        "0": {"XPU": 2400, "CPU": 0, "DISK": 0, "total": 2400, "matched_tokens": 800},
-                        "1": {"XPU": 0, "CPU": 200, "DISK": 0, "total": 200, "matched_tokens": 100},
+                        "0": {"npu_blocks": 6, "cpu_blocks": 0, "disk_blocks": 0, "matched_tokens": 800},
+                        "1": {"npu_blocks": 0, "cpu_blocks": 1, "disk_blocks": 0, "matched_tokens": 100},
                     }
                 }
             }

@@ -129,7 +129,11 @@ class ConductorApiClient:
     def _register_hbm_dp(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
         """Register a single DP's HBM endpoint for pool-backend auto-attach."""
         instance_id = conductor_instance_id(instance)
-        xpu_url = cls._resolve_endpoint_url(reg.xpu_endpoint or reg.endpoint, endpoint.ip, endpoint.id)
+        npu_url = cls._resolve_endpoint_url(
+            reg.npu_endpoint or reg.xpu_endpoint or reg.endpoint,
+            endpoint.ip,
+            endpoint.id,
+        )
 
         replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
         register_data: dict = {
@@ -140,8 +144,8 @@ class ConductorApiClient:
             "block_size": reg.block_size,
             "dp_rank": endpoint.id,
         }
-        if xpu_url:
-            register_data["medium_endpoints"] = {"xpu": xpu_url}
+        if npu_url:
+            register_data["medium_endpoints"] = {"npu": npu_url}
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
         if replay_url:
@@ -151,7 +155,7 @@ class ConductorApiClient:
         try:
             with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/register", register_data)
-                mode = "ZMQ+HTTP" if xpu_url else "HTTP-only"
+                mode = "ZMQ+HTTP" if npu_url else "HTTP-only"
                 logger.info(
                     "HBM DP registered (%s): instance=%s dp=%d replay=%s",
                     mode,
@@ -218,12 +222,12 @@ class ConductorApiClient:
     @classmethod
     def _build_medium_endpoints(cls, config, ip: str, dp_rank: int) -> dict[str, str]:
         """Build the medium_endpoints map from per-medium endpoint patterns."""
-        xpu_url = cls._resolve_endpoint_url(config.xpu_endpoint, ip, dp_rank)
+        npu_url = cls._resolve_endpoint_url(config.npu_endpoint or config.xpu_endpoint, ip, dp_rank)
         cpu_url = cls._resolve_endpoint_url(config.cpu_endpoint, ip, dp_rank)
         disk_url = cls._resolve_endpoint_url(config.disk_endpoint, ip, dp_rank)
         fallback = cls._resolve_endpoint_url(config.endpoint, ip, dp_rank)
         return {
-            "xpu": xpu_url or fallback or "",
+            "npu": npu_url or fallback or "",
             "cpu": cpu_url or fallback or "",
             "disk": disk_url or fallback or "",
         }
@@ -309,7 +313,7 @@ class ConductorApiClient:
 
     @classmethod
     def query_conductor(cls, instances: list[Instance], encoded_ids: list[int]) -> dict[str, Any]:
-        """Query KV conductor for prefix cache overlap scores.
+        """Query KV conductor for prefix cache matched blocks.
 
         Circuit breaker: after ``_QUERY_CB_THRESHOLD`` consecutive failures,
         skip queries for ``_QUERY_CB_COOLDOWN`` seconds.
@@ -345,7 +349,7 @@ class ConductorApiClient:
         try:
             with SafeHTTPSClient(timeout=3, **client_args) as client:
                 response = client.post("/query", query_data)
-                cls._log_hit_summary(response, reg.block_size)
+                logger.info("conductor query response: %s", response)
                 cls._query_failures = 0  # reset on success
                 return response
         except Exception as e:
@@ -365,69 +369,6 @@ class ConductorApiClient:
                     e,
                 )
         return {}
-
-    @classmethod
-    def _log_hit_summary(cls, response: dict[str, Any], block_size: int = 128) -> None:
-        """Log a concise per-instance hit summary from the query response."""
-        if not isinstance(response, dict):
-            return
-        for tenant_id, instances in response.items():
-            if not isinstance(instances, dict):
-                continue
-            for inst_id, imd in instances.items():
-                if not isinstance(imd, dict):
-                    continue
-                longest = imd.get("longest_matched", 0)  # tokens (blocks × block_size)
-                dp = imd.get("DP", {})
-                total_score = imd.get("total_score", 0)
-
-                # Aggregate per-DP hit info for the log line.
-                any_hit = False
-                dp_parts = []
-                media_parts = []
-                if isinstance(dp, dict):
-                    for rank, v in sorted(dp.items(), key=lambda x: int(x[0])):
-                        if isinstance(v, dict):
-                            mt = v.get("matched_tokens", 0)
-                            s = v.get("total", 0)
-                            xpu_blk = v.get("XPU_blk", 0)
-                            cpu_blk = v.get("CPU_blk", 0)
-                            disk_blk = v.get("DISK_blk", 0)
-                            dp_parts.append(f"{rank}:{mt}t/{s}pts")
-                            if xpu_blk or cpu_blk or disk_blk:
-                                any_hit = True
-                            media_fmt = cls._fmt_medium(xpu_blk, cpu_blk, disk_blk, block_size)
-                            if media_fmt:
-                                media_parts.append(f"  conductor media: {tenant_id}/{inst_id} dp={rank} {media_fmt}")
-                        else:
-                            dp_parts.append(f"{rank}:{v}t")
-
-                parts = [
-                    f"matched={longest}t",
-                    f"score={total_score}",
-                    f"DP={{{','.join(dp_parts)}}}",
-                ]
-                logger.info(
-                    "conductor hit: %s/%s %s %s",
-                    tenant_id,
-                    inst_id,
-                    "HIT" if any_hit else "MISS",
-                    " ".join(parts),
-                )
-                for mp in media_parts:
-                    logger.info(mp)
-
-    @staticmethod
-    def _fmt_medium(xpu_blk: int, cpu_blk: int, disk_blk: int, block_size: int) -> str:
-        """Format per-medium hit as e.g. ``XPU=768t(6blk) CPU=0t DISK=0t``."""
-        parts = []
-        for label, blk in [("XPU", xpu_blk), ("CPU", cpu_blk), ("DISK", disk_blk)]:
-            if blk:
-                tok = blk * block_size
-                parts.append(f"{label}={tok}t({blk}blk)")
-            else:
-                parts.append(f"{label}=0t")
-        return " ".join(parts)
 
     @classmethod
     def _build_register_payload(cls, instance: Instance, endpoint: Endpoint) -> dict[str, Any]:

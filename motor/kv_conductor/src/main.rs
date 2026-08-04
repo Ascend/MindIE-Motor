@@ -21,7 +21,6 @@ use clap::Parser;
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::EnvFilter;
 
-use kv_conductor::protocols::ScoringConfig;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
 
@@ -37,18 +36,6 @@ struct Cli {
     /// Port to listen on
     #[arg(long, short, default_value = "13333")]
     port: u16,
-
-    /// Score per matched HBM/XPU block
-    #[arg(long, default_value = "3")]
-    hbm_weight: u32,
-
-    /// Score per matched CPU block
-    #[arg(long, default_value = "2")]
-    cpu_weight: u32,
-
-    /// Score per matched disk block
-    #[arg(long, default_value = "1")]
-    disk_weight: u32,
 }
 
 #[tokio::main]
@@ -70,20 +57,8 @@ async fn main() {
     let host: IpAddr = cli.host.parse().expect("invalid host address");
     let addr = SocketAddr::new(host, cli.port);
 
-    let scoring = ScoringConfig {
-        hbm_weight: cli.hbm_weight,
-        cpu_weight: cli.cpu_weight,
-        disk_weight: cli.disk_weight,
-    };
-    tracing::info!(
-        hbm_weight = scoring.hbm_weight,
-        cpu_weight = scoring.cpu_weight,
-        disk_weight = scoring.disk_weight,
-        "scoring config"
-    );
-
-    let registry = Arc::new(WorkerRegistry::new(scoring.clone()));
-    let state = AppState { registry, scoring };
+    let registry = Arc::new(WorkerRegistry::new());
+    let state = AppState { registry };
     let router = create_router(state);
 
     tracing::info!("KV conductor starting on {}", addr);

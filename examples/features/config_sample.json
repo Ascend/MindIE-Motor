@@ -264,7 +264,7 @@
       "block_size": 128,
       "engine_type": "vLLM",
       "pool_endpoint": "",
-      "xpu_endpoint": "",
+      "npu_endpoint": "",
       "cpu_endpoint": "",
       "disk_endpoint": "",
       "endpoint": "",

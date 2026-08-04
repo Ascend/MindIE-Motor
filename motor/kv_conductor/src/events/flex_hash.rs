@@ -11,7 +11,7 @@
 //! `FlexHash` — polymorphic u64 deserialization for msgpack values.
 //!
 //! Supports multiple representations:
-//!   - integer (u64, i64, u32, …)
+//!   - non-negative integer (u64, i64, u32, …; negative i64 is rejected)
 //!   - decimal string   "12345678901234567890"
 //!   - hex string       "0xABCD1234…" or "ABCD1234…"
 //!   - binary bytes     up to 8 bytes, big-endian (vLLM BlockHash compat)

@@ -1,14 +1,27 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-// MindIE is licensed under Mulan PSL v2.
-// You can use this software according to the terms and conditions of the Mulan PSL v2.
-// You may obtain a copy of Mulan PSL v2 at:
-//         http://license.coscl.org.cn/MulanPSL2
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PSL v2 for more details.
+// SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file is a Derivative Work of NVIDIA Dynamo kv-router hashing helpers
+// in lib/kv-router/src/protocols.rs (XXH3_SEED, compute_block_hash,
+// little-endian xxh3 block hashing), originally licensed under the Apache
+// License, Version 2.0. Upstream project: https://github.com/ai-dynamo/dynamo
+//
+// You may obtain a copy of the Apache License at:
+//   http://www.apache.org/licenses/LICENSE-2.0
+// Local copy: licenses/Apache-2.0.txt
+// Attribution: THIRD_PARTY_NOTICES.md
+//
+// Modified by Huawei Technologies Co., Ltd. for MindIE-PyMotor KV Conductor
+// (i64 token input with per-chunk conversion, rayon parallel batching,
+// include partial trailing block via div_ceil). Huawei modifications are
+// also available under Mulan PSL v2 (http://license.coscl.org.cn/MulanPSL2).
+// Redistribution of this file must still comply with Apache License 2.0.
 
 //! XXH3-based token block hashing.
+//!
+//! Derived from NVIDIA Dynamo kv-router hashing helpers in
+//! `lib/kv-router/src/protocols.rs` (Apache-2.0). See `THIRD_PARTY_NOTICES.md`.
 //!
 //! Computes `LocalBlockHash` values from token sequences using a sliding-window
 
@@ -16,7 +29,8 @@ use xxhash_rust::xxh3;
 
 use crate::protocols::LocalBlockHash;
 
-/// Seed for XXH3 hashing, consistent with Dynamo kv-router.
+/// Seed for XXH3 hashing (same value as NVIDIA Dynamo kv-router for wire
+/// interoperability).
 pub const XXH3_SEED: u64 = 1337;
 
 /// Compute the hash of arbitrary data.

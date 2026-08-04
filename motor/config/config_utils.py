@@ -280,21 +280,30 @@ def _update_prefill_kv_event_config(updated_config: dict[str, Any], user_config_
 
 
 def _redirect_prefill_kv_event_config(updated_config: dict[str, Any], user_config_data: dict[str, Any]) -> None:
-    """Redirect legacy prefill_kv_event_config into the unified kv_conductor_config.
+    """Redirect legacy / top-level kv conductor settings into scheduler_config.
 
-    1. If the user config still has a ``prefill_kv_event_config`` section, merge its
+    1. Merge top-level ``user_config.kv_conductor_config`` into
+       ``scheduler_config.kv_conductor_config`` (deployer convention).
+    2. If the user config still has a ``prefill_kv_event_config`` section, merge its
        fields into ``kv_conductor_config`` (backward compat).
-    2. Auto-derive connection info from engine sections and kv_conductor_config.
+    3. Auto-derive connection info from engine sections when fields are unset.
     """
     try:
         reg = updated_config.setdefault("scheduler_config", {}).setdefault(KV_CONDUCTOR_CONFIG, {})
+
+        # ── Top-level user_config.kv_conductor_config (deployer) ──────
+        top_level = user_config_data.get(KV_CONDUCTOR_CONFIG)
+        if isinstance(top_level, dict):
+            for key, value in top_level.items():
+                if value not in (None, "") and not reg.get(key):
+                    reg[key] = value
 
         # ── Backward compat: migrate old prefill_kv_event_config ──────
         old_config = updated_config.pop(PREFILL_KV_EVENT_CONFIG, None)
         if isinstance(old_config, dict):
             logger.warning(
                 "prefill_kv_event_config is deprecated and will be removed in a future version. "
-                "Please migrate to kv_conductor_config under scheduler_config. "
+                "Please migrate to top-level kv_conductor_config (or scheduler_config.kv_conductor_config). "
                 "See docs/zh/user_guide/features/kvcache_affinity.md for details."
             )
             for key in (

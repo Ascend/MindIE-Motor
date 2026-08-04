@@ -1,16 +1,28 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-// MindIE is licensed under Mulan PSL v2.
-// You can use this software according to the terms and conditions of the Mulan PSL v2.
-// You may obtain a copy of Mulan PSL v2 at:
-//         http://license.coscl.org.cn/MulanPSL2
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PSL v2 for more details.
+// SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+//
+// Portions of this file (hash newtypes, KV cache event / store payloads, and
+// overlap-match result types) are a Derivative Work of NVIDIA Dynamo
+// kv-router lib/kv-router/src/protocols.rs, licensed under Apache-2.0.
+// Upstream project: https://github.com/ai-dynamo/dynamo
+// SPDX-License-Identifier: Apache-2.0
+//
+// You may obtain a copy of the Apache License at:
+//   http://www.apache.org/licenses/LICENSE-2.0
+// Local copy: licenses/Apache-2.0.txt
+// Attribution: THIRD_PARTY_NOTICES.md
+//
+// MindIE HTTP API types (register / query / health, WorkerKey, StorageMedium
+// parsing, HbmIpIndex, etc.) and other Huawei modifications are also
+// available under Mulan PSL v2 (http://license.coscl.org.cn/MulanPSL2).
+// Redistribution of the Dynamo-derived portions must still comply with
+// Apache License 2.0.
 
 //! Protocol types for the KV conductor service.
 //!
-//! These types define the HTTP API contract, compatible with the Python
+//! Hash / KV-event payload types are derived from NVIDIA Dynamo kv-router
+//! `lib/kv-router/src/protocols.rs` (Apache-2.0); see `THIRD_PARTY_NOTICES.md`.
+//! HTTP API types are the MindIE conductor contract used by Python
 //! `ConductorApiClient` in `motor/coordinator/api_client/`.
 
 use std::collections::HashMap;
@@ -20,6 +32,8 @@ use parking_lot::RwLock as ParkingRwLock;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use tracing;
+
+use crate::hashing::compute_block_hash_for_seq;
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -73,9 +87,10 @@ impl<'de> Deserialize<'de> for LocalBlockHash {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum StorageMedium {
-    /// GPU/NPU HBM — from inference engine workers.
+    /// NPU HBM — from inference engine workers.
+    /// Wire aliases `gpu` / `xpu` / `hbm` / `device` still parse to this variant.
     #[default]
-    Xpu,
+    Npu,
     /// Host DDR / CPU pinned memory — from Mooncake master (MEMORY replica).
     Cpu,
     /// SSD / DFS / NVMe disk — from Mooncake master (DISK replica).
@@ -87,7 +102,9 @@ pub enum StorageMedium {
 impl StorageMedium {
     pub fn parse(s: &str) -> Self {
         match s {
-            "xpu" | "XPU" | "hbm" | "HBM" | "device" | "DEVICE" => Self::Xpu,
+            "npu" | "NPU" | "gpu" | "GPU" | "xpu" | "XPU" | "hbm" | "HBM" | "device" | "DEVICE" => {
+                Self::Npu
+            }
             "cpu" | "CPU" | "cpu_pinned" | "CPU_PINNED" | "host" | "HOST" | "memory" | "MEMORY" => {
                 Self::Cpu
             }
@@ -100,36 +117,16 @@ impl StorageMedium {
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Xpu => "XPU",
+            Self::Npu => "NPU",
             Self::Cpu => "CPU",
             Self::Disk => "DISK",
             Self::Unknown => "UNKNOWN",
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Scoring configuration
-// ---------------------------------------------------------------------------
-
-/// Per-medium block match weights, configurable at startup.
-#[derive(Debug, Clone)]
-pub struct ScoringConfig {
-    /// Weight for each HBM (XPU) block matched.
-    pub hbm_weight: u32,
-    /// Weight for each CPU block matched.
-    pub cpu_weight: u32,
-    /// Weight for each disk block matched.
-    pub disk_weight: u32,
-}
-
-impl Default for ScoringConfig {
-    fn default() -> Self {
-        Self {
-            hbm_weight: 3,
-            cpu_weight: 2,
-            disk_weight: 1,
-        }
+    /// Whether `s` names the device-HBM tier (npu / gpu / xpu / hbm / device).
+    pub fn is_hbm_key(s: &str) -> bool {
+        matches!(Self::parse(s), Self::Npu)
     }
 }
 
@@ -150,7 +147,7 @@ pub struct WorkerKey {
     /// RFC #1527: backend that owns the KV blocks (engine worker, Mooncake daemon, etc.).
     pub backend_id: String,
     pub dp_rank: DpRank,
-    /// RFC #1527: cache medium (xpu, cpu, disk).
+    /// RFC #1527: cache medium (npu, cpu, disk).
     pub medium: StorageMedium,
 }
 
@@ -163,7 +160,7 @@ pub struct WorkerKey {
 pub struct RegisterRequest {
     pub instance_id: InstanceId,
     /// Per-medium ZMQ PUB endpoints (new protocol).
-    /// e.g. {"xpu": "tcp://...:5557", "cpu": "tcp://...:5558"}.
+    /// e.g. {"npu": "tcp://...:5557", "cpu": "tcp://...:5558"}.
     /// Multiple media may share the same endpoint URL; the conductor deduplicates.
     /// When empty, falls back to the legacy `endpoint` field.
     #[serde(default)]
@@ -236,34 +233,27 @@ pub struct QueryByHashRequest {
 // Query response types (matching Python client expectations)
 //
 // Python reads:
-//   rsp[tenant_id][instance_id]["longest_matched"]  (in tokens)
-//   rsp[tenant_id][instance_id]["DP"][dp_rank_str]   (in tokens)
+//   rsp[tenant_id][instance_id]["longest_matched"]            (in tokens)
+//   rsp[tenant_id][instance_id]["DP"][dp_rank_str]            (DpBlocks obj:
+//     matched_tokens / npu_blocks / cpu_blocks / disk_blocks)
 // ---------------------------------------------------------------------------
 
-/// Per-DP weighted score breakdown across storage media.
+/// Per-DP matched block counts across storage media.
 #[derive(Debug, Clone, Serialize, Default)]
-pub struct DpScoring {
-    /// HBM matched blocks × 3
-    #[serde(rename = "XPU")]
-    pub xpu_score: u32,
-    /// CPU matched blocks × 2
-    #[serde(rename = "CPU")]
-    pub cpu_score: u32,
-    /// Disk matched blocks × 1
-    #[serde(rename = "DISK")]
-    pub disk_score: u32,
-    /// Total weighted score (xpu_score + cpu_score + disk_score)
-    pub total: u32,
-    /// Cached prefix length for this DP, in tokens (blocks × block_size).
+pub struct DpBlocks {
+    /// Cached prefix length for this DP, in tokens:
+    /// farthest absolute coverage end across media × `block_size`.
+    ///
+    /// Per-medium `*_blocks` are segment lengths (HBM from root; CPU/Disk
+    /// from their continuation **or** an unconditional root chain — replicas
+    /// are reported on every tier). `matched_tokens` must not sum
+    /// overlapping replicas of the same prefix.
     pub matched_tokens: u32,
-    /// HBM raw block count.
-    #[serde(rename = "XPU_blk")]
-    pub xpu_blocks: u32,
-    /// CPU raw block count.
-    #[serde(rename = "CPU_blk")]
+    /// HBM (NPU) matched block count.
+    pub npu_blocks: u32,
+    /// CPU matched block count.
     pub cpu_blocks: u32,
-    /// Disk raw block count.
-    #[serde(rename = "DISK_blk")]
+    /// Disk matched block count.
     pub disk_blocks: u32,
 }
 
@@ -272,11 +262,9 @@ pub struct DpScoring {
 pub struct InstanceMatchData {
     /// Longest continuous prefix match across all DP ranks, in tokens.
     pub longest_matched: u32,
-    /// Per-DP-rank scoring breakdown across media.
+    /// Per-DP-rank matched block counts across media.
     #[serde(rename = "DP")]
-    pub dp: HashMap<String, DpScoring>,
-    /// Sum of all DP total scores for this instance.
-    pub total_score: u32,
+    pub dp: HashMap<String, DpBlocks>,
 }
 
 /// Full query response: { tenant_id: { instance_id: InstanceMatchData } }
@@ -292,12 +280,12 @@ pub struct QueryResponse {
 
 /// Batch of KV cache events from workers.
 ///
-/// Routing context (`instance_id`, `model_name`, `tenant_id`, `block_size`)
-/// identifies the originating worker and the model/tenant scope for indexer
-/// lookup. When `model_name` / `tenant_id` are omitted and the instance is
-/// already registered, the registered values are used as a fallback.
-/// `block_size` defaults to 128 when neither the batch nor a prior
-/// registration provides it.
+/// Routing context (`instance_id`, `model_name`, `tenant_id`) identifies the
+/// originating worker and the model/tenant scope for indexer lookup. When
+/// `model_name` / `tenant_id` are omitted and the instance is already
+/// registered, the registered values are used as a fallback. `block_size`
+/// is carried for wire compatibility; the HTTP events path does not consume
+/// it (query uses the registered value).
 #[derive(Debug, Clone, Deserialize)]
 pub struct KvEventBatch {
     /// The worker instance these events originate from.
@@ -308,7 +296,9 @@ pub struct KvEventBatch {
     /// Tenant id for indexer routing (falls back to registered value if omitted).
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// KV block size in tokens (falls back to registered value, then 128).
+    /// KV block size in tokens. The HTTP events path currently does not
+    /// consume this field (query uses the registered `block_size`); the
+    /// serde default of 128 keeps the wire type stable.
     #[serde(default = "default_block_size")]
     pub block_size: u32,
     #[serde(default)]
@@ -355,14 +345,24 @@ pub struct KvEventWirePayload {
     /// Engine-style: blocks with block_hash + tokens_hash.
     pub blocks: Vec<KvCacheStoredBlockData>,
     /// Engine-style: parent sequence hash.
+    /// Accepts both the RFC #1527 field name `parent_hash` and the vLLM
+    /// engine field name `parent_block_hash`.
+    #[serde(alias = "parent_block_hash")]
     pub parent_hash: Option<i64>,
+    /// Engine-style: raw token ids of the stored chain, used to recompute
+    /// `tokens_hash` (XXH3) when the event carries no pre-computed blocks.
+    #[serde(default)]
+    pub token_ids: Vec<i64>,
+    /// Engine-style: block size in tokens, must pair with `token_ids`.
+    #[serde(default)]
+    pub block_size: Option<u32>,
     /// RFC #1527: rolling sequence hashes.
     pub seq_hashes: Vec<u64>,
-    /// RFC #1527: cache medium (xpu, cpu, disk).
+    /// RFC #1527: cache medium (npu, cpu, disk).
     pub medium: Option<String>,
     /// RFC #1527: backend that owns the blocks.
     pub backend_id: Option<String>,
-    /// Legacy compat: block_hashes (vLLM/Dynamo alias for seq_hashes).
+    /// Legacy compat: block_hashes (vLLM / engine alias for seq_hashes).
     #[serde(default)]
     pub block_hashes: Vec<u64>,
     /// Legacy compat: old event type string (e.g. "BlockStored").
@@ -387,6 +387,18 @@ impl KvEventWirePayload {
             "stored" => {
                 let blocks: Vec<KvCacheStoredBlockData> = if !self.blocks.is_empty() {
                     self.blocks.clone()
+                } else if !self.token_ids.is_empty() && self.block_size.is_some_and(|bs| bs > 0) {
+                    // Engine-style event (vLLM map/JSON): recompute the XXH3
+                    // content hash from token_ids, same as the ZMQ path.
+                    let bs = self.block_size.unwrap_or(0);
+                    let computed = compute_block_hash_for_seq(&self.token_ids, bs);
+                    let num = computed.len().min(self.block_hashes.len());
+                    (0..num)
+                        .map(|i| KvCacheStoredBlockData {
+                            block_hash: self.block_hashes[i],
+                            tokens_hash: computed[i].0,
+                        })
+                        .collect()
                 } else {
                     // Build engine-style blocks from seq_hashes (Mooncake path: no tokens_hash)
                     seq_hashes
@@ -397,13 +409,10 @@ impl KvEventWirePayload {
                         })
                         .collect()
                 };
-                let parent_hash = if !self.blocks.is_empty() {
-                    self.parent_hash
-                } else {
-                    None // Mooncake events have no parent
-                };
                 KvCacheEventData::Stored(KvCacheStoreData {
-                    parent_hash: parent_hash.map(|h| h as u64),
+                    // Engine events carry `parent_block_hash` (aliased into
+                    // `parent_hash`); RFC #1527 pool events have no parent.
+                    parent_hash: self.parent_hash.map(|h| h as u64),
                     start_position: None,
                     blocks,
                 })
@@ -442,15 +451,31 @@ impl KvEventWirePayload {
         (data, self.medium.clone(), self.backend_id.clone())
     }
 
+    /// Resolve the event type to one of `stored` / `removed` / `cleared`.
+    ///
+    /// Both the canonical wire names ("stored", "removed", "cleared") and the
+    /// engine class names ("BlockStored", "BlockRemoved", "AllBlocksCleared")
+    /// are recognized via keyword matching, so a vLLM-style event pushed over
+    /// HTTP /events is never misclassified (a `BlockStored` must not fall into
+    /// the `Removed` fallback branch).
     fn resolve_event_type(&self) -> &str {
-        if !self.event_type.is_empty() {
-            return &self.event_type;
-        }
-        match &self.legacy_type {
-            Some(t) if t.contains("Removed") || t.contains("removed") => "removed",
-            Some(t) if t.contains("Stored") || t.contains("stored") => "stored",
-            Some(t) if t.contains("Cleared") || t.contains("cleared") => "cleared",
-            _ => "unknown",
+        let raw = if !self.event_type.is_empty() {
+            self.event_type.as_str()
+        } else {
+            match &self.legacy_type {
+                Some(t) => t.as_str(),
+                None => return "unknown",
+            }
+        };
+        let lower = raw.to_ascii_lowercase();
+        if lower.contains("removed") {
+            "removed"
+        } else if lower.contains("stored") {
+            "stored"
+        } else if lower.contains("cleared") {
+            "cleared"
+        } else {
+            "unknown"
         }
     }
 
@@ -503,42 +528,42 @@ pub struct KvCacheStoredBlockData {
 // Internal types
 // ---------------------------------------------------------------------------
 
-/// Overlap scores result from a radix-tree lookup.
+/// Overlap match result from a radix-tree lookup.
 #[derive(Debug, Clone, Default)]
-pub struct OverlapScores {
+pub struct OverlapBlocks {
     /// worker -> matched block count
-    pub scores: FxHashMap<WorkerKey, u32>,
+    pub blocks: FxHashMap<WorkerKey, u32>,
 }
 
-impl OverlapScores {
+impl OverlapBlocks {
     pub fn is_empty(&self) -> bool {
-        self.scores.is_empty()
+        self.blocks.is_empty()
     }
 
-    /// Add points for a worker (HBM depth × 3, CPU block × 2, disk block × 1).
+    /// Add matched block count for a worker.
     #[inline]
-    pub fn add_score(&mut self, worker: WorkerKey, points: u32) {
-        self.scores
+    pub fn add_blocks(&mut self, worker: WorkerKey, n: u32) {
+        self.blocks
             .entry(worker)
-            .and_modify(|s| *s += points)
-            .or_insert(points);
+            .and_modify(|s| *s += n)
+            .or_insert(n);
     }
 
-    /// Legacy max-based update, used internally by HBM tree traversal.
+    /// Max-based update, used internally by HBM tree traversal.
     #[inline]
-    pub fn update_score(&mut self, worker: WorkerKey, depth: u32) {
-        self.scores
+    pub fn update_blocks(&mut self, worker: WorkerKey, depth: u32) {
+        self.blocks
             .entry(worker)
             .and_modify(|s| *s = (*s).max(depth))
             .or_insert(depth);
     }
 
-    /// Merge scores from another `OverlapScores` into this one.
-    /// Used by parallel flat lookup to combine per-thread results.
+    /// Merge matched blocks from another `OverlapBlocks` into this one,
+    /// keeping the maximum per worker.
     #[inline]
-    pub fn merge(&mut self, other: OverlapScores) {
-        for (worker, score) in other.scores {
-            self.add_score(worker, score);
+    pub fn merge(&mut self, other: OverlapBlocks) {
+        for (worker, n) in other.blocks {
+            self.add_blocks(worker, n);
         }
     }
 }
@@ -553,11 +578,18 @@ mod tests {
     // ── StorageMedium ─────────────────────────────────────────────────
 
     #[test]
-    fn test_storage_medium_from_str_xpu() {
-        assert_eq!(StorageMedium::parse("xpu"), StorageMedium::Xpu);
-        assert_eq!(StorageMedium::parse("XPU"), StorageMedium::Xpu);
-        assert_eq!(StorageMedium::parse("hbm"), StorageMedium::Xpu);
-        assert_eq!(StorageMedium::parse("device"), StorageMedium::Xpu);
+    fn test_storage_medium_from_str_npu() {
+        assert_eq!(StorageMedium::parse("npu"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("NPU"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("gpu"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("GPU"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("xpu"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("XPU"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("hbm"), StorageMedium::Npu);
+        assert_eq!(StorageMedium::parse("device"), StorageMedium::Npu);
+        assert!(StorageMedium::is_hbm_key("npu"));
+        assert!(StorageMedium::is_hbm_key("gpu"));
+        assert!(!StorageMedium::is_hbm_key("cpu"));
     }
 
     #[test]
@@ -573,13 +605,13 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_medium_default_is_xpu() {
-        assert_eq!(StorageMedium::default(), StorageMedium::Xpu);
+    fn test_storage_medium_default_is_npu() {
+        assert_eq!(StorageMedium::default(), StorageMedium::Npu);
     }
 
     #[test]
     fn test_storage_medium_as_str() {
-        assert_eq!(StorageMedium::Xpu.as_str(), "XPU");
+        assert_eq!(StorageMedium::Npu.as_str(), "NPU");
         assert_eq!(StorageMedium::Cpu.as_str(), "CPU");
         assert_eq!(StorageMedium::Disk.as_str(), "DISK");
         assert_eq!(StorageMedium::Unknown.as_str(), "UNKNOWN");
@@ -593,12 +625,12 @@ mod tests {
             instance_id: "inst-1".into(),
             backend_id: "backend-a".into(),
             dp_rank: 2,
-            medium: StorageMedium::Xpu,
+            medium: StorageMedium::Npu,
         };
         assert_eq!(wk.instance_id, "inst-1");
         assert_eq!(wk.backend_id, "backend-a");
         assert_eq!(wk.dp_rank, 2);
-        assert_eq!(wk.medium, StorageMedium::Xpu);
+        assert_eq!(wk.medium, StorageMedium::Npu);
     }
 
     #[test]
@@ -624,7 +656,7 @@ mod tests {
             instance_id: "i1".into(),
             backend_id: "b1".into(),
             dp_rank: 0,
-            medium: StorageMedium::Xpu,
+            medium: StorageMedium::Npu,
         };
         let b = WorkerKey {
             instance_id: "i1".into(),
@@ -639,50 +671,41 @@ mod tests {
 
     #[test]
     fn test_instance_match_data_serialization() {
-        let mut imd = InstanceMatchData::default();
-        imd.longest_matched = 256;
+        let mut imd = InstanceMatchData {
+            longest_matched: 256,
+            ..Default::default()
+        };
         imd.dp.insert(
             "0".into(),
-            DpScoring {
-                xpu_score: 6,
-                cpu_score: 0,
-                disk_score: 0,
-                total: 6,
+            DpBlocks {
                 matched_tokens: 768,
-                xpu_blocks: 6,
+                npu_blocks: 6,
                 cpu_blocks: 0,
                 disk_blocks: 0,
             },
         );
         imd.dp.insert(
             "1".into(),
-            DpScoring {
-                xpu_score: 0,
-                cpu_score: 8,
-                disk_score: 0,
-                total: 8,
+            DpBlocks {
                 matched_tokens: 1024,
-                xpu_blocks: 0,
+                npu_blocks: 0,
                 cpu_blocks: 4,
                 disk_blocks: 0,
             },
         );
-        imd.total_score = 14;
 
         let json = serde_json::to_string(&imd).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["longest_matched"], 256);
-        assert_eq!(parsed["total_score"], 14);
-        assert_eq!(parsed["DP"]["0"]["XPU"], 6);
-        assert_eq!(parsed["DP"]["0"]["total"], 6);
+        assert!(parsed.get("total_score").is_none());
+        assert!(parsed["DP"]["0"].get("XPU").is_none());
+        assert!(parsed["DP"]["0"].get("total").is_none());
         assert_eq!(parsed["DP"]["0"]["matched_tokens"], 768);
-        assert_eq!(parsed["DP"]["0"]["XPU_blk"], 6);
-        assert!(parsed["DP"]["0"]["CPU_blk"].as_u64().unwrap() == 0);
-        assert_eq!(parsed["DP"]["1"]["CPU"], 8);
-        assert_eq!(parsed["DP"]["1"]["total"], 8);
+        assert_eq!(parsed["DP"]["0"]["npu_blocks"], 6);
+        assert_eq!(parsed["DP"]["0"]["cpu_blocks"], 0);
         assert_eq!(parsed["DP"]["1"]["matched_tokens"], 1024);
-        assert_eq!(parsed["DP"]["1"]["CPU_blk"], 4);
+        assert_eq!(parsed["DP"]["1"]["cpu_blocks"], 4);
     }
 
     // ── KvEventWirePayload normalization ────────────────────────────────
@@ -757,5 +780,73 @@ mod tests {
 
         let (data, _, _) = payload.normalize();
         assert!(matches!(data, KvCacheEventData::Removed { .. }));
+    }
+
+    // ── Engine class-name type resolution (vLLM map/JSON events) ────────
+
+    #[test]
+    fn test_normalize_engine_block_stored_is_stored_not_removed() {
+        // vLLM engine events pushed via HTTP /events carry `type: "BlockStored"`.
+        // They must normalize to Stored — the historical fallback classified
+        // them as Removed, which would delete index entries.
+        let payload = KvEventWirePayload {
+            event_type: "BlockStored".into(),
+            block_hashes: vec![100, 200],
+            parent_hash: Some(50),
+            token_ids: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            block_size: Some(4),
+            ..Default::default()
+        };
+        let (data, _, _) = payload.normalize();
+        let KvCacheEventData::Stored(store) = &data else {
+            panic!("BlockStored must normalize to Stored, got {data:?}");
+        };
+        assert_eq!(store.parent_hash, Some(50));
+        assert_eq!(store.blocks.len(), 2);
+        // tokens_hash is the XXH3 content hash recomputed from token_ids,
+        // never the sequence hash.
+        let computed = compute_block_hash_for_seq(&[1, 2, 3, 4, 5, 6, 7, 8], 4);
+        assert_eq!(store.blocks[0].tokens_hash, computed[0].0);
+        assert_eq!(store.blocks[1].tokens_hash, computed[1].0);
+        assert_ne!(store.blocks[0].tokens_hash, 100);
+    }
+
+    #[test]
+    fn test_normalize_engine_block_removed() {
+        let payload = KvEventWirePayload {
+            event_type: "BlockRemoved".into(),
+            block_hashes: vec![111],
+            ..Default::default()
+        };
+        let (data, _, _) = payload.normalize();
+        assert!(matches!(data, KvCacheEventData::Removed { .. }));
+    }
+
+    #[test]
+    fn test_normalize_engine_all_blocks_cleared() {
+        let payload = KvEventWirePayload {
+            event_type: "AllBlocksCleared".into(),
+            ..Default::default()
+        };
+        let (data, _, _) = payload.normalize();
+        assert!(matches!(data, KvCacheEventData::Cleared));
+    }
+
+    #[test]
+    fn test_normalize_engine_parent_block_hash_alias() {
+        // The vLLM field name `parent_block_hash` maps onto `parent_hash`.
+        let payload = KvEventWirePayload {
+            event_type: "BlockStored".into(),
+            block_hashes: vec![100],
+            parent_hash: Some(999),
+            token_ids: vec![1, 2, 3, 4],
+            block_size: Some(4),
+            ..Default::default()
+        };
+        let (data, _, _) = payload.normalize();
+        let KvCacheEventData::Stored(store) = &data else {
+            panic!("expected Stored, got {data:?}");
+        };
+        assert_eq!(store.parent_hash, Some(999));
     }
 }

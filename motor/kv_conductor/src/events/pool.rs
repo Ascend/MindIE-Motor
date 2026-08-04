@@ -12,7 +12,9 @@
 //!
 //! Used by all pool backends (Mooncake, Memcache, YuanRong) — the pool
 //! daemon broadcasts KV cache events that this module deserializes and
-//! matches against offload cache entries.
+//! resolves against the offload cache, retained content, or an
+//! already-indexed lower tier (two-phase match, pool-first arrivals wait
+//! in `pending_pool`).
 
 use serde::Deserialize;
 
@@ -104,7 +106,7 @@ pub(crate) fn apply_pool_event(
     // For MatchMode::None (YuanRong), use the subscriber's backend_id which IS
     // the engine instance_id from registration.  The event's backend_id may be
     // the pool daemon's IP:port — using it directly would create a different
-    // instance_id than the HBM blocks, breaking cross-media score aggregation.
+    // instance_id than the HBM blocks, breaking cross-media block aggregation.
     // For pool backends (Mooncake/Memcache), the event's backend_id is the node
     // IP, needed by resolve_workers for hbm_ip_index lookup.
     let event_be_id = pool_event.backend_id.as_deref().unwrap_or(backend_id);
@@ -165,14 +167,21 @@ pub(crate) fn apply_pool_event(
                     medium = %worker.medium.as_str(),
                     ?preview,
                     worker = %worker.instance_id,
-                    "pool confirm: matched cached offload blocks, inserting into tree"
+                    "pool confirm: resolved mapping, inserting into tree"
                 );
-                let store_data = KvCacheStoreData {
-                    parent_hash: None,
-                    start_position: None,
-                    blocks,
-                };
-                entry.apply_event(worker, &KvCacheEventData::Stored(store_data))?;
+                // Apply one `Stored` event per block, each with its own
+                // `parent_hash` (resolved from the offload cache, retained
+                // content, or a lower-tier lookup), instead of batching them
+                // into a single event with `parent_hash: None` — batching
+                // would silently drop continuation-edge chaining.
+                for (parent_hash, block) in blocks {
+                    let store_data = KvCacheStoreData {
+                        parent_hash,
+                        start_position: None,
+                        blocks: vec![block],
+                    };
+                    entry.apply_event(worker, &KvCacheEventData::Stored(store_data))?;
+                }
             }
         } else if is_removed {
             let block_hashes: Vec<u64> = seq_hashes.iter().map(|h| h.0).collect();

@@ -157,8 +157,8 @@ class KvConductorConfig:
     the kv-conductor.  Behaviour varies by ``store_backend``:
 
     - Mooncake / Memcache: register the pool once (``pool_endpoint``) +
-      per-DP HBM via ``xpu_endpoint``.
-    - YuanRong: per-DP multi-port via ``xpu/cpu/disk_endpoint`` patterns.
+      per-DP HBM via ``npu_endpoint``.
+    - YuanRong: per-DP multi-port via ``npu/cpu/disk_endpoint`` patterns.
 
     Endpoint patterns use ``*`` as IP placeholder and add ``dp_rank``
     to the port, e.g. ``"tcp://*:15557"`` resolves to
@@ -195,8 +195,11 @@ class KvConductorConfig:
     pool_endpoint: str = ""
     """Pool service endpoint for centralized backends, e.g. "tcp://kvp-master:5557"."""
 
-    xpu_endpoint: str = ""
+    npu_endpoint: str = ""
     """Per-DP HBM ZMQ PUB endpoint pattern, e.g. "tcp://*:50090"."""
+
+    xpu_endpoint: str = ""
+    """Deprecated alias of ``npu_endpoint``; used when ``npu_endpoint`` is empty."""
 
     cpu_endpoint: str = ""
     """Per-DP CPU/DDR ZMQ PUB endpoint pattern, e.g. "tcp://*:15558"."""

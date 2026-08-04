@@ -94,7 +94,7 @@ pub enum MatchMode {
     /// No auto-attach — the subscriber is tied to a fixed dp_rank (YuanRong).
     None,
     /// Match by IP only.  An event with `backend_id=<ip>` is applied to
-    /// **every** HBM-registered DP whose XPU endpoint IP matches.
+    /// **every** HBM-registered DP whose NPU endpoint IP matches.
     /// (Mooncake: one master per cluster, backend_id=node IP).
     IpOnly,
     /// Match by IP **and** dp_rank.  An event with `backend_id=<ip>` and
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn test_resolve_workers_empty_ip_index() {
         let index = make_ip_index(vec![]);
-        let media = &[StorageMedium::Xpu];
+        let media = &[StorageMedium::Npu];
         let workers = MatchMode::IpOnly.resolve_workers(Some(&index), "10.0.0.1", 0, media);
         assert!(workers.is_empty());
     }
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn test_resolve_workers_multiple_media() {
         let index = make_ip_index(vec![("10.0.0.1", vec![("prefill-0", 0)])]);
-        let media = &[StorageMedium::Xpu, StorageMedium::Cpu, StorageMedium::Disk];
+        let media = &[StorageMedium::Npu, StorageMedium::Cpu, StorageMedium::Disk];
 
         let workers = MatchMode::IpOnly.resolve_workers(Some(&index), "10.0.0.1", 0, media);
         assert_eq!(workers.len(), 3); // 1 DP × 3 media

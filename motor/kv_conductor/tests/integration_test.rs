@@ -16,15 +16,13 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
-use kv_conductor::protocols::ScoringConfig;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
 
 /// Start a test server on a random port, returning the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
-    let scoring = ScoringConfig::default();
-    let registry = Arc::new(WorkerRegistry::new(scoring.clone()));
-    let state = AppState { registry, scoring };
+    let registry = Arc::new(WorkerRegistry::new());
+    let state = AppState { registry };
     let router = create_router(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -65,7 +63,7 @@ async fn test_register_and_query() {
     let register_data = json!({
         "instance_id": "vllm-prefill-42",
         "medium_endpoints": {
-            "xpu": "tcp://10.0.0.1:50090",
+            "npu": "tcp://10.0.0.1:50090",
             "cpu": "tcp://10.0.0.1:50090",
             "disk": "tcp://10.0.0.1:50090"
         },
@@ -120,7 +118,7 @@ async fn test_query_after_kv_events() {
             .json(&json!({
                 "instance_id": format!("vllm-prefill-{}", i),
                 "medium_endpoints": {
-                    "xpu": ep,
+                    "npu": ep,
                     "cpu": ep,
                     "disk": ep
                 },
@@ -200,7 +198,7 @@ async fn test_unregister() {
         .json(&json!({
             "instance_id": "vllm-prefill-99",
             "medium_endpoints": {
-                "xpu": "tcp://10.0.0.1:50090",
+                "npu": "tcp://10.0.0.1:50090",
                 "cpu": "tcp://10.0.0.1:50090",
                 "disk": "tcp://10.0.0.1:50090"
             },
@@ -260,7 +258,7 @@ async fn test_duplicate_registration() {
     let reg = json!({
         "instance_id": "dup-test",
         "medium_endpoints": {
-            "xpu": "tcp://10.0.0.1:50090",
+            "npu": "tcp://10.0.0.1:50090",
             "cpu": "tcp://10.0.0.1:50090",
             "disk": "tcp://10.0.0.1:50090"
         },
@@ -332,12 +330,12 @@ async fn test_mooncake_hbm_plus_pool_registration() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
 
-    // Register HBM endpoint (XPU only, store_backend=Mooncake)
+    // Register HBM endpoint (NPU only, store_backend=Mooncake)
     let resp = client
         .post(format!("{}/register", base_url))
         .json(&json!({
             "instance_id": "mooncake-prefill-0",
-            "medium_endpoints": {"xpu": "tcp://10.0.0.1:50090"},
+            "medium_endpoints": {"npu": "tcp://10.0.0.1:50090"},
             "type": "vLLM",
             "store_backend": "Mooncake",
             "modelname": "mooncake-model",
@@ -395,7 +393,7 @@ async fn test_memcache_hbm_plus_pool_registration() {
         .post(format!("{}/register", base_url))
         .json(&json!({
             "instance_id": "memcache-prefill-0",
-            "medium_endpoints": {"xpu": "tcp://10.0.1.1:50090"},
+            "medium_endpoints": {"npu": "tcp://10.0.1.1:50090"},
             "type": "vLLM",
             "store_backend": "Memcache",
             "modelname": "memcache-model",
@@ -440,13 +438,13 @@ async fn test_yuanrong_multi_port_registration() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
 
-    // YuanRong: cpu + disk share one port, xpu on another
+    // YuanRong: cpu + disk share one port, npu on another
     let resp = client
         .post(format!("{}/register", base_url))
         .json(&json!({
             "instance_id": "yr-node-0",
             "medium_endpoints": {
-                "xpu": "tcp://10.0.2.1:15557",
+                "npu": "tcp://10.0.2.1:15557",
                 "cpu": "tcp://10.0.2.1:15558",
                 "disk": "tcp://10.0.2.1:15558"
             },
@@ -470,7 +468,7 @@ async fn test_yuanrong_multi_port_registration() {
     let body: Value = resp.json().await.unwrap();
     let w = &body["workers"].as_array().unwrap()[0];
     let meps = &w["endpoints"]["0"]["medium_endpoints"];
-    assert_eq!(meps["xpu"], "tcp://10.0.2.1:15557");
+    assert_eq!(meps["npu"], "tcp://10.0.2.1:15557");
     assert_eq!(meps["cpu"], "tcp://10.0.2.1:15558");
     assert_eq!(meps["disk"], "tcp://10.0.2.1:15558");
 }
@@ -484,7 +482,7 @@ async fn test_mooncake_duplicate_hbm_registration() {
 
     let reg = json!({
         "instance_id": "mooncake-dup",
-        "medium_endpoints": {"xpu": "tcp://10.0.3.1:50090"},
+        "medium_endpoints": {"npu": "tcp://10.0.3.1:50090"},
         "type": "vLLM",
         "store_backend": "Mooncake",
         "modelname": "dup-model",
@@ -557,7 +555,7 @@ async fn test_unregister_mooncake_hbm_removes_worker() {
         .post(format!("{}/register", base_url))
         .json(&json!({
             "instance_id": "to-remove",
-            "medium_endpoints": {"xpu": "tcp://10.0.5.1:50090"},
+            "medium_endpoints": {"npu": "tcp://10.0.5.1:50090"},
             "type": "vLLM",
             "store_backend": "Mooncake",
             "modelname": "rm-model",
@@ -615,7 +613,7 @@ async fn test_unknown_backend_falls_back_to_yuanrong() {
         .json(&json!({
             "instance_id": "unknown-backend",
             "medium_endpoints": {
-                "xpu": "tcp://10.0.6.1:15557",
+                "npu": "tcp://10.0.6.1:15557",
                 "cpu": "tcp://10.0.6.1:15558",
                 "disk": "tcp://10.0.6.1:15558"
             },
@@ -683,7 +681,7 @@ async fn test_reregister_same_backend_preserves_tree() {
     let reg = json!({
         "instance_id": "rereg-same",
         "medium_endpoints": {
-            "xpu": "tcp://10.0.10.1:50090",
+            "npu": "tcp://10.0.10.1:50090",
             "cpu": "tcp://10.0.10.1:50090",
             "disk": "tcp://10.0.10.1:50090"
         },
@@ -727,7 +725,7 @@ async fn test_reregister_same_backend_preserves_tree() {
     // Re-register with same backend (different endpoint)
     let mut reg2 = reg.clone();
     reg2["medium_endpoints"] = json!({
-        "xpu": "tcp://10.0.10.2:50090",
+        "npu": "tcp://10.0.10.2:50090",
         "cpu": "tcp://10.0.10.2:50090",
         "disk": "tcp://10.0.10.2:50090"
     });
@@ -775,7 +773,7 @@ async fn test_reregister_different_backend_drops_tree() {
     let reg = json!({
         "instance_id": "rereg-diff",
         "medium_endpoints": {
-            "xpu": "tcp://10.0.11.1:50090",
+            "npu": "tcp://10.0.11.1:50090",
             "cpu": "tcp://10.0.11.1:50090",
             "disk": "tcp://10.0.11.1:50090"
         },

@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 # Copyright Huawei Technologies Co., Ltd. 2026. All rights reserved.
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import configparser
 import logging
 import logging.handlers
@@ -227,9 +227,24 @@ class LogMonitor:
             log_e(f"shell_get_pod Exception: {e}")
             return None
 
-    def shell_pull_log(self, pod_name: str, file_path: str, interval: float = 0.2) -> bool:
+    @staticmethod
+    def _kubectl_since_time(when: datetime | None = None, lookback_seconds: float = 2.0) -> str:
+        """RFC3339 UTC timestamp for ``kubectl logs --since-time`` (small lookback avoids gaps)."""
+        ts = (when or datetime.now(timezone.utc)) - timedelta(seconds=lookback_seconds)
+        return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def shell_pull_log(
+        self,
+        pod_name: str,
+        file_path: str,
+        interval: float = 0.2,
+        since_time: str | None = None,
+    ) -> bool:
         """
         Execute the kubectl command to obtain the log.
+
+        :param since_time: If set, pass ``--since-time`` so reconnects only fetch
+            new lines (avoids re-dumping the full container history).
         """
         b_write_flag = False
         abs_path = os.path.abspath(os.path.normpath(file_path))
@@ -240,10 +255,21 @@ class LogMonitor:
 
         process = None
         try:
+            kubectl_args = [
+                self.cmd_kubectl,
+                'logs',
+                '-f',
+                '-n',
+                g_name_space,
+                pod_name,
+            ]
+            if since_time:
+                kubectl_args.extend(['--since-time', since_time])
+
             # Long-running kubectl logs -f; with-statement is unsuitable
             # because the process is terminated in the finally block.
             process = subprocess.Popen(  # pylint: disable=consider-using-with
-                [self.cmd_kubectl, 'logs', '-f', '-n', g_name_space, pod_name],
+                kubectl_args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -255,6 +281,8 @@ class LogMonitor:
             if abs_path not in self._logged_save_paths:
                 self._logged_save_paths.add(abs_path)
                 log_i(f"{pod_name}: logs save to: {abs_path} (max {size:.1f}MB, keep {g_backup_count} backups)")
+            elif since_time:
+                log_i(f"{pod_name}: reconnecting logs with --since-time={since_time}")
 
             # Reads the output in real time and writes it to the log file.
             while not self.exit_flag.is_set():
@@ -276,7 +304,10 @@ class LogMonitor:
             # Ensure the child process is terminated
             if process and process.poll() is None:
                 process.terminate()
-            log_i(f"{pod_name} :The thread has exited.")
+            for handler in list(logger.handlers):
+                handler.close()
+                logger.removeHandler(handler)
+            log_i(f"{pod_name}: log stream session ended.")
         return b_write_flag
 
     def pull_log_and_save(self, pod_name: str, interval: float = 3) -> None:
@@ -288,6 +319,13 @@ class LogMonitor:
         next_slot = self._pod_log_next_slot.get(pod_name, 0)
         index = max(generation_floor, next_slot)
         node_name = self.shell_get_pod_node(pod_name)
+        # Reuse one rotating log file across kubectl stream reconnects; only
+        # allocate a new _{n}.log when the collector starts fresh or the pod
+        # moves to another node. Otherwise each ~4h apiserver disconnect would
+        # re-dump full history into _1/_2/... (and duplicate .log.1 rotations).
+        file_path: str | None = None
+        allocated_log_index: int | None = None
+        since_time: str | None = None
         try:
             while not self.exit_flag.is_set():
                 pod_running_state = self.check_pod_is_running(pod_name)
@@ -301,26 +339,37 @@ class LogMonitor:
                 fetched_node_name = self.shell_get_pod_node(pod_name)
                 if fetched_node_name != node_name:
                     log_i(f"{pod_name}: node_name refresh {node_name!r} -> {fetched_node_name!r}")
-                node_name = fetched_node_name
-                file_path, allocated_log_index = self._allocate_unique_log_path(pod_name, node_name, index)
-                if allocated_log_index != index:
-                    log_i(
-                        f"{pod_name}: log file slot bumped {index} -> {allocated_log_index} "
-                        "(target path already exists)."
-                    )
-                if self.shell_pull_log(pod_name, file_path):
-                    next_after = allocated_log_index + 1
+                    node_name = fetched_node_name
+                    # New node => new file name; fetch full history for this placement.
+                    if allocated_log_index is not None:
+                        index = max(index, allocated_log_index + 1)
+                    file_path = None
+                    allocated_log_index = None
+                    since_time = None
+                if file_path is None:
+                    file_path, allocated_log_index = self._allocate_unique_log_path(pod_name, node_name, index)
+                    if allocated_log_index != index:
+                        log_i(
+                            f"{pod_name}: log file slot bumped {index} -> {allocated_log_index} "
+                            "(target path already exists)."
+                        )
+                    index = allocated_log_index
+                if self.shell_pull_log(pod_name, file_path, since_time=since_time):
+                    # Reserve next slot for a future collector generation, but keep
+                    # appending to the same file for this thread's reconnects.
                     self._pod_log_next_slot[pod_name] = max(
                         self._pod_log_next_slot.get(pod_name, 0),
-                        next_after,
+                        allocated_log_index + 1,
                     )
-                    index = self._pod_log_next_slot[pod_name]
-                    # Pod restart — apply exponential backoff to avoid log
-                    # duplication from frequent restarts (e.g. crash-loop).
-                    delay = self._backoff_sleep(pod_name)
+                    # Capture before sleep so logs during the pause are still fetched.
+                    since_time = self._kubectl_since_time()
+                    # Stream reconnect (not a pod crash-loop) — keep a short pause.
+                    # Backoff is reserved for cases that start a brand-new file.
+                    delay = interval
                     log_i(
                         f"{pod_name}: Log stream ended; pausing {delay:.0f}s before "
-                        "re-checking pod and reopening logs if still Running."
+                        f"re-checking pod and reopening logs "
+                        f"(same file, --since-time={since_time})."
                     )
                     time.sleep(delay)
                 else:
@@ -329,8 +378,13 @@ class LogMonitor:
                         os.remove(file_path)
                     except OSError:
                         pass
-                    log_w(f"{pod_name}: Failed to pull logs; pausing {interval}s before retry.")
-                    time.sleep(interval)
+                    file_path = None
+                    allocated_log_index = None
+                    since_time = None
+                    # Failed / crash-loop pulls — exponential backoff before retry.
+                    delay = self._backoff_sleep(pod_name)
+                    log_w(f"{pod_name}: Failed to pull logs; pausing {delay:.0f}s before retry.")
+                    time.sleep(delay)
         except Exception as e:
             log_e(f"{pod_name} :Exception: {e}")
         finally:

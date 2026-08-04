@@ -38,7 +38,7 @@ fn extract_ip_from_endpoint(endpoint: &str) -> Option<String> {
     Some(without_prefix[..colon_pos].to_string())
 }
 
-/// Add `(instance_id, dp_rank)` entries to `hbm_ip_index` for each XPU endpoint.
+/// Add `(instance_id, dp_rank)` entries to `hbm_ip_index` for each NPU endpoint.
 fn add_hbm_ip_index_entries(
     ip_index: &HbmIpIndex,
     medium_endpoints: &HashMap<String, String>,
@@ -46,7 +46,7 @@ fn add_hbm_ip_index_entries(
     dp_rank: u32,
 ) {
     for (medium_str, ep_url) in medium_endpoints {
-        if !medium_str.eq_ignore_ascii_case("xpu") {
+        if !StorageMedium::is_hbm_key(medium_str) {
             continue;
         }
         let Some(ref ip) = extract_ip_from_endpoint(ep_url) else {
@@ -61,7 +61,7 @@ fn add_hbm_ip_index_entries(
     }
 }
 
-/// For each XPU endpoint in `medium_endpoints`, remove the (instance_id, dp_rank)
+/// For each NPU endpoint in `medium_endpoints`, remove the (instance_id, dp_rank)
 /// entry from `hbm_ip_index`. If a given IP has no remaining DPs, the IP key is
 /// dropped entirely.
 fn remove_hbm_ip_index_entries(
@@ -71,7 +71,7 @@ fn remove_hbm_ip_index_entries(
     dp_rank: u32,
 ) {
     for (medium_str, ep_url) in medium_endpoints {
-        if !medium_str.eq_ignore_ascii_case("xpu") {
+        if !StorageMedium::is_hbm_key(medium_str) {
             continue;
         }
         let Some(ref ip) = extract_ip_from_endpoint(ep_url) else {
@@ -91,7 +91,7 @@ fn remove_hbm_ip_index_entries(
 /// Information about a registered endpoint for a worker.
 #[derive(Debug, Clone, Serialize)]
 pub struct EndpointInfo {
-    /// Per-medium ZMQ PUB endpoints, e.g. {"xpu": "tcp://...:5557", "cpu": "tcp://...:5558"}.
+    /// Per-medium ZMQ PUB endpoints, e.g. {"npu": "tcp://...:5557", "cpu": "tcp://...:5558"}.
     pub medium_endpoints: HashMap<String, String>,
     pub engine_type: String,
     pub dp_rank: DpRank,
@@ -119,8 +119,8 @@ pub struct WorkerRegistry {
     instances: tokio::sync::RwLock<HashMap<InstanceId, WorkerEntry>>,
     /// The shared indexer for all models/tenants
     indexer: Arc<Indexer>,
-    /// Count of active replay sessions. Queries are rejected while > 0
-    /// to avoid returning incomplete results during prefix-tree rebuild.
+    /// Count of active replay sessions. Tracks how many replays are running
+    /// (for diagnostics); replay itself is offloaded to `spawn_blocking`.
     /// Wrapped in Arc so it can be shared with spawn_blocking tasks.
     replay_in_progress: Arc<std::sync::atomic::AtomicU64>,
     /// Active ZMQ subscribers, keyed by (instance_id, dp_rank, endpoint_url).
@@ -164,12 +164,12 @@ impl WorkerRegistry {
                 ));
             }
             let mut map: HashMap<String, Vec<StorageMedium>> = HashMap::new();
-            // Mooncake master publishes CPU and DISK events (never XPU) on one
-            // port. We include XPU here so the indexer is ready for HBM events
+            // Mooncake master publishes CPU and DISK events (never NPU) on one
+            // port. We include NPU here so the indexer is ready for HBM events
             // from engine-level publishers that may share the same endpoint.
             map.insert(
                 ep.clone(),
-                vec![StorageMedium::Xpu, StorageMedium::Cpu, StorageMedium::Disk],
+                vec![StorageMedium::Npu, StorageMedium::Cpu, StorageMedium::Disk],
             );
             return Ok(map);
         }
@@ -179,10 +179,10 @@ impl WorkerRegistry {
         Ok(HashMap::new())
     }
 
-    pub fn new(scoring: ScoringConfig) -> Self {
+    pub fn new() -> Self {
         Self {
             instances: tokio::sync::RwLock::new(HashMap::new()),
-            indexer: Arc::new(Indexer::new(scoring)),
+            indexer: Arc::new(Indexer::new()),
             replay_in_progress: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             zmq_subscribers: tokio::sync::RwLock::new(HashMap::new()),
             hbm_ip_index: Arc::new(ParkingRwLock::new(HashMap::new())),
@@ -449,7 +449,7 @@ impl WorkerRegistry {
 
         entry.endpoints.remove(&req.dp_rank);
 
-        // Remove from indexer tree across all storage media (XPU/CPU/DISK)
+        // Remove from indexer tree across all storage media (NPU/CPU/DISK)
         // Use the *registered* model/tenant (not the request's) to ensure
         // cleanup targets the correct indexer entry.
         let indexer_entry = self.indexer.get(&entry.model_name, &entry.tenant_id);
@@ -548,7 +548,7 @@ impl WorkerRegistry {
             let medium = medium_str
                 .as_deref()
                 .map(StorageMedium::parse)
-                .unwrap_or(StorageMedium::Xpu);
+                .unwrap_or(StorageMedium::Npu);
 
             let backend_id = backend_id_opt.as_deref().unwrap_or(instance_id).to_string();
 
@@ -594,7 +594,7 @@ impl WorkerRegistry {
 
 impl Default for WorkerRegistry {
     fn default() -> Self {
-        Self::new(ScoringConfig::default())
+        Self::new()
     }
 }
 

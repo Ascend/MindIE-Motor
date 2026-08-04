@@ -381,7 +381,7 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
     use crate::hashing::compute_block_hash_for_seq;
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![1i64, 2, 3, 4, 5, 6, 7, 8];
     let block_size = 4u32;
 
@@ -404,7 +404,7 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
         "test-tenant",
         "test-backend",
         0,
-        &[StorageMedium::Xpu],
+        &[StorageMedium::Npu],
         MatchMode::None,
         &None,
         block_size,
@@ -420,7 +420,7 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
         instance_id: "test-backend".into(),
         backend_id: "test-backend".into(),
         dp_rank: 0,
-        medium: StorageMedium::Xpu,
+        medium: StorageMedium::Npu,
     };
     let lookup = lookups.get(&wk).expect("worker should exist");
     // 2 SHA256 hashes → 2 lookup entries
@@ -434,9 +434,9 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
     }
 
     // Query via find_matches should match (tokens_hash == query hash)
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    let scores = entry.find_matches(&token_ids, block_size);
     assert!(
-        !scores.scores.is_empty(),
+        !scores.blocks.is_empty(),
         "query should match stored blocks"
     );
 }
@@ -449,7 +449,7 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
 fn test_non_hbm_event_cached_not_in_tree() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![1i64, 2, 3, 4];
     let block_size = 4u32;
 
@@ -485,9 +485,9 @@ fn test_non_hbm_event_cached_not_in_tree() {
     }
 
     // Tree should NOT have the block (not inserted for non-HBM).
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    let scores = entry.find_matches(&token_ids, block_size);
     assert!(
-        scores.scores.is_empty(),
+        scores.blocks.is_empty(),
         "non-HBM events should not be inserted into tree"
     );
 }
@@ -496,7 +496,7 @@ fn test_non_hbm_event_cached_not_in_tree() {
 fn test_pool_backend_store_matches_cached_block() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![1i64, 2, 3, 4];
     let block_size = 4u32;
 
@@ -555,7 +555,7 @@ fn test_pool_backend_store_matches_cached_block() {
 
     // Tree should now have the block at the pool backend's worker key.
     let entry = indexer.get_or_create("test-model", "test-tenant");
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    let scores = entry.find_matches(&token_ids, block_size);
     // The pool backend worker ("test-pool") should have a match.
     let pool_worker = WorkerKey {
         instance_id: "test-pool".into(),
@@ -564,7 +564,7 @@ fn test_pool_backend_store_matches_cached_block() {
         medium: StorageMedium::Cpu,
     };
     assert!(
-        scores.scores.contains_key(&pool_worker),
+        scores.blocks.contains_key(&pool_worker),
         "pool backend store should insert cached block into tree at pool worker"
     );
 }
@@ -573,7 +573,7 @@ fn test_pool_backend_store_matches_cached_block() {
 fn test_pool_backend_store_ignores_unknown_hash() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("test-model", "test-tenant");
 
     // Pool backend stores a block we never cached — now queued in
@@ -628,7 +628,7 @@ fn test_pool_backend_store_ignores_unknown_hash() {
 fn test_pool_backend_remove_evicts_cache() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![1i64, 2, 3, 4, 5, 6, 7, 8];
     let block_size = 4u32;
 
@@ -727,16 +727,25 @@ fn test_pool_backend_remove_evicts_cache() {
         assert!(state.pending_pool.is_empty());
     }
 
-    // Tree should still have the pool worker's block for 0xBBB (only 0xAAA was removed).
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    // After removing 0xAAA, 0xBBB remains in the CPU tier. Contiguous prefix
+    // lookup cannot walk past the hole, so find_matches on the full sequence
+    // reports no hit — verify tier membership directly instead.
     let pool_worker = WorkerKey {
         instance_id: "test-pool".into(),
         backend_id: "test-pool".into(),
         dp_rank: 0,
         medium: StorageMedium::Cpu,
     };
-    // After removing 0xAAA, only the 0xBBB block remains → still 1 match.
-    assert!(scores.scores.contains_key(&pool_worker));
+    assert!(!entry.cpu_tiers.contains_block(0xAAA));
+    assert!(
+        entry.cpu_tiers.contains_block(0xBBB),
+        "removing 0xAAA must not evict the remaining block 0xBBB"
+    );
+    assert_eq!(entry.cpu_tiers.worker_block_count(&pool_worker), 1);
+    assert!(
+        entry.find_matches(&token_ids, block_size).blocks.is_empty(),
+        "broken prefix chain should not produce a contiguous match"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -750,7 +759,7 @@ fn test_pool_backend_remove_evicts_cache() {
 fn test_pool_arrives_before_offload() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![1i64, 2, 3, 4];
     let block_size = 4u32;
 
@@ -793,8 +802,8 @@ fn test_pool_arrives_before_offload() {
     }
 
     // Tree still empty — no offload has arrived yet.
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
-    assert!(scores.scores.is_empty());
+    let scores = entry.find_matches(&token_ids, block_size);
+    assert!(scores.blocks.is_empty());
 
     // Phase 2: engine offloads to CPU (arrives SECOND).
     let engine_event = VllmEvent::BlockStored {
@@ -827,7 +836,7 @@ fn test_pool_arrives_before_offload() {
     }
 
     // Tree should now have the block at the pool backend's worker key.
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    let scores = entry.find_matches(&token_ids, block_size);
     let pool_worker = WorkerKey {
         instance_id: "test-pool".into(),
         backend_id: "test-pool".into(),
@@ -835,7 +844,7 @@ fn test_pool_arrives_before_offload() {
         medium: StorageMedium::Cpu,
     };
     assert!(
-        scores.scores.contains_key(&pool_worker),
+        scores.blocks.contains_key(&pool_worker),
         "pool-first ordering: block should be inserted into tree after offload arrives"
     );
 }
@@ -846,7 +855,7 @@ fn test_pool_arrives_before_offload() {
 fn test_pool_arrives_before_offload_multi_worker() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![10i64, 20, 30, 40];
     let block_size = 4u32;
 
@@ -919,7 +928,7 @@ fn test_pool_arrives_before_offload_multi_worker() {
     }
 
     // Both workers have the block in tree.
-    let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    let scores = entry.find_matches(&token_ids, block_size);
     let w0 = WorkerKey {
         instance_id: "pool".into(),
         backend_id: "pool".into(),
@@ -932,8 +941,8 @@ fn test_pool_arrives_before_offload_multi_worker() {
         dp_rank: 1,
         medium: StorageMedium::Cpu,
     };
-    assert!(scores.scores.contains_key(&w0));
-    assert!(scores.scores.contains_key(&w1));
+    assert!(scores.blocks.contains_key(&w0));
+    assert!(scores.blocks.contains_key(&w1));
 }
 
 /// Pool event is queued, then a pool removal arrives — pending entry
@@ -942,7 +951,7 @@ fn test_pool_arrives_before_offload_multi_worker() {
 fn test_pool_removal_cleans_pending() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
 
     // Pool stored arrives first → queued.
@@ -1022,7 +1031,7 @@ fn test_pool_removal_cleans_pending() {
 fn test_offload_then_vllm_removal() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
     let block_size = 4u32;
 
@@ -1092,7 +1101,7 @@ fn test_offload_then_vllm_removal() {
 fn test_removal_after_both_matched() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let token_ids = vec![1i64, 2, 3, 4];
     let block_size = 4u32;
 
@@ -1163,9 +1172,9 @@ fn test_removal_after_both_matched() {
         medium: StorageMedium::Cpu,
     };
     {
-        let scores = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+        let scores = entry.find_matches(&token_ids, block_size);
         assert!(
-            scores.scores.contains_key(&pool_worker),
+            scores.blocks.contains_key(&pool_worker),
             "after match: block should be in tree"
         );
     }
@@ -1199,9 +1208,9 @@ fn test_removal_after_both_matched() {
 
     // Tree should be empty now (removal succeeded).
     // Verify via find_matches — no workers should have the block.
-    let scores_after = entry.find_matches(&token_ids, block_size, &ScoringConfig::default());
+    let scores_after = entry.find_matches(&token_ids, block_size);
     assert!(
-        !scores_after.scores.contains_key(&pool_worker),
+        !scores_after.blocks.contains_key(&pool_worker),
         "removal after match: block should be removed from tree"
     );
 }
@@ -1212,7 +1221,7 @@ fn test_removal_after_both_matched() {
 fn test_vllm_removal_after_pool_queued() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
     let block_size = 4u32;
 
@@ -1284,7 +1293,7 @@ fn test_vllm_removal_after_pool_queued() {
 fn test_duplicate_pool_stored_idempotent() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
 
     let zmq_event = PoolEvent {
@@ -1340,7 +1349,7 @@ fn test_duplicate_pool_stored_idempotent() {
 fn test_pending_worker_cleanup() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
 
     // Queue pool events for two different workers.
@@ -1394,7 +1403,7 @@ fn test_pending_worker_cleanup() {
 fn test_cleared_cleans_pending() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
 
     // Queue a pool event.
@@ -1465,7 +1474,7 @@ fn test_cleared_cleans_pending() {
 fn test_sweep_stale_pending() {
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let entry = indexer.get_or_create("m", "t");
 
     // Queue a pool event.
@@ -1498,7 +1507,7 @@ fn test_sweep_stale_pending() {
     assert_eq!(entry.pending_count(), 1);
 
     // Sweep with zero TTL → removes everything.
-    let pruned = entry.sweep_stale_pending(std::time::Duration::ZERO);
+    let pruned = entry.sweep_stale_pending(std::time::Duration::ZERO, std::time::Duration::ZERO);
     assert!(pruned > 0, "zero-TTL sweep should remove pending entries");
     assert_eq!(entry.pending_count(), 0);
 }
@@ -1514,7 +1523,7 @@ fn test_vllm_parent_hash_root_level() {
     use crate::hashing::compute_block_hash_for_seq;
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let block_size = 4u32;
     let tokens: Vec<i64> = (0..8).collect();
     let hashes = compute_block_hash_for_seq(&tokens, block_size);
@@ -1524,9 +1533,9 @@ fn test_vllm_parent_hash_root_level() {
         instance_id: "be".into(),
         backend_id: "be".into(),
         dp_rank: 0,
-        medium: StorageMedium::Xpu,
+        medium: StorageMedium::Npu,
     };
-    let media = &[StorageMedium::Xpu];
+    let media = &[StorageMedium::Npu];
 
     // 2-block event, no parent — these form a root chain internally.
     apply_vllm_event(
@@ -1551,9 +1560,9 @@ fn test_vllm_parent_hash_root_level() {
     .unwrap();
 
     let entry = indexer.get_or_create("m", "t");
-    let scores = entry.find_matches(&tokens, block_size, &ScoringConfig::default());
+    let scores = entry.find_matches(&tokens, block_size);
     assert!(
-        scores.scores.contains_key(&wk),
+        scores.blocks.contains_key(&wk),
         "should match at least 1 block"
     );
 
@@ -1570,7 +1579,7 @@ fn test_vllm_parent_hash_cross_event_chain() {
     use crate::hashing::compute_block_hash_for_seq;
     use crate::indexer::Indexer;
 
-    let indexer = Indexer::new(ScoringConfig::default());
+    let indexer = Indexer::new();
     let block_size = 4u32;
     let tokens: Vec<i64> = (0..16).collect();
     let hashes = compute_block_hash_for_seq(&tokens, block_size);
@@ -1580,9 +1589,9 @@ fn test_vllm_parent_hash_cross_event_chain() {
         instance_id: "be".into(),
         backend_id: "be".into(),
         dp_rank: 0,
-        medium: StorageMedium::Xpu,
+        medium: StorageMedium::Npu,
     };
-    let media = &[StorageMedium::Xpu];
+    let media = &[StorageMedium::Npu];
 
     // Event 0: blocks 0x100, 0x200, tokens[0..8], no parent.
     apply_vllm_event(
@@ -1629,10 +1638,13 @@ fn test_vllm_parent_hash_cross_event_chain() {
     .unwrap();
 
     let entry = indexer.get_or_create("m", "t");
-    let scores = entry.find_matches(&tokens, block_size, &ScoringConfig::default());
-    let score = scores.scores.get(&wk).expect("should match HBM chain");
-    // 4-block chain → depth=4 × hbm_weight=3 = 12
-    assert_eq!(*score, 12, "depth=4 × 3 = 12, got {score}");
+    let scores = entry.find_matches(&tokens, block_size);
+    let matched = scores.blocks.get(&wk).expect("should match HBM chain");
+    // Per-medium overlap is matched block count (no weighted scoring).
+    assert_eq!(
+        *matched, 4,
+        "4-block HBM chain should match depth=4, got {matched}"
+    );
 
     // Verify parent-not-found error.
     let result = apply_vllm_event(

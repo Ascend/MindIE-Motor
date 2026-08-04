@@ -1,14 +1,29 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-// MindIE is licensed under Mulan PSL v2.
-// You can use this software according to the terms and conditions of the Mulan PSL v2.
-// You may obtain a copy of Mulan PSL v2 at:
-//         http://license.coscl.org.cn/MulanPSL2
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PSL v2 for more details.
+// SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file is a Derivative Work of NVIDIA Dynamo kv-router
+// (https://github.com/ai-dynamo/dynamo), originally licensed under the
+// Apache License, Version 2.0. Upstream source path:
+//   lib/kv-router/src/indexer/concurrent_radix_tree.rs
+//
+// You may obtain a copy of the Apache License at:
+//   http://www.apache.org/licenses/LICENSE-2.0
+// Local copy: licenses/Apache-2.0.txt
+// Attribution: THIRD_PARTY_NOTICES.md
+//
+// Modified by Huawei Technologies Co., Ltd. for MindIE-PyMotor KV Conductor
+// (WorkerKey + Arc<FxHashSet> COW workers; lookup owned by Indexer;
+// find_matches_detailed / PrefixMatch; sweep_stale_nodes; no CleanupState /
+// metrics / early_exit path). Huawei modifications are also available under
+// Mulan PSL v2 (http://license.coscl.org.cn/MulanPSL2). Redistribution of
+// this file must still comply with Apache License 2.0.
 
 //! Thread-safe Concurrent Radix Tree for KV cache block indexing.
+//!
+//! Derived from NVIDIA Dynamo kv-router `ConcurrentRadixTree`
+//! (`lib/kv-router/src/indexer/concurrent_radix_tree.rs`, Apache-2.0). See
+//! `THIRD_PARTY_NOTICES.md`.
 //!
 //! Uses `Arc<parking_lot::RwLock<Block>>` per node, enabling:
 //! - Multiple concurrent `find_matches` (read locks only)
@@ -93,6 +108,16 @@ impl Default for ConcurrentRadixTree {
     }
 }
 
+/// Per-worker HBM prefix match: depth + last engine sequence hash.
+///
+/// ``last_seq_hash`` is the breakpoint used to continue into the CPU
+/// continuation-edge index.
+#[derive(Debug, Clone, Copy)]
+pub struct PrefixMatch {
+    pub depth: u32,
+    pub last_seq_hash: Option<SequenceBlockHash>,
+}
+
 impl ConcurrentRadixTree {
     /// Create a new empty concurrent radix tree.
     pub fn new() -> Self {
@@ -107,14 +132,28 @@ impl ConcurrentRadixTree {
 
     /// Find matches for a sequence of `LocalBlockHash` values.
     ///
-    /// Returns per-worker overlap scores indicating the depth of the longest
-    /// matching prefix for each worker.
-    pub fn find_matches(&self, sequence: &[LocalBlockHash]) -> OverlapScores {
+    /// Returns per-worker matched block counts indicating the depth of the
+    /// longest matching prefix for each worker.
+    pub fn find_matches(&self, sequence: &[LocalBlockHash]) -> OverlapBlocks {
+        let detailed = self.find_matches_detailed(sequence);
+        let mut overlap = OverlapBlocks::default();
+        for (worker, m) in detailed {
+            overlap.update_blocks(worker, m.depth);
+        }
+        overlap
+    }
+
+    /// Like [`find_matches`], but also returns the last matched sequence hash
+    /// so callers can continue into lower-tier indexes.
+    pub fn find_matches_detailed(
+        &self,
+        sequence: &[LocalBlockHash],
+    ) -> FxHashMap<WorkerKey, PrefixMatch> {
         let t0 = std::time::Instant::now();
-        let mut scores = OverlapScores::default();
+        let mut results: FxHashMap<WorkerKey, PrefixMatch> = FxHashMap::default();
 
         if sequence.is_empty() {
-            return scores;
+            return results;
         }
 
         // Get first child from root (read lock)
@@ -125,18 +164,17 @@ impl ConcurrentRadixTree {
 
         let Some(first_child) = first_child else {
             tracing::trace!(seq_len = sequence.len(), "tree miss at root");
-            return scores;
+            return results;
         };
 
         // Initialize active workers from first child.
-        // Arc clone is O(1) refcount bump instead of O(n) set clone.
         let mut active: FxHashSet<WorkerKey> = {
             let guard = first_child.read();
             (*guard.workers).clone()
         };
 
         if active.is_empty() {
-            return scores;
+            return results;
         }
 
         let mut current = first_child;
@@ -153,6 +191,8 @@ impl ConcurrentRadixTree {
                 break;
             };
 
+            let last_seq = { current.read().block_hash };
+
             // Short-circuit: if only 1 worker remains, just check whether
             // this single worker is in the child's set.
             if active.len() == 1 {
@@ -166,20 +206,31 @@ impl ConcurrentRadixTree {
                     matched_depth += 1;
                     continue;
                 } else {
-                    scores.update_score(w, matched_depth);
+                    results.insert(
+                        w,
+                        PrefixMatch {
+                            depth: matched_depth,
+                            last_seq_hash: last_seq,
+                        },
+                    );
                     active.clear();
                     break;
                 }
             }
 
             // Reconcile: remove workers that don't have this child block.
-            // Use retain to avoid a second Vec allocation.
             let guard = block.read();
             active.retain(|w| {
                 if guard.workers.contains(w) {
                     true
                 } else {
-                    scores.update_score(w.clone(), matched_depth);
+                    results.insert(
+                        w.clone(),
+                        PrefixMatch {
+                            depth: matched_depth,
+                            last_seq_hash: last_seq,
+                        },
+                    );
                     false
                 }
             });
@@ -193,19 +244,25 @@ impl ConcurrentRadixTree {
             matched_depth += 1;
         }
 
-        // Drain surviving workers into scores (avoid clone)
+        let last_seq = { current.read().block_hash };
         for worker in active.drain() {
-            scores.update_score(worker, matched_depth);
+            results.insert(
+                worker,
+                PrefixMatch {
+                    depth: matched_depth,
+                    last_seq_hash: last_seq,
+                },
+            );
         }
 
         tracing::debug!(
             seq_len = sequence.len(),
             depth = matched_depth,
-            active_workers = scores.scores.len(),
+            active_workers = results.len(),
             elapsed_us = t0.elapsed().as_micros(),
             "find_matches"
         );
-        scores
+        results
     }
 
     // -----------------------------------------------------------------------
@@ -355,7 +412,7 @@ impl ConcurrentRadixTree {
 
     /// Remove a worker entirely, cleaning up all tree references.
     pub fn remove_worker(&self, worker: &WorkerKey, lookup: &mut WorkerLookup) {
-        for (_, block) in lookup.iter() {
+        for block in lookup.values() {
             block.write().drop_worker(worker);
         }
         lookup.clear();
@@ -411,7 +468,7 @@ mod tests {
             instance_id: instance_id.to_string(),
             backend_id: instance_id.to_string(),
             dp_rank,
-            medium: StorageMedium::Xpu,
+            medium: StorageMedium::Npu,
         }
     }
 
@@ -432,8 +489,8 @@ mod tests {
     #[test]
     fn test_concurrent_find_matches_empty() {
         let tree = ConcurrentRadixTree::new();
-        let scores = tree.find_matches(&[LocalBlockHash(1)]);
-        assert!(scores.is_empty());
+        let overlap = tree.find_matches(&[LocalBlockHash(1)]);
+        assert!(overlap.is_empty());
     }
 
     #[test]
@@ -445,8 +502,8 @@ mod tests {
         tree.apply_store(&w1, &mut lookup, &make_store(None, vec![(100, 1)]))
             .unwrap();
 
-        let scores = tree.find_matches(&[LocalBlockHash(1)]);
-        assert_eq!(scores.scores.get(&w1).copied(), Some(1));
+        let overlap = tree.find_matches(&[LocalBlockHash(1)]);
+        assert_eq!(overlap.blocks.get(&w1).copied(), Some(1));
     }
 
     #[test]
@@ -462,8 +519,8 @@ mod tests {
         tree.apply_store(&w1, &mut lookup, &make_store(Some(200), vec![(300, 3)]))
             .unwrap();
 
-        let scores = tree.find_matches(&[LocalBlockHash(1), LocalBlockHash(2), LocalBlockHash(3)]);
-        assert_eq!(scores.scores.get(&w1).copied(), Some(3));
+        let overlap = tree.find_matches(&[LocalBlockHash(1), LocalBlockHash(2), LocalBlockHash(3)]);
+        assert_eq!(overlap.blocks.get(&w1).copied(), Some(3));
     }
 
     #[test]
@@ -485,9 +542,9 @@ mod tests {
 
         assert_eq!(lookup.len(), 1);
 
-        let scores = tree.find_matches(&[LocalBlockHash(1), LocalBlockHash(2)]);
+        let overlap = tree.find_matches(&[LocalBlockHash(1), LocalBlockHash(2)]);
         // Only first block matches since second was removed
-        assert_eq!(scores.scores.get(&w1).copied(), Some(1));
+        assert_eq!(overlap.blocks.get(&w1).copied(), Some(1));
     }
 
     #[test]
@@ -506,8 +563,8 @@ mod tests {
         tree.remove_worker(&w1, &mut lookup);
 
         assert!(lookup.is_empty());
-        let scores = tree.find_matches(&[LocalBlockHash(1)]);
-        assert!(scores.is_empty());
+        let overlap = tree.find_matches(&[LocalBlockHash(1)]);
+        assert!(overlap.is_empty());
     }
 
     #[test]
@@ -531,13 +588,13 @@ mod tests {
             .unwrap();
 
         // Both match first block
-        let scores = tree.find_matches(&[LocalBlockHash(1)]);
-        assert_eq!(scores.scores.get(&w1).copied(), Some(1));
-        assert_eq!(scores.scores.get(&w2).copied(), Some(1));
+        let overlap = tree.find_matches(&[LocalBlockHash(1)]);
+        assert_eq!(overlap.blocks.get(&w1).copied(), Some(1));
+        assert_eq!(overlap.blocks.get(&w2).copied(), Some(1));
 
         // Path (1, 2) matches W1 deeper
-        let scores = tree.find_matches(&[LocalBlockHash(1), LocalBlockHash(2)]);
-        assert_eq!(scores.scores.get(&w1).copied(), Some(2));
-        assert_eq!(scores.scores.get(&w2).copied(), Some(1));
+        let overlap = tree.find_matches(&[LocalBlockHash(1), LocalBlockHash(2)]);
+        assert_eq!(overlap.blocks.get(&w1).copied(), Some(2));
+        assert_eq!(overlap.blocks.get(&w2).copied(), Some(1));
     }
 }

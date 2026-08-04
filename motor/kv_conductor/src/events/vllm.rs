@@ -7,11 +7,20 @@
 // EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
+//
+// Portions: the main-attention allow/deny kind set used by
+// `is_main_attention_kind` is derived from NVIDIA Dynamo kv-router
+// `lib/kv-router/src/zmq_wire/filter.rs` (Apache-2.0).
+// Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// See ../THIRD_PARTY_NOTICES.md and ../licenses/Apache-2.0.txt.
+// The msgspec/JSON visitor and event-application logic in this file are
+// Huawei original work under Mulan PSL v2.
 
 //! vLLM-native event types, parsing, and application logic.
 //!
 //! Handles the msgspec ``array_like`` wire format with tag-based dispatch,
 //! attention-group filtering, and two-phase offload/pool insertion.
+//! Attention-kind filtering policy: see `THIRD_PARTY_NOTICES.md`.
 
 use serde::Deserialize;
 
@@ -363,18 +372,37 @@ fn parse_block_removed_values(
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if `kind` is a main attention type whose events should be
-/// ingested.  Following Dynamo kv-router, only `FullAttention`,
-/// `MlaAttention`, and `SinkFullAttention` qualify.  Events with no
-/// `kv_cache_spec_kind` (older vLLM versions) are kept for backward compat.
+/// ingested.  Allow/deny kind names follow NVIDIA Dynamo kv-router
+/// `zmq_wire/filter.rs` (Apache-2.0; see `THIRD_PARTY_NOTICES.md`): only
+/// `FullAttention`, `MlaAttention`, and `SinkFullAttention` qualify.
+/// Events with no `kv_cache_spec_kind` (older vLLM versions) are kept for
+/// backward compat.
+///
+/// Matching is case-insensitive and ignores underscores so both PascalCase
+/// (`MlaAttention`) and vLLM wire snake_case (`mla_attention`) are matched;
+/// denied kinds (e.g. `sliding_window_mla`) are filtered out.
 pub(crate) fn is_main_attention_kind(kind: Option<&str>) -> bool {
-    match kind {
-        None => true,
-        Some("FullAttention") | Some("MlaAttention") | Some("SinkFullAttention") => true,
-        Some("SlidingWindow")
-        | Some("Mamba")
-        | Some("ChunkedLocalAttention")
-        | Some("EncoderOnlyAttention")
-        | Some("CrossAttention") => false,
+    let Some(kind) = kind else {
+        return true;
+    };
+    // Normalize: lowercase + strip underscores → "MlaAttention"/"mla_attention"
+    // both become "mlaattention".
+    let normalized: String = kind
+        .chars()
+        .filter(|c| *c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    match normalized.as_str() {
+        "fullattention" | "mlaattention" | "sinkfullattention" => true,
+        // Non-main groups (SWA / Mamba / local / encoder / cross).
+        // `slidingwindowmla` covers wire form `sliding_window_mla`.
+        "slidingwindow"
+        | "slidingwindowmla"
+        | "mamba"
+        | "chunkedlocalattention"
+        | "encoderonlyattention"
+        | "crossattention" => false,
+        // Unknown future kinds — forward compat (same as before).
         _ => true,
     }
 }
@@ -525,7 +553,7 @@ pub(crate) fn parse_vllm_batch(payload: &[u8]) -> Option<(Vec<VllmEvent>, u32)> 
 /// us to re-compute `tokens_hash` (XXH3 content hash).  The behaviour
 /// depends on the storage medium:
 ///
-/// - **HBM** (XPU/GPU): insert directly into the radix tree.
+/// - **HBM** (NPU): insert directly into the radix tree.
 /// - **Non-HBM** (CPU/DISK): bidirectional matching — cache the
 ///   `block_hash → tokens_hash` mapping and check for pending pool events
 ///   that arrived earlier.  If a match is found the block enters the tree
@@ -535,6 +563,10 @@ pub(crate) fn parse_vllm_batch(payload: &[u8]) -> Option<(Vec<VllmEvent>, u32)> 
 /// the block on a different node than the engine that offloaded it — the
 /// engine's offloading event tells us *what* was offloaded, and the pool
 /// backend's event tells us *where* it was placed.
+///
+/// After the first pool confirmation, `(tokens_hash, parent_hash)` is
+/// retained so a later pool medium (e.g. Disk SSD offload) can reuse
+/// content without another engine event.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_vllm_event(
     indexer: &Indexer,
@@ -570,9 +602,8 @@ pub(crate) fn apply_vllm_event(
                 return Ok(());
             }
 
-            let event_medium = medium.as_deref().unwrap_or("xpu");
-            let is_non_hbm = !event_medium.eq_ignore_ascii_case("xpu")
-                && !event_medium.eq_ignore_ascii_case("gpu");
+            let event_medium = medium.as_deref().unwrap_or("npu");
+            let is_non_hbm = !StorageMedium::is_hbm_key(event_medium);
 
             let computed_hashes: Vec<u64> = if token_ids.is_empty() || *block_size == 0 {
                 block_hashes.to_vec()
@@ -590,20 +621,29 @@ pub(crate) fn apply_vllm_event(
             let entry = indexer.get_or_create(model_name, tenant_id);
 
             if is_non_hbm {
-                let pairs: Vec<(u64, u64)> = (0..num)
-                    .map(|i| (block_hashes[i], computed_hashes[i]))
-                    .collect();
+                // Walk the offload chain so each block carries its own
+                // `parent_hash`: the first block's parent is the event's
+                // `parent_block_hash`, and each subsequent block's parent is
+                // the immediately preceding block in this same chain. This
+                // preserves continuation-edge semantics across the two-phase
+                // offload/pool confirmation protocol.
+                let mut parent = *parent_block_hash;
+                let mut triples: Vec<(u64, u64, Option<u64>)> = Vec::with_capacity(num);
+                for i in 0..num {
+                    triples.push((block_hashes[i], computed_hashes[i], parent));
+                    parent = Some(block_hashes[i]);
+                }
 
-                let preview_hashes: Vec<u64> = pairs.iter().take(4).map(|p| p.0).collect();
+                let preview_hashes: Vec<u64> = triples.iter().take(4).map(|p| p.0).collect();
                 tracing::trace!(
                     model = %model_name, tenant = %tenant_id,
-                    num = pairs.len(),
+                    num = triples.len(),
                     ?preview_hashes,
                     medium = %event_medium,
                     "vLLM non-HBM: ingesting offload blocks"
                 );
 
-                let matched = entry.ingest_offload_blocks(&pairs);
+                let matched = entry.ingest_offload_blocks(&triples);
                 let total_matched: usize = matched.values().map(|v| v.len()).sum();
 
                 if !matched.is_empty() {
@@ -614,13 +654,19 @@ pub(crate) fn apply_vllm_event(
                         medium = %event_medium,
                         "vLLM non-HBM: matched pending pool events, applying to tree"
                     );
+                    // Apply one `Stored` event per block, each with its own
+                    // `parent_hash`, instead of batching them under
+                    // `parent_hash: None` — batching would silently drop
+                    // continuation-edge chaining between blocks.
                     for (worker, blocks) in matched {
-                        let store_data = KvCacheStoreData {
-                            parent_hash: None,
-                            start_position: None,
-                            blocks,
-                        };
-                        entry.apply_event(&worker, &KvCacheEventData::Stored(store_data))?;
+                        for (parent_hash, block) in blocks {
+                            let store_data = KvCacheStoreData {
+                                parent_hash,
+                                start_position: None,
+                                blocks: vec![block],
+                            };
+                            entry.apply_event(&worker, &KvCacheEventData::Stored(store_data))?;
+                        }
                     }
                 }
 

@@ -419,8 +419,8 @@ fn zmq_errno_reasonable(e: &zmq::Error) -> bool {
 ///   3. End-of-stream: seq == 0xFFFFFFFFFFFFFFFF (-1 as signed i64)
 ///
 /// Called during `/register` when the registration payload includes
-/// a `replay_endpoint` field. Runs synchronously in the registration
-/// handler (blocking).
+/// a `replay_endpoint` field. Invoked via `spawn_blocking` from the
+/// registration handler (offloaded to a dedicated thread).
 #[allow(clippy::too_many_arguments)]
 pub fn replay_events(
     replay_endpoint: &str,

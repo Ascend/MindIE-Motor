@@ -14,7 +14,9 @@ description = "KV Conductor - Radix tree based KV cache indexer for MindIE-PyMot
 version = "0.1.0"
 edition = "2021"
 authors = ["MindIE Team"]
-license = "Mulan PSL v2"
+# Package is Mulan PSL v2; several sources are Apache-2.0 Derivative Works of
+# NVIDIA Dynamo kv-router — see THIRD_PARTY_NOTICES.md and licenses/Apache-2.0.txt.
+license = "MulanPSL-2.0"
 
 [dependencies]
 axum = "0.7"

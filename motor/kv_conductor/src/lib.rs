@@ -21,6 +21,7 @@ pub mod error;
 pub mod events;
 pub mod hashing;
 pub mod indexer;
+pub mod lower_tier;
 pub mod protocols;
 pub mod registry;
 pub mod server;
@@ -36,7 +37,7 @@ pub use indexer::Indexer;
 pub use protocols::{
     DpRank, HbmIpIndex, InstanceId, InstanceMatchData, KvCacheEvent, KvCacheEventData,
     KvCacheStoreData, KvCacheStoredBlockData, KvEventBatch, KvEventWirePayload, LocalBlockHash,
-    OverlapScores, QueryByHashRequest, QueryRequest, QueryResponse, RegisterRequest,
+    OverlapBlocks, QueryByHashRequest, QueryRequest, QueryResponse, RegisterRequest,
     SequenceBlockHash, StorageMedium, UnregisterRequest, WorkerKey,
 };
 pub use registry::WorkerRegistry;

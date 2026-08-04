@@ -13,8 +13,8 @@
 //! Provides the following endpoints:
 //! - `POST /register`       — Register a worker instance
 //! - `POST /unregister`     — Unregister a worker instance
-//! - `POST /query`          — Query KV cache overlap scores by token IDs
-//! - `POST /query_by_hash`  — Query KV cache overlap scores by pre-computed hashes
+//! - `POST /query`          — Query KV cache matched blocks by token IDs
+//! - `POST /query_by_hash`  — Query KV cache matched blocks by pre-computed hashes
 //! - `POST /events`         — Ingest KV cache events from workers
 //! - `GET /health`          — Health check
 //! - `GET /workers`         — List registered workers (debug)
@@ -30,7 +30,7 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-/// Maximum request body size (16 MB). Large queries (402400+ token IDs)
+/// Maximum request body size (64 MB). Large queries (402400+ token IDs)
 /// exceed axum's default 2 MB limit.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -42,8 +42,6 @@ use crate::registry::WorkerRegistry;
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Arc<WorkerRegistry>,
-    /// Per-medium block scoring weights.
-    pub scoring: ScoringConfig,
 }
 
 /// Create the axum Router with all endpoints.
@@ -62,8 +60,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_handler))
         .route("/workers", get(workers_handler));
 
-    // Raise body limit for query/events endpoints — DeepSeek V4 queries
-    // carry 400K+ token IDs (~2.4 MB JSON body).
+    // Raise the global body limit — DeepSeek V4 queries carry 400K+ token
+    // IDs (~2.4 MB JSON body), beyond axum's 2 MB default.
     router = router.layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES));
 
     router
@@ -137,7 +135,9 @@ async fn unregister_handler(
 ///
 /// Request body: `{ "model": "...", "block_size": 128, "token_ids": [...], "tenant_id": "default" }`
 ///
-/// Response: `{ "<tenant_id>": { "<instance_id>": { "longest_matched": N, "DP": { "<rank>": N } } } }`
+/// Response: `{ "<tenant_id>": { "<instance_id>": { "longest_matched": N,
+/// "DP": { "<rank>": { "matched_tokens": N, "npu_blocks": N,
+/// "cpu_blocks": N, "disk_blocks": N } } } } }`
 async fn query_handler(
     State(state): State<AppState>,
     Json(req): Json<QueryRequest>,
@@ -286,7 +286,8 @@ async fn events_handler(
         i = j;
     }
 
-    // Handle shutdown flag: unregister the instance if it's shutting down
+    // Handle shutdown flag: the instance reports it is shutting down. Full
+    // cleanup is done by an explicit /unregister call; here we just log.
     if batch.shutdown {
         tracing::info!(
             instance_id = %batch.instance_id,

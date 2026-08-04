@@ -259,11 +259,10 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             # already excludes headless endpoints / respects enable_multi_endpoints.
             for ep in instance.get_all_endpoints():
                 matched_raw = dp_map.get(f"{ep.id}", 0)
-                # Conductor reports per-DP match data. Since the multi-medium scoring
-                # revision (DpScoring struct), the value is a dict with a "matched_tokens"
-                # key (plus "XPU"/"CPU"/"DISK" per-medium breakdown for future
-                # medium-aware scheduling); older conductors returned a plain int.
-                # Handle both.
+                # Conductor reports per-DP match data. Since the multi-medium blocks
+                # revision (DpBlocks struct), the value is a dict with a "matched_tokens"
+                # key (plus "npu_blocks"/"cpu_blocks"/"disk_blocks" per-medium block counts);
+                # older conductors returned a plain int. Handle both.
                 if isinstance(matched_raw, dict):
                     matched = matched_raw.get("matched_tokens", 0)
                 else:
@@ -467,7 +466,7 @@ class TokenizerManager(ThreadSafeSingleton):
             is_vllm_engine = engine_type == "vllm"
 
             if is_vllm_engine and self._is_deepseek_v4_model(model_path):
-                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
+                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer  # pylint: disable=no-name-in-module
 
                 self.tokenizer = DeepseekV4Tokenizer.from_pretrained(model_path, trust_remote_code=True)
                 self._is_dsv4 = True

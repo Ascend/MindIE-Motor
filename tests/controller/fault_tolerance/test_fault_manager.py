@@ -1928,17 +1928,23 @@ def test_pre_separate_l6_inactive_instances_triggers_scale_p2d(
         with patch(_FAULT_MGR_IM) as mock_fm_im_class:
             mock_fm_im = MagicMock()
             mock_fm_im_class.return_value = mock_fm_im
+            # Prevent async ScaleP2D.execute from racing: without a scale_p2d IM
+            # patch, execute aborts immediately, marks finished, and
+            # _process_instance_strategy clears strategy before assertions.
+            with patch.object(manager.executor, "submit") as mock_submit:
+                # First refresh fault level → L6 (included because node has instances)
+                manager._refresh_instance_fault_level(1)
+                # Then process strategy → should trigger ScaleP2D
+                manager._process_instance_strategy(1)
 
-            # First refresh fault level → L6 (included because node has instances)
-            manager._refresh_instance_fault_level(1)
-            # Then process strategy → should trigger ScaleP2D
-            manager._process_instance_strategy(1)
-
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L6, (
-        "PreSeparateNPU L6 with instances on node should set instance fault to L6"
-    )
-    assert ins_meta.strategy is not None, "PreSeparateNPU L6 with inactive instances should trigger ScaleP2D"
+                ins_meta = manager.instances[1]
+                assert ins_meta.fault_level == FaultLevel.L6, (
+                    "PreSeparateNPU L6 with instances on node should set instance fault to L6"
+                )
+                assert ins_meta.strategy is not None, (
+                    "PreSeparateNPU L6 with inactive instances should trigger ScaleP2D"
+                )
+                mock_submit.assert_called_once()
 
 
 # =============================================================================

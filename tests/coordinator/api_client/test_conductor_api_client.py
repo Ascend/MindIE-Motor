@@ -66,7 +66,7 @@ def _mock_config(**overrides) -> Mock:
 
     reg = KvConductorConfig(
         store_backend=overrides.get("store_backend", "Mooncake"),
-        xpu_endpoint=overrides.get("xpu_endpoint", "tcp://*:5557"),
+        npu_endpoint=overrides.get("npu_endpoint", "tcp://*:5557"),
         endpoint=overrides.get("endpoint", "tcp://*:5557"),
         replay_endpoint=overrides.get("replay_endpoint", ""),
         engine_type=overrides.get("engine_type", "vLLM"),
@@ -122,7 +122,7 @@ class TestBuildRegisterPayload:
 
     def test_returns_empty_dict_when_no_endpoints_configured(self):
         """No endpoint patterns configured → empty dict."""
-        cfg = _mock_config(xpu_endpoint="", endpoint="", replay_endpoint="")
+        cfg = _mock_config(npu_endpoint="", endpoint="", replay_endpoint="")
         inst = _make_instance(inst_id=1, role=PDRole.ROLE_P)
         ep = _make_endpoint(ep_id=0, ip="10.0.0.1")
 
@@ -131,9 +131,9 @@ class TestBuildRegisterPayload:
 
         assert payload == {}
 
-    def test_basic_payload_with_xpu_endpoint(self):
-        """Standard payload with medium_endpoints via xpu_endpoint (no fallback)."""
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557", endpoint="")
+    def test_basic_payload_with_npu_endpoint(self):
+        """Standard payload with medium_endpoints via npu_endpoint (no fallback)."""
+        cfg = _mock_config(npu_endpoint="tcp://*:5557", endpoint="")
         inst = _make_instance(inst_id=1, role=PDRole.ROLE_P, model_name="qwen")
         ep = _make_endpoint(ep_id=0, ip="10.0.0.1")
 
@@ -142,7 +142,7 @@ class TestBuildRegisterPayload:
 
         assert payload["instance_id"] == "vllm-prefill-1"
         assert payload["dp_rank"] == 0
-        assert payload["medium_endpoints"] == {"xpu": "tcp://10.0.0.1:5557"}
+        assert payload["medium_endpoints"] == {"npu": "tcp://10.0.0.1:5557"}
         assert payload["type"] == "vLLM"
         assert payload["modelname"] == "qwen"
         assert payload["block_size"] == 128
@@ -150,7 +150,7 @@ class TestBuildRegisterPayload:
     def test_payload_with_replay_endpoint(self):
         """Payload includes replay_endpoint when configured."""
         cfg = _mock_config(
-            xpu_endpoint="tcp://*:5557",
+            npu_endpoint="tcp://*:5557",
             replay_endpoint="tcp://*:6667",
         )
         inst = _make_instance(inst_id=2, role=PDRole.ROLE_U, model_name="qwen")
@@ -165,7 +165,7 @@ class TestBuildRegisterPayload:
 
     def test_payload_dp_rank_uses_endpoint_id(self):
         """dp_rank is taken from endpoint.id."""
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
         inst = _make_instance(inst_id=3, role=PDRole.ROLE_P)
         ep = _make_endpoint(ep_id=5, ip="10.0.0.3")
 
@@ -173,25 +173,25 @@ class TestBuildRegisterPayload:
             payload = ConductorApiClient._build_register_payload(inst, ep)
 
         assert payload["dp_rank"] == 5
-        assert payload["medium_endpoints"]["xpu"] == "tcp://10.0.0.3:5562"
+        assert payload["medium_endpoints"]["npu"] == "tcp://10.0.0.3:5562"
 
     def test_payload_with_fallback_endpoint(self):
-        """Legacy 'endpoint' fallback pattern used when xpu_endpoint empty."""
-        cfg = _mock_config(xpu_endpoint="", endpoint="tcp://*:15557")
+        """Legacy 'endpoint' fallback pattern used when npu_endpoint empty."""
+        cfg = _mock_config(npu_endpoint="", endpoint="tcp://*:15557")
         inst = _make_instance(inst_id=4, role=PDRole.ROLE_P)
         ep = _make_endpoint(ep_id=0, ip="10.0.0.4")
 
         with patch.object(ConductorApiClient, "coordinator_config", cfg):
             payload = ConductorApiClient._build_register_payload(inst, ep)
 
-        # Fallback endpoint fills xpu, cpu, disk
+        # Fallback endpoint fills gpu, cpu, disk
         meps = payload["medium_endpoints"]
-        assert "xpu" in meps
+        assert "npu" in meps
 
     def test_replay_endpoint_malformed_skipped(self):
         """replay_endpoint without '*:' → replay_endpoint absent in payload."""
         cfg = _mock_config(
-            xpu_endpoint="tcp://*:5557",
+            npu_endpoint="tcp://*:5557",
             replay_endpoint="tcp://127.0.0.1:6667",
         )
         inst = _make_instance(inst_id=5, role=PDRole.ROLE_P)
@@ -219,7 +219,7 @@ class TestNormalizeServiceKey:
             "instance_id": "vllm-prefill-1",
             "endpoints": {
                 "0": {
-                    "medium_endpoints": {"xpu": "tcp://10.0.0.1:5557"},
+                    "medium_endpoints": {"npu": "tcp://10.0.0.1:5557"},
                     "dp_rank": 0,
                 }
             },
@@ -232,8 +232,8 @@ class TestNormalizeServiceKey:
         worker = {
             "instance_id": "vllm-union-2",
             "endpoints": {
-                "0": {"medium_endpoints": {"xpu": "tcp://10.0.0.1:5557"}},
-                "1": {"medium_endpoints": {"xpu": "tcp://10.0.0.1:5558"}},
+                "0": {"medium_endpoints": {"npu": "tcp://10.0.0.1:5557"}},
+                "1": {"medium_endpoints": {"npu": "tcp://10.0.0.1:5558"}},
             },
         }
         keys = ConductorApiClient._normalize_service_key(worker)
@@ -250,8 +250,8 @@ class TestNormalizeServiceKey:
         worker = {
             "instance_id": "vllm-prefill-1",
             "endpoints": {
-                "abc": {"medium_endpoints": {"xpu": "tcp://x:1"}},
-                "0": {"medium_endpoints": {"xpu": "tcp://x:2"}},
+                "abc": {"medium_endpoints": {"npu": "tcp://x:1"}},
+                "0": {"medium_endpoints": {"npu": "tcp://x:2"}},
             },
         }
         keys = ConductorApiClient._normalize_service_key(worker)
@@ -419,7 +419,7 @@ class TestReRegisterKvInstances:
     def test_skip_when_no_endpoints_configured(self):
         """No endpoint patterns → _build_register_payload returns {} → skip."""
         inst = _make_instance(inst_id=1, role=PDRole.ROLE_P)
-        cfg = _mock_config(xpu_endpoint="", endpoint="")
+        cfg = _mock_config(npu_endpoint="", endpoint="")
 
         with (
             patch.object(ConductorApiClient, "coordinator_config", cfg),
@@ -436,7 +436,7 @@ class TestReRegisterKvInstances:
         endpoints = {"pod-0": {0: ep}}
         inst = Instance(id=1, role=PDRole.ROLE_P, model_name="qwen", job_name="test-job", endpoints=endpoints)
 
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
 
         # Conductor has a DIFFERENT instance registered
         registered = [{"instance_id": "vllm-prefill-99", "endpoints": {"0": {}}}]
@@ -456,11 +456,11 @@ class TestReRegisterKvInstances:
         endpoints = {"pod-0": {0: ep}}
         inst = Instance(id=1, role=PDRole.ROLE_P, model_name="qwen", job_name="test-job", endpoints=endpoints)
 
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
 
         # Same (instance_id, dp_rank) already registered
         registered = [
-            {"instance_id": "vllm-prefill-1", "endpoints": {"0": {"medium_endpoints": {"xpu": "tcp://10.0.0.1:5557"}}}}
+            {"instance_id": "vllm-prefill-1", "endpoints": {"0": {"medium_endpoints": {"npu": "tcp://10.0.0.1:5557"}}}}
         ]
 
         with (
@@ -479,11 +479,11 @@ class TestReRegisterKvInstances:
         endpoints = {"pod-0": {0: ep0, 1: ep1}}
         inst = Instance(id=1, role=PDRole.ROLE_P, model_name="qwen", job_name="test-job", endpoints=endpoints)
 
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
 
         # ep0 (dp_rank=0) already registered; ep1 (dp_rank=1) missing
         registered = [
-            {"instance_id": "vllm-prefill-1", "endpoints": {"0": {"medium_endpoints": {"xpu": "tcp://10.0.0.1:5557"}}}}
+            {"instance_id": "vllm-prefill-1", "endpoints": {"0": {"medium_endpoints": {"npu": "tcp://10.0.0.1:5557"}}}}
         ]
 
         with (
@@ -504,7 +504,7 @@ class TestReRegisterKvInstances:
         endpoints = {"pod-0": {0: ep}}
         inst = Instance(id=1, role=PDRole.ROLE_P, model_name="qwen", job_name="test-job", endpoints=endpoints)
 
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
 
         # Mooncake Master format: InstanceID + DPRank
         registered = [{"InstanceID": "vllm-prefill-1", "DPRank": 0, "Endpoint": "tcp://10.0.0.1:5557"}]
@@ -524,7 +524,7 @@ class TestReRegisterKvInstances:
         endpoints = {"pod-0": {0: ep}}
         inst = Instance(id=1, role=PDRole.ROLE_P, model_name="qwen", job_name="test-job", endpoints=endpoints)
 
-        cfg = _mock_config(xpu_endpoint="tcp://*:5557")
+        cfg = _mock_config(npu_endpoint="tcp://*:5557")
 
         # Different instance registered
         registered = [{"InstanceID": "vllm-prefill-99", "DPRank": 0, "Endpoint": "tcp://10.0.0.99:5557"}]
@@ -593,7 +593,7 @@ def test_return_value_on_failure(mock_http):
 
 
 def _setup_reg_config(
-    store_backend, pool_endpoint="", xpu_endpoint="", cpu_endpoint="", disk_endpoint="", replay_endpoint=""
+    store_backend, pool_endpoint="", npu_endpoint="", cpu_endpoint="", disk_endpoint="", replay_endpoint=""
 ):
     """Patch ConductorApiClient's config for registration testing."""
     from motor.config.coordinator import KvConductorConfig, SchedulerConfig
@@ -601,7 +601,7 @@ def _setup_reg_config(
     reg = KvConductorConfig(
         store_backend=store_backend,
         pool_endpoint=pool_endpoint,
-        xpu_endpoint=xpu_endpoint,
+        npu_endpoint=npu_endpoint,
         cpu_endpoint=cpu_endpoint,
         disk_endpoint=disk_endpoint,
         replay_endpoint=replay_endpoint,
@@ -634,7 +634,7 @@ def test_yuanrong_registration_dispatches_per_dp(mock_http):
     ConductorApiClient._pool_registered = False
 
     with _setup_reg_config(
-        "YuanRong", xpu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
     ):
         ConductorApiClient.register_kv_instance([instance])
 
@@ -643,7 +643,7 @@ def test_yuanrong_registration_dispatches_per_dp(mock_http):
     payload = calls[0][0][1]
     assert "medium_endpoints" in payload
     assert payload["store_backend"] == "YuanRong"
-    assert "xpu" in str(payload["medium_endpoints"])
+    assert "npu" in str(payload["medium_endpoints"])
     assert "cpu" in str(payload["medium_endpoints"])
     assert "disk" in str(payload["medium_endpoints"])
 
@@ -658,7 +658,7 @@ def test_mooncake_registration_includes_pool_plus_hbm(mock_http):
     instance = _make_mock_instance(1)
     ConductorApiClient._pool_registered = False
 
-    with _setup_reg_config("Mooncake", pool_endpoint="tcp://kvp-master:5557", xpu_endpoint="tcp://*:50090"):
+    with _setup_reg_config("Mooncake", pool_endpoint="tcp://kvp-master:5557", npu_endpoint="tcp://*:50090"):
         ConductorApiClient.register_kv_instance([instance])
 
     calls = mock_client.post.call_args_list
@@ -673,7 +673,7 @@ def test_mooncake_registration_includes_pool_plus_hbm(mock_http):
     # Second call: HBM DP
     hbm_payload = calls[1][0][1]
     assert "medium_endpoints" in hbm_payload
-    assert "xpu" in str(hbm_payload["medium_endpoints"])
+    assert "npu" in str(hbm_payload["medium_endpoints"])
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
@@ -686,7 +686,7 @@ def test_mooncake_pool_only_registered_once(mock_http):
     instance = _make_mock_instance(1)
     ConductorApiClient._pool_registered = False
 
-    with _setup_reg_config("Mooncake", pool_endpoint="tcp://kvp-master:5557", xpu_endpoint="tcp://*:50090"):
+    with _setup_reg_config("Mooncake", pool_endpoint="tcp://kvp-master:5557", npu_endpoint="tcp://*:50090"):
         ConductorApiClient.register_kv_instance([instance])
         ConductorApiClient.register_kv_instance([instance])
 
@@ -707,7 +707,7 @@ def test_memcache_registration_same_as_mooncake_different_store_backend(mock_htt
     instance = _make_mock_instance(1)
     ConductorApiClient._pool_registered = False
 
-    with _setup_reg_config("Memcache", pool_endpoint="tcp://kvp-master:5557", xpu_endpoint="tcp://*:50090"):
+    with _setup_reg_config("Memcache", pool_endpoint="tcp://kvp-master:5557", npu_endpoint="tcp://*:50090"):
         ConductorApiClient.register_kv_instance([instance])
 
     calls = mock_client.post.call_args_list
@@ -728,7 +728,7 @@ def test_replay_endpoint_included_in_registration(mock_http):
 
     with _setup_reg_config(
         "YuanRong",
-        xpu_endpoint="tcp://*:15557",
+        npu_endpoint="tcp://*:15557",
         cpu_endpoint="tcp://*:15558",
         disk_endpoint="tcp://*:15558",
         replay_endpoint="tcp://*:6667",
@@ -752,13 +752,13 @@ def test_endpoint_url_resolves_ip_and_dp_rank(mock_http):
     instance.endpoints["pod-0"][0].id = 2  # dp_rank=2
 
     with _setup_reg_config(
-        "YuanRong", xpu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
     ):
         ConductorApiClient.register_kv_instance([instance])
 
     payload = mock_client.post.call_args_list[0][0][1]
     meps = payload["medium_endpoints"]
-    assert meps["xpu"] == "tcp://10.0.0.1:15559"  # 15557 + 2
+    assert meps["npu"] == "tcp://10.0.0.1:15559"  # 15557 + 2
     assert meps["cpu"] == "tcp://10.0.0.1:15560"  # 15558 + 2
     assert payload["dp_rank"] == 2
 
@@ -772,7 +772,7 @@ def test_unknown_backend_falls_back_to_per_dp(mock_http):
 
     instance = _make_mock_instance(1)
 
-    with _setup_reg_config("SomeUnknownBackend", xpu_endpoint="tcp://*:15557"):
+    with _setup_reg_config("SomeUnknownBackend", npu_endpoint="tcp://*:15557"):
         ConductorApiClient.register_kv_instance([instance])
 
     assert len(mock_client.post.call_args_list) >= 1
