@@ -110,6 +110,30 @@ def test_apply_node_selector_override_merges_and_validates():
         apply_node_selector_override({}, {C.PREFILL_NODE_SELECTOR: "label1=value1"}, C.PREFILL_NODE_SELECTOR)
 
 
+def test_prune_metadata_annotations_keeps_other_annotations():
+    metadata = {C.ANNOTATIONS: {C.SP_BLOCK: "16", C.VOLCANO_QUEUE_ANNOTATION: "queue-a"}}
+
+    k8s_utils.prune_metadata_annotations(metadata, C.SP_BLOCK)
+
+    assert metadata[C.ANNOTATIONS] == {C.VOLCANO_QUEUE_ANNOTATION: "queue-a"}
+
+
+def test_prune_metadata_annotations_removes_empty_annotations():
+    metadata = {C.ANNOTATIONS: {C.SP_BLOCK: "16"}}
+
+    k8s_utils.prune_metadata_annotations(metadata, C.SP_BLOCK)
+
+    assert C.ANNOTATIONS not in metadata
+
+
+def test_apply_sp_block_annotation_a2_preserves_volcano_queue_annotation():
+    metadata = {C.ANNOTATIONS: {C.SP_BLOCK: "16", C.VOLCANO_QUEUE_ANNOTATION: "queue-a"}}
+
+    k8s_utils.apply_sp_block_annotation(metadata, 16, C.HARDWARE_TYPE_800I_A2)
+
+    assert metadata[C.ANNOTATIONS] == {C.VOLCANO_QUEUE_ANNOTATION: "queue-a"}
+
+
 def test_infer_service_roles_apply_component_selectors_and_node_port(monkeypatch):
     template_path = DEPLOYER_ROOT / "yaml_template" / "infer_service_template.yaml"
     infer_doc = _find_infer_service_set_doc(load_yaml(str(template_path), False))

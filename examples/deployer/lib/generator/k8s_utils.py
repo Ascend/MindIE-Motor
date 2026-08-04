@@ -436,11 +436,19 @@ def set_services_namespace(service_list, namespace):
         service_data[C.METADATA][C.NAMESPACE] = namespace
 
 
+def prune_metadata_annotations(metadata, key):
+    annotations = metadata.get(C.ANNOTATIONS)
+    if not isinstance(annotations, dict):
+        return
+    annotations.pop(key, None)
+    if not annotations:
+        metadata.pop(C.ANNOTATIONS, None)
+
+
 def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
     """Apply sp_block annotation based on hardware type"""
     if hardware_type in C.HARDWARE_TYPE_A2:
-        if C.ANNOTATIONS in metadata:
-            del metadata[C.ANNOTATIONS]
+        prune_metadata_annotations(metadata, C.SP_BLOCK)
         return
     annotations = metadata.setdefault(C.ANNOTATIONS, {})
     if C.SP_BLOCK in annotations:
@@ -457,8 +465,7 @@ def apply_sp_block_annotation(metadata, sp_block_num, hardware_type):
 def modify_sp_block_num(data, pd_flag, config):
     hardware_type = config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
     if hardware_type in C.HARDWARE_TYPE_A2:
-        if C.ANNOTATIONS in data[C.SPEC][C.TEMPLATE][C.METADATA]:
-            del data[C.SPEC][C.TEMPLATE][C.METADATA][C.ANNOTATIONS]
+        prune_metadata_annotations(data[C.SPEC][C.TEMPLATE][C.METADATA], C.SP_BLOCK)
         return
     if pd_flag == C.NODE_TYPE_E:
         sp_block_num = int(config[C.SINGER_E_INSTANCES_NUM]) * int(config[C.E_POD_NPU_NUM])

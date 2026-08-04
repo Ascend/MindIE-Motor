@@ -87,7 +87,7 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     pod_spec[C.NODE_SELECTOR] = pod_spec.get(C.NODE_SELECTOR, {})
     if hardware_type in C.HARDWARE_TYPE_A2:
         apply_node_selector_by_hardware(pod_spec, hardware_type)
-        del deployment_data[C.SPEC][C.TEMPLATE][C.METADATA][C.ANNOTATIONS]
+        k8s_utils.prune_metadata_annotations(deployment_data[C.SPEC][C.TEMPLATE][C.METADATA], C.SP_BLOCK)
     elif hardware_type in C.HARDWARE_TYPE_A3:
         apply_node_selector_by_hardware(pod_spec, hardware_type)
         k8s_utils.apply_sp_block_annotation(deployment_data[C.SPEC][C.TEMPLATE][C.METADATA], npu_num, hardware_type)
