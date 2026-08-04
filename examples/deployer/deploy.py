@@ -38,6 +38,7 @@ from lib.generator.controller import generate_yaml_controller
 from lib.generator.coordinator import generate_yaml_coordinator
 from lib.generator.engine import generate_yaml_engine, update_engine_base_name, validate_instance_nums
 from lib.generator.kv_cache_store import generate_yaml_kv_store, normalize_kv_cache_store_config
+from lib.generator.storage import generate_yaml_storage_pvc, get_storage_entries
 from lib.generator.kv_conductor import generate_yaml_kv_conductor, normalize_kv_conductor_config
 from lib.generator.single_container import generate_yaml_single_container
 from lib.generator.infer_service import (
@@ -146,6 +147,12 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False):
     kv_store_config = None
     if k8s_utils.g_kv_store_enabled:
         kv_store_config = normalize_kv_cache_store_config(user_config)
+    storage_entries = get_storage_entries(user_config)
+    if storage_entries:
+        generate_yaml_storage_pvc(
+            paths["storage_pvc_input_yaml"], paths["storage_pvc_output_yaml"], user_config, storage_entries
+        )
+    # Queue dynamically-created PVCs before workloads that reference them.
     generate_yaml_engine(paths["engine_input_yaml"], paths["engine_output_yaml"], user_config)
     if kv_store_config is not None:
         generate_yaml_kv_store(
@@ -172,6 +179,12 @@ def deploy_services_infer_service_set(paths, user_config, dry_run=False):
             "Please ensure infer_service_template.yaml exists in yaml_template folder."
         )
     init_infer_service_domain_name(infer_input, deploy_config)
+    storage_entries = get_storage_entries(user_config)
+    if storage_entries:
+        generate_yaml_storage_pvc(
+            paths["storage_pvc_input_yaml"], paths["storage_pvc_output_yaml"], user_config, storage_entries
+        )
+    # Queue dynamically-created PVCs before the InferServiceSet that references them.
     generate_yaml_infer_service_set(infer_input, paths["infer_service_output_yaml"], user_config)
     if not dry_run:
         deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)

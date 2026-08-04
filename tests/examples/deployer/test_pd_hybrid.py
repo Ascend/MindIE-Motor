@@ -99,6 +99,8 @@ def make_deploy_paths(tmp_path):
         "infer_service_output_yaml": str(tmp_path / "infer_service.yaml"),
         "single_container_input_yaml": str(DEPLOYER_ROOT / "yaml_template" / "single_container_template.yaml"),
         "single_container_output_yaml": str(tmp_path / "mindie_motor_single_container.yaml"),
+        "storage_pvc_input_yaml": str(DEPLOYER_ROOT / "yaml_template" / "storage_pvc_template.yaml"),
+        "storage_pvc_output_yaml": str(tmp_path / "mindie_motor_storage_pvc.yaml"),
         "mf_store_input_yaml": str(DEPLOYER_ROOT / "yaml_template" / "mf_store_template.yaml"),
         "mf_store_output_yaml": str(tmp_path / "mindie_motor_mf_store.yaml"),
     }
@@ -181,6 +183,50 @@ def test_deploy_services_dry_run_uses_multi_deployment_when_explicit(tmp_path, m
     deploy_module.deploy_services(user_config, env_config_path=None, dry_run=True)
 
     assert any(path.endswith("_u0.yaml") for path in k8s_utils.g_generate_yaml_list)
+
+
+@pytest.mark.parametrize(
+    ("deploy_mode", "workload_suffix"),
+    [
+        (C.DEPLOY_MODE_INFER_SERVICE_SET, "infer_service.yaml"),
+        (C.DEPLOY_MODE_MULTI_DEPLOYMENT_YAML, "_u0.yaml"),
+    ],
+)
+def test_dynamic_storage_pvc_is_queued_before_engine_workload(tmp_path, monkeypatch, deploy_mode, workload_suffix):
+    user_config = make_pd_hybrid_user_config()
+    user_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = deploy_mode
+    user_config[C.MOTOR_DEPLOY_CONFIG][C.STORAGE] = [
+        {C.STORAGE_TYPE: C.STORAGE_TYPE_PVC, C.STORAGE_CLASS: "nfs-rwx-sc", C.STORAGE_MOUNT_PATH: "/mnt/ucm"}
+    ]
+    monkeypatch.setattr(deploy_module, "get_deploy_paths", lambda: make_deploy_paths(tmp_path))
+
+    deploy_module.deploy_services(user_config, env_config_path=None, dry_run=True)
+
+    pvc_index = next(
+        index
+        for index, path in enumerate(k8s_utils.g_generate_yaml_list)
+        if path.endswith("mindie_motor_storage_pvc.yaml")
+    )
+    workload_index = next(
+        index for index, path in enumerate(k8s_utils.g_generate_yaml_list) if path.endswith(workload_suffix)
+    )
+    assert pvc_index < workload_index
+
+
+def test_single_container_embeds_dynamic_pvc_before_deployment(tmp_path, monkeypatch):
+    user_config = make_pd_separation_user_config()
+    user_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_SINGLE_CONTAINER
+    user_config[C.MOTOR_DEPLOY_CONFIG][C.STORAGE] = [
+        {C.STORAGE_TYPE: C.STORAGE_TYPE_PVC, C.STORAGE_CLASS: "nfs-rwx-sc", C.STORAGE_MOUNT_PATH: "/mnt/ucm"}
+    ]
+    paths = make_deploy_paths(tmp_path)
+    monkeypatch.setattr(deploy_module, "get_deploy_paths", lambda: paths)
+
+    deploy_module.deploy_services(user_config, env_config_path=None, dry_run=True)
+
+    docs = load_yaml(paths["single_container_output_yaml"], False)
+    assert docs[0][C.KIND_KEY] == "PersistentVolumeClaim"
+    assert docs[1][C.KIND_KEY] == "Deployment"
 
 
 def test_boot_script_routes_union_role_to_engine(tmp_path):

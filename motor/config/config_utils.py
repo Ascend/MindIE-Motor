@@ -57,7 +57,10 @@ SSL_CERTFILE = "ssl_certfile"
 SSL_KEYFILE = "ssl_keyfile"
 ADDITIONAL_CONFIG = "additional_config"
 KV_TRANSFER_CONFIG = "kv_transfer_config"
+KV_CONNECTOR = "kv_connector"
 KV_CONNECTOR_EXTRA_CONFIG = "kv_connector_extra_config"
+CONNECTORS = "connectors"
+MULTI_CONNECTOR = "MultiConnector"
 DEPLOY_CONFIG = "deploy_config"
 P_INSTANCES_NUM = "p_instances_num"
 D_INSTANCES_NUM = "d_instances_num"
@@ -81,6 +84,21 @@ class ConfigKey(Enum):
     @staticmethod
     def get_supported_keys() -> str:
         return ", ".join([key.value for key in ConfigKey])
+
+
+def get_validated_multi_connectors(kv_config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the transport/store connectors after validating the shared structure."""
+    extra_config = kv_config.get(KV_CONNECTOR_EXTRA_CONFIG)
+    connectors = extra_config.get(CONNECTORS) if isinstance(extra_config, dict) else None
+    config_path = f"{KV_TRANSFER_CONFIG}.{KV_CONNECTOR_EXTRA_CONFIG}.{CONNECTORS}"
+    if not isinstance(connectors, list) or len(connectors) < 2:
+        raise ValueError(
+            f"{config_path} must be a list of at least 2 connectors "
+            f"(transport first, store second) when {KV_CONNECTOR} is {MULTI_CONNECTOR}"
+        )
+    if not all(isinstance(connector, dict) for connector in connectors[:2]):
+        raise ValueError(f"{config_path} entries must be objects (connector configs)")
+    return connectors
 
 
 def save_config_to_json(

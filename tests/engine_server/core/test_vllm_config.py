@@ -9,6 +9,10 @@
 # See the Mulan PSL v2 for more details.
 
 
+import json
+
+import pytest
+
 from motor.config.endpoint import DeployConfig, EndpointConfig, EngineConfig, ModelConfig, ParallelConfig
 from motor.engine_server.core.vllm.vllm_config import VLLMConfig
 
@@ -260,3 +264,177 @@ def test_mooncake_connector_preserves_pp_layer_partition():
     assert extra["prefill"]["tp_size"] == 16
     assert "pp_size" in extra["prefill"]
     assert "pp_size" in extra["decode"]
+
+
+# --- UCM store connector (MultiConnector[Mooncake, UCM]) ---------------------------------
+
+_UCM_INLINE = {
+    "ucm_connectors": [
+        {
+            "ucm_connector_name": "UcmPipelineStore",
+            "ucm_connector_config": {
+                "store_pipeline": "Cache|Posix",
+                "storage_backends": "/mnt/ucm",
+            },
+        }
+    ],
+    "enable_event_sync": True,
+    "use_layerwise": True,
+}
+
+
+def _make_prefill_with_store(store_connector: dict) -> VLLMConfig:
+    """Prefill VLLMConfig whose kv_transfer_config is MultiConnector[Mooncake, store]."""
+    endpoint_config = _make_endpoint_config(dp_size=1, tp_size=4)
+    endpoint_config.role = "prefill"
+    endpoint_config.deploy_config.engine_config.set(
+        "kv_transfer_config",
+        {
+            "kv_connector": "MultiConnector",
+            "kv_connector_extra_config": {
+                "connectors": [
+                    {"kv_connector": "MooncakeConnectorV1", "kv_port": "20001", "kv_connector_extra_config": {}},
+                    store_connector,
+                ]
+            },
+        },
+    )
+    return VLLMConfig(endpoint_config=endpoint_config)
+
+
+def _ucm_store() -> dict:
+    return {
+        "kv_connector": "UCMConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+        "kv_connector_extra_config": json.loads(json.dumps(_UCM_INLINE)),  # deep copy
+    }
+
+
+def test_ucm_store_keeps_kv_both_and_injects_no_port():
+    """UCM connectors[1] must stay kv_both and receive no rpc/lookup port."""
+    config = _make_prefill_with_store(_ucm_store())
+    config.initialize()
+    store = json.loads(config.kv_transfer_config)["kv_connector_extra_config"]["connectors"][1]
+
+    assert store["kv_role"] == "kv_both"
+    assert store["kv_connector_module_path"] == "ucm.integration.vllm.ucm_connector"
+    extra = store["kv_connector_extra_config"]
+    assert "lookup_rpc_port" not in extra
+    assert "mooncake_rpc_port" not in extra
+
+
+def test_ucm_store_inline_config_not_polluted():
+    """The inline UCM config must pass through verbatim, with no injected keys."""
+    config = _make_prefill_with_store(_ucm_store())
+    config.initialize()
+    extra = json.loads(config.kv_transfer_config)["kv_connector_extra_config"]["connectors"][1][
+        "kv_connector_extra_config"
+    ]
+
+    assert extra["ucm_connectors"][0]["ucm_connector_name"] == "UcmPipelineStore"
+    assert extra["enable_event_sync"] is True
+    assert set(extra.keys()) == {"ucm_connectors", "enable_event_sync", "use_layerwise"}
+
+
+def test_ascend_store_still_gets_lookup_rpc_port():
+    """Regression: AscendStore path is unchanged (kv_role producer + lookup_rpc_port)."""
+    config = _make_prefill_with_store({"kv_connector": "AscendStoreConnector", "kv_connector_extra_config": {}})
+    config.initialize()
+    store = json.loads(config.kv_transfer_config)["kv_connector_extra_config"]["connectors"][1]
+
+    assert store["kv_role"] == "kv_producer"
+    assert store["kv_connector_extra_config"]["lookup_rpc_port"] == str(config.endpoint_config.instance_id)
+
+
+def test_unknown_store_connector_still_raises():
+    """An unrecognized store connector must still be rejected."""
+    config = _make_prefill_with_store({"kv_connector": "NotARealStore", "kv_connector_extra_config": {}})
+    with pytest.raises(ValueError):
+        config.initialize()
+
+
+def test_standalone_ucm_connector_rejected_in_prefill():
+    """A top-level standalone UCMConnector (not wrapped in MultiConnector) must fail loud in
+    prefill/decode roles instead of silently getting mooncake-style prefill/decode keys
+    injected into its inline config.
+    """
+    endpoint_config = _make_endpoint_config(dp_size=1, tp_size=4)
+    endpoint_config.role = "prefill"
+    endpoint_config.deploy_config.engine_config.set(
+        "kv_transfer_config",
+        {
+            "kv_connector": "UCMConnector",
+            "kv_role": "kv_both",
+            "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+            "kv_connector_extra_config": json.loads(json.dumps(_UCM_INLINE)),
+        },
+    )
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    with pytest.raises(ValueError):
+        config.initialize()
+
+
+def test_standalone_ucm_connector_passes_through_in_union():
+    """Union keeps the standalone UCM config unchanged instead of entering P/D processing."""
+    endpoint_config = _make_endpoint_config(dp_size=1, tp_size=4)
+    ucm_config = {
+        "kv_connector": "UCMConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+        "kv_connector_extra_config": json.loads(json.dumps(_UCM_INLINE)),
+    }
+    endpoint_config.deploy_config.engine_config.set("kv_transfer_config", ucm_config)
+
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    config.initialize()
+
+    assert config.kv_transfer_config is None
+    assert config._flatten_config()["kv_transfer_config"] == ucm_config
+
+
+@pytest.mark.parametrize(
+    "extra_config",
+    [
+        None,
+        {},
+        {"connectors": "not-a-list"},
+        {"connectors": [{"kv_connector": "MooncakeConnectorV1"}]},
+        {"connectors": [{"kv_connector": "MooncakeConnectorV1"}, "not-an-object"]},
+    ],
+)
+def test_vllm_rejects_malformed_multi_connectors(extra_config):
+    """Direct VLLMConfig callers receive a clear ValueError before connector indexing."""
+    endpoint_config = _make_endpoint_config(dp_size=1, tp_size=4)
+    endpoint_config.role = "prefill"
+    kv_config = {"kv_connector": "MultiConnector"}
+    if extra_config is not None:
+        kv_config["kv_connector_extra_config"] = extra_config
+    endpoint_config.deploy_config.engine_config.set("kv_transfer_config", kv_config)
+
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    with pytest.raises(ValueError, match="connectors"):
+        config.initialize()
+
+
+def test_ucm_as_transport_position_rejected():
+    """UCM placed as connectors[0] would silently get mooncake-style keys injected into its
+    inline config (connectors[0] is always processed as the transport) — reject loudly.
+    """
+    endpoint_config = _make_endpoint_config(dp_size=1, tp_size=4)
+    endpoint_config.role = "prefill"
+    endpoint_config.deploy_config.engine_config.set(
+        "kv_transfer_config",
+        {
+            "kv_connector": "MultiConnector",
+            "kv_connector_extra_config": {
+                "connectors": [
+                    _ucm_store(),
+                    {"kv_connector": "MooncakeConnectorV1", "kv_port": "20001", "kv_connector_extra_config": {}},
+                ]
+            },
+        },
+    )
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    with pytest.raises(ValueError, match=r"connectors\[1\]"):
+        config.initialize()

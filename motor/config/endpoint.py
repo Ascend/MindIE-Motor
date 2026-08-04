@@ -17,7 +17,7 @@ from typing import Any
 
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DISPATCH_PROFILE_KEY
-from motor.config.config_utils import _update_engine_server_tls_config
+from motor.config.config_utils import _update_engine_server_tls_config, get_validated_multi_connectors
 from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.tls_config import TLSConfig
 from motor.engine_server.constants import constants
@@ -348,13 +348,14 @@ class EndpointConfig:
         kv_config = self.deploy_config.engine_config.get(constants.KV_TRANSFER_CONFIG, {})
         if kv_config:
             if kv_config[constants.KV_CONNECTOR] == constants.MULTI_CONNECTOR:
-                connectors = kv_config[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.CONNECTORS]
+                connectors = get_validated_multi_connectors(kv_config)
                 if self.kv_port is not None:
                     connectors[0][constants.KV_PORT] = str(self.kv_port)
-                if self.lookup_rpc_port is not None:
-                    connectors[1][constants.KV_CONNECTOR_EXTRA_CONFIG][constants.LOOKUP_RPC_PORT] = str(
-                        self.lookup_rpc_port
-                    )
+                store = connectors[1]
+                # UCM store has no lookup_rpc_port; writing one would pollute its inline config.
+                # Skip only UCM; other stores keep the original direct write unchanged.
+                if store.get(constants.KV_CONNECTOR) != constants.UCM_CONNECTOR and self.lookup_rpc_port is not None:
+                    store[constants.KV_CONNECTOR_EXTRA_CONFIG][constants.LOOKUP_RPC_PORT] = str(self.lookup_rpc_port)
             else:
                 if self.kv_port is not None:
                     kv_config[constants.KV_PORT] = str(self.kv_port)

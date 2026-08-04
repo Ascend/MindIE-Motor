@@ -9,11 +9,14 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Tests for config_utils — re_register_interval_sec resolution."""
+"""Tests for shared config utilities."""
+
+import pytest
 
 from motor.config.config_utils import (
     _resolve_re_register_interval_sec,
     DEFAULT_RE_REGISTER_INTERVAL_SEC,
+    get_validated_multi_connectors,
     RE_REGISTER_INTERVAL_SEC,
     PREFILL_KV_EVENT_CONFIG,
 )
@@ -84,3 +87,29 @@ class TestResolveReRegisterIntervalSec:
             {_MOTOR_COORDINATOR_KEY: {PREFILL_KV_EVENT_CONFIG: {RE_REGISTER_INTERVAL_SEC: 0}}}
         )
         assert result == 0
+
+
+class TestGetValidatedMultiConnectors:
+    """Validate the shared MultiConnector transport/store structure."""
+
+    def test_returns_valid_connectors(self):
+        connectors = [{"kv_connector": "MooncakeConnectorV1"}, {"kv_connector": "UCMConnector"}]
+        kv_config = {"kv_connector_extra_config": {"connectors": connectors}}
+
+        assert get_validated_multi_connectors(kv_config) is connectors
+
+    @pytest.mark.parametrize(
+        "extra_config",
+        [
+            None,
+            {},
+            {"connectors": "not-a-list"},
+            {"connectors": [{"kv_connector": "MooncakeConnectorV1"}]},
+            {"connectors": [{"kv_connector": "MooncakeConnectorV1"}, "not-an-object"]},
+        ],
+    )
+    def test_rejects_malformed_connectors(self, extra_config):
+        kv_config = {"kv_connector_extra_config": extra_config}
+
+        with pytest.raises(ValueError, match="connectors"):
+            get_validated_multi_connectors(kv_config)

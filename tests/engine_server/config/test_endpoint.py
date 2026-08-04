@@ -657,6 +657,37 @@ def test_endpoint_config_load_deploy_config_updates_kv_port(valid_config_file_fo
     assert kv_config[constants.KV_PORT] == "30001"
 
 
+def test_load_deploy_config_rejects_malformed_multi_connectors(valid_config_file_for_endpoint):
+    """MultiConnector connectors must be a list of >=2 dicts — validated before any indexing."""
+    bad_extras = (
+        None,  # kv_connector_extra_config missing entirely
+        {},  # connectors key missing
+        {constants.CONNECTORS: "not-a-list"},
+        {constants.CONNECTORS: [{constants.KV_CONNECTOR: "MooncakeConnectorV1"}]},  # too short
+        {constants.CONNECTORS: [{}, "not-a-dict"]},
+    )
+    for bad_extra in bad_extras:
+        with open(valid_config_file_for_endpoint) as f:
+            data = json.load(f)
+        kv = {constants.KV_CONNECTOR: constants.MULTI_CONNECTOR}
+        if bad_extra is not None:
+            kv[constants.KV_CONNECTOR_EXTRA_CONFIG] = bad_extra
+        data["engine_config"][constants.KV_TRANSFER_CONFIG] = kv
+        with open(valid_config_file_for_endpoint, "w") as f:
+            json.dump(data, f)
+
+        config = EndpointConfig(
+            host="127.0.0.1",
+            role="union",
+            port=8000,
+            mgmt_port=9001,
+            config_path=valid_config_file_for_endpoint,
+            kv_port=30001,
+        )
+        with pytest.raises(ValueError, match="connectors"):
+            config.load_deploy_config()
+
+
 def test_endpoint_config_load_deploy_config_updates_dp_rpc_port_prefill(valid_config_file_for_endpoint):
     """Test load_deploy_config updates dp_rpc_port for prefill role"""
     config = EndpointConfig(

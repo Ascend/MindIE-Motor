@@ -317,4 +317,6 @@ def get_deploy_paths():
         "single_container_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_single_container.yaml'),
         "mf_store_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'mf_store_template.yaml'),
         "mf_store_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_mf_store.yaml'),
+        "storage_pvc_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'storage_pvc_template.yaml'),
+        "storage_pvc_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_storage_pvc.yaml'),
     }

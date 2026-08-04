@@ -20,6 +20,7 @@ from lib.utils import (
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num
+from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 
 
 def _pop_ring_controller_atlas_from_labels(labels):
@@ -301,7 +302,10 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     set_engine_npu(container, deploy_config, node_type)
     set_engine_node_selector(deployment_data, deploy_config, node_type)
     set_engine_weight_mount(deployment_data, container, deploy_config)
-    apply_a5_engine_pod_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], container, deploy_config)
+    engine_pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    apply_storage_volumes(engine_pod_spec, container, user_config)
+    apply_dshm_size(engine_pod_spec, user_config)
+    apply_a5_engine_pod_config(engine_pod_spec, container, deploy_config)
     apply_a5_workload(deployment_data, deploy_config)
     modify_log_mount(deployment_data, user_config, deployment_data[C.METADATA][C.NAME])
 
