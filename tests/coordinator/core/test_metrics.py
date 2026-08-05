@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -1385,6 +1385,53 @@ def test_generate_dp_metrics_empty():
 
 
 @patch("threading.Thread.start", MagicMock())
+def test_generate_dp_metrics_empty_family_unified_with_real_sample():
+    """Empty-family DP ranks must match sibling ranks: carry model_name and 0.0."""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    real = Metric()
+    real.name = "vllm:num_requests_running"
+    real.help = "Number of requests running."
+    real.type = MetricType.GAUGE
+    real.label = ['vllm:num_requests_running{model_name="dsv3"}']
+    real.value = [0.0]
+
+    empty = Metric()
+    empty.name = "vllm:num_requests_running"
+    empty.help = "Number of requests running."
+    empty.type = MetricType.GAUGE
+    empty.label = []
+    empty.value = []
+
+    collects = {
+        1: {
+            "role": "decode",
+            "model_name": "dsv3",
+            "endpoints": {
+                0: {"metrics": [real], "pod_ip": "192.168.207.121"},
+                5: {"metrics": [empty], "pod_ip": "192.168.207.121"},
+            },
+        },
+    }
+
+    result = collector._generate_dp_metrics(collects)
+    # Real sample keeps engine label + Motor dims, value 0.0
+    assert (
+        'vllm:num_requests_running{dp_rank="0",role="decode",instance_id="1",pod_ip="192.168.207.121",model_name="dsv3"} 0.0'
+        in result
+    )
+    # Empty family now carries the same model_name and 0.0 (not bare, not "0")
+    assert (
+        'vllm:num_requests_running{dp_rank="5",role="decode",instance_id="1",pod_ip="192.168.207.121",model_name="dsv3"} 0.0'
+        in result
+    )
+    assert " 0\n" not in result and not result.endswith(" 0")
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
 def test_generate_node_metrics():
     _cleanup_singletons()
     config = CoordinatorConfig()
@@ -1419,6 +1466,102 @@ def test_generate_node_metrics():
     assert 'role="prefill"' in result
     assert "# HELP vllm:num_requests_running" in result
     assert "8.0" in result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_generate_node_metrics_empty_family_unified_with_real_sample():
+    """Empty-family node aggregates must carry model_name and 0.0.
+
+    Use different pod_ips so aggregation cannot absorb the empty family into a
+    real sample (same-pod merge would skip the empty-family serialize branch).
+    """
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    real = Metric()
+    real.name = "vllm:num_requests_running"
+    real.help = "Number of requests running."
+    real.type = MetricType.GAUGE
+    real.label = ['vllm:num_requests_running{model_name="dsv3"}']
+    real.value = [3.0]
+
+    empty = Metric()
+    empty.name = "vllm:num_requests_running"
+    empty.help = "Number of requests running."
+    empty.type = MetricType.GAUGE
+    empty.label = []
+    empty.value = []
+
+    collects = {
+        1: {
+            "role": "decode",
+            "model_name": "dsv3",
+            "endpoints": {
+                0: {"metrics": [real], "pod_ip": "10.0.0.1"},
+            },
+        },
+        2: {
+            "role": "decode",
+            "model_name": "dsv3",
+            "endpoints": {
+                0: {"metrics": [empty], "pod_ip": "10.0.0.2"},
+            },
+        },
+    }
+
+    result = collector._generate_node_metrics(collects)
+    # Real sample keeps engine label + Motor dims
+    assert 'vllm:num_requests_running{pod_ip="10.0.0.1",role="decode",model_name="dsv3"} 3.0' in result
+    # Empty family node must carry model_name and 0.0 (not bare, not "0")
+    assert 'vllm:num_requests_running{pod_ip="10.0.0.2",role="decode",model_name="dsv3"} 0.0' in result
+    assert " 0\n" not in result and not result.endswith(" 0")
+    _cleanup_singletons()
+
+
+def test_empty_family_base_label_escapes_model_name():
+    """Prometheus exposition requires escaping \\ and \" in label values."""
+    assert MetricsCollector._escape_prometheus_label_value(r'a"b\c') == r'a\"b\\c'
+    assert MetricsCollector._escape_prometheus_label_value("line\nbreak") == r"line\nbreak"
+    assert (
+        MetricsCollector._empty_family_base_label("vllm:num_requests_running", r'model"x\y')
+        == r'vllm:num_requests_running{model_name="model\"x\\y"}'
+    )
+    assert MetricsCollector._empty_family_base_label("vllm:num_requests_running", "") == ("vllm:num_requests_running")
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_generate_dp_metrics_empty_family_escapes_model_name():
+    """Empty-family DP lines must emit escaped model_name in the label set."""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    empty = Metric()
+    empty.name = "vllm:num_requests_running"
+    empty.help = "Number of requests running."
+    empty.type = MetricType.GAUGE
+    empty.label = []
+    empty.value = []
+
+    collects = {
+        1: {
+            "role": "decode",
+            "model_name": r'model"x\y',
+            "endpoints": {
+                0: {"metrics": [empty], "pod_ip": "192.168.207.121"},
+            },
+        },
+    }
+
+    result = collector._generate_dp_metrics(collects)
+    assert (
+        r'vllm:num_requests_running{dp_rank="0",role="decode",instance_id="1",'
+        r'pod_ip="192.168.207.121",model_name="model\"x\\y"} 0.0'
+    ) in result
+    # Unescaped quote must not appear as a raw label delimiter break.
+    assert 'model_name="model"x' not in result
     _cleanup_singletons()
 
 
