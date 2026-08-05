@@ -491,7 +491,7 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
     done
    ```
 
-3. A5服务器（Atlas 850 Server 普通集群）。
+3. Atlas 850 超节点服务器。
 
    >[!NOTE]说明
    >`accelerator-type` 需按实际形态填写。普通集群使用 `850-Atlas-8p-8`；若为 850 超节点请改为 `850-SuperPod-Atlas-8`；950 超节点请改为 `950-SuperPod-Atlas-8`。详细请参考[mindcluster标签设置](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md#%E5%88%9B%E5%BB%BA%E8%8A%82%E7%82%B9%E6%A0%87%E7%AD%BE)。
