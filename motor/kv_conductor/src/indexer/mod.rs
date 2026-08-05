@@ -27,7 +27,6 @@
 //! Query results report matched block counts per medium (no weighted scoring).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -42,13 +41,6 @@ use crate::hashing::compute_block_hash_for_seq;
 use crate::lower_tier::{ContiguousHit, LowerTierContinuation, LowerTierIndexer};
 use crate::protocols::*;
 
-/// Number of HBM removals after which `sweep_stale_nodes` is triggered
-/// to reclaim orphan tree nodes.
-const HBM_SWEEP_THRESHOLD: u64 = 1000;
-
-/// Number of ingest operations after which `sweep_stale_pending` is triggered
-/// to evict expired `pending_pool` / `content` entries.
-const PENDING_SWEEP_THRESHOLD: u64 = 100;
 /// TTL for stale pending pool entries (60 seconds).
 const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// TTL for retained `content` entries. Content must survive the CPU→Disk
@@ -56,6 +48,25 @@ const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// so it is deliberately longer than [`PENDING_TTL`]; entries are cleared
 /// once the window closes.
 const CONTENT_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+const OFFLOAD_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Retention limits for the asynchronous offload/pool matching caches.
+#[derive(Debug, Clone)]
+pub struct CacheMaintenanceConfig {
+    pub pending_ttl: std::time::Duration,
+    pub content_ttl: std::time::Duration,
+    pub offload_ttl: std::time::Duration,
+}
+
+impl Default for CacheMaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            pending_ttl: PENDING_TTL,
+            content_ttl: CONTENT_TTL,
+            offload_ttl: OFFLOAD_TTL,
+        }
+    }
+}
 
 /// Upstream-tier match breakpoint used to continue into the next lower tier.
 #[derive(Debug, Clone)]
@@ -72,29 +83,36 @@ struct TierBreakpoint {
 // Two-phase offload/pool matching protocol
 // ---------------------------------------------------------------------------
 
-/// Cached Phase-1 offload mapping: `tokens_hash` plus the optional
+/// Hash content shared by the timed offload and retained-content caches.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BlockContent {
+    pub(crate) tokens_hash: u64,
+    pub(crate) parent_hash: Option<u64>,
+}
+
+/// Cached Phase-1 offload mapping: block content plus insertion time.
+/// `BlockContent` carries `tokens_hash` plus the optional
 /// `parent_hash` (the engine's immediately preceding block in the offload
 /// chain, or the chain's original `parent_block_hash` for the first block).
 ///
 /// Carrying `parent_hash` alongside `tokens_hash` allows Phase-2 confirmation
 /// to insert this block as a continuation edge from the correct predecessor,
 /// rather than always chaining from root.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct OffloadCacheEntry {
-    pub(crate) tokens_hash: u64,
-    pub(crate) parent_hash: Option<u64>,
+    pub(crate) content: BlockContent,
+    pub(crate) inserted_at: std::time::Instant,
 }
 
 /// Confirmed content kept for a possible later pool medium (Disk promotion),
 /// with insert time for TTL eviction ([`CONTENT_TTL`]).
 ///
-/// Unlike the unconfirmed `offload` entries (which have no TTL — bounded by
-/// the number of outstanding offloaded blocks), content survives lower-tier
+/// Unlike unconfirmed `offload` entries, content survives lower-tier
 /// removal so a Disk store event arriving after CPU eviction can still resolve
 /// the mapping; the TTL bounds how long it lingers.
 #[derive(Debug, Clone)]
 pub(crate) struct ContentEntry {
-    pub(crate) entry: OffloadCacheEntry,
+    pub(crate) content: BlockContent,
     pub(crate) inserted_at: std::time::Instant,
 }
 
@@ -132,10 +150,9 @@ impl std::hash::Hash for PendingPoolEvent {
 /// residue; `content` is TTL-swept so memory stays bounded).
 ///
 /// Lifecycle:
-/// - `offload`: unconfirmed engine offloads. **No TTL** — pool confirmation
-///   may arrive arbitrarily late, so entries are bounded only by the number
-///   of outstanding offloaded blocks (original two-phase design) and cleared
-///   on match or explicit removal.
+/// - `offload`: unconfirmed engine offloads. TTL-bounded so a lost pool
+///   confirmation/removal event cannot grow memory indefinitely; also cleared
+///   eagerly on match or explicit removal.
 /// - `content`: confirmed `(tokens_hash, parent_hash)` kept for a later pool
 ///   medium. **TTL-evicted** ([`CONTENT_TTL`]) — it must survive lower-tier
 ///   removal so a Disk store arriving after CPU eviction still resolves, and
@@ -147,7 +164,7 @@ impl std::hash::Hash for PendingPoolEvent {
 #[derive(Debug, Default)]
 pub(crate) struct OffloadPoolState {
     /// `block_hash → OffloadCacheEntry`: offload events waiting for the
-    /// **first** pool confirmation. Not TTL-swept (see struct docs).
+    /// **first** pool confirmation. Swept with the configured offload TTL.
     pub(crate) offload: FxHashMap<u64, OffloadCacheEntry>,
     /// `block_hash → ContentEntry`: retained after the first lower-tier
     /// insert (always, see struct docs). Swept with [`CONTENT_TTL`].
@@ -180,12 +197,7 @@ pub struct IndexerEntry {
     /// See [`OffloadPoolState`] for the invariant.
     pub(crate) offload_pool_state: Arc<RwLock<OffloadPoolState>>,
 
-    /// Count of HBM block removals since last sweep. When this exceeds
-    /// `HBM_SWEEP_THRESHOLD`, `sweep_stale_nodes` is called to reclaim
-    /// orphan tree nodes that accumulate after worker drops.
-    hbm_removal_count: AtomicU64,
-    /// Count of ingest operations since last pending sweep.
-    pending_ingest_count: AtomicU64,
+    maintenance: CacheMaintenanceConfig,
 }
 
 impl Default for IndexerEntry {
@@ -196,14 +208,17 @@ impl Default for IndexerEntry {
 
 impl IndexerEntry {
     pub fn new() -> Self {
+        Self::with_config(CacheMaintenanceConfig::default())
+    }
+
+    pub fn with_config(maintenance: CacheMaintenanceConfig) -> Self {
         Self {
             hbm_tree: Arc::new(ConcurrentRadixTree::new()),
             lookups: Arc::new(RwLock::new(FxHashMap::default())),
             cpu_tiers: Arc::new(LowerTierIndexer::new()),
             disk_tiers: Arc::new(LowerTierIndexer::new()),
             offload_pool_state: Arc::new(RwLock::new(OffloadPoolState::default())),
-            hbm_removal_count: AtomicU64::new(0),
-            pending_ingest_count: AtomicU64::new(0),
+            maintenance,
         }
     }
 
@@ -444,14 +459,17 @@ impl IndexerEntry {
 
             for &(block_hash, tokens_hash, parent_hash) in triples {
                 let cache_entry = OffloadCacheEntry {
-                    tokens_hash,
-                    parent_hash,
+                    content: BlockContent {
+                        tokens_hash,
+                        parent_hash,
+                    },
+                    inserted_at: std::time::Instant::now(),
                 };
                 if let Some(pending) = state.pending_pool.remove(&block_hash) {
                     state.content.insert(
                         block_hash,
                         ContentEntry {
-                            entry: cache_entry,
+                            content: cache_entry.content,
                             inserted_at: std::time::Instant::now(),
                         },
                     );
@@ -466,8 +484,7 @@ impl IndexerEntry {
                         ));
                     }
                 } else {
-                    // Unconfirmed offload: no TTL (pool confirmation may be
-                    // arbitrarily late). If this hash was previously confirmed
+                    // If this hash was previously confirmed
                     // and re-offloaded, drop the stale content mapping to keep
                     // the offload/content invariant — the tier still carries
                     // the mapping for later pool events.
@@ -476,8 +493,7 @@ impl IndexerEntry {
                 }
             }
             matched
-        }; // lock released before sweep
-        self.maybe_sweep_pending();
+        };
         matched
     }
 
@@ -495,14 +511,14 @@ impl IndexerEntry {
             state.content.insert(
                 block_hash,
                 ContentEntry {
-                    entry: cached,
+                    content: cached.content,
                     inserted_at: std::time::Instant::now(),
                 },
             );
-            return Some((cached.parent_hash, cached.tokens_hash));
+            return Some((cached.content.parent_hash, cached.content.tokens_hash));
         }
         if let Some(cached) = state.content.get(&block_hash) {
-            return Some((cached.entry.parent_hash, cached.entry.tokens_hash));
+            return Some((cached.content.parent_hash, cached.content.tokens_hash));
         }
         None
     }
@@ -548,7 +564,7 @@ impl IndexerEntry {
                 state.content.insert(
                     bh,
                     ContentEntry {
-                        entry: OffloadCacheEntry {
+                        content: BlockContent {
                             tokens_hash: tokens,
                             parent_hash: parent,
                         },
@@ -575,7 +591,6 @@ impl IndexerEntry {
             }
         }
 
-        self.maybe_sweep_pending();
         matched
     }
 
@@ -624,11 +639,10 @@ impl IndexerEntry {
     /// block hashes whose `pending_pool` entries were fully cleared.
     ///
     /// Note: `offload` / `content` have no per-worker association. Content is
-    /// TTL-evicted via [`Self::sweep_stale_pending`] ([`CONTENT_TTL`]); it is
+    /// TTL-evicted by periodic maintenance; it is
     /// kept across tier clears so a later Disk store can still promote the
-    /// block. Unconfirmed `offload` entries are not TTL'd — they are bounded
-    /// by the number of outstanding offloaded blocks and cleared on match,
-    /// removal, or the pool confirmation eventually arriving.
+    /// block. Unconfirmed `offload` entries are TTL-bounded and are also
+    /// cleared on match, removal, or pool confirmation.
     pub fn remove_pending_worker(&self, worker: &WorkerKey) -> usize {
         let mut state = self.offload_pool_state.write();
         let mut removed = 0usize;
@@ -651,22 +665,26 @@ impl IndexerEntry {
         state.offload.len() + state.pending_pool.len() + state.content.len()
     }
 
-    /// Sweep stale `pending_pool` and retained `content` entries that exceed
+    /// Sweep stale matching-cache entries that exceed
     /// their TTLs, returning the total number of entries evicted.
     ///
-    /// Unconfirmed `offload` entries are **not** swept: pool confirmation may
-    /// arrive arbitrarily late, so they are bounded only by the number of
-    /// outstanding offloaded blocks (original two-phase design). `content`
-    /// must survive lower-tier removal for the CPU→Disk migration window,
-    /// so it is bounded by [`CONTENT_TTL`] instead.
-    pub fn sweep_stale_pending(
+    /// `content` uses a longer TTL because it must survive lower-tier removal
+    /// during the CPU→Disk migration window.
+    pub fn sweep_stale_caches(
         &self,
         pending_ttl: std::time::Duration,
         content_ttl: std::time::Duration,
+        offload_ttl: std::time::Duration,
     ) -> usize {
         let mut state = self.offload_pool_state.write();
         let mut pruned = 0usize;
         let now = std::time::Instant::now();
+
+        let before_offload = state.offload.len();
+        state
+            .offload
+            .retain(|_, e| now.duration_since(e.inserted_at) < offload_ttl);
+        pruned += before_offload - state.offload.len();
 
         let before_content = state.content.len();
         state
@@ -691,48 +709,27 @@ impl IndexerEntry {
                 remaining_offload = state.offload.len(),
                 remaining_content = state.content.len(),
                 remaining_pending_keys = state.pending_pool.len(),
-                "swept stale content/pending pool entries"
+                "swept stale offload/content/pending pool entries"
             );
         }
 
         pruned
     }
 
+    /// Run one complete maintenance pass for this model/tenant index.
+    pub fn maintenance(&self) -> usize {
+        let mut pruned = self.sweep_stale_caches(
+            self.maintenance.pending_ttl,
+            self.maintenance.content_ttl,
+            self.maintenance.offload_ttl,
+        );
+        pruned += self.hbm_tree.sweep_stale_nodes();
+        pruned
+    }
+
     // -----------------------------------------------------------------------
     // Event application
     // -----------------------------------------------------------------------
-
-    /// Periodically sweep stale pending pool / content entries on every
-    /// `PENDING_SWEEP_THRESHOLD`-th ingest.  Called after each `ingest_*`
-    /// operation.
-    fn maybe_sweep_pending(&self) {
-        let count = self
-            .pending_ingest_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        if count.is_multiple_of(PENDING_SWEEP_THRESHOLD) {
-            let pruned = self.sweep_stale_pending(PENDING_TTL, CONTENT_TTL);
-            if pruned > 0 {
-                tracing::debug!(
-                    pruned,
-                    total_ingests = count,
-                    "swept stale pending pool entries"
-                );
-            }
-        }
-    }
-
-    /// Trigger a sweep of stale HBM tree nodes if the removal counter
-    /// exceeds the threshold. Called after each HBM remove/clear.
-    fn maybe_sweep_hbm(&self) {
-        let count = self.hbm_removal_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if count.is_multiple_of(HBM_SWEEP_THRESHOLD) {
-            let pruned = self.hbm_tree.sweep_stale_nodes();
-            if pruned > 0 {
-                tracing::debug!(pruned, total_removals = count, "swept stale HBM tree nodes");
-            }
-        }
-    }
 
     /// Apply a KV cache event for a specific worker, dispatching to the
     /// correct data structure based on storage medium.
@@ -764,9 +761,7 @@ impl IndexerEntry {
                 StorageMedium::Npu | StorageMedium::Unknown => {
                     let mut lookups = self.lookups.write();
                     let lookup = lookups.entry(worker.clone()).or_default();
-                    let result = self.hbm_tree.apply_remove(worker, lookup, block_hashes);
-                    self.maybe_sweep_hbm();
-                    result
+                    self.hbm_tree.apply_remove(worker, lookup, block_hashes)
                 }
                 // Retained content is deliberately NOT pruned here: a CPU
                 // eviction may be the pool migrating the block to Disk, and
@@ -785,9 +780,9 @@ impl IndexerEntry {
                 match worker.medium {
                     StorageMedium::Npu | StorageMedium::Unknown => {
                         let mut lookups = self.lookups.write();
-                        let lookup = lookups.entry(worker.clone()).or_default();
-                        self.hbm_tree.remove_worker(worker, lookup);
-                        self.maybe_sweep_hbm();
+                        if let Some(mut lookup) = lookups.remove(worker) {
+                            self.hbm_tree.remove_worker(worker, &mut lookup);
+                        }
                     }
                     // Same as Removed: retained content survives the clear so
                     // a later Disk store can still promote these blocks.
@@ -833,9 +828,8 @@ impl IndexerEntry {
             }
         }
         // Offload/pool pending state — clean up pool entries waiting for
-        // this worker.  Unconfirmed offload / retained content entries are
-        // not per-worker: offload is bounded by outstanding offloaded blocks,
-        // and content is TTL-evicted (`CONTENT_TTL`), so both self-clean.
+        // this worker. Unconfirmed offload / retained content entries are not
+        // per-worker; both are bounded by periodic maintenance.
         {
             let mut state = self.offload_pool_state.write();
             state.pending_pool.retain(|_, entries| {
@@ -864,13 +858,19 @@ impl IndexerEntry {
 /// Top-level indexer managing multiple (model, tenant) trees.
 pub struct Indexer {
     entries: DashMap<IndexerKey, Arc<IndexerEntry>>,
+    maintenance: CacheMaintenanceConfig,
 }
 
 impl Indexer {
     /// Create an indexer.
     pub fn new() -> Self {
+        Self::with_config(CacheMaintenanceConfig::default())
+    }
+
+    pub fn with_config(maintenance: CacheMaintenanceConfig) -> Self {
         Self {
             entries: DashMap::new(),
+            maintenance,
         }
     }
 
@@ -882,7 +882,7 @@ impl Indexer {
         };
         self.entries
             .entry(key)
-            .or_insert_with(|| Arc::new(IndexerEntry::new()))
+            .or_insert_with(|| Arc::new(IndexerEntry::with_config(self.maintenance.clone())))
             .value()
             .clone()
     }
@@ -913,6 +913,25 @@ impl Indexer {
         if should_remove {
             self.entries.remove(&key);
         }
+    }
+
+    /// Sweep every entry and remove empty entries not protected by an active registration.
+    pub fn maintenance(&self, protected: &FxHashSet<IndexerKey>) -> usize {
+        let entries: Vec<(IndexerKey, Arc<IndexerEntry>)> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        let mut pruned = 0;
+        for (_, entry) in &entries {
+            pruned += entry.maintenance();
+        }
+        for (key, _) in entries {
+            if !protected.contains(&key) {
+                self.remove_if_empty(&key.model_name, &key.tenant_id);
+            }
+        }
+        pruned
     }
 
     /// Query matched block counts for a token sequence against a specific model/tenant.

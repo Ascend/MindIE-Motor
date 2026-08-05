@@ -35,7 +35,7 @@
 |------|------|------|
 | HTTP Server | `server.rs` | Axum 路由，CORS，TraceLayer |
 | Worker Registry | `registry.rs` | 注册/注销，事件/查询路由，ZMQ 订阅管理 |
-| Indexer | `indexer.rs` | Per-(model, tenant) 索引生命周期，三层匹配聚合 |
+| Indexer | `indexer/mod.rs` | Per-(model, tenant) 索引生命周期、两阶段缓存、三层匹配聚合与维护 |
 | HBM Tree | `concurrent_tree.rs` | 并发 Radix Tree，前缀链匹配 |
 | CPU/Disk Index | `lower_tier.rs` | Continuation-edge 图，断点续查 + root 走查 |
 | Hashing | `hashing.rs` | XXH3 token → LocalBlockHash |
@@ -125,10 +125,11 @@ HBM 使用前缀链 Radix Tree，每个节点以 `LocalBlockHash`（XXH3 token-c
 （`remove_worker`），若节点的所有 Worker 均离开，其 `children` map 一并清空以回收内存；
 已有 `Arc` 引用的旧集合不受影响，正在并发遍历的查询可以安全完成。
 
-**维护**：HBM `Removed` / `Cleared` 路径每累计满 `HBM_SWEEP_THRESHOLD`（1000）次删除
-（`count.is_multiple_of(1000)`，即 1000、2000…）触发 `sweep_stale_nodes()`，迭代回收
-无 Worker 且无子节点的孤儿节点。Worker 注销（`remove_worker_all_media`）直接清树节点，
-**不**计入该计数、也不触发 sweep。
+**维护**：HBM `Removed` / `Cleared` 只做精确索引删除，不在事件热路径扫描整棵树。
+后台 maintenance 按周期调用 `sweep_stale_nodes()`，统一回收无 Worker 且无子节点的空节点。
+`Cleared` 会同时删除清空后的外层 `WorkerLookup` key；Worker 注销则由
+`remove_worker_all_media` 清除该实例/DP 在所有介质上的索引。这样避免删除事件周期性出现
+全树扫描延迟尖峰，同时保证停止 ingest 后孤儿节点仍会被回收。
 
 ### CPU/Disk 索引：LowerTierIndexer
 
@@ -235,6 +236,17 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
     Disk: medium_endpoints={"disk": "tcp://IP:15558"} -> dedupe if shared port
 ```
 
+### 注册、重注册与注销生命周期
+
+- 首次注册会创建 `(model_name, tenant_id)` 对应的 `IndexerEntry`，并按去重后的 endpoint
+  创建 ZMQ subscriber；HTTP-only 注册允许 endpoint 为空。
+- 同一 `(instance_id, dp_rank)` 重注册时，旧 subscriber 会先停止。后端未变化时保留已有
+  索引，仅更新 endpoint；后端变化时清除该实例/DP 的 NPU/CPU/Disk 索引和旧 HBM IP 映射。
+- `replay_endpoint` 只在该 `instance_id` 首次出现时通过 `spawn_blocking` 执行历史事件回放。
+- 注销会停止该实例/DP 的全部 subscriber，删除 HBM IP 映射及三层索引；删除最后一个 DP
+  时，使用**注册记录中的** model/tenant 回收空 `IndexerEntry`，不信任注销请求里的同名字段。
+- `POST /events` 的 `shutdown=true` 当前只记录日志，完整释放仍需显式调用 `/unregister`。
+
 ---
 
 ## 哈希设计
@@ -270,8 +282,9 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
 
 - 引擎的 `BlockHash` 是链式滚动哈希（`H_i = hash(H_{i-1}, tokens_i)`），编码了整个前缀
 - Conductor 的 `LocalBlockHash` 是独立 XXH3（`H_i = XXH3(1337, tokens_i)`），仅编码本块内容
-- 独立哈希使树节点可以被多个不同前缀的序列**共享**——两个 Worker 的同一 token 内容映射到同一个树节点
-- 如果使用引擎的链式哈希，相同 tokens 在不同前缀上下文中会有不同哈希，无法共享
+- 独立哈希使同一父节点下、相同 token 内容稳定映射到同一 child key，多个 Worker 可共享该节点
+- 不同父路径仍对应不同树节点；若直接使用引擎链式哈希，节点 key 会额外绑定整个历史前缀，
+  不适合作为 Conductor 的本地内容键
 
 ### 计算细节
 
@@ -424,24 +437,24 @@ pool daemon 后上报 store 事件（含 `seq_hashes`，即 `block_hash`）。�
 
 ```rust
 pub struct OffloadPoolState {
-    // Phase 1 先到: block_hash → (tokens_hash, parent_hash)，等待首次 pool 确认
-    // 无 TTL、无硬容量上限 —— 随未确认 offload 增长；匹配成功或引擎驱逐时清除
+    // Phase 1 先到: block_hash → (tokens_hash, parent_hash, inserted_at)
+    // 等待首次 pool 确认；默认 TTL 600s，无容量上限
     offload: FxHashMap<u64, OffloadCacheEntry>,
     // 首次确认后始终写入（无需配置）：供后续 Disk 复用
     // TTL 300s（CONTENT_TTL）清扫；跨 tier 移除存活，为 CPU→Disk 迁移窗口兜底
-    content: FxHashMap<u64, ContentEntry>,   // ContentEntry = entry + inserted_at
+    content: FxHashMap<u64, ContentEntry>,   // BlockContent + content inserted_at
     // Phase 2 先到: block_hash → {waiting workers}，TTL 60s（PENDING_TTL）
     pending_pool: FxHashMap<u64, FxHashSet<PendingPoolEvent>>,
 }
 // 不变量: 一个 block_hash 不同时存在于 offload 与 content
 ```
 
-**Phase 1 先到**：引擎 offload 事件到达 → 计算 `tokens_hash` → 连同**该块自己的
-`parent_hash`** 缓存到 `offload` → 等待 Pool 确认
-**Phase 2 先到**：Pool store 事件到达 → 排入 `pending_pool`（按 Worker 去重）→ 等待
-引擎 offload 事件
-**双方到齐**：以 `tokens_hash` + `parent_hash` 匹配 → 构建 continuation edge → 插入
-CPU/Disk 索引，同时将映射迁入 `content`。
+- **Phase 1 先到**：引擎 offload 事件到达 → 计算 `tokens_hash` → 连同该块自己的
+  `parent_hash` 缓存到 `offload` → 等待 Pool 确认。
+- **Phase 2 先到**：Pool store 事件到达 → 排入 `pending_pool`（按 Worker 去重）→ 等待
+  引擎 offload 事件。
+- **双方到齐**：使用 block hash 关联两侧事件，取得 `tokens_hash` + `parent_hash` → 构建
+  continuation edge → 插入 CPU/Disk 索引，同时将映射迁入 `content`。
 
 **content 保留（无需配置，始终生效）**：
 
@@ -463,13 +476,32 @@ root 挂接——否则 continuation-edge 图会丢失链式关系，CPU/Disk �
 `parent_hash`）应用，绝不批量合并成单个 `parent_hash: None` 的事件——批量会静默丢失
 块间续接。
 
-过期清理：每满 100 次 ingest（`PENDING_SWEEP_THRESHOLD`，`is_multiple_of`）触发一次
-`sweep_stale_pending()`。`pending_pool` 带插入时间戳，TTL 60s；未确认的 `offload`
-**不做 TTL、无硬容量上限**（pool 确认可能任意延迟，map 随未确认块增长），只在匹配成功
-或引擎侧 `evict_pending_blocks`（对应 Removed 等）时清除——Worker 注销只清该 Worker
-的 `pending_pool` 条目，**不清**共享的 `offload` / `content`。确认后迁入 `content`，
-按 `CONTENT_TTL`（300s）TTL 清扫——content 跨 tier 移除存活（覆盖 CPU→Disk 迁移窗口），
-过期由 `content` 自身的 TTL 兜底，无需按 tier 归属 prune。
+**缓存清理语义**：ingest 路径不再触发惰性全量扫描。后台 maintenance 默认每 30 秒
+调用 `sweep_stale_caches()`，分别清理 `pending_pool`（默认 60s）、`content`（默认 300s）
+和 `offload`（默认 600s）。三类缓存均记录插入时间；实际最长驻留时间约为对应 TTL 加一个
+maintenance 周期。`offload` 没有容量上限，但不会永久驻留，同时仍会在匹配成功或引擎侧
+`evict_pending_blocks` 时提前删除。Worker 注销只按 Worker 清理 `pending_pool`；共享的
+`offload` / `content` 由匹配、显式移除或 TTL 维护回收。
+
+### 后台 Maintenance
+
+服务启动时创建独立 Tokio 周期任务，默认每 30 秒执行一次完整维护：
+
+1. 对每个 `IndexerEntry` 清理过期的 offload/pending/content；
+2. 调用 `sweep_stale_nodes()` 回收 HBM 空节点；
+3. 扫描顶层 `DashMap`，删除缓存已空且没有活跃注册引用的 `(model, tenant)` Entry。
+
+维护任务通过 `Weak<WorkerRegistry>` 持有服务，Registry 释放后任务自行退出。扫描空 Entry 时
+持有注册表读锁，避免注册过程与“活跃 Entry 保护集合”之间出现竞态。匹配缓存的 maintenance
+与 ingest 共用 `RwLock<OffloadPoolState>` 写锁，因此不会并发修改 Map；代价是清扫期间 ingest
+可能短暂等待。
+
+| CLI 参数 | 默认值 | 说明 |
+|----------|--------|------|
+| `--maintenance-interval-secs` | `30` | 后台维护周期；实现至少按 1 秒执行 |
+| `--pending-ttl-secs` | `60` | Pool-first 等待项 TTL |
+| `--content-ttl-secs` | `300` | CPU→Disk promotion 映射保留 TTL |
+| `--offload-ttl-secs` | `600` | 未确认 engine offload TTL；无容量上限 |
 
 ### vLLM 事件过滤
 
@@ -511,9 +543,8 @@ Coordinator / 引擎也可经 `POST /events` 推送 JSON（`KvEventBatch` / `KvE
 
 | 错误 | HTTP 状态码 | 场景 |
 |------|-----------|------|
-| `DuplicateRegistration` | 409 | 同一 (instance_id, dp_rank) 重复注册 |
 | `InstanceNotFound` | 404 | 对未注册实例执行操作 |
-| `NoIndexer` | 404 | 查询时 (model, tenant) 无已注册 Worker |
+| `NoIndexer` | 404 | 查询时不存在对应的 (model, tenant) IndexerEntry |
 | `NoWorkers` | 200 `{tenant_id: {}}` | 无缓存命中——正常，不视为错误 |
 | `ParentBlockNotFound` | 500 | Store 事件引用了未知 parent hash |
 | `InvalidBlockSequence` | 500 | 检测到自引用 block |
@@ -524,7 +555,11 @@ Coordinator / 引擎也可经 `POST /events` 推送 JSON（`KvEventBatch` / `KvE
 
 | 文件 | 说明 |
 |------|------|
-| `motor/kv_conductor/src/` | Rust 源码 |
+| `motor/kv_conductor/src/indexer/mod.rs` | 顶层索引、两阶段缓存和 maintenance |
+| `motor/kv_conductor/src/concurrent_tree.rs` | HBM 并发 Radix Tree |
+| `motor/kv_conductor/src/lower_tier.rs` | CPU/Disk continuation-edge 索引 |
+| `motor/kv_conductor/src/registry.rs` | Worker 注册生命周期与 subscriber 管理 |
+| `motor/kv_conductor/src/main.rs` | CLI、后台 maintenance 和 HTTP 服务启动 |
 | `motor/kv_conductor/__init__.py` | Python 包入口，`is_available()`, `start()` |
 | `motor/kv_conductor/__main__.py` | `python -m motor.kv_conductor` 入口 |
 | `build.sh` | 条件编译，`KV_CONDUCTOR_PREBUILT` 支持预构建二进制 |

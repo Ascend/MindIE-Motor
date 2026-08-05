@@ -67,6 +67,20 @@ python -m motor.kv_conductor --port 13333
 ./motor/kv_conductor/target/release/kv-conductor --port 13333
 ```
 
+缓存维护参数（均有默认值）：
+
+```bash
+kv-conductor \
+  --maintenance-interval-secs 30 \
+  --pending-ttl-secs 60 \
+  --content-ttl-secs 300 \
+  --offload-ttl-secs 600
+```
+
+后台维护会定期清理过期的 offload/pending/content 匹配缓存、HBM 空节点和无注册引用的空索引。
+TTL 清理由后台周期任务完成，ingest 路径不再执行惰性全量扫描；因此即使事件流量停止，
+过期数据也会被回收。实际最长驻留时间约为对应 TTL 加一个 maintenance 周期。
+
 > **注意**：容器部署时，镜像内二进制路径为 `/usr/local/bin/kv-conductor`，
 > 启动脚本 `kv_conductor.sh` 通过 `exec python -m motor.kv_conductor` 启动。
 

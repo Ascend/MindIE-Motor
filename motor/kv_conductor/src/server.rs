@@ -91,15 +91,6 @@ async fn register_handler(
             StatusCode::CREATED,
             Json(serde_json::json!({"status": "ok"})),
         ),
-        Err(KvConductorError::DuplicateRegistration {
-            instance_id,
-            dp_rank,
-        }) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": format!("instance {} dp_rank {} already registered", instance_id, dp_rank)
-            })),
-        ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

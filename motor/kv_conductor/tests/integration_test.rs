@@ -251,7 +251,7 @@ async fn test_unregister() {
 }
 
 #[tokio::test]
-async fn test_duplicate_registration() {
+async fn test_same_backend_reregistration_is_accepted() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
 

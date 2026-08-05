@@ -21,6 +21,7 @@ use clap::Parser;
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::EnvFilter;
 
+use kv_conductor::indexer::CacheMaintenanceConfig;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
 
@@ -36,6 +37,22 @@ struct Cli {
     /// Port to listen on
     #[arg(long, short, default_value = "13333")]
     port: u16,
+
+    /// Maintenance sweep interval in seconds.
+    #[arg(long, default_value = "30")]
+    maintenance_interval_secs: u64,
+
+    /// Maximum age of a pending pool entry in seconds.
+    #[arg(long, default_value = "60")]
+    pending_ttl_secs: u64,
+
+    /// Maximum age of a retained content entry in seconds.
+    #[arg(long, default_value = "300")]
+    content_ttl_secs: u64,
+
+    /// Maximum age of an unmatched offload entry in seconds.
+    #[arg(long, default_value = "600")]
+    offload_ttl_secs: u64,
 }
 
 #[tokio::main]
@@ -57,7 +74,27 @@ async fn main() {
     let host: IpAddr = cli.host.parse().expect("invalid host address");
     let addr = SocketAddr::new(host, cli.port);
 
-    let registry = Arc::new(WorkerRegistry::new());
+    let registry = Arc::new(WorkerRegistry::with_cache_config(CacheMaintenanceConfig {
+        pending_ttl: std::time::Duration::from_secs(cli.pending_ttl_secs),
+        content_ttl: std::time::Duration::from_secs(cli.content_ttl_secs),
+        offload_ttl: std::time::Duration::from_secs(cli.offload_ttl_secs),
+    }));
+    let maintenance_registry = Arc::downgrade(&registry);
+    let maintenance_interval = std::time::Duration::from_secs(cli.maintenance_interval_secs.max(1));
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(maintenance_interval);
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let Some(registry) = maintenance_registry.upgrade() else {
+                break;
+            };
+            let pruned = registry.maintenance().await;
+            if pruned > 0 {
+                tracing::debug!(pruned, "cache maintenance completed");
+            }
+        }
+    });
     let state = AppState { registry };
     let router = create_router(state);
 

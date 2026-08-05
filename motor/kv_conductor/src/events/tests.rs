@@ -1471,7 +1471,7 @@ fn test_cleared_cleans_pending() {
 
 /// TTL sweep removes stale pending pool entries.
 #[test]
-fn test_sweep_stale_pending() {
+fn test_sweep_stale_caches() {
     use crate::indexer::Indexer;
 
     let indexer = Indexer::new();
@@ -1507,7 +1507,11 @@ fn test_sweep_stale_pending() {
     assert_eq!(entry.pending_count(), 1);
 
     // Sweep with zero TTL → removes everything.
-    let pruned = entry.sweep_stale_pending(std::time::Duration::ZERO, std::time::Duration::ZERO);
+    let pruned = entry.sweep_stale_caches(
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+    );
     assert!(pruned > 0, "zero-TTL sweep should remove pending entries");
     assert_eq!(entry.pending_count(), 0);
 }

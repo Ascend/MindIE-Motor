@@ -11,9 +11,6 @@
 /// Errors returned by the KV conductor service.
 #[derive(Debug, thiserror::Error)]
 pub enum KvConductorError {
-    #[error("instance {instance_id} dp_rank {dp_rank} already registered")]
-    DuplicateRegistration { instance_id: String, dp_rank: u32 },
-
     #[error("instance {instance_id} not found")]
     InstanceNotFound { instance_id: String },
 
@@ -37,9 +34,6 @@ pub enum KvConductorError {
 
     #[error("parent block not found")]
     ParentBlockNotFound,
-
-    #[error("block not found")]
-    BlockNotFound,
 
     #[error("internal error: {0}")]
     Internal(String),

@@ -20,7 +20,7 @@ use parking_lot::RwLock as ParkingRwLock;
 
 use crate::backend::{MatchMode, StoreBackend};
 use crate::error::KvConductorError;
-use crate::indexer::Indexer;
+use crate::indexer::{CacheMaintenanceConfig, Indexer, IndexerKey};
 use crate::protocols::*;
 
 /// Extract the IP/host portion from a ZMQ endpoint URL.
@@ -119,10 +119,6 @@ pub struct WorkerRegistry {
     instances: tokio::sync::RwLock<HashMap<InstanceId, WorkerEntry>>,
     /// The shared indexer for all models/tenants
     indexer: Arc<Indexer>,
-    /// Count of active replay sessions. Tracks how many replays are running
-    /// (for diagnostics); replay itself is offloaded to `spawn_blocking`.
-    /// Wrapped in Arc so it can be shared with spawn_blocking tasks.
-    replay_in_progress: Arc<std::sync::atomic::AtomicU64>,
     /// Active ZMQ subscribers, keyed by (instance_id, dp_rank, endpoint_url).
     /// Multiple subscribers may exist per dp_rank when a backend uses separate
     /// ports for different storage media (e.g. YuanRong: HBM port vs DDR/SSD port).
@@ -180,10 +176,13 @@ impl WorkerRegistry {
     }
 
     pub fn new() -> Self {
+        Self::with_cache_config(CacheMaintenanceConfig::default())
+    }
+
+    pub fn with_cache_config(config: CacheMaintenanceConfig) -> Self {
         Self {
             instances: tokio::sync::RwLock::new(HashMap::new()),
-            indexer: Arc::new(Indexer::new()),
-            replay_in_progress: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            indexer: Arc::new(Indexer::with_config(config)),
             zmq_subscribers: tokio::sync::RwLock::new(HashMap::new()),
             hbm_ip_index: Arc::new(ParkingRwLock::new(HashMap::new())),
         }
@@ -359,17 +358,12 @@ impl WorkerRegistry {
 
         if let Some(ref replay_ep) = req.replay_endpoint {
             if !replay_ep.is_empty() && !instance_exists {
-                self.replay_in_progress
-                    .fetch_add(1, std::sync::atomic::Ordering::Release);
-
                 let replay_ep = replay_ep.clone();
                 let modelname = req.modelname.clone();
                 let tenant_id = req.tenant_id.clone();
                 let block_size = req.block_size;
                 let indexer = Arc::clone(&self.indexer);
                 let instance_id = req.instance_id.clone();
-                let replay_counter = Arc::clone(&self.replay_in_progress);
-
                 let match_mode = sb.match_mode();
                 let ip_index = if sb.index_hbm_ip() {
                     Some(Arc::clone(&self.hbm_ip_index))
@@ -390,7 +384,6 @@ impl WorkerRegistry {
                         match_mode,
                         &ip_index,
                     );
-                    replay_counter.fetch_sub(1, std::sync::atomic::Ordering::Release);
                 });
             }
         }
@@ -447,6 +440,9 @@ impl WorkerRegistry {
             }
         })?;
 
+        let registered_model = entry.model_name.clone();
+        let registered_tenant = entry.tenant_id.clone();
+
         entry.endpoints.remove(&req.dp_rank);
 
         // Remove from indexer tree across all storage media (NPU/CPU/DISK)
@@ -465,7 +461,8 @@ impl WorkerRegistry {
 
         if entry.endpoints.is_empty() {
             instances.remove(&req.instance_id);
-            self.indexer.remove_if_empty(&req.modelname, &req.tenant_id);
+            self.indexer
+                .remove_if_empty(&registered_model, &registered_tenant);
         }
 
         Ok(())
@@ -589,6 +586,21 @@ impl WorkerRegistry {
     /// Access the underlying indexer (for advanced use).
     pub fn indexer(&self) -> &Arc<Indexer> {
         &self.indexer
+    }
+
+    /// Sweep stale caches and reclaim indexers which have no active registration.
+    pub async fn maintenance(&self) -> usize {
+        // Keep the read guard through the pass so registration cannot race
+        // between the protected-key snapshot and empty-entry reclamation.
+        let instances = self.instances.read().await;
+        let protected = instances
+            .values()
+            .map(|entry| IndexerKey {
+                model_name: entry.model_name.clone(),
+                tenant_id: entry.tenant_id.clone(),
+            })
+            .collect();
+        self.indexer.maintenance(&protected)
     }
 }
 

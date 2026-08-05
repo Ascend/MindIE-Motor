@@ -850,3 +850,65 @@ fn test_no_indexer_error() {
         KvConductorError::NoIndexer { .. }
     ));
 }
+
+#[test]
+fn test_hbm_cleared_removes_empty_worker_lookup() {
+    let entry = IndexerEntry::new();
+    let worker = WorkerKey {
+        instance_id: "cleared-worker".into(),
+        backend_id: "cleared-worker".into(),
+        dp_rank: 0,
+        medium: StorageMedium::Npu,
+    };
+    entry
+        .apply_event(
+            &worker,
+            &KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: None,
+                start_position: None,
+                blocks: vec![KvCacheStoredBlockData {
+                    block_hash: 1,
+                    tokens_hash: 11,
+                }],
+            }),
+        )
+        .unwrap();
+    assert!(entry.lookups.read().contains_key(&worker));
+
+    entry
+        .apply_event(&worker, &KvCacheEventData::Cleared)
+        .unwrap();
+
+    assert!(!entry.lookups.read().contains_key(&worker));
+}
+
+#[test]
+fn test_maintenance_expires_offload_and_removes_empty_entry() {
+    let indexer = Indexer::with_config(CacheMaintenanceConfig {
+        offload_ttl: std::time::Duration::ZERO,
+        ..CacheMaintenanceConfig::default()
+    });
+    let entry = indexer.get_or_create("stale-model", "stale-tenant");
+    entry.ingest_offload_blocks(&[(1, 11, None)]);
+    assert_eq!(entry.pending_count(), 1);
+
+    let protected = FxHashSet::default();
+    indexer.maintenance(&protected);
+
+    assert!(indexer.get("stale-model", "stale-tenant").is_none());
+}
+
+#[test]
+fn test_maintenance_keeps_registered_empty_entry() {
+    let indexer = Indexer::new();
+    indexer.get_or_create("active-model", "active-tenant");
+    let mut protected = FxHashSet::default();
+    protected.insert(IndexerKey {
+        model_name: "active-model".into(),
+        tenant_id: "active-tenant".into(),
+    });
+
+    indexer.maintenance(&protected);
+
+    assert!(indexer.get("active-model", "active-tenant").is_some());
+}

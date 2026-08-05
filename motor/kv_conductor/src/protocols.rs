@@ -557,15 +557,6 @@ impl OverlapBlocks {
             .and_modify(|s| *s = (*s).max(depth))
             .or_insert(depth);
     }
-
-    /// Merge matched blocks from another `OverlapBlocks` into this one,
-    /// keeping the maximum per worker.
-    #[inline]
-    pub fn merge(&mut self, other: OverlapBlocks) {
-        for (worker, n) in other.blocks {
-            self.add_blocks(worker, n);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
