@@ -19,7 +19,7 @@ MemCache 为默认池化后端，基于 [memcache_hybrid](https://gitcode.com/As
 }
 ```
 
-- `local_service_mode`（可选）：LocalService 部署模式，见下方说明。默认值：A2/A5 硬件默认 `inprocess`，A3 硬件默认 `standalone`。
+- `local_service_mode`（可选）：LocalService 部署模式，见下方说明。默认值：Atlas 800I A2 推理服务器/Atlas 850 超节点服务器 硬件默认 `inprocess`，Atlas 800I A3 超节点服务器 硬件默认 `standalone`。
 
 > **所有 memcache 内部配置项**（DRAM 池大小、通信协议、SSD 缓存、UBSIO 参数等）均由用户直接在 `mmc-local-inprocess.conf` 中管理。模板文件位于 `examples/deployer/startup/roles/kv_store_backends/memcache/`，部署时 `common.sh` 自动同步到 `$CONFIG_PATH/`。
 
@@ -32,11 +32,9 @@ MemCache 在每个 P/D 引擎节点上需要运行一个 LocalService 进程来�
 | **同进程** | `inprocess` | vLLM 进程内分配；每个进程的 `dram.size` 在 `mmc-local-inprocess.conf` 中配置 | 无独立进程，集成在 vLLM 内 | 部署简单，资源占用少 |
 | **独立进程** | `standalone` | 独立 LocalService 使用 `mmc-local-standalone.conf`；vLLM 侧 `dram.size=0GB` | NodeManager 自动拉起并监控 | 内存隔离更好，LS 崩溃不影响 vLLM |
 
-**默认值**：A2/A5 硬件默认 `inprocess`，A3 硬件默认 `standalone`。如需覆盖硬件默认值，在 `user_config.json` 中显式配置即可。
+**默认值**：Atlas 800I A2 推理服务器/Atlas 850 超节点服务器 硬件默认 `inprocess`，Atlas 800I A3 超节点服务器 硬件默认 `standalone`。如需覆盖硬件默认值，在 `user_config.json` 中显式配置即可。
 
 两种模式的差异和部署示例详见 [MemCache 分离部署方案](https://gitcode.com/Ascend/memcache/wiki/MemCache+vLLM+A3%E5%88%86%E7%A6%BB%E9%83%A8%E7%BD%B2%E6%A1%88%E4%BE%8B.md)。
-
----
 
 ## UBSIO / SSD 三级缓存（HBM → DRAM → SSD）
 

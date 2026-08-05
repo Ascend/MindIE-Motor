@@ -144,7 +144,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `local_service_mode` | string（可选） | A2/A5：`inprocess`，A3：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
+| `local_service_mode` | string（可选） | <ul><li>Atlas 800I A2 推理服务器/Atlas 850 超节点服务器：`inprocess`。</li><li>Atlas 800I A3 超节点服务器：`standalone`</li></ul> | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
 > **所有 memcache 内部配置项**（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户直接在 `mmc-local-inprocess.conf` 中管理，无需在 `user_config.json` 中配置。详见 [MemCache 后端文档](backend/memcache.md)。
 
