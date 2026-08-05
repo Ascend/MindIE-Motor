@@ -169,7 +169,6 @@ class _SchedulerInstanceCache:
         endpoint_id: int,
         role: PDRole,
         active_tokens: float,
-        active_kv_cache: float,
     ) -> None:
         """Patch single endpoint workload from shared memory. Skip if not in cache."""
         role_map = self._instance_map.get(role) or {}
@@ -182,12 +181,10 @@ class _SchedulerInstanceCache:
         old_workload = cached_endpoint.workload or Workload()
         cached_endpoint.workload = Workload(
             active_tokens=active_tokens,
-            active_kv_cache=active_kv_cache,
         )
         if cached_instance.gathered_workload is None:
             cached_instance.gathered_workload = Workload()
         cached_instance.gathered_workload.active_tokens += active_tokens - old_workload.active_tokens
-        cached_instance.gathered_workload.active_kv_cache += active_kv_cache - old_workload.active_kv_cache
 
     def _apply_role_under_lock(self, role: PDRole, instances: list[Instance]) -> None:
         """Update cache and maps for one role. Must be called with _lock held."""
@@ -901,18 +898,33 @@ class AsyncSchedulerClient:
                     {
                         "instance_id": ins_id,
                         "endpoint_id": ep_id,
+                        "matched_tokens": rec[0],
                         "prefill_cost": rec[2],
                     }
                     for (ins_id, ep_id), rec in affinity_debug.items()
                     if rec[2] is not None
                 ]
+            elif candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY and isinstance(affinity_debug, dict):
+                # load_gated (and other affinity modes without prefill_cost): still forward
+                # matched_tokens so the scheduler can commit ISL-matched for the final endpoint.
+                candidate_endpoints = []
+                for cand_instance, cand_endpoint, _score in candidates:
+                    item = {
+                        "instance_id": cand_instance.id,
+                        "endpoint_id": cand_endpoint.id,
+                    }
+                    rec = affinity_debug.get((cand_instance.id, cand_endpoint.id))
+                    if rec is not None:
+                        item["matched_tokens"] = rec[0]
+                    candidate_endpoints.append(item)
             else:
                 candidate_endpoints = [
                     {"instance_id": cand_instance.id, "endpoint_id": cand_endpoint.id}
                     for cand_instance, cand_endpoint, _score in candidates
                 ]
 
-        # Allocation workload: RR does not use load, so use zero; LB uses demand for accounting.
+        # Fallback demand for non-affinity policies. Affinity commit is recomputed on the scheduler
+        # from isl + selected matched_tokens; this value is only used when isl/matched are absent.
         workload = (
             Workload()
             if (self._scheduler_type or "round_robin") == "round_robin"
@@ -924,6 +936,8 @@ class AsyncSchedulerClient:
         role_workload_sequence = (
             self._workload_reader.last_sequence_for_role(role) if self._workload_reader is not None else None
         )
+        token_ids = getattr(req_info, "token_ids", None)
+        isl = float(len(token_ids)) if isinstance(token_ids, list) and token_ids else 0.0
         req_data = {
             "instance_id": instance.id,
             "endpoint_id": endpoint.id,
@@ -933,12 +947,12 @@ class AsyncSchedulerClient:
             "workload_sequence": workload_sequence,
             "role_workload_sequence": role_workload_sequence,
             "instance_version": self._last_instance_version,
-            # Workload demand as two raw floats: avoids a pydantic dump here and a model_validate on
-            # the scheduler. RR sends 0.0/0.0 (Workload() has no demand) rather than a dumped model.
+            # Non-affinity demand as a raw float (RR sends 0.0). Affinity overrides via isl/matched.
             "workload_active_tokens": workload.active_tokens,
-            "workload_active_kv_cache": workload.active_kv_cache,
             "candidate_policy": candidate_policy,
         }
+        if isl > 0:
+            req_data["isl"] = isl
         if global_affinity:
             # Scalars the scheduler needs to recompute the unified score against its fresh load:
             # combined = prefill_load_scale * prefill_cost + load_weight * fresh_load.
@@ -990,9 +1004,17 @@ class AsyncSchedulerClient:
                     instance.id,
                     endpoint.id,
                 )
+                committed_data = data.get("committed_workload")
+                if isinstance(committed_data, dict):
+                    try:
+                        committed_workload = Workload.model_validate(committed_data)
+                    except Exception:
+                        committed_workload = workload
+                else:
+                    committed_workload = workload
                 logger.info(
                     "scheduled role=%s req_id=%s instance=%s endpoint=%s policy=%s matched=%s "
-                    "load=%s score=%s fast_path=%s repicked=%s proposed=%s-%s",
+                    "load=%s committed=%s score=%s fast_path=%s repicked=%s proposed=%s-%s",
                     role_str,
                     req_info.req_id,
                     out_instance.id,
@@ -1000,13 +1022,14 @@ class AsyncSchedulerClient:
                     candidate_policy,
                     matched,
                     sel_load,
+                    committed_workload.active_tokens,
                     data.get("selected_score"),
                     data.get("fast_path"),
                     repicked,
                     instance.id,
                     endpoint.id,
                 )
-                return (out_instance, out_endpoint, workload)
+                return (out_instance, out_endpoint, committed_workload)
         return None
 
     async def confirm_sample(

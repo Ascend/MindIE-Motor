@@ -44,9 +44,7 @@ class AttemptState(str, Enum):
 @dataclass
 class AttemptReleaseFlags:
     prefill_tokens: bool = False
-    prefill_kv: bool = False
     decode_tokens: bool = False
-    decode_kv: bool = False
 
 
 @dataclass

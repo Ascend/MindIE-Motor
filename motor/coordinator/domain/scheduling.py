@@ -137,7 +137,7 @@ class SchedulingFacade(Protocol):
         ...
 
     async def update_workload(self, params: UpdateWorkloadParams) -> bool:
-        """Update workload (ALLOCATION / RELEASE_KV / RELEASE_TOKENS)."""
+        """Update workload (ALLOCATION / RELEASE_TOKENS)."""
         ...
 
     async def has_required_instances(self) -> InstanceReadiness:

@@ -40,14 +40,14 @@ def _reset_tokenizer_manager_singleton() -> None:
     ThreadSafeSingleton._instances.pop(TokenizerManager, None)
 
 
-def _make_endpoint(ep_id: int, active_tokens: float = 0.0, active_kv_cache: float = 0.0) -> Endpoint:
+def _make_endpoint(ep_id: int, active_tokens: float = 0.0) -> Endpoint:
     """Build a real Endpoint carrying a known workload for load-aware scoring tests."""
     return Endpoint(
         id=ep_id,
         ip="127.0.0.1",
         business_port="8000",
         mgmt_port="8001",
-        workload=Workload(active_tokens=active_tokens, active_kv_cache=active_kv_cache),
+        workload=Workload(active_tokens=active_tokens),
     )
 
 

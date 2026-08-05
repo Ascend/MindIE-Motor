@@ -30,6 +30,7 @@ from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import (
     UpdateWorkloadParams,
 )
+from motor.coordinator.domain.workload_calculator import calculate_committed_workload
 from motor.coordinator.domain.circuit_breaker import (
     CircuitBreakerManager,
 )
@@ -107,13 +108,15 @@ _KEY_ENDPOINT = "endpoint"
 _KEY_SELECTED_SCORE = "selected_score"
 _KEY_WORKLOAD_SEQUENCE = "workload_sequence"
 _KEY_ROLE_WORKLOAD_SEQUENCE = "role_workload_sequence"
-# Allocation demand sent as two raw floats (keys must match the client literals in scheduler_client).
+# Allocation demand as a raw float (non-affinity fallback). Affinity recomputes from isl/matched.
 _KEY_WORKLOAD_ACTIVE_TOKENS = "workload_active_tokens"
-_KEY_WORKLOAD_ACTIVE_KV_CACHE = "workload_active_kv_cache"
 _KEY_INSTANCE_VERSION = "instance_version"
 _KEY_FAST_PATH = "fast_path"
 _KEY_CANDIDATE_POLICY = "candidate_policy"
 _KEY_CANDIDATES = "candidates"
+_KEY_COMMITTED_WORKLOAD = "committed_workload"
+_KEY_ISL = "isl"
+_KEY_MATCHED_TOKENS = "matched_tokens"
 # kv_cache_affinity unified global selection: worker sends per-candidate affinity prefill cost
 # plus the two scalars so the scheduler recomputes prefill_load_scale*prefill_cost + load_weight*load.
 _KEY_PREFILL_COST = "prefill_cost"
@@ -638,7 +641,6 @@ class _SchedulerRequestDispatcher:
         req_id = request.data.get("req_id", "")
         workload_data = request.data.get("workload")
         workload_active_tokens = request.data.get(_KEY_WORKLOAD_ACTIVE_TOKENS)
-        workload_active_kv_cache = request.data.get(_KEY_WORKLOAD_ACTIVE_KV_CACHE)
         role_str = request.data.get("role")
         worker_workload_sequence = self._parse_optional_int(request.data.get(_KEY_WORKLOAD_SEQUENCE))
         worker_role_workload_sequence = self._parse_optional_int(request.data.get(_KEY_ROLE_WORKLOAD_SEQUENCE))
@@ -646,6 +648,7 @@ class _SchedulerRequestDispatcher:
         candidate_policy = request.data.get(_KEY_CANDIDATE_POLICY)
         worker_load_weight = self._parse_optional_float(request.data.get(_KEY_LOAD_WEIGHT))
         worker_prefill_load_scale = self._parse_optional_float(request.data.get(_KEY_PREFILL_LOAD_SCALE))
+        isl = self._parse_optional_float(request.data.get(_KEY_ISL))
 
         if instance_id is None or endpoint_id is None:
             return SchedulerResponse(
@@ -653,21 +656,19 @@ class _SchedulerRequestDispatcher:
                 request_id=request.request_id,
                 error="Missing instance_id or endpoint_id in request data",
             )
-        if workload_active_tokens is None and workload_active_kv_cache is None and not workload_data:
+        if workload_active_tokens is None and not workload_data and isl is None:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
                 request_id=request.request_id,
                 error="Missing workload in request data",
             )
         try:
-            if workload_active_tokens is not None or workload_active_kv_cache is not None:
-                workload = Workload(
-                    active_tokens=float(workload_active_tokens or 0.0),
-                    active_kv_cache=float(workload_active_kv_cache or 0.0),
-                )
+            if workload_active_tokens is not None:
+                worker_demand = Workload(active_tokens=float(workload_active_tokens))
+            elif workload_data:
+                worker_demand = Workload.model_validate(workload_data)
             else:
-                # Legacy wire format: full Workload dict from an older client.
-                workload = Workload.model_validate(workload_data)
+                worker_demand = Workload()
         except Exception as e:
             return SchedulerResponse(
                 response_type=SchedulerResponseType.ERROR,
@@ -694,6 +695,7 @@ class _SchedulerRequestDispatcher:
         # kv_cache_affinity unified mode: every endpoint with its affinity-discounted prefill cost,
         # for a global re-rank by the scheduler's fresh load. Empty for other policies/modes.
         affinity_candidates = self._extract_affinity_candidates(request.data)
+        matched_tokens_map = self._extract_candidate_matched_tokens(request.data)
         fast_path = self._can_use_worker_top1_fast_path(
             worker_workload_sequence,
             worker_role_workload_sequence,
@@ -736,6 +738,32 @@ class _SchedulerRequestDispatcher:
                 data={_KEY_INSTANCE: None, _KEY_ENDPOINT: None},
             )
         instance, endpoint, selected_score = selected
+        selected_matched = matched_tokens_map.get((instance.id, endpoint.id), 0.0)
+        if (instance.id, endpoint.id) not in matched_tokens_map:
+            # Selected endpoint missed the affinity scoring pass (e.g. candidate re-selection):
+            # 0.0 commits the full ISL, which is the conservative direction (never under-counts),
+            # but log it so a silently lost KV-reuse discount is diagnosable.
+            logger.warning(
+                "matched_tokens missing for selected endpoint req_id=%s instance_id=%s "
+                "endpoint_id=%s, committing full ISL",
+                req_id,
+                instance.id,
+                endpoint.id,
+            )
+        if (
+            candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY
+            and isl is not None
+            and role in (PDRole.ROLE_P, PDRole.ROLE_U)
+        ):
+            workload = calculate_committed_workload(
+                role,
+                isl,
+                matched_tokens=selected_matched,
+            )
+        else:
+            # Non-affinity path (and non-P/U roles, e.g. pinned decode allocation arriving with
+            # the affinity policy attached): commit the worker-computed demand as-is.
+            workload = worker_demand
         params = UpdateWorkloadParams(
             instance_id=instance.id,
             endpoint_id=endpoint.id,
@@ -758,11 +786,13 @@ class _SchedulerRequestDispatcher:
         endpoint_data = _serialize_endpoint_minimal(endpoint) if endpoint else None
         if _should_log_scheduling_sample(req_id or request.request_id):
             logger.info(
-                "ALLOCATE_ONLY req_id=%s ins=%s ep=%s score=%.4f fast_path=%s",
+                "ALLOCATE_ONLY req_id=%s ins=%s ep=%s score=%.4f committed=%.2f matched=%.2f fast_path=%s",
                 req_id,
                 instance.id,
                 endpoint.id,
                 selected_score,
+                workload.active_tokens,
+                selected_matched,
                 fast_path,
             )
         return SchedulerResponse(
@@ -773,6 +803,7 @@ class _SchedulerRequestDispatcher:
                 _KEY_ENDPOINT: endpoint_data,
                 _KEY_SELECTED_SCORE: selected_score,
                 _KEY_FAST_PATH: fast_path,
+                _KEY_COMMITTED_WORKLOAD: workload.model_dump(mode="json"),
             },
         )
 
@@ -817,6 +848,27 @@ class _SchedulerRequestDispatcher:
                 continue
             try:
                 result.append((int(instance_id), int(endpoint_id), float(prefill_cost)))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    @staticmethod
+    def _extract_candidate_matched_tokens(data: dict) -> dict[tuple[int, int], float]:
+        """Parse per-candidate matched_tokens for authoritative ISL-matched commit."""
+        raw = data.get(_KEY_CANDIDATES)
+        result: dict[tuple[int, int], float] = {}
+        if not isinstance(raw, list):
+            return result
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            instance_id = item.get("instance_id")
+            endpoint_id = item.get("endpoint_id")
+            matched = item.get(_KEY_MATCHED_TOKENS)
+            if instance_id is None or endpoint_id is None or matched is None:
+                continue
+            try:
+                result[(int(instance_id), int(endpoint_id))] = float(matched)
             except (TypeError, ValueError):
                 continue
         return result

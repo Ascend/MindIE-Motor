@@ -79,12 +79,11 @@ class TestPdRoleToShmRole(unittest.TestCase):
 class TestCollectEntriesAndSlotMap(unittest.TestCase):
     """Test _collect_entries_and_slot_map helper."""
 
-    def _make_endpoint(self, eid, tokens, kv):
+    def _make_endpoint(self, eid, tokens):
         ep = MagicMock()
         ep.id = eid
         ep.workload = MagicMock()
         ep.workload.active_tokens = tokens
-        ep.workload.active_kv_cache = kv
         return ep
 
     def _make_instance(self, iid, endpoints_dict):
@@ -99,15 +98,15 @@ class TestCollectEntriesAndSlotMap(unittest.TestCase):
         im = MagicMock()
 
         # ROLE_P instance with one endpoint
-        ep_p = self._make_endpoint(10, 100.0, 200.0)
+        ep_p = self._make_endpoint(10, 100.0)
         inst_p = self._make_instance(1, {"g1": {10: ep_p}})
 
         # ROLE_D instance with one endpoint
-        ep_d = self._make_endpoint(20, 300.0, 400.0)
+        ep_d = self._make_endpoint(20, 300.0)
         inst_d = self._make_instance(2, {"g1": {20: ep_d}})
 
         # ROLE_U instance with one endpoint
-        ep_u = self._make_endpoint(30, 500.0, 600.0)
+        ep_u = self._make_endpoint(30, 500.0)
         inst_u = self._make_instance(3, {"g1": {30: ep_u}})
 
         def get_available_instances_side_effect(role):
@@ -133,15 +132,15 @@ class TestCollectEntriesAndSlotMap(unittest.TestCase):
 
         self.assertEqual(
             entries[0],
-            (1, 10, ROLE_PREFILL, 100.0, 200.0),
+            (1, 10, ROLE_PREFILL, 100.0),
         )
         self.assertEqual(
             entries[1],
-            (2, 20, ROLE_DECODE, 300.0, 400.0),
+            (2, 20, ROLE_DECODE, 300.0),
         )
         self.assertEqual(
             entries[2],
-            (3, 30, ROLE_HYBRID, 500.0, 600.0),
+            (3, 30, ROLE_HYBRID, 500.0),
         )
 
     # ---------------------------------------------------------------
@@ -149,7 +148,7 @@ class TestCollectEntriesAndSlotMap(unittest.TestCase):
         """When entries exceed max_entries, only max_entries are returned."""
         im = MagicMock()
 
-        eps = {i: self._make_endpoint(i, float(i), float(i * 2)) for i in range(5)}
+        eps = {i: self._make_endpoint(i, float(i)) for i in range(5)}
         inst = self._make_instance(1, {"g1": eps})
 
         im.get_available_instances = MagicMock(
@@ -210,7 +209,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
 
         # First snapshot: a single prefill endpoint appears.
-        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0, 3.0)], {(1, 10): 0})):
+        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0)], {(1, 10): 0})):
             writer.write_snapshot()
         self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
         self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
@@ -221,7 +220,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         with patch(
             collect,
             return_value=(
-                [(1, 10, ROLE_PREFILL, 5.0, 3.0), (2, 20, ROLE_DECODE, 7.0, 0.0)],
+                [(1, 10, ROLE_PREFILL, 5.0), (2, 20, ROLE_DECODE, 7.0)],
                 {(1, 10): 0, (2, 20): 1},
             ),
         ):
@@ -237,7 +236,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         shm = _make_mock_shm()
         writer = WorkloadSharedMemoryWriter(shm, MagicMock())
         collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
-        entries = ([(1, 10, ROLE_PREFILL, 5.0, 3.0)], {(1, 10): 0})
+        entries = ([(1, 10, ROLE_PREFILL, 5.0)], {(1, 10): 0})
         with patch(collect, return_value=entries):
             writer.write_snapshot()
             self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
@@ -250,7 +249,7 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         shm = _make_mock_shm()
         writer = WorkloadSharedMemoryWriter(shm, MagicMock())
         collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
-        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0, 3.0)], {(1, 10): 0})):
+        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0)], {(1, 10): 0})):
             writer.write_snapshot()
         self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
         with patch(collect, return_value=([], {})):
@@ -304,7 +303,6 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         # Mock get_endpoint_workload
         mock_workload = MagicMock()
         mock_workload.active_tokens = 999.0
-        mock_workload.active_kv_cache = 888.0
         im.get_endpoint_workload = AsyncMock(
             return_value=(PDRole.ROLE_P, mock_workload),
         )
@@ -325,7 +323,6 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         self.assertEqual(entry_arg.endpoint_id, 1)
         self.assertEqual(entry_arg.role, ROLE_PREFILL)
         self.assertEqual(entry_arg.active_tokens, 999.0)
-        self.assertEqual(entry_arg.active_kv_cache, 888.0)
 
         # Header should be rewritten
         mock_wh.assert_called()
@@ -343,7 +340,6 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
         writer._entry_count = 1
         mock_workload = MagicMock()
         mock_workload.active_tokens = 10.0
-        mock_workload.active_kv_cache = 20.0
         im.get_endpoint_workload = AsyncMock(return_value=(PDRole.ROLE_D, mock_workload))
 
         asyncio.run(writer.write_single_entry(2, 2))
@@ -408,7 +404,6 @@ class TestWorkloadSharedMemoryWriter(unittest.TestCase):
             endpoint_id=200,
             role=ROLE_PREFILL,
             active_tokens=12.5,
-            active_kv_cache=34.5,
         )
         expected_data = pack_entry(entry)
 

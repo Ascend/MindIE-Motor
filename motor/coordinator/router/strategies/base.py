@@ -370,7 +370,6 @@ class BaseRouter(ABC):
     ) -> bool:
         """Undo a scheduler allocation if local request workload bookkeeping fails."""
         rollback_workload = Workload(
-            active_kv_cache=-allocate_workload.active_kv_cache,
             active_tokens=-allocate_workload.active_tokens,
         )
         params = UpdateWorkloadParams(
@@ -598,16 +597,11 @@ class BaseRouter(ABC):
         return f"{scheme}://{format_address(ep.ip, ep.business_port)}"
 
     async def release_all(self, resource: ScheduledResource):
-        """Release tokens and KV cache; returns True only if both succeed."""
-        tokens_result = await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)
-        kv_result = await self._update_workload(resource, WorkloadAction.RELEASE_KV)
-        return tokens_result and kv_result
+        """Release compute ledger (active_tokens)."""
+        return await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)
 
     async def release_tokens(self, resource: ScheduledResource):
         return await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)
-
-    async def release_kv(self, resource: ScheduledResource):
-        return await self._update_workload(resource, WorkloadAction.RELEASE_KV)
 
     async def do_encode(self):
         if not await self._check_can_encode():
@@ -717,10 +711,30 @@ class BaseRouter(ABC):
             req_id=self.req_info.req_id,
             workload_action=action,
             workload_change=workload_change,
+            # Deterministic id keyed on (request, endpoint, action): stable across retries, so a
+            # release whose ACK was lost is de-duplicated by the scheduler instead of applied twice
+            # (same contract as UnifiedPDRouter._build_release_work_item; no attempt dimension here).
+            operation_id=(f"{self.req_info.req_id}:{resource.instance.id}:{resource.endpoint.id}:{action.value}"),
         )
         # Release RPC must finish even if the request/stream task is cancelled (e.g. client disconnect).
         with CancelScope(shield=True):
-            return await self._scheduler.update_workload(params)
+            ok = await self._scheduler.update_workload(params)
+        if ok and action == WorkloadAction.RELEASE_TOKENS:
+            # Scheduler ACKed the release: drop the worker-side ledger record retained for
+            # failure recomputation (see WorkloadActionHandler.compute_and_update).
+            try:
+                await self._workload_action_handler.finalize_release(self.req_info.req_id, role)
+            except Exception as exc:
+                # The scheduler already applied the release; a finalize failure only leaves a
+                # stale local record (a later re-release is deduped by operation_id). Log it
+                # but do not turn the ACKed release into a failure.
+                self.logger.warning(
+                    "finalize_release failed after scheduler ACK req_id=%s action=%s: %s",
+                    self.req_info.req_id,
+                    action.value,
+                    exc,
+                )
+        return ok
 
     async def _submit_token_sample(
         self,

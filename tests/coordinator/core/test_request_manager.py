@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -13,17 +11,18 @@
 import asyncio
 import pytest
 import time
-import threading
 from unittest.mock import patch
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock
+from motor.common.resources.endpoint import Workload
+from motor.common.resources.instance import PDRole
 from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.models.request import RequestInfo
 from motor.config.coordinator import CoordinatorConfig
 
 
 class TestRequestManager:
     """Test cases for RequestManager class"""
-    
+
     @pytest.mark.asyncio
     async def test_generate_request_id_format(self):
         """Test that generated ID has correct format"""
@@ -79,27 +78,27 @@ class TestRequestManager:
         config = CoordinatorConfig()
         manager = RequestManager(config)
         request_id = await manager.generate_request_id()
-        
+
         # Extract components
         timestamp_part = request_id[:16]  # First 16 chars: timestamp
         counter_part = request_id[16:20]  # Next 4 chars: counter
-        random_part = request_id[20:]     # Last 8 chars: random
-        
+        random_part = request_id[20:]  # Last 8 chars: random
+
         # Timestamp should be a valid microsecond timestamp
         assert timestamp_part.isdigit()
         timestamp_val = int(timestamp_part)
         current_micros = int(time.time() * 1000000)
         # Should be within a reasonable range (last 10 seconds)
         assert current_micros - timestamp_val <= 10000000
-        
+
         # Counter should be 4-digit number
         assert counter_part.isdigit()
         assert len(counter_part) == 4
-        
+
         # Random part should be 8 hex characters
         assert len(random_part) == 8
         assert all(c in '0123456789abcdef' for c in random_part)
-    
+
     @pytest.mark.asyncio
     async def test_consecutive_ids_increment_counter(self):
         """Test that counter increments for same timestamp"""
@@ -136,12 +135,7 @@ class TestRequestManager:
         config = CoordinatorConfig()
         manager = RequestManager(config)
         req_id = await manager.generate_request_id()
-        req_info = RequestInfo(
-            req_id=req_id,
-            req_data={"test": "data"},
-            req_len=100,
-            api="/test/api"
-        )
+        req_info = RequestInfo(req_id=req_id, req_data={"test": "data"}, req_len=100, api="/test/api")
         result = await manager.add_req_info(req_info)
         assert result is True
         async with manager._lock:
@@ -159,7 +153,6 @@ class TestRequestManager:
         """Test concurrent async access to add_req_info and del_req_info"""
         config = CoordinatorConfig()
         manager = RequestManager(config)
-        results = {}
 
         async def worker(worker_id: int):
             req_id = await manager.generate_request_id()
@@ -167,7 +160,7 @@ class TestRequestManager:
                 req_id=req_id,
                 req_data={"worker_id": worker_id, "test": "data"},
                 req_len=100,
-                api=f"/test/api/{worker_id}"
+                api=f"/test/api/{worker_id}",
             )
             add_result = await manager.add_req_info(req_info)
             del_result = await manager.del_req_info(req_id)
@@ -188,10 +181,7 @@ class TestRequestManager:
         for i in range(5):
             req_id = await manager.generate_request_id()
             req_info = RequestInfo(
-                req_id=req_id,
-                req_data={"index": i, "test": "data"},
-                req_len=100,
-                api=f"/test/api/{i}"
+                req_id=req_id, req_data={"index": i, "test": "data"}, req_len=100, api=f"/test/api/{i}"
             )
             await manager.add_req_info(req_info)
             req_ids.append(req_id)
@@ -225,6 +215,7 @@ async def test_with_fixture(request_manager):
     assert isinstance(id2, str)
     assert id1 != id2
 
+
 def test_update_config():
     """Test RequestManager update_config method"""
     # Create initial config
@@ -245,8 +236,6 @@ def test_update_config():
 
 
 # -------- Workload (add/get/update/del_req_workload) tests --------
-from motor.common.resources.endpoint import Workload
-from motor.common.resources.instance import PDRole
 
 
 @pytest.mark.asyncio
@@ -256,7 +245,7 @@ async def test_add_get_update_del_req_workload():
     manager = RequestManager(config)
     req_id = await manager.generate_request_id()
     role = PDRole.ROLE_P
-    workload = Workload(active_kv_cache=10.0, active_tokens=5.0)
+    workload = Workload(active_tokens=5.0)
 
     # add
     ok = await manager.add_req_workload(req_id, role, workload)
@@ -265,15 +254,13 @@ async def test_add_get_update_del_req_workload():
     # get
     got = await manager.get_req_workload(req_id, role)
     assert got is not None
-    assert got.active_kv_cache == 10.0
     assert got.active_tokens == 5.0
 
     # update (in-place style: pass updated Workload)
-    updated = Workload(active_kv_cache=0, active_tokens=3.0)
+    updated = Workload(active_tokens=3.0)
     ok = await manager.update_req_workload(req_id, role, updated)
     assert ok is True
     got2 = await manager.get_req_workload(req_id, role)
-    assert got2.active_kv_cache == 0
     assert got2.active_tokens == 3.0
 
     # del

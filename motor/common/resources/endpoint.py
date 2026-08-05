@@ -20,48 +20,27 @@ logger = get_logger(__name__)
 
 
 class Workload(BaseModel):
-    """Workload information for load balancing"""
+    """Workload information for load balancing (compute-load ledger)."""
 
-    active_kv_cache: float = Field(default=0, description="Active KV cache size")
-    active_tokens: float = Field(default=0, description="Number of active requests")
+    active_tokens: float = Field(default=0, description="Active compute load in token units")
 
     def __iadd__(self, other):
         if not isinstance(other, Workload):
-            raise TypeError("Unsupported operand type(s) for +=: 'Workload' and %s", type(other).__name__)
+            raise TypeError(f"Unsupported operand type(s) for +=: 'Workload' and {type(other).__name__}")
 
-        self.active_kv_cache += other.active_kv_cache
         self.active_tokens += other.active_tokens
 
         return self
 
     def calculate_workload_score(self, role: Enum | str | None) -> float:
-        """
-        Calculate workload score based on role.
-
-        Args:
-            role: PDRole enum or str ("prefill"/"decode"/"mix") indicating the role.
-
-        Returns:
-            float: Calculated workload score
-        """
+        """Return the compute-load score (active_tokens) for any PD role."""
         if role is None:
             raise ValueError("role is required for calculate_workload_score")
-        role_value = role.value if isinstance(role, Enum) else role
-        if role_value == "prefill":
-            return self.active_tokens + self.active_kv_cache * 0.3
-        elif role_value == "decode":
-            return self.active_tokens
-        elif role_value == "encode":
-            return self.active_tokens
-        elif role_value in ("union", "both"):
-            return self.active_tokens + self.active_kv_cache * 0.15
-        else:
-            raise ValueError(f"Invalid role value: {role_value}")
+        return self.active_tokens
 
 
 class WorkloadAction(Enum):
     ALLOCATION = 'Allocation'
-    RELEASE_KV = 'Release_KV'
     RELEASE_TOKENS = 'Release_Tokens'
 
 
@@ -94,7 +73,7 @@ class Endpoint(BaseModel):
     workload: Workload = Field(default_factory=Workload, description="Current workload of the endpoint")
     headless: bool = Field(default=False, description="Whether this endpoint runs in headless mode (PCP slave node)")
 
-    def __init__(
+    def __init__(  # pylint: disable=redefined-builtin
         self,
         id: int,
         ip: str,

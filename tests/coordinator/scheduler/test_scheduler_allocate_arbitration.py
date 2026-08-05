@@ -165,7 +165,6 @@ async def test_allocate_only_accepts_scalar_workload_fields():
             "role": PDRole.ROLE_P.value,
             "req_id": "req-scalar",
             "workload_active_tokens": 3.0,
-            "workload_active_kv_cache": 0.0,
         },
     )
 

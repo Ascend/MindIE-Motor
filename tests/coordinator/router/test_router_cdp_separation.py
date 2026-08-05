@@ -513,13 +513,13 @@ class TestRouterCDPSeparation:
                 return (
                     mock_instance_p,
                     mock_endpoint_p,
-                    Workload(active_kv_cache=1, active_tokens=1),
+                    Workload(active_tokens=1),
                 )
             if role == PDRole.ROLE_D:
                 return (
                     mock_instance_d,
                     mock_endpoint_d,
-                    Workload(active_kv_cache=0, active_tokens=1),
+                    Workload(active_tokens=1),
                 )
             return None
 
@@ -675,17 +675,14 @@ class TestRouterCDPSeparation:
         req_info = await create_mock_request_info()
 
         release_p_tokens = 0
-        release_p_kv = 0
         release_d_tokens = 0
         original_release = SeparateCDPRouter._release_attempt_resource
 
         async def mock_release_attempt_resource(self, resource, attempt_seq, action, attempt=None, **kwargs):
-            nonlocal release_p_tokens, release_p_kv, release_d_tokens
+            nonlocal release_p_tokens, release_d_tokens
             if resource.instance.role == PDRole.ROLE_P:
                 if action == WorkloadAction.RELEASE_TOKENS:
                     release_p_tokens += 1
-                elif action == WorkloadAction.RELEASE_KV:
-                    release_p_kv += 1
             elif resource.instance.role == PDRole.ROLE_D:
                 if action == WorkloadAction.RELEASE_TOKENS:
                     release_d_tokens += 1
@@ -707,7 +704,6 @@ class TestRouterCDPSeparation:
         assert d_client.stream_count == 1
         assert release_d_tokens >= 1
         assert release_p_tokens >= 1
-        assert release_p_kv >= 1
 
     @pytest.mark.asyncio
     async def test_engine_server_decode_continuous_5xx_status_code(

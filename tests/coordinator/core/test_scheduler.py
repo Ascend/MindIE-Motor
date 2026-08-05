@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -9,6 +7,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -128,7 +127,7 @@ async def scheduler_setup(prefill_instances, decode_instances, mix_instances, en
                 business_port=f"800{j}",
                 mgmt_port=f"900{j}",
                 status=EndpointStatus.NORMAL,
-                workload=Workload(active_tokens=0, active_kv_cache=0),
+                workload=Workload(active_tokens=0),
             )
             endpoints[j] = endpoint
         instance.add_endpoints(f"192.168.1.{instance.id}", endpoints)
@@ -176,7 +175,6 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     assert result
 
     assert selected_prefill_endpoint.workload.active_tokens > 0
-    assert selected_prefill_endpoint.workload.active_kv_cache > 0
 
     # 3. release active_tokens
     release_tokens = Workload(active_tokens=-selected_prefill_endpoint.workload.active_tokens)
@@ -190,7 +188,6 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
     assert result
 
     assert selected_prefill_endpoint.workload.active_tokens == 0
-    assert selected_prefill_endpoint.workload.active_kv_cache > 0
 
     # 4. select decode instance and endpoint
     res_d = await scheduler.select_instance_and_endpoint(role=PDRole.ROLE_D)
@@ -217,15 +214,6 @@ async def test_request_processing_pd_separation_scenario(scheduler_setup):
 
     assert selected_decode_endpoint.workload.active_tokens == 0
 
-    # 7. release prefill kv_cache
-    release_kv = Workload(active_kv_cache=-selected_prefill_endpoint.workload.active_kv_cache)
-    result = await load_balance_scheduler.update_workload(
-        selected_prefill_instance.id, selected_prefill_endpoint.id, req_id, WorkloadAction.RELEASE_KV, release_kv
-    )
-    assert result
-
-    assert selected_prefill_endpoint.workload.active_kv_cache == 0
-
 
 @pytest.mark.asyncio
 async def test_request_processing_e_scenario(scheduler_setup):
@@ -250,7 +238,6 @@ async def test_request_processing_e_scenario(scheduler_setup):
         selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.ALLOCATION, workload_e
     )
     assert result
-    assert selected_endpoint.workload.active_tokens > 0 or selected_endpoint.workload.active_kv_cache >= 0
 
     # release tokens if any allocated
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
@@ -287,7 +274,6 @@ async def test_request_processing_mix_scenario(scheduler_setup):
     assert result
 
     assert selected_endpoint.workload.active_tokens > 0
-    assert selected_endpoint.workload.active_kv_cache > 0
 
     # 3. release tokens
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
@@ -297,17 +283,6 @@ async def test_request_processing_mix_scenario(scheduler_setup):
     assert result
 
     assert selected_endpoint.workload.active_tokens == 0
-    assert selected_endpoint.workload.active_kv_cache > 0
-
-    # 4. release kv_cache
-    release_kv = Workload(active_kv_cache=-selected_endpoint.workload.active_kv_cache)
-    result = await load_balance_scheduler.update_workload(
-        selected_instance.id, selected_endpoint.id, req_id, WorkloadAction.RELEASE_KV, release_kv
-    )
-    assert result
-
-    assert selected_endpoint.workload.active_tokens == 0
-    assert selected_endpoint.workload.active_kv_cache == 0
 
 
 @pytest.mark.asyncio
@@ -334,7 +309,6 @@ async def test_multiple_requests_load_balancing(scheduler_setup, request_length)
     assert result
 
     assert selected_endpoint.workload.active_tokens > 0
-    assert selected_endpoint.workload.active_kv_cache > 0
 
     # release tokens
     release_tokens = Workload(active_tokens=-selected_endpoint.workload.active_tokens)
@@ -344,7 +318,6 @@ async def test_multiple_requests_load_balancing(scheduler_setup, request_length)
     assert result
 
     assert selected_endpoint.workload.active_tokens == 0
-    assert selected_endpoint.workload.active_kv_cache > 0
 
 
 @pytest.mark.asyncio
@@ -373,8 +346,8 @@ async def test_workload_calculation_accuracy(scheduler_setup):
     )
     assert result
 
-    # calculate expected workload score
-    expected_score = selected_endpoint.workload.active_tokens + selected_endpoint.workload.active_kv_cache * 0.3
+    # calculate expected workload score (single-field active_tokens ledger)
+    expected_score = selected_endpoint.workload.active_tokens
 
     # get actual computed score
     actual_score = selected_endpoint.workload.calculate_workload_score(role=selected_instance.role)
@@ -390,9 +363,7 @@ async def test_workload_calculation_accuracy(scheduler_setup):
     assert result
 
     # verify that the score after release matches the expected score
-    expected_score_after_release = (
-        selected_endpoint.workload.active_tokens + selected_endpoint.workload.active_kv_cache * 0.3
-    )
+    expected_score_after_release = selected_endpoint.workload.active_tokens
     actual_score_after_release = selected_endpoint.workload.calculate_workload_score(role=selected_instance.role)
     assert actual_score_after_release == expected_score_after_release
 

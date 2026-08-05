@@ -216,13 +216,11 @@ class TestInstanceManager:
         self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
 
-        workload_change = Workload(active_tokens=10, active_kv_cache=20)
+        workload_change = Workload(active_tokens=10)
         await self.instance_manager.update_instance_workload(1, self.endpoint.id, workload_change)
 
         assert self.prefill_instance.gathered_workload.active_tokens == 10
-        assert self.prefill_instance.gathered_workload.active_kv_cache == 20
         assert self.endpoint.workload.active_tokens == 10
-        assert self.endpoint.workload.active_kv_cache == 20
 
     @pytest.mark.asyncio
     async def test_update_instance_workload_floors_negative_and_warns(self, caplog):
@@ -233,19 +231,13 @@ class TestInstanceManager:
         """
         self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
-        await self.instance_manager.update_instance_workload(
-            1, self.endpoint.id, Workload(active_tokens=10, active_kv_cache=20)
-        )
+        await self.instance_manager.update_instance_workload(1, self.endpoint.id, Workload(active_tokens=10))
         caplog.clear()
         # Over-release: subtract more than was allocated -> would go negative without the floor.
-        await self.instance_manager.update_instance_workload(
-            1, self.endpoint.id, Workload(active_tokens=-30, active_kv_cache=-50)
-        )
+        await self.instance_manager.update_instance_workload(1, self.endpoint.id, Workload(active_tokens=-30))
 
         assert self.endpoint.workload.active_tokens == 0
-        assert self.endpoint.workload.active_kv_cache == 0
         assert self.prefill_instance.gathered_workload.active_tokens == 0
-        assert self.prefill_instance.gathered_workload.active_kv_cache == 0
         assert "floor" in caplog.text.lower()
         assert "endpoint_id=1" in caplog.text
 
@@ -254,16 +246,11 @@ class TestInstanceManager:
         """A balanced allocate/release settles at exactly 0 with no floor warning."""
         self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
-        await self.instance_manager.update_instance_workload(
-            1, self.endpoint.id, Workload(active_tokens=10, active_kv_cache=20)
-        )
+        await self.instance_manager.update_instance_workload(1, self.endpoint.id, Workload(active_tokens=10))
         caplog.clear()
-        await self.instance_manager.update_instance_workload(
-            1, self.endpoint.id, Workload(active_tokens=-10, active_kv_cache=-20)
-        )
+        await self.instance_manager.update_instance_workload(1, self.endpoint.id, Workload(active_tokens=-10))
 
         assert self.endpoint.workload.active_tokens == 0
-        assert self.endpoint.workload.active_kv_cache == 0
         assert "floor" not in caplog.text.lower()
 
     @pytest.mark.asyncio
@@ -286,7 +273,7 @@ class TestInstanceManager:
     async def test_update_instance_workload_instance_not_found(self, caplog):
         """Test update_instance_workload method when instance not found"""
         # Create workload change
-        workload_change = Workload(active_tokens=10, active_kv_cache=20)
+        workload_change = Workload(active_tokens=10)
 
         # Try to update workload for non-existent instance
         await self.instance_manager.update_instance_workload(999, self.endpoint.id, workload_change)
@@ -303,7 +290,7 @@ class TestInstanceManager:
         self.instance_manager._available_pool[1] = None
 
         # Create workload change
-        workload_change = Workload(active_tokens=10, active_kv_cache=20)
+        workload_change = Workload(active_tokens=10)
 
         # Try to update workload for None instance (instance_id 1 maps to None in pool)
         await self.instance_manager.update_instance_workload(1, self.endpoint.id, workload_change)
@@ -807,8 +794,8 @@ class TestInstanceManager:
             role=PDRole.ROLE_P,
             endpoints={"10.0.0.1": {1: ep}},
         )
-        existing.gathered_workload = Workload(active_tokens=100, active_kv_cache=200)
-        ep.workload = Workload(active_tokens=100, active_kv_cache=200)
+        existing.gathered_workload = Workload(active_tokens=100)
+        ep.workload = Workload(active_tokens=100)
 
         # New instance from SET event has no workload
         new_ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")
@@ -1207,7 +1194,7 @@ class TestInstanceManagerThreadSafety:
 
         def update_workload_task(iteration, tokens, kv_cache):
             try:
-                workload_change = Workload(active_tokens=tokens, active_kv_cache=kv_cache)
+                workload_change = Workload(active_tokens=tokens)
                 asyncio.run_coroutine_threadsafe(
                     self.instance_manager.update_instance_workload(1, self.endpoint.id, workload_change), loop
                 ).result(timeout=10)
@@ -1247,9 +1234,7 @@ class TestInstanceManagerThreadSafety:
 
         # Verify that workload was updated (exact value depends on execution order)
         assert self.prefill_instance.gathered_workload.active_tokens >= 0, "Negative token count"
-        assert self.prefill_instance.gathered_workload.active_kv_cache >= 0, "Negative KV cache count"
         assert self.endpoint.workload.active_tokens >= 0, "Negative endpoint token count"
-        assert self.endpoint.workload.active_kv_cache >= 0, "Negative endpoint KV cache count"
 
     def test_concurrent_has_required_instances_calls(self):
         """Test concurrent has_required_instances calls under different conditions with enhanced concurrency"""
