@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -25,31 +24,45 @@ logger = get_logger(__name__)
 
 def calculate_demand_workload(role: PDRole, req_info: RequestInfo) -> Workload:
     """
-    Compute demand workload for this allocation from role and request length.
-    Shared by BaseRouter.prepare_resource and WorkloadActionHandler ALLOCATION.
+    Compute demand workload for non-affinity allocation paths.
 
-    Args:
-        role: PDRole enum (encode/prefill/decode/both)
-        request_length: Request length
-
-    Returns:
-        Workload: Load for ALLOCATION (used by select_and_allocate / add_req_workload)
+    KV-affinity ALLOCATE commits via :func:`calculate_committed_workload` on the scheduler
+    after final selection (ISL - matched_tokens).
     """
-
     if role == PDRole.ROLE_E:
-        score = _calculate_encode_scores(req_info)
-        return Workload(active_tokens=score)
+        return Workload(active_tokens=_calculate_encode_scores(req_info))
     if role == PDRole.ROLE_P:
-        score = _prefill_load_score(req_info)
-        return Workload(active_kv_cache=score, active_tokens=score)
+        return Workload(active_tokens=_prefill_load_score(req_info))
     if role == PDRole.ROLE_D:
-        score = _calculate_decode_scores(req_info.req_len)
-        return Workload(active_tokens=score)
+        return Workload(active_tokens=_calculate_decode_scores(req_info.req_len))
     if role == PDRole.ROLE_U:
-        score = _calculate_both_scores(req_info.req_len)
-        return Workload(active_kv_cache=score, active_tokens=score)
+        # Same compute demand as ROLE_P (LB / non-affinity): ISL or prefill heuristic.
+        return Workload(active_tokens=_prefill_load_score(req_info))
     logger.warning("Unknown role %s for workload calculation", role)
     return Workload()
+
+
+def calculate_committed_workload(
+    role: PDRole,
+    isl: float,
+    matched_tokens: float = 0.0,
+) -> Workload:
+    """
+    Authoritative compute load after final affinity endpoint selection.
+
+    ROLE_P / ROLE_U both commit ``ISL - matched_tokens`` (KV reuse reduces remaining
+    prefill compute). Non-affinity paths pass matched_tokens=0 → commit ISL.
+    """
+    isl_f = max(0.0, float(isl))
+    matched = min(max(0.0, float(matched_tokens)), isl_f)
+    effective = isl_f - matched
+
+    if role not in (PDRole.ROLE_P, PDRole.ROLE_U):
+        # Defensive: the affinity commit branch is gated to P/U roles upstream (worker policy
+        # selection and the scheduler's commit guard); any other role here means a caller
+        # bypassed both gates. The returned value is still the effective compute load.
+        logger.warning("calculate_committed_workload called for unexpected role %s", role)
+    return Workload(active_tokens=effective)
 
 
 def _calculate_encode_scores(req_info: RequestInfo) -> float:
@@ -77,15 +90,7 @@ def _calculate_encode_scores(req_info: RequestInfo) -> float:
 
 
 def _prefill_load_score(req_info: RequestInfo) -> float:
-    """
-    Prefill load in **real prompt tokens** when available, else the legacy byte-length estimate.
-
-    When the request was tokenized at routing (KV affinity sets ``req_info.token_ids``), the load
-    uses the real token count so it shares the token unit with the affinity prefill cost
-    (``isl - matched_tokens``) -- this is what makes the unified score's weights principled instead
-    of mixing token counts with a byte-length fit. Falls back to ``_calculate_prefill_scores`` when
-    token ids are absent (e.g. load_balance/round_robin, or no tokenizer configured).
-    """
+    """Prefill load: real token count when available, else legacy byte-length heuristic."""
     token_ids = getattr(req_info, "token_ids", None)
     if isinstance(token_ids, list) and token_ids:
         return float(len(token_ids))
@@ -101,8 +106,3 @@ def _calculate_prefill_scores(request_length: int) -> float:
 def _calculate_decode_scores(request_length: int) -> float:
     """Decode role workload score."""
     return float(request_length)
-
-
-def _calculate_both_scores(request_length: int) -> float:
-    """Hybrid role workload score."""
-    return (_calculate_prefill_scores(request_length) + _calculate_decode_scores(request_length)) * 0.5

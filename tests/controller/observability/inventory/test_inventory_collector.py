@@ -225,7 +225,7 @@ def mock_input(p_num: int | None = 2, d_num: int | None = 1, u_num: int | None =
         status=EndpointStatus.NORMAL,
         device_infos=mock_device_list(2),
         hb_timestamp=1770171687,
-        workload=Workload(active_kv_cache=0, active_tokens=0),
+        workload=Workload(active_tokens=0),
     )
 
     test_endpoint_1 = Endpoint(
@@ -236,7 +236,7 @@ def mock_input(p_num: int | None = 2, d_num: int | None = 1, u_num: int | None =
         status=EndpointStatus.NORMAL,
         device_infos=mock_device_list(2),
         hb_timestamp=1770171687.2293227,
-        workload=Workload(active_kv_cache=0, active_tokens=0),
+        workload=Workload(active_tokens=0),
     )
 
     test_endpoint_16_1 = Endpoint(
@@ -247,7 +247,7 @@ def mock_input(p_num: int | None = 2, d_num: int | None = 1, u_num: int | None =
         status=EndpointStatus.NORMAL,
         device_infos=mock_device_list(8),
         hb_timestamp=1770171687.22930,
-        workload=Workload(active_kv_cache=0, active_tokens=0),
+        workload=Workload(active_tokens=0),
     )
 
     test_endpoint_16_2 = Endpoint(
@@ -258,7 +258,7 @@ def mock_input(p_num: int | None = 2, d_num: int | None = 1, u_num: int | None =
         status=EndpointStatus.NORMAL,
         device_infos=mock_device_list(8),
         hb_timestamp=1770171687.2293230,
-        workload=Workload(active_kv_cache=0, active_tokens=0),
+        workload=Workload(active_tokens=0),
     )
 
     # mock instance

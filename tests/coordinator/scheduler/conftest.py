@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -11,19 +10,17 @@
 
 """Shared test fixtures for scheduler tests."""
 
-from unittest.mock import MagicMock, AsyncMock, Mock
-import pytest
+from unittest.mock import Mock
 
 from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
+from motor.common.resources.endpoint import Endpoint, Workload
 
 
-def create_mock_workload(active_tokens: float = 0.0, active_kv_cache: float = 0.0) -> Mock:
+def create_mock_workload(active_tokens: float = 0.0) -> Mock:
     """Create a mock Workload with given values."""
     wl = Mock(spec=Workload)
     wl.active_tokens = active_tokens
-    wl.active_kv_cache = active_kv_cache
-    wl.calculate_workload_score = Mock(return_value=active_tokens + active_kv_cache)
+    wl.calculate_workload_score = Mock(return_value=active_tokens)
     return wl
 
 
@@ -55,9 +52,7 @@ def create_mock_instance(
     if endpoints is None:
         endpoints = {"group": {1: create_mock_endpoint(1)}}
     inst.endpoints = endpoints
-    inst.get_all_endpoints = Mock(
-        return_value=[ep for pod in endpoints.values() for ep in pod.values()]
-    )
+    inst.get_all_endpoints = Mock(return_value=[ep for pod in endpoints.values() for ep in pod.values()])
     if gathered_workload is None:
         gathered_workload = create_mock_workload()
     inst.gathered_workload = gathered_workload

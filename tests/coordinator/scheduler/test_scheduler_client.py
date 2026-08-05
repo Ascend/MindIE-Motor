@@ -51,7 +51,6 @@ def _make_endpoint(
     mgmt_port: str = "8081",
     status: EndpointStatus = EndpointStatus.NORMAL,
     active_tokens: float = 0.0,
-    active_kv_cache: float = 0.0,
 ) -> Endpoint:
     """Create a real Endpoint (used by _SchedulerInstanceCache tests)."""
     return Endpoint(
@@ -60,7 +59,7 @@ def _make_endpoint(
         business_port=business_port,
         mgmt_port=mgmt_port,
         status=status,
-        workload=Workload(active_tokens=active_tokens, active_kv_cache=active_kv_cache),
+        workload=Workload(active_tokens=active_tokens),
     )
 
 
@@ -224,7 +223,7 @@ class TestSchedulerInstanceCache:
     @pytest.mark.asyncio
     async def test_patch_workload_from_shm(self):
         """patch_workload_from_shm updates the endpoint workload and gathers it."""
-        ep = _make_endpoint(endpoint_id=1, active_tokens=0.0, active_kv_cache=0.0)
+        ep = _make_endpoint(endpoint_id=1, active_tokens=0.0)
         inst = _make_instance(instance_id=1, role="prefill", endpoints={"pod1": {1: ep}})
 
         await self.cache.replace_all(PDRole.ROLE_P, [inst])
@@ -234,14 +233,11 @@ class TestSchedulerInstanceCache:
             endpoint_id=1,
             role=PDRole.ROLE_P,
             active_tokens=5.0,
-            active_kv_cache=3.0,
         )
 
         workload = _endpoint_workload(ep)
         assert workload.active_tokens == 5.0
-        assert workload.active_kv_cache == 3.0
         assert inst.gathered_workload.active_tokens == 5.0
-        assert inst.gathered_workload.active_kv_cache == 3.0
 
     def test_patch_workload_from_shm_unknown_instance_noop(self):
         """patch_workload_from_shm on unknown instance is a no-op (no raise)."""
@@ -250,13 +246,12 @@ class TestSchedulerInstanceCache:
             endpoint_id=1,
             role=PDRole.ROLE_P,
             active_tokens=5.0,
-            active_kv_cache=3.0,
         )
 
     @pytest.mark.asyncio
     async def test_patch_workload_from_shm_unknown_endpoint_noop(self):
         """patch_workload_from_shm on unknown endpoint does not modify workload."""
-        ep = _make_endpoint(endpoint_id=1, active_tokens=0.0, active_kv_cache=0.0)
+        ep = _make_endpoint(endpoint_id=1, active_tokens=0.0)
         inst = _make_instance(instance_id=1, role="prefill", endpoints={"pod1": {1: ep}})
 
         await self.cache.replace_all(PDRole.ROLE_P, [inst])
@@ -266,12 +261,10 @@ class TestSchedulerInstanceCache:
             endpoint_id=999,
             role=PDRole.ROLE_P,
             active_tokens=10.0,
-            active_kv_cache=20.0,
         )
 
         workload = _endpoint_workload(ep)
         assert workload.active_tokens == 0.0
-        assert workload.active_kv_cache == 0.0
 
     @pytest.mark.asyncio
     async def test_patch_workload_from_shm_wrong_role_noop(self):
@@ -286,12 +279,10 @@ class TestSchedulerInstanceCache:
             endpoint_id=1,
             role=PDRole.ROLE_D,
             active_tokens=5.0,
-            active_kv_cache=3.0,
         )
 
         workload = _endpoint_workload(ep)
         assert workload.active_tokens == 0.0
-        assert workload.active_kv_cache == 0.0
 
 
 # ========================================================================
@@ -517,7 +508,7 @@ class TestAsyncSchedulerClient:
             role=PDRole.ROLE_P,
             req_id="req-upd",
             workload_action=WorkloadAction.ALLOCATION,
-            workload_change=Workload(active_tokens=5.0, active_kv_cache=3.0),
+            workload_change=Workload(active_tokens=5.0),
             operation_id="op-update-workload",
         )
 
@@ -558,8 +549,8 @@ class TestAsyncSchedulerClient:
             endpoint_id=10,
             role=PDRole.ROLE_P,
             req_id="req-err",
-            workload_action=WorkloadAction.RELEASE_KV,
-            workload_change=Workload(active_tokens=1.0, active_kv_cache=2.0),
+            workload_action=WorkloadAction.RELEASE_TOKENS,
+            workload_change=Workload(active_tokens=1.0),
         )
 
         result = await self.client.update_workload(params)

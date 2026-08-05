@@ -150,12 +150,15 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
         self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_D), 6)
         self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_U), 2)
 
-    def test_legacy_schema_uses_global_sequence_fallback(self):
-        """Legacy schema headers must not expose role sequences from old padding bytes."""
+    def test_schema_version_mismatch_rejected(self):
+        """Mismatched schema headers are rejected: entry layout differs across schemas, so
+        reading would slice entries at the wrong stride. The reader must refuse the read
+        instead of exposing role sequences from incompatible layout bytes.
+        """
         buf = self._make_buf(0)
         header = WorkloadShmHeader(
             magic=MAGIC,
-            schema_version=1,
+            schema_version=SCHEMA_VERSION - 1,
             sequence=8,
             entry_count=0,
             max_entries=10,
@@ -171,11 +174,9 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
 
         result = self.reader.read_and_patch_cache(MagicMock(), role=PDRole.ROLE_D)
 
-        self.assertEqual(result, (3, False))
-        self.assertEqual(self.reader.last_sequence, 8)
-        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_P))
-        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_D))
-        self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_U))
+        self.assertEqual(result, (None, False))
+        self.assertIsNone(self.reader.last_sequence)
+        self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_D), 99)
 
     def test_role_patch_only_updates_matching_entries_and_sequence(self):
         """Role-scoped patching must not mark other role caches as current."""
@@ -199,7 +200,6 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
                 endpoint_id=10,
                 role=ROLE_PREFILL,
                 active_tokens=11.0,
-                active_kv_cache=12.0,
             )
         )
         buf[HEADER_SIZE + ENTRY_SIZE : HEADER_SIZE + 2 * ENTRY_SIZE] = pack_entry(
@@ -208,7 +208,6 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
                 endpoint_id=20,
                 role=ROLE_DECODE,
                 active_tokens=21.0,
-                active_kv_cache=22.0,
             )
         )
         self.reader._buf = memoryview(buf)
@@ -222,7 +221,6 @@ class TestWorkloadSharedMemoryReader(unittest.TestCase):
             20,
             PDRole.ROLE_D,
             21.0,
-            22.0,
         )
         self.assertIsNone(self.reader.last_sequence_for_role(PDRole.ROLE_P))
         self.assertEqual(self.reader.last_sequence_for_role(PDRole.ROLE_D), 6)

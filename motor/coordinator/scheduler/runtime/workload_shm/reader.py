@@ -131,6 +131,17 @@ class WorkloadSharedMemoryReader:
         """Validate shm header before reading entries."""
         if header.magic != MAGIC:
             return False
+        if header.schema_version != SCHEMA_VERSION:
+            # Entry layout is tied to the schema version, so reading a mismatched schema would
+            # slice entries at the wrong stride and feed garbage load values to the balancer.
+            # Refuse the read instead: the caller degrades to the last-known cache, same as an
+            # unread shm. A mismatch means mixed-version processes share this shm segment.
+            logger.error(
+                "WorkloadSharedMemoryReader schema mismatch: expect %s got %s, refusing read",
+                SCHEMA_VERSION,
+                header.schema_version,
+            )
+            return False
         if header.entry_count < 0 or header.entry_count > header.max_entries:
             logger.debug(
                 "WorkloadSharedMemoryReader invalid entry_count=%s max_entries=%s",
@@ -226,5 +237,4 @@ class WorkloadSharedMemoryReader:
                 entry.endpoint_id,
                 pdrole,
                 entry.active_tokens,
-                entry.active_kv_cache,
             )

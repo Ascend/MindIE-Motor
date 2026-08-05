@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,6 +7,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
 import time
 from unittest.mock import patch, MagicMock
 import pytest
@@ -278,7 +278,7 @@ def test_restore_data_success():
         "status": "initial",
         "parallel_config": None,
         "node_managers": [],
-        "gathered_workload": {"active_kv_cache": 0, "active_tokens": 0},
+        "gathered_workload": {"active_tokens": 0},
     }
     persistent_state = PersistentState(data={"1": instance_data}, version=1, timestamp=time.time(), checksum="")
     persistent_state.checksum = persistent_state.calculate_checksum()
@@ -327,7 +327,7 @@ def test_restore_data_invalid_checksum():
                     "status": "initial",
                     "parallel_config": None,
                     "node_managers": [],
-                    "gathered_workload": {"active_kv_cache": 0, "active_tokens": 0},
+                    "gathered_workload": {"active_tokens": 0},
                 }
             },
             version=1,

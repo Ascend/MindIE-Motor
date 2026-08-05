@@ -1,4 +1,13 @@
-# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """Tests for workload shared memory role handling."""
 
 import pytest
@@ -32,7 +41,7 @@ def _make_encode_instance() -> Instance:
                 business_port="8000",
                 mgmt_port="9000",
                 status=EndpointStatus.NORMAL,
-                workload=Workload(active_tokens=7, active_kv_cache=3),
+                workload=Workload(active_tokens=7),
             )
         },
     )
@@ -43,14 +52,12 @@ def _make_encode_instance() -> Instance:
 async def test_workload_shm_snapshot_includes_encode_role():
     instance_manager = InstanceManager()
     await instance_manager.refresh_instances(EventType.ADD, [_make_encode_instance()])
-    await instance_manager.update_instance_workload(
-        1, 10, Workload(active_tokens=7, active_kv_cache=3)
-    )
+    await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=7))
 
     entries, slot_map = _collect_entries_and_slot_map(instance_manager, max_entries=10)
 
     assert slot_map == {(1, 10): 0}
-    assert entries == [(1, 10, ROLE_ENCODE, 7, 3)]
+    assert entries == [(1, 10, ROLE_ENCODE, 7)]
 
 
 def test_workload_shm_round_trips_encode_role():

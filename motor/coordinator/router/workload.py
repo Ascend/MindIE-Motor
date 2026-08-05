@@ -1,19 +1,19 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
 """
-Compute workload_change by WorkloadAction (ALLOCATION / RELEASE_KV / RELEASE_TOKENS) and update RequestManager.
+Compute workload_change by WorkloadAction (ALLOCATION / RELEASE_TOKENS) and update RequestManager.
 """
 
 from __future__ import annotations
 
-from typing import Tuple
 
 from motor.common.resources.endpoint import Workload, WorkloadAction
 from motor.common.resources.instance import PDRole
@@ -67,7 +67,7 @@ class WorkloadActionHandler:
         action: WorkloadAction,
         req_info: RequestInfo,
         attempt_seq: int | None = None,
-    ) -> Tuple[Workload | None, PDRole | None]:
+    ) -> tuple[Workload | None, PDRole | None]:
         """
         Get/compute workload_change from RequestManager by action, update RequestManager, return (change, role).
         If action is invalid or not computable (e.g. not allocated so cannot release), return (None, None).
@@ -99,29 +99,6 @@ class WorkloadActionHandler:
                 return (None, None)
             workload_change = allocate_workload
 
-        elif action == WorkloadAction.RELEASE_KV:
-            current_workload = (
-                await request_mgr.get_req_workload(req_id, role)
-                if attempt_seq is None
-                else await request_mgr.get_req_attempt_workload(req_id, attempt_seq, role)
-            )
-            if not current_workload:
-                logger.debug(
-                    "Request %s attempt %s not allocated for role %s, KV release ignored", req_id, attempt_seq, role
-                )
-                return (None, None)
-            workload_change = Workload(active_kv_cache=-current_workload.active_kv_cache)
-            current_workload.active_kv_cache = 0
-            if attempt_seq is None:
-                await request_mgr.update_req_workload(req_id, role, current_workload)
-            else:
-                await request_mgr.update_req_attempt_workload(req_id, attempt_seq, role, current_workload)
-            if current_workload.active_tokens <= 0:
-                if attempt_seq is None:
-                    await request_mgr.del_req_workload(req_id, role)
-                else:
-                    await request_mgr.del_req_attempt_workload(req_id, attempt_seq, role)
-
         elif action == WorkloadAction.RELEASE_TOKENS:
             current_workload = (
                 await request_mgr.get_req_workload(req_id, role)
@@ -134,19 +111,23 @@ class WorkloadActionHandler:
                 )
                 return (None, None)
             workload_change = Workload(active_tokens=-current_workload.active_tokens)
-            current_workload.active_tokens = 0
-            if attempt_seq is None:
-                await request_mgr.update_req_workload(req_id, role, current_workload)
-            else:
-                await request_mgr.update_req_attempt_workload(req_id, attempt_seq, role, current_workload)
-            if current_workload.active_kv_cache <= 0:
-                if attempt_seq is None:
-                    await request_mgr.del_req_workload(req_id, role)
-                else:
-                    await request_mgr.del_req_attempt_workload(req_id, attempt_seq, role)
+            # Keep the local record until the scheduler ACKs the release (finalize_release).
+            # If the RPC fails permanently or the task is cancelled mid-flight, a later
+            # re-enqueue can still recompute the full negative delta from the retained record
+            # and resend it; the scheduler dedups repeated releases by deterministic operation_id.
 
         else:
             logger.warning("Unknown workload action: %s", action)
             return (None, None)
 
         return (workload_change, role)
+
+    async def finalize_release(self, req_id: str, role: PDRole, attempt_seq: int | None = None) -> bool:
+        """
+        Delete the local workload record after the scheduler has ACKed the release.
+        Must only be called once scheduler.update_workload has succeeded; on failure the
+        record is intentionally retained so the release can be recomputed and resent.
+        """
+        if attempt_seq is None:
+            return await self._request_manager.del_req_workload(req_id, role)
+        return await self._request_manager.del_req_attempt_workload(req_id, attempt_seq, role)

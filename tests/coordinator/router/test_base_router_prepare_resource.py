@@ -1,4 +1,13 @@
-# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """Tests for BaseRouter resource preparation edge cases."""
 
 from unittest.mock import AsyncMock, MagicMock
@@ -77,7 +86,7 @@ async def test_prepare_resource_rolls_back_scheduler_allocation_when_local_recor
     config.exception_config.max_retry = 1
     req_info = _make_req_info()
     resource = _make_resource(PDRole.ROLE_E)
-    allocated_workload = Workload(active_tokens=12, active_kv_cache=3)
+    allocated_workload = Workload(active_tokens=12)
 
     scheduler = MagicMock()
     scheduler.select_and_allocate = AsyncMock(return_value=(resource.instance, resource.endpoint, allocated_workload))
@@ -95,7 +104,7 @@ async def test_prepare_resource_rolls_back_scheduler_allocation_when_local_recor
     assert params.endpoint_id == resource.endpoint.id
     assert params.role == PDRole.ROLE_E
     assert params.workload_action == WorkloadAction.RELEASE_TOKENS
-    assert params.workload_change == Workload(active_tokens=-12, active_kv_cache=-3)
+    assert params.workload_change == Workload(active_tokens=-12)
 
 
 @pytest.mark.asyncio

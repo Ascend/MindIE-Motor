@@ -583,7 +583,6 @@ class UnifiedPDRouter(BaseRouter):
             self.req_info.trace_obj.set_trace_error_message(error_message)
             self.logger.warning(error_message)
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_TOKENS)
-            await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_KV)
             raise
         return session.new_attempt(
             p_resource,
@@ -740,7 +739,6 @@ class UnifiedPDRouter(BaseRouter):
         release_prefill_on_stream: bool = False,
     ) -> AsyncGenerator[str, None]:
         queue_task: asyncio.Task | None = None
-        prefill_kv_release_submitted = False
         try:
             while True:
                 # Atomic non-blocking drain: get_nowait() either returns a queued chunk or raises,
@@ -765,6 +763,8 @@ class UnifiedPDRouter(BaseRouter):
                     done, _ = await asyncio.wait(waitables, return_when=asyncio.FIRST_COMPLETED)
 
                     if prefill_task is not None and prefill_task in done:
+                        # Prefill HTTP may only mean "prepared" in trigger mode; do not release
+                        # P load here. Wait for the first decode chunk (below).
                         try:
                             await prefill_task
                         except BaseException as error:
@@ -772,8 +772,6 @@ class UnifiedPDRouter(BaseRouter):
                             await asyncio.gather(queue_task, return_exceptions=True)
                             await attempt.cancel(repr(error))
                             raise
-                        if release_prefill_on_stream:
-                            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                         prefill_task = None
 
                     if queue_task in done:
@@ -794,9 +792,12 @@ class UnifiedPDRouter(BaseRouter):
                         except BaseException as error:
                             await attempt.cancel(repr(error))
                             raise
-                        if release_prefill_on_stream:
-                            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                         prefill_task = None
+                    # Concurrent/trigger: release P only after decode proves progress (first chunk).
+                    # Earlier P HTTP completion can be a prepared ACK before real prefill/metaserver work.
+                    if release_prefill_on_stream:
+                        self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
+                        release_prefill_on_stream = False
                     if sampling_state is not None:
                         value = self._collect_logprobs_from_stream_chunk(value, sampling_state)
                     if self.config.exception_config.reschedule_enabled:
@@ -809,9 +810,6 @@ class UnifiedPDRouter(BaseRouter):
                         )
                     else:
                         value = self._merge_prompt_tokens_details_into_stream_chunk(value)
-                    if release_prefill_on_stream and not prefill_kv_release_submitted:
-                        self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_KV)
-                        prefill_kv_release_submitted = True
                     yield value
                 elif key == "done":
                     if prefill_task is not None:
@@ -823,9 +821,8 @@ class UnifiedPDRouter(BaseRouter):
                         except BaseException as error:
                             await attempt.cancel(repr(error))
                             raise
-                        if release_prefill_on_stream:
-                            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                         prefill_task = None
+                    # No decode chunk arrived: do not early-release P here; _release_attempt cleans up.
                     self.req_info.update_state(ReqState.DECODE_END)
                     if sampling_state is not None:
                         await self._maybe_submit_sample(attempt, sampling_state)
@@ -915,8 +912,8 @@ class UnifiedPDRouter(BaseRouter):
                     waitables.append(prefill_task)
                 done, _ = await asyncio.wait(waitables, return_when=asyncio.FIRST_COMPLETED)
                 if prefill_task is not None and prefill_task in done:
+                    # Trigger prepared ACK is not real prefill completion; hold P until decode returns.
                     await prefill_task
-                    self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                     prefill_task = None
                 if d_task in done:
                     break
@@ -929,7 +926,9 @@ class UnifiedPDRouter(BaseRouter):
                 raise error
             if prefill_task is not None:
                 await prefill_task
-                self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
+                prefill_task = None
+            # Non-stream concurrent: decode HTTP success is the first-progress signal (no chunks).
+            self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
             self.req_info.update_state(ReqState.DECODE_END)
             if sampling_state is not None:
                 response = self._collect_logprobs_from_nonstream_body(response, sampling_state)
@@ -965,7 +964,6 @@ class UnifiedPDRouter(BaseRouter):
         )
         late_decode = await self._ensure_handoff_decode_resource(attempt)
         d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
-        prefill_kv_released = False
         async with self._client_for(attempt.decode_resource) as d_client:
             if late_decode:
                 # Client is now in the pool; the canceller can bind to it.
@@ -981,14 +979,6 @@ class UnifiedPDRouter(BaseRouter):
                 )
             ) as decode_stream:
                 async for chunk in decode_stream:
-                    if not prefill_kv_released and chunk:
-                        self._submit_release_attempt_resource_background(
-                            attempt.prefill_resource,
-                            attempt.attempt_seq,
-                            WorkloadAction.RELEASE_KV,
-                            attempt,
-                        )
-                        prefill_kv_released = True
                     yield chunk
 
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
@@ -1193,13 +1183,6 @@ class UnifiedPDRouter(BaseRouter):
                 attempt,
                 wait=wait,
             )
-            await self._release_attempt_resource(
-                attempt.prefill_resource,
-                attempt.attempt_seq,
-                WorkloadAction.RELEASE_KV,
-                attempt,
-                wait=wait,
-            )
         if attempt.decode_resource:
             await self._release_attempt_resource(
                 attempt.decode_resource,
@@ -1322,7 +1305,30 @@ class UnifiedPDRouter(BaseRouter):
             record = self._release_records.get(current_task) if current_task is not None else None
             if record is not None:
                 record.item = item
-            return await self._send_release_work_item(item)
+            ok = await self._send_release_work_item(item)
+            if ok:
+                # Scheduler ACKed the release: drop the worker-side ledger record that
+                # compute_and_update intentionally retained for failure recomputation.
+                try:
+                    await self._workload_action_handler.finalize_release(self.req_info.req_id, item.role, attempt_seq)
+                except Exception as exc:
+                    # The scheduler already applied the release; a finalize failure only leaves
+                    # a stale local record (a later re-release is deduped by operation_id).
+                    # Log it but do not turn the ACKed release into a failure/retry.
+                    self.logger.warning(
+                        "finalize_release failed after scheduler ACK req_id=%s attempt_seq=%s action=%s: %s",
+                        self.req_info.req_id,
+                        attempt_seq,
+                        action.value,
+                        exc,
+                    )
+                else:
+                    # Mark released only after the local record is gone: a finalize failure
+                    # leaves the release unmarked, so a later re-enqueue can recompute the
+                    # delta and finalize again instead of skipping as already-released.
+                    if item.attempt is not None:
+                        self._mark_released(item.attempt, item.role, item.action)
+            return ok
         except Exception as exc:
             self._log_release_task_result_error(None, "raised", exc, context=task_context)
             return False
@@ -1428,8 +1434,9 @@ class UnifiedPDRouter(BaseRouter):
                     exc,
                 )
             if ok:
-                if item.attempt is not None:
-                    self._mark_released(item.attempt, item.role, item.action)
+                # NOTE: the release is NOT marked here. The mark happens in the caller only after
+                # finalize_release removed the local ledger record, so a finalize failure leaves
+                # the release unmarked and a later re-enqueue can recompute and finalize it.
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 self.logger.info(
                     "Release workload succeeded stage=%s elapsed_ms=%.2f instance_id=%s endpoint_id=%s role=%s action=%s retry=%d",
@@ -1576,12 +1583,8 @@ class UnifiedPDRouter(BaseRouter):
         role = PDRole(resource.instance.role)
         if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
             return "release_p_tokens"
-        if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_KV:
-            return "release_p_kv"
         if role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_TOKENS:
             return "release_d_tokens"
-        if role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_KV:
-            return "release_d_kv"
         return f"release_{role.value}_{action.value.lower()}"
 
     async def _stop_attempt(self, attempt: AttemptContext | None, reason: DispatchStopReason) -> None:
@@ -1624,12 +1627,8 @@ class UnifiedPDRouter(BaseRouter):
         flags = attempt.release_flags
         if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
             return flags.prefill_tokens
-        if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_KV:
-            return flags.prefill_kv
         if role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_TOKENS:
             return flags.decode_tokens
-        if role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_KV:
-            return flags.decode_kv
         return False
 
     @staticmethod
@@ -1637,12 +1636,8 @@ class UnifiedPDRouter(BaseRouter):
         flags = attempt.release_flags
         if role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_TOKENS:
             flags.prefill_tokens = True
-        elif role == PDRole.ROLE_P and action == WorkloadAction.RELEASE_KV:
-            flags.prefill_kv = True
         elif role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_TOKENS:
             flags.decode_tokens = True
-        elif role == PDRole.ROLE_D and action == WorkloadAction.RELEASE_KV:
-            flags.decode_kv = True
 
     # ------------------------------------------------------------------
     # Precision sampling helpers
