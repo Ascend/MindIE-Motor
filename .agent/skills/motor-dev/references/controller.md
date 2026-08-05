@@ -169,7 +169,7 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 
 When modifying ConfigMap parsing logic in `motor/controller/fault_tolerance/k8s/configmap_parser.py`, consult:
 
-**Local path:** `/home/jason/mind-cluster/docs/zh/scheduling/06_api/ascend_device_plugin.md`
+**Reference doc:** <https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/02_ascend_device_plugin.md>
 
 Key points (MindCluster 26.0.0):
 

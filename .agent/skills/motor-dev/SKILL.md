@@ -39,7 +39,7 @@ Follow this loop whenever debugging or fixing bugs — it closes the learning cy
 3. **Fix + write the intercepting test** — the test must fail on the old code and pass on the new code (regression guard).
 4. **Verify** — run the targeted test, then the module tests, via `bash tests/run_tests.sh`.
 5. **Record** — create `bug-fix-history/<module>/<short-name>.md` using the template (Symptom / Root cause / Why / Fix / Test interception / Scenario / Keywords) and add one row to `bug-fix-history/INDEX.md`. Dedup by keyword; skip typos and environment-only issues.
-6. **Offer to file an ISSUE** — after recording the case, ask the user whether to file a bug report against the Motor repo (gitcode.com/Ascend/MindIE-Motor, `bug-report` template). Do **not** load `references/issue-reporting.md` unless the user agrees — it is only read on demand (progressive disclosure). If they agree, follow that reference: draft from the recorded case → ask token-based submit vs. markdown draft vs. skip.
+6. **Offer to file an ISSUE (+PR)** — after recording the case, ask the user whether to file a bug report against the Motor repo (gitcode.com/Ascend/MindIE-Motor, `bug-report` template). Do **not** load `references/issue-reporting.md` unless the user agrees — it is only read on demand (progressive disclosure). If they agree, follow that reference. **顺序硬性要求：先提 ISSUE，拿到编号后再提 PR，PR 正文直接写 ISSUE 链接**；提交方式：token-based API 提交 vs. markdown 草稿 vs. skip。
 
 ## Testing (Core Principles)
 
