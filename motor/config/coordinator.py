@@ -141,12 +141,47 @@ class SchedulerType(Enum):
             return None
 
 
-# Sub-strategy selected by SchedulerConfig.kv_affinity_mode when scheduler_type=kv_cache_affinity.
+# Sub-strategy selected by SchedulerConfig.kv_affinity.mode when scheduler_type=kv_cache_affinity.
 #   "unified"    - single score fusing affinity and live load (default).
 #   "load_gated" - keep the N least-loaded endpoints, then pick the longest cached prefix.
 KV_AFFINITY_MODE_UNIFIED = "unified"
 KV_AFFINITY_MODE_LOAD_GATED = "load_gated"
 KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
+
+# Legacy flat scheduler_config keys → nested kv_affinity field names.
+_LEGACY_KV_AFFINITY_FLAT_KEYS = {
+    "kv_affinity_mode": "mode",
+    "kv_affinity_load_weight": "load_weight",
+    "kv_affinity_overlap_credit": "overlap_credit",
+    "kv_affinity_prefill_load_scale": "prefill_load_scale",
+    "kv_affinity_load_gate_topn": "load_gate_topn",
+    "kv_affinity_w_npu": "w_npu",
+    "kv_affinity_w_cpu": "w_cpu",
+    "kv_affinity_w_disk": "w_disk",
+}
+
+
+def _migrate_legacy_kv_affinity_flat_keys(scheduler_dict: dict[str, Any]) -> None:
+    """Move deprecated flat ``kv_affinity_*`` keys into ``scheduler_config.kv_affinity``.
+
+    Nested ``kv_affinity`` values win when both forms are present.
+    """
+    legacy: dict[str, Any] = {}
+    for old_key, new_key in _LEGACY_KV_AFFINITY_FLAT_KEYS.items():
+        if old_key in scheduler_dict:
+            legacy[new_key] = scheduler_dict.pop(old_key)
+    if not legacy:
+        return
+    logger.warning(
+        "scheduler_config.kv_affinity_* flat keys are deprecated; "
+        "migrate to scheduler_config.kv_affinity.{mode,load_weight,...}"
+    )
+    nested = scheduler_dict.setdefault("kv_affinity", {})
+    if not isinstance(nested, dict):
+        scheduler_dict["kv_affinity"] = dict(legacy)
+        return
+    for key, value in legacy.items():
+        nested.setdefault(key, value)
 
 
 @dataclass
@@ -221,28 +256,43 @@ class KvConductorConfig:
 
 
 @dataclass
+class KvAffinityConfig:
+    """Tunables for ``scheduler_type=kv_cache_affinity``.
+
+    Nested under ``scheduler_config.kv_affinity`` in user JSON.
+    """
+
+    # Which kv_cache_affinity sub-strategy to use (see KV_AFFINITY_MODES):
+    #   "unified"    - single score fusing affinity and live load, pick the minimum (default).
+    #   "load_gated" - keep the N least-loaded endpoints, then pick the longest cached prefix.
+    mode: str = KV_AFFINITY_MODE_UNIFIED
+    # Weight of an endpoint's live workload in the "unified" score. 1.0 puts load on equal footing
+    # with the affinity-discounted prefill cost; 0 makes the unified score affinity-only (longest
+    # prefix wins, load-blind).
+    load_weight: float = 1.0
+    # How much a cached prefix discounts prefill work (default 1.0).
+    overlap_credit: float = 1.0
+    # Weight of the (affinity-discounted) prefill cost in the unified score (default 1.0).
+    prefill_load_scale: float = 1.0
+    # Number of least-loaded endpoints kept by the "load_gated" mode before the affinity
+    # tie-break. Only used when mode="load_gated"; 0 (default) falls back to 2.
+    load_gate_topn: int = 0
+    # Weights for exclusive per-medium matched blocks from kv-conductor.
+    # Defaults ignore Disk when scoring affinity.
+    w_npu: float = 1.0
+    w_cpu: float = 1.0
+    w_disk: float = 0.0
+
+
+@dataclass
 class SchedulerConfig:
     scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
     enable_pd_separation_fallback_to_hybrid: bool = True
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
     endpoint_instance_score_weight: float = 0.05
-    # --- kv_cache_affinity tunables (affinity + load) ---
-    # Which kv_cache_affinity sub-strategy to use (see KV_AFFINITY_MODES):
-    #   "unified"    - single score fusing affinity and live load, pick the minimum (default).
-    #   "load_gated" - keep the N least-loaded endpoints, then pick the longest cached prefix.
-    kv_affinity_mode: str = KV_AFFINITY_MODE_UNIFIED
-    # Weight of an endpoint's live workload in the "unified" score. 1.0 puts load on equal footing
-    # with the affinity-discounted prefill cost; 0 makes the unified score affinity-only (longest
-    # prefix wins, load-blind).
-    kv_affinity_load_weight: float = 1.0
-    # How much a cached prefix discounts prefill work (default 1.0).
-    kv_affinity_overlap_credit: float = 1.0
-    # Weight of the (affinity-discounted) prefill cost in the unified score (default 1.0).
-    kv_affinity_prefill_load_scale: float = 1.0
-    # Number of least-loaded endpoints kept by the "load_gated" mode before the affinity
-    # tie-break. Only used when kv_affinity_mode="load_gated"; 0 (default) falls back to 2.
-    kv_affinity_load_gate_topn: int = 0
+    # kv_cache_affinity tunables (affinity + load + per-medium weights).
+    kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
     # KV event registration config for kv-conductor.
     kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
 
@@ -638,6 +688,9 @@ class CoordinatorConfig:
                 ("port_allocator_config", config.port_allocator_config, None),
             ]
 
+            if "scheduler_config" in cfg and isinstance(cfg["scheduler_config"], dict):
+                _migrate_legacy_kv_affinity_flat_keys(cfg["scheduler_config"])
+
             for section_name, config_obj, special_handlers in config_mappings:
                 if section_name in cfg:
                     update_config_from_dict(config_obj, cfg[section_name], special_handlers)
@@ -727,30 +780,44 @@ class CoordinatorConfig:
             "endpoint_instance_score_weight",
             allow_zero=True,
         )
+        affinity = self.scheduler_config.kv_affinity
         self._validate_positive_number(
-            self.scheduler_config.kv_affinity_load_weight,
-            "kv_affinity_load_weight",
+            affinity.load_weight,
+            "kv_affinity.load_weight",
             allow_zero=True,
         )
         self._validate_positive_number(
-            self.scheduler_config.kv_affinity_overlap_credit,
-            "kv_affinity_overlap_credit",
+            affinity.overlap_credit,
+            "kv_affinity.overlap_credit",
             allow_zero=True,
         )
         self._validate_positive_number(
-            self.scheduler_config.kv_affinity_prefill_load_scale,
-            "kv_affinity_prefill_load_scale",
+            affinity.prefill_load_scale,
+            "kv_affinity.prefill_load_scale",
             allow_zero=True,
         )
         self._validate_positive_number(
-            self.scheduler_config.kv_affinity_load_gate_topn,
-            "kv_affinity_load_gate_topn",
+            affinity.load_gate_topn,
+            "kv_affinity.load_gate_topn",
             allow_zero=True,
         )
-        if self.scheduler_config.kv_affinity_mode not in KV_AFFINITY_MODES:
-            self._errors.append(
-                f"kv_affinity_mode must be one of {KV_AFFINITY_MODES}, got {self.scheduler_config.kv_affinity_mode!r}"
-            )
+        self._validate_positive_number(
+            affinity.w_npu,
+            "kv_affinity.w_npu",
+            allow_zero=True,
+        )
+        self._validate_positive_number(
+            affinity.w_cpu,
+            "kv_affinity.w_cpu",
+            allow_zero=True,
+        )
+        self._validate_positive_number(
+            affinity.w_disk,
+            "kv_affinity.w_disk",
+            allow_zero=True,
+        )
+        if affinity.mode not in KV_AFFINITY_MODES:
+            self._errors.append(f"kv_affinity.mode must be one of {KV_AFFINITY_MODES}, got {affinity.mode!r}")
 
         # Validate host address
         self._validate_ip_or_hostname(self.api_config.coordinator_api_host, "coordinator_api_host")
@@ -932,9 +999,12 @@ class CoordinatorConfig:
             "  Scheduler Configuration:\n"
             f"    ├─ Scheduler Type:             {self.scheduler_config.scheduler_type.value}\n"
             f"    ├─ Endpoint Instance Weight:   {self.scheduler_config.endpoint_instance_score_weight}\n"
-            f"    ├─ KV Affinity Mode:           {self.scheduler_config.kv_affinity_mode}\n"
-            f"    ├─ KV Affinity Load Weight:    {self.scheduler_config.kv_affinity_load_weight}\n"
-            f"    └─ KV Affinity Load Gate TopN: {self.scheduler_config.kv_affinity_load_gate_topn}\n"
+            f"    ├─ KV Affinity Mode:           {self.scheduler_config.kv_affinity.mode}\n"
+            f"    ├─ KV Affinity Load Weight:    {self.scheduler_config.kv_affinity.load_weight}\n"
+            f"    ├─ KV Affinity Load Gate TopN: {self.scheduler_config.kv_affinity.load_gate_topn}\n"
+            f"    ├─ KV Affinity W NPU:          {self.scheduler_config.kv_affinity.w_npu}\n"
+            f"    ├─ KV Affinity W CPU:          {self.scheduler_config.kv_affinity.w_cpu}\n"
+            f"    └─ KV Affinity W Disk:         {self.scheduler_config.kv_affinity.w_disk}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
             f"    └─ Num Workers: {self.inference_workers_config.num_workers}\n"

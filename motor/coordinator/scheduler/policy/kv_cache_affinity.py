@@ -38,7 +38,7 @@ from motor.coordinator.scheduler.policy.utils import (
 
 logger = get_logger(__name__)
 
-# Endpoints kept by the load-gated mode when kv_affinity_load_gate_topn is left unset (0).
+# Endpoints kept by the load-gated mode when kv_affinity.load_gate_topn is left unset (0).
 _DEFAULT_LOAD_GATE_TOPN = 2
 
 
@@ -62,6 +62,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         prefill_load_scale: float = 1.0,
         load_weight: float = 1.0,
         load_gate_topn: int = 0,
+        w_npu: float = 1.0,
+        w_cpu: float = 1.0,
+        w_disk: float = 0.0,
         top_k: int = 1,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
@@ -100,6 +103,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             (default 1.0); 0 makes the unified score affinity-only.
         :param load_gate_topn: number of least-loaded endpoints kept by the ``"load_gated"`` mode
             before the affinity ranking; 0 (default) falls back to 2. Ignored by ``"unified"``.
+        :param w_npu: weight for exclusive NPU matched blocks (default 1.0).
+        :param w_cpu: weight for exclusive CPU matched blocks (default 1.0).
+        :param w_disk: weight for exclusive Disk matched blocks (default 0.0).
         :param top_k: maximum number of ranked candidates to return (>=1).
         :returns: best-first ``[(instance, endpoint, score), ...]`` or ``None`` to fall back.
         """
@@ -133,6 +139,10 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
                 topn,
                 top_k,
                 req_info=req_info,
+                w_npu=w_npu,
+                w_cpu=w_cpu,
+                w_disk=w_disk,
+                block_size=block_size,
             )
 
         # "unified" (default); unknown modes fall through here too.
@@ -145,6 +155,10 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             load_weight,
             top_k,
             req_info=req_info,
+            w_npu=w_npu,
+            w_cpu=w_cpu,
+            w_disk=w_disk,
+            block_size=block_size,
         )
 
     @staticmethod
@@ -156,6 +170,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         prefill_load_scale: float = 1.0,
         load_weight: float = 1.0,
         load_gate_topn: int = 0,
+        w_npu: float = 1.0,
+        w_cpu: float = 1.0,
+        w_disk: float = 0.0,
     ) -> tuple[Instance, Endpoint] | None:
         """
         Single-result convenience wrapper over :meth:`select_endpoint_candidates_from_list`.
@@ -171,6 +188,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             prefill_load_scale=prefill_load_scale,
             load_weight=load_weight,
             load_gate_topn=load_gate_topn,
+            w_npu=w_npu,
+            w_cpu=w_cpu,
+            w_disk=w_disk,
             top_k=1,
         )
         if not ranked:
@@ -232,18 +252,47 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             return 0
 
     @staticmethod
+    def _weighted_matched_tokens(
+        matched_raw: object,
+        block_size: int,
+        w_npu: float,
+        w_cpu: float,
+        w_disk: float,
+    ) -> int:
+        """
+        Score a DP match for affinity.
+
+        Prefer exclusive ``*_blocks`` × tier weights × ``block_size``. Fall back to conductor
+        ``matched_tokens`` (or a plain int) when blocks are unavailable.
+        """
+        if isinstance(matched_raw, dict):
+            npu = matched_raw.get("npu_blocks")
+            cpu = matched_raw.get("cpu_blocks")
+            disk = matched_raw.get("disk_blocks")
+            if npu is not None or cpu is not None or disk is not None:
+                if block_size > 0:
+                    effective = float(npu or 0) * w_npu + float(cpu or 0) * w_cpu + float(disk or 0) * w_disk
+                    return int(round(effective * block_size))
+            return int(matched_raw.get("matched_tokens", 0) or 0)
+        return int(matched_raw or 0)
+
+    @staticmethod
     def _collect_load_candidates(
         instances: list[Instance],
         tenant: dict,
         isl: int,
         overlap_credit: float,
+        w_npu: float = 1.0,
+        w_cpu: float = 1.0,
+        w_disk: float = 0.0,
+        block_size: int = 0,
     ) -> tuple[list[tuple[float, int, float, Instance, Endpoint]], bool]:
         """
         Build the per-endpoint scoring tuples shared by the load-aware selection modes.
 
         Each candidate is ``(load_cost, matched_tokens, prefill_cost, instance, endpoint)`` where
         ``load_cost`` is the SHM-reported live workload and ``matched_tokens`` is the
-        conductor-reported cached prefix length capped at the prompt. Returns
+        tier-weighted affinity match capped at the prompt. Returns
         ``(candidates, any_instance)``; ``any_instance`` distinguishes "conductor reported nothing
         for our instances" (fall back) from "reported, but no endpoints".
         """
@@ -259,14 +308,7 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
             # already excludes headless endpoints / respects enable_multi_endpoints.
             for ep in instance.get_all_endpoints():
                 matched_raw = dp_map.get(f"{ep.id}", 0)
-                # Conductor reports per-DP match data. Since the multi-medium blocks
-                # revision (DpBlocks struct), the value is a dict with a "matched_tokens"
-                # key (plus "npu_blocks"/"cpu_blocks"/"disk_blocks" per-medium block counts);
-                # older conductors returned a plain int. Handle both.
-                if isinstance(matched_raw, dict):
-                    matched = matched_raw.get("matched_tokens", 0)
-                else:
-                    matched = matched_raw
+                matched = KvCacheAffinityPolicy._weighted_matched_tokens(matched_raw, block_size, w_npu, w_cpu, w_disk)
                 # Cap at the prompt length as a safety bound, since a matched prefix
                 # cannot be longer than the prompt itself.
                 matched_tokens = min(matched, isl) if isl > 0 else 0
@@ -317,6 +359,10 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         load_weight: float,
         top_k: int = 1,
         req_info: RequestInfo | None = None,
+        w_npu: float = 1.0,
+        w_cpu: float = 1.0,
+        w_disk: float = 0.0,
+        block_size: int = 0,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Unified cost: score every reported endpoint by affinity-discounted prefill
@@ -325,7 +371,16 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         herding onto a single hot-prefix endpoint. With ``load_weight == 0`` the score is
         affinity-only (longest prefix wins).
         """
-        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(instances, tenant, isl, overlap_credit)
+        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
+            instances,
+            tenant,
+            isl,
+            overlap_credit,
+            w_npu=w_npu,
+            w_cpu=w_cpu,
+            w_disk=w_disk,
+            block_size=block_size,
+        )
         if not any_instance:
             logger.warning("kv_cache_affinity(load-aware): no instance data")
             return None
@@ -365,6 +420,10 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         load_gate_topn: int,
         top_k: int = 1,
         req_info: RequestInfo | None = None,
+        w_npu: float = 1.0,
+        w_cpu: float = 1.0,
+        w_disk: float = 0.0,
+        block_size: int = 0,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Two-stage "load first, affinity second" ranking: keep only the ``load_gate_topn``
@@ -374,7 +433,16 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         This gives a *hard* load bound (the choice can never escape the least-loaded set) while
         still exploiting KV-cache affinity as the tie-break inside that set.
         """
-        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(instances, tenant, isl, overlap_credit)
+        raw, any_instance = KvCacheAffinityPolicy._collect_load_candidates(
+            instances,
+            tenant,
+            isl,
+            overlap_credit,
+            w_npu=w_npu,
+            w_cpu=w_cpu,
+            w_disk=w_disk,
+            block_size=block_size,
+        )
         if not any_instance:
             logger.warning("kv_cache_affinity(load-gated): no instance data")
             return None

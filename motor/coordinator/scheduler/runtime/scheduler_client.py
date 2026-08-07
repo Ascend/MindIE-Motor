@@ -48,6 +48,7 @@ from motor.common.logger import get_logger
 from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
+    KvAffinityConfig,
 )
 from motor.coordinator.fault_tolerance.precision.streak_result import (
     PrecisionStreakResult,
@@ -613,14 +614,8 @@ class SchedulerClientConfig:
     client_index: int = 0
     client_count: int = 1
     endpoint_instance_score_weight: float = 0.05
-    # kv_cache_affinity tunables (see SchedulerConfig). mode = "unified" | "load_gated".
-    kv_affinity_mode: str = KV_AFFINITY_MODE_UNIFIED
-    kv_affinity_load_weight: float = 1.0
-    kv_affinity_overlap_credit: float = 1.0
-    kv_affinity_prefill_load_scale: float = 1.0
-    # Load-gated affinity: keep only the N least-loaded endpoints, then pick the best prefix
-    # match among them. 0 disables it (uses the unified-score / legacy path instead).
-    kv_affinity_load_gate_topn: int = 0
+    # kv_cache_affinity tunables (see SchedulerConfig.kv_affinity).
+    kv_affinity: KvAffinityConfig | None = None
     tls_config: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
 
@@ -644,20 +639,24 @@ class AsyncSchedulerClient:
         self._request_id_prefix = uuid.uuid4().hex
         self._request_seq = 0
         self._endpoint_instance_score_weight = max(0.0, config.endpoint_instance_score_weight)
-        mode = str(config.kv_affinity_mode or KV_AFFINITY_MODE_UNIFIED).lower()
+        affinity = config.kv_affinity or KvAffinityConfig()
+        mode = str(affinity.mode or KV_AFFINITY_MODE_UNIFIED).lower()
         if mode not in KV_AFFINITY_MODES:
             logger.warning(
-                "Invalid kv_affinity_mode %r; expected one of %s. Falling back to %r.",
-                config.kv_affinity_mode,
+                "Invalid kv_affinity.mode %r; expected one of %s. Falling back to %r.",
+                affinity.mode,
                 KV_AFFINITY_MODES,
                 KV_AFFINITY_MODE_UNIFIED,
             )
             mode = KV_AFFINITY_MODE_UNIFIED
         self._kv_affinity_mode = mode
-        self._kv_affinity_load_weight = max(0.0, config.kv_affinity_load_weight)
-        self._kv_affinity_overlap_credit = max(0.0, config.kv_affinity_overlap_credit)
-        self._kv_affinity_prefill_load_scale = max(0.0, config.kv_affinity_prefill_load_scale)
-        self._kv_affinity_load_gate_topn = max(0, int(config.kv_affinity_load_gate_topn))
+        self._kv_affinity_load_weight = max(0.0, float(affinity.load_weight))
+        self._kv_affinity_overlap_credit = max(0.0, float(affinity.overlap_credit))
+        self._kv_affinity_prefill_load_scale = max(0.0, float(affinity.prefill_load_scale))
+        self._kv_affinity_load_gate_topn = max(0, int(affinity.load_gate_topn))
+        self._kv_affinity_w_npu = max(0.0, float(affinity.w_npu))
+        self._kv_affinity_w_cpu = max(0.0, float(affinity.w_cpu))
+        self._kv_affinity_w_disk = max(0.0, float(affinity.w_disk))
 
         self._serializer = ZMQMessageSerializer()
         self._transport = _SchedulerTransport(config.scheduler_address, config.timeout, self._serializer)
@@ -1572,6 +1571,9 @@ class AsyncSchedulerClient:
                     prefill_load_scale=self._kv_affinity_prefill_load_scale,
                     load_weight=self._kv_affinity_load_weight,
                     load_gate_topn=self._kv_affinity_load_gate_topn,
+                    w_npu=self._kv_affinity_w_npu,
+                    w_cpu=self._kv_affinity_w_cpu,
+                    w_disk=self._kv_affinity_w_disk,
                     top_k=max(1, top_k),
                 )
                 if ranked:

@@ -168,11 +168,16 @@
     "scheduler_config": {
       "scheduler_type": "load_balance",
       "endpoint_instance_score_weight": 0.05,
-      "kv_affinity_mode": "unified",
-      "kv_affinity_load_weight": 1.0,
-      "kv_affinity_overlap_credit": 1.0,
-      "kv_affinity_prefill_load_scale": 1.0,
-      "kv_affinity_load_gate_topn": 0
+      "kv_affinity": {
+        "mode": "unified",
+        "load_weight": 1.0,
+        "overlap_credit": 1.0,
+        "prefill_load_scale": 1.0,
+        "load_gate_topn": 0,
+        "w_npu": 1.0,
+        "w_cpu": 1.0,
+        "w_disk": 0.0
+      }
     },
     "inference_workers_config": {
       "num_workers": 4

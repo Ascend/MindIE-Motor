@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -76,11 +75,7 @@ class SchedulerConnectionManager:
             client_index=client_index,
             client_count=client_count,
             endpoint_instance_score_weight=(coordinator_config.scheduler_config.endpoint_instance_score_weight),
-            kv_affinity_mode=(coordinator_config.scheduler_config.kv_affinity_mode),
-            kv_affinity_load_weight=(coordinator_config.scheduler_config.kv_affinity_load_weight),
-            kv_affinity_overlap_credit=(coordinator_config.scheduler_config.kv_affinity_overlap_credit),
-            kv_affinity_prefill_load_scale=(coordinator_config.scheduler_config.kv_affinity_prefill_load_scale),
-            kv_affinity_load_gate_topn=(coordinator_config.scheduler_config.kv_affinity_load_gate_topn),
+            kv_affinity=coordinator_config.scheduler_config.kv_affinity,
             tls_config=coordinator_config.infer_tls_config,
             on_instance_refreshed=on_instance_refreshed,
         )

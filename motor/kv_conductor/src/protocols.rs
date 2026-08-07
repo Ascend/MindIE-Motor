@@ -241,19 +241,19 @@ pub struct QueryByHashRequest {
 /// Per-DP matched block counts across storage media.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct DpBlocks {
-    /// Cached prefix length for this DP, in tokens:
-    /// farthest absolute coverage end across media × `block_size`.
+    /// Unweighted coverage for this DP, in tokens:
+    /// `(npu_blocks + cpu_blocks + disk_blocks) × block_size`.
     ///
-    /// Per-medium `*_blocks` are segment lengths (HBM from root; CPU/Disk
-    /// from their continuation **or** an unconditional root chain — replicas
-    /// are reported on every tier). `matched_tokens` must not sum
-    /// overlapping replicas of the same prefix.
+    /// Per-medium `*_blocks` are exclusive contributions after partitioning
+    /// absolute coverage ends with priority NPU > CPU > Disk (replicas of the
+    /// same prefix are attributed to the highest tier only). Coordinator
+    /// applies tier affinity weights when scoring.
     pub matched_tokens: u32,
-    /// HBM (NPU) matched block count.
+    /// Exclusive HBM (NPU) matched block count.
     pub npu_blocks: u32,
-    /// CPU matched block count.
+    /// Exclusive CPU matched block count (beyond NPU coverage).
     pub cpu_blocks: u32,
-    /// Disk matched block count.
+    /// Exclusive Disk matched block count (beyond max(NPU, CPU) coverage).
     pub disk_blocks: u32,
 }
 

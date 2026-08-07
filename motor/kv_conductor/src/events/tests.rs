@@ -1644,7 +1644,7 @@ fn test_vllm_parent_hash_cross_event_chain() {
     let entry = indexer.get_or_create("m", "t");
     let scores = entry.find_matches(&tokens, block_size);
     let matched = scores.blocks.get(&wk).expect("should match HBM chain");
-    // Per-medium overlap is matched block count (no weighted scoring).
+    // Per-medium overlap is matched block count before exclusive/weight scoring.
     assert_eq!(
         *matched, 4,
         "4-block HBM chain should match depth=4, got {matched}"

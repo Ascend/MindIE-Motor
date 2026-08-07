@@ -49,11 +49,11 @@
 同一实例同一 DP 的 HBM / CPU / Disk 块是三个不同的 WorkerKey，查询时按 `(instance_id, dp_rank)`
 聚合跨介质命中。`backend_id` 是块的来源后端（引擎实例或 pool daemon），用于事件路由。
 
-**匹配语义**：查询结果按介质分别报告**连续匹配的 block 数**（`npu_blocks` / `cpu_blocks` /
-`disk_blocks`，均为段长——各层如实报告、层间可重叠，root 链无条件走，更长副本不被上游
-较短命中掩盖）。`matched_tokens = 各介质覆盖终点的最大值 × block_size`
-（同前缀在 NPU/CPU/Disk 的副本不重复累计、不为段长之和，保证 ≤ 输入长度），亲和性评分
-由 Coordinator 调度器（`kv_cache_affinity` 策略）基于 `matched_tokens` 完成。
+**匹配语义**：查询先收集每 DP 各介质的绝对覆盖终点，再按优先级 NPU > CPU > Disk
+互斥切分为 `npu_blocks` / `cpu_blocks` / `disk_blocks`（同前缀副本只归最高优先级介质）。
+`matched_tokens = (npu + cpu + disk) × block_size`（未加权真实覆盖）。亲和性评分由
+Coordinator 调度器（`kv_cache_affinity`）按 `*_blocks` 与配置项
+`scheduler_config.kv_affinity.w_npu/w_cpu/w_disk`（默认 `1.0/1.0/0.0`）加权后完成。
 
 ---
 
@@ -175,9 +175,10 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
     edge(None, H0) -> ... walk until first missing edge
     -> compare with a); keep farther absolute end
 
-  W1: npu_blocks=2, cpu_blocks=<segment length of farthest end>
-  matched_tokens = max(coverage ends) * block_size
-                  // do not sum overlapping replicas
+  Absolute ends: npu_end=2, cpu_end=<farthest absolute end>
+  Exclusive: npu_blocks=npu_end, cpu_blocks=max(0, cpu_end-npu_end)
+  matched_tokens = (npu + cpu + disk) × block_size   // unweighted coverage
+  // Coordinator affinity: round((npu×w_npu + cpu×w_cpu + disk×w_disk) × block_size)
 ```
 
 ---
@@ -363,14 +364,13 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
                            ▼
   ┌─ Phase 4: Aggregate ─────────────────────────────────────┐
   │  build_response:                                         │
-  │    per (instance, dp_rank): coverage_end =               │
-  │      max absolute end across HBM / CPU / Disk            │
-  │      segment ends                                        │
-  │    dp.matched_tokens = coverage_end * block_size         │
-  │      (no double-count same-prefix replicas;              │
-  │       always <= input length)                            │
+  │    per (instance, dp_rank):                              │
+  │      collect npu_end / cpu_end / disk_end                │
+  │      exclusive *_blocks (NPU > CPU > Disk)               │
+  │      matched_tokens = (npu + cpu + disk) × block_size    │
   │    longest_matched = max(matched_tokens) across          │
   │      DP ranks                                            │
+  │  (tier weights applied later by Coordinator affinity)    │
   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -384,11 +384,9 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
 | 保证 | 匹配的块形成合法前缀链 | 与 HBM 衔接的续接链 + 本层更长副本均可如实报告 |
 
 断点续查保证三层命中块是**同一条连续前缀**，与 vLLM prefix cache 的查找语义
-（NPU → CPU → Disk 依次续接）一致。root 链无条件并行走查是为了**如实报告副本**：
-CPU/Disk 持有的完整副本（哪怕上游只命中较短前缀）会被报告为真实段长，且当副本更长时
-扩展覆盖终点；由于 `matched_tokens` 是终点取 max（绝不求和），root 链重复扫描上层
-已覆盖的块不会造成虚增——这正是弃用旧 `skip_root` 规则的原因（旧规则在 coverage
-语义下只会制造低估）。
+（NPU → CPU → Disk 依次续接）一致。root 链无条件并行走查是为了发现下层更长根副本
+或仅下层命中；响应侧再按绝对终点做互斥切分，同前缀副本不会重复计入 `*_blocks` /
+加权 `matched_tokens`——这正是弃用旧 `skip_root` 规则的原因（旧规则只会制造低估）。
 
 ### 为什么是连续匹配而不是平铺索引？
 

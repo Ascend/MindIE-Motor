@@ -38,7 +38,7 @@ def _make_config() -> MagicMock:
     cfg = MagicMock()
     cfg.scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
     cfg.scheduler_config.endpoint_instance_score_weight = 1.0
-    cfg.scheduler_config.kv_affinity_load_weight = 0.5
+    cfg.scheduler_config.kv_affinity.load_weight = 0.5
     cfg.exception_config.max_retry = 1
     cfg.exception_config.retry_delay = 0.0001
     cfg.exception_config.reschedule_enabled = False

@@ -233,11 +233,16 @@ motor_coordinator_config字段配置样例如下所示：
     "scheduler_type": "load_balance",
     "enable_pd_separation_fallback_to_hybrid": true,
     "endpoint_instance_score_weight": 0.05,
-    "kv_affinity_mode": "unified",
-    "kv_affinity_load_weight": 1.0,
-    "kv_affinity_overlap_credit": 1.0,
-    "kv_affinity_prefill_load_scale": 1.0,
-    "kv_affinity_load_gate_topn": 0
+    "kv_affinity": {
+      "mode": "unified",
+      "load_weight": 1.0,
+      "overlap_credit": 1.0,
+      "prefill_load_scale": 1.0,
+      "load_gate_topn": 0,
+      "w_npu": 1.0,
+      "w_cpu": 1.0,
+      "w_disk": 0.0
+    }
   },
   "inference_workers_config": {
     "num_workers": 4
@@ -385,11 +390,16 @@ motor_coordinator_config字段配置样例如下所示：
 | scheduler_type | string | 调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
 | enable_pd_separation_fallback_to_hybrid | bool | PD分离场景下，当D实例不可用或P/D实例不满足调度条件时，是否允许降级使用混部路由，默认值为 `true` |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认：`0.05` |
-| kv_affinity_mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
-| kv_affinity_load_weight | float | unified 模式下 endpoint 实时负载权重。默认值：`1.0` |
-| kv_affinity_overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数。默认值：`1.0` |
-| kv_affinity_prefill_load_scale | float | unified 模式下（经亲和折扣后的）prefill 成本权重。默认值：`1.0` |
-| kv_affinity_load_gate_topn | int | load_gated 模式下先保留负载最低的 N 个 endpoint 再做亲和择优；`0` 时回退为 `2`。默认值：`0` |
+| kv_affinity | object | KV Cache 亲和性调度参数（见下表） |
+| **kv_affinity 字段** |-|-|
+| mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
+| load_weight | float | unified 模式下 endpoint 实时负载权重。默认值：`1.0` |
+| overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数。默认值：`1.0` |
+| prefill_load_scale | float | unified 模式下（经亲和折扣后的）prefill 成本权重。默认值：`1.0` |
+| load_gate_topn | int | load_gated 模式下先保留负载最低的 N 个 endpoint 再做亲和择优；`0` 时回退为 `2`。默认值：`0` |
+| w_npu | float | 互斥 NPU 命中块权重。默认值：`1.0` |
+| w_cpu | float | 互斥 CPU 命中块权重。默认值：`1.0` |
+| w_disk | float | 互斥 Disk 命中块权重。默认值：`0.0` |
 | **inference_workers_config字段** |-|-|
 | num_workers | int | Coordinator中业务面worker个数，默认值：4。 |
 | **timeout_config字段** |-|-|

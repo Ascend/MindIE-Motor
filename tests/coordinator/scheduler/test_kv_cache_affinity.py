@@ -302,6 +302,136 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         # Both have equal load; ep 0 has longer cached prefix (800 > 100 tokens) → lower prefill cost → chosen.
         self.assertEqual(result[1].id, 0)
 
+    @patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=4)
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_default_tier_weights_ignore_disk_blocks(
+        self, mock_tokenizer_manager, mock_query_conductor, _mock_block_size
+    ):
+        """Default w_disk=0: Disk-only match does not beat empty NPU/CPU affinity."""
+        ep_disk = _make_endpoint(0, active_tokens=50.0)
+        ep_empty = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_disk, 1: ep_empty}}
+        mock_instance.get_all_endpoints.return_value = (ep_disk, ep_empty)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(16))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        mock_query_conductor.return_value = {
+            TENANT_ID: {
+                "vllm-prefill-inst": {
+                    "DP": {
+                        "0": {
+                            "npu_blocks": 0,
+                            "cpu_blocks": 0,
+                            "disk_blocks": 3,
+                            "matched_tokens": 12,
+                        },
+                        "1": {
+                            "npu_blocks": 0,
+                            "cpu_blocks": 0,
+                            "disk_blocks": 0,
+                            "matched_tokens": 0,
+                        },
+                    }
+                }
+            }
+        }
+
+        # Affinity ties at 0 matched tokens under default w_disk=0; load also ties → stable first.
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info, load_weight=0.0)
+        self.assertIsNotNone(result)
+        matched = KvCacheAffinityPolicy._weighted_matched_tokens(
+            {
+                "npu_blocks": 0,
+                "cpu_blocks": 0,
+                "disk_blocks": 3,
+                "matched_tokens": 12,
+            },
+            block_size=4,
+            w_npu=1.0,
+            w_cpu=1.0,
+            w_disk=0.0,
+        )
+        self.assertEqual(matched, 0)
+
+    @patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=4)
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_custom_cpu_weight_affects_affinity_ranking(
+        self, mock_tokenizer_manager, mock_query_conductor, _mock_block_size
+    ):
+        """w_cpu=0.5 makes a longer CPU-only hit lose to a shorter NPU hit."""
+        ep_npu = _make_endpoint(0, active_tokens=10.0)
+        ep_cpu = _make_endpoint(1, active_tokens=10.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_npu, 1: ep_cpu}}
+        mock_instance.get_all_endpoints.return_value = (ep_npu, ep_cpu)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        # isl=16; NPU exclusive 2 blocks → 8 tokens; CPU exclusive 3 → 0.5*3*4=6 tokens
+        mock_tokenizer.encode.return_value = list(range(16))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        mock_query_conductor.return_value = {
+            TENANT_ID: {
+                "vllm-prefill-inst": {
+                    "DP": {
+                        "0": {
+                            "npu_blocks": 2,
+                            "cpu_blocks": 0,
+                            "disk_blocks": 0,
+                            "matched_tokens": 8,
+                        },
+                        "1": {
+                            "npu_blocks": 0,
+                            "cpu_blocks": 3,
+                            "disk_blocks": 0,
+                            "matched_tokens": 12,
+                        },
+                    }
+                }
+            }
+        }
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(
+            instances,
+            mock_req_info,
+            load_weight=0.0,
+            w_npu=1.0,
+            w_cpu=0.5,
+            w_disk=0.0,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1].id, 0)
+
+    def test_weighted_matched_tokens_fallback_without_blocks(self):
+        """Legacy plain int / missing *_blocks falls back to matched_tokens."""
+        self.assertEqual(
+            KvCacheAffinityPolicy._weighted_matched_tokens(200, block_size=4, w_npu=1, w_cpu=1, w_disk=0),
+            200,
+        )
+        self.assertEqual(
+            KvCacheAffinityPolicy._weighted_matched_tokens(
+                {"matched_tokens": 120},
+                block_size=4,
+                w_npu=1.0,
+                w_cpu=1.0,
+                w_disk=0.0,
+            ),
+            120,
+        )
+
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_mixed_dp_format_old_and_new(self, mock_tokenizer_manager, mock_query_conductor):
@@ -857,24 +987,26 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
         return AsyncSchedulerClient(SchedulerClientConfig(scheduler_type="kv_cache_affinity"))
 
     def test_invalid_mode_warns_and_falls_back_to_unified(self):
-        """An invalid kv_affinity_mode logs a warning and falls back to unified (not silent)."""
+        """An invalid kv_affinity.mode logs a warning and falls back to unified (not silent)."""
         from motor.coordinator.scheduler.runtime.scheduler_client import (
             AsyncSchedulerClient,
             SchedulerClientConfig,
         )
         from motor.config.coordinator import KV_AFFINITY_MODE_UNIFIED
 
+        from motor.config.coordinator import KvAffinityConfig
+
         with patch("motor.coordinator.scheduler.runtime.scheduler_client.logger.warning") as warn:
             client = AsyncSchedulerClient(
                 SchedulerClientConfig(
                     scheduler_type="kv_cache_affinity",
-                    kv_affinity_mode="bogus",
+                    kv_affinity=KvAffinityConfig(mode="bogus"),
                 )
             )
         self.assertEqual(client._kv_affinity_mode, KV_AFFINITY_MODE_UNIFIED)
         self.assertTrue(
-            any("kv_affinity_mode" in str(c.args[0]) for c in warn.call_args_list),
-            "expected a warning mentioning kv_affinity_mode",
+            any("kv_affinity.mode" in str(c.args[0]) for c in warn.call_args_list),
+            "expected a warning mentioning kv_affinity.mode",
         )
 
     def test_prefill_affinity_hit_uses_affinity(self):

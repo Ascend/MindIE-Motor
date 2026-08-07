@@ -793,3 +793,76 @@ def test_from_json_maps_prefill_kv_events_regression(_temp_json_file):
     assert kr.model_path == "/mnt/weight/qwen3_8B"
     assert kr.http_server_port == 15555
     assert kr.block_size == 32
+
+
+def test_from_json_loads_nested_kv_affinity(_temp_json_file):
+    test_config = {
+        "scheduler_config": {
+            "scheduler_type": "kv_cache_affinity",
+            "kv_affinity": {
+                "mode": "load_gated",
+                "load_weight": 2.0,
+                "overlap_credit": 0.5,
+                "prefill_load_scale": 1.5,
+                "load_gate_topn": 3,
+                "w_npu": 1.0,
+                "w_cpu": 0.5,
+                "w_disk": 0.25,
+            },
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    affinity = config.scheduler_config.kv_affinity
+    assert affinity.mode == "load_gated"
+    assert affinity.load_weight == 2.0
+    assert affinity.overlap_credit == 0.5
+    assert affinity.prefill_load_scale == 1.5
+    assert affinity.load_gate_topn == 3
+    assert affinity.w_npu == 1.0
+    assert affinity.w_cpu == 0.5
+    assert affinity.w_disk == 0.25
+
+
+def test_from_json_migrates_legacy_flat_kv_affinity_keys(_temp_json_file, caplog):
+    test_config = {
+        "scheduler_config": {
+            "scheduler_type": "kv_cache_affinity",
+            "kv_affinity_mode": "load_gated",
+            "kv_affinity_load_weight": 2.0,
+            "kv_affinity_w_cpu": 0.5,
+            "kv_affinity_w_disk": 0.1,
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    affinity = config.scheduler_config.kv_affinity
+    assert affinity.mode == "load_gated"
+    assert affinity.load_weight == 2.0
+    assert affinity.w_cpu == 0.5
+    assert affinity.w_disk == 0.1
+    assert "kv_affinity_* flat keys are deprecated" in caplog.text
+
+
+def test_from_json_nested_kv_affinity_wins_over_legacy_flat(_temp_json_file):
+    test_config = {
+        "scheduler_config": {
+            "kv_affinity_mode": "load_gated",
+            "kv_affinity_load_weight": 9.0,
+            "kv_affinity": {
+                "mode": "unified",
+                "load_weight": 1.5,
+            },
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    affinity = config.scheduler_config.kv_affinity
+    assert affinity.mode == "unified"
+    assert affinity.load_weight == 1.5

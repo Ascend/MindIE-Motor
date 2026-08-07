@@ -145,8 +145,10 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 "motor_coordinator_config": {
   "scheduler_config": {
     "scheduler_type": "kv_cache_affinity",
-    "kv_affinity_mode": "unified",
-    "kv_affinity_load_weight": 1.0
+    "kv_affinity": {
+      "mode": "unified",
+      "load_weight": 1.0
+    }
   }
 }
 ```
@@ -156,11 +158,12 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
 | scheduler_config.scheduler_type | string | 调度类型。默认 `load_balance`；启用 KV 亲和时配置为 `kv_cache_affinity` |
-| scheduler_config.kv_affinity_mode | string | KV 亲和子策略：`unified`（默认）或 `load_gated` |
-| scheduler_config.kv_affinity_load_weight | float | unified 模式下负载权重，默认 `1.0` |
-| scheduler_config.kv_affinity_overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数，默认 `1.0` |
-| scheduler_config.kv_affinity_prefill_load_scale | float | unified 模式下 prefill 成本权重，默认 `1.0` |
-| scheduler_config.kv_affinity_load_gate_topn | int | load_gated 模式下保留的最小负载 endpoint 数量；`0` 时回退为 `2` |
+| scheduler_config.kv_affinity.mode | string | KV 亲和子策略：`unified`（默认）或 `load_gated` |
+| scheduler_config.kv_affinity.load_weight | float | unified 模式下负载权重，默认 `1.0` |
+| scheduler_config.kv_affinity.overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数，默认 `1.0` |
+| scheduler_config.kv_affinity.prefill_load_scale | float | unified 模式下 prefill 成本权重，默认 `1.0` |
+| scheduler_config.kv_affinity.load_gate_topn | int | load_gated 模式下保留的最小负载 endpoint 数量；`0` 时回退为 `2` |
+| scheduler_config.kv_affinity.w_npu / w_cpu / w_disk | float | 互斥介质命中块权重，默认 `1.0` / `1.0` / `0.0` |
 
 ### motor_engine_union_config（混部引擎）
 

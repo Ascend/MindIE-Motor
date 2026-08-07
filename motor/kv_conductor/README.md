@@ -86,9 +86,9 @@ TTL 清理由后台周期任务完成，ingest 路径不再执行惰性全量扫
 
 ## 功能
 
-KV Conductor 维护三层存储介质的 KV Cache 索引，每层独立追踪连续匹配的 block 数。
-查询结果返回**各介质 block 计数**与换算后的 `matched_tokens`；亲和性评分由
-Coordinator 调度器基于 `matched_tokens` 完成。
+KV Conductor 维护三层存储介质的 KV Cache 索引，按绝对覆盖终点做互斥切分后
+返回各介质 `*_blocks` 与未加权覆盖长度 `matched_tokens`；介质亲和权重由
+Coordinator 调度器（`kv_affinity_w_*`）在计分时应用。
 
 ### HBM（NPU）— 统一模型
 
@@ -183,10 +183,10 @@ Coordinator                                  KV Conductor
       │        "longest_matched": 640,         │  <- max matched_tokens across DPs
       │        "DP": {                         │
       │          "0": {                        │
-      │            "matched_tokens": 640,      │  <- coverage_end * block_size
-      │            "npu_blocks": 3,            │  <- HBM contiguous hit length
-      │            "cpu_blocks": 2,            │  <- CPU winning segment length
-      │            "disk_blocks": 0            │  <- Disk winning segment length
+      │            "matched_tokens": 640,      │  <- exclusive sum × block_size
+      │            "npu_blocks": 3,            │  <- exclusive NPU blocks
+      │            "cpu_blocks": 2,            │  <- exclusive CPU beyond NPU
+      │            "disk_blocks": 0            │  <- exclusive Disk beyond max(NPU,CPU)
       │          }                             │
       │        }                               │
       │      }                                 │
@@ -195,15 +195,24 @@ Coordinator                                  KV Conductor
       │<───────────────────────────────────────│
 ```
 
-字段计算：
+字段计算（每 DP / rank）：
+
+1. 收集各介质绝对覆盖终点 `npu_end` / `cpu_end` / `disk_end`
+2. 互斥切分（优先级 NPU > CPU > Disk）：
+   - `npu_blocks = npu_end`
+   - `cpu_blocks = max(0, cpu_end - npu_end)`
+   - `disk_blocks = max(0, disk_end - max(npu_end, cpu_end))`
+3. `matched_tokens = (npu + cpu + disk) × block_size`（未加权覆盖）
+4. `longest_matched = max(各 DP matched_tokens)`
 
 | 字段 | 含义 |
 |------|------|
-| `npu_blocks` / `cpu_blocks` / `disk_blocks` | 该 DP 在各介质上的最长连续匹配 block 数（段长；各层如实报告，层间可重叠——副本不会被上游较短命中掩盖） |
-| `matched_tokens` | 各介质绝对覆盖终点的最大值 × `block_size`（永不等于段长之和；同前缀多副本不重复计，≤ 输入长度） |
+| `npu_blocks` / `cpu_blocks` / `disk_blocks` | 该 DP 互斥真实命中块数（同前缀副本只归最高优先级介质） |
+| `matched_tokens` | 互斥块数之和 × `block_size`（真实覆盖长度） |
 | `longest_matched` | 该实例所有 DP 的 `matched_tokens` 最大值 |
 
-调度器实际只消费 `DP[<dp_rank>].matched_tokens`（见亲和性调度文档）。
+调度器读取 `DP[<dp_rank>]` 的 `*_blocks`，按 `scheduler_config.kv_affinity`
+中的 `w_npu/w_cpu/w_disk`（默认 `1.0/1.0/0.0`）加权后再算亲和分（见亲和性调度文档）。
 
 ## 启动参数
 

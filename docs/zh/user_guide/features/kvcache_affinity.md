@@ -12,10 +12,11 @@ kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 w
 
 **分工**：
 
-- **kv-conductor**：索引三层介质（NPU HBM / CPU / Disk），查询时返回各 DP 的连续命中
-  `npu_blocks` / `cpu_blocks` / `disk_blocks`（段长），以及换算后的 `matched_tokens`
-  （各介质覆盖终点最大值 × `block_size`，同前缀多副本不重复累计）。
-- **Coordinator 调度器**：读取 `matched_tokens`，与 endpoint 实时负载融合后选路。
+- **kv-conductor**：索引三层介质（NPU HBM / CPU / Disk），查询时返回各 DP 的互斥命中
+  `npu_blocks` / `cpu_blocks` / `disk_blocks`，以及未加权覆盖长度 `matched_tokens`
+  （互斥块之和 × `block_size`）。
+- **Coordinator 调度器**：按 `*_blocks` 与 `scheduler_config.kv_affinity` 中的介质权重
+  加权得到亲和匹配长度，再与 endpoint 实时负载融合后选路。
 
 **子策略**：
 
@@ -116,10 +117,15 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
   "motor_coordinator_config": {
     "scheduler_config": {
       "scheduler_type": "kv_cache_affinity",
-      "kv_affinity_mode": "unified",
-      "kv_affinity_load_weight": 1.0,
-      "kv_affinity_overlap_credit": 1.0,
-      "kv_affinity_prefill_load_scale": 1.0
+      "kv_affinity": {
+        "mode": "unified",
+        "load_weight": 1.0,
+        "overlap_credit": 1.0,
+        "prefill_load_scale": 1.0,
+        "w_npu": 1.0,
+        "w_cpu": 1.0,
+        "w_disk": 0.0
+      }
     }
   },
   "motor_engine_prefill_config": {
@@ -163,7 +169,9 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
     "scheduler_config": {
       "deploy_mode": "single_node",
       "scheduler_type": "kv_cache_affinity",
-      "kv_affinity_mode": "unified"
+      "kv_affinity": {
+        "mode": "unified"
+      }
     }
   },
   "motor_engine_union_config": {
@@ -227,11 +235,14 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | 配置项 | 类型 | 取值范围 | 说明 |
 |--------|------|----------|------|
 | **scheduler_type** | string | `kv_cache_affinity` | 启用 KV Cache 亲和性调度 |
-| **kv_affinity_mode** | string | `unified` / `load_gated` | 评分子策略，默认 `unified` |
-| **kv_affinity_load_weight** | float | `[0, +∞)` | `unified` 下 endpoint 实时负载权重。`1.0`（默认）与亲和折扣后的 prefill 成本同等重要；`0` 表示纯亲和性 |
-| **kv_affinity_overlap_credit** | float | `[0, +∞)` | 缓存前缀对 prefill 成本的折扣系数。值越大，已缓存前缀折扣越高。默认 `1.0` |
-| **kv_affinity_prefill_load_scale** | float | `[0, +∞)` | `unified` 下亲和折扣后的 prefill 成本权重。默认 `1.0` |
-| **kv_affinity_load_gate_topn** | int | `[0, +∞)` | `load_gated` 下保留负载最低的 N 个 endpoint。`0` 时回退为 `2`（默认 `0`） |
+| **kv_affinity.mode** | string | `unified` / `load_gated` | 评分子策略，默认 `unified` |
+| **kv_affinity.load_weight** | float | `[0, +∞)` | `unified` 下 endpoint 实时负载权重。`1.0`（默认）与亲和折扣后的 prefill 成本同等重要；`0` 表示纯亲和性 |
+| **kv_affinity.overlap_credit** | float | `[0, +∞)` | 缓存前缀对 prefill 成本的折扣系数。值越大，已缓存前缀折扣越高。默认 `1.0` |
+| **kv_affinity.prefill_load_scale** | float | `[0, +∞)` | `unified` 下亲和折扣后的 prefill 成本权重。默认 `1.0` |
+| **kv_affinity.load_gate_topn** | int | `[0, +∞)` | `load_gated` 下保留负载最低的 N 个 endpoint。`0` 时回退为 `2`（默认 `0`） |
+| **kv_affinity.w_npu** | float | `[0, +∞)` | 互斥 NPU 命中块权重。默认 `1.0` |
+| **kv_affinity.w_cpu** | float | `[0, +∞)` | 互斥 CPU 命中块权重。默认 `1.0` |
+| **kv_affinity.w_disk** | float | `[0, +∞)` | 互斥 Disk 命中块权重。默认 `0.0`（默认不计 Disk） |
 
 ### `kv-events-config`（引擎侧 KV 事件发布配置）
 
@@ -283,7 +294,7 @@ hash_block_size = 512
 
 1. **KV Cache 事件发布**：P 实例完成 prefill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 block hashes、token IDs、parent hash 等）。
 2. **Conductor 索引**：kv-conductor 通过 ZMQ SUB 订阅引擎事件，根据 token IDs 重算 XXH3 内容哈希，构建 HBM RadixTree + CPU/Disk continuation-edge 索引。
-3. **亲和性调度决策**：Coordinator（`scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，读取各 endpoint 的 `matched_tokens`，按评分策略选择最优 Worker。
+3. **亲和性调度决策**：Coordinator（`scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度，再按评分策略选择最优 Worker。
 
 ### Conductor 查询结果
 
@@ -309,8 +320,8 @@ hash_block_size = 512
 
 | 字段 | 计算 |
 |------|------|
-| `npu_blocks` / `cpu_blocks` / `disk_blocks` | 各介质连续命中的段长（CPU/Disk 为 root / 断点候选中胜出者的段长，可与上层重叠） |
-| `matched_tokens` | 各介质覆盖终点的最大值 × `block_size`（同前缀多副本不重复累计，≤ 输入长度） |
+| `npu_blocks` / `cpu_blocks` / `disk_blocks` | 互斥真实命中块数（优先级 NPU > CPU > Disk；同前缀副本只归最高层） |
+| `matched_tokens` | `(npu + cpu + disk) × block_size`（未加权真实覆盖） |
 | `longest_matched` | 实例内各 DP `matched_tokens` 的最大值 |
 
 匹配方式：
@@ -323,13 +334,17 @@ hash_block_size = 512
 
 ### 调度评分模型
 
-调度器只使用 `DP[<dp_rank>].matched_tokens`（兼容旧版裸 `int`），并截断为不超过 prompt 长度 `isl`：
+调度器优先使用 `DP[<dp_rank>]` 的互斥 `*_blocks` 按介质权重计分（兼容旧版裸 `int` /
+仅有 `matched_tokens` 的响应），并截断为不超过 prompt 长度 `isl`：
 
 ```text
-matched_tokens = min(conductor.matched_tokens, isl)
-prefill_cost   = max(0, isl − overlap_credit × matched_tokens)
-load_cost      = endpoint 实时 workload
+effective_blocks = npu×w_npu + cpu×w_cpu + disk×w_disk
+matched_tokens   = min(round(effective_blocks × block_size), isl)
+prefill_cost     = max(0, isl − overlap_credit × matched_tokens)
+load_cost        = endpoint 实时 workload
 ```
+
+默认权重：`w_npu=1.0`，`w_cpu=1.0`，`w_disk=0.0`。
 
 **`unified`（默认，分数越低越好）**：
 
@@ -342,7 +357,7 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 
 **`load_gated`**：
 
-1. 按 `load_cost` 升序保留最低的 N 个 endpoint（`N = kv_affinity_load_gate_topn`，≤0 时为 2）
+1. 按 `load_cost` 升序保留最低的 N 个 endpoint（`N = kv_affinity.load_gate_topn`，≤0 时为 2）
 2. 在候选集内按 `matched_tokens` 降序、`load_cost` 升序排序
 
 ### 部署流程
@@ -360,9 +375,9 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 
 | 场景 | 建议 |
 |------|------|
-| 纯吞吐优先 | `kv_affinity_mode: unified`，`kv_affinity_load_weight: 0`（纯亲和性，不感知负载） |
-| 负载均衡优先 | `kv_affinity_mode: unified`，`kv_affinity_load_weight: 2.0`（负载权重更高） |
-| 延迟敏感（保守） | `kv_affinity_mode: load_gated`，`kv_affinity_load_gate_topn: 3`（只在低负载中选最优前缀） |
+| 纯吞吐优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 0`（纯亲和性，不感知负载） |
+| 负载均衡优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 2.0`（负载权重更高） |
+| 延迟敏感（保守） | `kv_affinity.mode: load_gated`，`kv_affinity.load_gate_topn: 3`（只在低负载中选最优前缀） |
 | DeepSeek V4 | `block_size: 512`（引擎 `--block-size` 同步设为 512） |
 | `http_server_port` | 确保不与集群其他服务端口冲突，默认 `13333` |
 

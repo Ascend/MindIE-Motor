@@ -24,7 +24,9 @@
 //!   originating `parent_hash` so that lower-tier continuation edges are
 //!   correctly chained once the pool backend confirms placement.
 //!
-//! Query results report matched block counts per medium (no weighted scoring).
+//! Query results report exclusive per-medium matched blocks and unweighted
+//! coverage `matched_tokens` (sum of exclusive blocks × `block_size`).
+//! Tier affinity weights are applied by the Coordinator scheduler.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,6 +68,14 @@ impl Default for CacheMaintenanceConfig {
             offload_ttl: OFFLOAD_TTL,
         }
     }
+}
+
+/// Per-DP absolute coverage ends (in blocks) on each storage medium.
+#[derive(Debug, Clone, Copy, Default)]
+struct MediumEnds {
+    npu: u32,
+    cpu: u32,
+    disk: u32,
 }
 
 /// Upstream-tier match breakpoint used to continue into the next lower tier.
@@ -248,18 +258,17 @@ impl IndexerEntry {
         self.find_matches_with_coverage(block_hashes).0
     }
 
-    /// Query with per-DP absolute coverage end (in blocks).
+    /// Query with per-DP absolute coverage ends per medium (in blocks).
     ///
-    /// `npu_blocks` / `cpu_blocks` / `disk_blocks` remain per-medium segment
-    /// lengths. `coverage_end` is the farthest absolute prefix end across
-    /// media for each `(instance_id, dp_rank)` — used for `matched_tokens`
-    /// so overlapping replicas (same prefix on NPU+CPU+Disk) are not summed.
+    /// Matching still records per-worker segment lengths in `OverlapBlocks`
+    /// (for diagnostics / unit tests). Response assembly uses `MediumEnds`
+    /// absolute ends, then exclusive-partitions them into `*_blocks`.
     fn find_matches_with_coverage(
         &self,
         block_hashes: &[LocalBlockHash],
-    ) -> (OverlapBlocks, FxHashMap<(String, DpRank), u32>) {
+    ) -> (OverlapBlocks, FxHashMap<(String, DpRank), MediumEnds>) {
         let mut overlap = OverlapBlocks::default();
-        let mut coverage_end: FxHashMap<(String, DpRank), u32> = FxHashMap::default();
+        let mut medium_ends: FxHashMap<(String, DpRank), MediumEnds> = FxHashMap::default();
 
         // 1) HBM prefix match.
         let hbm: FxHashMap<WorkerKey, PrefixMatch> =
@@ -269,10 +278,11 @@ impl IndexerEntry {
                 continue;
             }
             overlap.add_blocks(worker.clone(), m.depth);
-            Self::note_coverage(
-                &mut coverage_end,
+            Self::note_medium_end(
+                &mut medium_ends,
                 &worker.instance_id,
                 worker.dp_rank,
+                StorageMedium::Npu,
                 m.depth,
             );
         }
@@ -292,15 +302,14 @@ impl IndexerEntry {
             .collect();
 
         // 2) CPU: continue from HBM breakpoints; root walk runs for every
-        //    worker owning the first edge (replicas of an already-covered
-        //    prefix are reported as real segment lengths — coverage is a
-        //    max, so they cannot inflate matched_tokens).
+        //    worker owning the first edge so longer lower-tier replicas are
+        //    never hidden by a shorter upstream hit.
         let cpu_hits = self.lower_tier_lookup(
             block_hashes,
             &hbm_breaks,
             &self.cpu_tiers,
             &mut overlap,
-            &mut coverage_end,
+            &mut medium_ends,
         );
 
         let cpu_breaks: Vec<TierBreakpoint> = cpu_hits
@@ -324,23 +333,34 @@ impl IndexerEntry {
             &disk_breaks,
             &self.disk_tiers,
             &mut overlap,
-            &mut coverage_end,
+            &mut medium_ends,
         );
 
-        (overlap, coverage_end)
+        (overlap, medium_ends)
     }
 
     #[inline]
-    fn note_coverage(
-        coverage_end: &mut FxHashMap<(String, DpRank), u32>,
+    fn note_medium_end(
+        medium_ends: &mut FxHashMap<(String, DpRank), MediumEnds>,
         instance_id: &str,
         dp_rank: DpRank,
+        medium: StorageMedium,
         end: u32,
     ) {
-        coverage_end
+        let entry = medium_ends
             .entry((instance_id.to_string(), dp_rank))
-            .and_modify(|e| *e = (*e).max(end))
-            .or_insert(end);
+            .or_default();
+        match medium {
+            StorageMedium::Npu | StorageMedium::Unknown => {
+                entry.npu = entry.npu.max(end);
+            }
+            StorageMedium::Cpu => {
+                entry.cpu = entry.cpu.max(end);
+            }
+            StorageMedium::Disk => {
+                entry.disk = entry.disk.max(end);
+            }
+        }
     }
 
     /// Per `(instance_id, dp_rank)`, keep the farther breakpoint.
@@ -369,10 +389,9 @@ impl IndexerEntry {
 
     /// Build continuations and count contiguous lower-tier hits.
     ///
-    /// - Root walks run for **every** worker owning the first edge — replicas
-    ///   of a prefix already covered upstream are reported as real segment
-    ///   lengths. This cannot inflate `matched_tokens` (coverage is a max
-    ///   over absolute ends, each bounded by the query length).
+    /// - Root walks run for **every** worker owning the first edge so a
+    ///   longer replica on this tier is never hidden by an upstream
+    ///   (possibly shorter) hit.
     /// - Continuation starts from each upstream ``TierBreakpoint``; a worker
     ///   may hold several candidates (root + breakpoints), and the one with
     ///   the farthest absolute end wins inside
@@ -383,7 +402,7 @@ impl IndexerEntry {
         upstream_breaks: &[TierBreakpoint],
         tiers: &LowerTierIndexer,
         overlap: &mut OverlapBlocks,
-        coverage_end: &mut FxHashMap<(String, DpRank), u32>,
+        medium_ends: &mut FxHashMap<(String, DpRank), MediumEnds>,
     ) -> FxHashMap<WorkerKey, ContiguousHit> {
         if block_hashes.is_empty() {
             return FxHashMap::default();
@@ -423,10 +442,11 @@ impl IndexerEntry {
         for (worker, hit) in &hits {
             if hit.count > 0 {
                 overlap.add_blocks(worker.clone(), hit.count as u32);
-                Self::note_coverage(
-                    coverage_end,
+                Self::note_medium_end(
+                    medium_ends,
                     &worker.instance_id,
                     worker.dp_rank,
+                    worker.medium,
                     hit.end_pos() as u32,
                 );
             }
@@ -957,7 +977,7 @@ impl Indexer {
         let t_hash = std::time::Instant::now();
         let block_hashes = compute_block_hash_for_seq(token_ids, block_size);
         let hash_us = t_hash.elapsed().as_micros();
-        let (overlap, coverage_end) = entry.find_matches_with_coverage(&block_hashes);
+        let (overlap, medium_ends) = entry.find_matches_with_coverage(&block_hashes);
         tracing::debug!(
             num_tokens = token_ids.len(),
             block_size,
@@ -968,7 +988,7 @@ impl Indexer {
         );
         let t_tree = t0.elapsed();
 
-        let resp = Self::build_response(overlap, &coverage_end, model_name, tenant_id, block_size);
+        let resp = self.build_response(&overlap, &medium_ends, model_name, tenant_id, block_size);
         let total = t0.elapsed();
 
         tracing::debug!(
@@ -995,23 +1015,21 @@ impl Indexer {
                 tenant_id: tenant_id.to_string(),
             })?;
 
-        let (overlap, coverage_end) = entry.find_matches_with_coverage(block_hashes);
+        let (overlap, medium_ends) = entry.find_matches_with_coverage(block_hashes);
         // Default to 1 token per hash (no scaling) since we don't know the
         // original block_size from the hash alone.
-        Self::build_response(overlap, &coverage_end, model_name, tenant_id, 1)
+        self.build_response(&overlap, &medium_ends, model_name, tenant_id, 1)
     }
 
-    /// Build a `QueryResponse` from per-worker matched block counts.
+    /// Build a `QueryResponse` from per-DP absolute medium ends.
     ///
-    /// Per-medium fields are segment lengths. `matched_tokens` uses the
-    /// farthest absolute coverage end across media for that DP (never the
-    /// sum of segment lengths — every hit records a coverage end, so the
-    /// defensive sum fallback below is unreachable), so NPU+CPU+Disk
-    /// replicas of the same prefix do not inflate the cached prefix beyond
-    /// the input.
+    /// `*_blocks` are exclusive contributions (priority NPU > CPU > Disk).
+    /// `matched_tokens = (npu + cpu + disk) × block_size` (unweighted coverage;
+    /// Coordinator applies tier affinity weights).
     fn build_response(
-        overlap: OverlapBlocks,
-        coverage_end: &FxHashMap<(String, DpRank), u32>,
+        &self,
+        overlap: &OverlapBlocks,
+        medium_ends: &FxHashMap<(String, DpRank), MediumEnds>,
         model_name: &str,
         tenant_id: &str,
         block_size: u32,
@@ -1025,40 +1043,23 @@ impl Indexer {
 
         let mut instance_data: HashMap<String, InstanceMatchData> = HashMap::new();
 
-        for (worker, &matched_blocks) in &overlap.blocks {
-            let dp_rank_str = worker.dp_rank.to_string();
-            let imd = instance_data.entry(worker.instance_id.clone()).or_default();
+        for ((instance_id, dp_rank), ends) in medium_ends {
+            let npu = ends.npu;
+            let cpu = ends.cpu.saturating_sub(ends.npu);
+            let disk = ends.disk.saturating_sub(ends.npu.max(ends.cpu));
+            let covered = npu.saturating_add(cpu).saturating_add(disk);
+
+            let dp_rank_str = dp_rank.to_string();
+            let imd = instance_data.entry(instance_id.clone()).or_default();
             let dp_match = imd.dp.entry(dp_rank_str).or_default();
-            match worker.medium {
-                StorageMedium::Npu | StorageMedium::Unknown => {
-                    dp_match.npu_blocks = dp_match.npu_blocks.max(matched_blocks);
-                }
-                StorageMedium::Cpu => {
-                    dp_match.cpu_blocks = dp_match.cpu_blocks.max(matched_blocks);
-                }
-                StorageMedium::Disk => {
-                    dp_match.disk_blocks = dp_match.disk_blocks.max(matched_blocks);
-                }
-            }
+            dp_match.npu_blocks = npu;
+            dp_match.cpu_blocks = cpu;
+            dp_match.disk_blocks = disk;
+            dp_match.matched_tokens = covered.saturating_mul(block_size);
         }
 
-        for (instance_id, imd) in instance_data.iter_mut() {
-            let mut longest = 0u32;
-            for (dp_rank_str, dp_match) in imd.dp.iter_mut() {
-                let dp_rank: DpRank = dp_rank_str.parse().unwrap_or(0);
-                let covered = coverage_end
-                    .get(&(instance_id.clone(), dp_rank))
-                    .copied()
-                    .unwrap_or_else(|| {
-                        dp_match
-                            .npu_blocks
-                            .saturating_add(dp_match.cpu_blocks)
-                            .saturating_add(dp_match.disk_blocks)
-                    });
-                dp_match.matched_tokens = covered.saturating_mul(block_size);
-                longest = longest.max(dp_match.matched_tokens);
-            }
-            imd.longest_matched = longest;
+        for imd in instance_data.values_mut() {
+            imd.longest_matched = imd.dp.values().map(|d| d.matched_tokens).max().unwrap_or(0);
         }
 
         let mut response = QueryResponse::default();

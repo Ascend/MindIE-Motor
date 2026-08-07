@@ -201,7 +201,7 @@ fn test_cpu_continuation_from_hbm_breakpoint() {
         "CPU should continue 1 block from HBM breakpoint"
     );
 
-    // matched_tokens = coverage_end × block_size (HBM 2 + CPU tail 1 → end 3)
+    // Exclusive: npu=2, cpu=1; default weights 1/1/0 → matched = 3 blocks.
     let resp = indexer.query("model-c", "t1", &tokens, 4).unwrap();
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.npu_blocks, 2);
@@ -264,9 +264,8 @@ fn test_cpu_replica_reported_when_hbm_hits_same_dp() {
     let resp = indexer.query("model-d", "t1", &tokens, 4).unwrap();
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.npu_blocks, 1);
-    // CPU replica of the same prefix is reported as a real segment; the
-    // coverage max keeps matched_tokens at the true end (1 block).
-    assert_eq!(dp0.cpu_blocks, 1);
+    // Same-prefix CPU replica is exclusive-attributed to NPU.
+    assert_eq!(dp0.cpu_blocks, 0);
     assert_eq!(dp0.matched_tokens, 4);
 }
 
@@ -382,15 +381,13 @@ fn test_disk_continuation_from_cpu_breakpoint() {
     assert_eq!(dp0.npu_blocks, 1);
     assert_eq!(dp0.cpu_blocks, 1);
     assert_eq!(dp0.disk_blocks, 1);
-    // Coverage end = 3 (consecutive segments), not a double-counted sum.
+    // Unweighted coverage = exclusive sum × block_size.
     assert_eq!(dp0.matched_tokens, 3 * 4);
 }
 
 #[test]
 fn test_overlapping_npu_cpu_disk_replicas_do_not_inflate_matched_tokens() {
-    // Log pattern: same prefix present on NPU + CPU + Disk. Replicas are
-    // reported as real segment lengths on every tier, but matched_tokens
-    // must stay within the input prefix (coverage end), never NPU+CPU+Disk.
+    // Same prefix on NPU + CPU + Disk: exclusive attribution keeps only NPU.
     let indexer = Indexer::new();
     let entry = indexer.get_or_create("model-overlap", "t1");
 
@@ -479,10 +476,8 @@ fn test_overlapping_npu_cpu_disk_replicas_do_not_inflate_matched_tokens() {
     let resp = indexer.query("model-overlap", "t1", &tokens, 4).unwrap();
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.npu_blocks, 2);
-    // Replicas on CPU/Disk are reported as real segment lengths (no root
-    // skip), but matched_tokens stays at the coverage end — never summed.
-    assert_eq!(dp0.cpu_blocks, 2);
-    assert_eq!(dp0.disk_blocks, 2);
+    assert_eq!(dp0.cpu_blocks, 0);
+    assert_eq!(dp0.disk_blocks, 0);
     assert_eq!(dp0.matched_tokens, 2 * 4);
     assert!(
         dp0.matched_tokens <= tokens.len() as u32,
@@ -575,11 +570,9 @@ fn test_shorter_hbm_breakpoint_does_not_overcount_cpu_overlap() {
         .unwrap();
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.npu_blocks, 2);
-    // The CPU worker genuinely owns the chained block (100→200 = position 1),
-    // so it scores a 1-block continuation segment. The farthest HBM
-    // breakpoint (end_pos=2) sits at the sequence end and cannot continue —
-    // but coverage end is still 2, so matched_tokens stays within input.
-    assert_eq!(dp0.cpu_blocks, 1);
+    // CPU continuation ends at the same absolute position as the longer NPU
+    // hit, so exclusive cpu_blocks is 0.
+    assert_eq!(dp0.cpu_blocks, 0);
     assert_eq!(dp0.matched_tokens, 2 * 4);
 }
 
@@ -639,7 +632,8 @@ fn test_disk_continuation_from_hbm_when_cpu_miss() {
     assert_eq!(dp0.npu_blocks, 1);
     assert_eq!(dp0.cpu_blocks, 0);
     assert_eq!(dp0.disk_blocks, 1);
-    assert_eq!(dp0.matched_tokens, 2 * 4); // coverage end after NPU + disk tail
+    // Unweighted coverage includes exclusive disk extension.
+    assert_eq!(dp0.matched_tokens, 2 * 4);
 }
 
 #[test]
@@ -694,9 +688,8 @@ fn test_disk_replica_reported_when_cpu_hits_same_dp() {
     let resp = indexer.query("model-g", "t1", &tokens, 4).unwrap();
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.cpu_blocks, 1);
-    // Disk replica is reported as a real segment; coverage max keeps
-    // matched_tokens at the true end (1 block).
-    assert_eq!(dp0.disk_blocks, 1);
+    // Same-prefix Disk replica is exclusive-attributed to CPU.
+    assert_eq!(dp0.disk_blocks, 0);
     assert_eq!(dp0.matched_tokens, 4);
 }
 
@@ -751,17 +744,13 @@ fn test_disk_replica_reported_when_hbm_hits_same_dp() {
     let resp = indexer.query("model-i", "t1", &tokens, 4).unwrap();
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.npu_blocks, 1);
-    // Disk replica of the same prefix is reported as a real segment;
-    // coverage max keeps matched_tokens at the true end (1 block).
-    assert_eq!(dp0.disk_blocks, 1);
+    // Same-prefix Disk replica is exclusive-attributed to NPU.
+    assert_eq!(dp0.disk_blocks, 0);
     assert_eq!(dp0.matched_tokens, 4);
 }
 
-/// The documented "longer lower-tier replica" case: NPU holds only the
-/// first block while Disk holds the full prefix. The old root-skip made
-/// this silently under-report (disk_blocks=0, matched=1 block); the
-/// unconditional root walk must surface the Disk copy and extend the
-/// coverage end to the true prefix length.
+/// Longer Disk root replica: exclusive disk_blocks captures the extension
+/// beyond NPU; unweighted matched_tokens covers the full prefix.
 #[test]
 fn test_lower_tier_longer_replica_extends_coverage() {
     let indexer = Indexer::new();
@@ -829,15 +818,14 @@ fn test_lower_tier_longer_replica_extends_coverage() {
     let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
     assert_eq!(dp0.npu_blocks, 1);
     assert_eq!(
-        dp0.disk_blocks, 3,
-        "Disk replica of the full prefix must be reported"
+        dp0.disk_blocks, 2,
+        "exclusive Disk blocks are the extension beyond NPU"
     );
     assert_eq!(
         dp0.matched_tokens,
         3 * 4,
-        "coverage must extend to the longer replica, not the NPU's 1 block"
+        "unweighted coverage extends to the longer replica"
     );
-    assert!(dp0.matched_tokens <= tokens.len() as u32);
 }
 
 #[test]
@@ -911,4 +899,120 @@ fn test_maintenance_keeps_registered_empty_entry() {
     indexer.maintenance(&protected);
 
     assert!(indexer.get("active-model", "active-tenant").is_some());
+}
+
+#[test]
+fn test_exclusive_sum_is_unweighted_matched_tokens() {
+    let indexer = Indexer::new();
+    let entry = indexer.get_or_create("model-coverage", "t1");
+
+    let tokens: Vec<i64> = (0..12).collect();
+    let hashes = compute_block_hash_for_seq(&tokens, 4);
+    assert_eq!(hashes.len(), 3);
+
+    let wk_npu = WorkerKey {
+        instance_id: "inst-1".into(),
+        backend_id: "inst-1".into(),
+        dp_rank: 0,
+        medium: StorageMedium::Npu,
+    };
+    entry
+        .apply_event(
+            &wk_npu,
+            &KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: None,
+                start_position: None,
+                blocks: vec![KvCacheStoredBlockData {
+                    block_hash: 100,
+                    tokens_hash: hashes[0].0,
+                }],
+            }),
+        )
+        .unwrap();
+
+    let wk_cpu = WorkerKey {
+        instance_id: "inst-1".into(),
+        backend_id: "pool-cpu".into(),
+        dp_rank: 0,
+        medium: StorageMedium::Cpu,
+    };
+    entry
+        .apply_event(
+            &wk_cpu,
+            &KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: Some(100),
+                start_position: None,
+                blocks: vec![KvCacheStoredBlockData {
+                    block_hash: 200,
+                    tokens_hash: hashes[1].0,
+                }],
+            }),
+        )
+        .unwrap();
+
+    let wk_disk = WorkerKey {
+        instance_id: "inst-1".into(),
+        backend_id: "pool-disk".into(),
+        dp_rank: 0,
+        medium: StorageMedium::Disk,
+    };
+    entry
+        .apply_event(
+            &wk_disk,
+            &KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: Some(200),
+                start_position: None,
+                blocks: vec![KvCacheStoredBlockData {
+                    block_hash: 300,
+                    tokens_hash: hashes[2].0,
+                }],
+            }),
+        )
+        .unwrap();
+
+    let resp = indexer.query("model-coverage", "t1", &tokens, 4).unwrap();
+    let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
+    assert_eq!(dp0.npu_blocks, 1);
+    assert_eq!(dp0.cpu_blocks, 1);
+    assert_eq!(dp0.disk_blocks, 1);
+    assert_eq!(
+        dp0.matched_tokens,
+        (dp0.npu_blocks + dp0.cpu_blocks + dp0.disk_blocks) * 4
+    );
+}
+
+#[test]
+fn test_disk_only_coverage_matched_tokens() {
+    let indexer = Indexer::new();
+    let entry = indexer.get_or_create("model-disk-only", "t1");
+
+    let tokens: Vec<i64> = vec![1, 2, 3, 4];
+    let hashes = compute_block_hash_for_seq(&tokens, 4);
+
+    let wk_disk = WorkerKey {
+        instance_id: "inst-1".into(),
+        backend_id: "pool-disk".into(),
+        dp_rank: 0,
+        medium: StorageMedium::Disk,
+    };
+    entry
+        .apply_event(
+            &wk_disk,
+            &KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: None,
+                start_position: None,
+                blocks: vec![KvCacheStoredBlockData {
+                    block_hash: 100,
+                    tokens_hash: hashes[0].0,
+                }],
+            }),
+        )
+        .unwrap();
+
+    let resp = indexer.query("model-disk-only", "t1", &tokens, 4).unwrap();
+    let dp0 = &resp.tenants["t1"]["inst-1"].dp["0"];
+    assert_eq!(dp0.npu_blocks, 0);
+    assert_eq!(dp0.cpu_blocks, 0);
+    assert_eq!(dp0.disk_blocks, 1);
+    assert_eq!(dp0.matched_tokens, 4);
 }

@@ -83,7 +83,7 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 
 | File | Role |
 |------|------|
-| `src/main.rs` | CLI entry: host/port/weights, tracing (UTC+8), axum serve |
+| `src/main.rs` | CLI entry: host/port, tracing (UTC+8), axum serve |
 | `src/lib.rs` | Module declarations + re-exports |
 | `src/server.rs` | HTTP routes, `AppState { registry, scoring }`, middleware |
 | `src/registry.rs` | WorkerRegistry: register/unregister/query dispatch, ZMQ lifecycle, re-registration, replay gating |
@@ -187,15 +187,24 @@ disk_blocks: Arc<RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>>
 
 ### Scoring Model
 
-``` yaml
-HBM:  matched_block × --hbm-weight  (default 3)
-CPU:  matched_block × --cpu-weight  (default 2)
-Disk: matched_block × --disk-weight (default 1)
+Per DP, Conductor exclusive-partitions absolute coverage ends (NPU > CPU > Disk):
 
-DP total = HBM_score + CPU_score + Disk_score
+``` text
+npu_blocks  = npu_end
+cpu_blocks  = max(0, cpu_end - npu_end)
+disk_blocks = max(0, disk_end - max(npu_end, cpu_end))
+matched_tokens = (npu + cpu + disk) × block_size   # unweighted coverage
+longest_matched = max(matched_tokens over DP ranks)
 ```
 
-Configured at startup: `kv-conductor --hbm-weight 3 --cpu-weight 2 --disk-weight 1`
+Coordinator `kv_cache_affinity` applies tier weights when ranking:
+
+``` text
+affinity_matched = round((npu×w_npu + cpu×w_cpu + disk×w_disk) × block_size)
+```
+
+Defaults in `SchedulerConfig.kv_affinity`: `w_npu=1.0`, `w_cpu=1.0`,
+`w_disk=0.0` (non-negative).
 
 ---
 
@@ -403,11 +412,9 @@ Indexer.query(model, tenant, token_ids, block_size)
   │
   ├─ Disk flat lookup (same pattern)
   │
-  └─ Score aggregation:
-      per-DP: score = matched_blocks × per_medium_weight
-               (HBM ×3, CPU ×2, DISK ×1 — see Scoring Model)
-      matched_tokens = matched_blocks × block_size (reported in response,
-               but NOT used in scoring)
+  └─ Score aggregation (build_response):
+      per-DP exclusive *_blocks (NPU > CPU > Disk)
+      matched_tokens = (npu + cpu + disk) × block_size
       Group by: tenant → instance → DP
 ```
 
@@ -418,19 +425,19 @@ Indexer.query(model, tenant, token_ids, block_size)
   "default": {
     "prefill-0": {
       "longest_matched": 384,
-      "XPU": 9, "CPU": 0, "DISK": 0,
-      "total_score": 9,
       "DP": {"0": {
-        "XPU": 9, "CPU": 0, "DISK": 0, "total": 9,
         "matched_tokens": 384,
-        "XPU_blk": 3, "CPU_blk": 0, "DISK_blk": 0
+        "npu_blocks": 3,
+        "cpu_blocks": 0,
+        "disk_blocks": 0
       }}
     }
   }
 }
 ```
 
-Example assumes 3 matched blocks × 128 tokens with default weights (HBM ×3 → XPU score 9). Each `DpScoring` object carries `XPU`/`CPU`/`DISK`/`total` (weighted scores), plus `matched_tokens` (cached prefix length in tokens) and `XPU_blk`/`CPU_blk`/`DISK_blk` (raw block counts).
+Example assumes exclusive `npu_blocks=3`, `block_size=128` → coverage `matched_tokens=384`.
+Coordinator affinity re-weights `*_blocks` via `scheduler_config.kv_affinity`.
 
 ---
 
