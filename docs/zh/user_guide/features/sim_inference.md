@@ -14,9 +14,10 @@ Node Manager 周期性请求 Engine Server mgmt 面 **`GET /status`**；返回�
 
 1. `engine_type` 为 **`vllm`**（SGLang 引擎即使配置 `enable_virtual_inference: true` 也会在运行时被自动关闭）
 2. `health_check_config.enable_virtual_inference` 为 `true`
-3. `0 < health_check_config.npu_usage_threshold <= 100`
-4. 推理面 `GET /health` 返回正常（由 `HealthCollector` 探测，`health_collector_timeout` 控制超时, `health_collector_timeout_retry_attempts` 控制超时重试次数）
-5. 仅 **DP rank 0** 执行虚推（非 DP0 节点运行时自动关闭）
+3. 该引擎角色生效的 `ASCEND_GLOBAL_LOG_LEVEL` 为 **ERROR**（`3`；0=DEBUG、1=INFO、2=WARNING、3=ERROR）。虚推**仅允许在 ERROR 日志级别下开启**；未配置时默认即为 ERROR。若显式配置为非 `3`，`deploy.py` 会强制将 `enable_virtual_inference` 设为 `false` 并打印 warning
+4. `0 < health_check_config.npu_usage_threshold <= 100`
+5. 推理面 `GET /health` 返回正常（由 `HealthCollector` 探测，`health_collector_timeout` 控制超时, `health_collector_timeout_retry_attempts` 控制超时重试次数）
+6. 仅 **DP rank 0** 执行虚推（非 DP0 节点运行时自动关闭）
 
 满足条件后，`mgmt_endpoint.py` 在首次 `/status` 请求时调用 `run_virtual_inference()` 启动虚推循环。
 
@@ -52,7 +53,7 @@ Node Manager 周期性请求 Engine Server mgmt 面 **`GET /status`**；返回�
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| enable_virtual_inference | bool | `false` | 虚推总开关。**仅支持 vLLM**；SGLang 配置为 `true` 时运行时会自动关闭 |
+| enable_virtual_inference | bool | `false` | 虚推总开关。**仅支持 vLLM**；SGLang 配置为 `true` 时运行时会自动关闭。**仅允许在 ERROR 日志级别下开启**（`ASCEND_GLOBAL_LOG_LEVEL=3`，未配置默认 ERROR）；显式配置为非 ERROR 时 deploy 会强制关闭 |
 | npu_usage_threshold | int | `3` | AI Cube 利用率阈值（%） |
 | max_failure_count | int | `6` | 连续虚推失败次数上限 |
 | health_collector_timeout | int | `5` | 推理面 `/health` 探测超时（秒） |
@@ -62,4 +63,4 @@ Node Manager 周期性请求 Engine Server mgmt 面 **`GET /status`**；返回�
 
 ## 启用方式
 
-在 PD 分离部署的 `user_config.json` 中，将 Prefill 与 Decode 引擎配置的 `health_check_config.enable_virtual_inference` 设为 `true`，并按业务调整 `npu_usage_threshold`、`max_failure_count`。配置示例与字段说明见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#虚推健康检查-virtual-inference-health-check)。
+在 PD 分离部署的 `user_config.json` 中，将 Prefill 与 Decode 引擎配置的 `health_check_config.enable_virtual_inference` 设为 `true`，并按业务调整 `npu_usage_threshold`、`max_failure_count`。虚推要求 ERROR 日志级别：`ASCEND_GLOBAL_LOG_LEVEL` 未配置时默认即为 ERROR；若在 `env.json` 中显式配置为非 `3`，deploy 会强制关闭虚推。配置示例与字段说明见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md#虚推健康检查-virtual-inference-health-check)。
