@@ -44,6 +44,10 @@
 
 **最佳实践**：PD 分离部署请参见[PD 分离服务部署详细指导](./docs/zh/user_guide/deployment/k8s/pd_disaggregation_deployment.md)，PD 混部部署请参见[PD 混部服务部署详细指导](./docs/zh/user_guide/deployment/k8s/pd_aggregation_deployment.md)。
 
+# 版本说明书
+
+组件版本配套与兼容性说明，请参见[版本配套说明](./docs/zh/release_note_motor.md)。
+
 # 最新消息
 
 [2026/03] 🚀 MindIE Motor正式开源，新增代码仓智能体。
