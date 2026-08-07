@@ -55,6 +55,7 @@ from lib.config_validator import (
     validate_pd_hybrid_config,
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
+    enforce_virtual_inference_log_level,
 )
 
 
@@ -113,6 +114,10 @@ def handle_update_instance_num(user_config, env_config_path=None):
 
     update_kv_store_enabled_flag(user_config)
     update_engine_base_name(user_config)
+    if env_config_path and os.path.exists(env_config_path):
+        enforce_virtual_inference_log_level(user_config, read_json(env_config_path))
+    else:
+        enforce_virtual_inference_log_level(user_config, {})
     set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
 
     k8s_utils.g_generate_yaml_list = []
@@ -219,6 +224,11 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
     update_engine_type_flag(user_config)
 
     update_engine_base_name(user_config)
+
+    if env_config_path and os.path.exists(env_config_path):
+        enforce_virtual_inference_log_level(user_config, read_json(env_config_path))
+    else:
+        enforce_virtual_inference_log_level(user_config, {})
 
     deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
     if not dry_run:

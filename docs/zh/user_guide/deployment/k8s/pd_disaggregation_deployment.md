@@ -206,7 +206,7 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
   ```
 
 - **关闭**：删除 `health_check_config` 配置块，或将 `enable_virtual_inference` 设为 `false`。
-- **注意**：该功能使用详情请参见[虚推健康检查](../../features/sim_inference.md)。
+- **注意**：虚推**仅允许在 ERROR 日志级别下开启**（`ASCEND_GLOBAL_LOG_LEVEL=3`，未配置默认即为 ERROR）。若在 `env.json` 中显式配置为非 ERROR，`deploy.py` 会强制关闭虚推并打印 warning。该功能使用详情请参见[虚推健康检查](../../features/sim_inference.md)。
 
 ### KV Cache 亲和调度
 

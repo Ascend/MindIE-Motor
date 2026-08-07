@@ -261,3 +261,82 @@ def validate_node_selectors(deploy_config):
         )
     else:
         _validate_node_labels_exist(base_labels, "engine")
+
+
+# Encode has no virtual-inference feature; only prefill/decode/union are checked.
+_ENGINE_CONFIG_TO_ENV = (
+    (C.MOTOR_ENGINE_PREFILL_CONFIG, C.MOTOR_ENGINE_PREFILL_ENV),
+    (C.MOTOR_ENGINE_DECODE_CONFIG, C.MOTOR_ENGINE_DECODE_ENV),
+    (C.MOTOR_ENGINE_UNION_CONFIG, C.MOTOR_ENGINE_UNION_ENV),
+)
+
+
+def _normalize_ascend_global_log_level(raw_value):
+    """Return stripped string level, or None when unset/empty (defaults to ERROR)."""
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    return text if text else None
+
+
+def _resolve_ascend_global_log_level(env_config, engine_env_key):
+    """Resolve ASCEND_GLOBAL_LOG_LEVEL with common env as base and engine env override.
+
+    Returns (level, source_key). level/source are None when unset; callers treat that as ERROR.
+    """
+    if not isinstance(env_config, dict):
+        return None, None
+    common_env = env_config.get(C.MOTOR_COMMON_ENV) or {}
+    engine_env = env_config.get(engine_env_key) or {}
+    if not isinstance(common_env, dict):
+        common_env = {}
+    if not isinstance(engine_env, dict):
+        engine_env = {}
+    if C.ASCEND_GLOBAL_LOG_LEVEL in engine_env:
+        return (
+            _normalize_ascend_global_log_level(engine_env.get(C.ASCEND_GLOBAL_LOG_LEVEL)),
+            engine_env_key,
+        )
+    if C.ASCEND_GLOBAL_LOG_LEVEL in common_env:
+        return (
+            _normalize_ascend_global_log_level(common_env.get(C.ASCEND_GLOBAL_LOG_LEVEL)),
+            C.MOTOR_COMMON_ENV,
+        )
+    return None, None
+
+
+def enforce_virtual_inference_log_level(user_config, env_config):
+    """Disable virtual inference when ASCEND_GLOBAL_LOG_LEVEL is explicitly not ERROR (3).
+
+    Mutates user_config in place. Unset ASCEND_GLOBAL_LOG_LEVEL defaults to ERROR and
+    does not disable virtual inference. Only an explicit non-ERROR value forces off.
+    Encode roles are ignored (no virtual-inference feature).
+    """
+    if not isinstance(user_config, dict):
+        return
+
+    for engine_config_key, engine_env_key in _ENGINE_CONFIG_TO_ENV:
+        engine_config = user_config.get(engine_config_key)
+        if not isinstance(engine_config, dict):
+            continue
+        health_check_config = engine_config.get(C.HEALTH_CHECK_CONFIG)
+        if not isinstance(health_check_config, dict):
+            continue
+        if health_check_config.get(C.ENABLE_VIRTUAL_INFERENCE) is not True:
+            continue
+
+        log_level, source = _resolve_ascend_global_log_level(env_config, engine_env_key)
+        # Unset defaults to ERROR (3); only explicit non-ERROR disables virtual inference.
+        if log_level is None or log_level == C.ASCEND_GLOBAL_LOG_LEVEL_ERROR:
+            continue
+
+        health_check_config[C.ENABLE_VIRTUAL_INFERENCE] = False
+        logger.warning(
+            "Virtual inference requires ASCEND_GLOBAL_LOG_LEVEL=%s (ERROR); "
+            "got %r for %s (source: %s). "
+            "Forcing enable_virtual_inference=false.",
+            C.ASCEND_GLOBAL_LOG_LEVEL_ERROR,
+            log_level,
+            engine_config_key,
+            source,
+        )
