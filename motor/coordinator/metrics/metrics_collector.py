@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -844,6 +844,7 @@ class MetricsCollector(ThreadSafeSingleton):
             if collect:
                 collect["role"] = ins_info.role
                 collect["job_name"] = ins_info.job_name
+                collect["model_name"] = ins_info.model_name
                 collect["dispatch_capabilities"] = list(ins_info.dispatch_capabilities or [])
                 collects[ins_info.id] = collect
 
@@ -1050,6 +1051,25 @@ class MetricsCollector(ThreadSafeSingleton):
         return str(value)
 
     @staticmethod
+    def _escape_prometheus_label_value(value: str) -> str:
+        """Escape a label value for Prometheus text exposition format."""
+        return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+    @staticmethod
+    def _empty_family_base_label(name: str, model_name: str) -> str:
+        """Base label for an empty (HELP/TYPE-only) family.
+
+        Engine omits the sample line until the series is first written, so the
+        synthesized zero line has no engine-side labels. Carry the Motor-known
+        model_name so the output matches sibling endpoints that did emit a
+        sample (which carry model_name); never invent other engine labels.
+        """
+        if model_name:
+            escaped = MetricsCollector._escape_prometheus_label_value(model_name)
+            return f'{name}{{model_name="{escaped}"}}'
+        return name
+
+    @staticmethod
     def _emit_metric_groups(name_to_meta: dict[str, dict[str, Any]]) -> str:
         out_lines: list[str] = []
         for name in sorted(name_to_meta.keys()):
@@ -1070,6 +1090,7 @@ class MetricsCollector(ThreadSafeSingleton):
             if not isinstance(ins_collect, dict) or "endpoints" not in ins_collect:
                 continue
             role = ins_collect.get("role", "")
+            model_name = ins_collect.get("model_name", "")
             for ep_id, pod_info in ins_collect["endpoints"].items():
                 if self.METRICS_KEY not in pod_info:
                     continue
@@ -1081,8 +1102,9 @@ class MetricsCollector(ThreadSafeSingleton):
                         {"help": metric.help, "type": metric.type, "lines": []},
                     )
                     if not metric.label or not metric.value:
-                        new_label = self._prepend_dim_labels(metric.name, dim_labels)
-                        meta["lines"].append(((instance_id, ep_id), f"{new_label} 0"))
+                        base = self._empty_family_base_label(metric.name, model_name)
+                        new_label = self._prepend_dim_labels(base, dim_labels)
+                        meta["lines"].append(((instance_id, ep_id), f"{new_label} {self._metric_value_str(0.0)}"))
                         continue
                     for i, label_str in enumerate(metric.label):
                         new_label = self._prepend_dim_labels(label_str, dim_labels)
@@ -1093,10 +1115,12 @@ class MetricsCollector(ThreadSafeSingleton):
 
     def _generate_node_metrics(self, collects: dict[int, dict[str, Any]]) -> str:
         key_to_lists: dict[tuple[str, str], list[list[Metric]]] = {}
+        key_to_model: dict[tuple[str, str], str] = {}
         for ins_collect in collects.values():
             if not isinstance(ins_collect, dict) or "endpoints" not in ins_collect:
                 continue
             role = ins_collect.get("role", "")
+            model_name = ins_collect.get("model_name", "")
             for pod_info in ins_collect["endpoints"].values():
                 if self.METRICS_KEY not in pod_info:
                     continue
@@ -1104,6 +1128,7 @@ class MetricsCollector(ThreadSafeSingleton):
                 if not pod_ip:
                     continue
                 key_to_lists.setdefault((pod_ip, role), []).append(pod_info[self.METRICS_KEY])
+                key_to_model.setdefault((pod_ip, role), model_name)
         node_ctx = AggregationContext(scope=AggregationScope.NODE)
         pod_aggregates = {
             key: self._aggregate_metrics(metrics_lists, ctx=node_ctx)
@@ -1113,14 +1138,16 @@ class MetricsCollector(ThreadSafeSingleton):
         name_to_meta: dict[str, dict[str, Any]] = {}
         for (pod_ip, role), aggregate in pod_aggregates.items():
             dim_labels = f'pod_ip="{pod_ip}",role="{role}"'
+            model_name = key_to_model.get((pod_ip, role), "")
             for metric in aggregate:
                 meta = name_to_meta.setdefault(
                     metric.name,
                     {"help": metric.help, "type": metric.type, "lines": []},
                 )
                 if not metric.label or not metric.value:
-                    new_label = self._prepend_dim_labels(metric.name, dim_labels)
-                    meta["lines"].append(((pod_ip, role), f"{new_label} 0"))
+                    base = self._empty_family_base_label(metric.name, model_name)
+                    new_label = self._prepend_dim_labels(base, dim_labels)
+                    meta["lines"].append(((pod_ip, role), f"{new_label} {self._metric_value_str(0.0)}"))
                     continue
                 for i, label_str in enumerate(metric.label):
                     new_label = self._prepend_dim_labels(label_str, dim_labels)
