@@ -331,3 +331,68 @@ def test_ucm_as_transport_position_rejected():
     config = VLLMConfig(endpoint_config=endpoint_config)
     with pytest.raises(ValueError, match=r"connectors\[1\]"):
         config.initialize()
+
+
+def test_cross_node_overrides_placeholder_master_addr_and_node_rank():
+    """Runtime node_rank/master_dp_ip must override engine_config placeholders."""
+    endpoint_config = _make_endpoint_config(
+        nnodes=2,
+        master_port=7060,
+        node_rank=1,
+        master_dp_ip="192.168.66.62",
+    )
+    # User left static placeholders in engine_config; runtime values must win.
+    endpoint_config.deploy_config.engine_config.set("master_addr", "placeholder")
+    endpoint_config.deploy_config.engine_config.set("node_rank", 0)
+
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    config.initialize()
+    flattened = config._flatten_config()
+
+    assert flattened.get("master_addr") == "192.168.66.62"
+    assert flattened.get("node_rank") == 1
+    assert flattened.get("headless") is True
+
+
+def test_cross_node_rank0_clears_stale_headless():
+    """Master must not keep a leftover headless=True from engine_config."""
+    endpoint_config = _make_endpoint_config(
+        nnodes=2,
+        master_port=7060,
+        node_rank=0,
+        master_dp_ip="192.168.66.62",
+    )
+    endpoint_config.deploy_config.engine_config.set("headless", True)
+
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    config.initialize()
+    flattened = config._flatten_config()
+
+    assert flattened.get("node_rank") == 0
+    assert "headless" not in flattened
+
+
+def test_mooncake_connector_preserves_pp_layer_partition():
+    """Non-parallel keys such as pp_layer_partition must survive parallel injection."""
+    endpoint_config = _make_endpoint_config(dp_size=1, tp_size=16)
+    config = VLLMConfig(endpoint_config=endpoint_config)
+
+    kv_config = {
+        "kv_connector": "MooncakeLayerwiseConnector",
+        "kv_connector_extra_config": {
+            "prefill": {"pp_layer_partition": "41,37"},
+            "decode": {"pp_layer_partition": "78"},
+        },
+    }
+
+    config._process_mooncake_connector(kv_config, add_engine_id=False)
+
+    extra = kv_config["kv_connector_extra_config"]
+    # User-provided non-parallel keys preserved.
+    assert extra["prefill"]["pp_layer_partition"] == "41,37"
+    assert extra["decode"]["pp_layer_partition"] == "78"
+    # Parallel keys still injected.
+    assert extra["prefill"]["dp_size"] == 1
+    assert extra["prefill"]["tp_size"] == 16
+    assert "pp_size" in extra["prefill"]
+    assert "pp_size" in extra["decode"]

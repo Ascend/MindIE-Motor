@@ -2831,3 +2831,74 @@ def test_assemble_clears_stale_snapshot_dp_master_ip(instance_assembler, test_co
         instance_assembler._assemble_instance(metadata)
 
     assert metadata.snapshot_dp_master_ip is None
+
+
+def test_send_start_command_returns_false_when_no_endpoints(instance_assembler):
+    """No node manager has endpoints -> start must fail, not fake success."""
+    instance = Instance(
+        job_name="test_no_endpoints",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=1, tp_size=4),
+        enable_multi_endpoints=True,
+    )
+    # Node manager registered but no endpoints were ever attached.
+    instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
+
+    metadata = AssembleInstanceMetadata(
+        instance=instance,
+        register_timestamp=time.time(),
+        nnodes=1,
+    )
+    metadata.register_status = RegisterStatus.ASSEMBLED
+
+    with (
+        patch.object(instance_assembler, "_is_d2d_enabled_for_role", return_value=False),
+        patch(
+            "motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command"
+        ) as mock_send,
+    ):
+        result = instance_assembler._send_start_command(metadata)
+
+    assert result is False
+    mock_send.assert_not_called()
+
+
+def test_send_start_command_fails_when_cross_node_partial_endpoints(instance_assembler, test_config):
+    """nnodes>1: missing endpoints on any required node manager must fail start."""
+    instance = Instance(
+        job_name="test_cross_node_partial_endpoints",
+        model_name="test_model",
+        id=1,
+        role=test_config["role"],
+        parallel_config=test_config["parallel_config"],
+        enable_multi_endpoints=True,
+    )
+    instance.add_node_mgr("127.0.0.1", "8088")
+    instance.add_node_mgr("127.0.0.2", "8089")
+
+    # Only the first node manager has endpoints; the second is required for PP/PCP.
+    reg_msg = create_register_msg("test_cross_node_partial_endpoints", "127.0.0.1", test_config)
+    pod_endpoints = instance_assembler._build_single_endpoint(reg_msg, 0)
+    instance.add_endpoints("127.0.0.1", pod_endpoints)
+
+    metadata = AssembleInstanceMetadata(
+        instance=instance,
+        register_timestamp=time.time(),
+        nnodes=2,
+    )
+    metadata.register_status = RegisterStatus.ASSEMBLED
+
+    with (
+        patch.object(instance_assembler, "_is_d2d_enabled_for_role", return_value=False),
+        patch(
+            "motor.controller.api_client.node_manager_api_client.NodeManagerApiClient.send_start_command"
+        ) as mock_send,
+    ):
+        mock_send.return_value = True
+        result = instance_assembler._send_start_command(metadata)
+
+    assert result is False
+    # Must not report success after only a subset of required nodes were started.
+    assert mock_send.call_count <= 1

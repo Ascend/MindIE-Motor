@@ -1,5 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 #
+# 独立脚本：不依赖 motor 包，可直接拷贝到任意目录运行。
+# 推荐通过 examples/deployer/deploy.py --mode general_config 调用本脚本。
+#
 # 用法:
 #   PD 混部: 同目录放置 run_dp_template_hybrid.sh 后执行
 #     python deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A3
@@ -9,8 +12,8 @@
 #   可选: --weight-path <路径>  --image-name <镜像>
 #   输出: output_config/user_config.json、output_config/env.json
 #
-# 并行度：脚本 kv extra 提供 world_size；--hardware-type 仅在 tp 超过单节点上限时重算 engine dp/tp。
-# deploy Pod 切分：按 world_size 打包到节点（pod 数 = world/cards，每 pod 卡数 = cards 或 world）。
+# 并行度：脚本 kv extra / CLI 提供的 dp、tp、pp 原样写入 engine_config，不做跨硬件削 TP / 抬 DP。
+# deploy Pod 切分：按 dp×tp×pp 打包到节点（tp 不可超过单节点卡数；PP 可跨机）。
 # env.json：仅转换脚本中字面量 export。部署/运行时在 shell 中展开的环境变量不写入 env.json：
 #   - 显式跳过：HCCL_IF_IP、网卡名、LD_PRELOAD、ASCEND_RT_VISIBLE_DEVICES 等（见 SKIP_ENV_KEYS）
 #   - 值含 $ 引用：如 LD_PRELOAD=...:$LD_PRELOAD、LD_LIBRARY_PATH=...:$LD_LIBRARY_PATH、$1/$nic_name 等
@@ -35,19 +38,30 @@ SKIP_RUNTIME_KEYS = frozenset(
         "port",
         "data_parallel_rank",
         "data_parallel_address",
+        # Cross-node rendezvous: Motor injects master_addr/node_rank at runtime;
+        # nnodes is re-emitted from pod layout when a DP group spans nodes.
+        "master_addr",
+        "node_rank",
+        "nnodes",
     }
 )
 
-# 并行度以 kv_connector_extra_config 为准；CLI 中的以下字段忽略
+# 并行度统一由 apply_engine_parallel 写规范值；raw engine_config 循环跳过这些 CLI 键
+# （读取仍从原始 cli_args 走 _cli_parallel_value，不受影响）
 SKIP_PARALLEL_CLI_KEYS = frozenset(
     {
         "data_parallel_size",
         "tensor_parallel_size",
+        "pipeline_parallel_size",
         "data_parallel_rpc_port",
     }
 )
 
 DEFAULT_DP_RPC_PORT = 9000
+
+# Default rendezvous port for cross-node (nnodes > 1) engine groups. master-addr
+# and node-rank are injected by Motor at runtime, so only the port is emitted here.
+DEFAULT_MASTER_PORT = 7060
 
 # Motor 部署/运行时自行注入，不转换到 env.json
 SKIP_ENV_KEYS = frozenset(
@@ -183,6 +197,17 @@ DEFAULT_DEPLOY_CONFIG = {
     "single_d_instance_pod_num": 1,
     "p_pod_npu_num": 16,
     "d_pod_npu_num": 16,
+    "image_name": "",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "/mnt/weight/",
+}
+
+DEFAULT_HYBRID_DEPLOY_CONFIG = {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 1,
     "image_name": "",
     "job_id": "mindie-motor",
     "hardware_type": "800I_A3",
@@ -370,6 +395,14 @@ NESTED_KEY_ORDERS: dict[str, tuple[str, ...]] = {
         "enable_npugraph_ex",
         "enable_static_kernel",
     ),
+    "additional-config": (
+        "enable_cpu_binding",
+        "enable_shared_expert_dp",
+        "enable_dsa_cp",
+        "multistream_overlap_shared_expert",
+        "recompute_scheduler_enable",
+        "ascend_compilation_config",
+    ),
 }
 
 
@@ -388,30 +421,13 @@ def reorder_dict(
         value = data[key]
         if isinstance(value, dict) and key in nested_orders:
             value = reorder_dict(value, nested_orders[key], nested_orders=nested_orders)
-        elif isinstance(value, dict) and key == "additional-config":
-            value = _reorder_additional_config(value)
         ordered[key] = value
     for key, value in data.items():
         if key in ordered:
             continue
         if isinstance(value, dict) and key in nested_orders:
             value = reorder_dict(value, nested_orders[key], nested_orders=nested_orders)
-        elif isinstance(value, dict) and key == "additional-config":
-            value = _reorder_additional_config(value)
         ordered[key] = value
-    return ordered
-
-
-def _reorder_additional_config(data: dict[str, Any]) -> dict[str, Any]:
-    preferred = (
-        "enable_cpu_binding",
-        "enable_shared_expert_dp",
-        "enable_dsa_cp",
-        "multistream_overlap_shared_expert",
-        "recompute_scheduler_enable",
-        "ascend_compilation_config",
-    )
-    ordered = reorder_dict(data, preferred, nested_orders=NESTED_KEY_ORDERS)
     return ordered
 
 
@@ -448,6 +464,9 @@ def format_user_config(config: dict[str, Any]) -> dict[str, Any]:
             )
         return ordered
 
+    # Defensive fallback: a bare engine_config (no version / role wrappers). Current
+    # callers always pass a full user_config, so this path is not hit today; kept so
+    # format_user_config stays usable on a standalone engine dict.
     if "motor_engine_prefill_config" not in config and "version" not in config:
         role = "prefill"
         kv = config.get("kv_transfer_config") or {}
@@ -509,69 +528,60 @@ def _as_optional_int(value: Any) -> int | None:
         return None
 
 
-def _read_prefill_decode_parallel(extra: dict[str, Any]) -> dict[str, int] | None:
-    """Read P/D dp/tp from one dict that contains prefill/decode, if complete."""
-    prefill = extra.get("prefill") or {}
-    decode = extra.get("decode") or {}
-    if not isinstance(prefill, dict) or not isinstance(decode, dict):
-        return None
-
-    prefill_dp = _as_optional_int(prefill.get("dp_size"))
-    prefill_tp = _as_optional_int(prefill.get("tp_size"))
-    decode_dp = _as_optional_int(decode.get("dp_size"))
-    decode_tp = _as_optional_int(decode.get("tp_size"))
-    if not all([prefill_dp, prefill_tp, decode_dp, decode_tp]):
-        return None
-    return {
-        "prefill_dp": prefill_dp,
-        "prefill_tp": prefill_tp,
-        "decode_dp": decode_dp,
-        "decode_tp": decode_tp,
-    }
+# 并行度轴：CLI flag 别名 + kv_connector_extra_config 中的 size 键
+_PARALLEL_AXES = ("dp", "tp", "pp")
+_PARALLEL_CLI_FLAGS: dict[str, tuple[str, ...]] = {
+    "dp": ("data-parallel-size", "data_parallel_size"),
+    "tp": ("tensor-parallel-size", "tensor_parallel_size"),
+    "pp": ("pipeline-parallel-size", "pipeline_parallel_size"),
+}
+_PARALLEL_KV_SIZE_KEYS = {"dp": "dp_size", "tp": "tp_size", "pp": "pp_size"}
 
 
-def _find_prefill_decode_parallel(node: Any) -> dict[str, int] | None:
-    """Recursively find the first complete prefill/decode dp/tp in a nested structure."""
-    if isinstance(node, dict):
-        parallel = _read_prefill_decode_parallel(node)
-        if parallel is not None:
-            return parallel
-        for value in node.values():
-            found = _find_prefill_decode_parallel(value)
-            if found is not None:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = _find_prefill_decode_parallel(item)
-            if found is not None:
-                return found
+def _cli_parallel_value(cli_args: dict[str, Any], axis: str) -> int | None:
+    """Return a positive-int CLI parallel value for *axis*, else None (=未提供)."""
+    for key in _PARALLEL_CLI_FLAGS[axis]:
+        value = _as_optional_int(cli_args.get(key))
+        if value is not None and value > 0:
+            return value
     return None
 
 
-def try_extract_parallel_from_cli_args(cli_args: dict[str, Any]) -> dict[str, int] | None:
-    """Return P/D dp/tp from kv config when present; otherwise None (no error)."""
-    kv_config = _get_kv_config(cli_args)
-    if not kv_config:
-        return None
-    return _find_prefill_decode_parallel(kv_config)
+def _find_kv_role_extras(node: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Recursively locate the first mapping holding prefill/decode sub-dicts.
 
-
-def extract_parallel_from_cli_args(cli_args: dict[str, Any]) -> dict[str, int]:
-    """Read P/D dp/tp from kv_connector_extra_config (preferred).
-
-    Supports top-level prefill/decode and nested structures such as MultiConnector
-    ``connectors[].kv_connector_extra_config``.
+    Returns ``(prefill_extra, decode_extra)``; a missing role yields ``{}``. Supports
+    nested structures such as MultiConnector ``connectors[].kv_connector_extra_config``.
     """
-    parallel = try_extract_parallel_from_cli_args(cli_args)
-    if parallel is not None:
-        return parallel
+    if isinstance(node, dict):
+        prefill = node.get("prefill")
+        decode = node.get("decode")
+        if isinstance(prefill, dict) or isinstance(decode, dict):
+            return (
+                prefill if isinstance(prefill, dict) else {},
+                decode if isinstance(decode, dict) else {},
+            )
+        for value in node.values():
+            found = _find_kv_role_extras(value)
+            if found != ({}, {}):
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_kv_role_extras(item)
+            if found != ({}, {}):
+                return found
+    return {}, {}
 
-    if not _get_kv_config(cli_args):
-        raise ValueError("脚本中缺少 kv-transfer-config / kv_connector_extra_config，无法推断 P/D 并行度。")
-    raise ValueError(
-        "kv_connector_extra_config 中需包含完整的 prefill/decode dp_size 与 tp_size。"
-        "（支持写在 MultiConnector 等任意嵌套层级）"
-    )
+
+def _resolve_role_parallel(cli_args: dict[str, Any], kv_role_extra: dict[str, Any]) -> dict[str, int | None]:
+    """Resolve dp/tp/pp for one role: CLI integer wins, else kv extra size, else None."""
+    resolved: dict[str, int | None] = {}
+    for axis in _PARALLEL_AXES:
+        value = _cli_parallel_value(cli_args, axis)
+        if value is None:
+            value = _as_optional_int((kv_role_extra or {}).get(_PARALLEL_KV_SIZE_KEYS[axis]))
+        resolved[axis] = value
+    return resolved
 
 
 def _as_positive_int(value: Any, *, field: str) -> int:
@@ -595,56 +605,14 @@ def extract_hybrid_parallel_from_cli_args(cli_args: dict[str, Any]) -> tuple[int
     return dp, tp
 
 
-def remap_hybrid_parallel_for_hardware(dp: int, tp: int, hardware_type: str) -> tuple[int, int]:
-    """Remap hybrid dp/tp while preserving world_size (same rules as PD remap)."""
-    cards = cards_per_node(hardware_type)
-    world = dp * tp
-    new_tp = min(tp, cards)
-    if new_tp == tp:
-        return dp, tp
-    if world % new_tp != 0:
-        raise ValueError(
-            f"hybrid: world_size={world} 在 tp 上限 {cards} 下无法整除为 tp={new_tp}，"
-            "请检查脚本中的 --data-parallel-size / --tensor-parallel-size。"
-        )
-    return world // new_tp, new_tp
+def _preset_and_cards(hardware_type: str) -> tuple[dict[str, Any], int]:
+    """Return (preset copy without cards_per_node, cards_per_node) for a hardware type."""
+    preset = dict(HARDWARE_PRESETS[normalize_hardware_type(hardware_type)])
+    return preset, int(preset.pop("cards_per_node"))
 
 
 def cards_per_node(hardware_type: str) -> int:
-    return int(HARDWARE_PRESETS[normalize_hardware_type(hardware_type)]["cards_per_node"])
-
-
-def remap_parallel_for_hardware(
-    parallel: dict[str, int],
-    hardware_type: str,
-) -> dict[str, int]:
-    """Remap dp/tp while preserving world_size.
-
-    Script tp is kept when already <= cards-per-node; only values above the
-    hardware cap (8 for A2/A5, 16 for A3) are reduced and dp is increased accordingly.
-    """
-    cards = cards_per_node(hardware_type)
-
-    def _remap_role(dp: int, tp: int, role: str) -> tuple[int, int]:
-        world = dp * tp
-        new_tp = min(tp, cards)
-        if new_tp == tp:
-            return dp, tp
-        if world % new_tp != 0:
-            raise ValueError(
-                f"{role}: world_size={world} 在 tp 上限 {cards} 下无法整除为 tp={new_tp}，"
-                "请检查 kv_connector_extra_config 中的 dp_size/tp_size。"
-            )
-        return world // new_tp, new_tp
-
-    p_dp, p_tp = _remap_role(parallel["prefill_dp"], parallel["prefill_tp"], "prefill")
-    d_dp, d_tp = _remap_role(parallel["decode_dp"], parallel["decode_tp"], "decode")
-    return {
-        "prefill_dp": p_dp,
-        "prefill_tp": p_tp,
-        "decode_dp": d_dp,
-        "decode_tp": d_tp,
-    }
+    return _preset_and_cards(hardware_type)[1]
 
 
 def apply_engine_parallel(
@@ -663,7 +631,9 @@ def apply_engine_parallel(
     else:
         raise ValueError(f"unsupported engine role: {role}")
     engine_config["data_parallel_rpc_port"] = DEFAULT_DP_RPC_PORT
-    engine_config["pipeline_parallel_size"] = 1
+    # Preserve the script's pipeline_parallel_size instead of forcing 1, so cross-node
+    # PP survives conversion. Defaults to 1 when the script does not set PP.
+    engine_config["pipeline_parallel_size"] = parallel.get(f"{role}_pp", 1)
 
 
 def _infer_role_from_cli_args(cli_args: dict[str, Any]) -> str:
@@ -676,16 +646,31 @@ def _infer_role_from_cli_args(cli_args: dict[str, Any]) -> str:
     return "prefill"
 
 
-def _infer_pod_layout(dp: int, tp: int, cards: int, *, role: str) -> tuple[int, int]:
-    """Pack dp×tp world_size onto nodes with ``cards`` NPUs each."""
-    world = dp * tp
+def _cli_pipeline_parallel(cli_args: dict[str, Any]) -> int:
+    """Read pipeline-parallel-size from CLI flags; defaults to 1 when absent/invalid."""
+    return _cli_parallel_value(cli_args, "pp") or 1
+
+
+def _infer_pod_layout(dp: int, tp: int, cards: int, *, role: str, pp: int = 1) -> tuple[int, int, int]:
+    """Pack a dp×tp×pp world onto nodes with ``cards`` NPUs each.
+
+    Returns ``(single_instance_pod_num, pod_npu_num, nnodes_per_dp_group)``. TP stays
+    intra-node; PP may span nodes, so a single DP group occupies ``tp*pp`` NPUs which
+    must divide evenly by ``cards`` when it exceeds one node. Pod packing keeps the
+    original whole-world semantics (folding PP into world) for backward compatibility.
+    """
     if tp > cards:
         raise ValueError(f"{role}: tp={tp} 超过单节点上限 {cards} 卡。")
+    per_dp = tp * pp
+    if per_dp > cards and per_dp % cards != 0:
+        raise ValueError(f"{role}: tp*pp={per_dp} 无法按每节点 {cards} 卡整除切分 Pod。")
+    nnodes = per_dp // cards if per_dp > cards else 1
+    world = dp * per_dp
     if world <= cards:
-        return 1, world
+        return 1, world, nnodes
     if world % cards != 0:
         raise ValueError(f"{role}: world_size={world} 无法按每节点 {cards} 卡整除切分 Pod。")
-    return world // cards, cards
+    return world // cards, cards, nnodes
 
 
 def infer_motor_deploy_config(
@@ -693,23 +678,28 @@ def infer_motor_deploy_config(
     hardware_type: str,
     *,
     overrides: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Infer motor_deploy_config by packing remapped dp×tp onto nodes."""
-    hw = normalize_hardware_type(hardware_type)
-    preset = dict(HARDWARE_PRESETS[hw])
-    cards = int(preset.pop("cards_per_node"))
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Infer motor_deploy_config by packing dp×tp×pp onto nodes.
 
-    p_pods, p_npu = _infer_pod_layout(
+    Returns ``(deploy_config, nnodes_per_role)`` so callers can reuse the same
+    ``_infer_pod_layout`` result to emit cross-node engine config (nnodes/master-port)
+    without recomputing it.
+    """
+    preset, cards = _preset_and_cards(hardware_type)
+
+    p_pods, p_npu, p_nnodes = _infer_pod_layout(
         parallel["prefill_dp"],
         parallel["prefill_tp"],
         cards,
         role="prefill",
+        pp=parallel.get("prefill_pp", 1),
     )
-    d_pods, d_npu = _infer_pod_layout(
+    d_pods, d_npu, d_nnodes = _infer_pod_layout(
         parallel["decode_dp"],
         parallel["decode_tp"],
         cards,
         role="decode",
+        pp=parallel.get("decode_pp", 1),
     )
 
     deploy = {
@@ -724,7 +714,7 @@ def infer_motor_deploy_config(
     deploy.update(preset)
     if overrides:
         deploy.update(overrides)
-    return deploy
+    return deploy, {"prefill": p_nnodes, "decode": d_nnodes}
 
 
 def infer_hybrid_motor_deploy_config(
@@ -732,13 +722,15 @@ def infer_hybrid_motor_deploy_config(
     tp: int,
     hardware_type: str,
     *,
+    pp: int = 1,
     overrides: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Infer hybrid motor_deploy_config by packing dp×tp onto nodes."""
-    hw = normalize_hardware_type(hardware_type)
-    preset = dict(HARDWARE_PRESETS[hw])
-    cards = int(preset.pop("cards_per_node"))
-    pods, npu = _infer_pod_layout(dp, tp, cards, role="hybrid")
+) -> tuple[dict[str, Any], int]:
+    """Infer hybrid motor_deploy_config by packing dp×tp×pp onto nodes.
+
+    Returns ``(deploy_config, nnodes)`` so the caller can reuse the layout result.
+    """
+    preset, cards = _preset_and_cards(hardware_type)
+    pods, npu, nnodes = _infer_pod_layout(dp, tp, cards, role="hybrid", pp=pp)
     deploy = {
         "deploy_mode": "infer_service_set",
         "hybrid_instances_num": 1,
@@ -748,7 +740,47 @@ def infer_hybrid_motor_deploy_config(
     deploy.update(preset)
     if overrides:
         deploy.update(overrides)
-    return deploy
+    return deploy, nnodes
+
+
+def _apply_cross_node_engine_config(
+    engine_config: dict[str, Any],
+    *,
+    dp: int,
+    nnodes: int,
+    role: str,
+) -> None:
+    """Emit nnodes / master-port into engine_config from a precomputed *nnodes*.
+
+    master-addr and node-rank are injected by Motor at runtime, so they are
+    intentionally omitted here. Existing values are preserved via setdefault.
+    """
+    if nnodes > 1 and dp > 1:
+        raise ValueError(
+            f"{role}: dp>1 with nnodes>1 is unsupported "
+            f"(dp={dp}, nnodes={nnodes}); Controller assigns a single "
+            "master_dp_ip for the whole instance. Use dp=1 for cross-node PP, "
+            "or wait for per-DP-group rendezvous support."
+        )
+    if nnodes > 1:
+        # Key style intentionally mixed to match each consumer: `nnodes` (no hyphen)
+        # and `master-port` (hyphenated) are the exact keys vLLM/Motor expect here.
+        engine_config.setdefault("nnodes", nnodes)
+        engine_config.setdefault("master-port", DEFAULT_MASTER_PORT)
+
+
+def _emit_cross_node_engine_config(
+    engine_config: dict[str, Any],
+    *,
+    dp: int,
+    tp: int,
+    pp: int,
+    cards: int,
+    role: str,
+) -> None:
+    """Compute pod layout then apply cross-node engine config (standalone helper)."""
+    _pods, _npu, nnodes = _infer_pod_layout(dp, tp, cards, role=role, pp=pp)
+    _apply_cross_node_engine_config(engine_config, dp=dp, nnodes=nnodes, role=role)
 
 
 def resolve_hybrid_script(directory: Path) -> Path:
@@ -832,6 +864,12 @@ def _try_parse_json_text(raw: str) -> Any | None:
 
 
 def _coerce(raw: str) -> Any:
+    """Coerce a CLI token value for engine_config (real bools + JSON objects + numbers).
+
+    Differs from the other coercers: bools become real ``True``/``False`` and JSON
+    strings are parsed into objects (``_coerce_env_value`` keeps bools as lowercase
+    strings and never parses JSON; ``_coerce_deploy_value`` handles only scalars).
+    """
     lowered = raw.lower()
     if lowered == "true":
         return True
@@ -1101,11 +1139,11 @@ def _should_skip_key(cli_key: str, *, include_parallel: bool = False) -> bool:
     return False
 
 
-_KV_EXTRA_PARALLEL_KEYS = frozenset({"dp_size", "tp_size"})
+_KV_EXTRA_PARALLEL_KEYS = frozenset({"dp_size", "tp_size", "pp_size"})
 
 
 def _strip_parallel_from_tree(node: Any) -> Any:
-    """Recursively drop prefill/decode dp_size/tp_size; keep all other nested fields."""
+    """Recursively drop prefill/decode dp_size/tp_size/pp_size; keep other nested fields."""
     if isinstance(node, list):
         return [_strip_parallel_from_tree(item) for item in node]
     if not isinstance(node, dict):
@@ -1209,11 +1247,19 @@ def cli_args_to_engine_config(
     elif "model" in engine_config:
         engine_config["model"] = str(engine_config["model"])
 
+    engine_role = role or _infer_role_from_cli_args(cli_args)
     if parallel is None and infer_parallel:
-        parallel = try_extract_parallel_from_cli_args(cli_args)
+        prefill_extra, decode_extra = _find_kv_role_extras(_get_kv_config(cli_args) or {})
+        role_extra = prefill_extra if engine_role == "prefill" else decode_extra
+        resolved = _resolve_role_parallel(cli_args, role_extra)
+        if resolved["dp"] and resolved["tp"]:
+            parallel = {
+                f"{engine_role}_dp": resolved["dp"],
+                f"{engine_role}_tp": resolved["tp"],
+                f"{engine_role}_pp": resolved["pp"] or 1,
+            }
 
     if parallel is not None:
-        engine_role = role or _infer_role_from_cli_args(cli_args)
         apply_engine_parallel(engine_config, role=engine_role, parallel=parallel)
 
     if add_profiler_config and "profiler-config" not in engine_config:
@@ -1256,6 +1302,7 @@ def build_engine_role_config(
 
 
 def _coerce_deploy_value(value: str) -> Any:
+    """Coerce a deploy_config scalar (int/float/real bool); never parses JSON objects."""
     if value.isdigit():
         return int(value)
     try:
@@ -1266,6 +1313,22 @@ def _coerce_deploy_value(value: str) -> Any:
     if value.lower() in {"true", "false"}:
         return value.lower() == "true"
     return value
+
+
+# 权重挂载路径占位符：出现这些值(或 None)表示用户未填真实路径，回退到 engine model
+_PRESET_WEIGHT_PLACEHOLDERS = frozenset({"", "/mnt/weight/", "/data01/models/"})
+
+
+def _resolve_weight_mount_path(deploy: dict[str, Any], *engine_configs: dict[str, Any]) -> str:
+    """Resolve the real weight mount path, falling back to the first engine model path."""
+    current = deploy.get("weight_mount_path")
+    if current is not None and current not in _PRESET_WEIGHT_PLACEHOLDERS:
+        return current
+    for cfg in engine_configs:
+        model = cfg.get("model")
+        if model:
+            return model
+    return current or "/mnt/weight/"
 
 
 def build_user_config(
@@ -1279,15 +1342,7 @@ def build_user_config(
     if deploy_config:
         for key, value in deploy_config.items():
             deploy[key] = _coerce_deploy_value(value) if isinstance(value, str) else value
-    model_path = (
-        deploy.get("weight_mount_path")
-        if deploy.get("weight_mount_path") not in (None, "", "/mnt/weight/", "/data01/models/")
-        else prefill_engine_config.get("model")
-        or decode_engine_config.get("model")
-        or deploy.get("weight_mount_path")
-        or "/mnt/weight/"
-    )
-    deploy["weight_mount_path"] = model_path
+    deploy["weight_mount_path"] = _resolve_weight_mount_path(deploy, prefill_engine_config, decode_engine_config)
     return format_user_config(
         {
             "version": "v2.0",
@@ -1312,25 +1367,11 @@ def build_hybrid_user_config(
     deploy_config: dict[str, Any] | None = None,
     minimal_template: bool = False,
 ) -> dict[str, Any]:
-    deploy = {
-        "deploy_mode": "infer_service_set",
-        "hybrid_instances_num": 1,
-        "single_hybrid_instance_pod_num": 1,
-        "hybrid_pod_npu_num": 1,
-        "image_name": "",
-        "job_id": "mindie-motor",
-        "hardware_type": "800I_A3",
-        "weight_mount_path": "/mnt/weight/",
-    }
+    deploy = dict(DEFAULT_HYBRID_DEPLOY_CONFIG)
     if deploy_config:
         for key, value in deploy_config.items():
             deploy[key] = _coerce_deploy_value(value) if isinstance(value, str) else value
-    model_path = (
-        deploy.get("weight_mount_path")
-        if deploy.get("weight_mount_path") not in (None, "", "/mnt/weight/", "/data01/models/")
-        else engine_config.get("model") or deploy.get("weight_mount_path") or "/mnt/weight/"
-    )
-    deploy["weight_mount_path"] = model_path
+    deploy["weight_mount_path"] = _resolve_weight_mount_path(deploy, engine_config)
     return format_user_config(
         {
             "version": "v2.0",
@@ -1361,8 +1402,7 @@ def convert_vllm_hybrid_script_to_user_config(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     cli = parse_vllm_serve_command(script, variables=variables)
     dp, tp = extract_hybrid_parallel_from_cli_args(cli)
-    if hardware_type:
-        dp, tp = remap_hybrid_parallel_for_hardware(dp, tp, hardware_type)
+    pp = _cli_pipeline_parallel(cli)
 
     env_config = build_hybrid_env_config(parse_script_exports(script))
     engine_config = cli_args_to_engine_config(
@@ -1372,27 +1412,29 @@ def convert_vllm_hybrid_script_to_user_config(
         include_parallel_cli=True,
         skip_kv_transfer=True,
         add_profiler_config=False,
+        infer_parallel=False,
     )
     engine_config["data_parallel_size"] = dp
     engine_config["tensor_parallel_size"] = tp
-    engine_config.setdefault("pipeline_parallel_size", 1)
+    engine_config.setdefault("pipeline_parallel_size", pp)
     engine_config.setdefault("data_parallel_rpc_port", DEFAULT_DP_RPC_PORT)
 
     merged_deploy = dict(deploy_config or {})
     if weight_mount_path:
         merged_deploy["weight_mount_path"] = weight_mount_path
     if hardware_type:
-        merged_deploy = infer_hybrid_motor_deploy_config(
+        # Compute pod layout once; reuse nnodes to emit cross-node engine config.
+        merged_deploy, nnodes = infer_hybrid_motor_deploy_config(
             dp,
             tp,
             hardware_type,
+            pp=pp,
             overrides=merged_deploy or None,
         )
+        _apply_cross_node_engine_config(engine_config, dp=dp, nnodes=nnodes, role="hybrid")
     elif merged_deploy:
         merged_deploy = {
-            "deploy_mode": "infer_service_set",
-            "hybrid_instances_num": 1,
-            "single_hybrid_instance_pod_num": 1,
+            **DEFAULT_HYBRID_DEPLOY_CONFIG,
             "hybrid_pod_npu_num": dp * tp,
             **merged_deploy,
         }
@@ -1429,13 +1471,24 @@ def convert_vllm_scripts_to_user_config(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     prefill_cli = parse_vllm_serve_command(prefill_script, variables=variables)
     decode_cli = parse_vllm_serve_command(decode_script, variables=variables)
-    script_parallel = try_extract_parallel_from_cli_args(prefill_cli)
-    if script_parallel is None:
-        script_parallel = try_extract_parallel_from_cli_args(decode_cli)
+
+    # Per axis (dp/tp/pp): CLI integer wins; otherwise fall back to
+    # kv_connector_extra_config size (dp_size/tp_size/pp_size).
+    kv_config = _get_kv_config(prefill_cli) or _get_kv_config(decode_cli) or {}
+    prefill_extra, decode_extra = _find_kv_role_extras(kv_config)
+    prefill_par = _resolve_role_parallel(prefill_cli, prefill_extra)
+    decode_par = _resolve_role_parallel(decode_cli, decode_extra)
 
     parallel: dict[str, int] | None = None
-    if script_parallel is not None:
-        parallel = remap_parallel_for_hardware(script_parallel, hardware_type) if hardware_type else script_parallel
+    if prefill_par["dp"] and prefill_par["tp"] and decode_par["dp"] and decode_par["tp"]:
+        parallel = {
+            "prefill_dp": prefill_par["dp"],
+            "prefill_tp": prefill_par["tp"],
+            "prefill_pp": prefill_par["pp"] or 1,
+            "decode_dp": decode_par["dp"],
+            "decode_tp": decode_par["tp"],
+            "decode_pp": decode_par["pp"] or 1,
+        }
     else:
         _print_parallel_manual_fill_hint()
 
@@ -1466,14 +1519,24 @@ def convert_vllm_scripts_to_user_config(
         merged_deploy["weight_mount_path"] = weight_mount_path
 
     if parallel is not None and hardware_type:
-        inferred = infer_motor_deploy_config(parallel, hardware_type, overrides=merged_deploy or None)
-        merged_deploy = inferred
+        # Compute pod layout once; reuse per-role nnodes to emit cross-node config.
+        merged_deploy, nnodes_map = infer_motor_deploy_config(parallel, hardware_type, overrides=merged_deploy or None)
+        _apply_cross_node_engine_config(
+            prefill_engine,
+            dp=parallel["prefill_dp"],
+            nnodes=nnodes_map["prefill"],
+            role="prefill",
+        )
+        _apply_cross_node_engine_config(
+            decode_engine,
+            dp=parallel["decode_dp"],
+            nnodes=nnodes_map["decode"],
+            role="decode",
+        )
     elif merged_deploy:
         merged_deploy = {**DEFAULT_DEPLOY_CONFIG, **merged_deploy}
     elif hardware_type:
-        hw = normalize_hardware_type(hardware_type)
-        preset = dict(HARDWARE_PRESETS[hw])
-        preset.pop("cards_per_node", None)
+        preset, _cards = _preset_and_cards(hardware_type)
         merged_deploy = {**DEFAULT_DEPLOY_CONFIG, **preset}
 
     user_config = build_user_config(
