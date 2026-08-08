@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -586,6 +587,111 @@ def delete_engine_deployment(job_id, node_type, index, yaml_path):
         os.remove(yaml_path)
 
 
+def get_pending_engine_instance_indices(job_id, node_type):
+    """Return indices whose pods are Pending, or None when the query fails."""
+    pod_index_pattern = re.compile(rf"^{re.escape(g_engine_base_name)}-{re.escape(node_type)}(\d+)(?:-|$)")
+    try:
+        kubectl = _get_kubectl_path()
+        stdout = run_cmd_get_output([kubectl, "get", "pods", "-n", job_id, "-o", "json"], timeout=30)
+        pods_data = json.loads(stdout)
+    except (RuntimeError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to get pod status: %s, skip pending priority", exc)
+        return None
+
+    pending_indices = set()
+    for item in pods_data.get("items", []):
+        pod_name = item.get("metadata", {}).get("name", "")
+        phase = item.get("status", {}).get("phase", "")
+        match = pod_index_pattern.search(pod_name)
+        if match and phase == "Pending":
+            pending_indices.add(int(match.group(1)))
+    return pending_indices
+
+
+def _scale_in_delete_priority(index, pending_indices):
+    """Lower sort key means delete first: Pending before Running, high index before low."""
+    tier = 0 if index in pending_indices else 1
+    return (tier, -index)
+
+
+def compute_scale_in_delete_indices(existing_indices, target_total, pending_indices, num_to_delete):
+    """Pick indices to remove from the live cluster index set."""
+    if num_to_delete <= 0:
+        return []
+
+    return sorted(
+        existing_indices,
+        key=lambda idx: _scale_in_delete_priority(idx, pending_indices),
+    )[:num_to_delete]
+
+
+def compute_scale_out_add_indices(existing_indices, target_total, num_to_add):
+    """Pick indices to create within [0, target_total)."""
+    if num_to_add <= 0:
+        return []
+
+    missing_indices = [idx for idx in range(target_total) if idx not in existing_indices]
+    return missing_indices[:num_to_add]
+
+
+def get_instance_scale_in_delete_order(job_id, node_type, base, total):
+    """
+    Return engine-instance indices to delete during scale-in.
+
+    Use the live cluster index set as source of truth. Delete priority:
+    1. Pending pods, highest index first
+    2. remaining instances, highest index first
+
+    Fall back to the legacy config-range order when deployment query fails.
+    """
+    if base <= total:
+        return []
+
+    existing_indices = get_existing_engine_instance_indices(job_id, node_type)
+    if existing_indices is None:
+        return list(reversed(range(base)))[: base - total]
+
+    num_to_delete = len(existing_indices) - total
+    if num_to_delete <= 0:
+        return []
+
+    pending_indices = get_pending_engine_instance_indices(job_id, node_type)
+    if pending_indices is None:
+        pending_indices = set()
+
+    return compute_scale_in_delete_indices(existing_indices, total, pending_indices, num_to_delete)
+
+
+def get_existing_engine_instance_indices(job_id, node_type):
+    """Return indices of existing engine Deployments, or None when the query fails."""
+    deployment_pattern = re.compile(rf"^{re.escape(g_engine_base_name)}-{re.escape(node_type)}(\d+)$")
+    try:
+        kubectl = _get_kubectl_path()
+        stdout = run_cmd_get_output([kubectl, "get", "deployments", "-n", job_id, "-o", "json"], timeout=30)
+        deployments_data = json.loads(stdout)
+    except (RuntimeError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to get deployments: %s, use count-based scale-out order", exc)
+        return None
+
+    indices = set()
+    for item in deployments_data.get("items", []):
+        deployment_name = item.get("metadata", {}).get("name", "")
+        match = deployment_pattern.fullmatch(deployment_name)
+        if match:
+            indices.add(int(match.group(1)))
+    return indices
+
+
+def get_instance_scale_out_indices(job_id, node_type, base, total):
+    """Return missing engine indices to create until the target count is reached."""
+    existing_indices = get_existing_engine_instance_indices(job_id, node_type)
+    if existing_indices is None:
+        return list(range(base, total))
+
+    num_to_add = max(0, total - len(existing_indices))
+    return compute_scale_out_add_indices(existing_indices, total, num_to_add)
+
+
 def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_path, node_type):
     """Scale engine instances by type (p, d or u)."""
     from lib.utils import obtain_engine_instance_total
@@ -601,12 +707,20 @@ def scale_engine_by_type(deploy_config, baseline_deploy_config, out_deploy_yaml_
         base = bases[1]
     if total < base:
         logger.info("Scale-in %s instance, %s -> %s", node_type, base, total)
-        for index in reversed(range(total, base)):
+        if node_type in (C.NODE_TYPE_P, C.NODE_TYPE_D, C.NODE_TYPE_U):
+            delete_indices = get_instance_scale_in_delete_order(job_id, node_type, base, total)
+        else:
+            delete_indices = list(reversed(range(total, base)))
+        for index in delete_indices:
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{node_type}{index}.yaml")
             delete_engine_deployment(job_id, node_type, index, yaml_path)
     if total > base:
         logger.info("Scale-out %s instance, %s -> %s", node_type, base, total)
-        for index in range(base, total):
+        if node_type in (C.NODE_TYPE_P, C.NODE_TYPE_D, C.NODE_TYPE_U):
+            scale_out_indices = get_instance_scale_out_indices(job_id, node_type, base, total)
+        else:
+            scale_out_indices = list(range(base, total))
+        for index in scale_out_indices:
             yaml_path = os.path.join(out_deploy_yaml_path, f"{g_engine_base_name}_{node_type}{index}.yaml")
             safe_exec_cmd(["kubectl", "apply", "-f", yaml_path, "-n", job_id])
 
