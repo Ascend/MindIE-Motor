@@ -451,8 +451,24 @@ def test_elastic_distributed_engine_deploy_scales_in_hybrid_instances(tmp_path, 
     k8s_utils.elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, str(tmp_path))
 
     assert commands == [
-        ["kubectl", "delete", "-f", str(tmp_path / "mindie_server_u2.yaml"), "-n", "pd-hybrid"],
-        ["kubectl", "delete", "-f", str(tmp_path / "mindie_server_u1.yaml"), "-n", "pd-hybrid"],
+        [
+            "kubectl",
+            "delete",
+            "deployment",
+            "mindie_server-u2",
+            "-n",
+            "pd-hybrid",
+            "--ignore-not-found=true",
+        ],
+        [
+            "kubectl",
+            "delete",
+            "deployment",
+            "mindie_server-u1",
+            "-n",
+            "pd-hybrid",
+            "--ignore-not-found=true",
+        ],
     ]
     assert not yaml_to_remove.exists()
 
