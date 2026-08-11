@@ -117,6 +117,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `backend` | string | `memcache` | 池化后端：`mooncake`、`memcache`；未配置时默认 `memcache` |
+| `target_job_id` | string（可选） | 未配置 | 复用其他 K8s 推理服务的 kv_store。值为目标服务的 `motor_deploy_config.job_id`（即目标 namespace）。详见下方 [多套服务共享 kv_store](#多套服务共享-kv_store) |
 
 **Mooncake 专属参数**
 
@@ -138,6 +139,56 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 | `local_service_mode` | string（可选） | <ul><li>Atlas 800I A2 推理服务器/Atlas 850 超节点服务器：`inprocess`。</li><li>Atlas 800I A3 超节点服务器：`standalone`</li></ul> | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
 > **所有 memcache 内部配置项**（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户直接在 `mmc-local-inprocess.conf` 中管理，无需在 `user_config.json` 中配置。详见 [MemCache 后端文档](backend/memcache.md)。
+
+### 多套服务共享 kv_store
+
+当集群中存在多套 K8s 推理服务（各自对应独立的 `job_id` / namespace）时，可通过 `target_job_id` 让后续服务复用第一套已部署的 kv_store，而无需重复拉起 MetaService / mooncake_master Pod。
+
+**配置示例**
+
+第一套服务（提供 kv_store）：
+
+```json
+"motor_deploy_config": {
+  "job_id": "service-a"
+},
+"kv_cache_store_config": {
+  "backend": "memcache"
+}
+```
+
+第二套服务（复用第一套的 kv_store）：
+
+```json
+"motor_deploy_config": {
+  "job_id": "service-b"
+},
+"kv_cache_store_config": {
+  "backend": "memcache",
+  "target_job_id": "service-a"
+}
+```
+
+**行为说明**
+
+| 场景 | 行为 |
+|------|------|
+| 未配置 `target_job_id` | 在本 namespace 新建 kv_store Pod |
+| `target_job_id` 与自身 `job_id` 相同 | 在本 namespace 新建 kv_store Pod |
+| `target_job_id` 指向其他服务，且目标 namespace 中存在 kv_store Service 与 Running 状态的 kv_store Pod | 复用目标 kv_store 域名，本套不部署 kv_store Pod |
+| `target_job_id` 写错，或目标 namespace 中无可用 kv_store | 回退为在本 namespace 新建 kv_store Pod |
+
+复用时，P/D 引擎 Pod 的环境变量 `KVS_MASTER_SERVICE` 会指向目标 namespace 下的 kv_store 完整域名，例如：
+
+`mindie-motor-kvs-master.service-a.svc.cluster.local`
+
+（InferServiceSet 模式下 Service 名称会带 CRD 前缀，deployer 会自动按模板拼接。）
+
+> **注意**
+>
+> - 两套服务的 `deploy_mode`（`multi_deployment` / `infer_service_set`）应保持一致，否则 Service 名称可能对不上，复用会失败并回退为新建。
+> - InferServiceSet 模板中若无 `kv-store` role（未使用 KV 池化的精简模板），deployer 会跳过 kv_store 域名解析，不影响部署。
+> - 使用 `--update_instance_num` 扩缩容时，multi_deployment 模式同样会解析 `target_job_id`，确保新扩容的 engine Pod 能连上正确的 kv_store。
 
 ---
 
