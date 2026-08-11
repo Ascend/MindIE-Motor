@@ -36,15 +36,15 @@ Peer 发现与路由由 Controller / NodeManager 自动完成，**无需手动�
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `source` | 是 | 固定为 `"auto"`，表示 peer 地址由 Controller 自动填充 |
-| `listen_port` | 是 | 本实例对外提供权重服务的起始端口；各 device 实际端口为 `listen_port + device_offset` |
+| `listen_port` | 是 | 本实例对外提供权重服务的起始端口；各 device 实际端口为 `listen_port + device_rank(含dp偏移)` |
 
-若模型启用了投机推理（如 `speculative-config` / MTP），主模型与 draft 模型共用同一组 `source` 和 `listen_port`配置，无需额外配置。draft 权重服务端口会在 `listen_port` 基础上**自动偏移 10000**。
+若模型启用了投机推理（如 `speculative-config` / MTP），主模型与 draft 模型共用同一组 `source` 和 `listen_port`配置，无需额外配置。draft 权重服务端口会在 `listen_port` 基础上**自动偏移 10000**，此时建议port配置 < 55535 - device_rank。
 
 ### 可选字段
 
 | 字段 | 说明 |
 |------|------|
-| `int8_cache` | 是否启用 INT8 缓存，由于当前把接收端反量化做在了接收权重之后，量化版权重建议配置"INT8_CACHE":"dram" |
+| `int8_cache` | 是否启用 INT8 缓存，默认不开启，全量参数直传 |
 | `int8_cache_name` | INT8 缓存名称 |
 | `output_prefix` | 权重输出前缀 |
 
@@ -63,7 +63,7 @@ Controller 判定 D2D 开启需同时满足：
 ## 部署步骤
 
 1. 在模型对应的 `user_config.json` 中按上文添加 `model_loader_extra_config`（Prefill / Decode / Union 按实际角色分别配置）。
-2. 使用 [Deployer](../../deployer/README.md) 部署首个实例，等待实例进入 ACTIVE 状态。
+2. 部署首个实例，等待实例进入 ACTIVE 状态。
 3. 扩容或部署同角色新实例时，Controller 会自动向新实例下发 peer IP。
 
 ## 使用约束
@@ -77,9 +77,13 @@ Controller 判定 D2D 开启需同时满足：
 
 以下模型已在 PyMotor 示例配置中验证 D2D 启动加速：
 
-| 模型 | 配置目录 |
+| 模型 | 配置目录(参考) |
 |------|----------|
-| Qwen3-30B | `examples/infer_engines/vllm/models/qwen/3/30b/` |
-| DeepSeek-V3.1 | `examples/infer_engines/vllm/models/deepseek/v3_1/` |
+| Qwen3-30B | `examples/infer_engines/vllm/models/qwen_235b/` |
+| DeepSeek-V3.1-w8a8-mtp | `examples/infer_engines/vllm/models/deepseek_v3.1/` |
+| Deepseekv4-flash-w8a8-mtp | `examples/infer_engines/vllm/models/deepseek_v4_flash/` |
+| DeepSeek-V4-Pro-w4a8 | `examples/infer_engines/vllm/models/deepseek_v4_pro/` |
+| GLM-5.1-w4a8 | `examples/infer_engines/vllm/models/glm_5.1/` |
+| GLM-5.1-w8a8 | `examples/infer_engines/vllm/models/glm_5.1/` |
 
-其他未测试模型如有问题，欢迎至官方提 [ISSUE](https://gitcode.com/Ascend/MindIE-PyMotor/issues)。
+非典配场景或其他未测试模型，如有问题，欢迎至官方提 [ISSUE](https://gitcode.com/Ascend/MindIE-Motor/issues)。

@@ -40,6 +40,7 @@ nav:
           - 链路追踪: user_guide/features/tracing.md
           - ScaleP2D 故障恢复: user_guide/features/fault_tolerance/scale_p2d.md
           - 容器快照: user_guide/features/container_snapshot.md
+          - D2D 权重加载加速: user_guide/features/startup_acceleration.md
           - 虚推健康探测: user_guide/features/sim_inference.md
           - 故障场景重调度: user_guide/features/fault_tolerance/rescheduler.md
           - 精度检测: user_guide/features/precision_detection.md
