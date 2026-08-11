@@ -4,6 +4,8 @@
 
 Every Python file must start with the Mulan PSL v2 license header. No comments or descriptions before it.
 
+**Markdown documents (`.md`) do NOT need a license header** — they start directly with the document title (`# ...`). Keep doc style consistent with the existing `docs/` tree (no header, no trailing license comment).
+
 ```python
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.

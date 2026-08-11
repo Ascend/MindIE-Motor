@@ -207,7 +207,7 @@ pub struct UnregisterRequest {
 }
 
 /// POST /query request body (matching Python client).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
     pub model: String,
     pub block_size: u32,
@@ -219,7 +219,7 @@ pub struct QueryRequest {
 /// POST /query_by_hash request body — query using pre-computed block hashes
 /// instead of raw token IDs. This avoids redundant XXH3 computation when the
 /// caller has already hashed the sequence.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryByHashRequest {
     pub model: String,
     pub block_size: u32,
@@ -272,6 +272,102 @@ pub struct InstanceMatchData {
 pub struct QueryResponse {
     #[serde(flatten)]
     pub tenants: HashMap<String, HashMap<InstanceId, InstanceMatchData>>,
+}
+
+// ---------------------------------------------------------------------------
+// MessagePack query codec
+//
+// `/query` and `/query_by_hash` accept both JSON and MessagePack bodies
+// (selected by `Content-Type: application/msgpack`). The request side is
+// decoded with `rmp_serde` straight into `QueryRequest` / `QueryByHashRequest`
+// (neither uses serde `flatten`, so the generic path works). The response
+// side is hand-encoded below because `QueryResponse` relies on
+// `#[serde(flatten)]`, which MessagePack serializers do not support.
+//
+// The MessagePack response mirrors the JSON wire shape exactly:
+//
+// ```text
+// { tenant_id: { instance_id: { longest_matched, DP:
+//   { rank: { matched_tokens, npu_blocks, cpu_blocks, disk_blocks } } } } }
+// ```
+
+/// Content-Type values accepted as MessagePack on the query endpoints.
+pub const MSGPACK_CONTENT_TYPES: [&str; 2] = ["application/msgpack", "application/x-msgpack"];
+
+/// True when the request `Content-Type` header selects MessagePack.
+pub fn is_msgpack_content_type(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            // Strip parameters such as "; charset=utf-8".
+            let ct = ct
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            MSGPACK_CONTENT_TYPES.contains(&ct.as_str())
+        })
+        .unwrap_or(false)
+}
+
+/// Encode a full `/query` response into MessagePack.
+///
+/// Written with `rmp::encode` instead of `rmp_serde` to avoid the
+/// `#[serde(flatten)]` map-merge pitfall on `QueryResponse`.
+pub fn encode_query_response_msgpack(response: &QueryResponse, out: &mut Vec<u8>) {
+    use rmp::encode::*;
+    write_map_len(
+        out,
+        u32::try_from(response.tenants.len()).expect("tenants len fits u32"),
+    )
+    .expect("write map len");
+    for (tenant, instances) in &response.tenants {
+        write_str(out, tenant).expect("write tenant");
+        write_map_len(
+            out,
+            u32::try_from(instances.len()).expect("instances len fits u32"),
+        )
+        .expect("write map len");
+        for (instance, data) in instances {
+            write_str(out, instance).expect("write instance");
+            write_map_len(out, 2).expect("instance map len");
+            write_str(out, "longest_matched").expect("write key");
+            write_u32(out, data.longest_matched).expect("write longest_matched");
+            write_str(out, "DP").expect("write key");
+            write_map_len(out, u32::try_from(data.dp.len()).expect("dp len fits u32"))
+                .expect("write map len");
+            for (rank, blocks) in &data.dp {
+                write_str(out, rank).expect("write rank");
+                write_map_len(out, 4).expect("blocks map len");
+                write_str(out, "matched_tokens").expect("write key");
+                write_u32(out, blocks.matched_tokens).expect("write matched_tokens");
+                write_str(out, "npu_blocks").expect("write key");
+                write_u32(out, blocks.npu_blocks).expect("write npu_blocks");
+                write_str(out, "cpu_blocks").expect("write key");
+                write_u32(out, blocks.cpu_blocks).expect("write cpu_blocks");
+                write_str(out, "disk_blocks").expect("write key");
+                write_u32(out, blocks.disk_blocks).expect("write disk_blocks");
+            }
+        }
+    }
+}
+
+/// Encode a single-key error map `{ "error": "..." }` into MessagePack.
+pub fn encode_error_msgpack(message: &str, out: &mut Vec<u8>) {
+    use rmp::encode::*;
+    write_map_len(out, 1).expect("map len");
+    write_str(out, "error").expect("write key");
+    write_str(out, message).expect("write error");
+}
+
+/// Encode the empty query result `{ "<tenant_id>": {} }` into MessagePack.
+pub fn encode_empty_tenant_msgpack(tenant_id: &str, out: &mut Vec<u8>) {
+    use rmp::encode::*;
+    write_map_len(out, 1).expect("map len");
+    write_str(out, tenant_id).expect("write tenant");
+    write_map_len(out, 0).expect("empty map");
 }
 
 // ---------------------------------------------------------------------------
@@ -839,5 +935,163 @@ mod tests {
             panic!("expected Stored, got {data:?}");
         };
         assert_eq!(store.parent_hash, Some(999));
+    }
+
+    // -----------------------------------------------------------------------
+    // MessagePack query codec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_query_request_msgpack_roundtrip() {
+        let req = QueryRequest {
+            model: "llama-7b".into(),
+            block_size: 128,
+            token_ids: (0..100_000).map(|i| i % 32000).collect(),
+            tenant_id: "default".into(),
+        };
+        let encoded = rmp_serde::to_vec(&req).unwrap();
+        let decoded: QueryRequest = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.model, req.model);
+        assert_eq!(decoded.block_size, req.block_size);
+        assert_eq!(decoded.tenant_id, req.tenant_id);
+        assert_eq!(decoded.token_ids, req.token_ids);
+    }
+
+    #[test]
+    fn test_query_by_hash_request_msgpack_roundtrip() {
+        let req = QueryByHashRequest {
+            model: "llama-7b".into(),
+            block_size: 128,
+            block_hashes: (0..10_000).map(|i| (i as u64) * 2654435761).collect(),
+            tenant_id: "default".into(),
+        };
+        let encoded = rmp_serde::to_vec(&req).unwrap();
+        let decoded: QueryByHashRequest = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.block_hashes, req.block_hashes);
+    }
+
+    /// Convert a MessagePack value into its JSON equivalent so the two wire
+    /// shapes can be compared structurally.
+    fn rmpv_to_json(v: &rmpv::Value) -> serde_json::Value {
+        match v {
+            rmpv::Value::Nil => serde_json::Value::Null,
+            rmpv::Value::Boolean(b) => serde_json::Value::Bool(*b),
+            rmpv::Value::Integer(i) => {
+                if let Some(u) = i.as_u64() {
+                    serde_json::Value::from(u)
+                } else {
+                    serde_json::Value::from(i.as_i64().unwrap_or_default())
+                }
+            }
+            rmpv::Value::F64(f) => serde_json::Value::from(*f),
+            rmpv::Value::F32(f) => serde_json::Value::from(*f),
+            rmpv::Value::String(s) => {
+                serde_json::Value::String(s.as_str().unwrap_or_default().to_string())
+            }
+            rmpv::Value::Binary(b) => serde_json::Value::String(format!("{b:?}")),
+            rmpv::Value::Array(a) => serde_json::Value::Array(a.iter().map(rmpv_to_json).collect()),
+            rmpv::Value::Map(m) => {
+                let mut map = serde_json::Map::new();
+                for (k, v) in m {
+                    let key = match k {
+                        rmpv::Value::String(s) => s.as_str().unwrap_or_default().to_string(),
+                        other => format!("{other:?}"),
+                    };
+                    map.insert(key, rmpv_to_json(v));
+                }
+                serde_json::Value::Object(map)
+            }
+            rmpv::Value::Ext(..) => serde_json::Value::Null,
+        }
+    }
+
+    fn sample_query_response() -> QueryResponse {
+        let mut tenants = HashMap::new();
+        let mut instances = HashMap::new();
+        let mut dp = HashMap::new();
+        dp.insert(
+            "0".to_string(),
+            DpBlocks {
+                matched_tokens: 384,
+                npu_blocks: 3,
+                cpu_blocks: 0,
+                disk_blocks: 0,
+            },
+        );
+        dp.insert(
+            "1".to_string(),
+            DpBlocks {
+                matched_tokens: 512,
+                npu_blocks: 1,
+                cpu_blocks: 3,
+                disk_blocks: 0,
+            },
+        );
+        instances.insert(
+            "prefill-0".to_string(),
+            InstanceMatchData {
+                longest_matched: 512,
+                dp,
+            },
+        );
+        tenants.insert("default".to_string(), instances);
+        QueryResponse { tenants }
+    }
+
+    #[test]
+    fn test_query_response_msgpack_matches_json_shape() {
+        let response = sample_query_response();
+        let mut buf = Vec::new();
+        encode_query_response_msgpack(&response, &mut buf);
+
+        // Decode the msgpack payload and compare with the JSON wire shape
+        // field-by-field. This guards the hand-written encoder against
+        // drifting from the serde_json shape (which the Python client parses).
+        let msgpack_value = rmpv::decode::read_value(&mut buf.as_slice()).unwrap();
+        let msgpack_json = rmpv_to_json(&msgpack_value);
+        let json_value = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            msgpack_json, json_value,
+            "msgpack response diverges from JSON wire shape"
+        );
+    }
+
+    #[test]
+    fn test_query_response_msgpack_empty_tenant() {
+        let response = QueryResponse::default();
+        let mut buf = Vec::new();
+        encode_query_response_msgpack(&response, &mut buf);
+        let msgpack_value = rmpv::decode::read_value(&mut buf.as_slice()).unwrap();
+        assert_eq!(rmpv_to_json(&msgpack_value), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_error_msgpack_encoding() {
+        let mut err = Vec::new();
+        encode_error_msgpack("boom", &mut err);
+        assert_eq!(
+            rmpv_to_json(&rmpv::decode::read_value(&mut err.as_slice()).unwrap()),
+            serde_json::json!({"error": "boom"})
+        );
+    }
+
+    #[test]
+    fn test_is_msgpack_content_type() {
+        let cases: Vec<(&str, bool)> = vec![
+            ("application/msgpack", true),
+            ("application/x-msgpack", true),
+            ("application/msgpack; charset=utf-8", true),
+            ("Application/MSGPACK", true),
+            ("application/json", false),
+            ("", false),
+            ("text/plain", false),
+        ];
+        for (ct, expected) in cases {
+            let mut headers = axum::http::HeaderMap::new();
+            if !ct.is_empty() {
+                headers.insert(axum::http::header::CONTENT_TYPE, ct.parse().unwrap());
+            }
+            assert_eq!(is_msgpack_content_type(&headers), expected, "ct={ct}");
+        }
     }
 }

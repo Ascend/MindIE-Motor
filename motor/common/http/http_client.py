@@ -17,6 +17,7 @@ from ssl import Purpose
 from typing import Any
 
 import httpx
+import msgspec
 import requests
 from requests import Response
 from requests.adapters import HTTPAdapter
@@ -38,6 +39,31 @@ def _normalize_address(address: str) -> str:
 logger = get_logger(__name__)
 
 Canceller = Callable[[str], None]
+
+
+def _extract_error_message(response: Any, fallback: str) -> str:
+    """Extract a readable ``error`` field from an error response body.
+
+    Handles JSON and MessagePack maps (e.g. kv-conductor's 4xx/5xx
+    responses). Returns ``fallback`` when the body has no decodable
+    ``error`` key. ``response`` may be None.
+    """
+    if response is None:
+        return ""
+    content_type = response.headers.get("Content-Type", "").lower()
+    try:
+        if "msgpack" in content_type:
+            payload = msgspec.msgpack.decode(response.content)
+        else:
+            payload = response.json()
+    except Exception:
+        # Body is not a decodable error map — fall back to raw text.
+        return fallback
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, str) and error:
+            return error
+    return fallback
 
 
 class ConnectionMode(Enum):
@@ -120,11 +146,45 @@ class SafeHTTPSClient:
     ) -> Response:
         return self._request('POST', endpoint, data=data, params=query_params)
 
+    def post_bytes(
+        self,
+        endpoint: str,
+        body: bytes,
+        content_type: str = 'application/msgpack',
+        accept: str = 'application/msgpack',
+        query_params: dict | None = None,
+    ) -> Response:
+        """POST a raw (non-JSON) body and return the raw Response.
+
+        Used for MessagePack endpoints: the caller owns body encoding and
+        response parsing (``.content``). Request-level ``Content-Type`` /
+        ``Accept`` headers override the session defaults; the response is
+        NOT parsed by :meth:`request`. Error handling is shared with
+        :meth:`_request`.
+        """
+        headers = {'Content-Type': content_type, 'Accept': accept}
+        return self._request('POST', endpoint, params=query_params, raw_body=body, extra_headers=headers)
+
     def close(self) -> None:
         logger.debug("SafeHTTPSClient closing. address=%s", self.base_url)
         self.session.close()
 
-    def _request(self, method: str, endpoint: str, data: dict | None = None, params: dict | None = None) -> Response:
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        data: dict | None = None,
+        params: dict | None = None,
+        raw_body: bytes | None = None,
+        extra_headers: dict | None = None,
+    ) -> Response:
+        """Send a request, returning the raw Response.
+
+        ``data`` is JSON-serialized by requests (``json=``); ``raw_body`` is
+        sent as-is (``data=``) and is mutually exclusive with ``data``. When
+        ``raw_body`` is given, ``extra_headers`` replaces the session-level
+        ``Content-Type``/``Accept`` for this request.
+        """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         logger.debug(
             "HTTP request start. method=%s, url=%s, timeout=%s",
@@ -133,9 +193,19 @@ class SafeHTTPSClient:
             self.timeout,
         )
         try:
-            response = self.session.request(
-                method=method.upper(), url=url, json=data, params=params, timeout=self.timeout, verify=self.verify
-            )
+            request_kwargs: dict = {
+                'method': method.upper(),
+                'url': url,
+                'params': params,
+                'timeout': self.timeout,
+                'verify': self.verify,
+            }
+            if raw_body is not None:
+                request_kwargs['data'] = raw_body
+                request_kwargs['headers'] = extra_headers
+            else:
+                request_kwargs['json'] = data
+            response = self.session.request(**request_kwargs)
 
             response.raise_for_status()
             logger.debug(
@@ -156,16 +226,24 @@ class SafeHTTPSClient:
             )
             raise RuntimeError(f"SSL verify failed: {e}") from e
         except requests.exceptions.HTTPError as e:
-            status = getattr(e.response, "status_code", "unknown")
+            # e.response may be None when the error was raised without a
+            # response (e.g. by a caller); guard both access paths.
+            response = e.response
+            status = getattr(response, "status_code", "unknown")
+            body_text = getattr(response, "text", "") if response is not None else ""
+            # Error bodies may be JSON or MessagePack maps with an "error"
+            # key (e.g. kv-conductor's 4xx/5xx responses); surface the
+            # message instead of raw bytes.
+            error_message = _extract_error_message(response, body_text)
             logger.debug(
                 "HTTP error response. url=%s, status_code=%s, body=%s. "
                 "Possible causes: 1) peer rejected request "
                 "2) peer service down 3) auth failure.",
                 url,
                 status,
-                getattr(e.response, "text", ""),
+                error_message or body_text,
             )
-            raise RuntimeError(f"http response error {e.response.status_code}, {e.response.text}") from e
+            raise RuntimeError(f"http response error {status}, {error_message or body_text}") from e
         except Exception as e:
             logger.debug(
                 "HTTP request send failed. url=%s, error=%s. "

@@ -437,6 +437,24 @@ def test_config_validation_errors(param, value, expected_error):
             setattr(config.standby_config, param, value)
         elif param in ["etcd_port", "etcd_timeout"]:
             setattr(config.etcd_config, param, value)
+        elif param in ["query_encoding"]:
+            setattr(config.scheduler_config.kv_conductor_config, param, value)
+        config.validate_config()
+
+
+def test_config_validation_query_encoding_defaults_ok():
+    """Default query_encoding (msgpack) and json both validate."""
+    config = CoordinatorConfig()
+    config.validate_config()  # default msgpack
+    config.scheduler_config.kv_conductor_config.query_encoding = "json"
+    config.validate_config()
+
+
+def test_config_validation_query_encoding_invalid():
+    """Invalid query_encoding fails at startup validation."""
+    with pytest.raises(ValueError, match="query_encoding must be one of"):
+        config = CoordinatorConfig()
+        config.scheduler_config.kv_conductor_config.query_encoding = "MsgPack"
         config.validate_config()
 
 

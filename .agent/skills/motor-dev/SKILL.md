@@ -29,6 +29,7 @@ benefits from past mistakes.
 - Every Python file must start with the Mulan PSL v2 license header (see `references/code-style.md`).
 - After any completed bug fix (including log-diagnosed issues), **record the case in `bug-fix-history/`** (case file + INDEX.md row) — this is mandatory, not optional (see Continuous Learning).
 - **Skill sync (docs never drift)**: whenever you read component source code while developing, actively cross-check it against the corresponding `references/<module>.md`. If reality differs from the doc (path/line counts/constants/state machine/protocol/flow), **update the reference immediately** and carry it in the same PR as the code change. Never leave a known mismatch in place.
+- **References are development knowledge, not verification reports**: `references/<module>.md` records only what later development needs to know (architecture, mechanisms, wire protocols, constants, test/benchmark entry points and how to run them). **Never write one-off verification results — benchmark performance numbers, single-run tuning conclusions, measured gains — into skill references**; they go stale as hardware/code evolve and belong in PR/ISSUE bodies or user-facing docs. Keep the mechanism, drop the numbers.
 
 ## Debugging Workflow (含日志定位)
 

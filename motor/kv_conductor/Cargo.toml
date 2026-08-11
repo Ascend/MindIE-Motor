@@ -35,6 +35,7 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 zmq = "0.10"
+rmp = "0.8"
 rmp-serde = "1"
 rmpv = { version = "1", features = ["with-serde"] }
 tokio-util = "0.7"

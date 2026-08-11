@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -47,18 +45,9 @@ def test_init_with_valid_parameters(base_url, cert_files):
     """test init with valid parameters"""
     cert_file, key_file, ca_file = cert_files
 
-    tls_config = TLSConfig(
-        enable_tls=True,
-        cert_file=cert_file,
-        key_file=key_file,
-        ca_file=ca_file
-    )
+    tls_config = TLSConfig(enable_tls=True, cert_file=cert_file, key_file=key_file, ca_file=ca_file)
 
-    client = SafeHTTPSClient(
-        address=base_url,
-        tls_config=tls_config,
-        timeout=10
-    )
+    client = SafeHTTPSClient(address=base_url, tls_config=tls_config, timeout=10)
 
     assert client.base_url == f"https://{base_url}"
     assert client.timeout == 10
@@ -68,17 +57,10 @@ def test_init_with_valid_parameters(base_url, cert_files):
 
 def test_init_with_missing_cert_files(base_url):
     """test init with missing cert files"""
-    tls_config = TLSConfig(
-        enable_tls=True,
-        cert_file="nonexistent.crt",
-        key_file="nonexistent.key"
-    )
-    # CertUtil.create_ssl_context returns None if cert files don't exist, 
+    tls_config = TLSConfig(enable_tls=True, cert_file="nonexistent.crt", key_file="nonexistent.key")
+    # CertUtil.create_ssl_context returns None if cert files don't exist,
     # but client can still be initialized (SSL will fail at runtime)
-    client = SafeHTTPSClient(
-        address=base_url,
-        tls_config=tls_config
-    )
+    client = SafeHTTPSClient(address=base_url, tls_config=tls_config)
     # Client should still initialize, but SSL context creation may have failed
     assert client.base_url == f"https://{base_url}"
     assert client.protocol == 'https://'
@@ -207,3 +189,84 @@ def test_request_timeout(base_url):
 
         call_kwargs = mock_request.call_args[1]
         assert call_kwargs['timeout'] == 3.5
+
+
+# ── post_bytes / msgpack error extraction ───────────────────────────────
+
+
+def test_post_bytes_sends_raw_body(base_url):
+    """post_bytes sends the raw body with msgpack Content-Type headers."""
+    client = SafeHTTPSClient(address=base_url)
+    body = b"\x81\xa5hello\xa5world"
+
+    with patch.object(client.session, 'request') as mock_request:
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "application/msgpack"}
+        mock_request.return_value = mock_response
+
+        resp = client.post_bytes("/query", body)
+
+    assert resp is mock_response
+    kwargs = mock_request.call_args[1]
+    assert kwargs["data"] == body
+    assert kwargs["headers"]["Content-Type"] == "application/msgpack"
+    assert kwargs["headers"]["Accept"] == "application/msgpack"
+
+
+def test_post_bytes_json_headers_override(base_url):
+    """post_bytes honors explicit content_type/accept overrides."""
+    client = SafeHTTPSClient(address=base_url)
+
+    with patch.object(client.session, 'request') as mock_request:
+        mock_request.return_value = Mock(status_code=200, headers={})
+        client.post_bytes("/query", b"x", content_type="application/json", accept="application/json")
+
+    headers = mock_request.call_args[1]["headers"]
+    assert headers["Content-Type"] == "application/json"
+
+
+def _error_response(content_type, content, text=""):
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.headers = {"Content-Type": content_type}
+    mock_response.content = content
+    mock_response.text = text
+    return mock_response
+
+
+def test_http_error_msgpack_body_extracts_error(base_url):
+    """msgpack error bodies surface the readable error field."""
+    import msgspec
+
+    client = SafeHTTPSClient(address=base_url)
+    err_body = msgspec.msgpack.encode({"error": "no indexer for model=x"})
+    mock_response = _error_response("application/msgpack", err_body)
+
+    with patch.object(client.session, 'request') as mock_request:
+        mock_request.side_effect = requests.exceptions.HTTPError(response=mock_response)
+        with pytest.raises(Exception, match="no indexer for model=x"):
+            client.get("/query")
+
+
+def test_http_error_json_body_extracts_error(base_url):
+    """JSON error bodies surface the readable error field."""
+    client = SafeHTTPSClient(address=base_url)
+    mock_response = _error_response("application/json", b'{"error": "boom-json"}', text="ignored")
+    mock_response.json.return_value = {"error": "boom-json"}
+
+    with patch.object(client.session, 'request') as mock_request:
+        mock_request.side_effect = requests.exceptions.HTTPError(response=mock_response)
+        with pytest.raises(Exception, match="boom-json"):
+            client.get("/query")
+
+
+def test_http_error_non_error_body_falls_back_to_text(base_url):
+    """Non-map / undecodable error bodies fall back to the raw text."""
+    client = SafeHTTPSClient(address=base_url)
+    mock_response = _error_response("text/plain", b"gateway down", text="gateway down")
+
+    with patch.object(client.session, 'request') as mock_request:
+        mock_request.side_effect = requests.exceptions.HTTPError(response=mock_response)
+        with pytest.raises(Exception, match="gateway down"):
+            client.get("/query")

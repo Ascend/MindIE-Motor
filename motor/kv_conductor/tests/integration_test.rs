@@ -19,6 +19,8 @@ use tokio::net::TcpListener;
 use kv_conductor::registry::WorkerRegistry;
 use kv_conductor::server::{create_router, AppState};
 
+mod common;
+
 /// Start a test server on a random port, returning the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let registry = Arc::new(WorkerRegistry::new());
@@ -854,4 +856,220 @@ async fn test_reregister_different_backend_drops_tree() {
         !has_data,
         "tree should be dropped on backend-change re-registration"
     );
+}
+
+// ── MessagePack /query content negotiation ──────────────────────────────
+
+/// Register one vLLM-style worker and inject an engine-style stored event so
+/// the indexer has data to answer queries with.
+async fn register_and_seed(client: &Client, base_url: &str) {
+    let reg = json!({
+        "instance_id": "vllm-prefill-42",
+        "medium_endpoints": {
+            "npu": "tcp://10.0.9.1:50090",
+            "cpu": "tcp://10.0.9.1:50090",
+            "disk": "tcp://10.0.9.1:50090"
+        },
+        "type": "vllm",
+        "modelname": "msgpack-model",
+        "block_size": 4,
+        "dp_rank": 0,
+        "tenant_id": "default"
+    });
+    let resp = client
+        .post(format!("{base_url}/register"))
+        .json(&reg)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let events = json!({
+        "instance_id": "vllm-prefill-42",
+        "events": [
+            {
+                "event_id": 1,
+                "data": {
+                    "type": "stored",
+                    "parent_hash": null,
+                    "blocks": [
+                        {"block_hash": 100, "tokens_hash": 12345678901234567890_u64}
+                    ]
+                },
+                "dp_rank": 0
+            }
+        ],
+        "shutdown": false
+    });
+    let resp = client
+        .post(format!("{base_url}/events"))
+        .json(&events)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_query_msgpack_endpoint() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    register_and_seed(&client, &base_url).await;
+
+    let req = kv_conductor::QueryRequest {
+        model: "msgpack-model".into(),
+        block_size: 4,
+        token_ids: (1..=8).collect(),
+        tenant_id: "default".into(),
+    };
+    let resp = client
+        .post(format!("{base_url}/query"))
+        .header(reqwest::header::CONTENT_TYPE, "application/msgpack")
+        .body(rmp_serde::to_vec(&req).unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        content_type.starts_with("application/msgpack"),
+        "expected msgpack response, got {content_type}"
+    );
+
+    let bytes = resp.bytes().await.unwrap();
+    let msgpack_value = rmpv::decode::read_value(&mut bytes.as_ref()).unwrap();
+    let msgpack_json = common::rmpv_to_json(&msgpack_value);
+
+    // The JSON query must produce the exact same wire shape.
+    let json_resp = client
+        .post(format!("{base_url}/query"))
+        .json(&json!({
+            "model": "msgpack-model",
+            "block_size": 4,
+            "token_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+            "tenant_id": "default"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_resp.status(), 200);
+    let json_body: Value = json_resp.json().await.unwrap();
+
+    assert_eq!(
+        msgpack_json, json_body,
+        "msgpack and JSON query responses diverge"
+    );
+    assert!(
+        json_body.get("default").is_some(),
+        "expected a seeded tenant entry"
+    );
+}
+
+#[tokio::test]
+async fn test_query_by_hash_msgpack_endpoint() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    register_and_seed(&client, &base_url).await;
+
+    let req = kv_conductor::QueryByHashRequest {
+        model: "msgpack-model".into(),
+        block_size: 4,
+        block_hashes: vec![
+            kv_conductor::hashing::compute_block_hash_for_seq(&[1, 2, 3, 4], 4)[0].0,
+        ],
+        tenant_id: "default".into(),
+    };
+    let resp = client
+        .post(format!("{base_url}/query_by_hash"))
+        .header(reqwest::header::CONTENT_TYPE, "application/x-msgpack")
+        .body(rmp_serde::to_vec(&req).unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(content_type.starts_with("application/msgpack"));
+
+    let bytes = resp.bytes().await.unwrap();
+    let msgpack_value = rmpv::decode::read_value(&mut bytes.as_ref()).unwrap();
+    let msgpack_json = common::rmpv_to_json(&msgpack_value);
+    assert!(
+        msgpack_json.get("default").is_some(),
+        "expected a tenant entry for query_by_hash msgpack"
+    );
+}
+
+#[tokio::test]
+async fn test_query_msgpack_error_paths() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+
+    // 404: unregistered model, error must come back as msgpack.
+    let req = kv_conductor::QueryRequest {
+        model: "no-such-model".into(),
+        block_size: 4,
+        token_ids: vec![1, 2, 3, 4],
+        tenant_id: "default".into(),
+    };
+    let resp = client
+        .post(format!("{base_url}/query"))
+        .header(reqwest::header::CONTENT_TYPE, "application/msgpack")
+        .body(rmp_serde::to_vec(&req).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(content_type.starts_with("application/msgpack"));
+    let bytes = resp.bytes().await.unwrap();
+    let err = common::rmpv_to_json(&rmpv::decode::read_value(&mut bytes.as_ref()).unwrap());
+    assert!(
+        err.get("error").is_some(),
+        "expected msgpack error map, got {err}"
+    );
+
+    // 400: malformed msgpack body.
+    let resp = client
+        .post(format!("{base_url}/query"))
+        .header(reqwest::header::CONTENT_TYPE, "application/msgpack")
+        .body(vec![0xc1u8, 0xff, 0x00]) // invalid msgpack bytes
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let bytes = resp.bytes().await.unwrap();
+    let err = common::rmpv_to_json(&rmpv::decode::read_value(&mut bytes.as_ref()).unwrap());
+    assert!(
+        err.get("error").is_some(),
+        "expected msgpack error map for malformed body, got {err}"
+    );
+
+    // The same malformed body without a msgpack Content-Type yields a JSON error.
+    let resp = client
+        .post(format!("{base_url}/query"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(vec![0xc1u8, 0xff, 0x00])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.get("error").is_some());
 }

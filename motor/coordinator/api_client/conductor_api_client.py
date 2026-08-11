@@ -11,6 +11,8 @@
 import time
 from typing import Any
 
+import msgspec
+
 from motor.common.logger import get_logger
 from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.common.http.http_client import SafeHTTPSClient
@@ -22,6 +24,26 @@ TENANT_ID = "default"
 logger = get_logger(__name__)
 # Roles whose KV events should be registered with the conductor.
 _KVA_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
+
+# Content-Type for MessagePack query bodies / responses.
+MSGPACK_CONTENT_TYPE = "application/msgpack"
+
+
+def encode_query_msgpack(query_data: dict[str, Any]) -> bytes:
+    """Encode a /query request dict into MessagePack (msgspec).
+
+    Mirrors the kv-conductor's `QueryRequest` serde fields
+    (model / block_size / token_ids / tenant_id). Shared with the
+    end-to-end benchmark and tests so the wire codec has one implementation.
+    """
+    return msgspec.msgpack.encode(query_data)
+
+
+def decode_query_response_msgpack(payload: bytes) -> dict[str, Any]:
+    """Decode a /query MessagePack response into the same dict shape the
+    JSON path produces (tenant → instance → {longest_matched, DP, ...}).
+    """
+    return msgspec.msgpack.decode(payload)
 
 
 def conductor_instance_id(instance: Instance) -> str:
@@ -215,7 +237,7 @@ class ConductorApiClient:
             return None
         parts = pattern.split("*:")
         if len(parts) != 2:
-            logger.debug(f"endpoint pattern malformed: {pattern}")
+            logger.debug("endpoint pattern malformed: %s", pattern)
             return None
         return f"{parts[0]}{format_host(ip)}:{int(parts[1]) + dp_rank}"
 
@@ -268,7 +290,7 @@ class ConductorApiClient:
             logger.error(
                 "Exception occurred while register to controller at %s: %s", client_args.get("address", "unknown"), e
             )
-        logger.info(f"register_data : {register_data}")
+        logger.info("register_data : %s", register_data)
 
     @classmethod
     def unregister_post(cls, instance: Instance, endpoint: Endpoint) -> None:
@@ -303,7 +325,7 @@ class ConductorApiClient:
             logger.error(
                 "Exception occurred while register to conductor at %s: %s", client_args.get('address', 'unknown'), e
             )
-        logger.info(f"unregister_data : {register_data}")
+        logger.info("unregister_data : %s", register_data)
 
     # ── Circuit breaker for /query ──────────────────────────────────
     _query_failures: int = 0
@@ -312,8 +334,46 @@ class ConductorApiClient:
     _QUERY_CB_COOLDOWN: float = 30.0  # seconds to stay open
 
     @classmethod
+    def _encode_query(cls, query_data: dict[str, Any], encoding: str) -> tuple[bytes | None, str]:
+        """Encode the query body for the requested wire encoding.
+
+        Returns ``(body, content_type)``; JSON bodies are encoded lazily by
+        SafeHTTPSClient (``body=None``).
+        """
+        if encoding == "msgpack":
+            return encode_query_msgpack(query_data), MSGPACK_CONTENT_TYPE
+        if encoding == "json":
+            return None, "application/json"
+        logger.warning("Unknown query_encoding=%s, falling back to msgpack", encoding)
+        return encode_query_msgpack(query_data), MSGPACK_CONTENT_TYPE
+
+    @classmethod
+    def _decode_query_response(cls, response: Any, encoding: str) -> dict[str, Any]:
+        """Decode a /query response honoring the server's Content-Type.
+
+        MessagePack responses are decoded with msgspec; everything else
+        (including legacy JSON servers that ignore the Accept header) is
+        parsed as JSON — so an upgraded client keeps working against an
+        older kv-conductor binary.
+        """
+        content_type = response.headers.get("Content-Type", "").lower()
+        if content_type.startswith(MSGPACK_CONTENT_TYPE):
+            return decode_query_response_msgpack(response.content)
+        if encoding == "msgpack":
+            logger.debug(
+                "conductor replied with Content-Type=%s (expected msgpack); parsing as JSON",
+                content_type or "none",
+            )
+        return response.json()
+
+    @classmethod
     def query_conductor(cls, instances: list[Instance], encoded_ids: list[int]) -> dict[str, Any]:
         """Query KV conductor for prefix cache matched blocks.
+
+        Wire encoding is selected by ``kv_conductor_config.query_encoding``
+        (default ``"msgpack"``): MessagePack bodies are faster to serialize
+        and smaller on long-context queries. Response parsing follows the
+        server's Content-Type, so legacy JSON conductors still work.
 
         Circuit breaker: after ``_QUERY_CB_THRESHOLD`` consecutive failures,
         skip queries for ``_QUERY_CB_COOLDOWN`` seconds.
@@ -342,16 +402,28 @@ class ConductorApiClient:
         if TENANT_ID != "default":
             query_data["tenant_id"] = TENANT_ID
 
-        logger.debug(f"query_data : {query_data}")
+        logger.debug(
+            "query_data : model=%s block_size=%s tokens=%d",
+            query_data["model"],
+            query_data["block_size"],
+            len(encoded_ids),
+        )
+
+        encoding = getattr(reg, "query_encoding", "msgpack")
+        body, content_type = cls._encode_query(query_data, encoding)
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
 
         try:
             with SafeHTTPSClient(timeout=3, **client_args) as client:
-                response = client.post("/query", query_data)
-                logger.info("conductor query response: %s", response)
+                if body is not None:
+                    response = client.post_bytes("/query", body, content_type=content_type)
+                else:
+                    response = client.do_post("/query", data=query_data)
+                parsed = cls._decode_query_response(response, encoding)
+                logger.debug("conductor query ok: %s instances, %d bytes", len(parsed), len(response.content))
                 cls._query_failures = 0  # reset on success
-                return response
+                return parsed
         except Exception as e:
             cls._query_failures += 1
             if cls._query_failures >= cls._QUERY_CB_THRESHOLD:

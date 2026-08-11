@@ -212,6 +212,15 @@ class KvConductorConfig:
     http_server_port: int = 13333
     """kv-conductor HTTP API port."""
 
+    query_encoding: str = "msgpack"
+    """Wire encoding for ``/query`` requests to the kv-conductor.
+
+    - ``"msgpack"`` (default): MessagePack body + ``application/msgpack``
+      Content-Type; ~2× faster decode and ~50% smaller payloads on
+      long-context (1M+ token) queries.
+    - ``"json"``: legacy JSON encoding (for older kv-conductor versions).
+    """
+
     # ── KV cache identity ─────────────────────────────────────────────
     store_backend: str = ""
     """KV cache pooling backend: "Mooncake", "Memcache", "YuanRong"."""
@@ -818,6 +827,14 @@ class CoordinatorConfig:
         )
         if affinity.mode not in KV_AFFINITY_MODES:
             self._errors.append(f"kv_affinity.mode must be one of {KV_AFFINITY_MODES}, got {affinity.mode!r}")
+
+        # Validate kv-conductor query wire encoding
+        valid_query_encodings = ["msgpack", "json"]
+        query_encoding = self.scheduler_config.kv_conductor_config.query_encoding
+        if query_encoding not in valid_query_encodings:
+            self._errors.append(
+                f"kv_conductor_config.query_encoding must be one of {valid_query_encodings}, got {query_encoding!r}"
+            )
 
         # Validate host address
         self._validate_ip_or_hostname(self.api_config.coordinator_api_host, "coordinator_api_host")

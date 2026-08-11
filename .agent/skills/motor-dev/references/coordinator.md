@@ -126,6 +126,14 @@ Located in `scheduler/policy/`, each policy implements `BaseSchedulingPolicy`:
 | `LoadBalancePolicy` | Reads workload SHM, picks endpoint with minimum active tokens | Heterogeneous workloads, varying request lengths |
 | `KvCacheAffinityPolicy` | Queries KV Conductor (via `ConductorApiClient`) for prefix match; prefers endpoints with cached blocks | High prefix reuse, PD disaggregation |
 
+**Conductor `/query` wire encoding** (`ConductorApiClient.query_conductor`):
+`kv_conductor_config.query_encoding` (default `"msgpack"`) selects the wire
+format. MessagePack requests are sent via `SafeHTTPSClient.post_bytes()`
+(msgspec-encoded, `Content-Type: application/msgpack`) and responses are
+decoded by Content-Type (msgpack via `msgspec`, otherwise JSON — legacy
+JSON-only conductors keep working). Set `query_encoding: "json"` for older
+kv-conductor binaries.<br>
+
 **Factory registration** (`factory.py`): `SchedulingPolicyFactory` maps policy name → class. New policies register here.
 
 The policy is selected by `SchedulerType` (`config/coordinator.py`): `LOAD_BALANCE` / `ROUND_ROBIN` / `KV_CACHE_AFFINITY` (default). For `scheduler_type=kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:

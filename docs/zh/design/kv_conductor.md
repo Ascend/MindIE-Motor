@@ -537,6 +537,28 @@ Coordinator / 引擎也可经 `POST /events` 推送 JSON（`KvEventBatch` / `KvE
 
 ---
 
+## 查询接口编码协商（JSON / MessagePack）
+
+`/query` 与 `/query_by_hash` 通过请求 `Content-Type` 协商传输编码：
+
+| Content-Type | 请求 | 响应 |
+|---|---|---|
+| `application/msgpack` / `application/x-msgpack` | `rmp_serde` 直解为 `QueryRequest` / `QueryByHashRequest` | `rmp::encode` 手工编码，错误/空结果同样按 msgpack 返回 |
+| 其他（默认） | JSON（历史行为，不变） | JSON |
+
+**为什么响应侧手工编码**：`QueryResponse` 使用 `#[serde(flatten)]`（`tenants` 展开到顶层
+map），msgpack 序列化器不支持 flatten——`encode_query_response_msgpack`（`protocols.rs`）
+手工编码嵌套 map，保证 msgpack wire 形状与 JSON 逐字节等价（有单元测试
+rmpv→serde_json 结构化对比守护）。
+
+Coordinator 侧通过 `kv_conductor_config.query_encoding`（默认 `"msgpack"`，合法值
+`msgpack` / `json`）选择请求编码；响应按服务器 `Content-Type` 解析（msgpack → msgspec，
+否则 JSON），旧版 JSON-only conductor 自动兼容。**滚动升级注意**：请求侧无自动降级——
+须先升级 kv-conductor 再升级 Coordinator；混部（新版 Coordinator + 旧版 conductor）时
+须显式配置 `query_encoding: "json"`。
+
+---
+
 ## 错误处理
 
 | 错误 | HTTP 状态码 | 场景 |

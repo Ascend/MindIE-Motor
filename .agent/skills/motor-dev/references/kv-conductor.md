@@ -60,6 +60,11 @@ Replaces Mooncake conductor for MindIE-PyMotor. Design priorities:
 | `/health` | GET | Liveness check, returns `"OK"` |
 | `/workers` | GET | Debug: all registered workers + indexer summary |
 
+Both `/query` and `/query_by_hash` accept **JSON (default) and MessagePack**
+(`Content-Type: application/msgpack` / `application/x-msgpack`) request bodies;
+the response is returned in the request's encoding. See
+[MessagePack Query Codec](#messagepack-query-codec) below.
+
 ### HTTP `/events` Protocol (`KvEventBatch`)
 
 Body fields:
@@ -85,9 +90,9 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 |------|------|
 | `src/main.rs` | CLI entry: host/port, tracing (UTC+8), axum serve |
 | `src/lib.rs` | Module declarations + re-exports |
-| `src/server.rs` | HTTP routes, `AppState { registry, scoring }`, middleware |
+| `src/server.rs` | HTTP routes, `AppState { registry }`, middleware, JSON/msgpack content negotiation on query endpoints |
 | `src/registry.rs` | WorkerRegistry: register/unregister/query dispatch, ZMQ lifecycle, re-registration, replay gating |
-| `src/indexer.rs` | Indexer (DashMap), IndexerEntry (hbm_tree + cpu/disk flat + offload cache), query, two-phase matching |
+| `src/indexer/` | Indexer (DashMap), IndexerEntry (hbm_tree + cpu/disk flat + offload cache), query, two-phase matching (`mod.rs`, `tests.rs`) |
 | `src/concurrent_tree.rs` | ConcurrentRadixTree (`Arc<RwLock<Block>>`), find_matches/apply_store/remove_worker |
 | `src/backend.rs` | StoreBackend enum + MatchMode, IP→DP resolution |
 | `src/zmq_subscriber.rs` | ZMQ SUB socket I/O, 2-format payload dispatch, reconnect loop, replay DEALER→ROUTER |
@@ -197,7 +202,10 @@ matched_tokens = (npu + cpu + disk) × block_size   # unweighted coverage
 longest_matched = max(matched_tokens over DP ranks)
 ```
 
-Coordinator `kv_cache_affinity` applies tier weights when ranking:
+The conductor reports **raw coverage**, not weighted scores — the old
+`--hbm-weight/--cpu-weight/--disk-weight` CLI flags and `total_score`
+response field no longer exist. Coordinator `kv_cache_affinity` applies tier
+weights when ranking:
 
 ``` text
 affinity_matched = round((npu×w_npu + cpu×w_cpu + disk×w_disk) × block_size)
@@ -415,6 +423,7 @@ Indexer.query(model, tenant, token_ids, block_size)
   └─ Score aggregation (build_response):
       per-DP exclusive *_blocks (NPU > CPU > Disk)
       matched_tokens = (npu + cpu + disk) × block_size
+      (no server-side weighting — Coordinator applies kv_affinity)
       Group by: tenant → instance → DP
 ```
 
@@ -438,6 +447,40 @@ Indexer.query(model, tenant, token_ids, block_size)
 
 Example assumes exclusive `npu_blocks=3`, `block_size=128` → coverage `matched_tokens=384`.
 Coordinator affinity re-weights `*_blocks` via `scheduler_config.kv_affinity`.
+Each `DpBlocks` object carries `matched_tokens` (cached prefix length in
+tokens) and exclusive `npu_blocks` / `cpu_blocks` / `disk_blocks` raw counts.
+
+---
+
+## MessagePack Query Codec
+
+`/query` and `/query_by_hash` negotiate the wire encoding via the request
+`Content-Type` header:
+
+- `application/msgpack` / `application/x-msgpack` → MessagePack
+  (request decoded with `rmp_serde` straight into `QueryRequest` /
+  `QueryByHashRequest`; response + error/empty bodies hand-encoded with
+  `rmp::encode`)
+- anything else (default) → JSON (historical behavior, unchanged)
+
+**Why hand-encode the response?** `QueryResponse` uses `#[serde(flatten)]`
+(`tenants` spread into the top-level map), which MessagePack serializers do
+not support — the hand-written encoder guarantees the msgpack wire shape is
+byte-for-byte equivalent to the JSON shape. This equivalence is guarded by
+unit tests (`rmpv` → `serde_json` conversion comparison) and integration
+tests (msgpack request vs JSON request on the same seeded indexer).
+
+Key functions in `src/protocols.rs`:
+
+- `is_msgpack_content_type(&HeaderMap) -> bool` — Content-Type sniffing
+  (case-insensitive, strips `; charset=...` parameters)
+- `encode_query_response_msgpack(&QueryResponse, &mut Vec<u8>)` — nested-map
+  encoder mirroring the JSON shape
+- `encode_error_msgpack(&str, &mut Vec<u8>)` / `encode_empty_tenant_msgpack`
+  / `encode_status_ok_msgpack` — small single-map helpers
+
+`QueryRequest` / `QueryByHashRequest` gained `Serialize` (they were
+`Deserialize`-only) so `rmp_serde::to_vec` works.
 
 ---
 
@@ -462,7 +505,7 @@ Run the full test suite from the crate root (`motor/kv_conductor/`):
 
 ```bash
 cd motor/kv_conductor
-cargo test          # 93 unit tests in src/ (43 in events/tests.rs) + 17 integration tests
+cargo test          # 120 unit tests in src/ + 20 integration tests
 cargo clippy -- -D warnings   # enforced by pre-commit
 cargo fmt --all               # enforced by pre-commit
 ```
@@ -477,7 +520,7 @@ Inline test modules co-located with their code:
 
 ### Integration Tests (`tests/integration_test.rs`)
 
-HTTP API tests (17) over a real axum server on a random local port (`start_test_server()` helper binds `127.0.0.1:0`), exercising `/register`, `/unregister`, `/query`, `/events`, `/health`, `/workers`. Note: `/query_by_hash` is **not** covered by integration tests — only `/register`/`/query`-style flows are.
+HTTP API tests (20) over a real axum server on a random local port (`start_test_server()` helper binds `127.0.0.1:0`), exercising `/register`, `/unregister`, `/query`, `/query_by_hash` (msgpack), `/events`, `/health`, `/workers`. Note: `test_query_after_kv_events`'s event injection is a silent 422 in the original test (`_resp` is not asserted) — `register_and_seed()` in the msgpack tests fixes this by carrying `instance_id`; treat that helper as the canonical injection pattern. The msgpack tests assert Content-Type negotiation (`application/msgpack` request → msgpack response, errors included) and structural equality between msgpack and JSON query responses.
 
 ### Performance Profiling
 

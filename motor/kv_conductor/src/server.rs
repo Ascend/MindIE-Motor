@@ -22,8 +22,10 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::State,
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -122,6 +124,68 @@ async fn unregister_handler(
     }
 }
 
+/// Parse the query request body into `T`, honoring the `Content-Type` header.
+///
+/// MessagePack bodies (`application/msgpack`) are decoded via `rmp_serde`;
+/// everything else is treated as JSON (the historical default). Callers must
+/// answer in the same encoding — sniff `is_msgpack_content_type` once before
+/// calling and reuse the flag for the response.
+fn parse_query_body<T: serde::de::DeserializeOwned>(
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<T, String> {
+    if is_msgpack_content_type(headers) {
+        rmp_serde::from_slice::<T>(body).map_err(|e| format!("invalid msgpack request body: {e}"))
+    } else {
+        serde_json::from_slice::<T>(body).map_err(|e| format!("invalid JSON request body: {e}"))
+    }
+}
+
+/// Render the query error/empty-result responses in the request's encoding.
+fn query_error_response(status: StatusCode, message: &str, msgpack: bool) -> Response {
+    if msgpack {
+        let mut buf = Vec::with_capacity(32 + message.len());
+        encode_error_msgpack(message, &mut buf);
+        (status, [(header::CONTENT_TYPE, "application/msgpack")], buf).into_response()
+    } else {
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
+
+fn empty_tenant_response(tenant_id: &str, msgpack: bool) -> Response {
+    if msgpack {
+        let mut buf = Vec::with_capacity(16 + tenant_id.len());
+        encode_empty_tenant_msgpack(tenant_id, &mut buf);
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/msgpack")],
+            buf,
+        )
+            .into_response()
+    } else {
+        (StatusCode::OK, Json(serde_json::json!({ tenant_id: {} }))).into_response()
+    }
+}
+
+fn ok_query_response(response: QueryResponse, msgpack: bool) -> Response {
+    if msgpack {
+        let mut buf = Vec::with_capacity(256);
+        encode_query_response_msgpack(&response, &mut buf);
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/msgpack")],
+            buf,
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(serde_json::to_value(response).unwrap_or_default()),
+        )
+            .into_response()
+    }
+}
+
 /// POST /query
 ///
 /// Request body: `{ "model": "...", "block_size": 128, "token_ids": [...], "tenant_id": "default" }`
@@ -129,90 +193,91 @@ async fn unregister_handler(
 /// Response: `{ "<tenant_id>": { "<instance_id>": { "longest_matched": N,
 /// "DP": { "<rank>": { "matched_tokens": N, "npu_blocks": N,
 /// "cpu_blocks": N, "disk_blocks": N } } } } }`
-async fn query_handler(
-    State(state): State<AppState>,
-    Json(req): Json<QueryRequest>,
-) -> (StatusCode, Json<serde_json::Value>) {
+///
+/// Both JSON (default) and MessagePack (`Content-Type: application/msgpack`)
+/// encodings are accepted; the response is returned in the request's encoding.
+async fn query_handler(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let msgpack = is_msgpack_content_type(&headers);
+    let req = match parse_query_body::<QueryRequest>(&headers, &body) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            return query_error_response(StatusCode::BAD_REQUEST, &message, msgpack);
+        }
+    };
+
     tracing::debug!(
         model = %req.model,
         tenant = %req.tenant_id,
         num_tokens = req.token_ids.len(),
+        msgpack,
         "query request"
     );
 
     match state.registry.query(&req).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(response).unwrap_or_default()),
-        ),
+        Ok(response) => ok_query_response(response, msgpack),
         Err(KvConductorError::NoIndexer {
             model_name,
             tenant_id,
-        }) => (
+        }) => query_error_response(
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("no indexer for model={} tenant={}", model_name, tenant_id)
-            })),
+            &format!("no indexer for model={model_name} tenant={tenant_id}"),
+            msgpack,
         ),
         Err(KvConductorError::NoWorkers {
             model_name: _,
             tenant_id,
-        }) => (
-            StatusCode::OK,
+        }) => {
             // Return empty response structure matching expected format
-            Json(serde_json::json!({
-                tenant_id: {}
-            })),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
+            empty_tenant_response(&tenant_id, msgpack)
+        }
+        Err(e) => query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack),
     }
 }
 
 /// POST /query_by_hash
 ///
 /// Same semantics as `/query` but accepts pre-computed block hashes instead
-/// of raw token IDs, avoiding redundant XXH3 computation.
+/// of raw token IDs, avoiding redundant XXH3 computation. Supports the same
+/// JSON / MessagePack content negotiation as `/query`.
 async fn query_by_hash_handler(
     State(state): State<AppState>,
-    Json(req): Json<QueryByHashRequest>,
-) -> (StatusCode, Json<serde_json::Value>) {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let msgpack = is_msgpack_content_type(&headers);
+    let req = match parse_query_body::<QueryByHashRequest>(&headers, &body) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            return query_error_response(StatusCode::BAD_REQUEST, &message, msgpack);
+        }
+    };
+
     tracing::debug!(
         model = %req.model,
         tenant = %req.tenant_id,
         num_hashes = req.block_hashes.len(),
+        msgpack,
         "query_by_hash request"
     );
 
     match state.registry.query_by_hash(&req).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(response).unwrap_or_default()),
-        ),
+        Ok(response) => ok_query_response(response, msgpack),
         Err(KvConductorError::NoIndexer {
             model_name,
             tenant_id,
-        }) => (
+        }) => query_error_response(
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("no indexer for model={} tenant={}", model_name, tenant_id)
-            })),
+            &format!("no indexer for model={model_name} tenant={tenant_id}"),
+            msgpack,
         ),
         Err(KvConductorError::NoWorkers {
             model_name: _,
             tenant_id,
-        }) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                tenant_id: {}
-            })),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
+        }) => {
+            // Return empty response structure matching expected format
+            empty_tenant_response(&tenant_id, msgpack)
+        }
+        Err(e) => query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack),
     }
 }
 

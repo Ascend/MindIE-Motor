@@ -465,6 +465,7 @@ motor_coordinator_config字段配置样例如下所示：
 | **prefill_kv_event_config字段** |-|-|
 | conductor_service |string|conductor服务IP或域名，默认为空。|
 | http_server_port |int|KV Conductor的HTTP服务端口，默认值：13333，取值范围：[1024,65535]。|
+| query_encoding |string|Conductor `/query` 请求的传输编码，默认值：`msgpack`，取值：`msgpack` / `json`（启动时校验，非法值直接报错）。<ul><li>`msgpack`：MessagePack 编码（默认）。1M+ 长上下文查询下，请求体积缩减约 55%，端到端查询耗时（含客户端序列化、服务端哈希/匹配/序列化、网络传输）约为 JSON 的 1/4（5M 上下文约 42ms vs 220ms）。</li><li>`json`：传统 JSON 编码，用于对接旧版本 KV Conductor。</li></ul>**滚动升级/混部注意**：请求侧无自动降级——须先升级 kv-conductor 再升级 Coordinator；若混部（新版 Coordinator + 旧版 conductor，或反之），须显式配置 `query_encoding: "json"` 直至两端同版本。|
 | block_size |int|KV Cache块大小，默认值：128。DeepSeek V4 须设为 512，并与引擎 `--block-size` 保持一致。|
 | endpoint |string|P实例发布事件端点，默认为空，取值示例：tcp://*:\<port>。|
 | replay_endpoint |string|事件回放端点，默认为空，取值示例：tcp://*:\<port>。|

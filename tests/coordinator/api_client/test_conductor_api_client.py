@@ -12,9 +12,11 @@
 
 from unittest.mock import Mock, patch
 
+import msgspec
 
 from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.coordinator.api_client.conductor_api_client import (
+    MSGPACK_CONTENT_TYPE,
     TENANT_ID,
     ConductorApiClient,
     conductor_instance_id,
@@ -556,11 +558,37 @@ def _make_mock_instance(instance_id: int):
     return instance
 
 
-def _mock_successful_query(mock_http, response=None):
+def _mock_successful_query(
+    mock_http,
+    response=None,
+    *,
+    encoding="msgpack",
+    response_content_type=None,
+):
+    """Mock a successful /query round trip.
+
+    ``encoding`` selects which client-side path the mock wires up
+    (``post_bytes`` for msgpack, ``do_post`` for JSON). The fake response
+    carries the given ``Content-Type`` (defaults to the request encoding) so
+    the client-side response parsing is exercised end to end.
+    """
     if response is None:
         response = {TENANT_ID: {}}
+    if response_content_type is None:
+        response_content_type = MSGPACK_CONTENT_TYPE if encoding == "msgpack" else "application/json"
+
+    fake_resp = Mock()
+    fake_resp.headers.get.side_effect = lambda key, default=None: (
+        response_content_type if key.lower() == "content-type" else default
+    )
+    fake_resp.content = (
+        msgspec.msgpack.encode(response) if response_content_type.startswith(MSGPACK_CONTENT_TYPE) else b""
+    )
+    fake_resp.json.return_value = response
+
     mock_client = Mock()
-    mock_client.post.return_value = response
+    mock_client.post_bytes.return_value = fake_resp
+    mock_client.do_post.return_value = fake_resp
     mock_http.return_value.__enter__.return_value = mock_client
 
 
@@ -570,9 +598,70 @@ def _mock_failed_query(mock_http):
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
 def test_return_value_on_success(mock_http):
-    """On success, query_conductor returns the response dict."""
+    """On success (msgpack default), query_conductor returns the response dict."""
     expected = {TENANT_ID: {"vllm-prefill-1": {"longest_matched": 100, "DP": {"0": 50}}}}
     _mock_successful_query(mock_http, response=expected)
+    instances = [_make_mock_instance(1)]
+
+    result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
+    assert result == expected
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_query_msgpack_wire_format(mock_http):
+    """The msgpack path sends a MessagePack body with the right Content-Type
+    and decodes the MessagePack response.
+    """
+    expected = {TENANT_ID: {"vllm-prefill-1": {"longest_matched": 384, "DP": {"0": 3}}}}
+    _mock_successful_query(mock_http, response=expected)
+    instances = [_make_mock_instance(1)]
+    token_ids = list(range(1000))
+
+    result = ConductorApiClient.query_conductor(instances, token_ids)
+    assert result == expected
+
+    mock_client = mock_http.return_value.__enter__.return_value
+    body = mock_client.post_bytes.call_args[0][1]
+    content_type = mock_client.post_bytes.call_args[1]["content_type"]
+    assert content_type == MSGPACK_CONTENT_TYPE
+    # The request body must decode back to the exact query data.
+    decoded = msgspec.msgpack.decode(body)
+    assert decoded["model"] == "test-model"
+    assert decoded["block_size"] == 128
+    assert decoded["token_ids"] == token_ids
+    # tenant_id is omitted on the wire when it equals the default.
+    assert decoded.get("tenant_id", TENANT_ID) == TENANT_ID
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_query_json_encoding_config(mock_http):
+    """query_encoding='json' keeps the legacy JSON wire path."""
+    expected = {TENANT_ID: {"vllm-prefill-1": {"longest_matched": 100}}}
+    _mock_successful_query(mock_http, response=expected, encoding="json")
+    instances = [_make_mock_instance(1)]
+
+    with _setup_reg_config("Mooncake", query_encoding="json"):
+        result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
+    assert result == expected
+
+    mock_client = mock_http.return_value.__enter__.return_value
+    assert mock_client.post_bytes.call_count == 0
+    json_data = mock_client.do_post.call_args[1]["data"]
+    assert json_data["token_ids"] == [1, 2, 3]
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_query_legacy_json_response_fallback(mock_http):
+    """A msgpack request answered by a legacy JSON-only conductor still
+    parses correctly (response Content-Type fallback).
+    """
+    expected = {TENANT_ID: {"vllm-prefill-1": {"longest_matched": 100}}}
+    _mock_successful_query(
+        mock_http,
+        response=expected,
+        encoding="msgpack",
+        response_content_type="application/json",
+    )
     instances = [_make_mock_instance(1)]
 
     result = ConductorApiClient.query_conductor(instances, [1, 2, 3])
@@ -593,7 +682,13 @@ def test_return_value_on_failure(mock_http):
 
 
 def _setup_reg_config(
-    store_backend, pool_endpoint="", npu_endpoint="", cpu_endpoint="", disk_endpoint="", replay_endpoint=""
+    store_backend,
+    pool_endpoint="",
+    npu_endpoint="",
+    cpu_endpoint="",
+    disk_endpoint="",
+    replay_endpoint="",
+    query_encoding="msgpack",
 ):
     """Patch ConductorApiClient's config for registration testing."""
     from motor.config.coordinator import KvConductorConfig, SchedulerConfig
@@ -605,6 +700,7 @@ def _setup_reg_config(
         cpu_endpoint=cpu_endpoint,
         disk_endpoint=disk_endpoint,
         replay_endpoint=replay_endpoint,
+        query_encoding=query_encoding,
     )
     sched = SchedulerConfig(kv_conductor_config=reg)
     return patch.object(
