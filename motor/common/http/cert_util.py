@@ -15,7 +15,7 @@ import stat
 from datetime import timezone
 from ssl import Purpose, create_default_context
 
-from OpenSSL import crypto
+from OpenSSL import SSL, crypto
 from cryptography import x509 as crypt_x509
 from cryptography.x509.oid import ExtensionOID
 
@@ -43,18 +43,16 @@ READ_BINARY_MODE = "rb"
 UTF8_ENCODING = "utf-8"
 
 
-def validate_certs_and_keys_modulus(server_crt: CryptoX509, server_key: CryptoX509) -> bool:
-    """Validate certificate and private key modulus match"""
+def validate_cert_and_key_match(server_crt: CryptoX509, server_key: CryptoX509) -> bool:
+    """Validate certificate and private key match via OpenSSL native check."""
     try:
-        cert_pub_key = server_crt.get_pubkey()
-        cert_rsa_key = cert_pub_key.to_cryptography_key()
-        cert_modulus = cert_rsa_key.public_numbers().n
-
-        key_rsa_key = server_key.to_cryptography_key()
-        key_modulus = key_rsa_key.public_key().public_numbers().n
-        return cert_modulus == key_modulus
+        ctx = SSL.Context(SSL.TLS_SERVER_METHOD)
+        ctx.use_certificate(server_crt)
+        ctx.use_privatekey(server_key)
+        ctx.check_privatekey()
+        return True
     except Exception as e:
-        logger.error(f"Modulus validation failed: {e}")
+        logger.error("Certificate and private key match validation failed: %s", e)
         return False
 
 
@@ -494,8 +492,8 @@ class CertValidationUtil:
                 return False
 
             # Validate if certificate and private key match
-            if not validate_certs_and_keys_modulus(server_cert, server_key):
-                logger.error("Certificate and private key modulus mismatch")
+            if not validate_cert_and_key_match(server_cert, server_key):
+                logger.error("Certificate and private key mismatch")
                 return False
 
             # Validate certificate chain if CA certificate is provided
