@@ -51,7 +51,9 @@ def test_sglang_dist_init_addr_brackets_ipv6_master_ip():
         host="::1",
         port=8000,
         master_dp_ip="2001:db8::10",
-        dp_rank=1,
+        # Keep dp_rank != node_rank so a regression to dp_rank fails this assert.
+        dp_rank=3,
+        node_rank=1,
     )
     config = SGLangConfig(endpoint_config=endpoint_config)
 

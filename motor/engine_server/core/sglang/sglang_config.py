@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You may use this software according to the terms and conditions of the Mulan PSL v2.
@@ -14,7 +12,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any
 
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
@@ -23,16 +21,6 @@ from motor.engine_server.constants import constants
 from motor.engine_server.core.config import IConfig
 
 logger = get_logger(__name__)
-
-# Mapping from deploy config field names to sglang CLI argument names (with hyphens)
-_SGLANG_PARAM_MAPPING = {
-    "model_path": "model-path",
-    "model_name": "served-model-name",
-    "npu_mem_utils": "mem-fraction-static",
-    "dp_size": "dp-size",
-    "tp_size": "tp-size",
-    "pp_size": "pp-size",
-}
 
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):
@@ -55,7 +43,7 @@ def _add_argument_to_list(arg_list: list, key: str, value: Any):
 
 @dataclass
 class SGLangConfig(IConfig):
-    """SGLang engine configuration for PD (prefill/decode) separation scenario."""
+    """SGLang engine configuration for hybrid and PD-disaggregated roles."""
 
     args: argparse.Namespace | None = None
     endpoint_config: EndpointConfig | None = None
@@ -89,33 +77,24 @@ class SGLangConfig(IConfig):
         return self._get_param_list()
 
     def _flatten_config(self) -> dict[str, Any]:
-        """Flatten deploy_config to sglang CLI key-value dict (keys with hyphens)."""
+        """Flatten deploy_config to sglang CLI key-value dict.
+
+        CLI args come from engine_config plus runtime endpoint fields. Legacy
+        model_config / parallel_config field remapping is not applied here.
+        """
         flattened = {}
         deploy_config = self.endpoint_config.deploy_config
         role = self.endpoint_config.role
 
         flattened.update(deploy_config.engine_config.configs)
 
-        model_config = deploy_config.model_config
-        for server_key, sglang_key in _SGLANG_PARAM_MAPPING.items():
-            if hasattr(model_config, server_key):
-                value = getattr(model_config, server_key)
-                if value is not None:
-                    flattened.setdefault(sglang_key, value)
-
-        parallel_config = deploy_config.get_parallel_config(role)
-        for server_key, sglang_key in _SGLANG_PARAM_MAPPING.items():
-            if hasattr(parallel_config, server_key):
-                value = getattr(parallel_config, server_key)
-                if value is not None:
-                    flattened.setdefault(sglang_key, value)
-
         flattened["host"] = self.endpoint_config.host
         flattened["port"] = self.endpoint_config.port
 
         if flattened.get("nnodes", 1) > 1:
+            parallel_config = deploy_config.get_parallel_config(role)
             flattened["dist-init-addr"] = format_address(self.endpoint_config.master_dp_ip, parallel_config.dp_rpc_port)
-            flattened["node-rank"] = self.endpoint_config.dp_rank
+            flattened["node-rank"] = self.endpoint_config.node_rank
 
         if role == constants.PREFILL_ROLE:
             flattened[constants.DISAGGREGATION_MODE] = "prefill"
@@ -126,7 +105,7 @@ class SGLangConfig(IConfig):
 
         return flattened
 
-    def _get_param_list(self) -> List[str]:
+    def _get_param_list(self) -> list[str]:
         processed_args = []
         flattened_config = self._flatten_config()
         for key, value in flattened_config.items():

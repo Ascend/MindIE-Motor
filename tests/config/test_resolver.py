@@ -336,3 +336,58 @@ def test_get_engine_key_skips_missing():
 def test_get_engine_key_returns_none_when_all_missing():
     r = ConfigResolver(_vllm_section({}))
     assert r._get_engine_key("a", "b") is None
+
+
+def test_sglang_world_size_uses_local_when_dp_attention_enabled():
+    """world_size collapses to local_world_size when enable_dp_attention is True (not gated by enable_multi_endpoints)."""
+    resolver = ConfigResolver(
+        {
+            "engine_type": "sglang",
+            "enable_multi_endpoints": True,
+            "engine_config": {
+                "dp-size": 16,
+                "tp-size": 16,
+                "pp-size": 1,
+                "enable_dp_attention": True,
+            },
+        }
+    )
+    parallel = resolver.get_parallel_config()
+    assert parallel["local_world_size"] == 16
+    assert parallel["world_size"] == 16
+
+
+def test_sglang_world_size_keeps_legacy_when_dp_attention_unset():
+    """Without enable_dp_attention, world_size stays dp * local_world_size even if enable_multi_endpoints is false."""
+    resolver = ConfigResolver(
+        {
+            "engine_type": "sglang",
+            "enable_multi_endpoints": False,
+            "engine_config": {
+                "dp-size": 16,
+                "tp-size": 16,
+                "pp-size": 1,
+            },
+        }
+    )
+    parallel = resolver.get_parallel_config()
+    assert parallel["local_world_size"] == 16
+    assert parallel["world_size"] == 256
+
+
+def test_vllm_world_size_unaffected_by_enable_multi_endpoints_false():
+    """vLLM must keep legacy world_size even if enable_multi_endpoints is false."""
+    resolver = ConfigResolver(
+        {
+            "engine_type": "vllm",
+            "enable_multi_endpoints": False,
+            "engine_config": {
+                "data_parallel_size": 16,
+                "tensor_parallel_size": 16,
+                "pipeline_parallel_size": 1,
+            },
+        }
+    )
+    parallel = resolver.get_parallel_config()
+    assert parallel["local_world_size"] == 16
+    assert parallel["world_size"] == 256

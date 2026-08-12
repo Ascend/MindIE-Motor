@@ -271,6 +271,16 @@ class SGLangConfigResolver(BaseConfigResolver):
     def get_enable_multi_endpoints(self, default: bool = True) -> bool:
         return bool(self._engine_cfg.get("enable_multi_endpoints", False))
 
+    def _is_enable_dp_attention(self) -> bool:
+        """Return True when SGLang DP attention is enabled in engine_config."""
+        return bool(self._get_engine_key("enable_dp_attention", "enable-dp-attention"))
+
+    def _compute_world_size(self, config: dict[str, Any]) -> int:
+        """DP attention uses one endpoint for all DP ranks: world_size == local_world_size."""
+        if self._is_enable_dp_attention():
+            return self._compute_local_world_size(config)
+        return super()._compute_world_size(config)
+
     def _resolve_engine_parallel_keys(self) -> dict[str, Any]:
         result = super()._resolve_engine_parallel_keys()
 

@@ -1,0 +1,53 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "deploy_mode": "multi_deployment",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 2,
+    "hybrid_pod_npu_num": 16,
+    "image_name": "<请按实际情况填写镜像名称>",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
+  },
+  "motor_controller_config": {
+    "logging_config": {
+      "log_level": "INFO"
+    }
+  },
+  "motor_coordinator_config": {
+    "logging_config": {
+      "log_level": "INFO"
+    }
+  },
+  "motor_engine_union_config": {
+    "engine_type": "sglang",
+    "enable_multi_endpoints": false,
+    "engine_config": {
+      "served-model-name": "deepseek-v4-flash",
+      "model-path": "<请按实际情况填写模型权重文件的访问路径>",
+      "mem-fraction-static": 0.70,
+      "dp-size": 16,
+      "tp-size": 32,
+      "enable_dp_attention": true,
+      "moe_a2a_backend": "deepep",
+      "attention_backend": "ascend",
+      "trust_remote_code": true,
+      "page-size": 128,
+      "device": "npu",
+      "watchdog-timeout": 9000,
+      "prefill_max_requests": 1,
+      "disable_radix_cache": true,
+      "chunked_prefill_size": -1,
+      "max_running_requests": 16,
+      "deepep_mode": "auto",
+      "quantization": "modelslim",
+      "enable_dp_lm_head": true,
+      "kv_cache_dtype": "auto",
+      "nnodes": 2,
+      "max_total_tokens": 500000,
+      "disable_cuda_graph": true,
+      "disable_overlap_schedule": true
+    }
+  }
+}

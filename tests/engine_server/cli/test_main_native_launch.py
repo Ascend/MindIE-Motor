@@ -227,6 +227,9 @@ class TestMainNativeLaunchRouting:
         self._mgmt_cls().return_value.run.assert_called_once()
         self._ef().return_value.get_infer_endpoint.return_value.run.assert_called_once()
 
+    def test_default_is_invasive(self):
+        assert self._es.NATIVE_LAUNCH_ENABLED is False
+
 
 # ---------------------------------------------------------------------------
 # Tests for _run_native — subprocess launch and signal handling
