@@ -11,9 +11,11 @@
 import lib.constant as C
 from lib.utils import (
     apply_coordinator_infer_node_port,
+    apply_coordinator_obs_node_port,
     apply_node_selector_override,
     generate_unique_id,
     get_coordinator_service_name,
+    is_observability_service_name,
     load_yaml,
     logger,
     modify_log_mount,
@@ -101,9 +103,12 @@ def modify_coordinator_yaml(data, user_config):
     # service endpoints.
     coordinator_service_name = get_coordinator_service_name(deploy_config)
     for service_data in service_list:
-        if service_data[C.METADATA][C.NAME] == "mindie-motor-coordinator-infer":
+        svc_name = service_data[C.METADATA][C.NAME]
+        if svc_name == "mindie-motor-coordinator-infer":
             service_data[C.METADATA][C.NAME] = coordinator_service_name
             apply_coordinator_infer_node_port(service_data, deploy_config)
+        elif is_observability_service_name(svc_name):
+            apply_coordinator_obs_node_port(service_data, deploy_config)
     set_services_namespace(service_list, namespace)
     container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     set_engine_weight_mount(deployment_data, container, deploy_config)

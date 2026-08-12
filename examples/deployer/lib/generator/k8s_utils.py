@@ -7,6 +7,8 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -42,6 +44,23 @@ g_user_config_path = None
 g_mf_store_service = "mf_store"
 g_mf_store_enabled = False
 g_engine_type = "vllm"
+
+
+def resolve_nodeports_for_yaml_files(
+    deploy_config,
+    yaml_files: list[str] | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Detect cluster NodePort conflicts and rewrite generated yaml before apply."""
+    from lib.nodeport_allocator import resolve_and_rewrite_nodeports
+
+    files = list(yaml_files) if yaml_files is not None else list(g_generate_yaml_list)
+    job_id = deploy_config[C.CONFIG_JOB_ID]
+    resolve_and_rewrite_nodeports(
+        files,
+        job_id,
+        dry_run=dry_run,
+    )
 
 
 def set_user_config_path(path):
@@ -504,6 +523,13 @@ def _user_config_path_for_configmap(user_config=None, effective_deploy_mode=None
 def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mode=None):
     """Create or update ConfigMap motor-config with all mounted files (scripts + user_config.json)."""
     config_path = _user_config_path_for_configmap(user_config, effective_deploy_mode)
+    os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
+    coordinator_conflict = os.path.join(C.OUTPUT_ROOT_PATH, C.NODEPORT_CONFLICT_COORDINATOR_FILE)
+    controller_conflict = os.path.join(C.OUTPUT_ROOT_PATH, C.NODEPORT_CONFLICT_CONTROLLER_FILE)
+    for path in (coordinator_conflict, controller_conflict):
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("")
     apply_configmap(
         [
             "kubectl",
@@ -531,6 +557,8 @@ def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mod
             "--from-file=./prestop/prestop.sh",
             "--from-file=./prestop/prestop.py",
             f"--from-file=user_config.json={config_path}",
+            f"--from-file={C.NODEPORT_CONFLICT_COORDINATOR_FILE}={coordinator_conflict}",
+            f"--from-file={C.NODEPORT_CONFLICT_CONTROLLER_FILE}={controller_conflict}",
             "-n",
             job_id,
         ]
@@ -546,6 +574,11 @@ def exec_all_kubectl_multi(
     """Execute kubectl commands for multi-deployment or infer-service-set mode."""
     job_id = deploy_config[C.CONFIG_JOB_ID]
     out_deploy_yaml_path = C.OUTPUT_ROOT_PATH
+
+    # Resolve NodePorts before any cluster mutation (configmap / apply).
+    # Also cover --update_instance_num: same kubectl entry as deploy.
+    resolve_nodeports_for_yaml_files(deploy_config, g_generate_yaml_list)
+
     create_motor_config_configmap(job_id, user_config=user_config, effective_deploy_mode=deploy_mode_arg)
 
     if baseline_config is None:
@@ -562,6 +595,8 @@ def exec_all_kubectl_multi(
 def exec_all_kubectl_singer(deploy_config, yaml_file):
     """Execute kubectl commands for single container deployment."""
     job_id = deploy_config[C.CONFIG_JOB_ID]
+    # Resolve NodePorts before any cluster mutation (configmap / apply).
+    resolve_nodeports_for_yaml_files(deploy_config, [yaml_file])
     create_motor_config_configmap(job_id)
     safe_exec_cmd(["kubectl", "apply", "-f", yaml_file, "-n", job_id])
 

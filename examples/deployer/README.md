@@ -141,6 +141,8 @@ examples/infer_engines/
 | 字段 | 说明 |
 |------|------|
 | `coordinator_infer_node_port` | Coordinator 推理 Service 的 NodePort。缺省时保留模板中的 `nodePort`（当前模板默认 `31015`）；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
+| `coordinator_obs_node_port` | Coordinator 可观测性 / metrics Service 的 NodePort。缺省时保留模板中的 `nodePort`（当前模板默认 `31017`）；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
+| `controller_observability_node_port` | Controller 可观测性 Service 的 NodePort。缺省时保留模板中的 `nodePort`（当前模板默认 `31027`）；配置 `"-"` 时由 Kubernetes 自动分配；也可配置具体端口数字。 |
 | `controller_node_selector` | Controller Pod 的自定义 `nodeSelector`。 |
 | `coordinator_node_selector` | Coordinator Pod 的自定义 `nodeSelector`。 |
 | `prefill_node_selector` | Prefill Pod 的自定义 `nodeSelector`。 |
@@ -156,6 +158,8 @@ Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `
 {
   "motor_deploy_config": {
     "coordinator_infer_node_port": "-",
+    "coordinator_obs_node_port": 31017,
+    "controller_observability_node_port": 31027,
     "controller_node_selector": {"label1": "value1"},
     "coordinator_node_selector": {"label1": "value1"},
     "prefill_node_selector": {"label1": "value1"},
@@ -165,6 +169,18 @@ Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `
   }
 }
 ```
+
+#### NodePort 冲突检测
+
+`deploy.py` 在 `kubectl apply` 前会检查生成 YAML 中的 NodePort 是否已被集群占用。若冲突，交互提示（每个冲突端口一次）：
+
+- `y`：自动分配空闲 NodePort，并回写本次 `output_yamls`
+- `<port>`：使用你输入的端口号（需在建议范围内且未被占用）
+- `N`：保持冲突端口（与无此检测特性时相同），并打印修复指引；同时写入 coordinator/controller showlog 告警文件
+
+非 TTY（脚本/CI）场景按 `N` 处理。建议 NodePort 范围：`30000-32767`。
+
+说明：交互 remap 只修改本次部署使用的 `output_yamls`，**不会**自动回写 `user_config.json`。若需要把新端口持久化到配置里，请手动同步修改 `motor_deploy_config` 中对应的 `*_node_port` 字段。
 
 ### env.json
 

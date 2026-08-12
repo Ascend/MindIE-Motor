@@ -10,8 +10,10 @@
 
 import lib.constant as C
 from lib.utils import (
+    apply_controller_observability_node_port,
     apply_node_selector_override,
     generate_unique_id,
+    is_observability_service_name,
     load_yaml,
     logger,
     modify_log_mount,
@@ -74,6 +76,10 @@ def modify_controller_yaml(data, user_config):
     deployment_data, service_list, rbac_resources = extract_resources(data)
     set_rbac_namespace(rbac_resources, namespace)
     modify_controller_deployment(deployment_data, user_config)
+    for service_data in service_list:
+        svc_name = (service_data.get(C.METADATA) or {}).get(C.NAME, "")
+        if is_observability_service_name(svc_name):
+            apply_controller_observability_node_port(service_data, deploy_config)
     set_services_namespace(service_list, namespace)
 
 

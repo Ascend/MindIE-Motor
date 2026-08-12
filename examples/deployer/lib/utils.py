@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -256,8 +257,17 @@ def get_coordinator_service_name(deploy_config):
     return service_name or "mindie-motor-coordinator-infer"
 
 
-def get_coordinator_infer_node_port(deploy_config, default=None):
-    node_port = deploy_config.get(C.COORDINATOR_INFER_NODE_PORT, default)
+def is_observability_service_name(service_name: str) -> bool:
+    """Match observability / obs Service names without false hits like 'robust'."""
+    name = (service_name or "").lower()
+    if "observability" in name:
+        return True
+    return re.search(r"(^|[-_])obs($|[-_])", name) is not None
+
+
+def get_deploy_node_port(deploy_config, config_key, default=None):
+    """Read a NodePort from motor_deploy_config; '-' clears nodePort from the Service."""
+    node_port = deploy_config.get(config_key, default)
     if node_port is None:
         return default
     if isinstance(node_port, str):
@@ -269,18 +279,34 @@ def get_coordinator_infer_node_port(deploy_config, default=None):
     try:
         return int(node_port)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{C.MOTOR_DEPLOY_CONFIG}.{C.COORDINATOR_INFER_NODE_PORT} must be an integer or '-'") from exc
+        raise ValueError(f"{C.MOTOR_DEPLOY_CONFIG}.{config_key} must be an integer or '-'") from exc
 
 
-def apply_coordinator_infer_node_port(service_data, deploy_config):
+def get_coordinator_infer_node_port(deploy_config, default=None):
+    return get_deploy_node_port(deploy_config, C.COORDINATOR_INFER_NODE_PORT, default=default)
+
+
+def apply_service_node_port(service_data, deploy_config, config_key):
     ports = service_data.get(C.SPEC, {}).get(C.PORTS, [])
     if not ports:
-        raise ValueError("Coordinator infer service ports not found")
-    node_port = get_coordinator_infer_node_port(deploy_config, default=ports[0].get(C.NODE_PORT))
+        raise ValueError(f"Service ports not found when applying {config_key}")
+    node_port = get_deploy_node_port(deploy_config, config_key, default=ports[0].get(C.NODE_PORT))
     if node_port is None:
         ports[0].pop(C.NODE_PORT, None)
     else:
         ports[0][C.NODE_PORT] = node_port
+
+
+def apply_coordinator_infer_node_port(service_data, deploy_config):
+    apply_service_node_port(service_data, deploy_config, C.COORDINATOR_INFER_NODE_PORT)
+
+
+def apply_coordinator_obs_node_port(service_data, deploy_config):
+    apply_service_node_port(service_data, deploy_config, C.COORDINATOR_OBS_NODE_PORT)
+
+
+def apply_controller_observability_node_port(service_data, deploy_config):
+    apply_service_node_port(service_data, deploy_config, C.CONTROLLER_OBSERVABILITY_NODE_PORT)
 
 
 def apply_node_selector_override(pod_spec, deploy_config, selector_key):

@@ -12,9 +12,12 @@ import os
 import lib.constant as C
 from lib.utils import (
     apply_coordinator_infer_node_port,
+    apply_coordinator_obs_node_port,
+    apply_controller_observability_node_port,
     apply_node_selector_override,
     generate_unique_id,
     get_coordinator_service_name,
+    is_observability_service_name,
     load_yaml,
     logger,
     write_yaml,
@@ -113,7 +116,27 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     return container
 
 
+def _service_container_port(service):
+    ports = (service.get(C.SPEC) or {}).get(C.PORTS) or []
+    if not ports or not isinstance(ports[0], dict):
+        return None
+    try:
+        return int(ports[0].get("port"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _configure_controller_role(infer_doc, user_config):
+    deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
+    role = get_infer_role(infer_doc, C.CONTROLLER)
+    if role:
+        for service in role.get(C.SERVICES) or []:
+            if not isinstance(service, dict):
+                continue
+            name = (service.get(C.NAME) or "").lower()
+            container_port = _service_container_port(service)
+            if is_observability_service_name(name) or container_port == 1027:
+                apply_controller_observability_node_port(service, deploy_config)
     _configure_control_role(infer_doc, user_config, C.CONTROLLER, C.MOTOR_CONTROLLER_CONFIG)
 
 
@@ -122,9 +145,16 @@ def _configure_coordinator_role(infer_doc, user_config):
     role = get_infer_role(infer_doc, C.COORDINATOR)
     if role:
         services = role.get(C.SERVICES, [])
-        if services:
-            services[0][C.NAME] = get_coordinator_service_name(deploy_config)
-            apply_coordinator_infer_node_port(services[0], deploy_config)
+        for index, service in enumerate(services or []):
+            if not isinstance(service, dict):
+                continue
+            name = (service.get(C.NAME) or "").lower()
+            container_port = _service_container_port(service)
+            if index == 0 or "infer" in name or container_port == 1025:
+                service[C.NAME] = get_coordinator_service_name(deploy_config)
+                apply_coordinator_infer_node_port(service, deploy_config)
+            elif is_observability_service_name(name) or container_port == 1027:
+                apply_coordinator_obs_node_port(service, deploy_config)
 
     container = _configure_control_role(infer_doc, user_config, C.COORDINATOR, C.MOTOR_COORDINATOR_CONFIG)
     if not container:

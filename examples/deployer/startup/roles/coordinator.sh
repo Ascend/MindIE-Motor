@@ -17,6 +17,13 @@ fi
 set_coordinator_env
 setup_motor_log_path
 
+NODEPORT_WARN_FILE="${CONFIGMAP_PATH}/nodeport_conflict_coordinator.txt"
+if [ -f "$NODEPORT_WARN_FILE" ] && [ -s "$NODEPORT_WARN_FILE" ]; then
+    echo "========== [NodePort] CONFLICT WARNING =========="
+    cat "$NODEPORT_WARN_FILE"
+    echo "================================================="
+fi
+
  set_cann_env
  setup_jemalloc
 

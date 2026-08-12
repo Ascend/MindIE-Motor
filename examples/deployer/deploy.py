@@ -33,6 +33,7 @@ from lib.generator.k8s_utils import (
     update_kv_conductor_enabled_flag,
     update_engine_type_flag,
     set_user_config_path,
+    resolve_nodeports_for_yaml_files,
 )
 from lib.generator.controller import generate_yaml_controller
 from lib.generator.coordinator import generate_yaml_coordinator
@@ -250,6 +251,20 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
         deploy_services_multi_yaml(paths, user_config, dry_run=dry_run)
 
     if dry_run:
+        # Apply path already resolves NodePorts; dry-run must do it after yaml generation.
+        # dry_run=True: print conflicts / proposed remap only (no prompt, no rewrite).
+        if deploy_mode_arg == C.DEPLOY_MODE_SINGLE_CONTAINER:
+            resolve_nodeports_for_yaml_files(
+                deploy_config,
+                [paths["single_container_output_yaml"]],
+                dry_run=True,
+            )
+        else:
+            resolve_nodeports_for_yaml_files(
+                deploy_config,
+                k8s_utils.g_generate_yaml_list,
+                dry_run=True,
+            )
         logger.info("all deploy end (dry-run: kubectl apply skipped).")
     else:
         if auto_log_collect:
