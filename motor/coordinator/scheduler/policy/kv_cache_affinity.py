@@ -14,6 +14,7 @@ from pathlib import Path
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
+from motor.coordinator.domain.block_offset_translator import attach_block_offsets
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy, WorkloadLedgerMixin
 from motor.config.coordinator import (
     CoordinatorConfig,
@@ -215,7 +216,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         messages = req_info.req_data.get(OpenAIField.MESSAGES, None)
         tools = req_info.req_data.get(OpenAIField.TOOLS, None)
         if messages is not None:
-            encoded_ids = TokenizerManager().apply_chat_template(messages, tools, req_data=req_info.req_data)
+            tokenizer_manager = TokenizerManager()
+            encoded_ids = tokenizer_manager.apply_chat_template(messages, tools, req_data=req_info.req_data)
+            attach_block_offsets(req_info, messages, tools, tokenizer=tokenizer_manager.tokenizer)
         else:
             prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
             if prompt is not None:

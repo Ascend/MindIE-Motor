@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -20,6 +19,7 @@ from motor.common.resources.instance import PDRole
 from motor.coordinator.domain.scheduling_constraint import SchedulingConstraint
 from motor.coordinator.tracer.tracing import TraceObj
 from motor.coordinator.models.constants import OpenAIField
+from motor.coordinator.domain.agent_hint import AgentHintInfo
 
 
 class RequestType(Enum):
@@ -98,6 +98,10 @@ class RequestInfo(BaseModel):
     scheduling_constraint: SchedulingConstraint | None = Field(
         default=None,
         description="Internal pin-to-instance constraint (e.g. precision probe); not from client API",
+    )
+    agent_hint_info: AgentHintInfo = Field(
+        default_factory=AgentHintInfo,
+        description="Structured information parsed from the request agent_hint for Scheduler available",
     )
 
     def __init__(self, **data):

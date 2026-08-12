@@ -34,6 +34,10 @@ from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.request_manager import RequestManager
+from motor.coordinator.domain.agent_hint import (
+    parse_agent_hint,
+    ensure_minimum_messages_for_session_edits,
+)
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
@@ -363,6 +367,11 @@ async def __create_request_info(
     req_data = request_json.copy()
     client_expects_token_ids = bool(request_json.get("return_token_ids", False))
 
+    ensure_minimum_messages_for_session_edits(request_json, req_data)
+    agent_hint_info = parse_agent_hint(
+        request_json,
+        headers=dict(raw_request.headers),
+    )
     return RequestInfo(
         req_id=req_id,
         req_data=req_data,
@@ -371,4 +380,5 @@ async def __create_request_info(
         entry_api=api,
         client_expects_token_ids=client_expects_token_ids,
         client_expects_chat_shape=(OpenAIField.MESSAGES in request_json),
+        agent_hint_info=agent_hint_info,
     )

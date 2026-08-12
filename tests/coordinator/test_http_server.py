@@ -1135,6 +1135,97 @@ class TestCoordinatorServerAdvanced:
 
         assert response.status_code == 400, f"Expected 400 for empty messages, got: {response.status_code}"
 
+    def test_validate_openai_request_empty_messages_manage_false_session_target_rejected(self):
+        """Empty messages must be rejected when manage=false even if a session-targeted edit is present."""
+        invalid_data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {
+                "context_management": {
+                    "manage_request": False,
+                    "edits": [{"type": "evict", "target": "session"}],
+                }
+            },
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=invalid_data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, (
+            f"Expected 400 for empty messages with manage=false + target=session, got: {response.status_code}"
+        )
+        assert "must be a non-empty array" in response.text
+
+    def test_validate_openai_request_empty_messages_manage_true_messages_target_rejected(self):
+        """Empty messages must be rejected when manage=true but target is messages (not session)."""
+        invalid_data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {
+                "context_management": {
+                    "manage_request": True,
+                    "edits": [{"type": "evict", "target": "messages"}],
+                }
+            },
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=invalid_data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, (
+            f"Expected 400 for empty messages with manage=true + target=messages, got: {response.status_code}"
+        )
+        assert "must be a non-empty array" in response.text
+
+    def test_validate_openai_request_empty_messages_manage_true_tools_target_rejected(self):
+        """Empty messages must be rejected when manage=true but target is tools (not session)."""
+        invalid_data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {
+                "context_management": {
+                    "manage_request": True,
+                    "edits": [{"type": "evict", "target": "tools"}],
+                }
+            },
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=invalid_data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, (
+            f"Expected 400 for empty messages with manage=true + target=tools, got: {response.status_code}"
+        )
+        assert "must be a non-empty array" in response.text
+
+    def test_validate_openai_request_empty_messages_manage_true_session_target_allowed(self):
+        """Empty messages is the only valid bypass: manage=true AND target=session."""
+        data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {
+                "context_management": {
+                    "manage_request": True,
+                    "edits": [{"type": "evict", "target": "session"}],
+                }
+            },
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code != 400, (
+            f"Empty messages with manage=true + target=session must bypass the non-empty check, got {response.status_code}: {response.text}"
+        )
+
     def test_validate_openai_request_invalid_message_format(self):
         """Test _validate_openai_request with invalid message format"""
         invalid_data = {
