@@ -28,7 +28,7 @@ Controller 和 Coordinator 使用独立的 ETCD 锁键（自动加上 `/controll
 **选举流程：**
 
 <p align="center">
-  <img alt="主备倒换架构" src="../imgs/standby.png" />
+  <img alt="主备倒换架构" src="../../imgs/standby.png" />
 </p>
 
 <p align="center"><b>图1. 主备倒换架构图</b></p>
@@ -108,7 +108,7 @@ Coordinator 的 `/readiness` 不只是"我是 master 吗"，它综合判断以�
 ## 3. 主备倒换时序
 
 <p align="center">
-  <img alt="主备倒换时序图" src="../imgs/standby-seq.jpg" />
+  <img alt="主备倒换时序图" src="../../imgs/standby-seq.jpg" />
 </p>
 
 <p align="center"><b>图2. 主备倒换时序图</b></p>

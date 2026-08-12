@@ -8,7 +8,7 @@
 
 本特性通过ETCD分布式锁机制实现Kubernetes集群中Controller的主备倒换功能，确保系统高可用性。开启Controller主备倒换特性开关后，系统会在初始化阶段拉起两个Controller实例，通过ETCD分布式锁竞争来实现主备身份选举，当主Controller发生故障时，备用Controller能在设定时间间隔后自动接管工作。
 
-了解主备详细设计请参考[主备倒换特性设计文档](../../../design/standby.md)。
+了解主备详细设计请参考[主备倒换特性设计文档](../../../design/fault_tolerance/standby.md)。
 
 **限制与约束**
 
