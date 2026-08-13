@@ -314,6 +314,53 @@ def test_start_health_check_skips_patch_when_hdk_unsupported(mock_thread, _mock_
     assert sim_inference.enable_virtual_inference is False
 
 
+@mock.patch('motor.engine_server.core.sim_inference.is_ai_cube_usage_watch_supported', return_value=True)
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+def test_start_health_check_disables_when_log_level_not_error(
+    mock_thread, _mock_hdk_supported, sim_inference, monkeypatch
+):
+    """Non-ERROR ASCEND_GLOBAL_LOG_LEVEL should disable virtual inference before start."""
+    monkeypatch.setenv("ASCEND_GLOBAL_LOG_LEVEL", "1")
+    with mock.patch.object(sim_inference, "patch_vllm_metrics") as mock_patch:
+        sim_inference.start_health_check()
+
+    mock_patch.assert_not_called()
+    mock_thread.assert_not_called()
+    assert sim_inference.enable_virtual_inference is False
+
+
+@mock.patch('motor.engine_server.core.sim_inference.is_ai_cube_usage_watch_supported', return_value=True)
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+def test_start_health_check_keeps_enabled_when_log_level_error(
+    mock_thread, _mock_hdk_supported, sim_inference, monkeypatch
+):
+    """ASCEND_GLOBAL_LOG_LEVEL=3 (ERROR) allows virtual inference to start."""
+    monkeypatch.setenv("ASCEND_GLOBAL_LOG_LEVEL", "3")
+    mock_thread_instance = mock.MagicMock()
+    mock_thread.return_value = mock_thread_instance
+
+    sim_inference.start_health_check()
+
+    assert mock_thread.call_count == 2
+    assert sim_inference.enable_virtual_inference is True
+
+
+@mock.patch('motor.engine_server.core.sim_inference.is_ai_cube_usage_watch_supported', return_value=True)
+@mock.patch('motor.engine_server.core.sim_inference.threading.Thread')
+def test_start_health_check_keeps_enabled_when_log_level_unset(
+    mock_thread, _mock_hdk_supported, sim_inference, monkeypatch
+):
+    """Unset ASCEND_GLOBAL_LOG_LEVEL defaults to ERROR and allows virtual inference."""
+    monkeypatch.delenv("ASCEND_GLOBAL_LOG_LEVEL", raising=False)
+    mock_thread_instance = mock.MagicMock()
+    mock_thread.return_value = mock_thread_instance
+
+    sim_inference.start_health_check()
+
+    assert mock_thread.call_count == 2
+    assert sim_inference.enable_virtual_inference is True
+
+
 def test_stop_health_check(sim_inference):
     """Test health check task stop functionality"""
     # Create a mock task

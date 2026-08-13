@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import os
 import threading
 import time
 import importlib
@@ -31,6 +32,19 @@ _VIRTUAL_WARMUP_TIMEOUT_SEC = 180.0
 _AI_CUBE_SAMPLE_WINDOW_SEC = 5.0
 _SHUTDOWN_JOIN_TIMEOUT_SEC = 5.0
 VIRTUAL_REQUEST_ID_MARKER = "_virtual"
+_ASCEND_GLOBAL_LOG_LEVEL_ENV = "ASCEND_GLOBAL_LOG_LEVEL"
+_ASCEND_GLOBAL_LOG_LEVEL_ERROR = "3"
+
+
+def _is_ascend_global_log_level_error() -> bool:
+    """Return True when ASCEND_GLOBAL_LOG_LEVEL is unset/empty (default ERROR) or explicitly 3."""
+    raw_value = os.environ.get(_ASCEND_GLOBAL_LOG_LEVEL_ENV)
+    if raw_value is None:
+        return True
+    text = str(raw_value).strip()
+    if not text:
+        return True
+    return text == _ASCEND_GLOBAL_LOG_LEVEL_ERROR
 
 
 def _is_virtual_metrics_request(req_state) -> bool:
@@ -199,6 +213,16 @@ class SimInference:
         # only start virtual inference when enable_virtual_inference is True and npu_usage_threshold is above 0
         if not self.enable_virtual_inference:
             logger.info("Health check is disabled")
+            return
+
+        if not _is_ascend_global_log_level_error():
+            logger.warning(
+                "Virtual inference requires ASCEND_GLOBAL_LOG_LEVEL=%s (ERROR); "
+                "got %r. Disabling enable_virtual_inference at engine_server startup.",
+                _ASCEND_GLOBAL_LOG_LEVEL_ERROR,
+                os.environ.get(_ASCEND_GLOBAL_LOG_LEVEL_ENV),
+            )
+            self.enable_virtual_inference = False
             return
 
         if self.npu_usage_threshold <= 0 or self.npu_usage_threshold > 100:

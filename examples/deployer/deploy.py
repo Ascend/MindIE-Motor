@@ -55,7 +55,6 @@ from lib.config_validator import (
     validate_pd_hybrid_config,
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
-    enforce_virtual_inference_log_level,
 )
 
 
@@ -94,7 +93,7 @@ def handle_update_config(user_config):
     logger.info("Configmap refreshed.")
 
 
-def handle_update_instance_num(user_config, env_config_path=None):
+def handle_update_instance_num(user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     baseline_config = get_baseline_config_from_configmap(deploy_config[C.CONFIG_JOB_ID])
     if baseline_config is None:
@@ -114,10 +113,6 @@ def handle_update_instance_num(user_config, env_config_path=None):
 
     update_kv_store_enabled_flag(user_config)
     update_engine_base_name(user_config)
-    if env_config_path and os.path.exists(env_config_path):
-        enforce_virtual_inference_log_level(user_config, read_json(env_config_path))
-    else:
-        enforce_virtual_inference_log_level(user_config, {})
 
     k8s_utils.g_generate_yaml_list = []
     paths = get_deploy_paths()
@@ -217,11 +212,6 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
     update_engine_type_flag(user_config)
 
     update_engine_base_name(user_config)
-
-    if env_config_path and os.path.exists(env_config_path):
-        enforce_virtual_inference_log_level(user_config, read_json(env_config_path))
-    else:
-        enforce_virtual_inference_log_level(user_config, {})
 
     deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
     if not dry_run:
@@ -451,7 +441,7 @@ def main():
         handle_update_config(user_config)
         return
     if args.update_instance_num:
-        handle_update_instance_num(user_config, env_config_path)
+        handle_update_instance_num(user_config)
         return
 
     deploy_services(user_config, env_config_path, dry_run=args.dry_run, auto_log_collect=args.auto_log_collect)
