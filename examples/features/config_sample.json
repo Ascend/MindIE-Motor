@@ -358,7 +358,9 @@
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": false,
-      "zmq_pub_port": 0
+      "poll_interval_sec": 5.0,
+      "poll_timeout_sec": 5.0,
+      "max_poll_failures": 3
     },
     "port_allocator_config": {
       "enable": true,

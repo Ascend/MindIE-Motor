@@ -23,7 +23,7 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
 | `LocalService` | `motor/node_manager/core/services/memcache/lifecycle.py` | memcache 后端生命周期管理：配置准备、子进程拉起（通过 `memcache/worker.py`）、健康检查与重启 |
 | `EngineManager` | `motor/node_manager/core/engine_manager.py` | 注册/重注册、校验启动命令、处理 ranktable、快照元数据和故障上报 |
 | `HeartbeatManager` | `motor/node_manager/core/heartbeat_manager.py` | 轮询 endpoint 状态、上报心跳、维护暂停/恢复状态并触发异常自杀 |
-| `FaultReporter` | `motor/node_manager/core/fault_reporter.py` | 订阅 Engine Server 的 ZMQ 软件故障消息并转发给 Controller |
+| `FaultReporter` | `motor/node_manager/core/fault_reporter.py` | 轮询引擎 FT 状态接口并上报软件故障给 Controller |
 | `ControllerApiClient` | `motor/node_manager/api_client/controller_api_client.py` | 调用 Controller 的注册、重注册、心跳和故障上报接口 |
 | `EngineServerApiClient` | `motor/node_manager/api_client/engine_server_api_client.py` | 调用 Engine Server 管理面的 `GET /status` |
 
@@ -186,8 +186,10 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 | `basic_config.nnodes` | `1` | 从 `engine_config.nnodes` 派生的跨节点数量 |
 | `kv_cache_store_config.mode` | `combined` | 部署模式：`combined` 表示 Engine 与 KV-store 在同一 Pod，`separated` 表示 KV-store 独立 Pod（不拉 Engine、不注册、不心跳） |
 | `mgmt_tls_config.enable_tls` | `false` | Node Manager、Controller 和 Engine Server 管理面通信是否启用 TLS |
-| `fault_tolerance_config.enable_fault_tolerance` | `false` | 是否启动软件故障订阅线程 |
-| `fault_tolerance_config.zmq_pub_port` | `0` | ZMQ PUB 基础端口；每个 endpoint 使用 `base_port + endpoint.id` |
+| `fault_tolerance_config.enable_fault_tolerance` | `false` | 显式开启软件故障轮询；引擎 user config 检测到 FT 时自动开启，无需配置 |
+| `fault_tolerance_config.poll_interval_sec` | `5.0` | 轮询引擎 FT 状态的时间间隔（秒） |
+| `fault_tolerance_config.poll_timeout_sec` | `5.0` | 单次轮询的 HTTP 超时（秒） |
+| `fault_tolerance_config.max_poll_failures` | `3` | 连续轮询失败阈值，达到后按 `dead` 上报 |
 | `snapshot_config.enable_snapshot` | `false` | 是否启用容器快照流程 |
 | `snapshot_config.snapshot_metadata_path` | 空 | 自定义快照元数据路径；用户需预先创建并挂载该文件。为空时进入快照默认应用场景，即 MindCluster 实例重调度 |
 | `port_allocator_config.enable` | `true` | 是否在启动时自动检查并调整端口 |
@@ -203,7 +205,7 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 1. `_refresh_check_interval()` — 从配置刷新 daemon loop 间隔。
 2. 遍历所有模块调用 `update_config()`：
    - `HeartbeatManager` 动态更新 `heartbeat_interval_seconds`。
-   - `EngineManager` 更新配置，并根据 `enable_fault_tolerance`、endpoint、Pod IP 或 `zmq_pub_port` 的变化启停或重建 `FaultReporter`。
+   - `EngineManager` 更新配置，并根据 `enable_fault_tolerance`、endpoint 的变化启停或重建 `FaultReporter`。
 3. 打印更新后的配置摘要 `log_configuration_summary()`。
 4. API 监听地址、监听端口、TLS 和 `Daemon` 已缓存的设备参数不会热重启，修改后需要重启 Node Manager。
 
@@ -271,19 +273,29 @@ registry.add_discovery_path("new_backend", "path.to.new_backend_module")
 
 ## 软件故障上报
 
-开启 `fault_tolerance_config.enable_fault_tolerance` 后，`FaultReporter` 为每个 endpoint 连接一个 ZMQ SUB socket，订阅主题 `vllm_fault`。端口为：
+`FaultReporter` 在以下任一条件满足时自动启用：`fault_tolerance_config.enable_fault_tolerance` 显式开启，或 user config 的引擎配置（如 `motor_engine_prefill_config.engine_config`）中检测到 `enable-fault-tolerance` / `enable_fault_tolerance` 为 `true`（无需 NodeManager 显式配置）。启用后在后台线程中按 `poll_interval_sec` 间隔轮询每个 endpoint 的 FT 状态接口：
 
 ```text
-fault_tolerance_config.zmq_pub_port + endpoint.id
+GET http://{endpoint.ip}:{endpoint.business_port}/fault_tolerance/status
 ```
 
-消息中的状态映射为：
+响应格式（vLLM FaultTolerance 框架提供，见 vllm-project/vllm#44428）：
+
+```json
+{
+  "schema_version": 1,
+  "total_engines": 1,
+  "engines": [{"id": 0, "status": "healthy|dead|unhealthy", "fault_info": "..."}]
+}
+```
+
+状态映射为：
 
 - `healthy`：记录状态，不上报故障。
 - `dead`：上报 `EngineDeadError`。
-- `unhealthy`：上报 `EngineUnhealthyError`。
+- `unhealthy`：上报 `EngineUnhealthyError`；响应携带 `fault_info` 时以其作为 `exception_type`（如 `RuntimeError`）。
 
-同一 Engine 的相同非健康状态只在成功发送给 Controller 后标记为已上报；发送失败时后续消息仍可重试。ZMQ 发生错误后等待 5 秒并重建订阅。
+同一 Engine 的相同非健康状态只在成功发送给 Controller 后标记为已上报；发送失败时后续轮询仍可重试。引擎连续 `max_poll_failures` 次轮询失败（连接拒绝/超时）时按 `dead` 上报 `EngineDeadError`（异常消息注明不可达轮询次数），引擎恢复可轮询后重新计数。
 
 ## 容器快照
 

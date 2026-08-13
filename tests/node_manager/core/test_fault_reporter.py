@@ -9,21 +9,102 @@
 # See the Mulan PSL v2 for more details.
 """Tests for motor.node_manager.core.fault_reporter."""
 
+import json
 import os
 import sys
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 os.environ["USER_CONFIG_PATH"] = "tests/jsons/useruser_config.json"
 os.environ["ROLE"] = "both"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from motor.node_manager.core.fault_reporter import FaultReporter
+from motor.node_manager.core.fault_reporter import FaultReporter, _engine_ft_enabled
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.endpoint import Endpoint
 
 # pylint: disable=redefined-outer-name,duplicate-code
+
+
+# -- engine FT auto-detection --------------------------------------------------
+
+
+def _write_user_config(tmp_path, content: dict) -> str:
+    path = tmp_path / "user_config.json"
+    path.write_text(json.dumps(content), encoding="utf-8")
+    return str(path)
+
+
+def test_engine_ft_enabled_none_path():
+    assert _engine_ft_enabled(None) is False
+
+
+def test_engine_ft_enabled_missing_file(tmp_path):
+    assert _engine_ft_enabled(str(tmp_path / "nope.json")) is False
+
+
+def test_engine_ft_enabled_no_ft_key(tmp_path):
+    path = _write_user_config(tmp_path, {"motor_engine_prefill_config": {"engine_config": {}}})
+    assert _engine_ft_enabled(path) is False
+
+
+def test_engine_ft_enabled_snake_case_key(tmp_path):
+    path = _write_user_config(
+        tmp_path,
+        {"motor_engine_prefill_config": {"engine_config": {"enable_fault_tolerance": True}}},
+    )
+    assert _engine_ft_enabled(path) is True
+
+
+def test_engine_ft_enabled_hyphen_key(tmp_path):
+    path = _write_user_config(
+        tmp_path,
+        {"motor_engine_decode_config": {"engine_config": {"enable-fault-tolerance": True}}},
+    )
+    assert _engine_ft_enabled(path) is True
+
+
+def test_engine_ft_enabled_false_value(tmp_path):
+    path = _write_user_config(
+        tmp_path,
+        {"motor_engine_prefill_config": {"engine_config": {"enable_fault_tolerance": False}}},
+    )
+    assert _engine_ft_enabled(path) is False
+
+
+def test_engine_ft_enabled_broken_json(tmp_path):
+    path = tmp_path / "user_config.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert _engine_ft_enabled(str(path)) is False
+
+
+# -- auto-enable without explicit config ---------------------------------------
+
+
+def test_start_auto_enabled_via_engine_config(tmp_path, endpoints):
+    """No explicit flag needed: FT in the engine user config enables reporting."""
+    cfg = NodeManagerConfig()
+    cfg.api_config.pod_ip = "192.168.1.1"
+    cfg.fault_tolerance_config.enable_fault_tolerance = False
+    cfg.config_path = _write_user_config(
+        tmp_path,
+        {"motor_engine_prefill_config": {"engine_config": {"enable-fault-tolerance": True}}},
+    )
+    r = FaultReporter(cfg)
+    r.start(endpoints)
+    assert r._thread is not None
+    r.stop()
+
+
+def test_start_not_enabled_without_engine_ft(tmp_path, endpoints):
+    cfg = NodeManagerConfig()
+    cfg.api_config.pod_ip = "192.168.1.1"
+    cfg.fault_tolerance_config.enable_fault_tolerance = False
+    cfg.config_path = _write_user_config(tmp_path, {"motor_engine_prefill_config": {"engine_config": {}}})
+    r = FaultReporter(cfg)
+    r.start(endpoints)
+    assert r._thread is None
 
 
 @pytest.fixture
@@ -31,7 +112,9 @@ def config():
     cfg = NodeManagerConfig()
     cfg.api_config.pod_ip = "192.168.1.1"
     cfg.fault_tolerance_config.enable_fault_tolerance = True
-    cfg.fault_tolerance_config.zmq_pub_port = 0
+    # Endpoints are unreachable in the test env (connect timeout, not refused):
+    # a short poll timeout keeps one loop round well under stop()'s join(5s).
+    cfg.fault_tolerance_config.poll_timeout_sec = 0.1
     return cfg
 
 
@@ -97,350 +180,21 @@ def test_stop_joins_thread(reporter, endpoints):
     assert reporter._thread is None
 
 
-# -- ZMQ setup -----------------------------------------------------------------
-
-
-@patch("motor.node_manager.core.fault_reporter.zmq")
-def test_setup_zmq_multi(mock_zmq, config, endpoints):
-    import zmq as real_zmq
-
-    config.fault_tolerance_config.zmq_pub_port = 5555
-    r = FaultReporter(config)
-    r._endpoints = endpoints
-
-    mock_ctx_cls = MagicMock()
-    mock_ctx_instance = mock_ctx_cls.return_value
-    mock_sub = MagicMock()
-    mock_ctx_instance.socket.return_value = mock_sub
-    mock_zmq.Context = mock_ctx_cls
-    mock_zmq.SUB = real_zmq.SUB
-    mock_zmq.Poller.return_value = MagicMock()
-
-    sub_sockets, poller, _ = r._setup_zmq_sub_sockets()
-
-    mock_ctx_cls.assert_called_once()
-    assert mock_ctx_instance.socket.call_count == 2
-    mock_sub.connect.assert_any_call("tcp://192.168.1.1:5555")
-    mock_sub.connect.assert_any_call("tcp://192.168.1.1:5556")
-    assert len(sub_sockets) == 2
-    assert poller is not None
-
-
-@patch("motor.node_manager.core.fault_reporter.zmq")
-def test_setup_zmq_ipv6_bracketed_url(mock_zmq, config, endpoints):
-    import zmq as real_zmq
-
-    config.api_config.pod_ip = "2001:db8::1"
-    config.fault_tolerance_config.zmq_pub_port = 5555
-    r = FaultReporter(config)
-    r._endpoints = endpoints[:1]
-
-    mock_ctx_cls = MagicMock()
-    mock_ctx_instance = mock_ctx_cls.return_value
-    mock_sub = MagicMock()
-    mock_ctx_instance.socket.return_value = mock_sub
-    mock_zmq.Context = mock_ctx_cls
-    mock_zmq.SUB = real_zmq.SUB
-    mock_zmq.Poller.return_value = MagicMock()
-
-    sub_sockets, poller, _ = r._setup_zmq_sub_sockets()
-
-    mock_sub.connect.assert_called_once_with("tcp://[2001:db8::1]:5555")
-    assert len(sub_sockets) == 1
-    assert poller is not None
-
-
-@patch("motor.node_manager.core.fault_reporter.zmq")
-def test_setup_zmq_no_port(mock_zmq, config, endpoints):
-    r = FaultReporter(config)
-    r._endpoints = endpoints
-    sub_sockets, poller, zmq_ctx = r._setup_zmq_sub_sockets()
-    assert len(sub_sockets) == 0
-    assert poller is None
-    assert zmq_ctx is None
-
-
-@patch("motor.node_manager.core.fault_reporter.zmq")
-def test_setup_zmq_no_endpoints(mock_zmq, config):
-    config.fault_tolerance_config.zmq_pub_port = 5555
-    r = FaultReporter(config)
-    sub_sockets, poller, _ = r._setup_zmq_sub_sockets()
-    assert len(sub_sockets) == 0
-
-
-# -- ZMQ processing ------------------------------------------------------------
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-def test_process_zmq_dead(mock_report, reporter):
-    import msgspec.msgpack
-
-    msg = {
-        "schema_version": 1,
-        "total_engines": 2,
-        "engines": [{"id": 0, "status": "dead"}, {"id": 1, "status": "healthy"}],
-    }
-    raw = msgspec.msgpack.encode(msg)
-    known = {}
-    reporter._process_zmq_engine_status(raw, known)
-    mock_report.assert_called_once()
-    called = mock_report.call_args[0][0]
-    assert called["engine_id"] == 0
-    assert called["engine_status"] == 1
-    assert known == {0: "dead", 1: "healthy"}
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-def test_process_zmq_dedup(mock_report, reporter):
-    import msgspec.msgpack
-
-    msg = {"schema_version": 1, "total_engines": 1, "engines": [{"id": 0, "status": "dead"}]}
-    raw = msgspec.msgpack.encode(msg)
-    known = {0: "dead"}
-    reporter._process_zmq_engine_status(raw, known)
-    mock_report.assert_not_called()
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-def test_process_zmq_healthy(mock_report, reporter):
-    import msgspec.msgpack
-
-    msg = {"schema_version": 1, "total_engines": 1, "engines": [{"id": 0, "status": "healthy"}]}
-    raw = msgspec.msgpack.encode(msg)
-    known = {}
-    reporter._process_zmq_engine_status(raw, known)
-    mock_report.assert_not_called()
-    assert known == {0: "healthy"}
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-def test_send_fault_injects_pod_ip(mock_report, reporter):
-    fault = {"exception_type": "KeyError", "engine_id": 1, "engine_status": 2}
-    reporter._send_fault_to_controller(fault)
-    mock_report.assert_called_once()
-    assert mock_report.call_args[0][0]["pod_ip"] == "192.168.1.1"
-
-
-# -- Main Loop ----------------------------------------------------------------------
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-@patch("motor.node_manager.core.fault_reporter.zmq")
-def test_main_loop_multi_socket(mock_zmq, mock_report, config, endpoints):
-    import zmq as real_zmq
-    import msgspec.msgpack
-
-    config.fault_tolerance_config.zmq_pub_port = 5555
-    r = FaultReporter(config)
-    r._endpoints = endpoints
-
-    msg_dead = msgspec.msgpack.encode(
-        {
-            "schema_version": 1,
-            "total_engines": 1,
-            "engines": [{"id": 0, "status": "dead"}],
-        }
-    )
-    msg_uh = msgspec.msgpack.encode(
-        {
-            "schema_version": 1,
-            "total_engines": 1,
-            "engines": [{"id": 1, "status": "unhealthy"}],
-        }
-    )
-
-    sub0 = MagicMock()
-    sub0.recv_multipart.return_value = (b"vllm_fault", msg_dead)
-    sub1 = MagicMock()
-    sub1.recv_multipart.return_value = (b"vllm_fault", msg_uh)
-
-    mock_ctx_inst = MagicMock()
-    mock_ctx_inst.socket.side_effect = [sub0, sub1]
-    mock_zmq.Context.return_value = mock_ctx_inst
-    mock_zmq.SUB = real_zmq.SUB
-
-    mock_poller = MagicMock()
-    mock_zmq.Poller.return_value = mock_poller
-
-    cnt = [0]
-
-    def stop_after():
-        def side_effect(*a, **kw):
-            cnt[0] += 1
-            if cnt[0] >= 2:
-                r._stop_event.set()
-            return [{sub0: real_zmq.POLLIN}, {sub1: real_zmq.POLLIN}][cnt[0] - 1]
-
-        return side_effect
-
-    mock_poller.poll.side_effect = stop_after()
-
-    r._main_loop()
-
-    assert mock_poller.register.call_count == 2
-    assert mock_report.call_count == 2
-    assert mock_report.call_args_list[0][0][0]["engine_id"] == 0
-    assert mock_report.call_args_list[0][0][0]["engine_status"] == 1
-    assert mock_report.call_args_list[1][0][0]["engine_id"] == 1
-    assert mock_report.call_args_list[1][0][0]["engine_status"] == 2
-
-
-# -- ZMQ retry on error  --------------------------------------------------------
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-@patch("motor.node_manager.core.fault_reporter.zmq")
-def test_main_loop_retry_after_zmq_error(mock_zmq, mock_report, config, endpoints):
-    """When ZMQError occurs during poll, the loop tears down old sockets,
-    reconnects, and continues processing — instead of exiting.
-    """
-    import zmq as real_zmq
-    import msgspec.msgpack
-
-    config.fault_tolerance_config.zmq_pub_port = 5555
-    r = FaultReporter(config)
-    r._endpoints = endpoints
-    r._ZMQ_RECONNECT_DELAY = 0.0  # skip wait in test
-
-    msg_dead = msgspec.msgpack.encode(
-        {"schema_version": 1, "total_engines": 1, "engines": [{"id": 0, "status": "dead"}]}
-    )
-
-    # First-round mocks: poller raises ZMQError
-    old_poller = MagicMock()
-    old_poller.poll.side_effect = real_zmq.ZMQError("connection lost")
-    old_sub = MagicMock()
-    old_ctx = MagicMock()
-
-    # Second-round mocks: poller processes one message, then stops
-    new_poller = MagicMock()
-    new_sub = MagicMock()
-    new_sub.recv_multipart.return_value = (b"vllm_fault", msg_dead)
-    new_ctx = MagicMock()
-
-    call_count = [0]
-
-    def poll_side_effect(*a, **kw):
-        call_count[0] += 1
-        if call_count[0] >= 2:
-            r._stop_event.set()
-        return {new_sub: real_zmq.POLLIN}
-
-    new_poller.poll.side_effect = poll_side_effect
-
-    # _setup_zmq_sub_sockets → first returns old mocks, then new mocks
-    mock_zmq.Context.return_value = old_ctx
-    old_ctx.socket.return_value = old_sub
-    mock_zmq.SUB = real_zmq.SUB
-    mock_zmq.ZMQError = real_zmq.error.ZMQError  # pin to real exception class
-    mock_zmq.Poller.return_value = old_poller
-
-    # After first teardown + retry, switch to new mocks
-    orig_setup = r._setup_zmq_sub_sockets
-    setup_count = [0]
-
-    def setup_side_effect():
-        setup_count[0] += 1
-        if setup_count[0] == 1:
-            # First call: return old mocks (already configured via mock_zmq)
-            sub_sockets, poller, ctx = orig_setup()
-            poller.poll.side_effect = real_zmq.ZMQError("connection lost")
-            return sub_sockets, poller, ctx
-        else:
-            # Retry call: return new mocks
-            mock_zmq.Context.return_value = new_ctx
-            new_ctx.socket.return_value = new_sub
-            mock_zmq.Poller.return_value = new_poller
-            return orig_setup()
-
-    with patch.object(r, "_setup_zmq_sub_sockets", side_effect=setup_side_effect):
-        r._main_loop()
-
-    # First setup was called, then teardown, then retry
-    assert setup_count[0] == 2
-    # Old sockets were closed
-    old_sub.close.assert_called()
-    old_ctx.term.assert_called()
-    # New sockets processed a message
-    mock_report.assert_called_once()
-    assert mock_report.call_args[0][0]["engine_id"] == 0
-    assert mock_report.call_args[0][0]["engine_status"] == 1
-
-
-# -- Dedup after delivery (retry on failure) ----------------------------------
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-def test_process_zmq_failed_report_not_deduped(mock_report, reporter):
-    """When Controller is unreachable (report returns False), the status must
-    NOT be marked as known so it will be retried on the next ZMQ message.
-    """
-    import msgspec.msgpack
-
-    mock_report.return_value = False
-    msg = {"schema_version": 1, "total_engines": 1, "engines": [{"id": 0, "status": "dead"}]}
-    raw = msgspec.msgpack.encode(msg)
-    known: dict[int, str] = {}
-    reporter._process_zmq_engine_status(raw, known)
-
-    # Report was attempted
-    mock_report.assert_called_once()
-    # But on failure, known_statuses must NOT contain the engine
-    assert 0 not in known
-
-
-@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
-def test_process_zmq_successful_report_marked_as_known(mock_report, reporter):
-    """When Controller confirms delivery (report returns True), the status
-    IS marked as known so subsequent identical messages are deduplicated.
-    """
-    import msgspec.msgpack
-
-    mock_report.return_value = True
-    msg = {"schema_version": 1, "total_engines": 1, "engines": [{"id": 0, "status": "dead"}]}
-    raw = msgspec.msgpack.encode(msg)
-    known: dict[int, str] = {}
-    reporter._process_zmq_engine_status(raw, known)
-
-    mock_report.assert_called_once()
-    assert known == {0: "dead"}
-
-
 # -- update_config restart conditions ------------------------------------------
 
 
-def test_update_config_restart_on_pod_ip_change(config, endpoints):
-    """When pod_ip changes while enabled, restart to rebuild ZMQ sockets."""
-    config.fault_tolerance_config.zmq_pub_port = 5555
+def test_update_config_restart_on_endpoints_change(config, endpoints):
+    """When endpoints change while enabled, restart to poll the new engines."""
     r = FaultReporter(config)
     r._endpoints = endpoints
     r.start()
 
     new_config = NodeManagerConfig()
     new_config.fault_tolerance_config.enable_fault_tolerance = True
-    new_config.fault_tolerance_config.zmq_pub_port = 5555
-    new_config.api_config.pod_ip = "10.0.0.99"  # changed
-
-    r.update_config(new_config, endpoints)
-
-    assert r._enabled is True
-    assert r._thread is not None
-    r.stop()
-
-
-def test_update_config_restart_on_zmq_port_change(config, endpoints):
-    """When zmq_pub_port changes while enabled, restart to rebuild ZMQ sockets."""
-    config.fault_tolerance_config.zmq_pub_port = 5555
-    r = FaultReporter(config)
-    r._endpoints = endpoints
-    r.start()
-
-    new_config = NodeManagerConfig()
-    new_config.fault_tolerance_config.enable_fault_tolerance = True
-    new_config.fault_tolerance_config.zmq_pub_port = 6666  # changed
     new_config.api_config.pod_ip = "192.168.1.1"
+    new_endpoints = endpoints + [Endpoint(id=2, ip="192.168.1.1", business_port="8002", mgmt_port="9002")]
 
-    r.update_config(new_config, endpoints)
+    r.update_config(new_config, new_endpoints)
 
     assert r._enabled is True
     assert r._thread is not None
@@ -448,8 +202,7 @@ def test_update_config_restart_on_zmq_port_change(config, endpoints):
 
 
 def test_update_config_no_restart_when_nothing_changed(reporter, config, endpoints):
-    """When pod_ip, zmq_port, and endpoints are all unchanged, no restart."""
-    config.fault_tolerance_config.zmq_pub_port = 5555
+    """When endpoints and config are unchanged, no restart."""
     reporter._endpoints = endpoints
     reporter.start()
 
@@ -457,3 +210,362 @@ def test_update_config_no_restart_when_nothing_changed(reporter, config, endpoin
     reporter.update_config(config, endpoints)
     assert reporter._thread is t1  # Same thread object = no restart
     reporter.stop()
+
+
+def test_update_config_no_restart_on_poll_interval_change(reporter, config, endpoints):
+    """Poll interval is read inside the loop, so changing it does not restart."""
+    reporter._endpoints = endpoints
+    reporter.start()
+
+    config.fault_tolerance_config.poll_interval_sec = 1.0
+    t1 = reporter._thread
+    reporter.update_config(config, endpoints)
+    assert reporter._thread is t1
+    reporter.stop()
+
+
+# -- engine status processing --------------------------------------------------
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_healthy_updates_known_no_report(mock_report, reporter):
+    known = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "healthy"}, known)
+    mock_report.assert_not_called()
+    assert known == {0: "healthy"}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_unhealthy_with_fault_info(mock_report, reporter):
+    known = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy", "fault_info": "RuntimeError"}, known)
+    mock_report.assert_called_once()
+    called = mock_report.call_args[0][0]
+    assert called["engine_id"] == 0
+    assert called["engine_status"] == 2
+    assert called["exception_type"] == "RuntimeError"
+    assert known == {0: "unhealthy"}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_unhealthy_without_fault_info(mock_report, reporter):
+    known = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"}, known)
+    mock_report.assert_called_once()
+    called = mock_report.call_args[0][0]
+    assert called["exception_type"] == "EngineUnhealthyError"
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_dead(mock_report, reporter):
+    known = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+    mock_report.assert_called_once()
+    called = mock_report.call_args[0][0]
+    assert called["engine_id"] == 0
+    assert called["engine_status"] == 1
+    assert called["exception_type"] == "EngineDeadError"
+    assert known == {0: "dead"}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_dedup_same_status(mock_report, reporter):
+    known = {0: "dead"}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+    mock_report.assert_not_called()
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_unknown_status(mock_report, reporter):
+    known = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "weird"}, known)
+    mock_report.assert_not_called()
+    assert known == {}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_recovered_then_faulted_again(mock_report, reporter):
+    """After a healthy recovery resets the known status, a new fault is reported."""
+    known = {0: "unhealthy"}
+    reporter._process_engine_status(0, {"id": 0, "status": "healthy"}, known)
+    mock_report.assert_not_called()
+    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"}, known)
+    mock_report.assert_called_once()
+    assert known == {0: "unhealthy"}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_failed_report_not_deduped(mock_report, reporter):
+    """When Controller is unreachable (report returns False), the status must
+    NOT be marked as known so it will be retried on the next poll.
+    """
+    mock_report.return_value = False
+    known: dict[int, str] = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+
+    mock_report.assert_called_once()
+    assert 0 not in known
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_process_successful_report_marked_as_known(mock_report, reporter):
+    """When Controller confirms delivery (report returns True), the status
+    IS marked as known so subsequent identical polls are deduplicated.
+    """
+    mock_report.return_value = True
+    known: dict[int, str] = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+
+    mock_report.assert_called_once()
+    assert known == {0: "dead"}
+
+
+# -- status polling ------------------------------------------------------------
+
+
+@patch("motor.common.http.engine_ft_client.SafeHTTPSClient")
+def test_query_engine_status_uses_business_port(mock_client_cls, config, endpoints):
+    """FT status is fetched from the engine's business (API) port."""
+    config.fault_tolerance_config.poll_timeout_sec = 7.0
+    r = FaultReporter(config)
+    mock_client = mock_client_cls.return_value
+    mock_client.__enter__.return_value = mock_client  # with-client pattern
+    mock_client.get.return_value = {"engines": []}
+
+    r._query_engine_status(endpoints[0])
+
+    mock_client_cls.assert_called_once_with(address="192.168.1.1:8000", tls_config=None, timeout=7.0)
+    mock_client.get.assert_called_once_with("/fault_tolerance/status")
+
+
+def test_poll_engine_healthy_resets_failures(reporter, endpoints):
+    """A successful poll clears the consecutive-failure counter and reports nothing."""
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    failures: dict[int, int] = {0: 2}
+
+    with patch.object(
+        reporter,
+        "_query_engine_status",
+        return_value={"engines": [{"id": 0, "status": "healthy"}]},
+    ):
+        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+
+    assert failures == {0: 0}
+    assert known == {0: "healthy"}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_poll_engine_unhealthy_reports(mock_report, reporter, endpoints):
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    failures: dict[int, int] = {}
+
+    with patch.object(
+        reporter,
+        "_query_engine_status",
+        return_value={"engines": [{"id": 0, "status": "unhealthy", "fault_info": "KeyError"}]},
+    ):
+        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+
+    mock_report.assert_called_once()
+    assert known == {0: "unhealthy"}
+    assert failures == {0: 0}
+
+
+def test_poll_failures_below_threshold_no_report(reporter, endpoints):
+    """Fewer than max_poll_failures consecutive failures are not reported."""
+    config = reporter._config
+    config.fault_tolerance_config.max_poll_failures = 3
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    failures: dict[int, int] = {}
+
+    with patch.object(reporter, "_query_engine_status", side_effect=RuntimeError("boom")):
+        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+
+    assert failures == {0: 2}
+    assert known == {}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_poll_failures_reach_threshold_reports_dead(mock_report, reporter, endpoints):
+    """max_poll_failures consecutive failures are reported as dead."""
+    config = reporter._config
+    config.fault_tolerance_config.max_poll_failures = 3
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    failures: dict[int, int] = {}
+
+    with patch.object(reporter, "_query_engine_status", side_effect=RuntimeError("boom")):
+        for _ in range(3):
+            reporter._poll_engine(ep, known, failures, {ep.id: 0})
+
+    mock_report.assert_called_once()
+    called = mock_report.call_args[0][0]
+    assert called["engine_id"] == 0
+    assert called["engine_status"] == 1
+    assert called["exception_type"] == "EngineDeadError"
+    assert "unreachable" in called["exception_message"]
+    assert known == {0: "dead"}
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_poll_failures_dedup_dead(mock_report, reporter, endpoints):
+    """Continued failures after dead was reported do not re-report."""
+    config = reporter._config
+    config.fault_tolerance_config.max_poll_failures = 2
+    ep = endpoints[0]
+    known: dict[int, str] = {0: "dead"}  # already reported
+    failures: dict[int, int] = {}
+
+    with patch.object(reporter, "_query_engine_status", side_effect=RuntimeError("boom")):
+        for _ in range(5):
+            reporter._poll_engine(ep, known, failures, {ep.id: 0})
+
+    mock_report.assert_not_called()
+
+
+def test_poll_failures_then_recover(reporter, endpoints):
+    """After failures, a successful poll resets the counter; later failures
+    restart the counting from zero.
+    """
+    config = reporter._config
+    config.fault_tolerance_config.max_poll_failures = 3
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    failures: dict[int, int] = {}
+
+    side_effects = [
+        RuntimeError("boom"),
+        RuntimeError("boom"),
+        {"engines": [{"id": 0, "status": "healthy"}]},
+        RuntimeError("boom"),
+    ]
+    with patch.object(reporter, "_query_engine_status", side_effect=side_effects):
+        for _ in range(4):
+            reporter._poll_engine(ep, known, failures, {ep.id: 0})
+
+    # 2 failures -> success (reset) -> 1 failure
+    assert failures == {0: 1}
+    assert known == {0: "healthy"}
+
+
+# -- main loop -----------------------------------------------------------------
+
+
+def test_main_loop_polls_all_endpoints_then_stops(reporter, endpoints):
+    """The loop polls every endpoint once per tick and exits on stop_event."""
+    config = reporter._config
+    config.fault_tolerance_config.poll_interval_sec = 0.01
+    r = reporter
+    r._endpoints = endpoints
+
+    polled: list[int] = []
+
+    def fake_poll(ep, known, failures, first_poll_time):
+        polled.append(ep.id)
+        r._stop_event.set()  # stop after the first full round
+
+    with patch.object(r, "_poll_engine", side_effect=fake_poll):
+        r._main_loop()
+
+    assert polled == [0, 1]
+
+
+@patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
+def test_main_loop_reports_via_sentinel(mock_report, config, endpoints):
+    """End-to-end loop: one engine unhealthy -> reported once, then deduped."""
+    config.fault_tolerance_config.poll_interval_sec = 0.01
+    r = FaultReporter(config)
+    r._endpoints = endpoints
+
+    payload = {"engines": [{"id": 0, "status": "unhealthy", "fault_info": "RuntimeError"}]}
+    poll_count = [0]
+
+    def fake_query(ep):
+        poll_count[0] += 1
+        if poll_count[0] >= 3:
+            r._stop_event.set()
+        return payload
+
+    with patch.object(r, "_query_engine_status", side_effect=fake_query):
+        r._main_loop()
+
+    # Both endpoints report unhealthy (dedup keyed per endpoint); each is
+    # reported once, then deduped on subsequent polls.
+    assert mock_report.call_count == 2
+    assert {c.args[0]["engine_id"] for c in mock_report.call_args_list} == {0, 1}
+
+
+# -- robustness fixes (code review) -------------------------------------------
+
+
+def test_poll_engine_malformed_payload_does_not_raise(reporter, endpoints):
+    """A malformed FT status payload must not kill the polling thread."""
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    failures: dict[int, int] = {}
+
+    for bad_payload in ([], None, "ok", {"engines": [{"id": 0}]}, {"engines": ["x"]}):
+        with patch.object(reporter, "_query_engine_status", return_value=bad_payload):
+            reporter._poll_engine(ep, known, failures, {ep.id: 0})  # must not raise
+
+
+def test_process_engine_status_uses_endpoint_id_key(reporter):
+    """Dedup keys are endpoint ids, not payload ids — multi-endpoint safe."""
+    known: dict[int, str] = {}
+    # endpoint 0 dead, endpoint 1 healthy: payload ids collide on 0, keys must not.
+    with patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault") as mock_report:
+        mock_report.return_value = True
+        reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+        reporter._process_engine_status(1, {"id": 0, "status": "healthy"}, known)
+        reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+
+    assert known == {0: "dead", 1: "healthy"}
+    mock_report.assert_called_once()  # dedup: second dead report suppressed
+
+
+def test_report_unreachable_dead_within_grace_period_not_reported(reporter, endpoints):
+    """Poll failures during engine startup (model load) are not reported dead."""
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    first_poll_time = {ep.id: __import__("time").time()}
+
+    with patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault") as mock_report:
+        reporter._report_unreachable_dead(ep, 3, known, first_poll_time)
+
+    mock_report.assert_not_called()
+    assert known == {}
+
+
+def test_report_unreachable_dead_after_grace_period_reported(reporter, endpoints):
+    ep = endpoints[0]
+    known: dict[int, str] = {}
+    first_poll_time = {ep.id: 0}  # long ago, grace period over
+
+    with patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault") as mock_report:
+        mock_report.return_value = True
+        reporter._report_unreachable_dead(ep, 3, known, first_poll_time)
+
+    mock_report.assert_called_once()
+    assert known == {0: "dead"}
+
+
+def test_engine_ft_enabled_int_value(tmp_path):
+    """Config value 1 (not just JSON true) enables FT auto-detection."""
+    path = _write_user_config(
+        tmp_path,
+        {"motor_engine_prefill_config": {"engine_config": {"enable_fault_tolerance": 1}}},
+    )
+    assert _engine_ft_enabled(path) is True
+
+
+def test_engine_ft_enabled_ignores_non_engine_sections(tmp_path):
+    """A nested 'engine_config' outside the known engine sections is ignored."""
+    path = _write_user_config(
+        tmp_path,
+        {"motor_deploy_config": {"engine_config": {"enable_fault_tolerance": True}}},
+    )
+    assert _engine_ft_enabled(path) is False

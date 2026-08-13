@@ -47,29 +47,26 @@ Controller 侧:
 
 NodeManager 侧:
   FaultReporter (EngineManager 聚合)
-  ├── ZMQ SUB → 订阅 vllm ClientSentinel PUB (每引擎一个 socket)
-  ├── msgspec.msgpack 解码引擎状态
+  ├── HTTP 轮询 → GET {endpoint.business_port}/fault_tolerance/status (vLLM FT API)
   ├── 状态去重 → 仅上报 dead/unhealthy 变更
+  ├── 连续 max_poll_failures 次轮询失败 → 按 dead 上报
   └── HTTP POST → Controller /controller/report_software_fault
 ```
 
 ## 故障上报链路 (端到端)
 
 ```text
-vllm EngineCore 异常
-  → (ZMQ DEALER) EngineCoreSentinel 发送 FaultInfo
-    → (ZMQ ROUTER) ClientSentinel 接收并更新状态
-      → (ZMQ PUB) 广播 engine_status (msgpack) 到 fault_state_pub_socket
-        → (ZMQ SUB) FaultReporter._loop() 订阅 (每引擎一个 socket)
-          → _process_zmq_engine_status() 去重后
-            → _send_fault_to_controller() 注入 pod_ip
-              → ControllerApiClient.report_software_fault()
-                → POST /controller/report_software_fault
-                  → FaultManager.report_software_fault(pod_ip)
-                    → NodeMetadata.software_fault_infos += fault
-                    → _refresh_instance_fault_level()
-                      → 综合硬件+软件 → 更新 InstanceMetadata.fault_level
-                        → 策略中心 → 生成/升级恢复策略
+vllm EngineCore 异常 → 引擎状态变为 unhealthy/dead
+  → (HTTP) FaultReporter 轮询 GET /fault_tolerance/status (每 poll_interval_sec)
+    → 解析 engines[] 状态 → 去重后 (仅上报状态变更)
+      → _send_fault_to_controller() 注入 pod_ip
+        → ControllerApiClient.report_software_fault()
+          → POST /controller/report_software_fault
+            → FaultManager.report_software_fault(pod_ip)
+              → NodeMetadata.software_fault_infos += fault
+              → _refresh_instance_fault_level()
+                → 综合硬件+软件 → 更新 InstanceMetadata.fault_level
+                  → 策略中心 → 生成/升级恢复策略
 ```
 
 ## 数据结构
@@ -427,5 +424,7 @@ L4/L5/L6 → 根据实例角色 (decode) → ScaleP2DStrategy
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `enable_fault_tolerance` | bool | 是否启用故障上报线程。默认: `false` |
-| `zmq_pub_port` | int | ZMQ SUB 订阅的基端口 (每个引擎 = base_port + engine_id)。默认: `0` |
+| `enable_fault_tolerance` | bool | 显式启用故障上报线程；引擎 user config 检测到 FT 时自动启用。默认: `false` |
+| `poll_interval_sec` | float | 轮询引擎 FT 状态接口的间隔 (秒)。默认: `5.0` |
+| `poll_timeout_sec` | float | 单次轮询的 HTTP 超时 (秒)。默认: `5.0` |
+| `max_poll_failures` | int | 连续轮询失败阈值，达到后按 `dead` 上报。默认: `3` |

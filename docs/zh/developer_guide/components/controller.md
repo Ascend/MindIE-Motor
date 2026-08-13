@@ -516,7 +516,7 @@ flowchart LR
         K8sNode[K8s Node 状态] -->|Watch| RM_Node[ResourceMonitor]
     end
     subgraph SW[软件故障感知]
-        Engine[vLLM Engine] -->|ZMQ PUB/SUB| FR[FaultReporter<br/>NodeManager]
+        Engine[vLLM Engine] -->|HTTP 轮询<br/>GET /fault_tolerance/status| FR[FaultReporter<br/>NodeManager]
         FR -->|HTTP| API[ControllerAPI<br/>/report_software_fault]
     end
     RM_HW --> FM[FaultManager]

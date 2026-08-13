@@ -287,7 +287,12 @@ class NodeManagerFaultToleranceConfig:
     """Fault tolerance configuration for NodeManager"""
 
     enable_fault_tolerance: bool = False
-    zmq_pub_port: int = 0
+    poll_interval_sec: float = 5.0
+    #: Polling interval for engine FT status (vLLM /fault_tolerance/status).
+    poll_timeout_sec: float = 5.0
+    #: HTTP timeout for a single status poll.
+    max_poll_failures: int = 3
+    #: Consecutive poll failures before the engine is reported as dead.
 
 
 @dataclass

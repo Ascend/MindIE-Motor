@@ -553,7 +553,11 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类union E
     },
     "single_container_config": {...
     },
-    "fault_tolerance_config": {...
+    "fault_tolerance_config": {
+      "enable_fault_tolerance": false,
+      "poll_interval_sec": 5.0,
+      "poll_timeout_sec": 5.0,
+      "max_poll_failures": 3
     },
     "port_allocator_config": {
       "enable": true,
@@ -579,6 +583,10 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类union E
 | endpoint_config.base_port |int | 端点端口起始号。默认值：`10000` |
 | endpoint_config.mgmt_ports |array | 各端点管控端口列表（整数数组）。默认值：`[]` |
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
+| fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
+| fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：5.0。|
+| fault_tolerance_config.poll_timeout_sec |float|单次轮询的 HTTP 超时，单位：秒，默认值：5.0。|
+| fault_tolerance_config.max_poll_failures |int|连续轮询失败阈值，达到后按 dead 上报，默认值：3。|
 | snapshot_config.enable_snapshot |bool|是否使能容器快照功能总开关，默认值：false。<br>开启后，用户可对实例容器制作快照镜像，并支持由快照恢复的实例向控制面注册。|
 | snapshot_config.snapshot_metadata_path |string|容器快照元数据文件路径，包含容器快照制作与恢复过程中依赖的元数据，默认值为空。|
 | logging_config.log_level | string | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
@@ -667,7 +675,11 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     },
     "single_container_config": {...
     },
-    "fault_tolerance_config": {...
+    "fault_tolerance_config": {
+      "enable_fault_tolerance": false,
+      "poll_interval_sec": 5.0,
+      "poll_timeout_sec": 5.0,
+      "max_poll_failures": 3
     },
     "port_allocator_config": {
       "enable": true,
@@ -738,7 +750,11 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     },
     "single_container_config": {...
     },
-    "fault_tolerance_config": {...
+    "fault_tolerance_config": {
+      "enable_fault_tolerance": false,
+      "poll_interval_sec": 5.0,
+      "poll_timeout_sec": 5.0,
+      "max_poll_failures": 3
     },
     "port_allocator_config": {
       "enable": true,
@@ -765,6 +781,10 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | endpoint_config.base_port |int | 端点端口起始号。默认值：`10000` |
 | endpoint_config.mgmt_ports |array | 各端点管控端口列表（整数数组）。默认值：`[]` |
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
+| fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
+| fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：5.0。|
+| fault_tolerance_config.poll_timeout_sec |float|单次轮询的 HTTP 超时，单位：秒，默认值：5.0。|
+| fault_tolerance_config.max_poll_failures |int|连续轮询失败阈值，达到后按 dead 上报，默认值：3。|
 | snapshot_config.enable_snapshot |bool|是否使能容器快照功能总开关，默认值：false。<br>开启后，用户可对实例容器制作快照镜像，并支持由快照恢复的实例向控制面注册。|
 | snapshot_config.snapshot_metadata_path |string|容器快照元数据文件路径，包含容器快照制作与恢复过程中依赖的元数据，默认值为空。|
 | logging_config.log_level | string | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|

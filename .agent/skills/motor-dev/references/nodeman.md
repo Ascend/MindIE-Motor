@@ -35,8 +35,8 @@ NodeManager Process (sidecar, one per pod) — NodeManager(Application) main loo
 │     Fault detection: 120s grace period + 5 consecutive abnormal reports → suicide
 │
 └── FaultReporter (ThreadSafeSingleton)
-      ZMQ SUB sockets on engine PUB ports (topic: vllm_fault)
-      → report_software_fault to Controller
+      HTTP poll GET {business_port}/fault_tolerance/status per engine
+      (vLLM FT REST API) → report_software_fault to Controller
 ```
 
 All core components use `ThreadSafeSingleton` — `__new__` + `threading.Lock` ensures one instance per process with thread-safe lazy initialization.
@@ -204,7 +204,7 @@ When `is_restored_from_host_side_snapshot()` returns True:
 | `motor/node_manager/core/services/registry.py` | `@register_service` decorator + `_MODULE_MAP`; discovers active services by pod profile |
 | `motor/node_manager/core/services/memcache/` | KV-store (memcache) service implementation |
 | `motor/node_manager/core/heartbeat_manager.py` | Two daemon threads: status polling + heartbeat reporting, fault detection state machine, reregister |
-| `motor/node_manager/core/fault_reporter.py` | ZMQ SUB on engine PUB ports (topic `vllm_fault`) → `report_software_fault` to Controller |
+| `motor/node_manager/core/fault_reporter.py` | HTTP poll of engine `GET /fault_tolerance/status` (business port) → `report_software_fault` to Controller |
 | `motor/node_manager/api_client/controller_api_client.py` | Sync HTTP client to Controller: `/register`, `/reregister`, `/heartbeat` |
 | `motor/node_manager/api_client/engine_server_api_client.py` | Sync HTTP client: `GET /status` on engine's mgmt port |
 | `motor/config/node_manager.py` | `NodeManagerConfig`: BasicConfig, APIConfig, EndpointConfig, SnapshotConfig, SingleContainerConfig, PortAllocatorConfig |
