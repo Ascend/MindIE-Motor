@@ -2,6 +2,20 @@
 
 MemCache 为默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供 KV 池化能力，已预装在 Motor 镜像中，无需额外安装。
 
+## 部署前准备（仅 950系列服务器；其他系列可跳过）
+
+在 950系列服务器上使用 MemCache 池化后端时，请先修改服务启动脚本 `examples/deployer/startup/boot.sh`，在文件头部（约第 12 行附近）添加如下内容后再执行部署：
+
+```bash
+# 请在文件头部添加以下两行代码，在文件的12行附近
+python3 -c "import memfabric_hybrid"
+export PYTHONHASHSEED=0
+
+# boot.sh文件原有代码，无需修改，仅用于参考修改位置
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+```
+
 ## 配置
 
 `AscendStoreConnector` 中配置 `"backend": "memcache"`：
