@@ -9,7 +9,7 @@
 建议在项目根目录（包含 `examples/`、`motor/` 的目录）下执行：
 
 ```bash
-python examples/api_key/generate_api_key.py \
+python examples/features/http/api_key/generate_api_key.py \
   [--key <plain_api_key>] \
   [--algorithm <name>] \
   [--iterations <N>]
@@ -31,19 +31,19 @@ python examples/api_key/generate_api_key.py \
 - **自动生成随机 API Key：**
 
 ```bash
-python examples/api_key/generate_api_key.py
+python examples/features/http/api_key/generate_api_key.py
 ```
 
 - **使用指定明文 Key：**
 
 ```bash
-python examples/api_key/generate_api_key.py --key "sk-test123456789"
+python examples/features/http/api_key/generate_api_key.py --key "sk-test123456789"
 ```
 
 - **指定 PBKDF2 迭代次数：**
 
 ```bash
-python examples/api_key/generate_api_key.py --iterations 200000
+python examples/features/http/api_key/generate_api_key.py --iterations 200000
 ```
 
 执行完成后，脚本会打印两部分关键信息：
@@ -148,7 +148,7 @@ _builtin_algorithms = {
 1. **生成密钥**
 
     ```bash
-    python examples/api_key/generate_api_key.py \
+    python examples/features/http/api_key/generate_api_key.py \
       --key "sk-my-custom-key" \
       --algorithm "MY_CUSTOM_ALGO"
     ```
