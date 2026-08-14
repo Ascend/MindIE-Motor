@@ -51,6 +51,7 @@ class OpenAIServingChat:
         chat_template: str | None,
         chat_template_content_format: ChatTemplateContentFormatOption,
         openai_serving_render: Any | None = None,
+        online_renderer: Any | None = None,
         trust_request_chat_template: bool = False,
         return_tokens_as_token_ids: bool = False,
         reasoning_parser: str = "",
@@ -79,8 +80,12 @@ class OpenAIServingChat:
             "enable_log_deltas": enable_log_deltas,
             "default_chat_template_kwargs": default_chat_template_kwargs,
         }
+        # Pass both era-specific kwargs; kwargs_matching_signature keeps only what
+        # the installed vLLM OpenAIServingChat accepts (forward + backward compatible).
         if openai_serving_render is not None:
             chat_kw["openai_serving_render"] = openai_serving_render
+        if online_renderer is not None:
+            chat_kw["online_renderer"] = online_renderer
         chat_kw = kwargs_matching_signature(VllmOpenAIServingChat.__init__, chat_kw)
         self._vllm_serving_chat = VllmOpenAIServingChat(
             engine_client,

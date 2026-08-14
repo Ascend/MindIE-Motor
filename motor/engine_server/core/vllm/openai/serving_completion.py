@@ -50,6 +50,7 @@ class OpenAIServingCompletion:
         enable_prompt_tokens_details: bool = False,
         enable_force_include_usage: bool = False,
         openai_serving_render: Any | None = None,
+        online_renderer: Any | None = None,
     ):
         comp_kw: dict[str, Any] = {
             "request_logger": request_logger,
@@ -57,8 +58,12 @@ class OpenAIServingCompletion:
             "enable_prompt_tokens_details": enable_prompt_tokens_details,
             "enable_force_include_usage": enable_force_include_usage,
         }
+        # Pass both era-specific kwargs; kwargs_matching_signature keeps only what
+        # the installed vLLM OpenAIServingCompletion accepts.
         if openai_serving_render is not None:
             comp_kw["openai_serving_render"] = openai_serving_render
+        if online_renderer is not None:
+            comp_kw["online_renderer"] = online_renderer
         comp_kw = kwargs_matching_signature(VllmOpenAIServingCompletion.__init__, comp_kw)
         self._vllm_serving_completion = VllmOpenAIServingCompletion(
             engine_client,

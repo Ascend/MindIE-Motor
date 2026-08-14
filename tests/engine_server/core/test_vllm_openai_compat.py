@@ -16,8 +16,11 @@ import pytest
 from motor.engine_server.core.vllm.vllm_openai_compat import (
     build_openai_serving_render_kwargs,
     call_openai_serving,
+    create_vllm_openai_render_layer,
     kwargs_matching_signature,
     openai_http_response_from_exception,
+    resolve_openai_chat_render_kwarg_name,
+    vllm_openai_chat_needs_render,
 )
 
 
@@ -27,6 +30,156 @@ def test_kwargs_matching_signature_filters_unknown_keys():
 
     result = kwargs_matching_signature(target, {"a": 1, "b": 2, "c": 3})
     assert result == {"a": 1, "b": 2}
+
+
+@pytest.mark.parametrize(
+    ("param_names", "expected"),
+    [
+        (set(), None),
+        ({"request_logger", "chat_template"}, None),
+        ({"openai_serving_render", "request_logger"}, "openai_serving_render"),
+        ({"online_renderer", "request_logger"}, "online_renderer"),
+        # Prefer the newer API when both somehow appear.
+        ({"online_renderer", "openai_serving_render"}, "online_renderer"),
+    ],
+)
+def test_resolve_openai_chat_render_kwarg_name(param_names, expected):
+    assert resolve_openai_chat_render_kwarg_name(param_names) == expected
+
+
+def test_build_render_kwargs_for_online_renderer_without_model_registry():
+    class OnlineRendererLike:
+        def __init__(
+            self,
+            model_config,
+            renderer,
+            *,
+            request_logger=None,
+            chat_template=None,
+            chat_template_content_format="auto",
+            reasoning_parser=None,
+        ):
+            self.model_config = model_config
+            self.renderer = renderer
+            self.request_logger = request_logger
+            self.chat_template = chat_template
+            self.chat_template_content_format = chat_template_content_format
+            self.reasoning_parser = reasoning_parser
+
+    engine_client = SimpleNamespace(model_config="mcfg", renderer="rnd")
+    base_kwargs = {
+        "model_registry": "registry-should-be-dropped",
+        "request_logger": "logger",
+        "chat_template": "tpl",
+        "chat_template_content_format": "openai",
+        "reasoning_parser": "deepseek_r1",
+        "unused_field": "ignored",
+    }
+
+    kwargs = build_openai_serving_render_kwargs(
+        OnlineRendererLike.__init__,
+        engine_client,
+        base_kwargs,
+    )
+
+    assert kwargs == {
+        "model_config": "mcfg",
+        "renderer": "rnd",
+        "request_logger": "logger",
+        "chat_template": "tpl",
+        "chat_template_content_format": "openai",
+        "reasoning_parser": "deepseek_r1",
+    }
+    assert "model_registry" not in kwargs
+
+
+def test_create_vllm_openai_render_layer_returns_online_renderer(monkeypatch):
+    created = {}
+
+    class FakeOnlineRenderer:
+        def __init__(self, model_config, renderer, *, request_logger=None, chat_template=None):
+            created["kwargs"] = {
+                "model_config": model_config,
+                "renderer": renderer,
+                "request_logger": request_logger,
+                "chat_template": chat_template,
+            }
+            self.warmed = False
+
+        def warmup(self):
+            self.warmed = True
+
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat.vllm_openai_chat_render_kwarg_name",
+        lambda: "online_renderer",
+    )
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat._import_online_renderer",
+        lambda: FakeOnlineRenderer,
+    )
+
+    engine_client = SimpleNamespace(model_config="mcfg", renderer="rnd")
+    layer = create_vllm_openai_render_layer(
+        engine_client,
+        {"request_logger": "logger", "chat_template": "tpl", "model_registry": "reg"},
+    )
+
+    assert set(layer) == {"online_renderer"}
+    assert isinstance(layer["online_renderer"], FakeOnlineRenderer)
+    assert layer["online_renderer"].warmed is True
+    assert created["kwargs"]["model_config"] == "mcfg"
+    assert created["kwargs"]["renderer"] == "rnd"
+    assert created["kwargs"]["request_logger"] == "logger"
+
+
+def test_create_vllm_openai_render_layer_keeps_openai_serving_render(monkeypatch):
+    class FakeOpenAIServingRender:
+        def __init__(self, model_config, renderer, model_registry, request_logger=None):
+            self.model_config = model_config
+            self.renderer = renderer
+            self.model_registry = model_registry
+            self.request_logger = request_logger
+
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat.vllm_openai_chat_render_kwarg_name",
+        lambda: "openai_serving_render",
+    )
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat._import_openai_serving_render",
+        lambda: FakeOpenAIServingRender,
+    )
+
+    engine_client = SimpleNamespace(model_config="mcfg", renderer="rnd")
+    layer = create_vllm_openai_render_layer(
+        engine_client,
+        {"model_registry": "registry", "request_logger": "logger"},
+    )
+
+    assert set(layer) == {"openai_serving_render"}
+    assert isinstance(layer["openai_serving_render"], FakeOpenAIServingRender)
+    assert layer["openai_serving_render"].model_registry == "registry"
+
+
+def test_create_vllm_openai_render_layer_empty_when_not_required(monkeypatch):
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat.vllm_openai_chat_render_kwarg_name",
+        lambda: None,
+    )
+    layer = create_vllm_openai_render_layer(SimpleNamespace(), {})
+    assert layer == {}
+
+
+def test_vllm_openai_chat_needs_render_follows_kwarg_name(monkeypatch):
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat.vllm_openai_chat_render_kwarg_name",
+        lambda: "online_renderer",
+    )
+    assert vllm_openai_chat_needs_render() is True
+    monkeypatch.setattr(
+        "motor.engine_server.core.vllm.vllm_openai_compat.vllm_openai_chat_render_kwarg_name",
+        lambda: None,
+    )
+    assert vllm_openai_chat_needs_render() is False
 
 
 def test_build_render_kwargs_without_io_processor_when_not_required():

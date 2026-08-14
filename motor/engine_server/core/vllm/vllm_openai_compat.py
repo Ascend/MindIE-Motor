@@ -5,7 +5,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-"""Helpers to support multiple vLLM OpenAI serving API shapes (with/without OpenAIServingRender)."""
+"""Helpers to support multiple vLLM OpenAI serving API shapes.
+
+vLLM OpenAI chat/completion serving evolved across versions:
+
+- pre-render: no dedicated preprocess object
+- ~0.18–0.24: required ``openai_serving_render`` (:class:`OpenAIServingRender`)
+- 0.25+: required ``online_renderer`` (:class:`OnlineRenderer`)
+
+Motor detects the installed signature and constructs the matching object.
+"""
 
 from __future__ import annotations
 
@@ -83,9 +92,13 @@ __all__ = [
     "openai_http_response_from_generator",
     "vllm_stream_error_json",
     "register_vllm_openai_error_handlers",
+    "resolve_openai_chat_render_kwarg_name",
+    "vllm_openai_chat_render_kwarg_name",
     "vllm_openai_chat_needs_render",
     "build_openai_serving_render_kwargs",
     "create_openai_serving_render",
+    "create_online_renderer",
+    "create_vllm_openai_render_layer",
 ]
 
 
@@ -347,10 +360,29 @@ def kwargs_matching_signature(fn: Callable[..., Any], kwargs: dict[str, Any]) ->
     return {k: v for k, v in kwargs.items() if k in params}
 
 
-def vllm_openai_chat_needs_render() -> bool:
+def resolve_openai_chat_render_kwarg_name(param_names: set[str] | frozenset[str]) -> str | None:
+    """Map OpenAIServingChat ``__init__`` parameter names to the render-layer kwarg.
+
+    Prefers ``online_renderer`` (vLLM 0.25+) over ``openai_serving_render`` (~0.18–0.24)
+    so Motor stays compatible as the upstream API moves forward.
+    """
+    if "online_renderer" in param_names:
+        return "online_renderer"
+    if "openai_serving_render" in param_names:
+        return "openai_serving_render"
+    return None
+
+
+def vllm_openai_chat_render_kwarg_name() -> str | None:
+    """Inspect installed vLLM OpenAIServingChat for the required render-layer kwarg."""
     from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 
-    return "openai_serving_render" in inspect.signature(OpenAIServingChat.__init__).parameters
+    return resolve_openai_chat_render_kwarg_name(set(inspect.signature(OpenAIServingChat.__init__).parameters))
+
+
+def vllm_openai_chat_needs_render() -> bool:
+    """True when installed vLLM requires a chat preprocess / render object."""
+    return vllm_openai_chat_render_kwarg_name() is not None
 
 
 def _first_existing_attr_value(target: Any, candidates: tuple[str, ...]) -> tuple[bool, Any | None]:
@@ -365,7 +397,7 @@ def build_openai_serving_render_kwargs(
     engine_client: Any,
     base_kwargs: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build ctor kwargs for OpenAIServingRender across vLLM API changes."""
+    """Build ctor kwargs for OpenAIServingRender / OnlineRenderer across vLLM API changes."""
     dynamic_candidates: dict[str, tuple[str, ...]] = {
         "model_config": ("model_config",),
         "renderer": ("renderer",),
@@ -394,7 +426,7 @@ def build_openai_serving_render_kwargs(
     missing_required = [name for name in required_kwargs if name not in ctor_kwargs]
     if missing_required:
         raise RuntimeError(
-            "Cannot initialize OpenAIServingRender due to missing required kwargs: "
+            "Cannot initialize vLLM OpenAI render layer due to missing required kwargs: "
             f"{missing_required}. This usually means the installed vLLM changed AsyncLLM "
             "attributes and the compatibility mapping needs updating."
         )
@@ -402,12 +434,53 @@ def build_openai_serving_render_kwargs(
     return ctor_kwargs
 
 
-def create_openai_serving_render(engine_client: Any, base_kwargs: dict[str, Any]) -> Any:
+def _import_openai_serving_render() -> Any:
     from vllm.entrypoints.serve.render.serving import OpenAIServingRender
 
+    return OpenAIServingRender
+
+
+def _import_online_renderer() -> Any:
+    from vllm.renderers.online_renderer import OnlineRenderer
+
+    return OnlineRenderer
+
+
+def create_openai_serving_render(engine_client: Any, base_kwargs: dict[str, Any]) -> Any:
+    openai_serving_render_cls = _import_openai_serving_render()
     ctor_kwargs = build_openai_serving_render_kwargs(
-        OpenAIServingRender.__init__,
+        openai_serving_render_cls.__init__,
         engine_client,
         base_kwargs,
     )
-    return OpenAIServingRender(**ctor_kwargs)
+    return openai_serving_render_cls(**ctor_kwargs)
+
+
+def create_online_renderer(engine_client: Any, base_kwargs: dict[str, Any]) -> Any:
+    online_renderer_cls = _import_online_renderer()
+    ctor_kwargs = build_openai_serving_render_kwargs(
+        online_renderer_cls.__init__,
+        engine_client,
+        base_kwargs,
+    )
+    online_renderer = online_renderer_cls(**ctor_kwargs)
+    warmup = getattr(online_renderer, "warmup", None)
+    if callable(warmup):
+        warmup()
+    return online_renderer
+
+
+def create_vllm_openai_render_layer(engine_client: Any, base_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Create the render-layer object expected by installed vLLM, if any.
+
+    Returns a dict suitable for ``**kwargs`` into Motor's OpenAIServingChat /
+    OpenAIServingCompletion wrappers (empty when the installed vLLM needs none).
+    """
+    kwarg_name = vllm_openai_chat_render_kwarg_name()
+    if kwarg_name is None:
+        return {}
+    if kwarg_name == "online_renderer":
+        return {"online_renderer": create_online_renderer(engine_client, base_kwargs)}
+    if kwarg_name == "openai_serving_render":
+        return {"openai_serving_render": create_openai_serving_render(engine_client, base_kwargs)}
+    raise RuntimeError(f"Unsupported vLLM OpenAI render kwarg: {kwarg_name}")

@@ -21,7 +21,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI
 from vllm import envs
@@ -38,7 +38,7 @@ from motor.engine_server.core.vllm.openai.serving_chat import OpenAIServingChat
 from motor.engine_server.core.vllm.openai.serving_completion import OpenAIServingCompletion
 from motor.engine_server.core.vllm.vllm_openai_compat import (
     RequestLogger,
-    create_openai_serving_render,
+    create_vllm_openai_render_layer,
     process_lora_modules,
     vllm_openai_chat_needs_render,
 )
@@ -140,10 +140,14 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.openai_serving_models = openai_serving_models
 
-        openai_serving_render = None
+        openai_render_layer: dict[str, Any] = {}
         if vllm_openai_chat_needs_render():
             try:
-                openai_serving_render = create_openai_serving_render(
+                reasoning_parser = getattr(args, "reasoning_parser", None)
+                structured_outputs_config = getattr(args, "structured_outputs_config", None)
+                if reasoning_parser in (None, "") and structured_outputs_config is not None:
+                    reasoning_parser = getattr(structured_outputs_config, "reasoning_parser", None)
+                openai_render_layer = create_vllm_openai_render_layer(
                     engine_client,
                     {
                         "model_registry": openai_serving_models.registry,
@@ -156,18 +160,20 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             args, ATTR_EXCLUDE_TOOLS_WHEN_TOOL_CHOICE_NONE, False
                         ),
                         "tool_parser": getattr(args, ATTR_TOOL_CALL_PARSER, None),
+                        "reasoning_parser": reasoning_parser,
                         ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS: getattr(args, ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS, None),
                         "log_error_stack": getattr(args, "log_error_stack", False),
                     },
                 )
             except ImportError as e:
                 raise RuntimeError(
-                    "Installed vLLM expects OpenAIServingRender (chat serving API); "
+                    "Installed vLLM expects an OpenAI render layer "
+                    "(OnlineRenderer or OpenAIServingRender); "
                     "use a complete matching vLLM build or an older vLLM without the render layer."
                 ) from e
             except RuntimeError as e:
                 logger.warning(
-                    "InferEndpoint lifespan: Failed to initialize OpenAIServingRender, "
+                    "InferEndpoint lifespan: Failed to initialize vLLM OpenAI render layer, "
                     "continue without render compatibility layer: %s",
                     e,
                 )
@@ -181,7 +187,6 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     request_logger=request_logger,
                     chat_template=resolved_chat_template,
                     chat_template_content_format=args.chat_template_content_format,
-                    openai_serving_render=openai_serving_render,
                     trust_request_chat_template=getattr(args, ATTR_TRUST_REQUEST_CHAT_TEMPLATE, False),
                     return_tokens_as_token_ids=getattr(args, "return_tokens_as_token_ids", False),
                     reasoning_parser=getattr(args, "reasoning_parser", ""),
@@ -193,6 +198,7 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     enable_log_outputs=getattr(args, "enable_log_outputs", False),
                     enable_log_deltas=getattr(args, "enable_log_deltas", True),
                     default_chat_template_kwargs=getattr(args, ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS, None),
+                    **openai_render_layer,
                 )
                 if "generate" in supported_tasks
                 else None
@@ -206,7 +212,7 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     return_tokens_as_token_ids=getattr(args, "return_tokens_as_token_ids", False),
                     enable_prompt_tokens_details=getattr(args, "enable_prompt_tokens_details", False),
                     enable_force_include_usage=getattr(args, "enable_force_include_usage", False),
-                    openai_serving_render=openai_serving_render,
+                    **openai_render_layer,
                 )
                 if "generate" in supported_tasks
                 else None
