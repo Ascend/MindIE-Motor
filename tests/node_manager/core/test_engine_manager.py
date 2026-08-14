@@ -175,6 +175,23 @@ class TestEngineManager:
         assert msg is not None
         assert msg.is_master is True
 
+    def test_gen_register_msg_includes_sglang_bootstrap_port(self, engine_manager):
+        engine_manager._config.basic_config.job_name = "test_job"
+        engine_manager._config.basic_config.model_name = "test_model"
+        engine_manager._config.basic_config.role = PDRole.ROLE_P
+        engine_manager._config.api_config.pod_ip = "192.168.1.101"
+        engine_manager._config.endpoint_config.service_ports = ["8080"]
+        engine_manager._config.endpoint_config.mgmt_ports = ["8081"]
+        engine_manager._config.endpoint_config.bootstrap_port = 9100
+        engine_manager._config.api_config.node_manager_port = 8088
+        engine_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
+        engine_manager._config.basic_config.device_num = 2
+
+        msg = engine_manager._gen_register_msg()
+
+        assert msg is not None
+        assert msg.bootstrap_port == 9100
+
     def test_gen_register_msg_failure(self, engine_manager):
         """Test _gen_register_msg with invalid config"""
         engine_manager._config.basic_config.job_name = None

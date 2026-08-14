@@ -8,7 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.core.dispatch_adapter.base import DispatchAdapter
 from motor.engine_server.core.dispatch_adapter.sglang_adapter import SGLangDispatchAdapter
 from motor.engine_server.core.dispatch_adapter.vllm_adapter import VLLMDispatchAdapter

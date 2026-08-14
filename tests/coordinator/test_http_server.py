@@ -172,18 +172,21 @@ class TestCoordinatorServer:
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
             """Mock handle_request that returns JSON response matching test expectations"""
-            try:
-                # Try to get JSON from request (cached if already parsed)
-                body_json = await request.json()
-            except Exception:
-                # Fallback: try to read body directly
+            if request_json is not None:
+                body_json = request_json
+            else:
                 try:
-                    request_body = await request.body()
-                    body_json = json.loads(request_body.decode("utf-8"))
+                    # Try to get JSON from request (cached if already parsed)
+                    body_json = await request.json()
                 except Exception:
-                    body_json = {}
+                    # Fallback: try to read body directly
+                    try:
+                        request_body = await request.body()
+                        body_json = json.loads(request_body.decode("utf-8"))
+                    except Exception:
+                        body_json = {}
 
             # Extract input_data based on request type
             input_data = ""
@@ -800,18 +803,21 @@ class TestCoordinatorServerAdvanced:
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
+        async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
             """Mock handle_request that returns JSON response matching test expectations"""
-            try:
-                # Try to get JSON from request (cached if already parsed)
-                body_json = await request.json()
-            except Exception:
-                # Fallback: try to read body directly
+            if request_json is not None:
+                body_json = request_json
+            else:
                 try:
-                    request_body = await request.body()
-                    body_json = json.loads(request_body.decode("utf-8"))
+                    # Try to get JSON from request (cached if already parsed)
+                    body_json = await request.json()
                 except Exception:
-                    body_json = {}
+                    # Fallback: try to read body directly
+                    try:
+                        request_body = await request.body()
+                        body_json = json.loads(request_body.decode("utf-8"))
+                    except Exception:
+                        body_json = {}
 
             # Extract input_data based on request type
             input_data = ""
@@ -1850,11 +1856,14 @@ class TestAnthropicEndpoints:
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate response
-        async def mock_handle_request(request, config, scheduler=None, request_manager=None):
-            try:
-                body_json = await request.json()
-            except Exception:
-                body_json = {}
+        async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
+            if request_json is not None:
+                body_json = request_json
+            else:
+                try:
+                    body_json = await request.json()
+                except Exception:
+                    body_json = {}
 
             if "messages" in body_json:
                 json.dumps(body_json["messages"], ensure_ascii=False)

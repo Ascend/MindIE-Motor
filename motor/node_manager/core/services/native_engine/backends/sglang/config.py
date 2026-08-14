@@ -10,21 +10,22 @@
 
 import argparse
 import json
-import sys
 from dataclasses import dataclass
 from typing import Any
 
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.config.endpoint import EndpointConfig
-from motor.engine_server.constants import constants
-from motor.engine_server.core.config import IConfig
+from motor.common import engine_constants as constants
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 
 logger = get_logger(__name__)
 
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):
     """Append key-value to arg_list as CLI args (e.g. --key value)."""
+    if value is None:
+        return
     if isinstance(value, bool):
         if value:
             arg_list.append(f"--{key}")
@@ -58,12 +59,11 @@ class SGLangConfig(IConfig):
         arg_list = self._get_param_list()
         logger.info("engine server sglang arg_list: %s", arg_list)
 
-        sys.argv = ["serve"] + arg_list
         from sglang.srt.server_args import ServerArgs
 
         parser = argparse.ArgumentParser()
         ServerArgs.add_cli_args(parser)
-        raw_args = parser.parse_args()
+        raw_args = parser.parse_args(arg_list)
         self.args = ServerArgs.from_cli_args(raw_args)
 
     def get_args(self) -> argparse.Namespace:
@@ -87,11 +87,25 @@ class SGLangConfig(IConfig):
         role = self.endpoint_config.role
 
         flattened.update(deploy_config.engine_config.configs)
+        # Coordinator metrics aggregation and Kubernetes drain depend on this endpoint.
+        flattened["enable-metrics"] = True
 
         flattened["host"] = self.endpoint_config.host
         flattened["port"] = self.endpoint_config.port
 
-        if flattened.get("nnodes", 1) > 1:
+        raw_nnodes = flattened.get("nnodes", 1)
+        try:
+            nnodes = int(raw_nnodes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"nnodes must be an integer, got {raw_nnodes!r}") from exc
+        if nnodes < 1:
+            raise ValueError(f"nnodes must be greater than 0, got {nnodes}")
+        if "nnodes" in flattened:
+            flattened["nnodes"] = nnodes
+
+        if nnodes > 1:
+            if not self.endpoint_config.master_dp_ip:
+                raise ValueError("master_dp_ip is required when nnodes > 1")
             parallel_config = deploy_config.get_parallel_config(role)
             flattened["dist-init-addr"] = format_address(self.endpoint_config.master_dp_ip, parallel_config.dp_rpc_port)
             flattened["node-rank"] = self.endpoint_config.node_rank

@@ -26,7 +26,7 @@ from motor.config.endpoint import (
     DECODE_PARALLEL_CONFIG_KEY,
     ENCODE_PARALLEL_CONFIG_KEY,
 )
-from motor.engine_server.constants import constants
+from motor.common import engine_constants as constants
 
 
 # --- ParallelConfig tests ---
@@ -126,6 +126,7 @@ def test_health_check_config_defaults():
     config = HealthCheckConfig()
     assert config.health_collector_timeout == 5
     assert config.health_collector_timeout_retry_attempts == 3
+    assert config.startup_timeout == 1800
     assert config.npu_usage_threshold == 3
     assert config.enable_virtual_inference is False
 
@@ -135,12 +136,14 @@ def test_health_check_config_from_dict():
     data = {
         "health_collector_timeout": 10,
         "health_collector_timeout_retry_attempts": 5,
+        "startup_timeout": 600,
         "npu_usage_threshold": 20,
         "enable_virtual_inference": False,
     }
     config = HealthCheckConfig.from_dict(data)
     assert config.health_collector_timeout == 10
     assert config.health_collector_timeout_retry_attempts == 5
+    assert config.startup_timeout == 600
     assert config.npu_usage_threshold == 20
     assert config.enable_virtual_inference is False
 
@@ -667,13 +670,13 @@ def test_load_deploy_config_rejects_malformed_multi_connectors(valid_config_file
         {constants.CONNECTORS: [{}, "not-a-dict"]},
     )
     for bad_extra in bad_extras:
-        with open(valid_config_file_for_endpoint) as f:
+        with open(valid_config_file_for_endpoint, encoding="utf-8") as f:
             data = json.load(f)
         kv = {constants.KV_CONNECTOR: constants.MULTI_CONNECTOR}
         if bad_extra is not None:
             kv[constants.KV_CONNECTOR_EXTRA_CONFIG] = bad_extra
         data["engine_config"][constants.KV_TRANSFER_CONFIG] = kv
-        with open(valid_config_file_for_endpoint, "w") as f:
+        with open(valid_config_file_for_endpoint, "w", encoding="utf-8") as f:
             json.dump(data, f)
 
         config = EndpointConfig(

@@ -15,7 +15,7 @@ Usage::
     from motor.node_manager.core.services.registry import register_service
 
     @register_service("engine", backend="engine")
-    class EngineService:
+    class NativeEngineService:
         ...
 
     @register_service("kv_store", backend="memcache", prepare_priority=10)
@@ -49,7 +49,7 @@ SERVICE_KV_STORE: str = "kv_store"
 # that backend appears in the ``Env.kv_store_backend`` list (comma-separated).
 # ``None`` key = always-active (imported unconditionally).
 _DEFAULT_MODULE_MAP: dict[str | None, list[str]] = {
-    "engine": ["motor.node_manager.core.services.engine"],
+    "engine": ["motor.node_manager.core.services.native_engine.service"],
     "memcache": ["motor.node_manager.core.services.memcache.lifecycle"],
 }
 

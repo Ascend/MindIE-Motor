@@ -9,23 +9,22 @@
 # See the Mulan PSL v2 for more details.
 
 import argparse
-import sys
 import json
 from typing import Any
 from dataclasses import dataclass, field
 
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
-
 from motor.config.endpoint import EndpointConfig
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
-from motor.engine_server.constants import constants
+from motor.common import engine_constants as constants
 
 logger = get_logger(__name__)
 
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):
+    if value is None:
+        return
     if isinstance(value, bool):
         if value:
             arg_list.append(f"--{key}")
@@ -78,21 +77,23 @@ class VLLMConfig(IConfig):
 
     def validate(self):
         if self.args is not None:
+            from vllm.entrypoints.openai.cli_args import validate_parsed_serve_args
+
             validate_parsed_serve_args(self.args)
 
     def convert(self):
         arg_list = self._get_param_list()
         logger.info(f'engine server parsed arg_list: {arg_list}')
 
-        sys.argv = ["serve"] + arg_list
-
         try:
             from vllm.utils import FlexibleArgumentParser
         except ImportError:
             from vllm.utils.argparse_utils import FlexibleArgumentParser
+        from vllm.entrypoints.openai.cli_args import make_arg_parser
+
         parser = FlexibleArgumentParser(description="vLLM parser")
         parser = make_arg_parser(parser)
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(arg_list)
 
     def get_args(self) -> argparse.Namespace:
         return self.args

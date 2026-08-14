@@ -11,22 +11,22 @@
 import importlib
 
 from motor.config.endpoint import EndpointConfig
-from motor.engine_server.core.config import IConfig
-from motor.common.logger import get_logger
-
-logger = get_logger(__name__)
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 
 
 class ConfigFactory:
+    """Lazily construct engine-specific native CLI configuration adapters."""
+
     _ENGINE_CONFIG_MAP: dict[str, str] = {
-        "vllm": "motor.engine_server.core.vllm.vllm_config.VLLMConfig",
-        "sglang": "motor.engine_server.core.sglang.sglang_config.SGLangConfig",
+        "vllm": "motor.node_manager.core.services.native_engine.backends.vllm.config.VLLMConfig",
+        "sglang": "motor.node_manager.core.services.native_engine.backends.sglang.config.SGLangConfig",
     }
 
     def __init__(self, endpoint_config: EndpointConfig):
         self.endpoint_config = endpoint_config
 
-    def parse(self) -> IConfig:
+    def build_cli_config(self) -> IConfig:
+        """Build native CLI configuration without importing engine parsers."""
         engine_type = self.endpoint_config.engine_type
         config_class_path = self._ENGINE_CONFIG_MAP.get(engine_type)
 
@@ -38,14 +38,19 @@ class ConfigFactory:
             )
 
         try:
-            module_path, class_name = config_class_path.rsplit('.', 1)
+            module_path, class_name = config_class_path.rsplit(".", 1)
             module = importlib.import_module(module_path)
             config_class = getattr(module, class_name)
 
             config_instance = config_class(endpoint_config=self.endpoint_config)
             config_instance.initialize()
-            config_instance.convert()
-            config_instance.validate()
             return config_instance
         except (ImportError, AttributeError) as e:
             raise ValueError(f"Failed to load config class for {engine_type}") from e
+
+    def parse(self) -> IConfig:
+        """Build and validate the transitional in-process EngineServer configuration."""
+        config_instance = self.build_cli_config()
+        config_instance.convert()
+        config_instance.validate()
+        return config_instance

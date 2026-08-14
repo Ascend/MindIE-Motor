@@ -13,9 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from motor.engine_server.constants.constants import INIT_STATUS, STATUS_KEY
+from motor.common.engine_constants import INIT_STATUS, STATUS_KEY
 from motor.engine_server.core.mgmt_endpoint import MgmtEndpoint
-from tests.engine_server.core.test_vllm_config import _make_endpoint_config
+from tests.node_manager.core.services.native_engine.backends.vllm.test_config import _make_endpoint_config
 
 
 @pytest.fixture(autouse=True)

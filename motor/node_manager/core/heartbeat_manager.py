@@ -8,10 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import os
 import threading
 import time
-import socket
 
 from motor.common.resources.endpoint import Endpoint, EndpointStatus
 from motor.common.resources.http_msg_spec import StartCmdMsg, HeartbeatMsg
@@ -22,9 +20,9 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, RETRY_LOG_FREQUENCY
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
-from motor.node_manager.api_client.engine_server_api_client import EngineServerApiClient
 from motor.node_manager.core.engine_manager import EngineManager
 from motor.node_manager.core.daemon import Daemon
+from motor.node_manager.core.services.native_engine.models import RuntimeState
 
 
 logger = get_logger(__name__)
@@ -55,14 +53,12 @@ class HeartbeatManager(ThreadSafeSingleton):
             daemon=True,
             name="heartbeat_report",
         )
-        self._engine_server_status_thread = threading.Thread(
+        self._engine_status_thread = threading.Thread(
             target=self._refresh_endpoints_status_loop,
             daemon=True,
             name="endpoint_status_fetch",
         )
         self._thread_started = False
-        self._engine_status_thread_start_time = None
-        self._is_within_grace_period = True
         self._consecutive_abnormal_count = 0
         self._abnormal_count_lock = threading.Lock()
         self._should_suicide = False
@@ -81,8 +77,7 @@ class HeartbeatManager(ThreadSafeSingleton):
     def start(self):
         if self._thread_started is False:
             self._heartbeat_report_thread.start()
-            self._engine_server_status_thread.start()
-            self._engine_status_thread_start_time = time.time()
+            self._engine_status_thread.start()
             self._thread_started = True
         else:
             logger.info("Heartbeat thread has been started...")
@@ -109,9 +104,6 @@ class HeartbeatManager(ThreadSafeSingleton):
         # Reset suicide flag when endpoints are updated
         with self._suicide_lock:
             self._should_suicide = False
-        self._is_within_grace_period = True
-        if self._thread_started:
-            self._engine_status_thread_start_time = time.time()
 
     def should_suicide(self) -> bool:
         """
@@ -125,8 +117,8 @@ class HeartbeatManager(ThreadSafeSingleton):
         self.stop_event.set()
         if self._heartbeat_report_thread.is_alive():
             self._heartbeat_report_thread.join(timeout=2.0)
-        if self._engine_server_status_thread.is_alive():
-            self._engine_server_status_thread.join(timeout=2.0)
+        if self._engine_status_thread.is_alive():
+            self._engine_status_thread.join(timeout=2.0)
         logger.info("HeartBeatManager stopped.")
 
     def check_all_endpoints_normal(self) -> bool:
@@ -166,10 +158,12 @@ class HeartbeatManager(ThreadSafeSingleton):
                 endpoint.status = EndpointStatus.PAUSED
         logger.info("All endpoints set to PAUSED for graceful shutdown")
 
-    def get_engine_mgmt_addrs(self) -> list[str]:
-        """Return engine management addresses for local metrics polling."""
+    def get_engine_metrics_targets(self) -> list[str]:
+        """Return native metrics URLs for routable local endpoints."""
         with self._endpoint_lock:
-            return [format_address(ep.ip, ep.mgmt_port) for ep in self._endpoints]
+            endpoints = [endpoint for endpoint in self._endpoints if not endpoint.headless]
+        daemon = Daemon()
+        return [target for endpoint in endpoints if (target := daemon.get_engine_metrics_target(endpoint)) is not None]
 
     def resume_all_endpoints(self) -> None:
         """Resume all endpoints from PAUSED back to NORMAL status.
@@ -192,35 +186,11 @@ class HeartbeatManager(ThreadSafeSingleton):
             self._is_started_after_restore = is_started
 
     def _refresh_endpoints_status_loop(self) -> None:
-        # Poll each engine server's mgmt port until it responds (max 60s)
-        self._wait_for_engine_servers_ready(timeout=60)
         while not self.stop_event.is_set():
-            self._get_engine_server_status()
-            time.sleep(1)
+            self._refresh_native_engine_status()
+            self.stop_event.wait(1)
 
-    def _wait_for_engine_servers_ready(self, timeout: float = 60) -> None:
-        """Poll each endpoint's mgmt port until it accepts connections or timeout."""
-        with self._endpoint_lock:
-            endpoints = list(self._endpoints)
-
-        deadline = time.time() + timeout
-        daemon = Daemon()
-        for endpoint in endpoints:
-            address = f"{endpoint.ip}:{endpoint.mgmt_port}"
-            logger.info("Waiting for engine server at %s to become ready...", address)
-            while not self.stop_event.is_set() and time.time() < deadline:
-                try:
-                    with socket.create_connection((endpoint.ip, int(endpoint.mgmt_port)), timeout=2):
-                        logger.info("Engine server at %s is ready.", address)
-                        break
-                except (OSError, ConnectionRefusedError, TimeoutError):
-                    # Check if engine process is still alive
-                    if not any(os.path.isdir(f"/proc/{pid}") for pid in daemon.engine_pids):
-                        logger.error("Engine process for %s is no longer running, aborting wait.", address)
-                        break
-                    time.sleep(1)
-
-    def _get_engine_server_status(self) -> None:
+    def _refresh_native_engine_status(self) -> None:
         with self._endpoint_lock:
             endpoints_snapshot = list(self._endpoints)
             generation_at_start = self._endpoints_generation
@@ -228,50 +198,26 @@ class HeartbeatManager(ThreadSafeSingleton):
         if not endpoints_snapshot:
             return
 
-        # Check if within one minute after startup
-        if self._is_within_grace_period and self._engine_status_thread_start_time is not None:
-            elapsed_time = time.time() - self._engine_status_thread_start_time
-            self._is_within_grace_period = elapsed_time < 120
-
         updated_endpoints = []
-        client = None
+        daemon = Daemon()
         for item in endpoints_snapshot:
             original_status = item.status
-            client = None
-            detected_status = None
-            engine_server_base_url = format_address(item.ip, item.mgmt_port)
             try:
-                response = EngineServerApiClient.query_status(engine_server_base_url)
-                if isinstance(response, dict) and "status" in response:
-                    status_value = response.get("status")
-                    try:
-                        detected_status = EndpointStatus(status_value)
-                    except ValueError:
-                        logger.error(
-                            "Invalid status value '%s' from Engine Server %d: %s",
-                            status_value,
-                            item.id,
-                            engine_server_base_url,
-                        )
-                        detected_status = EndpointStatus.ABNORMAL
-                else:
-                    logger.error(
-                        "Invalid response format from Engine Server%d: %s: %s",
-                        item.id,
-                        engine_server_base_url,
-                        response,
-                    )
-                    detected_status = EndpointStatus.ABNORMAL
+                runtime_state = daemon.get_engine_runtime_state(item)
             except Exception as e:
-                if not self._is_within_grace_period:
-                    logger.error("Failed to get engine server status from %s: %s", engine_server_base_url, e)
-                detected_status = EndpointStatus.ABNORMAL
-            finally:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception as e:
-                        logger.error("Failed to close client: %s", e)
+                logger.error(
+                    "Failed to probe native engine at %s: %s",
+                    format_address(item.ip, item.business_port),
+                    e,
+                )
+                runtime_state = RuntimeState.UNHEALTHY
+
+            detected_status = {
+                RuntimeState.RUNNING: EndpointStatus.WAIT2START,
+                RuntimeState.READY: EndpointStatus.NORMAL,
+                RuntimeState.UNHEALTHY: EndpointStatus.ABNORMAL,
+                RuntimeState.STOPPED: EndpointStatus.ABNORMAL,
+            }.get(runtime_state)
 
             if is_restored_from_host_side_snapshot() and item.ip != self._config.api_config.pod_ip:
                 # If restored from host side snapshot and not started after restore(pod_ip do not refresh yet), keep original status
@@ -281,11 +227,13 @@ class HeartbeatManager(ThreadSafeSingleton):
                     original_status,
                 )
                 item.status = original_status
-            elif self._is_within_grace_period and detected_status == EndpointStatus.ABNORMAL:
-                # If within grace period and abnormal status detected, do not update status
+            elif runtime_state in (RuntimeState.STARTING, RuntimeState.STOPPING):
+                # Loading is not a failure. Keep INITIAL (or the last reported
+                # status) until the native readiness endpoint succeeds.
                 logger.debug(
-                    "Engine server %s status is abnormal within grace period, keeping original status: %s",
-                    engine_server_base_url,
+                    "Native engine %s is %s, keeping status %s",
+                    format_address(item.ip, item.business_port),
+                    runtime_state.value,
                     original_status,
                 )
                 item.status = original_status
@@ -297,7 +245,7 @@ class HeartbeatManager(ThreadSafeSingleton):
 
             if item.status != original_status:
                 logger.info(
-                    "Engine Server rank %d, status change from %s to %s ",
+                    "Native engine rank %d, status change from %s to %s ",
                     item.id,
                     original_status,
                     item.status,
@@ -316,8 +264,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             is_normal = True
             try:
                 with self._endpoint_lock:
-                    # Check if any endpoint has abnormal status (only after grace period)
-                    # Check actual endpoint status, not the reported status
+                    # Check actual endpoint status, not the reported status.
                     has_abnormal = any(item.status == EndpointStatus.ABNORMAL for item in self._endpoints)
                     is_normal = all(item.status == EndpointStatus.NORMAL for item in self._endpoints)
 

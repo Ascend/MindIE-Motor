@@ -70,7 +70,7 @@ NodeManager 端口从 `user_config.json` 读取，缺省为 **1026**。
 
 | 接口 | 说明 |
 |------|------|
-| `POST /node-manager/pause` | PreStop 调用，返回 `engine_mgmt_addrs` |
+| `POST /node-manager/pause` | PreStop 调用，返回非 headless 原生引擎的 `engine_metrics_targets` |
 | `POST /node-manager/resume` | PreStop 取消时恢复（如滚动回滚） |
 
 ## 日志

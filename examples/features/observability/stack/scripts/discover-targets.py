@@ -1,5 +1,12 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
 
 """
 Auto-discover pyMotor observability endpoints and generate runtime configs.
@@ -16,10 +23,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Sequence
 
 DEFAULT_COORDINATOR_PORT = 1027
-DEFAULT_ENGINE_PORT = 10001
+DEFAULT_ENGINE_PORT = 10000
 DEFAULT_OBS_HOST = "localhost"
 DEFAULT_PROMETHEUS_PORT = 9090
 DEFAULT_GRAFANA_PORT = 3000
@@ -44,14 +51,14 @@ _PROXY_ENV_KEYS = (
 )
 
 
-def _kubectl_env() -> Dict[str, str]:
+def _kubectl_env() -> dict[str, str]:
     env = os.environ.copy()
     for key in _PROXY_ENV_KEYS:
         env.pop(key, None)
     return env
 
 
-def _kubectl_path() -> Optional[str]:
+def _kubectl_path() -> str | None:
     return shutil.which("kubectl")
 
 
@@ -86,9 +93,9 @@ class DiscoveryResult:
     coordinator_target: str
     coordinator_pod_name: str
     coordinator_is_primary: bool
-    engine_targets: List[Dict[str, Any]]
-    port_forwards: List[PortForwardSpec]
-    warnings: List[str]
+    engine_targets: list[dict[str, Any]]
+    port_forwards: list[PortForwardSpec]
+    warnings: list[str]
 
     @property
     def prefill_count(self) -> int:
@@ -99,7 +106,7 @@ class DiscoveryResult:
         return sum(1 for item in self.engine_targets if item["labels"].get("pd_role") == "decode")
 
 
-def _run_kubectl_json(args: Sequence[str]) -> Dict[str, Any]:
+def _run_kubectl_json(args: Sequence[str]) -> dict[str, Any]:
     kubectl = _kubectl_path()
     if kubectl is None:
         raise FileNotFoundError("kubectl not found in PATH")
@@ -108,7 +115,7 @@ def _run_kubectl_json(args: Sequence[str]) -> Dict[str, Any]:
     return json.loads(output.stdout)
 
 
-def _read_user_config_job_id(path: Optional[str]) -> Optional[str]:
+def _read_user_config_job_id(path: str | None) -> str | None:
     if not path:
         return None
     cfg = Path(path)
@@ -150,15 +157,15 @@ def _is_kubectl_ready() -> bool:
         return False
 
 
-def _service_name(service: Dict[str, Any]) -> str:
+def _service_name(service: dict[str, Any]) -> str:
     return str(service.get("metadata", {}).get("name", ""))
 
 
-def _service_namespace(service: Dict[str, Any]) -> str:
+def _service_namespace(service: dict[str, Any]) -> str:
     return str(service.get("metadata", {}).get("namespace", ""))
 
 
-def _service_ports(service: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _service_ports(service: dict[str, Any]) -> list[dict[str, Any]]:
     spec = service.get("spec", {})
     ports = spec.get("ports", [])
     return ports if isinstance(ports, list) else []
@@ -175,7 +182,7 @@ def _is_engine_pod(name: str) -> bool:
     return _has_keyword(name, ("engine", "mindie-motor-engine"))
 
 
-def _infer_engine_identity_from_pod(name: str, counters: Dict[str, int]) -> Tuple[str, str]:
+def _infer_engine_identity_from_pod(name: str, counters: dict[str, int]) -> tuple[str, str]:
     match = ENGINE_POD_RE.search(name)
     if match:
         role_char = (match.group("role") or "p").lower()
@@ -185,7 +192,7 @@ def _infer_engine_identity_from_pod(name: str, counters: Dict[str, int]) -> Tupl
     return _infer_engine_identity(name, counters)
 
 
-def _pod_ready_counts(pod: Dict[str, Any]) -> Tuple[int, int]:
+def _pod_ready_counts(pod: dict[str, Any]) -> tuple[int, int]:
     """Return (ready, total) container counts, matching kubectl READY column."""
     statuses = pod.get("status", {}).get("containerStatuses") or []
     if not statuses:
@@ -195,13 +202,13 @@ def _pod_ready_counts(pod: Dict[str, Any]) -> Tuple[int, int]:
     return ready, total
 
 
-def _is_running_coordinator_pod(pod: Dict[str, Any]) -> bool:
+def _is_running_coordinator_pod(pod: dict[str, Any]) -> bool:
     phase = str(pod.get("status", {}).get("phase", ""))
     pod_ip = str(pod.get("status", {}).get("podIP", ""))
     return phase == "Running" and bool(pod_ip)
 
 
-def _is_primary_coordinator_pod(pod: Dict[str, Any]) -> bool:
+def _is_primary_coordinator_pod(pod: dict[str, Any]) -> bool:
     """Primary coordinator in HA: kubectl READY shows N/N with N > 0 (e.g. 1/1)."""
     if not _is_running_coordinator_pod(pod):
         return False
@@ -209,9 +216,9 @@ def _is_primary_coordinator_pod(pod: Dict[str, Any]) -> bool:
     return total > 0 and ready == total
 
 
-def _list_coordinator_pods(namespace: str) -> List[Dict[str, Any]]:
+def _list_coordinator_pods(namespace: str) -> list[dict[str, Any]]:
     pod_json = _run_kubectl_json(["get", "pods", "-n", namespace])
-    pods: List[Dict[str, Any]] = []
+    pods: list[dict[str, Any]] = []
     for pod in pod_json.get("items", []):
         pod_name = str(pod.get("metadata", {}).get("name", ""))
         if _has_keyword(pod_name, COORDINATOR_POD_KEYWORDS):
@@ -222,9 +229,9 @@ def _list_coordinator_pods(namespace: str) -> List[Dict[str, Any]]:
 def _discover_coordinator_pod(
     namespace: str,
     port: int = DEFAULT_COORDINATOR_PORT,
-) -> Optional[CoordinatorPodMatch]:
-    primary_pods: List[Dict[str, Any]] = []
-    fallback_pods: List[Dict[str, Any]] = []
+) -> CoordinatorPodMatch | None:
+    primary_pods: list[dict[str, Any]] = []
+    fallback_pods: list[dict[str, Any]] = []
     for pod in _list_coordinator_pods(namespace):
         if _is_primary_coordinator_pod(pod):
             primary_pods.append(pod)
@@ -246,12 +253,12 @@ def _discover_coordinator_pod(
     )
 
 
-def _find_namespace_from_services() -> Optional[str]:
+def _find_namespace_from_services() -> str | None:
     try:
         svc_json = _run_kubectl_json(["get", "svc", "-A"])
     except subprocess.CalledProcessError:
         return None
-    candidates: List[str] = []
+    candidates: list[str] = []
     for svc in svc_json.get("items", []):
         name = _service_name(svc)
         if not _has_keyword(name, ("coordinator", "mindie-motor-coordinator")):
@@ -295,7 +302,7 @@ def _has_explicit_namespace(args: argparse.Namespace) -> bool:
     return bool(args.namespace or os.getenv("MOTOR_NAMESPACE"))
 
 
-def _resolve_node_ip(namespace: str, args: argparse.Namespace, warnings: List[str]) -> str:
+def _resolve_node_ip(namespace: str, args: argparse.Namespace, warnings: list[str]) -> str:
     if args.node_ip:
         return args.node_ip
     env_node_ip = os.getenv("MOTOR_NODE_IP")
@@ -344,10 +351,10 @@ def _resolve_node_ip(namespace: str, args: argparse.Namespace, warnings: List[st
 
 
 def _match_nodeport_for_service(
-    service: Dict[str, Any],
+    service: dict[str, Any],
     expected_port: int,
     allow_keywords: Sequence[str],
-) -> Optional[int]:
+) -> int | None:
     for port in _service_ports(service):
         node_port = port.get("nodePort")
         if not node_port:
@@ -361,13 +368,13 @@ def _match_nodeport_for_service(
 
 
 def _find_service_nodeport(
-    services: Sequence[Dict[str, Any]],
+    services: Sequence[dict[str, Any]],
     expected_port: int,
     service_keywords: Sequence[str],
     port_keywords: Sequence[str],
-) -> Optional[Tuple[str, int]]:
-    best_match: Optional[Tuple[str, int]] = None
-    fallback_match: Optional[Tuple[str, int]] = None
+) -> tuple[str, int] | None:
+    best_match: tuple[str, int] | None = None
+    fallback_match: tuple[str, int] | None = None
     for svc in services:
         name = _service_name(svc)
         matched = _match_nodeport_for_service(svc, expected_port, port_keywords)
@@ -381,7 +388,7 @@ def _find_service_nodeport(
     return best_match or fallback_match
 
 
-def _infer_engine_identity(name: str, counters: Dict[str, int]) -> Tuple[str, str]:
+def _infer_engine_identity(name: str, counters: dict[str, int]) -> tuple[str, str]:
     lowered = name.lower()
     pd_role = "prefill"
     if "decode" in lowered:
@@ -402,7 +409,7 @@ def _infer_engine_identity(name: str, counters: Dict[str, int]) -> Tuple[str, st
     return pd_role, instance_id
 
 
-def _infer_dp_rank(name: str, labels: Optional[Dict[str, Any]] = None) -> str:
+def _infer_dp_rank(name: str, labels: dict[str, Any] | None = None) -> str:
     labels = labels or {}
     for key in ("dp_rank", "dp-rank", "rank"):
         if labels.get(key) is not None:
@@ -415,12 +422,12 @@ def _infer_dp_rank(name: str, labels: Optional[Dict[str, Any]] = None) -> str:
 
 
 def _discover_engine_targets_from_services(
-    services: Sequence[Dict[str, Any]],
+    services: Sequence[dict[str, Any]],
     node_ip: str,
     engine_port: int,
     cluster_label: str,
-) -> List[Dict[str, Any]]:
-    targets: List[Dict[str, Any]] = []
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
     counters = {"prefill": 0, "decode": 0}
     for svc in services:
         name = _service_name(svc)
@@ -429,7 +436,7 @@ def _discover_engine_targets_from_services(
         node_port = _match_nodeport_for_service(
             svc,
             expected_port=engine_port,
-            allow_keywords=("metrics", "mgmt", "manage", "prometheus"),
+            allow_keywords=("metrics", "http", "api", "prometheus"),
         )
         if node_port is None:
             continue
@@ -454,9 +461,9 @@ def _discover_engine_targets_from_pods(
     namespace: str,
     engine_port: int,
     cluster_label: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     pod_json = _run_kubectl_json(["get", "pods", "-n", namespace])
-    targets: List[Dict[str, Any]] = []
+    targets: list[dict[str, Any]] = []
     counters = {"prefill": 0, "decode": 0}
     for pod in pod_json.get("items", []):
         metadata = pod.get("metadata", {})
@@ -490,7 +497,7 @@ def _discover_engine_targets_from_pods(
     return targets
 
 
-def _split_target(target: str) -> Tuple[str, int]:
+def _split_target(target: str) -> tuple[str, int]:
     host, port = target.rsplit(":", 1)
     return host.strip("[]"), int(port)
 
@@ -502,7 +509,7 @@ def _register_docker_port_forward(
     remote_port: int,
     pod_name: str,
     next_port: int,
-) -> Tuple[str, int]:
+) -> tuple[str, int]:
     local_port = next_port
     result.port_forwards.append(
         PortForwardSpec(
@@ -553,9 +560,9 @@ def _apply_docker_gateway(result: DiscoveryResult, base_port: int) -> None:
 
 
 def _discover(namespace: str, node_ip: str, args: argparse.Namespace) -> DiscoveryResult:
-    warnings: List[str] = []
+    warnings: list[str] = []
     obs_host = args.obs_host or os.getenv("OBS_HOST") or node_ip or DEFAULT_OBS_HOST
-    engine_port = args.engine_mgmt_port
+    engine_port = args.engine_business_port
     cluster_label = namespace
     runtime = args.runtime
 
@@ -564,8 +571,8 @@ def _discover(namespace: str, node_ip: str, args: argparse.Namespace) -> Discove
     coordinator_port = DEFAULT_COORDINATOR_PORT
     coordinator_pod_name = ""
     coordinator_is_primary = False
-    engine_targets: List[Dict[str, Any]] = []
-    port_forwards: List[PortForwardSpec] = []
+    engine_targets: list[dict[str, Any]] = []
+    port_forwards: list[PortForwardSpec] = []
 
     if _is_kubectl_ready():
         try:
@@ -710,11 +717,11 @@ def _discover(namespace: str, node_ip: str, args: argparse.Namespace) -> Discove
 
 def _render_job(
     name: str,
-    targets: Sequence[Dict[str, Any]],
-    metrics_path: Optional[str] = None,
+    targets: Sequence[dict[str, Any]],
+    metrics_path: str | None = None,
     honor_labels: bool = False,
-) -> List[str]:
-    lines: List[str] = [f"  - job_name: {name}"]
+) -> list[str]:
+    lines: list[str] = [f"  - job_name: {name}"]
     if metrics_path:
         lines.append(f"    metrics_path: {metrics_path}")
     if honor_labels:
@@ -933,10 +940,10 @@ def _parse_args() -> argparse.Namespace:
         help="First local port for Docker PodIP bridge forwards (default: 19000).",
     )
     parser.add_argument(
-        "--engine-mgmt-port",
+        "--engine-business-port",
         type=int,
-        default=int(os.getenv("MOTOR_ENGINE_MGMT_PORT", str(DEFAULT_ENGINE_PORT))),
-        help="Engine management metrics port (default: 10001).",
+        default=int(os.getenv("MOTOR_ENGINE_BUSINESS_PORT", str(DEFAULT_ENGINE_PORT))),
+        help="Native engine business port exposing /metrics (default: 10000).",
     )
     parser.add_argument(
         "--output-dir",
@@ -948,7 +955,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    warnings: List[str] = []
+    warnings: list[str] = []
     try:
         namespace = _resolve_namespace(args)
         if _has_explicit_namespace(args) and not _is_kubectl_ready():

@@ -44,7 +44,7 @@ set_process_title(f"EngineServer-DP{_dp_rank_from_argv()}")
 # ruff: noqa: E402
 from motor.common.logger import get_logger
 from motor.config.endpoint import EndpointConfig
-from motor.engine_server.factory.config_factory import ConfigFactory
+from motor.node_manager.core.services.native_engine.config_factory import ConfigFactory
 from motor.engine_server.factory.endpoint_factory import EndpointFactory
 from motor.engine_server.utils.prometheus import setup_multiprocess_prometheus
 

@@ -14,8 +14,8 @@ Prestop graceful shutdown for Kubernetes PreStop hook.
 Flow:
 1. Read NodeManager port from user_config.json (api_config.node_manager_port)
 2. POST /node-manager/pause to local NodeManager → endpoints set to PAUSED
-3. Read engine_mgmt_addrs from the pause response
-4. Poll engine /metrics locally (num_requests_waiting / running) until
+3. Read native engine_metrics_targets from the pause response
+4. Poll native engine /metrics (num_requests_waiting / running) until
    all drain to zero, then exit (Pod terminates).
 
 Config is read from CONFIG_PATH or CONFIGMAP_PATH env var (same pattern as probe.py).
@@ -105,6 +105,31 @@ def get_nm_port(config):
     return DEFAULT_NM_PORT
 
 
+def get_infer_tls_config(config):
+    """Return the inference TLS section used by native engine endpoints."""
+    tls_config = get_val_by_key_path(config, "motor_deploy_config.tls_config.infer_tls_config")
+    return tls_config if isinstance(tls_config, dict) else {}
+
+
+def build_curl_tls_args(tls_config):
+    """Map Motor inference TLS fields to curl arguments."""
+    if not tls_config.get("enable_tls", False):
+        return []
+
+    args = []
+    field_to_option = (
+        ("ca_file", "--cacert"),
+        ("cert_file", "--cert"),
+        ("key_file", "--key"),
+        ("crl_file", "--crlfile"),
+    )
+    for field, option in field_to_option:
+        value = tls_config.get(field)
+        if value:
+            args.extend([option, str(value)])
+    return args
+
+
 def _http_post_json(url, timeout=10):
     """HTTP POST via curl. Returns (status_code, body_text) or (None, None)."""
     try:
@@ -143,11 +168,14 @@ def _http_post_json(url, timeout=10):
         return None, None
 
 
-def _http_get_text(url, timeout=5):
+def _http_get_text(url, timeout=5, extra_args=None):
     """HTTP GET via curl. Returns response body text or None."""
     try:
+        command = ["curl", "-s", "-X", "GET", url]
+        command.extend(extra_args or [])
+        command.extend(["--connect-timeout", str(timeout), "--max-time", str(timeout)])
         result = subprocess.run(  # nosec B607
-            ["curl", "-s", "-X", "GET", url, "--connect-timeout", str(timeout), "--max-time", str(timeout)],
+            command,
             capture_output=True,
             text=True,
             timeout=timeout + 2,
@@ -180,15 +208,52 @@ def send_pause(node_manager_url, config):
     return None
 
 
-def get_engine_metrics(engine_mgmt_addr):
-    """Query engine /metrics locally and sum num_requests_waiting/running."""
-    url = f"http://{engine_mgmt_addr}/metrics"
-    text = _http_get_text(url, timeout=10)
+ENGINE_METRIC_NAMES = {
+    "vllm": ("vllm:num_requests_waiting", "vllm:num_requests_running"),
+    "sglang": ("sglang:num_waiting_reqs", "sglang:num_running_reqs"),
+}
+
+
+def get_engine_type(config):
+    """Read the active engine type from a role-specific or union section."""
+    role = os.environ.get("ROLE", "").strip().lower()
+    section_names = {
+        "prefill": ("motor_engine_prefill_config",),
+        "decode": ("motor_engine_decode_config",),
+        "union": ("motor_engine_union_config",),
+        "both": ("motor_engine_union_config",),
+    }.get(role, ())
+    candidates = section_names + (
+        "motor_engine_union_config",
+        "motor_engine_prefill_config",
+        "motor_engine_decode_config",
+    )
+    for section_name in candidates:
+        section = config.get(section_name)
+        if isinstance(section, dict) and section.get("engine_type"):
+            return str(section["engine_type"]).strip().lower()
+    return "vllm"
+
+
+def get_engine_metrics(metrics_target, tls_config, engine_type="vllm"):
+    """Query a native engine metrics URL and sum waiting/running requests."""
+    text = _http_get_text(
+        metrics_target,
+        timeout=10,
+        extra_args=build_curl_tls_args(tls_config),
+    )
     if not text:
         return None
 
+    metric_names = ENGINE_METRIC_NAMES.get(str(engine_type).strip().lower())
+    if metric_names is None:
+        logger.error("Unsupported engine type for prestop metrics: %s", engine_type)
+        return None
+    waiting_name, running_name = metric_names
     waiting = 0
     running = 0
+    found_waiting = False
+    found_running = False
     for line in text.split("\n"):
         if line.startswith("#") or not line.strip():
             continue
@@ -196,12 +261,55 @@ def get_engine_metrics(engine_mgmt_addr):
         if not m:
             continue
         val = int(float(m.group(1)))
-        if "num_requests_waiting" in line:
+        metric_name = line.split("{", 1)[0].split(None, 1)[0]
+        if metric_name == waiting_name:
             waiting += val
-        elif "num_requests_running" in line:
+            found_waiting = True
+        elif metric_name == running_name:
             running += val
+            found_running = True
+
+    if not found_waiting or not found_running:
+        logger.warning(
+            "Required %s drain metrics are missing from %s",
+            engine_type,
+            metrics_target,
+        )
+        return None
 
     return {"waiting": waiting, "running": running}
+
+
+def wait_for_engine_drain(engine_metrics_targets, tls_config, engine_type, max_wait, poll_interval):
+    """Wait until every engine reports zero active requests or the deadline expires."""
+    start_time = time.monotonic()
+    while time.monotonic() - start_time < max_wait:
+        total_waiting = 0
+        total_running = 0
+        metrics_available = True
+
+        for target in engine_metrics_targets:
+            metrics = get_engine_metrics(target, tls_config, engine_type)
+            if metrics is None:
+                logger.warning("Engine drain metrics unavailable from %s; retrying", target)
+                metrics_available = False
+                break
+            total_waiting += metrics["waiting"]
+            total_running += metrics["running"]
+
+        if metrics_available:
+            total_active = total_waiting + total_running
+            logger.info("active=%d (waiting=%d, running=%d)", total_active, total_waiting, total_running)
+            if total_active == 0:
+                elapsed = time.monotonic() - start_time
+                logger.info("All requests drained after %.1fs", elapsed)
+                return True
+
+        time.sleep(poll_interval)
+
+    elapsed = time.monotonic() - start_time
+    logger.info("Timeout after %.1fs, stopping anyway", elapsed)
+    return False
 
 
 def main():
@@ -244,47 +352,24 @@ def main():
         logger.warning("Terminate request failed, exiting anyway")
         sys.exit(0)
 
-    engine_mgmt_addrs = response.get("engine_mgmt_addrs", [])
-    if not engine_mgmt_addrs:
-        logger.error("No engine_mgmt_addrs in pause response, exiting")
+    engine_metrics_targets = response.get("engine_metrics_targets", [])
+    if not engine_metrics_targets:
+        logger.error("No engine_metrics_targets in pause response, exiting")
         sys.exit(0)
 
-    logger.info("Engine mgmt addresses: %s", engine_mgmt_addrs)
+    logger.info("Native engine metrics targets: %s", engine_metrics_targets)
+    infer_tls_config = get_infer_tls_config(config)
+    engine_type = get_engine_type(config)
 
     # Step 2: Poll engine /metrics locally until requests drain
     logger.info("Polling engine metrics...")
-    start_time = time.time()
-
-    while time.time() - start_time < args.max_wait:
-        total_waiting = 0
-        total_running = 0
-        all_ok = True
-
-        for addr in engine_mgmt_addrs:
-            metrics = get_engine_metrics(addr)
-            if metrics is None:
-                logger.debug("Engine %s unreachable", addr)
-                all_ok = False
-                break
-            total_waiting += metrics["waiting"]
-            total_running += metrics["running"]
-
-        if not all_ok:
-            logger.warning("Engine unreachable, exiting")
-            break
-
-        total_active = total_waiting + total_running
-        logger.info("active=%d (waiting=%d, running=%d)", total_active, total_waiting, total_running)
-
-        if total_active == 0:
-            elapsed = time.time() - start_time
-            logger.info("All requests drained after %.1fs", elapsed)
-            break
-
-        time.sleep(args.poll_interval)
-    else:
-        elapsed = time.time() - start_time
-        logger.info("Timeout after %.1fs, stopping anyway", elapsed)
+    wait_for_engine_drain(
+        engine_metrics_targets,
+        infer_tls_config,
+        engine_type,
+        args.max_wait,
+        args.poll_interval,
+    )
 
     sys.exit(0)
 

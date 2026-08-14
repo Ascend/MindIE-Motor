@@ -24,13 +24,13 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.config.endpoint import EndpointConfig
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.core.endpoint import Endpoint
 from motor.engine_server.core.health_collector import HealthCollector
 from motor.engine_server.core.snapshot_monitor import SnapshotMonitor
 from motor.engine_server.core.sim_inference import SimInference
-from motor.engine_server.constants import constants
-from motor.engine_server.constants.constants import (
+from motor.common import engine_constants as constants
+from motor.common.engine_constants import (
     METRICS_INTERFACE,
     STATUS_INTERFACE,
     STATUS_KEY,

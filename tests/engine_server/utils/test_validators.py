@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -16,8 +14,16 @@ import tempfile
 import pytest
 from pathlib import Path
 
-from motor.engine_server.utils.validators import Validator, StringValidator, MapValidator, DirectoryValidator, \
-    RankSizeValidator, FileValidator, IntValidator, ClassValidator
+from motor.common.utils.validators import (
+    ClassValidator,
+    DirectoryValidator,
+    FileValidator,
+    IntValidator,
+    MapValidator,
+    RankSizeValidator,
+    StringValidator,
+    Validator,
+)
 
 BIN_PATH = "/usr/bin"
 DIRECTORY_BLACKLIST_PATH = "/abc/d/e"
@@ -59,8 +65,13 @@ def test_string_validator_can_be_transformed2int():
 
 
 def test_string_validator_contain_sensitive_words():
-    assert not StringValidator("passwordme").check_not_contain_black_element("pass") \
-        .check_string_length().check().is_valid()
+    assert (
+        not StringValidator("passwordme")
+        .check_not_contain_black_element("pass")
+        .check_string_length()
+        .check()
+        .is_valid()
+    )
 
 
 def test_map_validator_should_contain_inclusive_keys():
@@ -76,29 +87,37 @@ def test_directory_black_list():
         os.makedirs(test_path, exist_ok=True)
         try:
             # Test exact match
-            assert not DirectoryValidator(test_path).with_blacklist(
-                lst=[test_path]).check().is_valid()
-            assert DirectoryValidator(test_path).with_blacklist(
-                lst=[""]).check().is_valid()
+            assert not DirectoryValidator(test_path).with_blacklist(lst=[test_path]).check().is_valid()
+            assert DirectoryValidator(test_path).with_blacklist(lst=[""]).check().is_valid()
             # Test parent path with exact_compare=True (should be valid)
-            assert DirectoryValidator(test_path).with_blacklist([temp_dir], exact_compare=True) \
-                .check().is_valid()
+            assert DirectoryValidator(test_path).with_blacklist([temp_dir], exact_compare=True).check().is_valid()
             # Test parent path with exact_compare=False (should be invalid as test_path is child of temp_dir)
-            assert not DirectoryValidator(test_path) \
-                .with_blacklist([temp_dir], exact_compare=False).check().is_valid()
+            assert not DirectoryValidator(test_path).with_blacklist([temp_dir], exact_compare=False).check().is_valid()
         finally:
             import shutil
+
             shutil.rmtree(temp_dir, ignore_errors=True)
     else:
-        assert not DirectoryValidator(DIRECTORY_BLACKLIST_PATH).with_blacklist(
-            lst=[DIRECTORY_BLACKLIST_PATH]).check().is_valid()
-        assert DirectoryValidator(DIRECTORY_BLACKLIST_PATH).with_blacklist(
-            lst=[""]).check().is_valid()
-        assert DirectoryValidator(DIRECTORY_BLACKLIST_PATH).with_blacklist(["/abc/d/"], exact_compare=True) \
-            .check().is_valid()
+        assert (
+            not DirectoryValidator(DIRECTORY_BLACKLIST_PATH)
+            .with_blacklist(lst=[DIRECTORY_BLACKLIST_PATH])
+            .check()
+            .is_valid()
+        )
+        assert DirectoryValidator(DIRECTORY_BLACKLIST_PATH).with_blacklist(lst=[""]).check().is_valid()
+        assert (
+            DirectoryValidator(DIRECTORY_BLACKLIST_PATH)
+            .with_blacklist(["/abc/d/"], exact_compare=True)
+            .check()
+            .is_valid()
+        )
         # if not exact compare, the /abc/d/e is chirldren path of /abc/d/, so it is invalid
-        assert not DirectoryValidator(DIRECTORY_BLACKLIST_PATH) \
-            .with_blacklist(["/abc/d/"], exact_compare=False).check().is_valid()
+        assert (
+            not DirectoryValidator(DIRECTORY_BLACKLIST_PATH)
+            .with_blacklist(["/abc/d/"], exact_compare=False)
+            .check()
+            .is_valid()
+        )
         assert DirectoryValidator("/usr/bin/bash").with_blacklist().check().is_valid()
         assert not DirectoryValidator("/usr/bin/bash").with_blacklist(exact_compare=False).check().is_valid()
 
@@ -121,21 +140,19 @@ def test_directory_soft_link():
     # Skip on Windows as creating symlinks requires admin privileges or developer mode
     if IS_WINDOWS:
         pytest.skip("Symlink creation requires admin privileges on Windows")
-    
-    tmp = tempfile.NamedTemporaryFile(delete=True)
+
     temp_dir = tempfile.mkdtemp()
     path = os.path.join(temp_dir, "link.ink")
-    # make a soft link
-    os.symlink(tmp.name, path)
-
-    try:
-        # do stuff with temp
-        tmp.write(b"stuff")
-        assert not DirectoryValidator(path).check_not_soft_link().check().is_valid()
-    finally:
-        tmp.close()
-        os.remove(path)
-        os.removedirs(temp_dir)
+    with tempfile.NamedTemporaryFile(delete=True) as tmp:
+        # make a soft link
+        os.symlink(tmp.name, path)
+        try:
+            # do stuff with temp
+            tmp.write(b"stuff")
+            assert not DirectoryValidator(path).check_not_soft_link().check().is_valid()
+        finally:
+            os.remove(path)
+            os.removedirs(temp_dir)
 
 
 def test_directory_check():
@@ -143,25 +160,36 @@ def test_directory_check():
     assert not DirectoryValidator("").check_is_not_none().check_dir_name().check().is_valid()
     assert not DirectoryValidator(None).check_is_not_none().check_dir_name().check().is_valid()
     assert DirectoryValidator("a/bc/d").check_is_not_none().check_dir_name().check().is_valid()
-    assert DirectoryValidator("/user/restore/fault/config", max_len=255). \
-        check_is_not_none().check_dir_name(). \
-        path_should_exist(is_file=True, msg="can not find the fault ranks config file") \
-        .should_not_contains_sensitive_words().with_blacklist().check()
-    assert DirectoryValidator(os.path.dirname(__file__), max_len=255). \
-        check_is_not_none().check_dir_name().check_dir_file_number() \
-        .path_should_exist(is_file=False, msg="can not find the fault ranks config file") \
-        .should_not_contains_sensitive_words().with_blacklist().check()
+    assert (
+        DirectoryValidator("/user/restore/fault/config", max_len=255)
+        .check_is_not_none()
+        .check_dir_name()
+        .path_should_exist(is_file=True, msg="can not find the fault ranks config file")
+        .should_not_contains_sensitive_words()
+        .with_blacklist()
+        .check()
+    )
+    assert (
+        DirectoryValidator(os.path.dirname(__file__), max_len=255)
+        .check_is_not_none()
+        .check_dir_name()
+        .check_dir_file_number()
+        .path_should_exist(is_file=False, msg="can not find the fault ranks config file")
+        .should_not_contains_sensitive_words()
+        .with_blacklist()
+        .check()
+    )
     assert not DirectoryValidator(os.path.dirname(__file__)).path_should_not_exist().check().is_valid()
 
 
 def test_check_directory_permissions():
-    temp_dir = tempfile.TemporaryDirectory()
-    temp_path = Path(temp_dir.name)
-    test_dir = temp_path / "test_dir"
-    test_dir.mkdir()
-    os.chmod(test_dir, 0o777)
-    target_mode = 0o750
-    assert not DirectoryValidator(test_dir).check_directory_permissions(target_mode).check().is_valid()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        test_dir = temp_path / "test_dir"
+        test_dir.mkdir()
+        os.chmod(test_dir, 0o777)
+        target_mode = 0o750
+        assert not DirectoryValidator(test_dir).check_directory_permissions(target_mode).check().is_valid()
 
 
 def test_rank_size_check():

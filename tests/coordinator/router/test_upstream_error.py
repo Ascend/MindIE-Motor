@@ -250,8 +250,7 @@ def _make_error(status_code: int, body: bytes = b"") -> UpstreamHTTPError:
 
 def test_cb_not_reportable_for_4xx():
     """4xx errors are client errors (e.g. input too long, bad params); the instance
-    must not be penalised.  The engine_server is responsible for mapping all known
-    request-validation exceptions to 4xx before they reach the coordinator.
+    must not be penalised. Native engines return request-validation failures as 4xx.
     """
     assert not is_cb_reportable_failure(_make_error(400))
     assert not is_cb_reportable_failure(_make_error(422))
@@ -264,8 +263,8 @@ def test_cb_reportable_for_5xx():
 
 
 def test_cb_not_reportable_for_vllm_validation_error_returned_as_400():
-    """VLLMValidationError (max_tokens > max_model_len) must be mapped to HTTP 400 by
-    the engine_server so the coordinator never sees it as a 5xx fault.
+    """A native vLLM validation failure returned as HTTP 400 must not trip the
+    coordinator circuit breaker.
     """
     body = json.dumps({"detail": "max_tokens=1024 cannot be greater than max_model_len=50"}).encode()
     error = _make_error(400, body)

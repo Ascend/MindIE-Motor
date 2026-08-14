@@ -9,7 +9,7 @@ cd "${SCRIPT_DIR}"
 NAMESPACE="${MOTOR_NAMESPACE:-}"
 NODE_IP="${MOTOR_NODE_IP:-}"
 USER_CONFIG="${MOTOR_USER_CONFIG:-}"
-ENGINE_MGMT_PORT="${MOTOR_ENGINE_MGMT_PORT:-10001}"
+ENGINE_BUSINESS_PORT="${MOTOR_ENGINE_BUSINESS_PORT:-10000}"
 OBS_HOST_INPUT="${OBS_HOST:-}"
 
 FORCE_NATIVE=0
@@ -36,7 +36,7 @@ Environment:
   MOTOR_NAMESPACE
   MOTOR_NODE_IP
   MOTOR_USER_CONFIG
-  MOTOR_ENGINE_MGMT_PORT
+  MOTOR_ENGINE_BUSINESS_PORT
   OBS_HOST
   PROXY_SH              dotenv file for native binary downloads only (see SERVICE_GUIDE.md §2.4)
 
@@ -108,7 +108,7 @@ DISCOVERY_RUNTIME="docker"
 if [[ "${FORCE_NATIVE}" -eq 1 ]]; then
   DISCOVERY_RUNTIME="native"
 fi
-DISCOVERY_CMD=(python3 "./scripts/discover-targets.py" "--output-dir" "./generated" "--engine-mgmt-port" "${ENGINE_MGMT_PORT}" "--runtime" "${DISCOVERY_RUNTIME}")
+DISCOVERY_CMD=(python3 "./scripts/discover-targets.py" "--output-dir" "./generated" "--engine-business-port" "${ENGINE_BUSINESS_PORT}" "--runtime" "${DISCOVERY_RUNTIME}")
 [[ -n "${NAMESPACE}" ]] && DISCOVERY_CMD+=("--namespace" "${NAMESPACE}")
 [[ -n "${NODE_IP}" ]] && DISCOVERY_CMD+=("--node-ip" "${NODE_IP}")
 [[ -n "${USER_CONFIG}" ]] && DISCOVERY_CMD+=("--user-config" "${USER_CONFIG}")
@@ -134,7 +134,7 @@ fi
 run_native() {
   echo "[launch] starting native runtime..."
   echo "[launch] refreshing discovery for native runtime..."
-  NATIVE_DISCOVERY_CMD=(python3 "./scripts/discover-targets.py" "--output-dir" "./generated" "--engine-mgmt-port" "${ENGINE_MGMT_PORT}" "--runtime" "native")
+  NATIVE_DISCOVERY_CMD=(python3 "./scripts/discover-targets.py" "--output-dir" "./generated" "--engine-business-port" "${ENGINE_BUSINESS_PORT}" "--runtime" "native")
   [[ -n "${NAMESPACE}" ]] && NATIVE_DISCOVERY_CMD+=("--namespace" "${NAMESPACE}")
   [[ -n "${NODE_IP}" ]] && NATIVE_DISCOVERY_CMD+=("--node-ip" "${NODE_IP}")
   [[ -n "${USER_CONFIG}" ]] && NATIVE_DISCOVERY_CMD+=("--user-config" "${USER_CONFIG}")

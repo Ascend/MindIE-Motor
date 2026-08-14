@@ -13,7 +13,6 @@ import threading
 
 import pytest
 
-from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources import Instance, PDRole, Workload, Endpoint, EventType
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain.instance_manager import InstanceManager, UpdateInstanceMode
@@ -34,7 +33,6 @@ class TestInstanceManager:
             model_name="test-model",
             id=1,
             role=PDRole.ROLE_P,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
             endpoints={},
         )
 
@@ -43,7 +41,6 @@ class TestInstanceManager:
             model_name="test-model",
             id=2,
             role=PDRole.ROLE_D,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
             endpoints={},
         )
 
@@ -73,13 +70,6 @@ class TestInstanceManager:
 
         self.instance_manager._add_instance_to_available_pool(self.decode_instance)
         assert self.instance_manager.has_required_instances() is True
-
-    def test_has_required_instances_rejects_incompatible_pd_pair(self):
-        self.decode_instance.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
-        self.instance_manager._add_instance_to_available_pool(self.decode_instance)
-
-        assert self.instance_manager.has_required_instances() is False
 
     def test_has_required_instances_hybrid(self):
         result = self.instance_manager._add_instance_to_available_pool(self.hybrid_instance)
@@ -962,7 +952,6 @@ class TestInstanceManagerThreadSafety:
             model_name="test-model",
             id=1,
             role=PDRole.ROLE_P,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
             endpoints={},
         )
 
@@ -971,7 +960,6 @@ class TestInstanceManagerThreadSafety:
             model_name="test-model",
             id=2,
             role=PDRole.ROLE_D,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
             endpoints={},
         )
 

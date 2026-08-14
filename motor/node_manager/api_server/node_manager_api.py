@@ -99,7 +99,7 @@ async def start_instance(request: Request):
         except Exception as pull_err:
             logger.error("Failed to pull engine: %s", pull_err)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start engine server"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start native engine"
             ) from pull_err
 
         # Start KV store service (if backend is configured)
@@ -154,11 +154,11 @@ async def pause_instance(request: Request):
     try:
         await asyncio.to_thread(HeartbeatManager().pause_all_endpoints)
         hm = HeartbeatManager()
-        engine_mgmt_addrs = hm.get_engine_mgmt_addrs()
+        engine_metrics_targets = hm.get_engine_metrics_targets()
         content = {
             "status": "ok",
             "message": "Endpoints set to PAUSED",
-            "engine_mgmt_addrs": engine_mgmt_addrs,
+            "engine_metrics_targets": engine_metrics_targets,
         }
         return Response(status_code=status.HTTP_200_OK, content=json.dumps(content))
     except Exception as err:

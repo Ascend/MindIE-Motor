@@ -9,20 +9,11 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
-import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
 from motor.common.http import HTTPClientPool
-from motor.common.resources.dispatch import (
-    DispatchEndpoint,
-    DispatchEndpoints,
-    MotorDispatch,
-    PrefillContextBudget,
-)
-from motor.common.resources.instance import PDRole
-from motor.common.utils.net import format_address
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import ScheduledResource
 
@@ -41,6 +32,12 @@ class AttemptState(str, Enum):
     STOPPED = "stopped"
 
 
+class AttemptStopReason(str, Enum):
+    CLIENT_DISCONNECT = "client_disconnect"
+    PEER_FAILED = "peer_failed"
+    OTHER = "other"
+
+
 @dataclass
 class AttemptReleaseFlags:
     prefill_tokens: bool = False
@@ -52,20 +49,18 @@ class AttemptContext:
     root_request_id: str
     attempt_seq: int
     pair_id: str
-    prefill_context_budget: PrefillContextBudget | None = None
     prefill_resource: ScheduledResource | None = None
     decode_resource: ScheduledResource | None = None
     state: AttemptState = AttemptState.CREATED
-    first_visible_sent: bool = False
-    stop_sent: bool = False
     release_flags: AttemptReleaseFlags = field(default_factory=AttemptReleaseFlags)
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
     prefill_task: asyncio.Task | None = None
     decode_task: asyncio.Task | None = None
+    prefill_dispatched: bool = False
+    prefill_completed: bool = False
+    decode_dispatched: bool = False
+    decode_completed: bool = False
     stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     config: CoordinatorConfig | None = None
-    fail_reason: str | None = None
 
     def transition(self, state: AttemptState) -> bool:
         if self.state == AttemptState.STOPPED:
@@ -73,37 +68,16 @@ class AttemptContext:
         if self.state == AttemptState.STOPPING:
             if state == AttemptState.STOPPED:
                 self.state = state
-                self.updated_at = time.time()
                 return True
             return state == AttemptState.STOPPING
         if self.state == AttemptState.DONE:
             return state == AttemptState.DONE
         self.state = state
-        self.updated_at = time.time()
-        if state == AttemptState.FIRST_VISIBLE:
-            self.first_visible_sent = True
         return True
 
     def stop(self) -> None:
         if self.state not in (AttemptState.DONE, AttemptState.STOPPED):
             self.state = AttemptState.STOPPING
-            self.stop_sent = True
-            self.updated_at = time.time()
-
-    def dispatch_for(self, role: PDRole, dispatch_mode: str) -> MotorDispatch:
-        return MotorDispatch(
-            root_request_id=self.root_request_id,
-            engine_request_id=f"{self.root_request_id}#a{self.attempt_seq}",
-            pair_id=self.pair_id,
-            attempt_seq=self.attempt_seq,
-            role="prefill" if role == PDRole.ROLE_P else "decode",
-            dispatch_mode=dispatch_mode,
-            prefill_context_budget=self.prefill_context_budget,
-            endpoints=DispatchEndpoints(
-                prefill=_dispatch_endpoint(self.prefill_resource),
-                decode=_dispatch_endpoint(self.decode_resource),
-            ),
-        )
 
     def register_prefill_task(self, task: asyncio.Task) -> asyncio.Task:
         self.prefill_task = task
@@ -113,25 +87,45 @@ class AttemptContext:
         self.decode_task = task
         return task
 
+    def mark_dispatched(self, role: str) -> None:
+        if role == "prefill":
+            self.prefill_dispatched = True
+        else:
+            self.decode_dispatched = True
+
+    def mark_completed(self, role: str) -> None:
+        if role == "prefill":
+            self.prefill_completed = True
+        else:
+            self.decode_completed = True
+
+    def needs_abort(self, role: str) -> bool:
+        if role == "prefill":
+            return self.prefill_dispatched and not self.prefill_completed
+        return self.decode_dispatched and not self.decode_completed
+
     async def cancel(self, reason: str = ""):
-        self.fail_reason = reason
-        task = []
+        tasks = []
         if self.prefill_task and not self.prefill_task.done() and not self.prefill_task.cancelled():
             logger.info(
-                f"Cancelling prefill task: {self.prefill_resource.endpoint.ip} {self.prefill_resource.instance.job_name}"
-                f" because {reason}"
+                "Cancelling prefill task: %s %s because %s",
+                self.prefill_resource.endpoint.ip,
+                self.prefill_resource.instance.job_name,
+                reason,
             )
             self.prefill_task.cancel(msg=reason)
-            task.append(self.prefill_task)
+            tasks.append(self.prefill_task)
         if self.decode_task and not self.decode_task.done() and not self.decode_task.cancelled():
             logger.info(
-                f"Cancelling decode task: {self.decode_resource.endpoint.ip} {self.decode_resource.instance.job_name}"
-                f" because {reason}"
+                "Cancelling decode task: %s %s because %s",
+                self.decode_resource.endpoint.ip,
+                self.decode_resource.instance.job_name,
+                reason,
             )
             self.decode_task.cancel(msg=reason)
-            task.append(self.decode_task)
-        if task:
-            await asyncio.gather(*task, return_exceptions=True)
+            tasks.append(self.decode_task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def register_canceller(self):
         pool = HTTPClientPool()
@@ -168,8 +162,7 @@ class AttemptContext:
                 )
                 pool.unregister_canceller(d_key, self.pair_id)
         except Exception as e:
-            logger.error(f"Unregister error {e=}")
-            pass
+            logger.error("Unregister error: %s", e)
 
     def unregister_prefill_canceller(self):
         try:
@@ -182,8 +175,7 @@ class AttemptContext:
                 )
                 pool.unregister_canceller(p_key, self.pair_id)
         except Exception as e:
-            logger.error(f"Unregister error {e=}")
-            pass
+            logger.error("Unregister error: %s", e)
 
     def register_decode_canceller(self):
         if not self.decode_resource:
@@ -198,47 +190,23 @@ class AttemptContext:
 
 
 class PDDispatchSession:
-    def __init__(
-        self,
-        root_request_id: str,
-        prefill_context_budget: PrefillContextBudget | None = None,
-    ) -> None:
+    def __init__(self, root_request_id: str) -> None:
         self.root_request_id = root_request_id
-        self.prefill_context_budget = prefill_context_budget
         self._attempt_seq = 0
-        self.attempts: dict[int, AttemptContext] = {}
 
     def new_attempt(
         self,
         prefill_resource: ScheduledResource | None,
         decode_resource: ScheduledResource | None,
         config: CoordinatorConfig,
-        *,
-        consumed_output_tokens: int = 0,
     ) -> AttemptContext:
         self._attempt_seq += 1
-        budget = self.prefill_context_budget
-        if budget is not None:
-            budget = budget.after_output_tokens(consumed_output_tokens)
         attempt = AttemptContext(
             root_request_id=self.root_request_id,
             attempt_seq=self._attempt_seq,
             pair_id=uuid.uuid4().hex,
-            prefill_context_budget=budget,
             prefill_resource=prefill_resource,
             decode_resource=decode_resource,
             config=config,
         )
-        self.attempts[attempt.attempt_seq] = attempt
         return attempt
-
-
-def _dispatch_endpoint(resource: ScheduledResource | None) -> DispatchEndpoint | None:
-    if not resource or not resource.instance or not resource.endpoint:
-        return None
-    endpoint = resource.endpoint
-    return DispatchEndpoint(
-        instance_id=int(resource.instance.id),
-        endpoint_id=int(endpoint.id),
-        url=f"http://{format_address(endpoint.ip, endpoint.business_port)}",
-    )

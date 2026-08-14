@@ -20,9 +20,9 @@ from motor.common.resources.dispatch import DISPATCH_PROFILE_KEY
 from motor.config.config_utils import _update_engine_server_tls_config
 from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.tls_config import TLSConfig
-from motor.engine_server.constants import constants
-from motor.engine_server.utils.ip import ip_valid_check, port_valid_check
-from motor.engine_server.utils.validators import FileValidator
+from motor.common import engine_constants as constants
+from motor.common.utils.ip import ip_valid_check, port_valid_check
+from motor.common.utils.validators import FileValidator
 
 logger = get_logger(__name__)
 
@@ -111,6 +111,9 @@ class HealthCheckConfig:
     health_collector_timeout: int = 5
     # Max attempts for /health probe when request times out (timeout-only retry).
     health_collector_timeout_retry_attempts: int = 3
+    # Native engines can spend a long time loading model weights before their
+    # HTTP endpoint starts accepting connections.
+    startup_timeout: int = 1800
     npu_usage_threshold: int = 3
     enable_virtual_inference: bool = False
     max_failure_count: int = 6
@@ -129,6 +132,7 @@ class HealthCheckConfig:
         self.health_collector_timeout_retry_attempts = self._as_positive_int(
             "health_collector_timeout_retry_attempts", self.health_collector_timeout_retry_attempts
         )
+        self.startup_timeout = self._as_positive_int("startup_timeout", self.startup_timeout)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HealthCheckConfig":

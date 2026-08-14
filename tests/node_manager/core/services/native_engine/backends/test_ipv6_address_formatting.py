@@ -10,9 +10,9 @@
 
 from types import SimpleNamespace
 
-from motor.engine_server.constants import constants
-from motor.engine_server.core.sglang.sglang_config import SGLangConfig
-from motor.engine_server.core.vllm.vllm_config import VLLMConfig
+from motor.common import engine_constants as constants
+from motor.node_manager.core.services.native_engine.backends.sglang.config import SGLangConfig
+from motor.node_manager.core.services.native_engine.backends.vllm.config import VLLMConfig
 
 
 class _DeployConfig:

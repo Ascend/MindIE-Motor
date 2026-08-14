@@ -14,7 +14,7 @@ import json
 import pytest
 
 from motor.config.endpoint import DeployConfig, EndpointConfig, EngineConfig, ModelConfig, ParallelConfig
-from motor.engine_server.core.vllm.vllm_config import VLLMConfig
+from motor.node_manager.core.services.native_engine.backends.vllm.config import VLLMConfig
 
 
 def _make_endpoint_config(

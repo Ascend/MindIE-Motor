@@ -4,13 +4,17 @@
 
 在本仓库中，**Engine Server** 指可执行入口 **`engine_server`**（`setup.py` 中 entry point：`engine_server = motor.engine_server.cli.main:main`），实现该功能的脚本路径为 `motor/engine_server/cli/main.py`。
 
+> `EngineServer` 是过渡期兼容链路。Node Manager 的直接原生路径由
+> `motor/node_manager/core/services/native_engine/` 管理，并直接拉起 `vllm serve` 或
+> `python3 -m sglang.launch_server`，不会插入 `engine_server` 进程。
+
 主要功能如下：
 
-- **解析端点配置**：`EndpointConfig.init_endpoint_config()`，经 `ConfigFactory` 得到具体引擎配置（`motor/engine_server/factory/config_factory.py` 中按 `vllm` / `sglang` 等类型选择配置类）。
+- **解析端点配置**：`EndpointConfig.init_endpoint_config()`，经 `ConfigFactory` 得到具体引擎配置（`motor/node_manager/core/services/native_engine/config_factory.py` 中按 `vllm` / `sglang` 等类型选择配置类）。
 - **管理面 HTTP（MgmtEndpoint）**：`motor/engine_server/core/mgmt_endpoint.py` 内在 `mgmt_port` 上启动 uvicorn，挂载 Prometheus 相关路由及 **`GET /status`**（路径常量 `STATUS_INTERFACE`，值为 `/status`）。状态字段键为 `STATUS_KEY` 对应常量（与同文件 `NORMAL_STATUS` / `ABNORMAL_STATUS` / `INIT_STATUS` 等配合使用）。可选 **TLS**（`mgmt_tls_config.enable_tls`）。
 - **推理面（InferEndpoint）**：由 `EndpointFactory.get_infer_endpoint(config)` 按引擎类型构造（如 `VLLMEndpoint`、`SGLangEndpoint`，见 `motor/engine_server/factory/endpoint_factory.py`），与 `MgmtEndpoint` 并行 `run()`，主线程在 `infer_endpoint.wait()` 阻塞直至退出，再 `shutdown` 两端点。
 
-Node Manager 侧通过子进程命令 **`engine_server`** 拉起本进程，参数在 `motor/node_manager/core/daemon.py` 的 `pull_engine` 中，包括 `--dp-rank`、`--instance-id`、`--role`、`--host`、`--port`、`--mgmt-port`、`--master-dp-ip`、`--config-path`（值为 `Env.user_config_path`）；单容器模式下还会追加 `--kv-port`、`--dp-rpc-port` 等。
+旧部署入口可通过子进程命令 **`engine_server`** 拉起本进程；新 Node Manager 原生路径不再组装该命令。以下 Engine Server 参数说明仅用于兼容链路和本地调试。
 
 ## 与周边组件的关系
 

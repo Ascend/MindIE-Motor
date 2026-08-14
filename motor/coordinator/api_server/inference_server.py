@@ -501,6 +501,7 @@ class InferenceServer(BaseCoordinatorServer):
                 self.coordinator_config,
                 scheduler=self._get_scheduler_client(),
                 request_manager=request_manager,
+                request_json=body_json,
             )
         except HTTPException:
             raise
@@ -531,6 +532,7 @@ class InferenceServer(BaseCoordinatorServer):
                 self.coordinator_config,
                 scheduler=self._get_scheduler_client(),
                 request_manager=request_manager,
+                request_json=body_json,
             )
         except HTTPException:
             raise

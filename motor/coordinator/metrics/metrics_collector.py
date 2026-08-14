@@ -17,14 +17,13 @@ from collections.abc import Callable
 from typing import Any
 import requests
 
-from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.utils.net import format_address
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.coordinator import CoordinatorConfig
-from motor.coordinator.api_client.engine_server_api_client import EngineServerApiClient
+from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
 from motor.coordinator.metrics.metric_types import (
     AggregationContext,
     AggregationScope,
@@ -243,6 +242,7 @@ class MetricsCollector(ThreadSafeSingleton):
             config = CoordinatorConfig()
         self._prometheus_metrics_config = config.prometheus_metrics_config
         self._deploy_config = config.deploy_config
+        self._infer_tls_config = config.infer_tls_config
 
         # Initial metrics state
         self._inactive_instance_metrics_aggregate: dict[str, list[Metric]] = {}
@@ -301,6 +301,7 @@ class MetricsCollector(ThreadSafeSingleton):
         with self._config_lock:
             self._prometheus_metrics_config = config.prometheus_metrics_config
             self._deploy_config = config.deploy_config
+            self._infer_tls_config = config.infer_tls_config
         logger.info("MetricsCollector configuration updated")
 
     def get_metrics(
@@ -845,7 +846,7 @@ class MetricsCollector(ThreadSafeSingleton):
                 collect["role"] = ins_info.role
                 collect["job_name"] = ins_info.job_name
                 collect["model_name"] = ins_info.model_name
-                collect["dispatch_capabilities"] = list(ins_info.dispatch_capabilities or [])
+                collect["engine_type"] = ins_info.engine_type
                 collects[ins_info.id] = collect
 
         return collects
@@ -868,7 +869,10 @@ class MetricsCollector(ThreadSafeSingleton):
         collect = {"endpoints": {}}
 
         for en_info in ins_info.get_all_endpoints():
-            metrics_str = EngineServerApiClient.query_metrics(f"{en_info.ip}:{en_info.mgmt_port}")
+            metrics_str = NativeEngineApiClient.query_metrics(
+                format_address(en_info.ip, en_info.business_port),
+                self._infer_tls_config,
+            )
             if not metrics_str:
                 return {}
             collect["endpoints"][en_info.id] = {
@@ -882,7 +886,7 @@ class MetricsCollector(ThreadSafeSingleton):
         self,
         collects: dict[int, dict[str, Any]],
         instance_roles: dict[int, str],
-        instance_dispatch_capabilities: dict[int, set[str]],
+        instance_engine_types: dict[int, str],
     ) -> list[Metric]:
         """Aggreagte metrics of all instances."""
 
@@ -909,7 +913,7 @@ class MetricsCollector(ThreadSafeSingleton):
             scope=AggregationScope.SERVICE,
             ins_ids=ins_ids,
             instance_roles=instance_roles,
-            instance_dispatch_capabilities=instance_dispatch_capabilities,
+            instance_engine_types=instance_engine_types,
         )
         return self._aggregate_metrics(aggr_input, ctx=ctx)
 
@@ -943,8 +947,7 @@ class MetricsCollector(ThreadSafeSingleton):
         result: list[Metric] = []
         for name, entries in aggr_input.items():
             if ctx is not None and ctx.scope == AggregationScope.SERVICE and ctx.instance_roles is not None:
-                if name == "vllm:time_to_first_token_seconds" and ctx.instance_dispatch_capabilities is not None:
-                    handoff = DispatchPlan.PREFILL_HANDOFF_DECODE.value
+                if name == "vllm:time_to_first_token_seconds" and ctx.instance_engine_types is not None:
                     entries = [
                         (ins_id, m)
                         for ins_id, m in entries
@@ -953,7 +956,7 @@ class MetricsCollector(ThreadSafeSingleton):
                             or ctx.instance_roles.get(ins_id) in {"decode", "union", "both", "hybrid"}
                             or (
                                 ctx.instance_roles.get(ins_id) == "prefill"
-                                and handoff in ctx.instance_dispatch_capabilities.get(ins_id, set())
+                                and ctx.instance_engine_types.get(ins_id, "").strip().lower() == "vllm"
                             )
                         )
                     ]
@@ -993,13 +996,11 @@ class MetricsCollector(ThreadSafeSingleton):
         for ins_id, metrics_list in instance_metrics.items():
             self._instance_metrics_cached[ins_id] = {self.METRICS_KEY: metrics_list}
         instance_roles = {ins_id: data.get("role", "") for ins_id, data in collects.items() if isinstance(data, dict)}
-        instance_dispatch_capabilities = {
-            ins_id: set(data.get("dispatch_capabilities", []))
-            for ins_id, data in collects.items()
-            if isinstance(data, dict)
+        instance_engine_types = {
+            ins_id: str(data.get("engine_type", "")) for ins_id, data in collects.items() if isinstance(data, dict)
         }
         aggregate = self._aggregation_engine.post_process(
-            self._aggregate_metrics_all_instance(collects, instance_roles, instance_dispatch_capabilities)
+            self._aggregate_metrics_all_instance(collects, instance_roles, instance_engine_types)
         )
         with self._config_lock:
             deploy_config = self._deploy_config

@@ -340,12 +340,24 @@ class Instance(BaseModel):
             return True
 
     def is_all_endpoints_ready(self) -> bool:
+        """Return whether routable endpoints and their headless workers are ready.
+
+        Headless PCP workers expose no HTTP readiness endpoint. Their
+        ``WAIT2START`` status confirms process liveness without advertising a
+        routable service; the non-headless master remains the readiness gate.
+        """
         with self._lock:
+            has_routable_endpoint = False
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.headless:
+                        if endpoint.status not in (EndpointStatus.NORMAL, EndpointStatus.WAIT2START):
+                            return False
+                        continue
+                    has_routable_endpoint = True
                     if endpoint.status != EndpointStatus.NORMAL:
                         return False
-            return True
+            return has_routable_endpoint
 
     def is_have_one_endpoint_abnormal(self) -> bool:
         abnormal_endpoints: dict[str, list[int]] = {}  # pod_ip -> [endpoint_id]

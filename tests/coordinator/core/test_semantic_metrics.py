@@ -16,7 +16,6 @@ Unit tests for semantic metrics modules:
 import math
 from unittest.mock import patch, MagicMock
 
-from motor.common.resources.dispatch import DispatchPlan
 from motor.coordinator.metrics.metric_types import (
     AggregationContext,
     AggregationScope,
@@ -582,8 +581,7 @@ def _apply_scope_filter(
 ) -> list[tuple[int, Metric]]:
     """Mirror MetricsCollector._aggregate_metrics SERVICE-scope filtering."""
     if ctx is not None and ctx.scope == AggregationScope.SERVICE and ctx.instance_roles is not None:
-        if name == "vllm:time_to_first_token_seconds" and ctx.instance_dispatch_capabilities is not None:
-            handoff = DispatchPlan.PREFILL_HANDOFF_DECODE.value
+        if name == "vllm:time_to_first_token_seconds" and ctx.instance_engine_types is not None:
             entries = [
                 (ins_id, metric)
                 for ins_id, metric in entries
@@ -592,7 +590,7 @@ def _apply_scope_filter(
                     or ctx.instance_roles.get(ins_id) in {"decode", "union", "both", "hybrid"}
                     or (
                         ctx.instance_roles.get(ins_id) == "prefill"
-                        and handoff in ctx.instance_dispatch_capabilities.get(ins_id, set())
+                        and ctx.instance_engine_types.get(ins_id, "").strip().lower() == "vllm"
                     )
                 )
             ]
@@ -619,30 +617,26 @@ class TestAggregationScope:
         ctx = AggregationContext(
             scope=AggregationScope.SERVICE,
             instance_roles={1: "prefill", 2: "decode"},
-            instance_dispatch_capabilities={},
+            instance_engine_types={},
         )
         entries = _apply_scope_filter("vllm:time_to_first_token_seconds", [(1, p_hist), (2, d_hist)], ctx)
         assert len(entries) == 1
         ttft = self.engine.aggregate("vllm:time_to_first_token_seconds", [m for _, m in entries])
         assert ttft.value[-1] == 8.0
 
-    def test_service_scope_includes_only_handoff_prefill_ttft(self):
-        p_concurrent = _make_ttft_histogram(10.0, 5.0)
-        p_handoff = _make_ttft_histogram(20.0, 15.0)
+    def test_service_scope_includes_only_vllm_prefill_ttft(self):
+        p_sglang = _make_ttft_histogram(10.0, 5.0)
+        p_vllm = _make_ttft_histogram(20.0, 15.0)
         d_hist = _make_ttft_histogram(30.0, 9.0)
         ctx = AggregationContext(
             scope=AggregationScope.SERVICE,
             instance_roles={1: "prefill", 2: "prefill", 3: "decode"},
-            instance_dispatch_capabilities={
-                1: {DispatchPlan.CONCURRENT_ENGINE_SYNC.value},
-                2: {DispatchPlan.PREFILL_HANDOFF_DECODE.value},
-                3: {DispatchPlan.PREFILL_HANDOFF_DECODE.value},
-            },
+            instance_engine_types={1: "sglang", 2: "vllm", 3: "vllm"},
         )
 
         entries = _apply_scope_filter(
             "vllm:time_to_first_token_seconds",
-            [(1, p_concurrent), (2, p_handoff), (3, d_hist)],
+            [(1, p_sglang), (2, p_vllm), (3, d_hist)],
             ctx,
         )
 
@@ -694,13 +688,6 @@ class TestRoleScope:
     def test_ttft_effective_role_scope_default(self):
         scope = MetricRegistry.get_effective_role_scope("vllm:time_to_first_token_seconds")
         assert scope == "decode"
-
-    def test_ttft_effective_role_scope_handoff_connector(self):
-        scope = MetricRegistry.get_effective_role_scope(
-            "vllm:time_to_first_token_seconds",
-            {DispatchPlan.PREFILL_HANDOFF_DECODE.value},
-        )
-        assert scope is None  # No filtering
 
     def test_effective_role_scope_unknown_metric(self):
         scope = MetricRegistry.get_effective_role_scope("some_unknown_metric")

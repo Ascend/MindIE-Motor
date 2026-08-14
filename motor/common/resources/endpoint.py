@@ -67,6 +67,7 @@ class Endpoint(BaseModel):
     ip: str = Field(..., description="IP address")
     business_port: str = Field(..., description="Business port")
     mgmt_port: str = Field(..., description="Management port")
+    bootstrap_port: int | None = Field(default=None, ge=1, le=65535, description="Native PD bootstrap port")
     status: EndpointStatus = Field(default=EndpointStatus.INITIAL, description="Endpoint status")
     device_infos: list[DeviceInfo] = Field(default_factory=list, description="List of DeviceInfo")
     hb_timestamp: float = Field(default=0, description="Last heartbeat timestamp")
@@ -79,6 +80,7 @@ class Endpoint(BaseModel):
         ip: str,
         business_port: str,
         mgmt_port: str,
+        bootstrap_port: int | None = None,
         status: EndpointStatus | None = None,
         device_infos: list[DeviceInfo] | None = None,
         hb_timestamp: float | None = None,
@@ -90,6 +92,7 @@ class Endpoint(BaseModel):
             ip=ip,
             business_port=business_port,
             mgmt_port=mgmt_port,
+            bootstrap_port=bootstrap_port,
             status=status if status is not None else EndpointStatus.INITIAL,
             device_infos=device_infos if device_infos is not None else [],
             hb_timestamp=hb_timestamp if hb_timestamp is not None else time.time(),

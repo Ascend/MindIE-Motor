@@ -20,9 +20,6 @@ from typing import Any, Awaitable, Callable
 import msgspec
 import zmq
 
-from motor.common.resources.dispatch import (
-    has_compatible_dispatch_pair,
-)
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload
 from motor.coordinator.domain import (
@@ -740,10 +737,13 @@ class AsyncSchedulerClient:
         req_info: RequestInfo,
         role: PDRole | None = None,
         top_k: int = 1,
+        required_engine_type: str | None = None,
     ) -> tuple[list[tuple[Instance, Endpoint, float]], str]:
         """Select endpoint candidates from cache or fresh instances."""
         cache_role = role if role is not None else PDRole.ROLE_U
-        cached_instances = self._cache.get_instances(cache_role)
+        cached_instances = self._filter_instances_by_engine_type(
+            self._cache.get_instances(cache_role), required_engine_type
+        )
         if cached_instances:
             # Cache stores instances sorted by id (see replace_all call sites); use as-is for RR
             candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
@@ -762,7 +762,9 @@ class AsyncSchedulerClient:
             return [], self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
 
         # get_available_instances already wrote sorted list to cache; build sorted list once for this path
-        instance_list = sorted(instances.values(), key=lambda i: i.id)
+        instance_list = self._filter_instances_by_engine_type(
+            sorted(instances.values(), key=lambda i: i.id), required_engine_type
+        )
         candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
             instance_list, cache_role, req_info, top_k=top_k
         )
@@ -774,6 +776,17 @@ class AsyncSchedulerClient:
                 self._scheduler_type,
             )
         return candidates, candidate_policy
+
+    @staticmethod
+    def _filter_instances_by_engine_type(instances: list[Instance], required_engine_type: str | None) -> list[Instance]:
+        normalized = str(required_engine_type or "").strip().lower()
+        if not normalized:
+            return instances
+        return [
+            instance
+            for instance in instances
+            if str(getattr(instance, "engine_type", "")).strip().lower() == normalized
+        ]
 
     async def _refresh_cache_from_workload_reader(self, role: PDRole | None = None) -> None:
         """Patch live workload into the local cache and pull a fresh instance list on
@@ -824,6 +837,7 @@ class AsyncSchedulerClient:
         req_info: RequestInfo,
         *,
         target_instance_id: int | None = None,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
         """Select instance locally + ALLOCATE_ONLY RPC. Allocation workload is decided here (RR=zero, LB=demand)."""
         role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
@@ -834,8 +848,16 @@ class AsyncSchedulerClient:
         # affinity-discounted prefill cost so the scheduler re-ranks globally by fresh load.
         global_affinity = False
 
+        normalized_engine_type = str(required_engine_type or "").strip().lower()
+
         if target_instance_id is not None:
             instances = await self.get_available_instances(role)
+            if normalized_engine_type:
+                instances = {
+                    instance_id: candidate
+                    for instance_id, candidate in instances.items()
+                    if str(getattr(candidate, "engine_type", "")).strip().lower() == normalized_engine_type
+                }
             instance = resolve_pinned_instance(instances, target_instance_id)
             if instance is None:
                 logger.warning(
@@ -877,7 +899,12 @@ class AsyncSchedulerClient:
             (
                 candidates,
                 candidate_policy,
-            ) = await self._select_endpoint_candidates_with_policy(req_info, role, top_k=request_top_k)
+            ) = await self._select_endpoint_candidates_with_policy(
+                req_info,
+                role,
+                top_k=request_top_k,
+                required_engine_type=normalized_engine_type or None,
+            )
             if not candidates:
                 return None
             instance, endpoint, _ = candidates[0]
@@ -893,6 +920,13 @@ class AsyncSchedulerClient:
                 and any(rec[2] is not None for rec in affinity_debug.values())
             )
             if global_affinity:
+                allowed_instance_ids = {
+                    candidate.id
+                    for candidate in self._filter_instances_by_engine_type(
+                        self._cache.get_instances(role),
+                        normalized_engine_type or None,
+                    )
+                }
                 candidate_endpoints = [
                     {
                         "instance_id": ins_id,
@@ -901,7 +935,7 @@ class AsyncSchedulerClient:
                         "prefill_cost": rec[2],
                     }
                     for (ins_id, ep_id), rec in affinity_debug.items()
-                    if rec[2] is not None
+                    if rec[2] is not None and ins_id in allowed_instance_ids
                 ]
             elif candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY and isinstance(affinity_debug, dict):
                 # load_gated (and other affinity modes without prefill_cost): still forward
@@ -949,6 +983,7 @@ class AsyncSchedulerClient:
             # Non-affinity demand as a raw float (RR sends 0.0). Affinity overrides via isl/matched.
             "workload_active_tokens": workload.active_tokens,
             "candidate_policy": candidate_policy,
+            "required_engine_type": normalized_engine_type or None,
         }
         if isl > 0:
             req_data["isl"] = isl
@@ -1336,23 +1371,6 @@ class AsyncSchedulerClient:
                 logger.debug("get_available_instance_roles: warm-up fetch failed: %s", e)
             roles = self._roles_from_cache()
         return roles
-
-    async def has_compatible_pd_pair(self) -> bool:
-        """Return whether cached P/D pools contain a compatible pair.
-
-        Assumes the cache was warmed by a preceding get_available_instance_roles in the same
-        routing decision; falls back to a warm-up fetch if both pools look empty.
-        """
-        prefill = self._cache.get_instances(PDRole.ROLE_P)
-        decode = self._cache.get_instances(PDRole.ROLE_D)
-        if not prefill and not decode:
-            try:
-                await self.get_available_instances(None)
-            except Exception as e:
-                logger.debug("has_compatible_pd_pair: warm-up fetch failed: %s", e)
-            prefill = self._cache.get_instances(PDRole.ROLE_P)
-            decode = self._cache.get_instances(PDRole.ROLE_D)
-        return has_compatible_dispatch_pair(prefill, decode)
 
     async def get_unblocked_instances(self, role: PDRole) -> list[int]:
         """Return instance IDs of the given role that are NOT blocked by circuit breaker."""

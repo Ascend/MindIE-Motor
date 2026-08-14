@@ -51,6 +51,7 @@ class RegisterMsg(BaseModel):
     pod_ip: str = Field(..., description="Pod IP address")
     business_port: list[str] = Field(..., description="Business port for all endpoints managed by this nm")
     mgmt_port: list[str] = Field(..., description="Management port for all endpoints managed by this nm")
+    bootstrap_port: int | None = Field(default=None, ge=1, le=65535, description="Native PD bootstrap port")
     nm_port: str = Field(..., description="Node manager communication port")
     parallel_config: ParallelConfig = Field(..., description="Parallel configuration")
     enable_multi_endpoints: bool = Field(default=True, description="Whether to enable multi-endpoints mode")

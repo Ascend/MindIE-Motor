@@ -558,6 +558,22 @@ def test_state_transitions(instance_manager, test_config):
     assert instance.status == InsStatus.INACTIVE
 
 
+def test_initial_instance_activates_with_ready_master_and_live_headless_worker():
+    """A headless worker's process liveness is sufficient only when the routable master is ready."""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(205, "test_headless_worker", ["192.168.1.1", "192.168.1.2"])
+    worker = instance.endpoints["192.168.1.2"][0]
+    worker.headless = True
+    manager.add_instance(instance)
+    instance.endpoints["192.168.1.1"][0].status = EndpointStatus.NORMAL
+    worker.status = EndpointStatus.WAIT2START
+
+    result = manager._handle_state_transition(instance)
+
+    assert result is True
+    assert instance.status == InsStatus.ACTIVE
+
+
 def test_inactive_with_mixed_paused_normal_goes_to_paused(instance_manager):
     """INACTIVE + mixed PAUSED/NORMAL (no ABNORMAL) → PAUSED, NOT INITIAL"""
     manager = create_instance_manager_with_config()

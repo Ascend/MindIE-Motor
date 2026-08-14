@@ -12,8 +12,16 @@ import os
 from typing import Callable, Any
 from typing import List, Tuple
 
-from motor.engine_server.constants.constants import (MAX_SIZE, MIN_SIZE, MIN_RANK_SIZE, MAX_RANK_SIZE,
-                                                     MAX_FILE_NUMS, MIN_DEVICE_NUM, MAX_DEVICE_NUM, MUSK_PRIVILEGE)
+from motor.common.engine_constants import (
+    MAX_DEVICE_NUM,
+    MAX_FILE_NUMS,
+    MAX_RANK_SIZE,
+    MAX_SIZE,
+    MIN_DEVICE_NUM,
+    MIN_RANK_SIZE,
+    MIN_SIZE,
+    MUSK_PRIVILEGE,
+)
 
 
 class Validator:
@@ -50,7 +58,7 @@ class Validator:
         if self.is_valid_state is None:
             try:
                 self.check()
-            except Exception as e:
+            except Exception:
                 self.is_valid_state = False
         return self.is_valid_state
 

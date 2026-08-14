@@ -10,7 +10,7 @@
 
 
 from motor.config.endpoint import DeployConfig, EndpointConfig, EngineConfig, ModelConfig, ParallelConfig
-from motor.engine_server.core.sglang.sglang_config import SGLangConfig
+from motor.node_manager.core.services.native_engine.backends.sglang.config import SGLangConfig
 
 
 def _make_endpoint_config(engine_cfg: dict) -> EndpointConfig:

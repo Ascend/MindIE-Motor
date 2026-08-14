@@ -933,7 +933,7 @@ class CoordinatorConfig:
         return reload_dataclass_config_from_json(
             self,
             self.from_json,
-            skip=frozenset({"worker_index", "worker_metaserver_port"}),
+            skip=frozenset({"worker_index"}),
             skip_private=True,
         )
 

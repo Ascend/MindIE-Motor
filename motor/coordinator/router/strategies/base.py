@@ -35,7 +35,6 @@ from motor.coordinator.models.constants import (
     OpenAIField,
     REQUEST_ID_KEY,
 )
-from motor.common.resources.dispatch import MOTOR_DISPATCH_KEY
 from motor.coordinator.models.response import ErrorResponse
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import RequestInfo, ReqState
@@ -106,7 +105,7 @@ class RequestLoggerAdapter(logging.LoggerAdapter):
 
 @dataclass
 class RecomputeState:
-    """Per-request recompute counters and flags (PD/CDP routers)."""
+    """Per-request recompute counters and flags for P/D routers."""
 
     retry_count: int = 0
     wants_retry: bool = False
@@ -180,9 +179,8 @@ class BaseRouter(ABC):
         return p_req
 
     def _forward_request_id(self, req_data: dict) -> str:
-        dispatch_data = req_data.get(MOTOR_DISPATCH_KEY)
-        if isinstance(dispatch_data, dict):
-            engine_request_id = dispatch_data.get("engine_request_id")
+        for field in ("request_id", "rid"):
+            engine_request_id = req_data.get(field)
             if isinstance(engine_request_id, str) and engine_request_id:
                 return engine_request_id
         return self.req_info.req_id
@@ -642,7 +640,7 @@ class BaseRouter(ABC):
         trace_obj = self.req_info.trace_obj
         headers = trace_obj.get_trace_headers_dict(self.is_meta)
         trace_context = TracerManager().extract_trace_context(headers)
-        with TracerManager().tracer.start_as_current_span("CDP_Encode", context=trace_context) as span:
+        with TracerManager().tracer.start_as_current_span("PD_Encode", context=trace_context) as span:
             self.is_meta = True
             trace_obj.meta_span = span
             trace_obj.meta_trace_headers = TracerManager().inject_trace_context()

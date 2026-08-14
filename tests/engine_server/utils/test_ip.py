@@ -10,7 +10,7 @@
 
 import pytest
 
-from motor.engine_server.utils.ip import ip_valid_check, port_valid_check, is_valid_ipv6_address, build_endpoint
+from motor.common.utils.ip import build_endpoint, ip_valid_check, is_valid_ipv6_address, port_valid_check
 
 
 class TestIpUtils:

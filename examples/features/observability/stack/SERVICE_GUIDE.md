@@ -56,7 +56,7 @@ cp -n .env.example .env   # launch.sh 在无 .env 时也会自动从 .env.exampl
 | 观测能力 | 是否需改 pyMotor 配置 | 需要的配置 |
 |----------|----------------------|-----------|
 | Coordinator 基础指标（指标总览 / KV 缓存的请求数、KV、吞吐、延迟等） | **否** | Coordinator 默认在管理端口暴露 `/metrics`、`/instance/metrics`，无需额外配置；只需保证该端口可被观测机或主机端口转发访问 |
-| Engine / vLLM 指标 | **否**（默认开启） | Engine 在管理端口（默认 `10001`）暴露 `/metrics`；保证端口可达即可 |
+| Engine / vLLM 指标 | **否**（默认开启） | 原生引擎在业务端口暴露 `/metrics`；Coordinator 使用 `infer_tls_config` 直接采集，需保证业务端口可达 |
 | Tracing（Tempo 链路） | **是** | 见下方「1.4.1 Tracing 接入」 |
 | 引擎性能剖析（`vllm_profiling_*`） | **是** | 需安装并开启 `ms_service_metric`，见下方「1.4.2 Profiling 接入」 |
 
@@ -329,7 +329,7 @@ MOTOR_NAMESPACE=<namespace> ./launch.sh --native
 export MOTOR_NAMESPACE=<namespace>          # K8s namespace / job_id
 export MOTOR_NODE_IP=<node-ip>              # NodePort 访问 IP
 export MOTOR_USER_CONFIG=/path/user_config.json
-export MOTOR_ENGINE_MGMT_PORT=10001         # Engine /metrics 管理端口，默认 10001
+export MOTOR_ENGINE_BUSINESS_PORT=10000     # 原生引擎 /metrics 业务端口，默认 10000
 export OBS_HOST=<obs-host>                  # pyMotor 上报 tracing / OTLP 的观测主机
 export OBS_STACK_MODE=minimal|full          # 未传 --minimal/--full 时生效
 export PROXY_SH=/path/to/pymotor-proxy.env  # native runtime 下载二进制（dotenv 格式，可选；见 §2.4）
@@ -366,7 +366,7 @@ launch.sh
 - **Namespace**：`--namespace` / `MOTOR_NAMESPACE` → `user_config.json` 的 `motor_deploy_config.job_id` → 扫描含 Coordinator observability NodePort 的 namespace。
 - **Node IP**：`--node-ip` / `MOTOR_NODE_IP` → Coordinator Pod `hostIP` → Kubernetes Node `InternalIP`。
 - **Coordinator**：自动发现 observability NodePort（默认服务端口 `1027`），生成 `/metrics` 及 `type=instance|role|dp|node` 等指标端点。
-- **Engine**：优先 Engine metrics NodePort；无 NodePort 时回退 PodIP + `MOTOR_ENGINE_MGMT_PORT`（默认 `10001`），识别 `vllm-p0` / `vllm-d0` 等命名并推断 `pd_role` 与 `instance_id`。
+- **Engine**：优先原生引擎 metrics NodePort；无 NodePort 时回退 PodIP + `MOTOR_ENGINE_BUSINESS_PORT`（默认 `10000`），识别 `vllm-p0` / `vllm-d0` 等命名并推断 `pd_role` 与 `instance_id`。
 - **Tracing**：写入 `OBS_HOST`、`OTLP_HTTP_ENDPOINT=http://<obs-host>:4318/v1/traces`、`OTLP_GRPC_ENDPOINT=http://<obs-host>:4317`。
 
 ### 3.7 默认端口

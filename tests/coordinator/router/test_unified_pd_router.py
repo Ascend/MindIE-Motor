@@ -12,23 +12,17 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
 import motor.common.utils.error as cancel_error
 from motor.common.http import HTTPClientPool
 from motor.common.logger.logger import _resolve_logger_name
-from motor.common.resources.dispatch import (
-    DispatchPlan,
-    DispatchStopReason,
-    MOTOR_DISPATCH_KEY,
-    MOTOR_PREFILL_RESULT_KEY,
-    PrefillContextBudget,
-)
 from motor.common.resources.endpoint import (
     Endpoint,
     EndpointStatus,
@@ -40,14 +34,12 @@ from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, Schedul
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.router.adapters.pd_protocol import EngineProtocolError
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
     AttemptState,
+    AttemptStopReason,
     PDDispatchSession,
-)
-from motor.coordinator.router.dispatch_capability import (
-    DispatchPlanNotSupported,
-    select_dispatch_plan_for_pair,
 )
 from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
@@ -61,21 +53,21 @@ def _instance(
     instance_id: int,
     role: PDRole,
     *,
-    engine_type: str | None = None,
-    dispatch_capabilities: list[str] | None = None,
+    engine_type: str = "sglang",
+    bootstrap_port: int | None = None,
 ) -> Instance:
     endpoint = Endpoint(
         id=instance_id,
         ip="127.0.0.1",
         business_port=str(8100 + instance_id),
         mgmt_port=str(9100 + instance_id),
+        bootstrap_port=bootstrap_port,
         status=EndpointStatus.NORMAL,
     )
     return Instance(
         job_name=f"job-{instance_id}",
-        model_name=engine_type or "model",
+        model_name=engine_type,
         engine_type=engine_type,
-        dispatch_capabilities=dispatch_capabilities or [],
         id=instance_id,
         role=role,
         status=InsStatus.ACTIVE,
@@ -88,31 +80,28 @@ class _Scheduler:
     def __init__(
         self,
         *,
-        prefill_engine_type: str | None = None,
-        decode_engine_type: str | None = None,
-        prefill_capabilities: list[str] | None = None,
-        decode_capabilities: list[str] | None = None,
+        prefill_engine_type: str = "sglang",
+        decode_engine_type: str = "sglang",
+        prefill_bootstrap_port: int | None = 20001,
     ):
-        if prefill_capabilities is None:
-            prefill_capabilities = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
-        if decode_capabilities is None:
-            decode_capabilities = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
         self.p = _instance(
             1,
             PDRole.ROLE_P,
             engine_type=prefill_engine_type,
-            dispatch_capabilities=prefill_capabilities,
+            bootstrap_port=prefill_bootstrap_port,
         )
         self.d = _instance(
             2,
             PDRole.ROLE_D,
             engine_type=decode_engine_type,
-            dispatch_capabilities=decode_capabilities,
         )
         self.update_workload = AsyncMock(return_value=True)
 
     async def select_and_allocate(self, role, req_info, **_kwargs):
         instance = self.p if role == PDRole.ROLE_P else self.d
+        required_engine_type = _kwargs.get("required_engine_type")
+        if required_engine_type and instance.engine_type != required_engine_type:
+            return None
         endpoint = next(iter(next(iter(instance.endpoints.values())).values()))
         return instance, endpoint, Workload(active_tokens=1)
 
@@ -129,11 +118,16 @@ class _Client:
         self.name = name
         self.exc = exc
         self.requests = []
+        self.abort_requests = []
         self.headers = []
         self.base_url = f"http://{name}"
         self.timeout = 1
 
     async def post(self, path, json=None, headers=None, timeout=None):
+        if str(path).rstrip("/").endswith("abort_request"):
+            self.abort_requests.append(json)
+            request = httpx.Request("POST", path, headers=headers or {}, json=json)
+            return httpx.Response(status_code=200, json={}, request=request)
         self.requests.append(json)
         self.headers.append(headers or {})
         if self.exc is not None:
@@ -142,7 +136,7 @@ class _Client:
         if self.name == "prefill":
             return httpx.Response(
                 status_code=200,
-                json={"status": "cached", "id": json["request_id"]},
+                json={"status": "cached", "id": json.get("request_id") or json.get("rid")},
                 request=request,
             )
         return httpx.Response(
@@ -179,24 +173,54 @@ class _DelayedHTTPErrorClient(_HTTPErrorClient):
         return await super().post(path, json=json, headers=headers, timeout=timeout)
 
 
-class _PrefillResultClient(_Client):
+class _NativeHandoffPrefillClient(_Client):
     async def post(self, path, json=None, headers=None, timeout=None):
         self.requests.append(json)
         self.headers.append(headers or {})
         request = httpx.Request("POST", path, headers=headers or {}, json=json)
-        dispatch = json[MOTOR_DISPATCH_KEY]
         return httpx.Response(
             status_code=200,
             json={
-                "object": "motor.prefill_result",
-                "schema_version": "1.0",
-                "root_request_id": dispatch["root_request_id"],
-                "engine_request_id": dispatch["engine_request_id"],
-                "pair_id": dispatch["pair_id"],
-                "attempt_seq": dispatch["attempt_seq"],
-                "status": "completed",
-                "handoff_mode": "handoff",
-                "payload": {"opaque": "kv"},
+                "kv_transfer_params": {
+                    "do_remote_prefill": True,
+                    "remote_request_id": json["request_id"],
+                    "remote_host": "10.0.0.1",
+                    "remote_port": 9000,
+                    "connector_private": {"opaque": "kv"},
+                },
+                "usage": {
+                    "prompt_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 2},
+                },
+            },
+            request=request,
+        )
+
+
+class _NativeSglangPrefillClient(_Client):
+    async def post(self, path, json=None, headers=None, timeout=None):
+        self.requests.append(json)
+        self.headers.append(headers or {})
+        request = httpx.Request("POST", path, headers=headers or {}, json=json)
+        if json.get("stream"):
+            return httpx.Response(
+                status_code=200,
+                content=(
+                    b'data: {"choices":[],"usage":{"prompt_tokens":5,'
+                    b'"prompt_tokens_details":{"cached_tokens":2}}}\n\n'
+                    b"data: [DONE]\n\n"
+                ),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        return httpx.Response(
+            status_code=200,
+            json={
+                "id": json["rid"],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 2},
+                },
             },
             request=request,
         )
@@ -403,11 +427,11 @@ async def _invoke_asgi_response(response) -> list[dict]:
     [
         (
             f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8102",
-            DispatchStopReason.PEER_FAILED,
+            AttemptStopReason.PEER_FAILED,
         ),
-        (cancel_error.CLIENT_DISCONNECT, DispatchStopReason.CLIENT_DISCONNECT),
-        (cancel_error.DISPATCH_ABORT, DispatchStopReason.OTHER),
-        (cancel_error.SCOPE_ABORT, DispatchStopReason.OTHER),
+        (cancel_error.CLIENT_DISCONNECT, AttemptStopReason.CLIENT_DISCONNECT),
+        (cancel_error.DISPATCH_ABORT, AttemptStopReason.OTHER),
+        (cancel_error.SCOPE_ABORT, AttemptStopReason.OTHER),
     ],
 )
 def test_unified_pd_cancel_stop_reason_mapping(reason, expected):
@@ -454,236 +478,8 @@ async def test_unified_pd_process_response_error_wraps_cancelled_as_request_canc
     assert cancel_error.CLIENT_DISCONNECT in caplog.text
 
 
-def test_dispatch_plan_prefers_explicit_capability_over_engine_fallback():
-    scheduler = _Scheduler(
-        prefill_engine_type="vllm",
-        decode_engine_type="sglang",
-        prefill_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        decode_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-    )
-    p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
-    d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
-
-    plan = select_dispatch_plan_for_pair(
-        prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
-        decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
-    )
-
-    assert plan == DispatchPlan.CONCURRENT_ENGINE_SYNC
-
-
-def test_dispatch_plan_requires_connector_capability():
-    scheduler = _Scheduler(prefill_capabilities=[], decode_capabilities=[])
-    p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
-    d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
-
-    with pytest.raises(DispatchPlanNotSupported, match="do not advertise"):
-        select_dispatch_plan_for_pair(
-            prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
-            decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
-        )
-
-
-def test_dispatch_plan_requires_capability_from_both_instances():
-    scheduler = _Scheduler(
-        prefill_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        decode_capabilities=[],
-    )
-    p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
-    d_endpoint = next(iter(next(iter(scheduler.d.endpoints.values())).values()))
-
-    with pytest.raises(DispatchPlanNotSupported, match="do not advertise"):
-        select_dispatch_plan_for_pair(
-            prefill=ScheduledResource(instance=scheduler.p, endpoint=p_endpoint),
-            decode=ScheduledResource(instance=scheduler.d, endpoint=d_endpoint),
-        )
-
-
 @pytest.mark.asyncio
-async def test_unified_pd_nonstream_dispatches_prefill_and_decode_with_same_attempt(
-    monkeypatch,
-):
-    req_info = RequestInfo(
-        req_id="root-1",
-        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
-        api="v1/completions",
-        entry_api="v1/completions",
-        req_len=10,
-    )
-    scheduler = _Scheduler()
-    router = UnifiedPDRouter(
-        req_info,
-        _config(),
-        scheduler=scheduler,
-        request_manager=RequestManager(_config()),
-    )
-    p_client = _Client("prefill")
-    d_client = _Client("decode")
-
-    @asynccontextmanager
-    async def _client_for(resource: ScheduledResource):
-        if resource.instance.role == PDRole.ROLE_P:
-            yield p_client
-        else:
-            yield d_client
-
-    monkeypatch.setattr(router, "_client_for", _client_for)
-
-    response = await router.handle_request()
-
-    assert response.body == b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
-    assert len(p_client.requests) == 1
-    assert len(d_client.requests) == 1
-
-    p_dispatch = p_client.requests[0][MOTOR_DISPATCH_KEY]
-    d_dispatch = d_client.requests[0][MOTOR_DISPATCH_KEY]
-    assert p_dispatch["role"] == "prefill"
-    assert d_dispatch["role"] == "decode"
-    assert p_dispatch["root_request_id"] == "root-1"
-    assert d_dispatch["root_request_id"] == "root-1"
-    assert p_dispatch["attempt_seq"] == d_dispatch["attempt_seq"] == 1
-    assert p_dispatch["pair_id"] == d_dispatch["pair_id"]
-    assert p_client.requests[0]["request_id"] == "root-1#a1"
-    assert d_client.requests[0]["request_id"] == "root-1#a1"
-    assert p_client.headers[0]["X-Request-Id"] == "root-1#a1"
-    assert d_client.headers[0]["X-Request-Id"] == "root-1#a1"
-    assert scheduler.update_workload.await_count == 2
-    assert ReqState.PREFILL_END in req_info.status
-    assert req_info.status[ReqState.P_ALLOCATED] <= req_info.status[ReqState.PREFILL_END]
-    assert req_info.status[ReqState.PREFILL_END] <= req_info.status[ReqState.DECODE_END]
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_decode_failure_stops_both_legs(monkeypatch):
-    req_info = RequestInfo(
-        req_id="root-stop",
-        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
-        api="v1/completions",
-        entry_api="v1/completions",
-        req_len=10,
-    )
-    req_info.trace_obj.set_trace_prompt = MagicMock()
-    scheduler = _Scheduler()
-    router = UnifiedPDRouter(
-        req_info,
-        _config(),
-        scheduler=scheduler,
-        request_manager=RequestManager(_config()),
-    )
-    p_client = _Client("prefill")
-    d_client = _Client("decode", exc=httpx.ConnectError("decode down"))
-    stop_calls = []
-
-    @asynccontextmanager
-    async def _client_for(resource: ScheduledResource):
-        if resource.instance.role == PDRole.ROLE_P:
-            yield p_client
-        else:
-            yield d_client
-
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason.value))
-        return None
-
-    monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
-
-    with pytest.raises(httpx.ConnectError):
-        await router.handle_request()
-
-    assert len(stop_calls) == 2
-    req_info.trace_obj.set_trace_prompt.assert_called_with(req_info.req_data)
-    assert {call[0] for call in stop_calls} == {PDRole.ROLE_P, PDRole.ROLE_D}
-    assert all(call[1] == 1 for call in stop_calls)
-    assert scheduler.update_workload.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_dual_dispatch_uses_dispatch_context_not_bootstrap_fields(
-    monkeypatch,
-):
-    req_info = RequestInfo(
-        req_id="root-vllm-concurrent",
-        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
-        api="v1/completions",
-        entry_api="v1/completions",
-        req_len=10,
-    )
-    scheduler = _Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm")
-    router = UnifiedPDRouter(
-        req_info,
-        _config(),
-        scheduler=scheduler,
-        request_manager=RequestManager(_config()),
-    )
-    p_client = _Client("prefill")
-    d_client = _Client("decode")
-
-    @asynccontextmanager
-    async def _client_for(resource: ScheduledResource):
-        if resource.instance.role == PDRole.ROLE_P:
-            yield p_client
-        else:
-            yield d_client
-
-    monkeypatch.setattr(router, "_client_for", _client_for)
-
-    await router.handle_request()
-
-    for request_body in (p_client.requests[0], d_client.requests[0]):
-        assert "bootstrap_host" not in request_body
-        assert "bootstrap_port" not in request_body
-        assert "bootstrap_room" not in request_body
-        assert request_body[MOTOR_DISPATCH_KEY]["dispatch_mode"] == "pd_pair"
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_sglang_injects_bootstrap_fields_not_motor_dispatch(
-    monkeypatch,
-):
-    """SGLang pure-native PD: Coordinator injects stock bootstrap_* on both legs."""
-    monkeypatch.setenv("DISAGGREGATION_BOOTSTRAP_PORT", "9100")
-    req_info = RequestInfo(
-        req_id="root-sglang",
-        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
-        api="v1/completions",
-        entry_api="v1/completions",
-        req_len=10,
-    )
-    scheduler = _Scheduler(prefill_engine_type="sglang", decode_engine_type="sglang")
-    router = UnifiedPDRouter(
-        req_info,
-        _config(),
-        scheduler=scheduler,
-        request_manager=RequestManager(_config()),
-    )
-    p_client = _Client("prefill")
-    d_client = _Client("decode")
-
-    @asynccontextmanager
-    async def _client_for(resource: ScheduledResource):
-        if resource.instance.role == PDRole.ROLE_P:
-            yield p_client
-        else:
-            yield d_client
-
-    monkeypatch.setattr(router, "_client_for", _client_for)
-
-    await router.handle_request()
-
-    for request_body in (p_client.requests[0], d_client.requests[0]):
-        assert MOTOR_DISPATCH_KEY not in request_body
-        assert request_body["bootstrap_host"] == "127.0.0.1"
-        assert request_body["bootstrap_port"] == "9100"
-        assert isinstance(request_body["bootstrap_room"], int)
-    assert p_client.requests[0]["bootstrap_room"] == d_client.requests[0]["bootstrap_room"]
-
-
-@pytest.mark.asyncio
-async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatch):
+async def test_unified_pd_vllm_uses_native_handoff_before_selecting_decode(monkeypatch):
     req_info = RequestInfo(
         req_id="root-cpcd",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -691,8 +487,10 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
         entry_api="v1/completions",
         req_len=10,
     )
-    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
     events = []
     select_and_allocate = scheduler.select_and_allocate
 
@@ -713,10 +511,10 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
         request_manager=RequestManager(_config()),
     )
 
-    class _RecordingPrefillClient(_PrefillResultClient):
+    class _RecordingPrefillClient(_NativeHandoffPrefillClient):
         async def post(self, path, json=None, headers=None, timeout=None):
             response = await super().post(path, json=json, headers=headers, timeout=timeout)
-            events.append(("prefill_result",))
+            events.append(("native_prefill_result",))
             return response
 
     p_client = _RecordingPrefillClient("prefill")
@@ -735,24 +533,252 @@ async def test_unified_pd_cpcd_waits_for_prefill_result_before_decode(monkeypatc
 
     assert len(p_client.requests) == 1
     assert len(d_client.requests) == 1
-    p_dispatch = p_client.requests[0][MOTOR_DISPATCH_KEY]
-    d_dispatch = d_client.requests[0][MOTOR_DISPATCH_KEY]
-    assert p_dispatch["attempt_seq"] == d_dispatch["attempt_seq"] == 1
-    assert p_dispatch["pair_id"] == d_dispatch["pair_id"]
-    prefill_result = d_client.requests[0][MOTOR_PREFILL_RESULT_KEY]
-    assert prefill_result["status"] == "completed"
-    assert prefill_result["handoff_mode"] == "handoff"
-    assert prefill_result["payload"] == {"opaque": "kv"}
+    p_request = p_client.requests[0]
+    d_request = d_client.requests[0]
+    assert "_motor_dispatch" not in p_request
+    assert "_motor_dispatch" not in d_request
+    assert "_motor_prefill_result" not in d_request
+    assert p_request["request_id"] == d_request["request_id"] == "root-cpcd#a1"
+    assert p_request["stream"] is False
+    assert p_request["max_tokens"] == 1
+    assert p_request["min_tokens"] == 1
+    assert d_request["max_tokens"] == 8
+    assert d_request["kv_transfer_params"] == {
+        "do_remote_prefill": True,
+        "remote_request_id": "root-cpcd#a1",
+        "remote_host": "10.0.0.1",
+        "remote_port": 9000,
+        "connector_private": {"opaque": "kv"},
+    }
+    assert p_client.headers[0]["X-Request-Id"] == "root-cpcd#a1"
+    assert d_client.headers[0]["X-Request-Id"] == "root-cpcd#a1"
     assert scheduler.update_workload.await_count == 2
     assert [event for event in events if event[0] == "select"] == [
         ("select", PDRole.ROLE_P),
         ("select", PDRole.ROLE_D),
     ]
-    assert events.index(("prefill_result",)) < events.index(("select", PDRole.ROLE_D))
+    assert events.index(("native_prefill_result",)) < events.index(("select", PDRole.ROLE_D))
     assert ("release", PDRole.ROLE_P, WorkloadAction.RELEASE_TOKENS) in events
+    assert req_info.prompt_tokens_details == {"cached_tokens": 2}
     assert ReqState.PREFILL_END in req_info.status
     assert req_info.status[ReqState.P_ALLOCATED] <= req_info.status[ReqState.PREFILL_END]
     assert req_info.status[ReqState.PREFILL_END] <= req_info.status[ReqState.DECODE_END]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_vllm_rejects_missing_native_ticket_without_decode_or_peer_stop(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-missing-ticket",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    select_and_allocate = AsyncMock(side_effect=scheduler.select_and_allocate)
+    scheduler.select_and_allocate = select_and_allocate
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _Client("prefill")
+    d_client = _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    with pytest.raises(UpstreamHTTPError) as exc_info:
+        await router.handle_request()
+
+    assert exc_info.value.status_code == 502
+    assert b"Missing kv_transfer_params" in exc_info.value.body
+    assert select_and_allocate.await_count == 1
+    assert len(p_client.requests) == 1
+    assert d_client.requests == []
+    assert scheduler.update_workload.await_count == 1
+    release = scheduler.update_workload.await_args.args[0]
+    assert release.role == PDRole.ROLE_P
+    assert release.workload_action == WorkloadAction.RELEASE_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_vllm_strips_native_internal_fields_from_nonstream_response(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-native-strip",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+
+    class _DecodeClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            request = httpx.Request("POST", path, headers=headers or {}, json=json)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "choices": [{"text": "ok", "index": 0}],
+                    "kv_transfer_params": {"remote_host": "10.0.0.1"},
+                },
+                request=request,
+            )
+
+    d_client = _DecodeClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    body = json.loads(response.body)
+
+    assert body["choices"][0]["text"] == "ok"
+    assert "kv_transfer_params" not in body
+    assert d_client.requests[0]["kv_transfer_params"]["remote_host"] == "10.0.0.1"
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_vllm_native_handoff_preserves_chat_output_budget_and_shape(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-native-chat",
+        req_data={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+            "max_completion_tokens": 6,
+        },
+        api="v1/chat/completions",
+        entry_api="v1/chat/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+
+    class _CompletionDecodeClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            request = httpx.Request("POST", path, headers=headers or {}, json=json)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "object": "text_completion",
+                    "choices": [{"text": "ok", "index": 0, "finish_reason": "stop"}],
+                },
+                request=request,
+            )
+
+    d_client = _CompletionDecodeClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    body = json.loads(response.body)
+
+    assert p_client.requests[0]["max_tokens"] == 1
+    assert p_client.requests[0]["max_completion_tokens"] == 1
+    assert d_client.requests[0]["max_completion_tokens"] == 6
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"] == {"role": "assistant", "content": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_vllm_strips_native_internal_fields_from_stream_response(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-native-stream-strip",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+    d_client = _SequenceStreamClient(
+        "decode",
+        [
+            _StreamResponse(
+                [(b'data: {"choices":[{"text":"A","index":0}],"kv_transfer_params":{"remote_host":"10.0.0.1"}}\n\n')]
+            )
+        ],
+    )
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 1
+    assert b'"text":"A"' in chunks[0]
+    assert b"kv_transfer_params" not in chunks[0]
 
 
 @pytest.mark.asyncio
@@ -769,8 +795,10 @@ async def test_unified_pd_handoff_registers_decode_canceller_after_client_open(
         entry_api="v1/completions",
         req_len=10,
     )
-    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
     router = UnifiedPDRouter(
         req_info,
         _config(),
@@ -787,7 +815,7 @@ async def test_unified_pd_handoff_registers_decode_canceller_after_client_open(
 
     monkeypatch.setattr(AttemptContext, "register_decode_canceller", _register_decode_canceller)
 
-    p_client = _PrefillResultClient("prefill")
+    p_client = _NativeHandoffPrefillClient("prefill")
     d_client = _Client("decode")
 
     @asynccontextmanager
@@ -838,14 +866,7 @@ async def test_unified_pd_nonretryable_upstream_error_is_not_retried(monkeypatch
         else:
             yield d_client
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        return None
-
     monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     with pytest.raises(UpstreamHTTPError) as exc_info:
         await router.handle_request()
@@ -888,14 +909,7 @@ async def test_unified_pd_stream_prefill_rejection_is_returned_before_first_deco
         else:
             yield d_client
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        return None
-
     monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
     monkeypatch.setattr(
         router.rescheduler,
         "process_stream_chunk",
@@ -913,8 +927,7 @@ async def test_unified_pd_stream_prefill_rejection_is_returned_before_first_deco
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
-    monkeypatch.setenv("DISAGGREGATION_BOOTSTRAP_PORT", "9100")
+async def test_unified_pd_sglang_uses_native_bootstrap_concurrently(monkeypatch):
     req_info = RequestInfo(
         req_id="root-cpcd-sglang",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
@@ -922,12 +935,10 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
         entry_api="v1/completions",
         req_len=10,
     )
-    concurrent = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
     scheduler = _Scheduler(
         prefill_engine_type="sglang",
         decode_engine_type="sglang",
-        prefill_capabilities=concurrent,
-        decode_capabilities=concurrent,
+        prefill_bootstrap_port=8998,
     )
     router = UnifiedPDRouter(
         req_info,
@@ -935,7 +946,7 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
         scheduler=scheduler,
         request_manager=RequestManager(_config()),
     )
-    p_client = _Client("prefill")
+    p_client = _NativeSglangPrefillClient("prefill")
     d_client = _Client("decode")
 
     @asynccontextmanager
@@ -951,24 +962,78 @@ async def test_unified_pd_cpcd_sglang_uses_concurrent_plan(monkeypatch):
 
     assert len(p_client.requests) == 1
     assert len(d_client.requests) == 1
-    assert MOTOR_PREFILL_RESULT_KEY not in d_client.requests[0]
-    assert MOTOR_DISPATCH_KEY not in d_client.requests[0]
-    assert d_client.requests[0]["bootstrap_port"] == "9100"
+    p_request = p_client.requests[0]
+    d_request = d_client.requests[0]
+    assert "_motor_dispatch" not in p_request
+    assert "_motor_dispatch" not in d_request
+    assert "_motor_prefill_result" not in d_request
+    assert p_request["rid"] == d_request["rid"] == "root-cpcd-sglang#a1"
+    for request in (p_request, d_request):
+        assert request["bootstrap_host"] == "127.0.0.1"
+        assert request["bootstrap_port"] == 8998
+    assert p_request["bootstrap_room"] == d_request["bootstrap_room"]
+    assert p_client.headers[0]["X-Request-Id"] == "root-cpcd-sglang#a1"
+    assert d_client.headers[0]["X-Request-Id"] == "root-cpcd-sglang#a1"
     assert scheduler.update_workload.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_rejects_pair_without_shared_connector_capability(monkeypatch):
+async def test_unified_pd_sglang_rejects_missing_bootstrap_port_before_dispatch(
+    monkeypatch,
+):
     req_info = RequestInfo(
-        req_id="root-mixed",
+        req_id="root-sglang-no-port",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
         api="v1/completions",
         entry_api="v1/completions",
         req_len=10,
     )
     scheduler = _Scheduler(
-        prefill_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        decode_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+        prefill_engine_type="sglang",
+        decode_engine_type="sglang",
+    )
+    next(iter(next(iter(scheduler.p.endpoints.values())).values())).bootstrap_port = None
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _NativeSglangPrefillClient("prefill")
+    d_client = _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    with pytest.raises(EngineProtocolError, match="bootstrap port"):
+        await router.handle_request()
+
+    assert p_client.requests == []
+    assert d_client.requests == []
+    assert scheduler.update_workload.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_sglang_rejects_mixed_engine_pair_without_dispatch(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-sglang-mixed",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="sglang",
+        decode_engine_type="vllm",
+        prefill_bootstrap_port=8998,
     )
     router = UnifiedPDRouter(
         req_info,
@@ -976,21 +1041,211 @@ async def test_unified_pd_rejects_pair_without_shared_connector_capability(monke
         scheduler=scheduler,
         request_manager=RequestManager(_config()),
     )
-    stop_calls = []
-
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason.value))
-        return None
-
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
-
-    with pytest.raises(RuntimeError, match="no shared dispatch capability"):
+    with pytest.raises(HTTPException) as exc_info:
         await router.handle_request()
 
-    assert {call[0] for call in stop_calls} == {PDRole.ROLE_P, PDRole.ROLE_D}
+    assert exc_info.value.status_code == 503
+    assert "engine_type=sglang" in exc_info.value.detail
+    assert scheduler.update_workload.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_sglang_decode_failure_cancels_prefill_without_peer_stop(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-sglang-cancel",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="sglang",
+        decode_engine_type="sglang",
+        prefill_bootstrap_port=8998,
+    )
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    prefill_started = asyncio.Event()
+    prefill_cancelled = asyncio.Event()
+
+    class _BlockingPrefillClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            if str(path).rstrip("/").endswith("abort_request"):
+                return await super().post(path, json=json, headers=headers, timeout=timeout)
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            prefill_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                prefill_cancelled.set()
+
+    class _FailingDecodeClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            if str(path).rstrip("/").endswith("abort_request"):
+                return await super().post(path, json=json, headers=headers, timeout=timeout)
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            await prefill_started.wait()
+            raise httpx.ConnectError("decode down")
+
+    p_client = _BlockingPrefillClient("prefill")
+    d_client = _FailingDecodeClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    with pytest.raises(httpx.ConnectError, match="decode down"):
+        await router.handle_request()
+
+    await asyncio.wait_for(prefill_cancelled.wait(), timeout=1)
+    assert p_client.requests[0]["bootstrap_room"] == d_client.requests[0]["bootstrap_room"]
+    assert p_client.abort_requests == [{"rid": "root-sglang-cancel#a1"}]
+    assert d_client.abort_requests == [{"rid": "root-sglang-cancel#a1"}]
+    assert scheduler.update_workload.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_sglang_retry_uses_new_matched_bootstrap_room(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-sglang-retry",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="sglang",
+        decode_engine_type="sglang",
+        prefill_bootstrap_port=8998,
+    )
+    config = _config()
+    config.exception_config.transport_max_retry = 2
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _NativeSglangPrefillClient("prefill")
+
+    class _FailOnceDecodeClient(_Client):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            if str(path).rstrip("/").endswith("abort_request"):
+                return await super().post(path, json=json, headers=headers, timeout=timeout)
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            if len(self.requests) == 1:
+                raise httpx.ConnectError("retry decode")
+            request = httpx.Request("POST", path, headers=headers or {}, json=json)
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"text": "ok", "index": 0}]},
+                request=request,
+            )
+
+    d_client = _FailOnceDecodeClient("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+
+    assert json.loads(response.body)["choices"][0]["text"] == "ok"
+    assert len(p_client.requests) == len(d_client.requests) == 2
+    for attempt_seq, (p_request, d_request) in enumerate(
+        zip(p_client.requests, d_client.requests, strict=True),
+        start=1,
+    ):
+        assert p_request["rid"] == d_request["rid"] == f"root-sglang-retry#a{attempt_seq}"
+        assert p_request["bootstrap_room"] == d_request["bootstrap_room"]
+    assert p_client.requests[0]["bootstrap_room"] != p_client.requests[1]["bootstrap_room"]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_sglang_chat_stream_uses_native_fields_and_strips_them(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-sglang-chat-stream",
+        req_data={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+            "max_completion_tokens": 6,
+        },
+        api="v1/chat/completions",
+        entry_api="v1/chat/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="sglang",
+        decode_engine_type="sglang",
+        prefill_bootstrap_port=8998,
+    )
+    router = UnifiedPDRouter(
+        req_info,
+        _config(),
+        scheduler=scheduler,
+        request_manager=RequestManager(_config()),
+    )
+    p_client = _NativeSglangPrefillClient("prefill")
+    d_client = _SequenceStreamClient(
+        "decode",
+        [
+            _StreamResponse(
+                [
+                    (
+                        b'data: {"choices":[{"delta":{"content":"A"},"index":0}],'
+                        b'"bootstrap_host":"127.0.0.1","bootstrap_port":8998,'
+                        b'"bootstrap_room":123}\n\n'
+                    )
+                ]
+            )
+        ],
+    )
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+
+    response = await router.handle_request()
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 1
+    assert b'"content":"A"' in chunks[0]
+    assert b"bootstrap_" not in chunks[0]
+    assert p_client.requests[0]["stream"] is False
+    assert d_client.requests[0]["stream"] is True
+    for request in (p_client.requests[0], d_client.requests[0]):
+        assert request["max_completion_tokens"] == 6
+        assert "_motor_dispatch" not in request
+    assert p_client.requests[0]["bootstrap_room"] == d_client.requests[0]["bootstrap_room"]
 
 
 @pytest.mark.asyncio
@@ -1270,7 +1525,7 @@ async def test_unified_pd_background_release_uses_single_tracked_task():
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_release_failure_retains_local_ledger_and_is_drained(caplog):
+async def test_unified_pd_release_failure_keeps_local_release_and_is_drained(caplog):
     req_info = RequestInfo(
         req_id="root-release-failure",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1298,6 +1553,7 @@ async def test_unified_pd_release_failure_retains_local_ledger_and_is_drained(ca
             PDRole.ROLE_P,
         )
         assert original is not None
+        original_active_tokens = original.active_tokens
 
         with caplog.at_level(logging.DEBUG, logger=_ROUTER_LOGGER):
             submitted = await router._release_attempt_resource(
@@ -1315,11 +1571,11 @@ async def test_unified_pd_release_failure_retains_local_ledger_and_is_drained(ca
                 attempt.attempt_seq,
                 PDRole.ROLE_P,
             )
-            # Delete-after-ACK: failed RPC keeps the local ledger so a later re-enqueue can
-            # recompute the full negative delta; release_flags stay unmarked either way.
-            assert current == original
+            assert current is not None
+            assert current.active_tokens == original_active_tokens
             assert not attempt.release_flags.prefill_tokens
-            assert scheduler.update_workload.await_count == UnifiedPDRouter._RELEASE_RPC_ATTEMPTS
+            assert scheduler.update_workload.await_count == 3
+            assert "Release workload background task failed" in caplog.text
             assert "Release workload rolled back locally" not in caplog.text
     finally:
         await request_manager.del_req_info(req_info.req_id)
@@ -1486,7 +1742,7 @@ async def test_unified_pd_drain_double_cancel_keeps_release_cleanup():
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_concurrent_stream_tail_release_survives_iterator_cancellation(
+async def test_unified_pd_bootstrap_stream_tail_release_survives_iterator_cancellation(
     monkeypatch,
 ):
     req_info = RequestInfo(
@@ -1565,8 +1821,10 @@ async def test_unified_pd_handoff_stream_yields_before_prefill_token_release_fin
         entry_api="v1/completions",
         req_len=10,
     )
-    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
     token_release_compute_started = asyncio.Event()
     allow_token_release_compute = asyncio.Event()
     token_release_started = asyncio.Event()
@@ -1605,7 +1863,7 @@ async def test_unified_pd_handoff_stream_yields_before_prefill_token_release_fin
         return await compute_and_update(resource, req_id, action, req_info_arg, **kwargs)
 
     monkeypatch.setattr(router._workload_action_handler, "compute_and_update", _compute_and_update)
-    p_client = _PrefillResultClient("prefill")
+    p_client = _NativeHandoffPrefillClient("prefill")
     d_client = _StreamClient("decode")
 
     @asynccontextmanager
@@ -1671,18 +1929,18 @@ async def test_unified_pd_stream_dispatches_context_and_yields_visible_chunk(
     assert chunks == [b'data: {"choices":[{"delta":{"content":"A"},"index":0}]}\n\n']
     assert len(p_client.requests) == 1
     assert len(d_client.requests) == 1
-    assert d_client.requests[0][MOTOR_DISPATCH_KEY]["role"] == "decode"
-    assert p_client.requests[0][MOTOR_DISPATCH_KEY]["pair_id"] == d_client.requests[0][MOTOR_DISPATCH_KEY]["pair_id"]
+    assert d_client.requests[0]["rid"] == p_client.requests[0]["rid"]
+    assert p_client.requests[0]["bootstrap_room"] == d_client.requests[0]["bootstrap_room"]
     assert scheduler.update_workload.await_count == 2
     assert ReqState.PREFILL_END in req_info.status
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_concurrent_stream_prefill_release_does_not_block_first_chunk(
+async def test_unified_pd_bootstrap_stream_prefill_release_does_not_block_first_chunk(
     monkeypatch,
 ):
     req_info = RequestInfo(
-        req_id="root-concurrent-prefill-release-background",
+        req_id="root-bootstrap-prefill-release-background",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
         api="v1/completions",
         entry_api="v1/completions",
@@ -1739,12 +1997,11 @@ async def test_unified_pd_concurrent_stream_prefill_release_does_not_block_first
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_concurrent_nonstream_holds_prefill_until_decode_returns(
+async def test_unified_pd_bootstrap_nonstream_holds_prefill_tokens_until_decode_finishes(
     monkeypatch,
 ):
-    """Trigger/concurrent: P prepared ACK must not release load before decode completes."""
     req_info = RequestInfo(
-        req_id="root-concurrent-nonstream-prefill-release",
+        req_id="root-bootstrap-nonstream-prefill-release",
         req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
         api="v1/chat/completions",
         entry_api="v1/chat/completions",
@@ -1797,13 +2054,13 @@ async def test_unified_pd_concurrent_nonstream_holds_prefill_until_decode_return
 
     response_task = asyncio.create_task(router.handle_request())
     await asyncio.wait_for(decode_started.wait(), timeout=1)
-    # Prefill HTTP has returned (prepared), but P load must still be held.
-    await asyncio.sleep(0.05)
     assert not p_token_compute_started.is_set()
     assert not response_task.done()
 
     allow_decode.set()
     await asyncio.wait_for(p_token_compute_started.wait(), timeout=1)
+    assert not response_task.done()
+
     allow_p_release_compute.set()
     response = await asyncio.wait_for(response_task, timeout=1)
 
@@ -1811,7 +2068,7 @@ async def test_unified_pd_concurrent_nonstream_holds_prefill_until_decode_return
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monkeypatch):
+async def test_unified_pd_client_disconnect_cancels_tasks_and_releases_resources(monkeypatch):
     req_info = RequestInfo(
         req_id="root-stream-disconnect",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1832,7 +2089,6 @@ async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monke
     d_response = _BlockingStreamResponse()
     d_client = _BlockingStreamClient("decode", d_response)
     attempts = []
-    stop_calls = []
     original_create_attempt = router._create_attempt
 
     @asynccontextmanager
@@ -1847,10 +2103,6 @@ async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monke
         attempts.append(attempt)
         return attempt
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
-        return None
-
     async def receive():
         await d_response.started.wait()
         return {"type": "http.disconnect"}
@@ -1860,10 +2112,6 @@ async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monke
 
     monkeypatch.setattr(router, "_client_for", _client_for)
     monkeypatch.setattr(router, "_create_attempt", _create_attempt)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     response = await router.handle_request()
     await asyncio.wait_for(response(_asgi_scope(), receive, send), timeout=1)
@@ -1872,13 +2120,8 @@ async def test_unified_pd_client_disconnect_cancels_tasks_and_stops_engine(monke
     attempt = attempts[0]
     await asyncio.wait_for(d_response.closed.wait(), timeout=1)
     assert attempt.state == AttemptState.STOPPED
-    assert attempt.stop_sent is True
     assert attempt.prefill_task.done()
     assert attempt.decode_task.done()
-    assert set(stop_calls) == {
-        (PDRole.ROLE_P, 1, DispatchStopReason.CLIENT_DISCONNECT),
-        (PDRole.ROLE_D, 1, DispatchStopReason.CLIENT_DISCONNECT),
-    }
     assert scheduler.update_workload.await_count == 2
     assert not any(
         task.get_name() == "unified-pd-queue-root-stream-disconnect-a1" and not task.done()
@@ -1906,20 +2149,12 @@ async def test_unified_pd_stop_attempt_drains_release_failures(monkeypatch, capl
         request_manager=request_manager,
     )
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        return None
-
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
-
     await request_manager.add_req_info(req_info)
     try:
         attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
 
         with caplog.at_level(logging.DEBUG, logger=_ROUTER_LOGGER):
-            await router._stop_attempt(attempt, DispatchStopReason.CLIENT_DISCONNECT)
+            await router._stop_attempt(attempt, AttemptStopReason.CLIENT_DISCONNECT)
 
             assert attempt.state == AttemptState.STOPPED
             assert scheduler.update_workload.await_count == 6
@@ -1932,7 +2167,7 @@ async def test_unified_pd_stop_attempt_drains_release_failures(monkeypatch, capl
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_send_failure_closes_decode_and_stops_engine(monkeypatch):
+async def test_unified_pd_send_failure_closes_decode_and_releases_resources(monkeypatch):
     req_info = RequestInfo(
         req_id="root-stream-send-failure",
         req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
@@ -1954,7 +2189,6 @@ async def test_unified_pd_send_failure_closes_decode_and_stops_engine(monkeypatc
     )
     d_client = _BlockingStreamClient("decode", d_response)
     attempts = []
-    stop_calls = []
     original_create_attempt = router._create_attempt
 
     @asynccontextmanager
@@ -1969,20 +2203,12 @@ async def test_unified_pd_send_failure_closes_decode_and_stops_engine(monkeypatc
         attempts.append(attempt)
         return attempt
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
-        return None
-
     async def send(message):
         if message["type"] == "http.response.body" and message.get("body"):
             raise OSError("client socket closed")
 
     monkeypatch.setattr(router, "_client_for", _client_for)
     monkeypatch.setattr(router, "_create_attempt", _create_attempt)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     response = await router.handle_request()
     with pytest.raises(ClientDisconnect):
@@ -1992,13 +2218,8 @@ async def test_unified_pd_send_failure_closes_decode_and_stops_engine(monkeypatc
     attempt = attempts[0]
     await asyncio.wait_for(d_response.closed.wait(), timeout=1)
     assert attempt.state == AttemptState.STOPPED
-    assert attempt.stop_sent is True
     assert attempt.prefill_task.done()
     assert attempt.decode_task.done()
-    assert set(stop_calls) == {
-        (PDRole.ROLE_P, 1, DispatchStopReason.CLIENT_DISCONNECT),
-        (PDRole.ROLE_D, 1, DispatchStopReason.CLIENT_DISCONNECT),
-    }
     assert scheduler.update_workload.await_count == 2
 
 
@@ -2056,14 +2277,7 @@ async def test_unified_pd_stream_error_after_visible_chunk_reschedules_with_toke
         else:
             yield d_client
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        return None
-
     monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     response = await router.handle_request()
     messages = await _invoke_asgi_response(response)
@@ -2075,7 +2289,7 @@ async def test_unified_pd_stream_error_after_visible_chunk_reschedules_with_toke
     assert len(d_client.requests) == 2
     assert d_client.requests[0]["return_token_ids"] is True
     assert p_client.requests[1]["prompt"] == [1, 2, 10]
-    assert p_client.requests[1]["max_tokens"] == 1
+    assert p_client.requests[1]["max_tokens"] == 8
     assert p_client.requests[1]["stream"] is False
     assert d_client.requests[1]["prompt"] == [1, 2, 10]
     assert d_client.requests[1]["max_tokens"] == 7
@@ -2114,7 +2328,6 @@ async def test_unified_pd_retry_plan_validation_fails_before_new_attempt_allocat
         scheduler=scheduler,
         request_manager=RequestManager(config),
     )
-    stop_calls = []
     build_plan_calls = []
     original_build_retry_plan = router.rescheduler.build_retry_plan
 
@@ -2124,19 +2337,11 @@ async def test_unified_pd_retry_plan_validation_fails_before_new_attempt_allocat
         raise httpx.ReadError("after token cache")
         yield b""  # pylint: disable=unreachable
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
-        return None
-
     def _build_retry_plan(req_data):
         build_plan_calls.append(req_data)
         return original_build_retry_plan(req_data)
 
     monkeypatch.setattr(router, "_run_stream_attempt", _run_stream_attempt)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
     monkeypatch.setattr(router.rescheduler, "build_retry_plan", _build_retry_plan)
 
     response = await router.handle_request()
@@ -2147,10 +2352,6 @@ async def test_unified_pd_retry_plan_validation_fails_before_new_attempt_allocat
     assert "parallel sampling" in body["detail"]
     assert len(build_plan_calls) == 1
     assert scheduler.select_and_allocate.await_count == 2
-    assert set(stop_calls) == {
-        (PDRole.ROLE_P, 1, DispatchStopReason.PEER_FAILED),
-        (PDRole.ROLE_D, 1, DispatchStopReason.PEER_FAILED),
-    }
 
 
 @pytest.mark.asyncio
@@ -2164,8 +2365,10 @@ async def test_unified_pd_handoff_stream_retry_replays_same_prompt_through_prefi
         entry_api="v1/completions",
         req_len=10,
     )
-    handoff = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-    scheduler = _Scheduler(prefill_capabilities=handoff, decode_capabilities=handoff)
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
     config = _config()
     config.exception_config.transport_max_retry = 2
     config.exception_config.reschedule_enabled = True
@@ -2175,7 +2378,7 @@ async def test_unified_pd_handoff_stream_retry_replays_same_prompt_through_prefi
         scheduler=scheduler,
         request_manager=RequestManager(config),
     )
-    p_client = _PrefillResultClient("prefill")
+    p_client = _NativeHandoffPrefillClient("prefill")
     d_client = _SequenceStreamClient(
         "decode",
         [
@@ -2200,14 +2403,7 @@ async def test_unified_pd_handoff_stream_retry_replays_same_prompt_through_prefi
         else:
             yield d_client
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        return None
-
     monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     response = await router.handle_request()
     messages = await _invoke_asgi_response(response)
@@ -2218,26 +2414,21 @@ async def test_unified_pd_handoff_stream_retry_replays_same_prompt_through_prefi
     assert len(d_client.requests) == 2
     assert p_client.requests[1]["prompt"] == [1, 2, 10]
     assert p_client.requests[1]["max_tokens"] == 1
-    assert p_client.requests[0][MOTOR_DISPATCH_KEY]["prefill_context_budget"] == {
-        "max_output_tokens": 8,
-        "parameter": "max_tokens",
-    }
-    assert p_client.requests[1][MOTOR_DISPATCH_KEY]["prefill_context_budget"] == {
-        "max_output_tokens": 7,
-        "parameter": "max_tokens",
-    }
+    assert all("_motor_dispatch" not in request for request in p_client.requests)
+    assert all("_motor_dispatch" not in request for request in d_client.requests)
+    assert all("_motor_prefill_result" not in request for request in d_client.requests)
+    assert p_client.requests[0]["request_id"] == d_client.requests[0]["request_id"] == "root-handoff-reschedule#a1"
+    assert p_client.requests[1]["request_id"] == d_client.requests[1]["request_id"] == "root-handoff-reschedule#a2"
     assert d_client.requests[1]["prompt"] == [1, 2, 10]
     assert d_client.requests[1]["max_tokens"] == 7
-    retry_prefill_result = d_client.requests[1][MOTOR_PREFILL_RESULT_KEY]
-    assert retry_prefill_result["attempt_seq"] == 2
-    assert retry_prefill_result["pair_id"] == d_client.requests[1][MOTOR_DISPATCH_KEY]["pair_id"]
+    assert d_client.requests[1]["kv_transfer_params"]["remote_request_id"] == "root-handoff-reschedule#a2"
     assert b'"text":"A"' in body
     assert b'"text":"B"' in body
     assert b"ReadError" not in body
 
 
 @pytest.mark.asyncio
-async def test_unified_pd_pool_node_fault_reschedules_and_stops_as_peer_failure(
+async def test_unified_pd_pool_node_fault_reschedules_without_peer_stop(
     monkeypatch,
 ):
     req_info = RequestInfo(
@@ -2260,14 +2451,13 @@ async def test_unified_pd_pool_node_fault_reschedules_and_stops_as_peer_failure(
     decode_started = asyncio.Event()
     decode_calls = []
     prefill_calls = []
-    stop_calls = []
 
     async def _forward_prefill(self, api, req_data, client, timeout):
         prefill_calls.append(req_data.copy())
         request = httpx.Request("POST", f"/{api}", json=req_data)
         return httpx.Response(
             status_code=200,
-            json={"status": "cached", "id": req_data["request_id"]},
+            json={"status": "cached", "id": req_data.get("request_id") or req_data.get("rid")},
             request=request,
         )
 
@@ -2281,16 +2471,8 @@ async def test_unified_pd_pool_node_fault_reschedules_and_stops_as_peer_failure(
             await asyncio.Event().wait()
         yield b'data: {"choices":[{"text":"B","index":0,"token_ids":[11],"finish_reason":"stop"}]}\n\n'
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason))
-        return None
-
     monkeypatch.setattr(UnifiedPDRouter, "forward_request", _forward_prefill)
     monkeypatch.setattr(UnifiedPDRouter, "forward_stream_request", _forward_decode)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     pool = HTTPClientPool()
     p_endpoint = next(iter(next(iter(scheduler.p.endpoints.values())).values()))
@@ -2325,10 +2507,6 @@ async def test_unified_pd_pool_node_fault_reschedules_and_stops_as_peer_failure(
         assert decode_calls[1]["prompt"] == [1, 2, 10]
         assert b'"text":"A"' in body
         assert b'"text":"B"' in body
-        assert len(stop_calls) == 2
-        assert {call[0] for call in stop_calls} == {PDRole.ROLE_P, PDRole.ROLE_D}
-        assert all(call[1] == 1 for call in stop_calls)
-        assert all(call[2] == DispatchStopReason.PEER_FAILED for call in stop_calls)
         assert req_info.state == ReqState.DECODE_END
     finally:
         await pool.close_client(
@@ -2365,7 +2543,6 @@ async def test_unified_pd_stream_error_after_visible_chunk_without_replay_does_n
     )
     p_client = _Client("prefill")
     d_client = _StreamClient("decode", exc_after_chunks=httpx.ReadError("after chunk"))
-    stop_calls = []
 
     @asynccontextmanager
     async def _client_for(resource: ScheduledResource):
@@ -2374,15 +2551,7 @@ async def test_unified_pd_stream_error_after_visible_chunk_without_replay_does_n
         else:
             yield d_client
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        stop_calls.append((resource.instance.role, attempt.attempt_seq, reason.value))
-        return None
-
     monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     response = await router.handle_request()
     chunks = [chunk async for chunk in response.body_iterator]
@@ -2391,7 +2560,6 @@ async def test_unified_pd_stream_error_after_visible_chunk_without_replay_does_n
     error_chunk = chunks[1].decode("utf-8") if isinstance(chunks[1], bytes) else chunks[1]
     assert "ReadError" in error_chunk
     assert len(d_client.requests) == 1
-    assert len(stop_calls) == 2
     await router._drain_release_tasks()
     assert scheduler.update_workload.await_count == 2
 
@@ -2437,14 +2605,7 @@ async def test_unified_pd_stream_error_before_first_body_retries_without_token_r
         else:
             yield d_client
 
-    async def _stop(self, resource, attempt, reason, timeout=1.0):
-        return None
-
     monkeypatch.setattr(router, "_client_for", _client_for)
-    monkeypatch.setattr(
-        "motor.coordinator.router.stop_client.DispatchStopClient.stop",
-        _stop,
-    )
 
     response = await router.handle_request()
     chunks = [chunk async for chunk in response.body_iterator]
@@ -2453,31 +2614,255 @@ async def test_unified_pd_stream_error_before_first_body_retries_without_token_r
     assert chunks == [b'data: {"choices":[{"delta":{"content":"B"},"index":0,"finish_reason":"stop"}]}\n\n']
 
 
-def test_dispatch_carries_effective_output_budget_to_prefill_leg():
-    session = PDDispatchSession(
-        "request-1",
-        prefill_context_budget=PrefillContextBudget(
-            max_output_tokens=24,
-            parameter="max_completion_tokens",
-        ),
+@pytest.mark.asyncio
+async def test_unified_pd_nonstream_falls_back_to_hybrid_when_decode_pool_exhausted(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-nonstream-fallback",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
     )
-    attempt = session.new_attempt(None, None, config=None, consumed_output_tokens=5)
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    select_and_allocate = scheduler.select_and_allocate
 
-    dispatch = attempt.dispatch_for(PDRole.ROLE_P, "prefill_handoff_decode")
+    async def _select_and_allocate(role, request_info, **kwargs):
+        if role == PDRole.ROLE_D:
+            return None
+        return await select_and_allocate(role, request_info, **kwargs)
 
-    assert dispatch.prefill_context_budget == PrefillContextBudget(
-        max_output_tokens=19,
-        parameter="max_completion_tokens",
+    async def _get_unblocked_instances(role):
+        if role == PDRole.ROLE_D:
+            return []
+        return [scheduler.p.id]
+
+    scheduler.select_and_allocate = AsyncMock(side_effect=_select_and_allocate)
+    scheduler.get_unblocked_instances = _get_unblocked_instances
+    config = _config()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+    fallback_calls = []
+
+    class _FallbackRouter:
+        async def handle_request(self, *, manage_request_context):
+            fallback_calls.append(manage_request_context)
+            return JSONResponse({"choices": [{"text": "hybrid"}]})
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        assert resource.instance.role == PDRole.ROLE_P
+        yield p_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(router, "_build_hybrid_fallback_router", _FallbackRouter)
+
+    response = await router.handle_request()
+
+    assert json.loads(response.body)["choices"][0]["text"] == "hybrid"
+    assert fallback_calls == [False]
+    assert len(p_client.requests) == 1
+    assert scheduler.select_and_allocate.await_count == 2
+    await router._drain_release_tasks()
+    assert scheduler.update_workload.await_count == 1
+    release = scheduler.update_workload.await_args.args[0]
+    assert release.role == PDRole.ROLE_P
+    assert release.workload_action == WorkloadAction.RELEASE_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_runtime_fallback_respects_disabled_switch(monkeypatch):
+    req_info = RequestInfo(
+        req_id="root-fallback-disabled",
+        req_data={"model": "m", "prompt": "hello", "stream": False, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    select_and_allocate = scheduler.select_and_allocate
+
+    async def _select_and_allocate(role, request_info, **kwargs):
+        if role == PDRole.ROLE_D:
+            return None
+        return await select_and_allocate(role, request_info, **kwargs)
+
+    scheduler.select_and_allocate = AsyncMock(side_effect=_select_and_allocate)
+    scheduler.get_unblocked_instances = AsyncMock(return_value=[scheduler.p.id])
+    config = _config()
+    config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        assert resource.instance.role == PDRole.ROLE_P
+        yield p_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(
+        router,
+        "_build_hybrid_fallback_router",
+        lambda: pytest.fail("disabled runtime fallback must not build PDHybridRouter"),
     )
 
+    with pytest.raises(HTTPException, match="No instance available for role"):
+        await router.handle_request()
 
-def test_unified_pd_prefers_max_completion_tokens_and_preserves_parameter():
-    router = SimpleNamespace(req_info=SimpleNamespace(req_data={"max_tokens": 32, "max_completion_tokens": 24}))
+    scheduler.get_unblocked_instances.assert_not_awaited()
 
-    assert UnifiedPDRouter._prefill_context_budget(router) == PrefillContextBudget(
-        max_output_tokens=24,
-        parameter="max_completion_tokens",
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_restarts_on_hybrid_before_commit_when_decode_pool_exhausted(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-stream-fallback-restart",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
     )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+    select_and_allocate = scheduler.select_and_allocate
+
+    async def _select_and_allocate(role, request_info, **kwargs):
+        if role == PDRole.ROLE_D:
+            return None
+        return await select_and_allocate(role, request_info, **kwargs)
+
+    async def _get_unblocked_instances(role):
+        if role == PDRole.ROLE_D:
+            return []
+        return [scheduler.p.id]
+
+    scheduler.select_and_allocate = AsyncMock(side_effect=_select_and_allocate)
+    scheduler.get_unblocked_instances = _get_unblocked_instances
+    config = _config()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+    fallback_calls = []
+
+    class _FallbackRouter:
+        async def stream_fallback_from_existing_context(self, **kwargs):
+            fallback_calls.append(kwargs)
+            kwargs["mark_unified_ready"]()
+            yield b'data: {"choices":[{"text":"hybrid","finish_reason":"stop"}]}\n\n'
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        assert resource.instance.role == PDRole.ROLE_P
+        yield p_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(router, "_build_hybrid_fallback_router", _FallbackRouter)
+
+    response = await router.handle_request()
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert chunks == [b'data: {"choices":[{"text":"hybrid","finish_reason":"stop"}]}\n\n']
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0]["attempt_id"] == 2
+    assert fallback_calls[0]["req_data"]["prompt"] == "hello"
+    assert fallback_calls[0]["mark_unified_ready"] is not None
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_resumes_on_hybrid_with_token_replay_after_commit(
+    monkeypatch,
+):
+    req_info = RequestInfo(
+        req_id="root-stream-fallback-resume",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    scheduler = _Scheduler(
+        prefill_engine_type="vllm",
+        decode_engine_type="vllm",
+    )
+
+    async def _get_unblocked_instances(role):
+        if role == PDRole.ROLE_D:
+            return []
+        return [scheduler.p.id]
+
+    scheduler.get_unblocked_instances = _get_unblocked_instances
+    config = _config()
+    config.exception_config.transport_max_retry = 2
+    config.exception_config.reschedule_enabled = True
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    p_client = _NativeHandoffPrefillClient("prefill")
+    d_client = _SequenceStreamClient(
+        "decode",
+        [
+            _StreamResponse(
+                [
+                    b'data: {"choices":[{"text":"A","index":0,"prompt_token_ids":[1,2],"token_ids":[10]}]}\n\n',
+                ],
+                exc_after_chunks=httpx.ReadError("decode disappeared"),
+            )
+        ],
+    )
+    fallback_calls = []
+
+    class _FallbackRouter:
+        async def stream_fallback_from_existing_context(self, **kwargs):
+            fallback_calls.append(kwargs)
+            yield b'data: {"choices":[{"text":"B","token_ids":[11],"finish_reason":"stop"}]}\n\n'
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        if resource.instance.role == PDRole.ROLE_P:
+            yield p_client
+        else:
+            yield d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    monkeypatch.setattr(router, "_build_hybrid_fallback_router", _FallbackRouter)
+
+    response = await router.handle_request()
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = b"".join(chunk if isinstance(chunk, bytes) else chunk.encode() for chunk in chunks)
+
+    assert b'"text":"A"' in body
+    assert b'"text":"B"' in body
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0]["is_resume"] is True
+    assert fallback_calls[0]["api"] == "v1/completions"
+    assert fallback_calls[0]["req_data"]["prompt"] == [1, 2, 10]
+    assert fallback_calls[0]["req_data"]["max_tokens"] == 7
 
 
 def test_retry_plan_preserves_max_completion_tokens_precedence_for_completion_replay():

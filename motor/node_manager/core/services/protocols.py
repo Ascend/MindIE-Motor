@@ -41,7 +41,7 @@ class PreparableService(DaemonService, Protocol):
     """A service that needs pre-flight preparation before the engine starts."""
 
     def prepare(self, **kwargs) -> None:
-        """Run before ``EngineService.pull()``.
+        """Run before ``NativeEngineService.pull()``.
 
         *kwargs* include ``endpoints_count`` (int) so the service can
         divide per-node DRAM across DP ranks.

@@ -39,6 +39,13 @@ from motor.common.resources.instance import (  # noqa: E402
     InsConditionEvent,
     PDRole,
 )
+from examples.deployer.prestop.prestop import (  # noqa: E402
+    build_curl_tls_args,
+    get_engine_metrics,
+    get_engine_type,
+    get_infer_tls_config,
+    wait_for_engine_drain,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -147,6 +154,81 @@ class TestHeartbeatManagerPrestop:
         with heartbeat_mgr._endpoint_lock:
             heartbeat_mgr._endpoints = []
         heartbeat_mgr.pause_all_endpoints()  # no exception
+
+
+def test_prestop_uses_inference_tls_for_native_metrics():
+    config = {
+        "motor_deploy_config": {
+            "tls_config": {
+                "infer_tls_config": {
+                    "enable_tls": True,
+                    "ca_file": "/certs/ca.pem",
+                    "cert_file": "/certs/client.pem",
+                    "key_file": "/certs/client.key",
+                    "crl_file": "/certs/ca.crl",
+                }
+            }
+        }
+    }
+
+    tls_config = get_infer_tls_config(config)
+
+    assert build_curl_tls_args(tls_config) == [
+        "--cacert",
+        "/certs/ca.pem",
+        "--cert",
+        "/certs/client.pem",
+        "--key",
+        "/certs/client.key",
+        "--crlfile",
+        "/certs/ca.crl",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("engine_type", "metrics_text"),
+    [
+        ("vllm", "vllm:num_requests_waiting 2\nvllm:num_requests_running 3\n"),
+        ("sglang", "sglang:num_waiting_reqs 4\nsglang:num_running_reqs 5\n"),
+    ],
+)
+def test_prestop_parses_engine_specific_drain_metrics(engine_type, metrics_text):
+    with patch("examples.deployer.prestop.prestop._http_get_text", return_value=metrics_text):
+        assert get_engine_metrics("http://engine/metrics", {}, engine_type) == {
+            "waiting": 2 if engine_type == "vllm" else 4,
+            "running": 3 if engine_type == "vllm" else 5,
+        }
+
+
+def test_prestop_missing_required_metric_is_not_treated_as_drained():
+    with patch(
+        "examples.deployer.prestop.prestop._http_get_text",
+        return_value="sglang:num_waiting_reqs 0\n",
+    ):
+        assert get_engine_metrics("http://engine/metrics", {}, "sglang") is None
+
+
+def test_prestop_retries_when_metrics_are_temporarily_unavailable():
+    with (
+        patch(
+            "examples.deployer.prestop.prestop.get_engine_metrics",
+            side_effect=[None, {"waiting": 0, "running": 0}],
+        ) as get_metrics,
+        patch("examples.deployer.prestop.prestop.time.monotonic", side_effect=[0, 0, 1, 1]),
+        patch("examples.deployer.prestop.prestop.time.sleep") as sleep,
+    ):
+        drained = wait_for_engine_drain(["http://engine/metrics"], {}, "sglang", 10, 3)
+
+    assert drained is True
+    assert get_metrics.call_count == 2
+    sleep.assert_called_once_with(3)
+
+
+@patch.dict("os.environ", {"ROLE": "decode"}, clear=False)
+def test_prestop_resolves_engine_type_from_active_role():
+    config = {"motor_engine_decode_config": {"engine_type": "sglang"}}
+
+    assert get_engine_type(config) == "sglang"
 
 
 # ---------------------------------------------------------------------------

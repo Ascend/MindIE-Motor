@@ -38,6 +38,11 @@ Endpoint (ABC)    → MgmtEndpoint / InferEndpoint      — HTTP server lifecycl
 InferEndpoint.get_lifespan() → VLLMEndpoint / SGLangEndpoint  — engine-specific startup
 ```
 
+The transitional EngineServer reuses the CLI configuration adapters owned by
+`motor/node_manager/core/services/native_engine/backends/`. Process launch and supervision for the
+new direct-native path remain in `NativeEngineService`; the classes in this document describe only
+the legacy in-process EngineServer path.
+
 ### Config → CLI Args Pipeline
 
 1. `ConfigFactory` looks up the engine's `IConfig` in an explicit `_ENGINE_CONFIG_MAP` dict (`vllm` / `sglang` → module paths); `parse()` runs the full `initialize()` → `convert()` → `validate()` pipeline
@@ -176,7 +181,7 @@ Layer 4: SimInference (proactive health)
 | File | Role |
 |------|------|
 | `motor/engine_server/cli/main.py` | Entry point: CLI arg parsing, factory wiring, start Mgmt+Infer endpoints |
-| `motor/engine_server/core/config.py` | `IConfig` ABC: `initialize()`, `validate()`, `convert()`, `get_args()` |
+| `motor/node_manager/core/services/native_engine/backends/base.py` | Shared `IConfig` ABC used by the transitional EngineServer and native backends |
 | `motor/engine_server/core/engine.py` | `Engine` ABC: `launch()`, `shutdown()` |
 | `motor/engine_server/core/endpoint.py` | `Endpoint` ABC: `run()`, uvicorn lifecycle |
 | `motor/engine_server/core/infer_endpoint.py` | `InferEndpoint`: FastAPI app, uvicorn, route registration, lifespan, dispatch adapter wiring, TLS |
@@ -186,12 +191,13 @@ Layer 4: SimInference (proactive health)
 | `motor/engine_server/core/dispatch_adapter/` | Dispatch adapter subsystem: `base.py` (534), `vllm_adapter.py` (340), `normalization.py` (220), `sglang_adapter.py` (49), `factory.py` (23) |
 | `motor/engine_server/core/snapshot_sentinel.py` | `SnapshotSentinel` thread: checkpoint wait + suspend/resume driving |
 | `motor/engine_server/core/snapshot_monitor.py` | `SnapshotMonitor`: suspend/unlock/resume completion states |
-| `motor/engine_server/core/vllm/vllm_config.py` | `VLLMConfig`: field mapping, DP address, KV transfer, D2D config |
+| `motor/node_manager/core/services/native_engine/backends/vllm/config.py` | `VLLMConfig`: field mapping, DP address, KV transfer, D2D config |
 | `motor/engine_server/core/vllm/vllm_engine.py` | `VLLMEngine`: `AsyncEngineArgs.from_cli_args` + `AsyncLLM.from_vllm_config`, headless PCP follower |
 | `motor/engine_server/core/vllm/vllm_endpoint.py` | `VLLMEndpoint`: `_vllm_lifespan` context manager, route init |
 | `motor/engine_server/core/vllm/vllm_openai_compat.py` | OpenAI-compat shims (model lists, request mapping) for the vLLM backend |
-| `motor/engine_server/core/sglang/` | `SGLangConfig`, `SGLangEngine`, `SGLangEndpoint` |
-| `motor/engine_server/factory/config_factory.py` | `ConfigFactory`: explicit `_ENGINE_CONFIG_MAP` + `parse()` (initialize→convert→validate) |
+| `motor/node_manager/core/services/native_engine/backends/sglang/config.py` | `SGLangConfig`: native CLI conversion and validation |
+| `motor/engine_server/core/sglang/` | Transitional `SGLangEngine` and `SGLangEndpoint` |
+| `motor/node_manager/core/services/native_engine/config_factory.py` | `ConfigFactory`: explicit `_ENGINE_CONFIG_MAP` + `parse()` (initialize→convert→validate) |
 | `motor/engine_server/factory/endpoint_factory.py` | InferEndpoint loading by engine name |
 | `motor/config/endpoint.py` | `EndpointConfig`: engine_type, host, port, mgmt_port, role, dp_rank, master_dp_ip, node_rank, d2d_peer_ips, snapshot_metadata, deploy_config; `HealthCheckConfig`: timeout, retry attempts, npu_usage_threshold, enable_virtual_inference, max_failure_count |
 
@@ -201,11 +207,12 @@ Layer 4: SimInference (proactive health)
 
 To add support for a new engine (e.g., "trtllm"):
 
-1. Create `motor/engine_server/core/{engine}/` directory
-2. Implement `{engine}_config.py`: subclass `IConfig`, implement `initialize()`/`validate()`/`convert()`
-3. Implement `{engine}_engine.py`: subclass `Engine`, wrap engine client creation in `launch()`
-4. Implement `{engine}_endpoint.py`: subclass `InferEndpoint`, implement `get_lifespan()` + `init_request_handlers()`
-5. Register engine name → module path in `ConfigFactory._ENGINE_CONFIG_MAP` and `EndpointFactory`
+1. Create `motor/node_manager/core/services/native_engine/backends/{engine}/config.py`
+2. Implement the engine config adapter as an `IConfig` subclass and register it in `ConfigFactory._ENGINE_CONFIG_MAP`
+3. For transitional EngineServer support, create `motor/engine_server/core/{engine}/`
+4. Implement `{engine}_engine.py`: subclass `Engine`, wrap engine client creation in `launch()`
+5. Implement `{engine}_endpoint.py`: subclass `InferEndpoint`, implement `get_lifespan()` + `init_request_handlers()`
+6. Register the transitional endpoint in `EndpointFactory`
 
 ### Other Rules
 
@@ -214,7 +221,7 @@ To add support for a new engine (e.g., "trtllm"):
 - **PD disaggregation**: KV transfer config is set up during `IConfig.initialize()` based on the endpoint's role (prefill=producer, decode=consumer) and the selected connector (Mooncake/Multi/UCM/AscendStore).
 - **Device pinning**: handled by NodeManager via `ASCEND_RT_VISIBLE_DEVICES` env var. EngineServer must NOT manage device assignment — it inherits visibility from the parent process.
 - **Prometheus multiprocess**: `PROMETHEUS_MULTIPROC_DIR` must be set in `main()` before any metric import. Each engine_server writes its own metrics file to this directory.
-- **Port ranges**: ports are validated in `NodeManager`'s `EngineService._check_params()` (business_port in [1024, 65535]) before the engine process is spawned.
+- **Port ranges**: `EndpointConfig.validate()` validates business and management ports before the engine process is spawned.
 
 ## Testing
 

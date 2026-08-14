@@ -21,7 +21,7 @@ from motor.common.utils.snapshot_utils import (
     get_pod_ip,
     RETRY_LOG_FREQUENCY,
 )
-from motor.engine_server.utils.ip import build_endpoint
+from motor.common.utils.ip import build_endpoint
 
 logger = get_logger(__name__)
 

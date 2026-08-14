@@ -19,7 +19,6 @@ from typing import Iterable, Protocol
 
 from pydantic import BaseModel
 
-from motor.common.resources.dispatch import has_compatible_dispatch_pair
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.models.request import RequestInfo
@@ -53,7 +52,7 @@ class InstanceReadiness(str, Enum):
 
 
 def readiness_from_instances(instances: Iterable[Instance]) -> InstanceReadiness:
-    """Infer readiness from available roles and compatible P/D dispatch capabilities."""
+    """Infer readiness from the available native-engine roles."""
     encode_instances = []
     prefill_instances = []
     decode_instances = []
@@ -70,13 +69,10 @@ def readiness_from_instances(instances: Iterable[Instance]) -> InstanceReadiness
         elif role_value in (PDRole.ROLE_U.value, "both", "hybrid"):
             union_instances.append(instance)
 
-    has_compatible_pd = has_compatible_dispatch_pair(prefill_instances, decode_instances)
-    if has_compatible_pd:
+    if prefill_instances and decode_instances:
         return InstanceReadiness.REQUIRED_MET_EPD if encode_instances else InstanceReadiness.REQUIRED_MET
     if union_instances:
         return InstanceReadiness.REQUIRED_MET
-    if prefill_instances and decode_instances:
-        return InstanceReadiness.UNKNOWN
     if encode_instances and prefill_instances:
         return InstanceReadiness.ENCODE_PREFILL
     if prefill_instances:
@@ -126,10 +122,12 @@ class SchedulingFacade(Protocol):
         req_info: RequestInfo,
         *,
         target_instance_id: int | None = None,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
         When target_instance_id is set, pin to that instance (skip policy selection).
+        When required_engine_type is set, only matching engine instances are eligible.
         Returns (instance, endpoint, allocation_workload). Caller records allocation_workload for release.
         """
         ...
@@ -151,10 +149,6 @@ class SchedulingFacade(Protocol):
 
     async def get_available_instance_roles(self) -> set[PDRole]:
         """Return roles currently present in the scheduler's local instance view."""
-        ...
-
-    async def has_compatible_pd_pair(self) -> bool:
-        """Return whether the local scheduler view contains a compatible P/D pair."""
         ...
 
     async def report_cb_event(self, instance_id: int, event: str) -> None:

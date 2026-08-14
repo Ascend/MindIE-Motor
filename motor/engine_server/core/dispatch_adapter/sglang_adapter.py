@@ -9,7 +9,6 @@
 # See the Mulan PSL v2 for more details.
 
 import hashlib
-import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,11 +26,11 @@ class SGLangDispatchAdapter(DispatchAdapter):
             return body
 
         parsed = urlparse(prefill.url)
-        bootstrap_port = os.getenv("DISAGGREGATION_BOOTSTRAP_PORT", "").strip()
-        if not bootstrap_port:
+        bootstrap_port = prefill.bootstrap_port
+        if bootstrap_port is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=("DISAGGREGATION_BOOTSTRAP_PORT must be set for SGLang dispatch requests."),
+                detail=("Prefill endpoint bootstrap_port is required for SGLang dispatch requests."),
             )
         body.update(
             {

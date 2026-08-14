@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import json
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -17,7 +18,6 @@ from fastapi.testclient import TestClient
 
 import motor.common.utils.error as cancel_error
 from motor.common.logger.logger import _resolve_logger_name
-from motor.common.resources.dispatch import DispatchPlan, has_compatible_dispatch_pair
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.domain import InstanceReadiness
@@ -43,13 +43,6 @@ class _Scheduler:
             if has_p and not has_d:
                 return InstanceReadiness.ONLY_PREFILL
         return InstanceReadiness.REQUIRED_MET
-
-    async def has_compatible_pd_pair(self):
-        if self._instances is None:
-            return False
-        prefill = [instance for instance in self._instances.values() if instance.role == PDRole.ROLE_P.value]
-        decode = [instance for instance in self._instances.values() if instance.role == PDRole.ROLE_D.value]
-        return has_compatible_dispatch_pair(prefill, decode)
 
 
 def _app(config: CoordinatorConfig, scheduler: _Scheduler) -> FastAPI:
@@ -90,14 +83,12 @@ def test_dispatch_uses_unified_router_by_default(monkeypatch):
             model_name="m",
             id=1,
             role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
         2: Instance(
             job_name="d",
             model_name="m",
             id=2,
             role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
     }
     client = TestClient(_app(_config(), _Scheduler(instances)))
@@ -165,103 +156,43 @@ def test_dispatch_rejects_only_prefill_when_hybrid_fallback_disabled(monkeypatch
     assert response.json()["detail"] == "PD separate service is unavailable and fallback to hybrid is disabled"
 
 
-def test_dispatch_rejects_incompatible_pd_topology():
-    instances = {
-        1: Instance(
-            job_name="p",
-            model_name="m",
-            id=1,
-            role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        ),
-        2: Instance(
-            job_name="d",
-            model_name="m",
-            id=2,
-            role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
-        ),
-    }
+def test_dispatch_reuses_request_json_parsed_at_ingress(monkeypatch):
+    """A body parsed by the API layer is not parsed again while building RequestInfo."""
+    calls = []
 
-    response = TestClient(_app(_config(), _Scheduler(instances))).post(
-        "/v1/completions",
-        json={"model": "m", "prompt": "hi"},
-    )
-
-    assert response.status_code == 503
-
-
-def test_dispatch_falls_back_to_union_for_incompatible_pd(monkeypatch):
     class _FakeHybridRouter:
         def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
-            pass
+            calls.append(req_info.req_data)
 
         async def handle_request(self):
             return JSONResponse({"router": "hybrid"})
 
     monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
-    instances = {
-        1: Instance(
-            job_name="p",
-            model_name="m",
-            id=1,
-            role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        ),
-        2: Instance(
-            job_name="d",
-            model_name="m",
-            id=2,
-            role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
-        ),
-        3: Instance(job_name="u", model_name="m", id=3, role=PDRole.ROLE_U.value),
-    }
+    app = FastAPI()
+    config = CoordinatorConfig()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler({1: Instance(job_name="p", model_name="m", id=1, role=PDRole.ROLE_P.value)})
 
-    response = TestClient(_app(_config(), _Scheduler(instances))).post(
-        "/v1/completions",
-        json={"model": "m", "prompt": "hi"},
-    )
+    @app.post("/v1/completions")
+    async def completions(request: Request):
+        request_json = json.loads((await request.body()).decode("utf-8"))
+
+        async def unexpected_second_parse():
+            raise AssertionError("request.json() must not be called after ingress parsing")
+
+        monkeypatch.setattr(request, "json", unexpected_second_parse)
+        return await dispatch.handle_request(
+            request,
+            config,
+            scheduler=scheduler,
+            request_manager=request_manager,
+            request_json=request_json,
+        )
+
+    response = TestClient(app).post("/v1/completions", json={"model": "m", "prompt": "hi"})
 
     assert response.status_code == 200
-    assert response.json() == {"router": "hybrid"}
-
-
-def test_dispatch_rejects_union_fallback_when_hybrid_fallback_disabled(monkeypatch):
-    class _FakeHybridRouter:
-        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
-            raise AssertionError("PDHybridRouter should not be used when fallback is disabled")
-
-    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
-    instances = {
-        1: Instance(
-            job_name="p",
-            model_name="m",
-            id=1,
-            role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        ),
-        2: Instance(
-            job_name="d",
-            model_name="m",
-            id=2,
-            role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
-        ),
-        3: Instance(job_name="u", model_name="m", id=3, role=PDRole.ROLE_U.value),
-    }
-    config = CoordinatorConfig()
-    config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
-
-    response = TestClient(_app(config, _Scheduler(instances))).post(
-        "/v1/completions",
-        json={"model": "m", "prompt": "hi"},
-    )
-
-    assert response.status_code == 503
-    assert (
-        response.json()["detail"] == "PD separate service has no compatible P/D pair and fallback to hybrid is disabled"
-    )
+    assert calls == [{"model": "m", "prompt": "hi"}]
 
 
 def test_dispatch_preserves_upstream_http_error(monkeypatch):
@@ -286,14 +217,12 @@ def test_dispatch_preserves_upstream_http_error(monkeypatch):
             model_name="m",
             id=1,
             role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
         2: Instance(
             job_name="d",
             model_name="m",
             id=2,
             role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
     }
 
@@ -329,14 +258,12 @@ def test_dispatch_request_cancelled_does_not_log_error(monkeypatch, caplog):
             model_name="m",
             id=1,
             role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
         2: Instance(
             job_name="d",
             model_name="m",
             id=2,
             role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
     }
 
@@ -373,14 +300,12 @@ def test_dispatch_dispatch_abort_still_returns_500(monkeypatch, caplog):
             model_name="m",
             id=1,
             role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
         2: Instance(
             job_name="d",
             model_name="m",
             id=2,
             role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
     }
 
@@ -451,14 +376,12 @@ def test_dispatch_unexpected_exception_still_logs_error(monkeypatch, caplog):
             model_name="m",
             id=1,
             role=PDRole.ROLE_P.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
         2: Instance(
             job_name="d",
             model_name="m",
             id=2,
             role=PDRole.ROLE_D.value,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
         ),
     }
 

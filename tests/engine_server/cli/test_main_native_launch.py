@@ -70,7 +70,7 @@ def _install_engine_fakes():
     mock_endpoint_cfg_mod.EndpointConfig.init_endpoint_config.return_value = mock_ep
 
     fakes = {
-        "motor.engine_server.factory.config_factory": mock_cf_mod,
+        "motor.node_manager.core.services.native_engine.config_factory": mock_cf_mod,
         "motor.engine_server.factory.endpoint_factory": mock_ef_mod,
         "motor.engine_server.core.infer_endpoint": mock_infer_mod,
         "motor.engine_server.core.mgmt_endpoint": mock_mgmt_mod,
@@ -84,7 +84,7 @@ def _install_engine_fakes():
 def _uninstall_engine_fakes():
     """Remove engine-server module fakes that were added by _install_engine_fakes."""
     for mod_name in (
-        "motor.engine_server.factory.config_factory",
+        "motor.node_manager.core.services.native_engine.config_factory",
         "motor.engine_server.factory.endpoint_factory",
         "motor.engine_server.core.infer_endpoint",
         "motor.engine_server.core.mgmt_endpoint",
@@ -179,7 +179,7 @@ class TestMainNativeLaunchRouting:
             "motor.engine_server.core.infer_endpoint",
             "motor.engine_server.core.mgmt_endpoint",
             "motor.engine_server.factory.endpoint_factory",
-            "motor.engine_server.factory.config_factory",
+            "motor.node_manager.core.services.native_engine.config_factory",
         ):
             sys.modules[mod_name].reset_mock()
 

@@ -14,7 +14,7 @@ from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
 from motor.config.endpoint import EndpointConfig
-from motor.engine_server.utils.ip import build_endpoint
+from motor.common.utils.ip import build_endpoint
 
 logger = get_logger(__name__)
 

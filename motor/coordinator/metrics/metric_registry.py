@@ -20,9 +20,6 @@ Unknown metrics fall back to type-based defaults (gauge→sum, counter→sum, hi
 from dataclasses import dataclass
 from enum import Enum
 
-from motor.common.resources.dispatch import DispatchPlan
-
-
 # ---------------------------------------------------------------------------
 # Semantic taxonomy
 # ---------------------------------------------------------------------------
@@ -257,24 +254,11 @@ class MetricRegistry:
     def get_effective_role_scope(
         cls,
         metric_name: str,
-        dispatch_capabilities: set[str] | None = None,
     ) -> str | None:
-        """Get the effective role scope for a metric, considering connector capabilities.
-
-        Handoff connectors expose meaningful TTFT on both P and D instances.
-        Concurrent connectors use D's TTFT as the authoritative service value.
-        """
+        """Get the configured role scope for a metric."""
         config = cls.get_semantic(metric_name)
         if config is None or config.role_scope is None:
             return None
-
-        if (
-            metric_name == "vllm:time_to_first_token_seconds"
-            and dispatch_capabilities
-            and DispatchPlan.PREFILL_HANDOFF_DECODE.value in dispatch_capabilities
-        ):
-            return None
-
         return config.role_scope
 
     @classmethod

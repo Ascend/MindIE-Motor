@@ -78,6 +78,7 @@ def _body(role="decode"):
                     "instance_id": 1,
                     "endpoint_id": 0,
                     "url": "http://127.0.0.1:8000",
+                    "bootstrap_port": 31000,
                 },
                 "decode": {
                     "instance_id": 2,
@@ -863,15 +864,14 @@ async def test_vllm_stream_normalization_preserves_done():
 
 
 @pytest.mark.asyncio
-async def test_sglang_adapter_generates_stable_bootstrap(monkeypatch):
-    monkeypatch.setenv("DISAGGREGATION_BOOTSTRAP_PORT", "31000")
+async def test_sglang_adapter_generates_stable_bootstrap():
     adapter = SGLangDispatchAdapter(_Config(engine_type="sglang", role="decode"))
 
     first, _ = await adapter.adapt_request_body(_body("decode"))
     second, _ = await adapter.adapt_request_body(_body("decode"))
 
     assert first["bootstrap_host"] == "127.0.0.1"
-    assert first["bootstrap_port"] == "31000"
+    assert first["bootstrap_port"] == 31000
     assert first["bootstrap_room"] == second["bootstrap_room"]
 
 
@@ -883,13 +883,14 @@ async def test_sglang_adapter_requires_bootstrap_port(monkeypatch):
         peer_stops.append(dispatch)
         return None
 
-    monkeypatch.delenv("DISAGGREGATION_BOOTSTRAP_PORT", raising=False)
     monkeypatch.setattr(SGLangDispatchAdapter, "stop_peer", _stop_peer)
     adapter = SGLangDispatchAdapter(_Config(engine_type="sglang", role="decode"))
+    body = _body("decode")
+    body[MOTOR_DISPATCH_KEY]["endpoints"]["prefill"].pop("bootstrap_port")
 
     with pytest.raises(HTTPException) as exc_info:
-        await adapter.adapt_request_body(_body("decode"))
+        await adapter.adapt_request_body(body)
 
     assert exc_info.value.status_code == 500
-    assert "DISAGGREGATION_BOOTSTRAP_PORT" in exc_info.value.detail
+    assert "bootstrap_port" in exc_info.value.detail
     assert peer_stops[0].engine_request_id == "req#a1"

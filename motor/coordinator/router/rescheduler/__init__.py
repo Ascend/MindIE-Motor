@@ -8,7 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Shared helpers for PD/CDP rescheduler (token-cache retry and request rewrite).
+"""Shared helpers for P/D rescheduling (token-cache retry and request rewrite).
+
 
 Performance note: per-chunk JSON re-serialization is CPU-bound; ``async`` does not
 make it faster. Mitigations here use :mod:`msgspec` (already a dependency) for

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # (p_instance_id or None, d_instance_id)
-# p_instance_id 为 None 表示 CDP/PD_SEPARATE 模式下 coordinator 侧不感知 P 实例
+# p_instance_id 为 None 表示请求由单个 Hybrid/Union 实例完成。
 PDGroupKey = tuple[int | None, int]
 
 

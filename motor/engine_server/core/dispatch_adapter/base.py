@@ -31,7 +31,7 @@ from motor.common.resources.dispatch import (
     MotorDispatch,
     PrefillResult,
 )
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.core.vllm.prefill_context_validation import PrefillContextCheck
 from motor.engine_server.core.errors.sanitizer import sanitize_error_message
 

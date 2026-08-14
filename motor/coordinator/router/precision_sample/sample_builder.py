@@ -37,7 +37,7 @@ def build_decode_sample(
     """Construct a DecodeSample from request_info and context.
 
     Args:
-        p_instance_id: P instance id (None if unknown in CDP mode).
+        p_instance_id: P instance id (None for a Hybrid/Union request).
         d_instance_id: D instance id.
         request_info: Per-request mutable dict populated by
                       update_token_id_cache / update_logprob_cache.

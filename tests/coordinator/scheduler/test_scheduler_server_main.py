@@ -95,12 +95,14 @@ def _make_instance(
     instance_id: int,
     endpoint_ids: tuple[int, ...],
     role: PDRole = PDRole.ROLE_P,
+    engine_type: str | None = None,
 ) -> Instance:
     inst = Instance(
         job_name=f"{role.value}-{instance_id}",
         model_name="test_model",
         id=instance_id,
         role=role,
+        engine_type=engine_type,
         status=InsStatus.ACTIVE,
         parallel_config=ParallelConfig(dp_size=len(endpoint_ids)),
     )
@@ -197,8 +199,8 @@ class TestSerializeInstanceMinimal:
         assert result["job_name"] == inst.job_name
         assert result["model_name"] == "test_model"
         assert result["engine_type"] is None
-        assert result["dispatch_capabilities"] == []
-        assert len(result) == 6
+        assert "dispatch_capabilities" not in result
+        assert len(result) == 5
 
 
 class TestSerializeEndpointMinimal:
@@ -223,6 +225,20 @@ class TestSerializeEndpointMinimal:
         )
         result = _serialize_endpoint_minimal(ep)
         assert result["status"] == EndpointStatus.NORMAL.value
+
+    def test_endpoint_serializes_bootstrap_port(self):
+        ep = Endpoint(
+            id=14,
+            ip="10.0.0.14",
+            business_port="8014",
+            mgmt_port="9014",
+            bootstrap_port=9114,
+        )
+
+        result = _serialize_endpoint_minimal(ep)
+        restored = Endpoint.model_validate(result)
+
+        assert restored.bootstrap_port == 9114
 
     def test_endpoint_with_empty_mgmt_port_defaults_empty_string(self):
         """mgmt_port='' → serializer returns empty string (falsy → or '' branch)."""
@@ -768,6 +784,30 @@ class TestHandleAllocateOnlyEdgeCases:
             },
         )
         response = await dispatcher.dispatch(request)
+        assert response.response_type == SchedulerResponseType.SUCCESS
+        assert response.data["instance"] is None
+        assert response.data["endpoint"] is None
+
+    @pytest.mark.asyncio
+    async def test_required_engine_type_rejects_mismatched_candidate(self):
+        dispatcher, instance_manager, *_ = _make_dispatcher(scheduler_type=SchedulerType.ROUND_ROBIN)
+        instance = _make_instance(1, (10,), PDRole.ROLE_D, engine_type="vllm")
+        await instance_manager.refresh_instances(EventType.ADD, [instance])
+
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.ALLOCATE_ONLY,
+            request_id="req-engine-filter",
+            data={
+                "instance_id": 1,
+                "endpoint_id": 10,
+                "role": PDRole.ROLE_D.value,
+                "required_engine_type": "sglang",
+                "workload_active_tokens": 1,
+            },
+        )
+
+        response = await dispatcher.dispatch(request)
+
         assert response.response_type == SchedulerResponseType.SUCCESS
         assert response.data["instance"] is None
         assert response.data["endpoint"] is None

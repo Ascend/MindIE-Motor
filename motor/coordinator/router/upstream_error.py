@@ -80,9 +80,8 @@ def is_cb_reportable_failure(error: BaseException) -> bool:
     penalize the instance.  HTTP 5xx errors indicate instance health issues.
     Connection-level errors always indicate instance issues.
 
-    The engine_server (serving_error.py) is the single source of truth for classifying exceptions
-    as client errors vs engine faults: it maps all known request-validation errors to 4xx before
-    they reach the coordinator.  The coordinator therefore only needs to inspect the status code.
+    Native engines classify request-validation failures as 4xx and engine faults as 5xx.
+    The coordinator therefore only needs to inspect the upstream status code.
     """
     if isinstance(error, UpstreamHTTPError):
         return error.status_code >= 500

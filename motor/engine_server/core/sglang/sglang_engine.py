@@ -22,7 +22,7 @@
 from typing import Any
 
 from motor.common.logger import get_logger
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.core.engine import Engine
 
 logger = get_logger(__name__)
@@ -33,13 +33,13 @@ def _kill_engine_children() -> None:
     try:
         from sglang.srt.utils import kill_process_tree
         import os
+
         kill_process_tree(os.getpid(), include_parent=False)
     except Exception as e:
         logger.exception("Error killing SGLang engine child processes: %s", e)
 
 
 class SGLangEngine(Engine):
-
     def __init__(self, config: IConfig):
         self._template_manager: Any | None = None
         self._tokenizer_manager: Any | None = None
@@ -47,7 +47,7 @@ class SGLangEngine(Engine):
         self.config = config
 
     def launch(self) -> Any:
-        from sglang.srt.entrypoints.engine import (_launch_subprocesses)
+        from sglang.srt.entrypoints.engine import _launch_subprocesses
 
         server_args = self.config.get_args()
         if server_args is None:
@@ -74,16 +74,14 @@ class SGLangEngine(Engine):
 
         if server_args.tokenizer_worker_num > 1:
             from sglang.srt.managers.multi_tokenizer_mixin import write_data_for_multi_tokenizer
-            self._multi_tokenizer_args_shm = write_data_for_multi_tokenizer(
-                port_args, server_args, scheduler_infos[0]
-            )
+
+            self._multi_tokenizer_args_shm = write_data_for_multi_tokenizer(port_args, server_args, scheduler_infos[0])
 
         return self._tokenizer_manager, self._template_manager
 
     def shutdown(self) -> None:
         if self._multi_tokenizer_args_shm is not None:
             self._multi_tokenizer_args_shm.close()
-            self._multi_tokenizer_args_shm = None
-            self._tokenizer_manager.socket_mapping.clear_all_sockets()
+        self._multi_tokenizer_args_shm = None
+        self._tokenizer_manager.socket_mapping.clear_all_sockets()
         _kill_engine_children()
-

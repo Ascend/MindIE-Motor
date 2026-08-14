@@ -69,16 +69,6 @@ def modify_coordinator_deployment(deployment_data, user_config):
 
     container[C.ENV].extend(k8s_utils.build_kv_store_env_items())
 
-    disaggregation_bootstrap_port = (
-        user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG, {})
-        .get(C.ENGINE_CONFIG, {})
-        .get("disaggregation_bootstrap_port", "")
-    )
-    if disaggregation_bootstrap_port:
-        container[C.ENV].append(
-            {C.NAME: C.ENV_DISAGGREGATION_BOOTSTRAP_PORT, C.VALUE: str(disaggregation_bootstrap_port)}
-        )
-
     modify_coordinator_replicas(deployment_data, user_config)
     pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
     apply_node_selector_override(pod_spec, deploy_config, C.COORDINATOR_NODE_SELECTOR)

@@ -10,6 +10,7 @@
 
 import os
 import json
+import signal
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -18,6 +19,35 @@ from motor.node_manager.core.services.registry import SERVICE_ENGINE
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole, ParallelConfig
+from motor.node_manager.core.services.native_engine.models import CommandSpec, LaunchSpec, ProbeSpec
+
+
+def _recording_backend():
+    backend = MagicMock()
+
+    def prepare(context):
+        return LaunchSpec(
+            command=CommandSpec(
+                argv=(
+                    "vllm",
+                    "serve",
+                    "--host",
+                    context.host,
+                    "--port",
+                    str(context.business_port),
+                ),
+                env=context.environment,
+            ),
+            probe=ProbeSpec(path="/health", timeout_seconds=5, startup_timeout_seconds=1800),
+        )
+
+    backend.prepare.side_effect = prepare
+    return backend
+
+
+def _last_launch_context(daemon):
+    backend = daemon._services[SERVICE_ENGINE].backend
+    return backend.prepare.call_args.args[0]
 
 
 def create_config_mock(config_data):
@@ -57,14 +87,18 @@ def daemon(config_data):
             tp_size=config_data["parallel_config"]["tp_size"], pp_size=config_data["parallel_config"]["pp_size"]
         )
         config.basic_config.job_name = config_data.get("model_name", "test_job")
+        config.basic_config.model_name = config_data.get("model_name", "test-model")
+        config.basic_config.engine_type = "vllm"
         config.basic_config.role = PDRole(config_data.get("role", "both"))
         config.api_config.node_manager_port = config_data.get("node_manager_port", 8080)
 
         # Set device_num for testing (simulating visible devices)
         config.basic_config.device_num = 8  # 8 devices for testing
 
-        daemon_instance = Daemon(config)
-        yield daemon_instance
+        backend = _recording_backend()
+        with patch("motor.node_manager.core.services.native_engine.service.get_backend", return_value=backend):
+            daemon_instance = Daemon(config)
+            yield daemon_instance
 
 
 @pytest.fixture
@@ -76,6 +110,48 @@ def endpoints():
 
 
 class TestDaemon:
+    @pytest.mark.parametrize(
+        ("launch_env", "expected_host_ip", "expected_mc_ipv6"),
+        [
+            (
+                {"POD_IP": "10.0.0.8", "MOONCAKE_ASCEND_IPV6_EXPERIMENT": "1"},
+                "10.0.0.8",
+                "1",
+            ),
+            (
+                {
+                    "POD_IP": "10.0.0.8",
+                    "VLLM_HOST_IP": "10.0.0.9",
+                    "MOONCAKE_ASCEND_IPV6_EXPERIMENT": "1",
+                    "MC_USE_IPV6": "0",
+                },
+                "10.0.0.9",
+                "0",
+            ),
+        ],
+    )
+    @patch('subprocess.Popen')
+    def test_engine_launch_environment_contract(
+        self,
+        mock_popen,
+        daemon,
+        launch_env,
+        expected_host_ip,
+        expected_mc_ipv6,
+    ):
+        mock_process = MagicMock(pid=12345)
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+
+        with patch.dict(os.environ, launch_env, clear=True):
+            daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
+
+        child_env = mock_popen.call_args.kwargs["env"]
+        assert child_env["VLLM_HOST_IP"] == expected_host_ip
+        assert child_env["MC_USE_IPV6"] == expected_mc_ipv6
+        assert child_env["ASCEND_RT_VISIBLE_DEVICES"] == "0,1"
+
     @patch('subprocess.Popen')
     def test_pull_engine_success(self, mock_popen, daemon, endpoints):
         mock_process = MagicMock(pid=12345)
@@ -85,8 +161,19 @@ class TestDaemon:
         master_dp_ip = "192.168.1.100"
         daemon.pull_engine(PDRole.ROLE_P, endpoints, instance_id, master_dp_ip)
         # Verify that process was added to engine_pids
-        assert len(daemon._services[SERVICE_ENGINE].engine_pids) > 0
-        assert 12345 in daemon._services[SERVICE_ENGINE].engine_pids
+        assert len(daemon.engine_pids) > 0
+        assert 12345 in daemon.engine_pids
+
+    def test_pull_engine_failure_rolls_back_only_new_endpoints(self, daemon, endpoints):
+        engine = daemon._services[SERVICE_ENGINE]
+        with (
+            patch.object(engine.supervisor, "start", side_effect=[False, True, RuntimeError("start failed")]),
+            patch.object(engine.supervisor, "stop") as stop,
+        ):
+            with pytest.raises(RuntimeError, match="start failed"):
+                daemon.pull_engine(PDRole.ROLE_P, endpoints, instance_id=1, master_dp_ip="192.168.1.100")
+
+        stop.assert_called_once_with(endpoints[1].id)
 
     @pytest.mark.parametrize(
         "invalid_endpoint,error_msg",
@@ -99,41 +186,36 @@ class TestDaemon:
         with pytest.raises(RuntimeError, match=error_msg):
             daemon.pull_engine(PDRole.ROLE_U, [invalid_endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
-    @pytest.mark.parametrize(
-        "exception,should_not_raise",
-        [
-            (None, True),
-            (ProcessLookupError("No such process"), True),
-            (PermissionError("Permission denied"), True),
-            (Exception("Unexpected error"), True),
-        ],
-    )
-    @patch('os.kill')
-    def test_exit_daemon(self, mock_kill, daemon, exception, should_not_raise):
-        # Mock SIGKILL for Windows compatibility
-        with patch('motor.node_manager.core.services.engine.signal.SIGKILL', 9, create=True):
-            daemon._services[SERVICE_ENGINE].engine_pids = [1001, 1002]
-            if exception:
-                mock_kill.side_effect = exception
-            daemon.stop()  # Method is called 'stop', not 'exit_daemon'
-            assert mock_kill.call_count == len([1001, 1002])
+    def test_exit_daemon_delegates_to_process_supervisor(self, daemon):
+        supervisor = daemon._services[SERVICE_ENGINE].supervisor
+        with patch.object(supervisor, "stop_all", return_value=[1001, 1002]) as stop_all:
+            daemon.stop()
+        stop_all.assert_called_once_with()
 
-    @pytest.mark.parametrize(
-        "ip,port,expected",
-        [
-            ("192.168.1.100", "8080", True),
-            ("2001:db8::1", "8080", True),
-            ("invalid_ip", "8080", False),
-            ("192.168.1.100", "not_number", False),
-            ("192.168.1.100", "0", False),
-            ("192.168.1.100", "99999", False),
-            ("192.168.1.100", "1", False),
-            ("192.168.1.100", "65535", True),
-        ],
-    )
-    def test_check_params(self, daemon, ip, port, expected):
-        endpoint = Endpoint(id=1, ip=ip, business_port=port, mgmt_port="9090")
-        assert daemon._services[SERVICE_ENGINE]._check_params(endpoint) == expected
+    def test_engine_exit_requests_pod_recovery_only_once(self, daemon):
+        engine = daemon._services[SERVICE_ENGINE]
+        engine.restart_on_failure = True
+        with (
+            patch.object(engine.supervisor, "dead_pids", return_value=[12345]),
+            patch("motor.node_manager.core.services.native_engine.service.os.kill") as kill,
+        ):
+            engine.health_check()
+            engine.health_check()
+
+        kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+
+    @patch('subprocess.Popen')
+    def test_native_metrics_target_uses_business_port(self, mock_popen, daemon):
+        process = MagicMock(pid=12345)
+        process.poll.return_value = None
+        mock_popen.return_value = process
+        endpoint = Endpoint(id=0, ip="2001:db8::8", business_port="8000", mgmt_port="9000")
+        daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
+
+        assert daemon.get_engine_metrics_target(endpoint) == "http://[2001:db8::8]:8000/metrics"
+
+        endpoint.headless = True
+        assert daemon.get_engine_metrics_target(endpoint) is None
 
     @patch('subprocess.Popen')
     @patch('motor.node_manager.core.daemon.logger')
@@ -148,10 +230,12 @@ class TestDaemon:
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id, master_dp_ip)
 
         # Verify that process was added to engine_pids
-        assert len(daemon._services[SERVICE_ENGINE].engine_pids) > 0
-        assert 12345 in daemon._services[SERVICE_ENGINE].engine_pids
+        assert len(daemon.engine_pids) > 0
+        assert 12345 in daemon.engine_pids
         # Verify Popen was called
         mock_popen.assert_called_once()
+        assert mock_popen.call_args.args[0][:2] == ["vllm", "serve"]
+        assert "engine_server" not in mock_popen.call_args.args[0]
 
     @patch('subprocess.Popen')
     def test_hybrid_role_starts_union_engine(self, mock_popen, daemon):
@@ -162,9 +246,8 @@ class TestDaemon:
         endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
         daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
-        cmd = mock_popen.call_args.args[0]
-        role_arg_index = cmd.index("--role") + 1
-        assert cmd[role_arg_index] == "union"
+        context = _last_launch_context(daemon)
+        assert context.role == PDRole.ROLE_U
 
     @patch('subprocess.Popen')
     def test_single_container_hybrid_omits_kv_port_when_unset(self, mock_popen, config_data):
@@ -180,11 +263,14 @@ class TestDaemon:
             )
             config.basic_config.device_num = 8
             config.basic_config.enable_multi_endpoints = False
+            config.basic_config.engine_type = "vllm"
             config.single_container_config.single_container_flag = True
             config.single_container_config.device_offset = 0
             config.single_container_config.kv_port = None
             config.single_container_config.dp_rpc_port = 9000
-            daemon = Daemon(config)
+            backend = _recording_backend()
+            with patch("motor.node_manager.core.services.native_engine.service.get_backend", return_value=backend):
+                daemon = Daemon(config)
 
         mock_process = MagicMock(pid=12345)
         mock_process.poll.return_value = None
@@ -193,9 +279,9 @@ class TestDaemon:
         endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
         daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
-        cmd = mock_popen.call_args.args[0]
-        assert "--kv-port" not in cmd
-        assert cmd[cmd.index("--dp-rpc-port") + 1] == "9000"
+        context = _last_launch_context(daemon)
+        assert context.kv_port is None
+        assert context.dp_rpc_port == 9000
 
     # ===== D2D Weight Transfer Tests =====
 
@@ -218,10 +304,8 @@ class TestDaemon:
         )
 
         mock_popen.assert_called_once()
-        cmd = mock_popen.call_args.args[0]
-        assert '--d2d-peer-ips' in cmd
-        idx = cmd.index('--d2d-peer-ips')
-        assert cmd[idx + 1] == "192.168.1.10,192.168.1.11"
+        context = _last_launch_context(daemon)
+        assert context.d2d_peer_ips == ("192.168.1.10", "192.168.1.11")
 
     @patch('subprocess.Popen')
     def test_pull_engine_without_d2d_peer_ips(self, mock_popen, daemon):
@@ -240,8 +324,7 @@ class TestDaemon:
         )
 
         mock_popen.assert_called_once()
-        cmd = mock_popen.call_args.args[0]
-        assert '--d2d-peer-ips' not in cmd
+        assert _last_launch_context(daemon).d2d_peer_ips == ()
 
     @patch('subprocess.Popen')
     def test_pull_engine_with_empty_d2d_peer_ips(self, mock_popen, daemon):
@@ -263,8 +346,7 @@ class TestDaemon:
         )
 
         mock_popen.assert_called_once()
-        cmd = mock_popen.call_args.args[0]
-        assert '--d2d-peer-ips' not in cmd
+        assert _last_launch_context(daemon).d2d_peer_ips == ()
 
     @patch('subprocess.Popen')
     def test_pull_engine_with_d2d_peer_ips_rank_encoded(self, mock_popen, daemon):
@@ -288,10 +370,9 @@ class TestDaemon:
         )
 
         assert mock_popen.call_count == 2
-        first_cmd = mock_popen.call_args_list[0].args[0]
-        second_cmd = mock_popen.call_args_list[1].args[0]
-        assert first_cmd[first_cmd.index('--d2d-peer-ips') + 1] == "192.168.1.10"
-        assert second_cmd[second_cmd.index('--d2d-peer-ips') + 1] == "192.168.1.11"
+        contexts = [call.args[0] for call in daemon._services[SERVICE_ENGINE].backend.prepare.call_args_list]
+        assert contexts[0].d2d_peer_ips == ("192.168.1.10",)
+        assert contexts[1].d2d_peer_ips == ("192.168.1.11",)
 
     @patch('subprocess.Popen')
     def test_pull_engine_d2d_peer_ips_no_match_for_endpoint(self, mock_popen, daemon):
@@ -312,12 +393,11 @@ class TestDaemon:
         )
 
         mock_popen.assert_called_once()
-        cmd = mock_popen.call_args.args[0]
-        assert '--d2d-peer-ips' not in cmd
+        assert _last_launch_context(daemon).d2d_peer_ips == ()
 
     @patch('subprocess.Popen')
     def test_pull_engine_includes_node_rank(self, mock_popen, daemon):
-        """Test that --node-rank is included in the engine_server CLI with default value"""
+        """Test that the default node rank is passed to the backend."""
         mock_process = MagicMock(pid=12345)
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
@@ -325,14 +405,11 @@ class TestDaemon:
         endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
-        cmd = mock_popen.call_args.args[0]
-        assert "--node-rank" in cmd
-        node_rank_index = cmd.index("--node-rank")
-        assert cmd[node_rank_index + 1] == "0"
+        assert _last_launch_context(daemon).node_rank == 0
 
     @patch('subprocess.Popen')
     def test_pull_engine_custom_node_rank(self, mock_popen, daemon):
-        """Test that --node-rank value matches the node_rank parameter"""
+        """Test that the configured node rank is passed to the backend."""
         mock_process = MagicMock(pid=12345)
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
@@ -340,6 +417,4 @@ class TestDaemon:
         endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id=1, master_dp_ip="192.168.1.100", node_rank=2)
 
-        cmd = mock_popen.call_args.args[0]
-        node_rank_index = cmd.index("--node-rank")
-        assert cmd[node_rank_index + 1] == "2"
+        assert _last_launch_context(daemon).node_rank == 2

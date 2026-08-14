@@ -18,10 +18,10 @@ from motor.common.resources.dispatch import DispatchProfile, infer_vllm_dispatch
 from motor.common.http.http_client import AsyncSafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.utils.ai_cube import get_ai_cube_usage, is_ai_cube_usage_watch_supported
-from motor.engine_server.constants import constants
-from motor.engine_server.utils.ip import build_endpoint
+from motor.common import engine_constants as constants
+from motor.common.utils.ip import build_endpoint
 from motor.common.utils.snapshot_utils import is_restored_from_host_side_snapshot, get_pod_ip
 
 logger = get_logger(__name__)

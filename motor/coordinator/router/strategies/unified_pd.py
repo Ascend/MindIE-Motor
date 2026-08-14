@@ -20,16 +20,6 @@ from fastapi.responses import JSONResponse, Response
 
 import motor.common.utils.error as cancel_error
 from motor.common.utils.error import RequestCancelledError
-from motor.common.resources.dispatch import (
-    DispatchPlan,
-    DispatchStopReason,
-    dispatch_plans_from_capabilities,
-    MOTOR_DISPATCH_KEY,
-    MOTOR_PREFILL_RESULT_KEY,
-    PrefillResult,
-    PrefillResultStatus,
-    PrefillContextBudget,
-)
 from motor.common.resources.endpoint import WorkloadAction
 from motor.common.resources.instance import PDRole
 from motor.config.coordinator import CoordinatorConfig
@@ -39,19 +29,13 @@ from motor.coordinator.domain import (
     UpdateWorkloadParams,
 )
 from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
     AttemptState,
+    AttemptStopReason,
     PDDispatchSession,
 )
-from motor.coordinator.router.dispatch_capability import select_dispatch_plan_for_pair
-from motor.coordinator.router.sglang_native_dispatch import (
-    inject_sglang_pd_fields,
-    is_sglang_resource,
-)
-from motor.coordinator.router.stop_client import DispatchStopClient
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.coordinator.router.rescheduler.rescheduler import (
@@ -60,9 +44,25 @@ from motor.coordinator.router.rescheduler.rescheduler import (
 )
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.precision_sample.request import inject_logprobs
+from motor.coordinator.router.adapters.completion_to_chat import (
+    adapt_completion_nonstream_to_chat,
+    is_completion_like_body,
+)
+from motor.coordinator.router.adapters.pd_protocol import (
+    ADAPTERS,
+    CoordinationMode,
+    EngineEndpointMetadata,
+    EngineProtocolError,
+    EngineRequest,
+    LegContext,
+    PDProtocolAdapter,
+    PrefillMetadata,
+)
 from motor.coordinator.router.adapters.stream import (
     parse_stream_chunk_json,
     encode_stream_chunk_bytes,
+    strip_nonstream_response_body_for_client,
+    strip_stream_chunk_bytes_for_client,
 )
 from motor.coordinator.router.stream_response import (
     CommitAwareStreamingResponse,
@@ -73,6 +73,8 @@ from motor.coordinator.router.upstream_error import (
     is_cb_reportable_failure,
     is_retryable_upstream_error,
 )
+
+_SGLANG_PROTOCOL_ADAPTER = ADAPTERS["sglang"]
 
 
 @dataclass(frozen=True)
@@ -114,13 +116,11 @@ class _ReleaseTaskRecord:
 
 
 class UnifiedPDRouter(BaseRouter):
-    """Unified P/D pair router behind feature flag.
+    """Native-engine P/D router.
 
-    Coordinator owns lifecycle orchestration; EngineServer dispatch adapters own
-    engine-specific request and response normalization.
+    Coordinator owns lifecycle orchestration and uses stateless protocol adapters
+    for native-engine request mapping.
     """
-
-    _DISPATCH_MODE = "pd_pair"
 
     # Background workload-release RPC retry policy.
     _RELEASE_RPC_ATTEMPTS = 3
@@ -177,6 +177,30 @@ class UnifiedPDRouter(BaseRouter):
         self._capture_prompt_tokens_details(body)
         self.req_info.update_state(ReqState.PREFILL_END)
 
+    def _record_bootstrap_prefill_response(
+        self,
+        attempt: AttemptContext,
+        response: httpx.Response,
+    ) -> None:
+        if not self._is_native_sglang_attempt(attempt):
+            self._record_prefill_complete(response.json())
+            return
+
+        try:
+            body = response.json()
+        except ValueError:
+            # SGLang's native gateway forwards the client's stream flag to both
+            # legs. A streaming P response is internal: consume its SSE frames,
+            # retain usage metadata when present, and never forward P chunks.
+            for line in response.content.splitlines():
+                frame_body = parse_stream_chunk_json(line, self.logger)
+                if frame_body is not None:
+                    self._capture_prompt_tokens_details(frame_body)
+            self.req_info.update_state(ReqState.PREFILL_END)
+            return
+
+        self._record_prefill_complete(body)
+
     def _merge_prompt_tokens_details(self, body: dict[str, Any]) -> bool:
         details = self.req_info.prompt_tokens_details
         usage = body.get("usage")
@@ -198,6 +222,60 @@ class UnifiedPDRouter(BaseRouter):
         if chunk_json is None or not self._merge_prompt_tokens_details(chunk_json):
             return chunk
         return encode_stream_chunk_bytes(chunk, chunk_json)
+
+    @staticmethod
+    def _is_native_sglang_attempt(attempt: AttemptContext | None) -> bool:
+        return UnifiedPDRouter._adapter_for_attempt(attempt) is _SGLANG_PROTOCOL_ADAPTER
+
+    @staticmethod
+    def _adapter_for_attempt(attempt: AttemptContext | None) -> PDProtocolAdapter | None:
+        if attempt is None or attempt.prefill_resource is None:
+            return None
+        engine_type = getattr(attempt.prefill_resource.instance, "engine_type", None)
+        if not isinstance(engine_type, str):
+            return None
+        normalized = engine_type.strip().lower()
+        return ADAPTERS.get(normalized)
+
+    @staticmethod
+    def _require_adapter_for_attempt(attempt: AttemptContext) -> PDProtocolAdapter:
+        adapter = UnifiedPDRouter._adapter_for_attempt(attempt)
+        if adapter is not None:
+            return adapter
+        engine_type = None
+        if attempt.prefill_resource is not None:
+            engine_type = getattr(attempt.prefill_resource.instance, "engine_type", None)
+        raise RuntimeError(f"Unsupported native engine type for P/D coordination: {engine_type!r}")
+
+    @staticmethod
+    def _strip_native_internal_fields_from_body(body: dict[str, Any], attempt: AttemptContext) -> None:
+        adapter = UnifiedPDRouter._adapter_for_attempt(attempt)
+        if adapter is None:
+            return
+        for field in adapter.internal_response_fields:
+            body.pop(field, None)
+
+    def _strip_native_internal_fields_from_stream_chunk(
+        self,
+        chunk: bytes,
+        attempt: AttemptContext,
+    ) -> bytes:
+        adapter = self._adapter_for_attempt(attempt)
+        if adapter is None:
+            return chunk
+        fields = adapter.internal_response_fields
+        if not any(f'"{field}"'.encode() in chunk for field in fields):
+            return chunk
+        chunk_json = parse_stream_chunk_json(chunk, self.logger)
+        if chunk_json is None:
+            self.logger.warning("Dropping invalid native stream chunk containing internal protocol fields")
+            return b""
+        mutated = False
+        for field in fields:
+            if field in chunk_json:
+                chunk_json.pop(field)
+                mutated = True
+        return encode_stream_chunk_bytes(chunk, chunk_json) if mutated else chunk
 
     async def handle_request(self) -> Response:
         await self.do_encode()
@@ -235,6 +313,8 @@ class UnifiedPDRouter(BaseRouter):
         Shared by the non-stream / stream-restart / stream-resume fallback gates so the
         ``get_unblocked_instances`` availability probe stays in one place.
         """
+        if not self.config.scheduler_config.enable_pd_separation_fallback_to_hybrid:
+            return False
         get_unblocked = getattr(self._scheduler, "get_unblocked_instances", None)
         if get_unblocked is None:
             return False
@@ -244,12 +324,12 @@ class UnifiedPDRouter(BaseRouter):
         unblocked_p = await get_unblocked(PDRole.ROLE_P)
         return bool(unblocked_u or unblocked_p)
 
-    async def _should_trigger_hybrid_fallback_nonstream(self) -> bool:
+    async def _should_use_hybrid_fallback_nonstream(self) -> bool:
         if self.req_info.req_data.get("stream", False):
             return False
         return await self._hybrid_fallback_feasible()
 
-    async def _should_trigger_hybrid_fallback_stream_restart(self) -> bool:
+    async def _should_use_hybrid_fallback_stream_restart(self) -> bool:
         if not self.req_info.req_data.get("stream", False):
             return False
         if self._hybrid_stream_fallback_attempted:
@@ -260,7 +340,7 @@ class UnifiedPDRouter(BaseRouter):
             return False
         return await self._hybrid_fallback_feasible()
 
-    async def _should_trigger_hybrid_fallback_stream_resume(self) -> bool:
+    async def _should_use_hybrid_fallback_stream_resume(self) -> bool:
         """Post-commit continuation gate: visible output already sent, decode pool gone.
 
         Requires a replayable token cache (prompt + generated ids) so a single hybrid
@@ -367,15 +447,12 @@ class UnifiedPDRouter(BaseRouter):
         trace_obj = self.req_info.trace_obj
         with self._trace_span("UnifiedPD_Stream", True):
             max_retry = max(self.config.exception_config.transport_retry_limit, 1)
-            session = PDDispatchSession(
-                self.req_info.req_id,
-                prefill_context_budget=self._prefill_context_budget(),
-            )
+            session = PDDispatchSession(self.req_info.req_id)
 
             async with self._manage_request_context():
                 for attempt_index in range(max_retry):
                     attempt: AttemptContext | None = None
-                    cleanup_reason = DispatchStopReason.OTHER
+                    cleanup_reason = AttemptStopReason.OTHER
                     try:
                         self._active_retry_plan = None
                         if attempt_index > 0:
@@ -387,7 +464,7 @@ class UnifiedPDRouter(BaseRouter):
                         if not self._stream_commit_controller.commit_sealed:
                             self._stream_commit_controller.begin_attempt(attempt.attempt_seq)
                         attempt.register_canceller()
-                        dispatch_plan = self._select_dispatch_plan(attempt)
+                        coordination_mode = self._select_coordination_mode(attempt)
                         if attempt_index > 0:
                             self.logger.warning(
                                 "Rescheduling %d/%d: P=[%s], D=[%s]",
@@ -397,7 +474,7 @@ class UnifiedPDRouter(BaseRouter):
                                 self._resource_label(attempt.decode_resource),
                             )
                         attempt.transition(AttemptState.DISPATCHING)
-                        async with aclosing(self._run_stream_attempt(attempt, dispatch_plan)) as attempt_stream:
+                        async with aclosing(self._run_stream_attempt(attempt, coordination_mode)) as attempt_stream:
                             async for chunk in attempt_stream:
                                 attempt.transition(AttemptState.FIRST_VISIBLE)
                                 yield chunk
@@ -414,7 +491,7 @@ class UnifiedPDRouter(BaseRouter):
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
                         return
                     except GeneratorExit:
-                        cleanup_reason = DispatchStopReason.CLIENT_DISCONNECT
+                        cleanup_reason = AttemptStopReason.CLIENT_DISCONNECT
                         raise
                     except (asyncio.CancelledError, Exception) as e:
                         error, retry = await self._process_response_error(
@@ -423,14 +500,14 @@ class UnifiedPDRouter(BaseRouter):
                             e,
                             allow_retry=self._stream_retry_allowed(),
                         )
-                        if await self._should_trigger_hybrid_fallback_stream_restart():
+                        if await self._should_use_hybrid_fallback_stream_restart():
                             async with aclosing(
                                 self._run_hybrid_fallback_stream_restart(attempt, attempt_index)
                             ) as fallback_stream:
                                 async for chunk in fallback_stream:
                                     yield chunk
                             return
-                        if await self._should_trigger_hybrid_fallback_stream_resume():
+                        if await self._should_use_hybrid_fallback_stream_resume():
                             async with aclosing(
                                 self._run_hybrid_fallback_stream_resume(attempt, attempt_index)
                             ) as fallback_stream:
@@ -453,10 +530,7 @@ class UnifiedPDRouter(BaseRouter):
         trace_obj = self.req_info.trace_obj
         with self._trace_span("UnifiedPD", False):
             max_retry = max(self.config.exception_config.transport_retry_limit, 1)
-            session = PDDispatchSession(
-                self.req_info.req_id,
-                prefill_context_budget=self._prefill_context_budget(),
-            )
+            session = PDDispatchSession(self.req_info.req_id)
 
             async with self._manage_request_context():
                 for attempt_index in range(max_retry):
@@ -464,7 +538,7 @@ class UnifiedPDRouter(BaseRouter):
                     try:
                         attempt = await self._create_attempt(session)
                         attempt.register_canceller()
-                        dispatch_plan = self._select_dispatch_plan(attempt)
+                        coordination_mode = self._select_coordination_mode(attempt)
                         if attempt_index > 0:
                             self.rescheduler.retry_count = attempt_index
                             self.logger.warning(
@@ -475,14 +549,21 @@ class UnifiedPDRouter(BaseRouter):
                                 self._resource_label(attempt.decode_resource),
                             )
                         attempt.transition(AttemptState.DISPATCHING)
-                        body = await self._run_nonstream_attempt(attempt, dispatch_plan)
+                        body = await self._run_nonstream_attempt(attempt, coordination_mode)
                         attempt.unregister_canceller()
                         attempt.transition(AttemptState.DONE)
                         self._merge_prompt_tokens_details(body)
+                        if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
+                            adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
+                        self._strip_native_internal_fields_from_body(body, attempt)
+                        strip_nonstream_response_body_for_client(
+                            body,
+                            client_return_token_ids=self.req_info.client_expects_token_ids,
+                        )
                         return JSONResponse(content=body)
                     except (asyncio.CancelledError, Exception) as e:
                         error, retry = await self._process_response_error(attempt, attempt_index, e)
-                        if await self._should_trigger_hybrid_fallback_nonstream():
+                        if await self._should_use_hybrid_fallback_nonstream():
                             return await self._run_hybrid_fallback_nonstream()
                         if not retry:
                             raise error
@@ -512,7 +593,7 @@ class UnifiedPDRouter(BaseRouter):
             error = RequestCancelledError(reason_str)
             label = f"Unified PD cancelled {attempt_index}/{max_retry}"
         else:
-            reason = DispatchStopReason.PEER_FAILED
+            reason = AttemptStopReason.PEER_FAILED
             reason_str = str(error)
             retry = allow_retry and attempt_index < max_retry - 1
             if isinstance(error, HTTPException):
@@ -542,12 +623,12 @@ class UnifiedPDRouter(BaseRouter):
         return error, retry
 
     @staticmethod
-    def _cancel_stop_reason(reason: str) -> DispatchStopReason:
+    def _cancel_stop_reason(reason: str) -> AttemptStopReason:
         if reason.startswith(cancel_error.NODE_FAULT):
-            return DispatchStopReason.PEER_FAILED
+            return AttemptStopReason.PEER_FAILED
         if reason == cancel_error.CLIENT_DISCONNECT:
-            return DispatchStopReason.CLIENT_DISCONNECT
-        return DispatchStopReason.OTHER
+            return AttemptStopReason.CLIENT_DISCONNECT
+        return AttemptStopReason.OTHER
 
     @staticmethod
     def _resource_label(resource: ScheduledResource | None) -> str:
@@ -557,24 +638,20 @@ class UnifiedPDRouter(BaseRouter):
 
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
-        consumed_output_tokens = (
-            self._active_retry_plan.cached_output_tokens if self._active_retry_plan is not None else 0
-        )
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
 
         # Handoff connectors (CPCD-style) do not need a concrete decode endpoint while prefill runs.
         # Allocate D after prefill completes so long prompts do not reserve stale decode workload for
         # the entire prefill window. Concurrent connectors still allocate both legs up front.
         if self._should_defer_decode_allocation(p_resource):
-            return session.new_attempt(
-                p_resource,
-                None,
-                self.config,
-                consumed_output_tokens=consumed_output_tokens,
-            )
+            return session.new_attempt(p_resource, None, self.config)
 
         try:
-            d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt_seq)
+            d_resource = await self._prepare_attempt_resource(
+                PDRole.ROLE_D,
+                attempt_seq,
+                required_engine_type=str(p_resource.instance.engine_type),
+            )
         except Exception as e:
             error_message = (
                 f"Unified PD D allocation failed after P allocated "
@@ -584,12 +661,7 @@ class UnifiedPDRouter(BaseRouter):
             self.logger.warning(error_message)
             await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_TOKENS)
             raise
-        return session.new_attempt(
-            p_resource,
-            d_resource,
-            self.config,
-            consumed_output_tokens=consumed_output_tokens,
-        )
+        return session.new_attempt(p_resource, d_resource, self.config)
 
     @staticmethod
     def _should_defer_decode_allocation(
@@ -597,22 +669,25 @@ class UnifiedPDRouter(BaseRouter):
     ) -> bool:
         if prefill_resource is None:
             return False
-        plans = dispatch_plans_from_capabilities(getattr(prefill_resource.instance, "dispatch_capabilities", None))
-        return DispatchPlan.PREFILL_HANDOFF_DECODE in plans and DispatchPlan.CONCURRENT_ENGINE_SYNC not in plans
+        engine_type = getattr(prefill_resource.instance, "engine_type", None)
+        if not isinstance(engine_type, str):
+            return False
+        adapter = ADAPTERS.get(engine_type.strip().lower())
+        return adapter is not None and adapter.coordination_mode == CoordinationMode.HANDOFF
 
     async def _run_stream_attempt(
-        self, attempt: AttemptContext, dispatch_plan: DispatchPlan
+        self, attempt: AttemptContext, coordination_mode: CoordinationMode
     ) -> AsyncGenerator[str, None]:
-        if dispatch_plan == DispatchPlan.PREFILL_HANDOFF_DECODE:
+        if coordination_mode == CoordinationMode.HANDOFF:
             run_func = self._run_handoff_stream_attempt
         else:
-            run_func = self._run_concurrent_stream_attempt
+            run_func = self._run_bootstrap_stream_attempt
         async with aclosing(run_func(attempt)) as attempt_stream:
             async for chunk in attempt_stream:
                 yield chunk
         return
 
-    async def _run_concurrent_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
+    async def _run_bootstrap_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
         d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
@@ -626,15 +701,19 @@ class UnifiedPDRouter(BaseRouter):
 
             async def prefill_task():
                 try:
+                    attempt.mark_dispatched(PDRole.ROLE_P.value)
                     response = await self.forward_request(
                         p_api, p_req, p_client, self.config.exception_config.first_token_timeout
                     )
-                    self._record_prefill_complete(response.json())
+                    attempt.mark_completed(PDRole.ROLE_P.value)
+                    self._record_bootstrap_prefill_response(attempt, response)
                     self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
                     await self._scheduler.report_cb_event(p_instance_id, "success")
                 except asyncio.CancelledError:  # pylint: disable=try-except-raise
                     raise
                 except Exception as e:
+                    if isinstance(e, UpstreamHTTPError):
+                        attempt.mark_completed(PDRole.ROLE_P.value)
                     if is_cb_reportable_failure(e):
                         await self._scheduler.report_cb_event(p_instance_id, "failure")
                     raise
@@ -704,6 +783,7 @@ class UnifiedPDRouter(BaseRouter):
 
         async def decode_task() -> None:
             try:
+                attempt.mark_dispatched(PDRole.ROLE_D.value)
                 async for chunk in self.forward_stream_request(
                     d_api,
                     d_req,
@@ -713,6 +793,7 @@ class UnifiedPDRouter(BaseRouter):
                 ):
                     if chunk:
                         await queue.put(chunk)
+                attempt.mark_completed(PDRole.ROLE_D.value)
                 if not terminal.done():
                     terminal.set_result(("done", None))
                 await self._scheduler.report_cb_event(d_instance_id, "success")
@@ -720,6 +801,8 @@ class UnifiedPDRouter(BaseRouter):
                 if not terminal.done():
                     terminal.set_result(("cancel", e))
             except Exception as e:
+                if isinstance(e, UpstreamHTTPError):
+                    attempt.mark_completed(PDRole.ROLE_D.value)
                 if is_cb_reportable_failure(e):
                     await self._scheduler.report_cb_event(d_instance_id, "failure")
                 if not terminal.done():
@@ -810,6 +893,11 @@ class UnifiedPDRouter(BaseRouter):
                         )
                     else:
                         value = self._merge_prompt_tokens_details_into_stream_chunk(value)
+                        value = strip_stream_chunk_bytes_for_client(
+                            value,
+                            client_return_token_ids=self.req_info.client_expects_token_ids,
+                        )
+                    value = self._strip_native_internal_fields_from_stream_chunk(value, attempt)
                     yield value
                 elif key == "done":
                     if prefill_task is not None:
@@ -837,13 +925,15 @@ class UnifiedPDRouter(BaseRouter):
             if not terminal.done():
                 terminal.cancel()
 
-    async def _run_nonstream_attempt(self, attempt: AttemptContext, dispatch_plan: DispatchPlan) -> dict[str, Any]:
-        if dispatch_plan == DispatchPlan.PREFILL_HANDOFF_DECODE:
+    async def _run_nonstream_attempt(
+        self, attempt: AttemptContext, coordination_mode: CoordinationMode
+    ) -> dict[str, Any]:
+        if coordination_mode == CoordinationMode.HANDOFF:
             return await self._run_handoff_nonstream_attempt(attempt)
         else:
-            return await self._run_concurrent_nonstream_attempt(attempt)
+            return await self._run_bootstrap_nonstream_attempt(attempt)
 
-    async def _run_concurrent_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
+    async def _run_bootstrap_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
         d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
@@ -856,14 +946,18 @@ class UnifiedPDRouter(BaseRouter):
 
             async def prefill_task():
                 try:
+                    attempt.mark_dispatched(PDRole.ROLE_P.value)
                     response = await self.forward_request(
                         p_api, p_req, p_client, self.config.exception_config.first_token_timeout
                     )
-                    self._record_prefill_complete(response.json())
+                    attempt.mark_completed(PDRole.ROLE_P.value)
+                    self._record_bootstrap_prefill_response(attempt, response)
                     await self._scheduler.report_cb_event(p_instance_id, "success")
                 except asyncio.CancelledError:  # pylint: disable=try-except-raise
                     raise
                 except Exception as e:
+                    if isinstance(e, UpstreamHTTPError):
+                        attempt.mark_completed(PDRole.ROLE_P.value)
                     if is_cb_reportable_failure(e):
                         await self._scheduler.report_cb_event(p_instance_id, "failure")
                     raise
@@ -892,14 +986,18 @@ class UnifiedPDRouter(BaseRouter):
 
         async def decode_task() -> tuple[Any, Any]:
             try:
+                attempt.mark_dispatched(PDRole.ROLE_D.value)
                 response = await self.forward_request(
                     d_api, d_req, d_client, self.config.exception_config.infer_timeout
                 )
+                attempt.mark_completed(PDRole.ROLE_D.value)
                 await self._scheduler.report_cb_event(d_instance_id, "success")
                 return response.json(), None
             except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
             except Exception as e:
+                if isinstance(e, UpstreamHTTPError):
+                    attempt.mark_completed(PDRole.ROLE_D.value)
                 if is_cb_reportable_failure(e):
                     await self._scheduler.report_cb_event(d_instance_id, "failure")
                 return None, e
@@ -1011,7 +1109,12 @@ class UnifiedPDRouter(BaseRouter):
         if attempt.decode_resource is not None:
             return False
         start = time.perf_counter()
-        d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt.attempt_seq)
+        adapter = self._require_adapter_for_attempt(attempt)
+        d_resource = await self._prepare_attempt_resource(
+            PDRole.ROLE_D,
+            attempt.attempt_seq,
+            required_engine_type=adapter.engine_type,
+        )
         elapsed_ms = (time.perf_counter() - start) * 1000
         self.logger.info(
             "Scheduling latency stage=late_select_d elapsed_ms=%.2f instance_id=%s endpoint_id=%s req_id=%s",
@@ -1022,12 +1125,10 @@ class UnifiedPDRouter(BaseRouter):
         )
         attempt.decode_resource = d_resource
         try:
-            dispatch_plan = select_dispatch_plan_for_pair(
-                prefill=attempt.prefill_resource,
-                decode=attempt.decode_resource,
-            )
-            if dispatch_plan != DispatchPlan.PREFILL_HANDOFF_DECODE:
-                raise RuntimeError(f"Late decode allocation selected unsupported plan: {dispatch_plan}")
+            adapter = self._require_adapter_for_attempt(attempt)
+            decode_engine_type = getattr(attempt.decode_resource.instance, "engine_type", None)
+            if not isinstance(decode_engine_type, str) or decode_engine_type.strip().lower() != adapter.engine_type:
+                raise RuntimeError(f"{adapter.engine_type} handoff requires a matching decode instance")
         except Exception:
             await self._release_attempt_resource(
                 d_resource,
@@ -1039,7 +1140,11 @@ class UnifiedPDRouter(BaseRouter):
             raise
         return True
 
-    async def _await_handoff_prefill(self, attempt: AttemptContext, p_client) -> PrefillResult:
+    async def _await_handoff_prefill(
+        self,
+        attempt: AttemptContext,
+        p_client,
+    ) -> PrefillMetadata:
         p_instance_id = attempt.prefill_resource.instance.id
 
         async def prefill_task():
@@ -1063,15 +1168,23 @@ class UnifiedPDRouter(BaseRouter):
         attempt: AttemptContext,
         role: PDRole,
         *,
-        prefill_result: PrefillResult | None = None,
+        prefill_result: PrefillMetadata | None = None,
     ) -> (dict[str, Any], str):
+        req, api = self._base_request_for_attempt(role)
+        adapter = self._require_adapter_for_attempt(attempt)
+        return self._native_request_for_attempt(
+            attempt,
+            role,
+            adapter=adapter,
+            req=req,
+            api=api,
+            prefill_metadata=prefill_result,
+        )
+
+    def _base_request_for_attempt(self, role: PDRole) -> tuple[dict[str, Any], str]:
         api = self.req_info.entry_api
         req = self.req_info.req_data.copy()
         stream = self.req_info.req_data.get("stream", False)
-        req["request_id"] = f"{attempt.root_request_id}#a{attempt.attempt_seq}"
-        if role == PDRole.ROLE_P:
-            req["stream"] = False
-            req = self._apply_prefill_params(req, set_min_tokens=False)
         if stream and self.config.exception_config.reschedule_enabled:
             req["return_token_ids"] = True
             if self._active_retry_plan is not None:
@@ -1086,82 +1199,121 @@ class UnifiedPDRouter(BaseRouter):
             and self._sampling_manager is not None
         ):
             inject_logprobs(req, self.config.precision_detection_config, req_id=self.req_info.req_id)
-        # SGLang pure-native: stock launch_server needs bootstrap_* on the business
-        # port. Do not attach _motor_dispatch (no InferEndpoint adapter in native mode).
-        # Prefill endpoint must still be held here so Decode-leg inject can read
-        # bootstrap_host from attempt.prefill_resource.
-        target = attempt.prefill_resource if role == PDRole.ROLE_P else attempt.decode_resource
-        if is_sglang_resource(target):
-            inject_sglang_pd_fields(req, attempt)
-            return (req, api)
-        req[MOTOR_DISPATCH_KEY] = attempt.dispatch_for(role, self._DISPATCH_MODE).model_dump(mode="json")
-        if prefill_result is not None:
-            req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")
-        return (req, api)
+        return req, api
 
-    def _prefill_context_budget(self) -> PrefillContextBudget | None:
-        """Return the client budget before the prefill leg is rewritten to one token."""
-        for field in (OpenAIField.MAX_COMPLETION_TOKENS, OpenAIField.MAX_TOKENS):
-            value = self.req_info.req_data.get(field)
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                return PrefillContextBudget(
-                    max_output_tokens=value,
-                    parameter=field.value,
-                )
-        return None
+    def _native_request_for_attempt(
+        self,
+        attempt: AttemptContext,
+        role: PDRole,
+        *,
+        adapter: PDProtocolAdapter,
+        req: dict[str, Any],
+        api: str,
+        prefill_metadata: PrefillMetadata | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        context = self._native_leg_context(attempt, role, api)
+        if role == PDRole.ROLE_P:
+            engine_request = adapter.build_prefill_request(req, context)
+        else:
+            engine_request = adapter.build_decode_request(req, context, prefill_metadata)
+        return engine_request.body, engine_request.api
 
-    async def _request_prefill_result(self, attempt: AttemptContext, p_client) -> PrefillResult:
+    @staticmethod
+    def _native_leg_context(attempt: AttemptContext, role: PDRole, api: str) -> LegContext:
+        resource = attempt.prefill_resource if role == PDRole.ROLE_P else attempt.decode_resource
+        if resource is None:
+            raise RuntimeError(f"Missing {role.value} resource for native engine request")
+        peer_resource = attempt.decode_resource if role == PDRole.ROLE_P else attempt.prefill_resource
+        return LegContext(
+            engine_request_id=f"{attempt.root_request_id}#a{attempt.attempt_seq}",
+            pair_id=attempt.pair_id,
+            attempt_seq=attempt.attempt_seq,
+            api=api,
+            endpoint=UnifiedPDRouter._native_endpoint_metadata(resource),
+            peer_endpoint=(
+                UnifiedPDRouter._native_endpoint_metadata(peer_resource) if peer_resource is not None else None
+            ),
+        )
+
+    @staticmethod
+    def _native_endpoint_metadata(resource: ScheduledResource) -> EngineEndpointMetadata:
+        endpoint = resource.endpoint
+        return EngineEndpointMetadata(
+            host=endpoint.ip,
+            bootstrap_port=endpoint.bootstrap_port,
+        )
+
+    async def _request_prefill_result(
+        self,
+        attempt: AttemptContext,
+        p_client,
+    ) -> PrefillMetadata:
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
-        response = await self.forward_request(p_api, p_req, p_client, self.config.exception_config.first_token_timeout)
+        attempt.mark_dispatched(PDRole.ROLE_P.value)
+        try:
+            response = await self.forward_request(
+                p_api,
+                p_req,
+                p_client,
+                self.config.exception_config.first_token_timeout,
+            )
+        except UpstreamHTTPError:
+            attempt.mark_completed(PDRole.ROLE_P.value)
+            raise
+        attempt.mark_completed(PDRole.ROLE_P.value)
         response_body = response.json()
-        self._capture_prompt_tokens_details(response_body)
-        prefill_result = PrefillResult.model_validate(response_body)
-        self._validate_prefill_result(attempt, prefill_result, expected_status=PrefillResultStatus.COMPLETED)
+        adapter = self._require_adapter_for_attempt(attempt)
+        try:
+            prefill_metadata = adapter.parse_prefill_response(response_body)
+        except EngineProtocolError as error:
+            raise UpstreamHTTPError(
+                status_code=502,
+                body=str(error).encode("utf-8"),
+                headers={"content-type": "text/plain; charset=utf-8"},
+                phase="prefill",
+            ) from error
+        if prefill_metadata.usage is not None:
+            self._capture_prompt_tokens_details({"usage": prefill_metadata.usage})
         self.req_info.update_state(ReqState.PREFILL_END)
         if self._stream_commit_controller is not None:
             self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
-        return prefill_result
+        return prefill_metadata
 
-    @staticmethod
-    def _validate_prefill_result(
-        attempt: AttemptContext,
-        prefill_result: PrefillResult,
+    def _select_coordination_mode(self, attempt: AttemptContext) -> CoordinationMode:
+        adapter = self._require_adapter_for_attempt(attempt)
+        if adapter.coordination_mode == CoordinationMode.BOOTSTRAP and attempt.decode_resource is None:
+            raise RuntimeError(f"{adapter.engine_type} bootstrap requires a decode instance")
+        if attempt.decode_resource is not None:
+            decode_engine_type = getattr(attempt.decode_resource.instance, "engine_type", None)
+            if not isinstance(decode_engine_type, str) or decode_engine_type.strip().lower() != adapter.engine_type:
+                raise RuntimeError(
+                    f"P/D engine types must match: prefill={adapter.engine_type}, decode={decode_engine_type!r}"
+                )
+        return adapter.coordination_mode
+
+    async def _prepare_attempt_resource(
+        self,
+        role: PDRole,
+        attempt_seq: int,
         *,
-        expected_status: PrefillResultStatus,
-    ) -> None:
-        if (
-            prefill_result.root_request_id != attempt.root_request_id
-            or prefill_result.pair_id != attempt.pair_id
-            or prefill_result.attempt_seq != attempt.attempt_seq
-        ):
-            raise RuntimeError("PrefillResult does not match current dispatch attempt")
-        if prefill_result.status != expected_status.value:
-            raise RuntimeError(f"Unexpected PrefillResult status: {prefill_result.status}")
-
-    def _select_dispatch_plan(self, attempt: AttemptContext) -> DispatchPlan:
-        if attempt.decode_resource is None:
-            if self._should_defer_decode_allocation(attempt.prefill_resource):
-                return DispatchPlan.PREFILL_HANDOFF_DECODE
-            raise RuntimeError("Decode resource is required before selecting a concurrent P/D dispatch plan")
-        return select_dispatch_plan_for_pair(
-            prefill=attempt.prefill_resource,
-            decode=attempt.decode_resource,
-        )
-
-    async def _prepare_attempt_resource(self, role: PDRole, attempt_seq: int) -> ScheduledResource:
+        required_engine_type: str | None = None,
+    ) -> ScheduledResource:
         self.req_info.update_state(ReqState.P_SCHEDULING if role == PDRole.ROLE_P else ReqState.D_SCHEDULING)
         target_instance_id = None
         constraint = self.req_info.scheduling_constraint
         if constraint is not None:
             target_instance_id = constraint.target_for_role(role)
-        result = await self._scheduler.select_and_allocate(
-            role,
-            self.req_info,
-            target_instance_id=target_instance_id,
-        )
+        scheduler_kwargs = {"target_instance_id": target_instance_id}
+        if required_engine_type is not None:
+            scheduler_kwargs["required_engine_type"] = required_engine_type
+        result = await self._scheduler.select_and_allocate(role, self.req_info, **scheduler_kwargs)
         if result is None:
             error_message = f"No instance available for role {role}"
+            if required_engine_type is not None:
+                error_message += f" with engine_type={required_engine_type}"
             self.req_info.trace_obj.set_trace_error_message(error_message)
+            if required_engine_type is not None:
+                raise HTTPException(status_code=503, detail=error_message)
             raise RuntimeError(error_message)
         ins, endpoint, workload = result
         await self._record_attempt_workload(attempt_seq, role, workload)
@@ -1587,7 +1739,7 @@ class UnifiedPDRouter(BaseRouter):
             return "release_d_tokens"
         return f"release_{role.value}_{action.value.lower()}"
 
-    async def _stop_attempt(self, attempt: AttemptContext | None, reason: DispatchStopReason) -> None:
+    async def _stop_attempt(self, attempt: AttemptContext | None, reason: AttemptStopReason) -> None:
         if attempt is None:
             return
         async with attempt.stop_lock:
@@ -1596,15 +1748,8 @@ class UnifiedPDRouter(BaseRouter):
                 return
 
             attempt.stop()
+            await self._abort_native_attempt(attempt)
             await attempt.cancel(reason.value)
-            client = DispatchStopClient(self.config)
-            tasks = []
-            if attempt.prefill_resource:
-                tasks.append(client.stop(attempt.prefill_resource, attempt, reason))
-            if attempt.decode_resource:
-                tasks.append(client.stop(attempt.decode_resource, attempt, reason))
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
             await self._release_attempt(attempt, wait=False)
             try:
                 await self._drain_release_tasks()
@@ -1616,6 +1761,55 @@ class UnifiedPDRouter(BaseRouter):
                     reason.value,
                 )
             attempt.transition(AttemptState.STOPPED)
+
+    async def _abort_native_attempt(self, attempt: AttemptContext) -> None:
+        """Best-effort native cancellation; failures never mask the original stop reason."""
+        try:
+            adapter = self._require_adapter_for_attempt(attempt)
+        except Exception:
+            return
+        aborts = []
+        for role, resource in (
+            (PDRole.ROLE_P, attempt.prefill_resource),
+            (PDRole.ROLE_D, attempt.decode_resource),
+        ):
+            if resource is None or not attempt.needs_abort(role.value):
+                continue
+            context = self._native_leg_context(attempt, role, self.req_info.entry_api)
+            abort_request = adapter.build_abort_request(context)
+            if abort_request is not None:
+                aborts.append(self._send_native_abort(resource, abort_request))
+        if aborts:
+            await asyncio.gather(*aborts)
+
+    async def _send_native_abort(self, resource: ScheduledResource, request: EngineRequest) -> None:
+        try:
+            async with self._client_for(resource) as client:
+                timeout = min(float(self.config.exception_config.first_token_timeout), 1.0)
+                response = await asyncio.wait_for(
+                    client.post(
+                        f"/{request.api}",
+                        json=request.body,
+                        timeout=timeout,
+                    ),
+                    timeout=timeout,
+                )
+                if response.status_code >= 400:
+                    self.logger.warning(
+                        "Native abort rejected engine=%s instance_id=%s endpoint_id=%s status=%s",
+                        resource.instance.engine_type,
+                        resource.instance.id,
+                        resource.endpoint.id,
+                        response.status_code,
+                    )
+        except Exception as err:
+            self.logger.warning(
+                "Native abort failed engine=%s instance_id=%s endpoint_id=%s error=%s",
+                resource.instance.engine_type,
+                resource.instance.id,
+                resource.endpoint.id,
+                err,
+            )
 
     def _client_for(self, resource: ScheduledResource):
         if resource is None:
@@ -1660,49 +1854,6 @@ class UnifiedPDRouter(BaseRouter):
         d_id = attempt.decode_resource.instance.id
         if await self._sampling_manager.confirm_sample((p_id, d_id), time.time()):
             await self._submit_token_sample(p_id, d_id, info, attempt.decode_resource)
-
-    # ------------------------------------------------------------------
-    # Metaserver forward entry point (CDP mode: D-side prefill → P instance)
-    # ------------------------------------------------------------------
-
-    async def handle_metaserver_request(self) -> dict[str, Any]:
-        self.is_meta = True
-        schedule_resource: ScheduledResource = None
-        try:
-            schedule_resource = await self.prepare_resource(PDRole.ROLE_P)
-            req_data = self.req_info.req_data.copy()
-            req_data["stream"] = False
-            async with self._client_for(schedule_resource) as client:
-                response = await self.forward_request(
-                    self.req_info.api,
-                    req_data,
-                    client,
-                    self.config.exception_config.first_token_timeout,
-                )
-            resp_json = response.json()
-            self.logger.debug("Prefill response received")
-            self._capture_prompt_tokens_details(resp_json)
-            self.req_info.update_state(ReqState.PREFILL_END)
-            if hasattr(self.req_info, "p_instance_id"):
-                self.req_info.p_instance_id = schedule_resource.instance.id
-            return resp_json
-        except asyncio.CancelledError:
-            self.req_info.trace_obj.set_trace_prompt(self.req_info.req_data)
-            self.logger.info("Metaserver request was cancelled")
-            self.req_info.cancel_scope()
-            raise
-        except Exception:
-            self.req_info.trace_obj.set_trace_prompt(self.req_info.req_data)
-            self.req_info.cancel_scope()
-            self.req_info.update_state(ReqState.EXCEPTION)
-            raise
-        finally:
-            if schedule_resource and self.req_info.state != ReqState.PREFILL_END:
-                if not await self.release_all(schedule_resource):
-                    self.logger.debug(
-                        "release_all(prefill) returned False instance_id=%s",
-                        schedule_resource.instance.id,
-                    )
 
     @staticmethod
     async def _cancel_task_quietly(task: asyncio.Task | None) -> None:

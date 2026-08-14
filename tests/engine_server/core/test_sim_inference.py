@@ -24,7 +24,7 @@ from motor.engine_server.core.sim_inference import (
     _VIRTUAL_WARMUP_TIMEOUT_SEC,
     _is_virtual_metrics_request,
 )
-from motor.engine_server.constants import constants
+from motor.common import engine_constants as constants
 
 # pylint: disable=redefined-outer-name
 

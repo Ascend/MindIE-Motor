@@ -35,7 +35,7 @@ class AggregationScope(Enum):
 class AggregationContext:
     scope: AggregationScope = AggregationScope.INSTANCE
     instance_roles: dict[int, str] | None = None
-    instance_dispatch_capabilities: dict[int, set[str]] | None = None
+    instance_engine_types: dict[int, str] | None = None
     ins_ids: list[int] | None = None
 
 

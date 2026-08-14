@@ -18,7 +18,7 @@ from vllm.v1.executor.multiproc_executor import MultiprocExecutor
 
 from motor.common.logger import get_logger
 from motor.common.logger import attach_to_vllm_logger
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.core.engine import Engine
 from motor.engine_server.core.vllm.vllm_openai_compat import cli_env_setup
 

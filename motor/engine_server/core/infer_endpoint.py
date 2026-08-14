@@ -24,7 +24,7 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DispatchStopState, MotorDispatch
 from motor.engine_server.core.dispatch_adapter import create_dispatch_adapter
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
 from motor.common.utils.net import format_address
 from motor.engine_server.core.endpoint import Endpoint

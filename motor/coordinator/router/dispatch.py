@@ -179,29 +179,23 @@ async def select_router_class(
 ) -> type["BaseRouter"]:
     """Select the router implementation from the live instance topology.
 
-    Routing is derived from the roles currently present plus whether a P/D pair shares a
-    dispatch capability — no deploy_mode. Shared by user traffic (handle_request) and the
-    internal precision probe so both route identically.
+    Routing is derived from the live roles and circuit-breaker state. Native protocol
+    selection happens inside UnifiedPDRouter from the selected instance engine_type.
+    Shared by user traffic and the internal precision probe so both route identically.
 
     Raises HTTPException(503) when no routable topology is available.
     """
     roles = await scheduler.get_available_instance_roles()
     has_pd_roles = PDRole.ROLE_P in roles and PDRole.ROLE_D in roles
-    has_compatible_pair = False
+    has_routable_pd_pair = has_pd_roles
     if has_pd_roles:
-        compatibility_check = getattr(scheduler, "has_compatible_pd_pair", None)
-        has_compatible_pair = await compatibility_check() if compatibility_check is not None else True
-        if has_compatible_pair:
-            # Check circuit breaker: only treat as compatible if there are
-            # non-blocked instances for BOTH roles
-            get_unblocked = getattr(scheduler, "get_unblocked_instances", None)
-            if get_unblocked is not None:
-                unblocked_p = await get_unblocked(PDRole.ROLE_P)
-                unblocked_d = await get_unblocked(PDRole.ROLE_D)
-                if not unblocked_p or not unblocked_d:
-                    has_compatible_pair = False
+        get_unblocked = getattr(scheduler, "get_unblocked_instances", None)
+        if get_unblocked is not None:
+            unblocked_p = await get_unblocked(PDRole.ROLE_P)
+            unblocked_d = await get_unblocked(PDRole.ROLE_D)
+            has_routable_pd_pair = bool(unblocked_p and unblocked_d)
 
-    if has_compatible_pair:
+    if has_routable_pd_pair:
         return UnifiedPDRouter
 
     # Degrade to hybrid mode if any unblocked instance is available
@@ -225,7 +219,7 @@ async def select_router_class(
     is_hybrid_deploy = _is_pd_hybrid_deploy(config)
     if not fallback_enabled and not is_hybrid_deploy:
         if has_pd_roles:
-            message = "PD separate service has no compatible P/D pair and fallback to hybrid is disabled"
+            message = "PD separate service has no circuit-breaker-available P/D pair and fallback is disabled"
         else:
             message = "PD separate service is unavailable and fallback to hybrid is disabled"
         if req_info is not None:
@@ -234,17 +228,13 @@ async def select_router_class(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=message)
 
     if PDRole.ROLE_U in roles or PDRole.ROLE_P in roles:
-        if has_pd_roles and not has_compatible_pair and PDRole.ROLE_U in roles:
-            message = (
-                "P/D instances are online but advertise no shared dispatch capability; "
-                "falling back to PDHybridRouter via union instances. "
-                "Check the engine kv_connector is recognized or set dispatch_profile explicitly."
-            )
+        if has_pd_roles and not has_routable_pd_pair and PDRole.ROLE_U in roles:
+            message = "P/D instances are unavailable; falling back to PDHybridRouter via union instances"
             if req_info is not None:
                 req_info.trace_obj.set_trace_error_message(message)
             logger.warning(message)
-        elif has_pd_roles and not has_compatible_pair and req_info is not None:
-            error_message = "PD separate service degraded to hybrid: P or D instances circuit-broken or incompatible"
+        elif has_pd_roles and not has_routable_pd_pair and req_info is not None:
+            error_message = "PD separate service degraded to hybrid: P or D instances are circuit-broken"
             req_info.trace_obj.set_trace_error_message(error_message)
             logger.warning(error_message)
         elif req_info is not None and PDRole.ROLE_U not in roles:
@@ -265,12 +255,14 @@ async def handle_request(
     scheduler=None,
     *,
     request_manager: RequestManager,
+    request_json: dict | None = None,
 ) -> Response:
     """Handle incoming requests and route them to appropriate router implementation
 
     Args:
         raw_request: The incoming FastAPI request object
         request_manager: RequestManager instance (required, injected by InferenceServer)
+        request_json: Body already parsed by the API ingress, when available
 
     Returns:
         Response: The response from the selected router implementation (stream, non-stream, or error)
@@ -279,7 +271,7 @@ async def handle_request(
         HTTPException: If request body is empty or request fail
     """
 
-    req_info = await __create_request_info(raw_request, request_manager)
+    req_info = await __create_request_info(raw_request, request_manager, request_json=request_json)
 
     if TracerManager().contains_trace_headers(raw_request.headers):
         req_info.trace_obj.parent_context = TracerManager().extract_trace_context(raw_request.headers)
@@ -344,16 +336,18 @@ async def handle_request(
 async def __create_request_info(
     raw_request: Request,
     request_manager: RequestManager,
+    request_json: dict | None = None,
 ) -> RequestInfo:
     request_body = await raw_request.body()
     if not request_body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request body")
 
-    try:
-        request_json = await raw_request.json()
-    except Exception as e:
-        logger.warning("JSON parse failed: %s", e)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format") from e
+    if request_json is None:
+        try:
+            request_json = await raw_request.json()
+        except Exception as e:
+            logger.warning("JSON parse failed: %s", e)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format") from e
 
     if not request_json:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")

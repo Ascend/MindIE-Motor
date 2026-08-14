@@ -29,6 +29,7 @@ from motor.coordinator.metrics.metrics_collector import (
     Metric,
     _filter_kvstore_metrics,
 )
+from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.coordinator.metrics.metric_computer import (
@@ -872,6 +873,29 @@ http_request_duration_seconds_created{handler="/v1/chat/completions",method="POS
             assert requests.get(f"http://localhost:{port}/metrics").status_code == 200
         for port in [8004, 8005]:
             assert requests.get(f"http://localhost:{port}/metrics").status_code == 404
+
+    @_test_without_background_thread
+    @patch.object(NativeEngineApiClient, "query_metrics", return_value="# TYPE ready gauge\nready 1")
+    def test_fetch_endpoint_metrics_uses_native_business_port_and_infer_tls(self, query_metrics):
+        endpoint = Endpoint(
+            id=7,
+            ip="2001:db8::7",
+            business_port="8007",
+            mgmt_port="9007",
+        )
+        instance = Instance(
+            job_name="native-metrics",
+            model_name="test-model",
+            id=7,
+            role=PDRole.ROLE_U,
+            endpoints={"2001:db8::7": {7: endpoint}},
+        )
+        collector = MetricsCollector(self.config)
+
+        result = collector._fetch_endpoint_metrics(instance)
+
+        query_metrics.assert_called_once_with("[2001:db8::7]:8007", self.config.infer_tls_config)
+        assert result["endpoints"][7]["metrics_str"] == "# TYPE ready gauge\nready 1"
 
     def test_prometheus_metrics_handler(self, mock_metrics_collector):  # pylint: disable=redefined-outer-name
         mock_metrics_collector._last_metrics = None

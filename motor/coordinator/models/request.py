@@ -92,9 +92,6 @@ class RequestInfo(BaseModel):
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")
-    p_instance_id: int | None = Field(
-        default=None, description="P instance ID set by metaserver handler in CDP-like modes"
-    )
     scheduling_constraint: SchedulingConstraint | None = Field(
         default=None,
         description="Internal pin-to-instance constraint (e.g. precision probe); not from client API",

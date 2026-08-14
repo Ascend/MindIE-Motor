@@ -13,7 +13,6 @@ from typing import Mapping
 
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
-from motor.common.resources.dispatch import has_compatible_dispatch_pair
 from motor.common.resources.instance import Instance, PDRole, Workload, Endpoint
 from motor.common.resources.http_msg_spec import EventType
 from motor.config.coordinator import CoordinatorConfig
@@ -361,48 +360,7 @@ class InstanceManager:
                 len(self._decode_pool),
                 len(self._hybrid_pool),
             )
-            self._log_dispatch_capabilities()
             return result
-
-    def _log_dispatch_capabilities(self) -> None:
-        """Log per-instance dispatch_capabilities and flag an incompatible P/D pool.
-
-        Readiness gates on a shared P/D dispatch capability; when P and D are both present
-        but advertise no common capability the service stays not-ready with a vague
-        instances_status=unknown. This makes the actual capabilities (empty vs mismatched) visible.
-        """
-
-        def _role(inst: Instance) -> str:
-            role = getattr(inst, "role", None)
-            return role.value if hasattr(role, "value") else str(role)
-
-        summary = ", ".join(
-            f"{inst.id}({_role(inst)})={list(getattr(inst, 'dispatch_capabilities', []) or [])}"
-            for pool in (self._prefill_pool, self._decode_pool, self._encode_pool, self._hybrid_pool)
-            for inst in pool.values()
-        )
-        logger.info("Instance dispatch_capabilities: %s", summary or "(none)")
-
-        if (
-            self._prefill_pool
-            and self._decode_pool
-            and not has_compatible_dispatch_pair(self._prefill_pool.values(), self._decode_pool.values())
-        ):
-            if self._hybrid_pool:
-                logger.warning(
-                    "P/D instances are online but advertise no shared dispatch capability; "
-                    "requests will fall back to PDHybridRouter via union instances. "
-                    "Check the engine kv_connector is recognized or set dispatch_profile explicitly. "
-                    "capabilities: %s",
-                    summary or "(none)",
-                )
-            else:
-                logger.warning(
-                    "P/D instances are online but advertise no shared dispatch capability "
-                    "(readiness will report instances_status=unknown). Check the engine kv_connector "
-                    "is recognized or set dispatch_profile explicitly. capabilities: %s",
-                    summary or "(none)",
-                )
 
     def _find_available_pool(self, instance_id: int) -> dict[int, Instance] | None:
         # This is a private method that should only be called within locked contexts

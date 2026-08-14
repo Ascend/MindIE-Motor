@@ -62,6 +62,8 @@ MULTICONNECTOR = "MultiConnector"
 KV_CONNECTOR_EXTRA_CONFIG_KEY = "kv_connector_extra_config"
 CONNECTORS_KEY = "connectors"
 KV_PORT_KEY = "kv_port"
+DISAGGREGATION_BOOTSTRAP_PORT_KEY = "disaggregation_bootstrap_port"
+DISAGGREGATION_BOOTSTRAP_PORT_CLI_KEY = "disaggregation-bootstrap-port"
 LOOPUP_RPC_PORT_KEY = "lookup_rpc_port"
 UCM_CONNECTOR = "UCMConnector"
 SERVER_LIST = "server_list"
@@ -154,6 +156,7 @@ class EndpointConfig:
     base_port: int = 10000
     mgmt_ports: list[str] = field(default_factory=list)
     service_ports: list[str] = field(default_factory=list)
+    bootstrap_port: int | None = None
 
 
 @dataclass
@@ -381,6 +384,7 @@ class NodeManagerConfig:
                 config_data = raw
 
             cls._update_from_config_data(config, config_data)
+            cls._set_native_bootstrap_port(config, raw)
         else:
             logger.warning("Config file does not exist, using default configuration: %s", config_path_obj)
 
@@ -507,6 +511,46 @@ class NodeManagerConfig:
         return config_data
 
     @classmethod
+    def _set_native_bootstrap_port(cls, config: "NodeManagerConfig", user_cfg: dict[str, Any]) -> None:
+        """Resolve SGLang bootstrap metadata from the selected engine section."""
+        engine_key = {
+            "encode": MOTOR_ENGINE_ENCODE_CONFIG_KEY,
+            "prefill": MOTOR_ENGINE_PREFILL_CONFIG_KEY,
+            "decode": MOTOR_ENGINE_DECODE_CONFIG_KEY,
+            "union": MOTOR_ENGINE_UNION_CONFIG_KEY,
+            "both": MOTOR_ENGINE_UNION_CONFIG_KEY,
+        }.get(Env.role)
+        engine_section = user_cfg.get(engine_key, {}) if engine_key else {}
+        if not isinstance(engine_section, dict):
+            return
+        engine_config = engine_section.get(ENGINE_CONFIG_KEY, {})
+        if not isinstance(engine_config, dict):
+            return
+
+        if str(engine_section.get(ENGINE_TYPE_KEY, "")).strip().lower() != ENGINE_TYPE_SGLANG:
+            return
+        port = engine_config.get(
+            DISAGGREGATION_BOOTSTRAP_PORT_KEY,
+            engine_config.get(DISAGGREGATION_BOOTSTRAP_PORT_CLI_KEY),
+        )
+        config.endpoint_config.bootstrap_port = cls._parse_native_port(
+            DISAGGREGATION_BOOTSTRAP_PORT_KEY,
+            port,
+        )
+
+    @staticmethod
+    def _parse_native_port(field_name: str, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            port = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be an integer port") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(f"{field_name} must be in range 1-65535")
+        return port
+
+    @classmethod
     def _infer_dispatch_capabilities(cls, engine_config: dict[str, Any]) -> list[str]:
         """Infer Motor dispatch capabilities from engine-native config."""
         engine_type = str(engine_config.get(ENGINE_TYPE_KEY, "")).strip().lower()
@@ -521,7 +565,9 @@ class NodeManagerConfig:
                 native_engine_config,
                 explicit_profile=engine_config.get(DISPATCH_PROFILE_KEY),
             )
-            capabilities = dispatch_capabilities_for_profile(profile)
+            # The native vLLM runtime implements only the explicit handoff contract.
+            # Do not advertise trigger/concurrent support that runtime validation rejects.
+            capabilities = dispatch_capabilities_for_profile(profile) if profile == DispatchProfile.HANDOFF else []
             if not capabilities and profile == DispatchProfile.UNKNOWN:
                 logger.warning(
                     "Unable to infer vLLM dispatch capability from kv_transfer_config. "
@@ -746,6 +792,9 @@ class NodeManagerConfig:
         # Validate device configuration
         if self.basic_config.heartbeat_interval_seconds <= 0:
             errors.append("heartbeat_interval_seconds must be greater than 0")
+
+        if self.snapshot_config.enable_snapshot:
+            errors.append("Native engine runtime does not support snapshot yet; enable_snapshot must be false")
 
         # Validate logging configuration
         valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]

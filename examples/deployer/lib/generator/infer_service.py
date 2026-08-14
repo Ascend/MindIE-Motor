@@ -169,19 +169,6 @@ def _configure_coordinator_role(infer_doc, user_config):
             }
         )
 
-    disaggregation_bootstrap_port = (
-        user_config.get(C.MOTOR_ENGINE_PREFILL_CONFIG, {})
-        .get(C.ENGINE_CONFIG, {})
-        .get("disaggregation_bootstrap_port", "")
-    )
-    if disaggregation_bootstrap_port:
-        coordinator_env.append(
-            {
-                C.NAME: C.ENV_DISAGGREGATION_BOOTSTRAP_PORT,
-                C.VALUE: str(disaggregation_bootstrap_port),
-            }
-        )
-
     if coordinator_env:
         set_container_env(container, coordinator_env)
 

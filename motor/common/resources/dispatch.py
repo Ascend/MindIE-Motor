@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 from enum import Enum
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -100,49 +100,6 @@ def dispatch_capabilities_for_profile(profile: DispatchProfile) -> list[str]:
     return []
 
 
-def dispatch_plans_from_capabilities(values: Iterable[object] | None) -> set[DispatchPlan]:
-    """Normalize advertised capability values into supported dispatch plans."""
-    plans: set[DispatchPlan] = set()
-    if values is None:
-        return plans
-    if isinstance(values, (str, bytes)):
-        values = (values,)
-    try:
-        iterator = iter(values)
-    except TypeError:
-        return plans
-    for value in iterator:
-        try:
-            plans.add(DispatchPlan(str(value)))
-        except ValueError:
-            continue
-    return plans
-
-
-def shared_dispatch_plans(prefill: Any, decode: Any) -> set[DispatchPlan]:
-    """Return dispatch plans advertised by both instances."""
-    prefill_plans = dispatch_plans_from_capabilities(getattr(prefill, "dispatch_capabilities", None))
-    decode_plans = dispatch_plans_from_capabilities(getattr(decode, "dispatch_capabilities", None))
-    return prefill_plans & decode_plans
-
-
-def dispatch_plan_union(instances: Iterable[Any]) -> set[DispatchPlan]:
-    """Union of dispatch plans advertised across instances; parses each instance once."""
-    union: set[DispatchPlan] = set()
-    for instance in instances:
-        union |= dispatch_plans_from_capabilities(getattr(instance, "dispatch_capabilities", None))
-    return union
-
-
-def has_compatible_dispatch_pair(prefill_instances: Iterable[Any], decode_instances: Iterable[Any]) -> bool:
-    """Whether at least one P/D instance pair advertises a shared dispatch plan.
-
-    A shared plan exists iff the prefill and decode plan unions intersect, so this
-    runs in O(P+D) without enumerating instance pairs.
-    """
-    return bool(dispatch_plan_union(prefill_instances) & dispatch_plan_union(decode_instances))
-
-
 def _classify_vllm_kv_transfer_config(kv_transfer_config: Any) -> DispatchProfile:
     if not isinstance(kv_transfer_config, dict):
         return DispatchProfile.UNKNOWN
@@ -213,6 +170,12 @@ class DispatchEndpoint(BaseModel):
     instance_id: int = Field(..., ge=0, description="Scheduler instance identifier for the target engine")
     endpoint_id: int = Field(..., ge=0, description="Endpoint identifier within the instance")
     url: str = Field(..., min_length=1, description="Base HTTP URL for dispatch and stop calls to the engine")
+    bootstrap_port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description="Engine-native PD bootstrap port when it differs from the inference URL port",
+    )
 
 
 class DispatchEndpoints(BaseModel):

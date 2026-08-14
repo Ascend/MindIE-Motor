@@ -11,9 +11,6 @@
 import asyncio
 import uuid
 
-from motor.common.resources.dispatch import (
-    has_compatible_dispatch_pair,
-)
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import WorkloadAction, Workload
 from motor.coordinator.domain import (
@@ -116,6 +113,7 @@ class Scheduler:
         req_info: RequestInfo,
         *,
         target_instance_id: int | None = None,
+        required_engine_type: str | None = None,
     ):
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
@@ -125,8 +123,15 @@ class Scheduler:
             (Instance, Endpoint, Workload) tuple or None (no instance or update_workload failed).
             The returned Workload is what was allocated; caller records it for release.
         """
+        pool = self._instance_provider.get_available_instances(role)
+        if required_engine_type is not None:
+            normalized_engine_type = required_engine_type.strip().lower()
+            pool = {
+                instance_id: instance
+                for instance_id, instance in pool.items()
+                if str(getattr(instance, "engine_type", "")).strip().lower() == normalized_engine_type
+            }
         if target_instance_id is not None:
-            pool = self._instance_provider.get_available_instances(role)
             instance = resolve_pinned_instance(pool, target_instance_id)
             if instance is None:
                 logger.warning(
@@ -147,7 +152,11 @@ class Scheduler:
                 )
                 return None
         else:
-            r = self._scheduling_policy.select_instance_and_endpoint(role)
+            r = self._scheduling_policy.select_instance_and_endpoint_from_list(
+                list(pool.values()),
+                role,
+                req_info,
+            )
             result = (await r) if asyncio.iscoroutine(r) else r
             if result is None:
                 return None
@@ -239,12 +248,6 @@ class Scheduler:
                 if normalized in aliases:
                     roles.add(aliases[normalized])
         return roles
-
-    async def has_compatible_pd_pair(self) -> bool:
-        """Return whether the in-process instance view has a compatible P/D pair."""
-        prefill = self._instance_provider.get_available_instances(PDRole.ROLE_P).values()
-        decode = self._instance_provider.get_available_instances(PDRole.ROLE_D).values()
-        return has_compatible_dispatch_pair(prefill, decode)
 
     async def get_unblocked_instances(self, role: PDRole) -> list[int]:
         """Return all instance IDs for the role (in-process scheduler has no CB)."""

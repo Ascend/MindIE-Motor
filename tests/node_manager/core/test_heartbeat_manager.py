@@ -153,41 +153,95 @@ class TestHeartBeatManager:
         assert heart_beat_manager._endpoints[0].id == 1
         assert heart_beat_manager._endpoints[1].id == 2
 
-    def test_update_endpoint_resets_grace_period(self, heart_beat_manager, sample_start_cmd_msg):
-        """update_endpoint should restart grace period for engine cold start"""
-        heart_beat_manager._thread_started = True
-        heart_beat_manager._is_within_grace_period = False
-        heart_beat_manager._engine_status_thread_start_time = time.time() - 300
-
-        before = heart_beat_manager._engine_status_thread_start_time
+    def test_update_endpoint_invalidates_inflight_native_probe(self, heart_beat_manager, sample_start_cmd_msg):
+        """update_endpoint advances the generation used to reject stale probe results."""
+        before = heart_beat_manager._endpoints_generation
         heart_beat_manager.update_endpoint(sample_start_cmd_msg)
 
-        assert heart_beat_manager._is_within_grace_period is True
-        assert heart_beat_manager._engine_status_thread_start_time > before
+        assert heart_beat_manager._endpoints_generation == before + 1
 
-    @patch('motor.node_manager.core.heartbeat_manager.EngineServerApiClient.query_status')
-    def test_get_engine_server_status_success(self, mock_query_status, heart_beat_manager, sample_endpoints):
-        """test get engine server status success"""
-        # Mock query_status to return normal status for each endpoint
-        mock_query_status.return_value = {"status": "normal"}
+    @patch('motor.node_manager.core.heartbeat_manager.Daemon')
+    def test_engine_metrics_targets_exclude_headless(self, mock_daemon, heart_beat_manager):
+        routable = Endpoint(id=1, ip="10.0.0.1", business_port="8001", mgmt_port="9001")
+        headless = Endpoint(
+            id=2,
+            ip="10.0.0.2",
+            business_port="8002",
+            mgmt_port="9002",
+            headless=True,
+        )
+        mock_daemon.return_value.get_engine_metrics_target.return_value = "https://10.0.0.1:8001/metrics"
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [routable, headless]
+
+        targets = heart_beat_manager.get_engine_metrics_targets()
+
+        assert targets == ["https://10.0.0.1:8001/metrics"]
+        mock_daemon.return_value.get_engine_metrics_target.assert_called_once_with(routable)
+
+    @patch('motor.node_manager.core.heartbeat_manager.Daemon')
+    def test_refresh_native_engine_status_success(self, mock_daemon, heart_beat_manager, sample_endpoints):
+        """READY native runtimes map to normal endpoint status."""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.READY
 
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = sample_endpoints.copy()
 
-        heart_beat_manager._get_engine_server_status()
+        heart_beat_manager._refresh_native_engine_status()
 
-        # Verify that query_status was called for each endpoint
-        assert mock_query_status.call_count == 2
+        assert mock_daemon.return_value.get_engine_runtime_state.call_count == 2
 
-        # Verify that status was updated correctly
         assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
         assert heart_beat_manager._endpoints[1].status == EndpointStatus.NORMAL
 
-    @patch('motor.node_manager.core.heartbeat_manager.EngineServerApiClient.query_status')
-    def test_get_engine_server_status_discards_stale_probe_write_back(
-        self, mock_query_status, heart_beat_manager, sample_start_cmd_msg
+    @patch('motor.node_manager.core.heartbeat_manager.Daemon')
+    def test_refresh_native_engine_status_keeps_initial_while_loading(self, mock_daemon, heart_beat_manager):
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.STARTING
+        endpoint = Endpoint(
+            id=1,
+            ip="192.168.1.1",
+            business_port="8080",
+            mgmt_port="9090",
+            status=EndpointStatus.INITIAL,
+        )
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [endpoint]
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert heart_beat_manager._endpoints[0].status == EndpointStatus.INITIAL
+
+    @patch('motor.node_manager.core.heartbeat_manager.Daemon')
+    def test_refresh_headless_process_liveness_reports_wait2start(self, mock_daemon, heart_beat_manager):
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.RUNNING
+        endpoint = Endpoint(
+            id=1,
+            ip="192.168.1.2",
+            business_port="8080",
+            mgmt_port="9090",
+            status=EndpointStatus.INITIAL,
+            headless=True,
+        )
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [endpoint]
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        assert heart_beat_manager._endpoints[0].status == EndpointStatus.WAIT2START
+
+    @patch('motor.node_manager.core.heartbeat_manager.Daemon')
+    def test_refresh_native_engine_status_discards_stale_probe_write_back(
+        self, mock_daemon, heart_beat_manager, sample_start_cmd_msg
     ):
         """stale probe result must not overwrite endpoints refreshed by update_endpoint"""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
         stale_endpoint = Endpoint(
             id=0,
             ip="10.0.0.28",
@@ -198,15 +252,15 @@ class TestHeartBeatManager:
 
         def probe_and_update_during_probe(*args, **kwargs):
             heart_beat_manager.update_endpoint(sample_start_cmd_msg)
-            return {"status": "abnormal"}
+            return RuntimeState.UNHEALTHY
 
-        mock_query_status.side_effect = probe_and_update_during_probe
+        mock_daemon.return_value.get_engine_runtime_state.side_effect = probe_and_update_during_probe
 
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [stale_endpoint]
             heart_beat_manager._endpoints_generation = 0
 
-        heart_beat_manager._get_engine_server_status()
+        heart_beat_manager._refresh_native_engine_status()
 
         assert len(heart_beat_manager._endpoints) == 2
         assert heart_beat_manager._endpoints[0].ip == "192.168.1.1"
@@ -498,7 +552,6 @@ class TestHeartBeatManager:
         # Set endpoint info with abnormal status
         heart_beat_manager._job_name = "test_job"
         heart_beat_manager._instance_id = 1
-        heart_beat_manager._is_within_grace_period = False  # Ensure we're past grace period
         heart_beat_manager.stop_event.clear()
 
         with heart_beat_manager._endpoint_lock:
@@ -535,7 +588,6 @@ class TestHeartBeatManager:
 
         heart_beat_manager._job_name = "test_job"
         heart_beat_manager._instance_id = 1
-        heart_beat_manager._is_within_grace_period = False
         heart_beat_manager.stop_event.clear()
 
         # Start with abnormal status
@@ -583,7 +635,6 @@ class TestHeartBeatManager:
 
         heart_beat_manager._job_name = "test_job"
         heart_beat_manager._instance_id = 1
-        heart_beat_manager._is_within_grace_period = False
         heart_beat_manager.stop_event.clear()
 
         with heart_beat_manager._endpoint_lock:
@@ -617,7 +668,6 @@ class TestHeartBeatManager:
 
         heart_beat_manager._job_name = "test_job"
         heart_beat_manager._instance_id = 1
-        heart_beat_manager._is_within_grace_period = False
         heart_beat_manager.stop_event.clear()
 
         # Set multiple endpoints, one abnormal
@@ -651,7 +701,6 @@ class TestHeartBeatManager:
 
         heart_beat_manager._job_name = "test_job"
         heart_beat_manager._instance_id = 1
-        heart_beat_manager._is_within_grace_period = False
         heart_beat_manager.stop_event.clear()
 
         with heart_beat_manager._endpoint_lock:
@@ -774,20 +823,22 @@ class TestHeartBeatManager:
         mock_report_heartbeat.assert_called_once()
 
     @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=True)
-    @patch("motor.node_manager.core.heartbeat_manager.EngineServerApiClient.query_status")
-    def test_get_engine_server_status_keeps_status_before_start_after_restore(
-        self, mock_query_status, _mock_restored, heart_beat_manager, sample_endpoints
+    @patch("motor.node_manager.core.heartbeat_manager.Daemon")
+    def test_refresh_native_engine_status_keeps_status_before_start_after_restore(
+        self, mock_daemon, _mock_restored, heart_beat_manager, sample_endpoints
     ):
-        mock_query_status.return_value = {"status": "abnormal"}
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.UNHEALTHY
 
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = sample_endpoints.copy()
 
-        heart_beat_manager._get_engine_server_status()
+        heart_beat_manager._refresh_native_engine_status()
 
         assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
         assert heart_beat_manager._endpoints[1].status == EndpointStatus.NORMAL
-        assert mock_query_status.call_count == 2
+        assert mock_daemon.return_value.get_engine_runtime_state.call_count == 2
 
     @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=False)
     @patch("motor.node_manager.core.heartbeat_manager.time.sleep")

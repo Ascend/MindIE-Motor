@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
-from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction, EndpointStatus
 from motor.coordinator.domain import InstanceReadiness, UpdateWorkloadParams
@@ -67,7 +66,7 @@ def _make_instance(
     instance_id: int = 1,
     role: str = "prefill",
     endpoints: dict | None = None,
-    dispatch_capabilities: list[str] | None = None,
+    engine_type: str | None = None,
 ) -> Instance:
     """Create a real Instance (used by _SchedulerInstanceCache tests)."""
     if endpoints is None:
@@ -76,10 +75,10 @@ def _make_instance(
     return Instance(
         job_name="test-job",
         model_name="test-model",
+        engine_type=engine_type,
         id=instance_id,
         role=role,
         endpoints=endpoints,
-        dispatch_capabilities=dispatch_capabilities or [],
     )
 
 
@@ -419,6 +418,34 @@ class TestAsyncSchedulerClient:
         )
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_select_endpoint_candidates_filters_required_engine_type(self):
+        """Decode candidate selection must not mix native engine protocols."""
+        vllm = _make_instance(
+            instance_id=1,
+            role="decode",
+            endpoints={"pod1": {1: _make_endpoint(endpoint_id=1)}},
+            engine_type="vllm",
+        )
+        sglang = _make_instance(
+            instance_id=2,
+            role="decode",
+            endpoints={"pod2": {2: _make_endpoint(endpoint_id=2)}},
+            engine_type="sglang",
+        )
+        self.mock_cache.get_instances.return_value = [vllm, sglang]
+        req_info = Mock(spec=RequestInfo)
+        req_info.req_id = "req-engine-filter"
+        req_info.req_len = 10
+
+        candidates, _ = await self.client._select_endpoint_candidates_with_policy(
+            req_info,
+            PDRole.ROLE_D,
+            required_engine_type=" SGLang ",
+        )
+
+        assert [(instance.id, endpoint.id) for instance, endpoint, _ in candidates] == [(2, 2)]
+
     # -- test_select_and_allocate -------------------------------------------
 
     @pytest.mark.asyncio
@@ -666,9 +693,8 @@ class TestAsyncSchedulerClient:
     @pytest.mark.asyncio
     async def test_has_required_instances_met(self):
         """has_required_instances returns REQUIRED_MET when P and D present."""
-        capability = [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
-        mock_p = _make_instance(1, PDRole.ROLE_P, dispatch_capabilities=capability)
-        mock_d = _make_instance(2, PDRole.ROLE_D, dispatch_capabilities=capability)
+        mock_p = _make_instance(1, PDRole.ROLE_P)
+        mock_d = _make_instance(2, PDRole.ROLE_D)
 
         def _get_instances_side_effect(role):
             mapping = {PDRole.ROLE_P: [mock_p], PDRole.ROLE_D: [mock_d]}
@@ -694,31 +720,6 @@ class TestAsyncSchedulerClient:
         result = await self.client.has_required_instances()
         assert result == InstanceReadiness.ONLY_PREFILL
         assert result.is_ready() is False
-        self.mock_transport.send_request.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_has_required_instances_rejects_incompatible_pd_pair(self):
-        prefill = _make_instance(
-            1,
-            PDRole.ROLE_P,
-            dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
-        )
-        decode = _make_instance(
-            2,
-            PDRole.ROLE_D,
-            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
-        )
-
-        def _get_instances_side_effect(role):
-            mapping = {PDRole.ROLE_P: [prefill], PDRole.ROLE_D: [decode]}
-            return mapping.get(role, [])
-
-        self.mock_cache.get_instances.side_effect = _get_instances_side_effect
-
-        result = await self.client.has_required_instances()
-
-        assert result == InstanceReadiness.UNKNOWN
-        assert result.is_run() is False
         self.mock_transport.send_request.assert_not_awaited()
 
     @pytest.mark.asyncio

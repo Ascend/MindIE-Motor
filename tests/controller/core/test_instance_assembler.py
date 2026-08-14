@@ -167,6 +167,21 @@ def create_reregister_msg(job_name: str, pod_ip: str, instance_id: int, config: 
     )
 
 
+def test_build_endpoints_preserves_bootstrap_port(instance_assembler, test_config):
+    msg = create_register_msg(
+        "native-transfer",
+        test_config["pod_ip1"],
+        test_config,
+        bootstrap_port=9100,
+    )
+
+    endpoints = instance_assembler._build_multi_endpoints(msg, 0)
+
+    assert endpoints
+    for endpoint in endpoints.values():
+        assert endpoint.bootstrap_port == 9100
+
+
 def register_instance_with_pods(assembler: InstanceAssembler, job_name: str, config: dict, pod_count: int = 2) -> bool:
     """Register pods for an instance and return whether assembly is complete"""
     pod_ips = [f"127.0.0.{i + 1}" for i in range(pod_count)]

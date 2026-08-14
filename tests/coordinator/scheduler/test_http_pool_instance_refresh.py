@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import Instance, PDRole
 from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
 from motor.coordinator.domain.scheduling import InstanceReadiness
@@ -192,8 +191,6 @@ async def test_has_required_instances_uses_cache_after_warmup():
                 ("10.0.0.3", "8003", EndpointStatus.NORMAL),
             ],
         )
-        p_inst.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-        d_inst.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
         await client._cache.replace_all(PDRole.ROLE_E, [e_inst])
         await client._cache.replace_all(PDRole.ROLE_P, [p_inst])
         await client._cache.replace_all(PDRole.ROLE_D, [d_inst])

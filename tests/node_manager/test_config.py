@@ -169,6 +169,35 @@ def test_logging_config_defaults(nm_config_data):
     assert config.logging_config.log_date_format == '%m-%d %H:%M:%S'
 
 
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_native_sglang_bootstrap_port_from_engine_config():
+    config = create_config_object()
+    raw = {
+        "motor_engine_prefill_config": {
+            "engine_type": "sglang",
+            "engine_config": {"disaggregation_bootstrap_port": 9100},
+        }
+    }
+
+    NodeManagerConfig._set_native_bootstrap_port(config, raw)
+
+    assert config.endpoint_config.bootstrap_port == 9100
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_native_bootstrap_port_rejects_invalid_range():
+    config = create_config_object()
+    raw = {
+        "motor_engine_prefill_config": {
+            "engine_type": "sglang",
+            "engine_config": {"disaggregation_bootstrap_port": 70000},
+        }
+    }
+
+    with pytest.raises(ValueError, match="disaggregation_bootstrap_port must be in range 1-65535"):
+        NodeManagerConfig._set_native_bootstrap_port(config, raw)
+
+
 @pytest.mark.parametrize(
     "invalid_config,expected_error",
     [
@@ -542,6 +571,14 @@ def test_from_json_loads_union_config_for_hybrid():
     assert config.endpoint_config.endpoint_num == 2
 
 
+def test_native_runtime_rejects_snapshot_configuration():
+    config = NodeManagerConfig()
+    config.snapshot_config.enable_snapshot = True
+
+    with pytest.raises(ValueError, match="Native engine runtime does not support snapshot yet"):
+        config.validate_config()
+
+
 def _single_container_hybrid_user_config():
     return {
         "motor_deploy_config": {
@@ -654,9 +691,7 @@ def test_vllm_multi_connector_infers_transport_connector_capability():
     assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("NixlConnector")) == [
         DispatchPlan.PREFILL_HANDOFF_DECODE.value
     ]
-    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeLayerwiseConnector")) == [
-        DispatchPlan.CONCURRENT_ENGINE_SYNC.value
-    ]
+    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeLayerwiseConnector")) == []
 
 
 def test_vllm_multi_connector_ignores_non_transport_connector_profiles():
@@ -676,7 +711,7 @@ def test_vllm_multi_connector_ignores_non_transport_connector_profiles():
         },
     }
 
-    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == []
 
 
 def test_vllm_multi_connector_requires_transport_and_store_connectors():
@@ -742,7 +777,7 @@ def test_user_dispatch_capabilities_cannot_enable_unknown_connector():
     assert config_data["basic_config"]["dispatch_capabilities"] == []
 
 
-def test_vllm_layerwise_connector_infers_concurrent_capability():
+def test_vllm_layerwise_connector_does_not_advertise_unsupported_native_capability():
     capabilities = NodeManagerConfig._infer_dispatch_capabilities(
         {
             "engine_type": "vllm",
@@ -754,7 +789,7 @@ def test_vllm_layerwise_connector_infers_concurrent_capability():
         }
     )
 
-    assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+    assert capabilities == []
 
 
 def test_sglang_infers_concurrent_capability():

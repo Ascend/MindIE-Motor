@@ -12,6 +12,7 @@ import threading
 
 from motor.common.resources.instance import PDRole
 from motor.common.resources.endpoint import Endpoint
+from motor.node_manager.core.services.native_engine.models import RuntimeState
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.logger import get_logger
 from motor.config.node_manager import NodeManagerConfig
@@ -124,6 +125,19 @@ class Daemon(ThreadSafeSingleton):
     def has_engine(self) -> bool:
         """True when the engine service is active (i.e. this pod runs inference)."""
         return SERVICE_ENGINE in self._services
+
+    def get_engine_runtime_state(self, endpoint: Endpoint) -> RuntimeState:
+        """Return the native runtime state for one locally managed endpoint."""
+        engine = self._services.get(SERVICE_ENGINE)
+        if engine is None:
+            return RuntimeState.STOPPED
+        return engine.runtime_state(endpoint)  # type: ignore[attr-defined]
+
+    def get_engine_metrics_target(self, endpoint: Endpoint) -> str | None:
+        engine = self._services.get(SERVICE_ENGINE)
+        if engine is None:
+            return None
+        return engine.metrics_target(endpoint)  # type: ignore[attr-defined]
 
     def stop(self) -> None:
         self._monitor_stop.set()

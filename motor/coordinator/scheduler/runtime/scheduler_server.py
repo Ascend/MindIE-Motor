@@ -133,6 +133,7 @@ _KEY_MATCHED_TOKENS = "matched_tokens"
 _KEY_PREFILL_COST = "prefill_cost"
 _KEY_LOAD_WEIGHT = "load_weight"
 _KEY_PREFILL_LOAD_SCALE = "prefill_load_scale"
+_KEY_REQUIRED_ENGINE_TYPE = "required_engine_type"
 
 
 def _should_log_scheduling_sample(sample_key: str) -> bool:
@@ -169,7 +170,6 @@ def _serialize_instance_minimal(instance: Instance | None) -> dict:
         "job_name": instance.job_name,
         "model_name": instance.model_name,
         "engine_type": instance.engine_type,
-        "dispatch_capabilities": list(instance.dispatch_capabilities or []),
     }
 
 
@@ -182,6 +182,7 @@ def _serialize_endpoint_minimal(endpoint: Endpoint | None) -> dict:
         "ip": endpoint.ip,
         "business_port": endpoint.business_port,
         "mgmt_port": getattr(endpoint, "mgmt_port", "") or "",
+        "bootstrap_port": endpoint.bootstrap_port,
     }
     if hasattr(endpoint, "status") and endpoint.status is not None:
         out["status"] = endpoint.status.value if hasattr(endpoint.status, "value") else str(endpoint.status)
@@ -660,6 +661,7 @@ class _SchedulerRequestDispatcher:
         worker_load_weight = self._parse_optional_float(request.data.get(_KEY_LOAD_WEIGHT))
         worker_prefill_load_scale = self._parse_optional_float(request.data.get(_KEY_PREFILL_LOAD_SCALE))
         isl = self._parse_optional_float(request.data.get(_KEY_ISL))
+        required_engine_type = str(request.data.get(_KEY_REQUIRED_ENGINE_TYPE) or "").strip().lower() or None
 
         if instance_id is None or endpoint_id is None:
             return SchedulerResponse(
@@ -714,7 +716,7 @@ class _SchedulerRequestDispatcher:
             role,
         )
         selected = (
-            self._select_valid_candidate(selected_candidate, role)
+            self._select_valid_candidate(selected_candidate, role, required_engine_type)
             if fast_path
             else self._select_authoritative_allocate_candidate(
                 selected_candidate,
@@ -724,6 +726,7 @@ class _SchedulerRequestDispatcher:
                 affinity_candidates,
                 worker_prefill_load_scale,
                 worker_load_weight,
+                required_engine_type,
             )
         )
         if fast_path and selected is None:
@@ -735,6 +738,7 @@ class _SchedulerRequestDispatcher:
                 affinity_candidates,
                 worker_prefill_load_scale,
                 worker_load_weight,
+                required_engine_type,
             )
             fast_path = False
         if selected is None:
@@ -909,9 +913,10 @@ class _SchedulerRequestDispatcher:
         self,
         candidate: tuple[int, int],
         role: PDRole,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, float] | None:
         """Select the best candidate using SchedulerServer's current workload ledger."""
-        return self._select_valid_candidate(candidate, role)
+        return self._select_valid_candidate(candidate, role, required_engine_type)
 
     def _select_authoritative_allocate_candidate(
         self,
@@ -922,6 +927,7 @@ class _SchedulerRequestDispatcher:
         affinity_candidates: list[tuple[int, int, float]] | None = None,
         prefill_load_scale: float | None = None,
         load_weight: float | None = None,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, float] | None:
         """
         Select allocation target using SchedulerServer's authoritative workload view.
@@ -934,19 +940,21 @@ class _SchedulerRequestDispatcher:
         worker's ranked alternates". Other policies keep the worker-proposed endpoint.
         """
         if self._should_scan_global_load_balance(candidate_policy):
-            selected = self._select_global_load_balance_candidate(role)
+            selected = self._select_global_load_balance_candidate(role, required_engine_type)
             if selected is not None:
                 return selected
         if candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY:
             if affinity_candidates:
-                selected = self._select_affinity_global(affinity_candidates, role, prefill_load_scale, load_weight)
+                selected = self._select_affinity_global(
+                    affinity_candidates, role, prefill_load_scale, load_weight, required_engine_type
+                )
                 if selected is not None:
                     return selected
             elif len(candidates) > 1:
-                selected = self._select_lowest_load_among_candidates(candidates, role)
+                selected = self._select_lowest_load_among_candidates(candidates, role, required_engine_type)
                 if selected is not None:
                     return selected
-        return self._select_authoritative_candidate(candidate, role)
+        return self._select_authoritative_candidate(candidate, role, required_engine_type)
 
     def _select_affinity_global(
         self,
@@ -954,6 +962,7 @@ class _SchedulerRequestDispatcher:
         role: PDRole,
         prefill_load_scale: float | None,
         load_weight: float | None,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, float] | None:
         """
         Global kv_cache_affinity unified selection over EVERY worker-reported endpoint.
@@ -974,6 +983,8 @@ class _SchedulerRequestDispatcher:
             if found is None:
                 continue
             instance, endpoint = found
+            if not self._matches_engine_type(instance, required_engine_type):
+                continue
             try:
                 instance_role = PDRole(instance.role)
             except ValueError:
@@ -1008,6 +1019,7 @@ class _SchedulerRequestDispatcher:
         self,
         candidates: list[tuple[int, int]],
         role: PDRole,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, float] | None:
         """
         Among the worker's affinity-ranked candidates, pick the lowest current endpoint score from
@@ -1022,6 +1034,8 @@ class _SchedulerRequestDispatcher:
             if found is None:
                 continue
             instance, endpoint = found
+            if not self._matches_engine_type(instance, required_engine_type):
+                continue
             try:
                 instance_role = PDRole(instance.role)
             except ValueError:
@@ -1207,13 +1221,18 @@ class _SchedulerRequestDispatcher:
     def _select_global_load_balance_candidate(
         self,
         role: PDRole,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, float] | None:
         """Select the globally lowest-score endpoint for role from SchedulerServer's local pool.
 
         Circuit-broken endpoints are filtered so the authoritative re-scan never picks one
         that the local PUB cache may not yet know about.
         """
-        instances = self._instance_manager.get_available_instances(role).values()
+        instances = [
+            instance
+            for instance in self._instance_manager.get_available_instances(role).values()
+            if self._matches_engine_type(instance, required_engine_type)
+        ]
         candidates = LoadBalancePolicy.select_endpoint_candidates_from_list(
             instances,
             role=role,
@@ -1258,6 +1277,7 @@ class _SchedulerRequestDispatcher:
         self,
         candidate: tuple[int, int],
         role: PDRole,
+        required_engine_type: str | None = None,
     ) -> tuple[Instance, Endpoint, float] | None:
         """
         Validate one worker-selected candidate and calculate its current score for observability.
@@ -1272,6 +1292,8 @@ class _SchedulerRequestDispatcher:
         if found is None:
             return None
         instance, endpoint = found
+        if not self._matches_engine_type(instance, required_engine_type):
+            return None
         try:
             instance_role = PDRole(instance.role)
         except ValueError:
@@ -1294,6 +1316,12 @@ class _SchedulerRequestDispatcher:
             )
             return None
         return (instance, endpoint, score)
+
+    @staticmethod
+    def _matches_engine_type(instance: Instance, required_engine_type: str | None) -> bool:
+        if not required_engine_type:
+            return True
+        return str(getattr(instance, "engine_type", "")).strip().lower() == required_engine_type
 
     def _find_available_instance_endpoint(
         self,

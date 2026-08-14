@@ -21,7 +21,7 @@ import importlib
 from typing import Any
 
 from motor.common.logger import get_logger
-from motor.engine_server.core.config import IConfig
+from motor.node_manager.core.services.native_engine.backends.base import IConfig
 
 logger = get_logger(__name__)
 
@@ -37,10 +37,7 @@ class EndpointFactory:
         target = self._CREATOR_MAP.get(engine_type)
         if not target:
             supported_types = list(self._CREATOR_MAP.keys())
-            raise ValueError(
-                f"Unsupported engine type: {engine_type}. "
-                f"Supported types are: {supported_types}."
-            )
+            raise ValueError(f"Unsupported engine type: {engine_type}. Supported types are: {supported_types}.")
 
         try:
             module_path, class_name = target.rsplit(".", 1)

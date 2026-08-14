@@ -280,10 +280,10 @@ IP与端口参见[内部接口的IP/端口](./README.md#内部接口的ip端口)
 Coordinator 在识别到实例 `engine_type=sglang` 时，会在发往业务口的请求中直接注入原生字段：
 
 - `bootstrap_host`：Prefill 实例 IP
-- `bootstrap_port`：环境变量 `DISAGGREGATION_BOOTSTRAP_PORT`（Coordinator 与引擎 Pod 需一致）
+- `bootstrap_port`：Prefill Endpoint 注册的原生 PD bootstrap 端口
 - `bootstrap_room`：由 `pair_id` + `attempt_seq` 稳定派生
 
-此时**不会**再附带 `_motor_dispatch`。因此 Coordinator 对 SGLang 存在引擎协议耦合；vLLM PD 仍走 `_motor_dispatch` / InferEndpoint（非 native）路径。
+此时**不会**再附带 `_motor_dispatch`。SGLang 和 vLLM 的原生 PD 请求差异由 Coordinator 的协议适配器处理。
 
 ### 取消 / stop
 
