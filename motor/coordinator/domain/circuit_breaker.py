@@ -152,6 +152,27 @@ class CircuitBreakerManager:
             )
         return False
 
+    def process_probe_failure(self, instance_id: int) -> float | None:
+        """Auto-recovery probe failed; keep the circuit open and extend the timeout.
+        Returns the new recovery timeout, or None when the instance is not open.
+        """
+        state = self._pool.get(instance_id)
+        if state is None or not state.is_open():
+            return None
+        state.trip_count += 1
+        timeout = min(
+            _CB_BASE_TIMEOUT * (2 ** (state.trip_count - 1)),
+            _CB_MAX_TIMEOUT,
+        )
+        state.current_timeout = timeout
+        logger.warning(
+            "CircuitBreaker probe failed, extending recovery: instance_id=%d trip_count=%d timeout=%.0fs",
+            instance_id,
+            state.trip_count,
+            timeout,
+        )
+        return timeout
+
     # ------------------------------------------------------------------
     # Auto-recovery
     # ------------------------------------------------------------------
@@ -165,6 +186,8 @@ class CircuitBreakerManager:
         timeout = state.current_timeout
         state.state = _CB_STATE_CLOSED
         state.failure_count = 0
+        state.trip_count = 0
+        state.current_timeout = 0
         logger.info(
             "CircuitBreaker auto-recovered: instance_id=%d timeout=%.0fs",
             instance_id,

@@ -58,6 +58,17 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 
 logger = get_logger(__name__)
 
+# Time bound (per phase: connect + first response line) for the pre-recovery
+# HTTP health probe: an instance is only re-enabled after it proves ready
+# (see _probe_instance / _auto_recover).
+_RECOVERY_PROBE_TIMEOUT_SECS = 2.0
+
+# Health-check endpoint served by the vLLM engine on the business port: it
+# returns 200 only when the engine is ready to serve (model loaded); during
+# loading / not-ready it returns 503. So a 200 answer means the instance is
+# not merely reachable but actually usable.
+_PROBE_HEALTH_PATH = "/health"
+
 InstanceRefreshCallback = Callable[[EventType, list[Instance]], None | Awaitable[None]]
 
 
@@ -1068,11 +1079,20 @@ class _SchedulerRequestDispatcher:
         self._recovery_timers[key] = task
 
     async def _auto_recover(self, instance_id: int, timeout: float) -> None:
-        """Recovery timer callback. Resets the instance to closed after timeout."""
+        """Recovery timer callback. Probes the instance, then re-closes its circuit."""
         try:
             await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
+
+        if not await self._probe_instance(instance_id):
+            # Still unreachable (or dropped by _probe_instance): extend the recovery timeout (exponential, capped at 300s) and retry.
+            retry_timeout = self._cb_manager.process_probe_failure(instance_id)
+            if retry_timeout is None:
+                return
+            self._schedule_recovery(instance_id, retry_timeout)
+            return
+
         try:
             recovered = self._cb_manager.auto_recover(instance_id)
             if recovered:
@@ -1083,6 +1103,82 @@ class _SchedulerRequestDispatcher:
             # this finally block runs (race window inside _publish_circuit_breaker).
             if self._recovery_timers.get(instance_id) is asyncio.current_task():
                 self._recovery_timers.pop(instance_id, None)
+
+    async def _probe_instance(self, instance_id: int) -> bool:
+        """Require every endpoint to answer HTTP 200 on /health before closing a circuit; an instance outside the available pool is not probed — its recovery is dropped (circuit cleared, workers notified "closed") instead."""
+        instance = self._instance_manager.get_available_instances(None).get(instance_id)
+        if instance is None:
+            logger.warning(
+                "CircuitBreaker probe: instance_id=%d not in available pool, dropping recovery",
+                instance_id,
+            )
+            # Not schedulable: nothing to protect; _auto_recover stops on process_probe_failure() == None.
+            self._cb_manager.clear_instance(instance_id)
+            await self._publish_circuit_breaker(instance_id, "closed")
+            return False
+        endpoints = instance.get_all_endpoints()
+        if not endpoints:
+            logger.warning(
+                "CircuitBreaker probe: instance_id=%d has no endpoint, keeping circuit open",
+                instance_id,
+            )
+            return False
+        results = await asyncio.gather(*(self._probe_endpoint(instance_id, endpoint) for endpoint in endpoints))
+        return all(results)
+
+    async def _probe_endpoint(self, instance_id: int, endpoint: Endpoint) -> bool:
+        """Probe one endpoint: ``GET /health`` must answer HTTP 200 (per-phase timeout, safe to run concurrently)."""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(endpoint.ip, endpoint.business_port),
+                timeout=_RECOVERY_PROBE_TIMEOUT_SECS,
+            )
+            try:
+                request = (
+                    f"GET {_PROBE_HEALTH_PATH} HTTP/1.1\r\n"
+                    f"Host: {endpoint.ip}:{endpoint.business_port}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(request.encode("ascii"))
+                await writer.drain()
+                status_line = await asyncio.wait_for(reader.readline(), timeout=_RECOVERY_PROBE_TIMEOUT_SECS)
+                if not status_line:
+                    logger.warning(
+                        "CircuitBreaker probe empty response: instance_id=%d endpoint=%s:%s",
+                        instance_id,
+                        endpoint.ip,
+                        endpoint.business_port,
+                    )
+                    return False
+                status_code = status_line.split(b" ", 2)[1].decode("ascii", "replace")
+                if status_code != "200":
+                    logger.warning(
+                        "CircuitBreaker probe rejected: instance_id=%d endpoint=%s:%s status=%s",
+                        instance_id,
+                        endpoint.ip,
+                        endpoint.business_port,
+                        status_code,
+                    )
+                    return False
+                logger.info(
+                    "CircuitBreaker probe ok: instance_id=%d endpoint=%s:%s",
+                    instance_id,
+                    endpoint.ip,
+                    endpoint.business_port,
+                )
+                return True
+            finally:
+                writer.close()
+        except Exception as e:  # OSError (no route/refused) or asyncio.TimeoutError
+            logger.warning(
+                "CircuitBreaker probe failed: instance_id=%d endpoint=%s:%s error=%s",
+                instance_id,
+                endpoint.ip,
+                endpoint.business_port,
+                e,
+            )
+            return False
 
     def _cancel_recovery(self, instance_id: int) -> None:
         """Cancel a pending recovery timer for an instance."""
