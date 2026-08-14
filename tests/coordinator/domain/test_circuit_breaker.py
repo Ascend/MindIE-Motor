@@ -3,8 +3,6 @@
 
 """Unit tests for CircuitBreakerManager state machine."""
 
-import pytest
-
 from motor.coordinator.domain.circuit_breaker import CircuitBreakerManager
 
 
@@ -44,28 +42,29 @@ class TestCircuitBreaker:
         assert should_trip is False
         assert timeout == 0
 
-    @pytest.mark.parametrize(
-        "trip_count,expected_timeout",
-        [
-            (1, 30),
-            (2, 60),
-            (3, 120),
-            (4, 240),
-            (5, 300),  # capped at 300
-        ],
-    )
-    def test_timeout_exponential_backoff(self, trip_count, expected_timeout):
-        """Timeout doubles each trip: 30→60→120→240→300 (capped)."""
+    def test_timeout_restarts_after_auto_recover(self):
+        """auto_recover resets trip_count: the next trip restarts from the base timeout."""
+
         cb = CircuitBreakerManager()
-        for i in range(trip_count):
-            # Close the circuit between trips so each triggers independently
-            if i > 0:
-                cb.auto_recover(1)
-            for _ in range(2):
-                cb.process_failure(1)
-            should_trip, timeout = cb.process_failure(1)
-            assert should_trip is True
-        assert timeout == expected_timeout
+        for _ in range(3):
+            cb.process_failure(1)  # trip #1: 30s
+        assert cb.get(1).trip_count == 1
+        for _ in range(3):
+            cb.process_probe_failure(1)  # within-episode extension
+        assert cb.get(1).trip_count == 4
+        assert cb.get(1).current_timeout == 240
+
+        recovered = cb.auto_recover(1)
+        assert recovered is True
+        assert cb.get(1).trip_count == 0
+        assert cb.get(1).current_timeout == 0
+
+        # Next trip starts fresh from the base 30s.
+        for _ in range(2):
+            cb.process_failure(1)
+        should_trip, timeout = cb.process_failure(1)
+        assert should_trip is True
+        assert timeout == 30
 
     def test_success_resets_counters(self):
         """Success on a closed circuit resets failure_count and trip_count."""
@@ -88,8 +87,40 @@ class TestCircuitBreaker:
         assert cb.is_closed(1)
         assert cb.process_failure(1) == (False, 0)  # counter reset
 
+    def test_probe_failure_extends_timeout(self):
+        """Probe failure on an open circuit doubles the recovery timeout."""
+        cb = CircuitBreakerManager()
+        for _ in range(3):
+            cb.process_failure(1)
+        assert cb.is_open(1)
+        assert cb.get(1).trip_count == 1
+
+        timeout = cb.process_probe_failure(1)
+
+        assert timeout == 60  # 30 * 2^1
+        assert cb.is_open(1)  # stays blocked
+        assert cb.get(1).trip_count == 2
+        assert cb.get(1).current_timeout == 60
+
+    def test_probe_failure_exponential_until_cap(self):
+        """Repeated probe failures keep doubling until capped at 300s."""
+        cb = CircuitBreakerManager()
+        for _ in range(3):
+            cb.process_failure(1)
+        timeouts = [cb.process_probe_failure(1) for _ in range(5)]
+        assert timeouts == [60, 120, 240, 300, 300]
+
+    def test_probe_failure_when_closed_returns_none(self):
+        """Probe failure on a closed or unknown instance is a no-op."""
+        cb = CircuitBreakerManager()
+        assert cb.process_probe_failure(1) is None  # unknown
+        for _ in range(3):
+            cb.process_failure(1)
+        cb.auto_recover(1)
+        assert cb.process_probe_failure(1) is None  # closed after recovery
+
     def test_auto_recover_closes_circuit(self):
-        """auto_recover transitions OPEN→CLOSED and resets failure_count."""
+        """auto_recover transitions OPEN→CLOSED and resets all counters."""
         cb = CircuitBreakerManager()
         for _ in range(3):
             cb.process_failure(1)
@@ -97,7 +128,9 @@ class TestCircuitBreaker:
         recovered = cb.auto_recover(1)
         assert recovered is True
         assert cb.is_closed(1)
-        # failure_count is reset, starts fresh
+        # failure_count and trip_count are both reset, starts fresh
+        assert cb.get(1).trip_count == 0
+        assert cb.get(1).current_timeout == 0
         assert cb.process_failure(1) == (False, 0)
 
     def test_auto_recover_when_closed_returns_false(self):

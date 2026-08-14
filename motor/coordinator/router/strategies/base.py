@@ -391,6 +391,22 @@ class BaseRouter(ABC):
             )
         return success
 
+    def _build_request_timeout(self, timeout: int) -> httpx.Timeout:
+        """Bound the TCP connect phase without touching the overall request timeout.
+
+        ``timeout`` (first_token_timeout / infer_timeout) keeps governing
+        read/write/pool exactly as before; only the connect phase gets an
+        independent bounded limit. Without this, a blackholed engine address
+        (pod deleted, IP released) fails only after the kernel SYN budget
+        (~63s): the circuit breaker re-trips and the hybrid fallback engages
+        far beyond the client timeout, so requests die instead of degrading.
+        ``connect_timeout <= 0`` keeps the historical single-value behavior.
+        """
+        connect_timeout = self.config.exception_config.connect_timeout
+        if connect_timeout > 0:
+            return httpx.Timeout(timeout=timeout, connect=connect_timeout)
+        return httpx.Timeout(timeout=timeout)
+
     async def forward_stream_request(
         self,
         api: str,
@@ -419,7 +435,13 @@ class BaseRouter(ABC):
         self.first_chunk_sent = False
         trace_obj.add_trace_event(f"Begin to stream: {client.base_url}/{api}, {client.timeout}", is_meta=self.is_meta)
         t0_forward = time.perf_counter()
-        async with client.stream("POST", f"/{api}", json=req_data, headers=headers, timeout=timeout) as response:
+        async with client.stream(
+            "POST",
+            f"/{api}",
+            json=req_data,
+            headers=headers,
+            timeout=self._build_request_timeout(timeout),
+        ) as response:
             trace_obj.add_trace_event(f"Stream ok: {response.status_code}", is_meta=self.is_meta)
             elapsed_to_connect_ms = (time.perf_counter() - t0_forward) * 1000
             if _should_log_scheduling_sample(self.req_info.req_id):
@@ -557,11 +579,22 @@ class BaseRouter(ABC):
         timeout: int,
     ):
         if isinstance(client, httpx.AsyncClient):
-            async with client.stream("POST", url, json=req_data, headers=headers, timeout=timeout) as response:
+            async with client.stream(
+                "POST",
+                url,
+                json=req_data,
+                headers=headers,
+                timeout=self._build_request_timeout(timeout),
+            ) as response:
                 yield response, True
             return
 
-        response = await client.post(url, json=req_data, headers=headers, timeout=timeout)
+        response = await client.post(
+            url,
+            json=req_data,
+            headers=headers,
+            timeout=self._build_request_timeout(timeout),
+        )
         try:
             yield response, False
         finally:
