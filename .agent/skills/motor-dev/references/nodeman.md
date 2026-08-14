@@ -67,8 +67,8 @@ All core components use `ThreadSafeSingleton` — `__new__` + `threading.Lock` e
      wait_until_api_ready(timeout=30.0)      # NodeManagerAPI must be serving
      POST /controller/register (with instance metadata, capabilities)
      → 200: registration accepted, break
-     → non-200: retry with exponential backoff (2, 4, 8, 16, 32s, max 5 retries)
-     → max retries exceeded: os.kill(SIGTERM) — pod restart by k8s
+     → non-200: retry indefinitely with exponential backoff (2, 4, 8, 16, 32s, capped at 32s)
+     Registration failure does not send SIGTERM / suicide the process.
 
 4. Main loop (Application.run()) blocks until stop_event
    - SIGTERM/SIGINT → cleanup and exit

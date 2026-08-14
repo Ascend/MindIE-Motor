@@ -10,7 +10,6 @@
 
 import json
 import os
-import signal
 import threading
 import time
 import shutil
@@ -299,31 +298,17 @@ class EngineManager(ThreadSafeSingleton):
         else:
             logger.info("NodeManagerAPI is ready, proceeding with registration")
 
-        max_retries = 5
         retry_interval = 2
-        retries = 0
-
-        while retries < max_retries:
-            logger.info("Attempting registration (Attempt %d of %d)...", retries + 1, max_retries)
-            success = self.post_register_msg()
-
-            if success:
+        max_retry_interval = 32
+        attempt = 0
+        while True:
+            attempt += 1
+            logger.info("Attempting registration (Attempt %d)...", attempt)
+            if self.post_register_msg():
                 return
-            else:
-                retries += 1
-                if retries < max_retries:
-                    logger.warning("Registration attempt %d failed. Retrying in %d seconds...", retries, retry_interval)
-                    time.sleep(retry_interval)
-                    retry_interval = retry_interval * 2
-                else:
-                    logger.error("Registration failed after maximum retries.")
-
-        logger.error("Failed to register after 5 attempts.")
-        try:
-            # triggering the signal handler in main using a process signal
-            os.kill(os.getpid(), signal.SIGTERM)
-        except Exception as e:
-            logger.error("failed to send SIGTERM after registration failure: %s", e)
+            logger.warning("Registration attempt %d failed. Retrying in %d seconds...", attempt, retry_interval)
+            time.sleep(retry_interval)
+            retry_interval = min(retry_interval * 2, max_retry_interval)
 
     def _check_config_paras(self) -> bool:
         # Read config values under lock protection

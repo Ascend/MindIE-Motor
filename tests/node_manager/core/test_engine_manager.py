@@ -11,7 +11,6 @@
 import os
 import sys
 import pytest
-import signal
 from unittest.mock import patch, MagicMock
 
 # Set environment variable for config path
@@ -377,22 +376,20 @@ class TestEngineManager:
     @patch("motor.node_manager.core.engine_manager.time.sleep")
     @patch("motor.node_manager.core.engine_manager.EngineManager.post_register_msg")
     @patch("motor.node_manager.core.engine_manager.os.kill")
-    def test_register_retry_mechanism(
+    def test_register_retries_until_success_without_suicide(
         self, mock_kill, mock_post_register, mock_sleep, _mock_wait_api_ready, engine_manager
     ):
-        """Test registration retry mechanism"""
+        """Registration retries beyond the old 5-attempt limit and never sends SIGTERM."""
         mock_sleep.return_value = None
+        # Fail 6 times (old max was 5), succeed on the 7th
+        mock_post_register.side_effect = [False] * 6 + [True]
 
-        # Make all attempts fail
-        mock_post_register.return_value = False
-
-        # Run _register method
         engine_manager._register()
 
-        # Should have retried 5 times
-        assert mock_post_register.call_count == 5
-        # Should have sent SIGTERM after max retries
-        mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+        assert mock_post_register.call_count == 7
+        mock_kill.assert_not_called()
+        assert mock_sleep.call_count == 6
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [2, 4, 8, 16, 32, 32]
 
     @patch("motor.node_manager.core.engine_manager.wait_until_api_ready", return_value=True)
     @patch("motor.node_manager.core.engine_manager.EngineManager.post_register_msg")

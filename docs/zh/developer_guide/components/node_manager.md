@@ -44,7 +44,7 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
    d. `_daemon_loop()` — select-based 主循环，每 `daemon_loop_interval` 秒检查自杀标志和 stdin 输入。
 4. 各模块的初始化行为不变：`NodeManagerAPI.__init__` 在后台线程中启动 FastAPI，`EngineManager.__init__` 启动注册线程，`Daemon.__init__` 启动进程监控线程。
 
-首次注册最多尝试 5 次，重试间隔为 2、4、8、16 秒。连续失败后，`EngineManager` 向当前进程发送 `SIGTERM`。
+首次注册会持续重试直至成功，重试间隔为 2、4、8、16、32 秒（上限 32 秒）。注册失败不会向当前进程发送 `SIGTERM`。
 
 ### 启动实例
 
@@ -347,7 +347,7 @@ curl -i http://127.0.0.1:1026/readiness
 
 ## 报错与排查
 
-- 日志出现 `Registration failed after maximum retries`：检查 Controller DNS、端口、TLS 配置和网络连通性；Node Manager 随后会收到 `SIGTERM`。
+- 日志持续出现 `Registration attempt N failed`：检查 Controller DNS、端口、TLS 配置和网络连通性；Node Manager 会持续重试注册，不会因此退出。
 - 日志出现 `Start command validation failed`：检查 Controller 下发的 `job_name`、endpoint 数量和 endpoint IP 是否与 Node Manager 配置一致。
 - 日志出现 `Invalid endpoint parameters`：检查 endpoint IP 与业务端口，业务端口必须处于 `[1024, 65535]`。
 - 日志出现 `Engine process exited immediately`：Engine Server 在 `Popen` 后立即退出，需继续检查 Engine Server 日志、配置路径和启动参数。
