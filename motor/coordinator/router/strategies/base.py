@@ -696,10 +696,6 @@ class BaseRouter(ABC):
                     raise e
 
     async def _check_can_encode(self) -> bool:
-        if self.req_info.is_count_tokens_entry:
-            # count_tokens is a lightweight single-instance tokenization call; it
-            # must never trigger an encode leg as a side effect.
-            return False
         messages = self.req_info.req_data.get("messages")
         if not messages:
             return False
@@ -713,9 +709,7 @@ class BaseRouter(ABC):
                 if not content_type:
                     continue
 
-                # OpenAI multimodal parts: image_url / video_url. Anthropic image
-                # blocks: {"type": "image", "source": {...}}.
-                if content_type in {"image_url", "video_url", "image"}:
+                if content_type in {"image_url", "video_url"}:
                     is_multimodal = True
                     break
 
@@ -806,15 +800,8 @@ class BaseRouter(ABC):
             self.logger.warning("_submit_token_sample failed: %s", e)
 
     def _init_sampling_state(self) -> dict:
-        sampleable = not self.req_info.is_anthropic_entry
-        enabled = self.config.precision_detection_config.precision_check_enabled
-        if enabled and not sampleable:
-            # Anthropic traffic is excluded from precision sampling; no logprobs
-            # collection or request mutation applies.
-            self.logger.debug("PrecisionSample: Anthropic ingress request is not sampleable; sampling disabled")
         return {
-            "enabled": enabled and sampleable,
-            "sampleable": sampleable,
+            "enabled": self.config.precision_detection_config.precision_check_enabled,
             "client_logprobs": bool(self.req_info.req_data.get("logprobs")),
             "lp_count": self.config.precision_detection_config.logprobs_count,
             "info": {},

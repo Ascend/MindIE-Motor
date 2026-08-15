@@ -42,10 +42,6 @@ from motor.coordinator.router.stream_response import (
     CommitAwareStreamingResponse,
     StreamCommitController,
 )
-from motor.coordinator.router.anthropic_envelope import (
-    anthropic_stream_error_frame,
-    is_anthropic_error_body,
-)
 
 
 class PDHybridRouter(BaseRouter):
@@ -199,7 +195,6 @@ class PDHybridRouter(BaseRouter):
                 self._generate_stream(req_data, manage_request_context=manage_request_context),
                 self._stream_commit_controller,
                 on_first_body_sent=self._mark_stream_body_sent,
-                anthropic_entry=self.req_info.is_anthropic_entry,
             )
         return await self._generate_post(req_data, manage_request_context=manage_request_context)
 
@@ -211,15 +206,11 @@ class PDHybridRouter(BaseRouter):
 
     def _prepare_precision_request(self, req_data: dict[str, Any]) -> None:
         if self._precision_sampling_enabled():
-            if self.req_info.is_anthropic_entry:
-                # precision sampling is not supported for Anthropic traffic.
-                self.logger.debug("PrecisionSample: skipping logprobs injection for Anthropic ingress request")
-                return
             inject_logprobs(req_data, self.config.precision_detection_config, req_id=self.req_info.req_id)
 
     def _init_hybrid_sampling_state(self) -> dict:
         sampling_state = self._init_sampling_state()
-        sampling_state["enabled"] = self._precision_sampling_enabled() and sampling_state.get("sampleable", True)
+        sampling_state["enabled"] = self._precision_sampling_enabled()
         return sampling_state
 
     async def _maybe_submit_hybrid_sample(self, resource: ScheduledResource | None, sampling_state: dict) -> None:
@@ -269,9 +260,6 @@ class PDHybridRouter(BaseRouter):
                     # Cache prompt/output token ids so a node-fault reschedule can
                     # continue generation from where the failed leg stopped.
                     yield self.rescheduler.process_stream_chunk(chunk, stream_adapter_state=stream_adapter_state)
-                elif self.req_info.is_anthropic_entry:
-                    # Anthropic frames carry no OpenAI token-id fields; forward byte-identical.
-                    yield chunk
                 else:
                     yield adapters.strip_stream_chunk_bytes_for_client(
                         chunk,
@@ -312,9 +300,7 @@ class PDHybridRouter(BaseRouter):
                         if reschedule_enabled:
                             attempt_req, attempt_api = self.rescheduler.prepare_retry_request(attempt_req)
                         self.logger.warning("Rescheduling stream[%d/%d] to a new hybrid instance", attempt, max_retry)
-                    if reschedule_enabled and not self.req_info.is_anthropic_entry:
-                        # Anthropic ingress: the engine ignores return_token_ids on the
-                        # Anthropic path and token-replay resume is unsupported.
+                    if reschedule_enabled:
                         attempt_req["return_token_ids"] = True
                     self._prepare_precision_request(attempt_req)
                     async with aclosing(
@@ -450,19 +436,14 @@ class PDHybridRouter(BaseRouter):
 
                         self.req_info.update_state(ReqState.DECODE_END)
                         body = response.json()
-                        if not self.req_info.is_anthropic_entry:
-                            # OpenAI-only response normalization: completion->chat shape
-                            # adaptation and token-id/stop_reason stripping never apply
-                            # to Anthropic-shaped bodies.
-                            if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
-                                adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
+                        if "chat" in self.req_info.effective_entry_api() and is_completion_like_body(body):
+                            adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
                         body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
                         await self._maybe_submit_hybrid_sample(self._scheduled_resource, sampling_state)
                         self._strip_logprobs_for_client(body, sampling_state)
-                        if not self.req_info.is_anthropic_entry:
-                            adapters.strip_nonstream_response_body_for_client(
-                                body, client_return_token_ids=self.req_info.client_expects_token_ids
-                            )
+                        adapters.strip_nonstream_response_body_for_client(
+                            body, client_return_token_ids=self.req_info.client_expects_token_ids
+                        )
                         await self._report_cb("success")
                         return JSONResponse(content=body)
 
@@ -565,7 +546,7 @@ class PDHybridRouter(BaseRouter):
             self.logger.warning("Running stream fallback to hybrid mode in existing request context")
             stream_adapter_state: dict[str, Any] = {}
             request_data = req_data.copy()
-            if self.config.exception_config.reschedule_enabled and not self.req_info.is_anthropic_entry:
+            if self.config.exception_config.reschedule_enabled:
                 request_data["return_token_ids"] = True
             self._prepare_precision_request(request_data)
             if is_resume:
@@ -595,24 +576,9 @@ class PDHybridRouter(BaseRouter):
                     await self._report_cb("failure")
                 raise
 
-    def _generate_streaming_error_chunk(self, error: Exception) -> bytes:
-        """Build an SSE error chunk from *error* for mid-stream failure reporting.
-
-        Anthropic entry APIs get one ``event: error`` frame with the Anthropic error
-        envelope; OpenAI-shaped ``data: {"error": ...}`` frames and the ``[DONE]``
-        sentinel are never emitted for Anthropic ingress.
-        """
-        if self.req_info.is_anthropic_entry:
-            if isinstance(error, UpstreamHTTPError) and error.body:
-                envelope = is_anthropic_error_body(error.body)
-                if envelope is not None:
-                    encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()
-                    return b"event: error\ndata: " + encoded + b"\n\n"
-            return anthropic_stream_error_frame(
-                status_code=self._streaming_error_status_code(error),
-                message=sanitize_error_message(str(error)),
-            )
-
+    @staticmethod
+    def _generate_streaming_error_chunk(error: Exception) -> bytes:
+        """Build an SSE ``data:`` error chunk from *error* for mid-stream failure reporting."""
         if isinstance(error, UpstreamHTTPError) and error.body:
             try:
                 payload = json.loads(error.body)
@@ -621,7 +587,16 @@ class PDHybridRouter(BaseRouter):
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
 
-        code = self._streaming_error_status_code(error)
+        if isinstance(error, UpstreamHTTPError):
+            code = error.status_code
+        elif isinstance(error, httpx.TimeoutException):
+            code = status.HTTP_504_GATEWAY_TIMEOUT
+        elif isinstance(error, httpx.RequestError):
+            code = status.HTTP_502_BAD_GATEWAY
+        elif isinstance(error, HTTPException):
+            code = error.status_code
+        else:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR
         payload = {
             "error": {
                 "message": sanitize_error_message(str(error)),
@@ -631,15 +606,3 @@ class PDHybridRouter(BaseRouter):
         }
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
         return b"data: " + encoded + b"\n\n"
-
-    @staticmethod
-    def _streaming_error_status_code(error: Exception) -> int:
-        if isinstance(error, UpstreamHTTPError):
-            return error.status_code
-        if isinstance(error, httpx.TimeoutException):
-            return status.HTTP_504_GATEWAY_TIMEOUT
-        if isinstance(error, httpx.RequestError):
-            return status.HTTP_502_BAD_GATEWAY
-        if isinstance(error, HTTPException):
-            return error.status_code
-        return status.HTTP_500_INTERNAL_SERVER_ERROR

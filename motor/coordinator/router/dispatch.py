@@ -35,7 +35,6 @@ from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
-from motor.coordinator.router.anthropic_envelope import anthropic_error_response
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
     render_transport_error,
@@ -240,14 +239,7 @@ async def handle_request(
             detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
         )
 
-    if req_info.is_count_tokens_entry:
-        # count_tokens is a lightweight single-instance tokenization call. Bypass
-        # topology-based router selection (UnifiedPD would schedule a full P+D pair and
-        # rewrite generation params); PDHybridRouter schedules exactly one instance
-        # (union preferred, else prefill) and forwards the body verbatim.
-        router_impl_class = PDHybridRouter
-    else:
-        router_impl_class = await select_router_class(scheduler, req_info=req_info, config=config)
+    router_impl_class = await select_router_class(scheduler, req_info=req_info, config=config)
 
     sampling_manager = getattr(raw_request.app.state, "sampling_manager", None)
     router_impl = router_impl_class(
@@ -272,15 +264,6 @@ async def handle_request(
     except httpx.RequestError as e:
         req_info.trace_obj.set_trace_error_message(f"Proxy endpoint {req_info.api} failed: {e}")
         logger.warning("Upstream inference transport failed api=%s error=%s", req_info.api, e)
-        if req_info.is_anthropic_entry:
-            # coordinator-synthesized transport errors on Anthropic entry APIs use
-            # the Anthropic error envelope.
-            status_code = (
-                status.HTTP_504_GATEWAY_TIMEOUT
-                if isinstance(e, httpx.TimeoutException)
-                else status.HTTP_502_BAD_GATEWAY
-            )
-            return anthropic_error_response(status_code=status_code, message=str(e))
         return render_transport_error(e)
     except RequestCancelledError as e:
         req_info.trace_obj.set_trace_error_message(str(e))

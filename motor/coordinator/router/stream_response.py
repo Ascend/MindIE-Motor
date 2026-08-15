@@ -24,12 +24,6 @@ from starlette.types import Receive, Scope, Send
 
 from motor.common.http.security_utils import sanitize_error_message
 import motor.common.utils.error as cancel_error
-from motor.coordinator.router.anthropic_envelope import (
-    anthropic_error_response,
-    anthropic_stream_error_frame,
-    detail_to_message,
-    is_anthropic_error_body,
-)
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
     render_transport_error,
@@ -115,7 +109,6 @@ class CommitAwareStreamingResponse(Response):
         media_type: str | None = None,
         background: BackgroundTask | None = None,
         on_first_body_sent: Callable[[], None] | None = None,
-        anthropic_entry: bool = False,
     ) -> None:
         super().__init__(
             content=None,
@@ -128,7 +121,6 @@ class CommitAwareStreamingResponse(Response):
         self._raw_iterator = content
         self.controller = controller
         self._on_first_body_sent = on_first_body_sent
-        self._anthropic_entry = anthropic_entry
         self._first_body_sent = False
         self._finished = False
         self._consumer_mode: str | None = None
@@ -247,12 +239,7 @@ class CommitAwareStreamingResponse(Response):
         # keeps its own status and body instead of collapsing into a generic 500. Always keep the
         # most specific types first if this chain is extended.
         if isinstance(error, UpstreamHTTPError):
-            # Engine-supplied error bodies pass through verbatim for every protocol
-            # (backend error pass-through); only coordinator-synthesized errors below
-            # get a protocol-specific envelope.
             response = render_upstream_error(error)
-        elif self._anthropic_entry:
-            response = self._anthropic_precommit_response(error)
         elif isinstance(error, httpx.RequestError):
             response = render_transport_error(error)
         elif isinstance(error, HTTPException):
@@ -278,30 +265,6 @@ class CommitAwareStreamingResponse(Response):
             raise ClientDisconnect() from send_error
         self._finished = True
 
-    @staticmethod
-    def _anthropic_precommit_response(error: Exception) -> JSONResponse:
-        """Render a coordinator-synthesized pre-commit error in the Anthropic envelope."""
-        if isinstance(error, httpx.TimeoutException):
-            return anthropic_error_response(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                message=str(error),
-            )
-        if isinstance(error, httpx.RequestError):
-            return anthropic_error_response(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                message=str(error),
-            )
-        if isinstance(error, HTTPException):
-            return anthropic_error_response(
-                status_code=error.status_code,
-                message=detail_to_message(error.detail),
-                headers=error.headers,
-            )
-        return anthropic_error_response(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            message=str(error),
-        )
-
     async def _send_committed_error(self, send: Send, error: Exception) -> None:
         if self._finished:
             return
@@ -312,10 +275,8 @@ class CommitAwareStreamingResponse(Response):
         except OSError as send_error:
             raise ClientDisconnect() from send_error
 
-    def _committed_error_chunk(self, error: Exception) -> bytes:
-        if self._anthropic_entry:
-            return self._anthropic_committed_error_chunk(error)
-
+    @staticmethod
+    def _committed_error_chunk(error: Exception) -> bytes:
         if isinstance(error, UpstreamHTTPError) and error.body:
             try:
                 payload = json.loads(error.body)
@@ -324,7 +285,18 @@ class CommitAwareStreamingResponse(Response):
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
 
-        code = self._committed_error_status_code(error)
+        if isinstance(error, UpstreamHTTPError):
+            code = error.status_code
+        elif isinstance(error, httpx.TimeoutException):
+            code = status.HTTP_504_GATEWAY_TIMEOUT
+        elif isinstance(error, httpx.RequestError):
+            code = status.HTTP_502_BAD_GATEWAY
+        elif isinstance(error, HTTPException):
+            code = error.status_code
+        elif isinstance(error, httpx.HTTPStatusError):
+            code = error.response.status_code
+        else:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR
         # Match the pre-commit / non-stream error envelope ({"error": {...}}) so clients can
         # parse a synthesized mid-stream error the same way regardless of when it occurred.
         # UpstreamHTTPError bodies are still forwarded verbatim above (the engine supplies its
@@ -337,37 +309,6 @@ class CommitAwareStreamingResponse(Response):
             }
         }
         return f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n".encode()
-
-    def _anthropic_committed_error_chunk(self, error: Exception) -> bytes:
-        """One Anthropic ``event: error`` frame for a committed stream failure.
-
-        Anthropic streams have no ``[DONE]`` sentinel and no OpenAI-style
-        ``data: {"error": ...}`` frame; exactly one error frame terminates the stream.
-        An engine-supplied Anthropic envelope is forwarded verbatim inside the frame.
-        """
-        if isinstance(error, UpstreamHTTPError) and error.body:
-            envelope = is_anthropic_error_body(error.body)
-            if envelope is not None:
-                encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()
-                return b"event: error\ndata: " + encoded + b"\n\n"
-        return anthropic_stream_error_frame(
-            status_code=self._committed_error_status_code(error),
-            message=str(error),
-        )
-
-    @staticmethod
-    def _committed_error_status_code(error: Exception) -> int:
-        if isinstance(error, UpstreamHTTPError):
-            return error.status_code
-        if isinstance(error, httpx.TimeoutException):
-            return status.HTTP_504_GATEWAY_TIMEOUT
-        if isinstance(error, httpx.RequestError):
-            return status.HTTP_502_BAD_GATEWAY
-        if isinstance(error, HTTPException):
-            return error.status_code
-        if isinstance(error, httpx.HTTPStatusError):
-            return error.response.status_code
-        return status.HTTP_500_INTERNAL_SERVER_ERROR
 
     async def _finish(self, send: Send) -> None:
         if self._finished:

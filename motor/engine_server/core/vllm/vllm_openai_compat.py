@@ -86,7 +86,6 @@ __all__ = [
     "vllm_openai_chat_needs_render",
     "build_openai_serving_render_kwargs",
     "create_openai_serving_render",
-    "create_anthropic_renderer",
 ]
 
 
@@ -412,23 +411,3 @@ def create_openai_serving_render(engine_client: Any, base_kwargs: dict[str, Any]
         base_kwargs,
     )
     return OpenAIServingRender(**ctor_kwargs)
-
-
-def create_anthropic_renderer(engine_client: Any, base_kwargs: dict[str, Any]) -> Any:
-    """Build the renderer AnthropicServingMessages requires across vLLM fork versions.
-
-    Newer forks expose ``vllm.renderers.online_renderer.OnlineRenderer`` and
-    require it as the ``online_renderer`` kwarg; older forks take an
-    OpenAIServingRender (``openai_serving_render``). Both are constructed with
-    the same signature-filtered kwargs.
-    """
-    try:
-        from vllm.renderers.online_renderer import OnlineRenderer
-    except ImportError:
-        return create_openai_serving_render(engine_client, base_kwargs)
-    ctor_kwargs = build_openai_serving_render_kwargs(
-        OnlineRenderer.__init__,
-        engine_client,
-        base_kwargs,
-    )
-    return OnlineRenderer(**ctor_kwargs)

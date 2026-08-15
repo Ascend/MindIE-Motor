@@ -23,7 +23,6 @@ from motor.coordinator.router.adapters.completion_to_chat import (
 from motor.coordinator.router.adapters.stream import (
     encode_stream_chunk_bytes,
     is_done_stream_chunk,
-    merge_anthropic_message_start_usage,
     merge_prompt_tokens_details_into_usage,
     parse_stream_chunk_json,
     strip_openai_token_id_fields_for_client,
@@ -85,33 +84,17 @@ class Rescheduler:
         retried without discarding already generated output. Engine-side ``recomputed``
         responses are normalized but do not trigger Coordinator recompute.
 
-        Anthropic-ingress frames and any frame that fails OpenAI JSON parsing are
-        forwarded byte-identical (the sole exception: a captured prefill-leg usage is
-        merged into the Anthropic ``message_start`` frame); frames are never
-        dropped by this layer.
-
         Returns:
             Bytes to forward to the client
         """
-        if self.req.is_anthropic_entry:
-            # Anthropic SSE frames (event:/data: pairs) are not OpenAI-shaped; forward
-            # them byte-identical. OpenAI mutations below (token-id caching/stripping,
-            # completion->chat adaptation, prompt_tokens_details merge, stop_reason
-            # normalization) never apply to Anthropic ingress. The single documented
-            # Anthropic-aware edit: the message_start frame's message.usage
-            # carries the captured prefill-leg input usage; with nothing captured
-            # this is a byte-identical passthrough.
-            return merge_anthropic_message_start_usage(chunk, self.req.anthropic_input_usage)
         chunk_json = parse_stream_chunk_json(chunk, self.logger)
         if chunk_json is None:
             if is_done_stream_chunk(chunk):
                 self._stream_finished = True
                 return chunk
             if self.logger is not None:
-                self.logger.debug("Passing through non-JSON decode stream chunk (Coordinator safety)")
-            # Never drop an unparseable frame: it may carry a protocol this layer does
-            # not understand. Only frames proven internal may be dropped.
-            return chunk
+                self.logger.debug("Dropping non-JSON decode stream chunk (Coordinator safety)")
+            return b""
 
         mutated = False
         if self.req.prompt_tokens_details:
@@ -127,14 +110,7 @@ class Rescheduler:
 
         sta = stream_adapter_state if stream_adapter_state is not None else {}
         # Chat clients expect chat.completion.chunk; adapt Completion-shaped engine chunks.
-        # Hard guard: the completion->chat adaptation must never fire for Anthropic ingress
-        # (Anthropic bodies contain "messages", so client_expects_chat_shape is True for them).
-        if (
-            self.is_rescheduling
-            and self.req.client_expects_chat_shape
-            and not self.req.is_anthropic_entry
-            and is_completion_like_stream_chunk(chunk_json)
-        ):
+        if self.is_rescheduling and self.req.client_expects_chat_shape and is_completion_like_stream_chunk(chunk_json):
             adapt_completion_stream_chunk_to_chat(
                 chunk_json,
                 req_id=self.req.req_id,
@@ -154,19 +130,6 @@ class Rescheduler:
 
     def can_resume_after_visible_output(self, req_data: dict) -> bool:
         """Return whether a streamed response can safely continue on a new instance."""
-        if self.req.is_anthropic_entry:
-            # Explicit protocol gate: Anthropic token-replay resume is not supported —
-            # token caches never fill for Anthropic frames and the engine ignores
-            # return_token_ids on the Anthropic path. A post-commit failure therefore
-            # always terminates the stream (with an Anthropic error event); this marker
-            # makes the degradation traceable rather than an empty-cache side effect.
-            if self.logger is not None:
-                self.logger.info(
-                    "Anthropic ingress request %s cannot resume after visible output; "
-                    "post-commit failure will terminate the stream",
-                    self.req.req_id,
-                )
-            return False
         if (
             not self.enable
             or not self._replay_progress_complete
@@ -220,18 +183,7 @@ class Rescheduler:
 
         ``max_tokens`` is derived from the client's original budget minus cumulative
         output token ids from prior legs.
-
-        Anthropic ingress is hard-guarded: the original body is always returned
-        unchanged so a pre-commit retry re-sends the Anthropic request verbatim; the
-        Completions token-replay rewrite must never fire for Anthropic.
         """
-        if self.req.is_anthropic_entry:
-            if self.logger is not None:
-                self.logger.debug(
-                    "Retry for Anthropic ingress request %s re-sends the original body; token-replay rewrite skipped",
-                    self.req.req_id,
-                )
-            return (req_data, self.req.api)
         plan = self.build_retry_plan(req_data)
         if plan is None:
             return (req_data, self.req.api)
@@ -239,10 +191,6 @@ class Rescheduler:
 
     def build_retry_plan(self, req_data: dict) -> RetryRequestPlan | None:
         """Validate and construct the shared token-replay plan for one retry attempt."""
-        if self.req.is_anthropic_entry:
-            # Hard guard: never build a Completions token-replay plan for Anthropic
-            # ingress, even if token caches were somehow populated in the future.
-            return None
         if len(self.req.prompt_token_ids) == 0 or len(self.req.cached_token_ids) == 0:
             return None
 
