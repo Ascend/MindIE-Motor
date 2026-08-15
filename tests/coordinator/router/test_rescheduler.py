@@ -236,12 +236,14 @@ def test_strip_nonstream_maps_recomputed_stop_reason():
     assert body["choices"][0]["stop_reason"] == "stop"
 
 
-def test_process_stream_chunk_drops_unparseable_chunk():
+def test_process_stream_chunk_passes_through_unparseable_chunk():
+    """Unparseable frames are never dropped (they may carry a non-OpenAI protocol)."""
     req_data = {"messages": [{"role": "user", "content": "x"}], "stream": True, "max_tokens": 10}
     req = _make_request_info(req_data)
     resch = Rescheduler(True, req, logger=logger)
-    out = resch.process_stream_chunk(b"not valid json {{{")
-    assert out == b""
+    chunk = b"not valid json {{{"
+    out = resch.process_stream_chunk(chunk)
+    assert out == chunk
 
 
 def test_process_stream_chunk_preserves_done_marker():

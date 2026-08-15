@@ -56,6 +56,11 @@ from motor.coordinator.router.rescheduler.rescheduler import (
 )
 from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.precision_sample.request import inject_logprobs
+from motor.coordinator.router.adapters.stream import (
+    parse_stream_chunk_json,
+    encode_stream_chunk_bytes,
+    merge_anthropic_message_start_usage,
+)
 from motor.coordinator.router.stream_response import (
     CommitAwareStreamingResponse,
     StreamCommitController,
@@ -71,8 +76,6 @@ from motor.coordinator.router.adapters.completion_to_chat import (
 )
 from motor.coordinator.router.adapters.stream import (
     chunk_has_usage_field,
-    parse_stream_chunk_json,
-    encode_stream_chunk_bytes,
     strip_nonstream_response_body_for_client,
     strip_stream_chunk_bytes_for_client,
 )
@@ -161,6 +164,11 @@ class UnifiedPDRouter(BaseRouter):
         self._release_inflight: dict[ReleaseKey, asyncio.Task[bool]] = {}
 
     def _capture_prompt_tokens_details(self, body: dict[str, Any]) -> None:
+        if self.req_info.is_anthropic_entry:
+            # Anthropic-native cache usage fields: capture the prefill leg's
+            # input usage so it can be merged into the decode leg's response.
+            self._capture_anthropic_input_usage(body)
+            return
         candidates = [body]
         payload = body.get("payload")
         if isinstance(payload, dict):
@@ -176,11 +184,51 @@ class UnifiedPDRouter(BaseRouter):
             self.req_info.update_prompt_tokens_details(details)
             return
 
+    def _capture_anthropic_input_usage(self, body: dict[str, Any]) -> None:
+        """Capture the prefill leg's Anthropic input usage into ``req_info``.
+
+        The engine emits ``cache_read_input_tokens``/``cache_creation_input_tokens``
+        iff prompt cache details are enabled; when absent, nothing is captured so the
+        decode leg's response passes through unmodified (never extended, never null).
+        Handoff ``PrefillResult`` bodies carry the Anthropic response under
+        ``payload``, so both levels are probed (mirroring the OpenAI candidates logic).
+
+        Args:
+            body: Prefill-leg response body (Anthropic message or PrefillResult).
+        """
+        candidates = [body]
+        payload = body.get("payload")
+        if isinstance(payload, dict):
+            candidates.append(payload)
+
+        for candidate in candidates:
+            usage = candidate.get("usage")
+            if not isinstance(usage, dict) or "cache_read_input_tokens" not in usage:
+                continue
+            captured = {
+                key: usage[key]
+                for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+                if key in usage
+            }
+            self.req_info.update_anthropic_input_usage(captured)
+            log = getattr(self, "logger", None)
+            if log is not None:
+                log.debug(
+                    "Captured Anthropic prefill input usage for request %s: %s",
+                    self.req_info.req_id,
+                    captured,
+                )
+            return
+
     def _record_prefill_complete(self, body: dict[str, Any]) -> None:
         self._capture_prompt_tokens_details(body)
         self.req_info.update_state(ReqState.PREFILL_END)
 
     def _merge_prompt_tokens_details(self, body: dict[str, Any]) -> bool:
+        if self.req_info.is_anthropic_entry:
+            # Anthropic-native cache usage fields: overwrite the decode leg's
+            # input usage with the prefill leg's captured values.
+            return self._merge_anthropic_input_usage(body)
         details = self.req_info.prompt_tokens_details
         usage = body.get("usage")
         if not details or not isinstance(usage, dict) or not usage:
@@ -190,7 +238,36 @@ class UnifiedPDRouter(BaseRouter):
         usage["prompt_tokens_details"] = details
         return True
 
+    def _merge_anthropic_input_usage(self, body: dict[str, Any]) -> bool:
+        """Merge the captured prefill Anthropic input usage into a non-stream body.
+
+        Overwrites ``usage.input_tokens``/``cache_read_input_tokens``/
+        ``cache_creation_input_tokens`` with the prefill leg's values; ``output_tokens``
+        and everything else stay the decode leg's. Without captured usage the body is
+        untouched (no keys added, no nulls).
+
+        Args:
+            body: Decode-leg response body, mutated in place.
+
+        Returns:
+            True iff the body's usage block was modified.
+        """
+        captured = self.req_info.anthropic_input_usage
+        usage = body.get("usage")
+        if not captured or not isinstance(usage, dict):
+            return False
+        modified = False
+        for key, value in captured.items():
+            if usage.get(key) != value:
+                usage[key] = value
+                modified = True
+        return modified
+
     def _merge_prompt_tokens_details_into_stream_chunk(self, chunk: bytes) -> bytes:
+        if self.req_info.is_anthropic_entry:
+            # Single documented Anthropic-aware stream edit: merge the captured
+            # prefill input usage into the message_start frame's message.usage.
+            return merge_anthropic_message_start_usage(chunk, self.req_info.anthropic_input_usage)
         if not self.req_info.prompt_tokens_details:
             return chunk
         # Only usage-bearing chunks (typically just the final include_usage chunk) can carry
@@ -211,6 +288,7 @@ class UnifiedPDRouter(BaseRouter):
                 self._generate_stream_response(),
                 self._stream_commit_controller,
                 on_first_body_sent=self._mark_stream_body_sent,
+                anthropic_entry=self.req_info.is_anthropic_entry,
             )
         return await self._generate_response()
 
@@ -1092,7 +1170,10 @@ class UnifiedPDRouter(BaseRouter):
         if role == PDRole.ROLE_P:
             req["stream"] = False
             req = self._apply_prefill_params(req, set_min_tokens=False)
-        if stream and self.config.exception_config.reschedule_enabled:
+        if stream and self.config.exception_config.reschedule_enabled and not self.req_info.is_anthropic_entry:
+            # Anthropic ingress: the engine ignores return_token_ids on the
+            # Anthropic path and token-replay resume is unsupported, so neither the
+            # injection nor the retry-plan rewrite applies.
             req["return_token_ids"] = True
             if self._active_retry_plan is not None:
                 req, api = self.rescheduler.apply_retry_plan(
@@ -1104,8 +1185,17 @@ class UnifiedPDRouter(BaseRouter):
             role == PDRole.ROLE_D
             and self.config.precision_detection_config.precision_check_enabled
             and self._sampling_manager is not None
+            and not self.req_info.is_anthropic_entry
         ):
             inject_logprobs(req, self.config.precision_detection_config, req_id=self.req_info.req_id)
+        elif (
+            role == PDRole.ROLE_D
+            and self.config.precision_detection_config.precision_check_enabled
+            and self._sampling_manager is not None
+        ):
+            # precision sampling is not supported for Anthropic traffic; record the
+            # skip once per request instead of mutating the decode body.
+            self.logger.debug("PrecisionSample: skipping logprobs injection for Anthropic ingress request")
         req[MOTOR_DISPATCH_KEY] = attempt.dispatch_for(role, self._DISPATCH_MODE).model_dump(mode="json")
         if prefill_result is not None:
             req[MOTOR_PREFILL_RESULT_KEY] = prefill_result.model_dump(mode="json")

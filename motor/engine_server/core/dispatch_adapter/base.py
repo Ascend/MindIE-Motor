@@ -45,6 +45,8 @@ class DispatchResponseContext:
     request_body: dict[str, Any]
     dispatch: MotorDispatch | None
     stream: bool
+    client_return_token_ids: bool = False
+    client_expects_chat_shape: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,12 +54,16 @@ class PrefillBodyCacheEntry:
     body: dict[str, Any]
     dispatch: MotorDispatch
     cached_at: float
+    entry_api: str | None = None
 
 
 @dataclass(frozen=True)
 class DispatchMetaserverRequest:
     engine_body: dict[str, Any]
     dispatch: MotorDispatch | None = None
+    # Entry API of the route that cached the prefill body (e.g. "v1/messages"
+    # for Anthropic-ingress). None means the default OpenAI replay behavior.
+    entry_api: str | None = None
 
 
 class DispatchPeerStopClient:
@@ -145,7 +151,9 @@ class DispatchAttemptRegistry:
             self._dispatches[key] = dispatch
             self._updated_at[key] = now
 
-    async def cache_prefill_body(self, dispatch: MotorDispatch, body: dict[str, Any]) -> None:
+    async def cache_prefill_body(
+        self, dispatch: MotorDispatch, body: dict[str, Any], entry_api: str | None = None
+    ) -> None:
         async with self._lock:
             now = time.monotonic()
             self._cleanup_locked(now)
@@ -153,6 +161,7 @@ class DispatchAttemptRegistry:
                 body=body.copy(),
                 dispatch=dispatch,
                 cached_at=now,
+                entry_api=entry_api,
             )
             waiter = self._prefill_waiters.pop(dispatch.engine_request_id, None)
             if waiter is not None:
@@ -178,6 +187,7 @@ class DispatchAttemptRegistry:
                 body=entry.body.copy(),
                 dispatch=entry.dispatch,
                 cached_at=entry.cached_at,
+                entry_api=entry.entry_api,
             )
 
     async def wait_prefill_body(self, engine_request_id: str, timeout_seconds: float) -> dict[str, Any] | None:
@@ -201,6 +211,7 @@ class DispatchAttemptRegistry:
                         body=entry.body.copy(),
                         dispatch=entry.dispatch,
                         cached_at=entry.cached_at,
+                        entry_api=entry.entry_api,
                     )
                 self._prefill_entries.pop(engine_request_id, None)
             event = self._prefill_waiters.get(engine_request_id)
@@ -345,7 +356,11 @@ class DispatchAdapter:
         return None
 
     async def maybe_prepare_response(
-        self, body: dict[str, Any], dispatch: MotorDispatch | None
+        self,
+        body: dict[str, Any],
+        dispatch: MotorDispatch | None,
+        *,
+        entry_api: str | None = None,
     ) -> dict[str, Any] | None:
         return None
 

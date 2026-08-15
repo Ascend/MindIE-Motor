@@ -37,6 +37,7 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.dispatch import handle_request
+from motor.coordinator.router.anthropic_envelope import anthropic_error_response, detail_to_message
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
@@ -426,14 +427,20 @@ class InferenceServer(BaseCoordinatorServer):
                 request_manager=request_manager,
                 request_json=body_json,
             )
-        except HTTPException:
-            raise
+        except HTTPException as e:
+            # coordinator-synthesized errors on Anthropic entry APIs (validation,
+            # availability, scheduling failures) render the Anthropic error envelope.
+            return anthropic_error_response(
+                status_code=e.status_code,
+                message=detail_to_message(e.detail),
+                headers=e.headers,
+            )
         except Exception as e:
             logger.error("Failed to process Anthropic request: %s", e, exc_info=True)
-            raise HTTPException(
+            return anthropic_error_response(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            ) from e
+                message=str(e),
+            )
 
     async def _handle_openai_request(
         self,

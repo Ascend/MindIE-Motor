@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import asyncio
 import inspect
 import json
 import multiprocessing
@@ -19,10 +20,23 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
 
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DispatchStopState, MotorDispatch
+from motor.engine_server.core.anthropic.errors import (
+    anthropic_error_response,
+    anthropic_http_response_from_exception,
+    anthropic_response_from_engine_error_body,
+    anthropic_stream_error_frame,
+)
+from motor.engine_server.core.anthropic.normalization import (
+    chunk_contains_message_stop,
+    is_anthropic_messages_api,
+    normalize_anthropic_nonstream_body,
+    normalize_anthropic_stream_chunk,
+)
 from motor.engine_server.core.dispatch_adapter import create_dispatch_adapter
 from motor.engine_server.core.config import IConfig
 from motor.engine_server.core.dispatch_adapter.base import DispatchResponseContext
@@ -38,6 +52,8 @@ CONFIG_KEY = "_config"
 class InferEndpoint(Endpoint):
     chat_completion_request: type[Any]
     completion_request: type[Any]
+    anthropic_messages_request: type[Any] | None = None
+    anthropic_count_tokens_request: type[Any] | None = None
 
     def __init__(self, config: IConfig):
         self.config = config
@@ -96,7 +112,11 @@ class InferEndpoint(Endpoint):
         logger.info("InferEndpoint stopped completely")
 
     async def _parse_openai_request(
-        self, raw_request: Request, model: type[Any]
+        self,
+        raw_request: Request,
+        model: type[Any],
+        *,
+        client_expects_chat_shape: bool | None = None,
     ) -> tuple[Any | None, JSONResponse | None, DispatchResponseContext]:
         dispatch: MotorDispatch | None = None
         context: DispatchResponseContext | None = None
@@ -107,14 +127,20 @@ class InferEndpoint(Endpoint):
             prefill_context_check = self.dispatch_adapter.get_prefill_context_check(dispatch)
             if prefill_context_check is not None:
                 raw_request.state.motor_prefill_context_check = prefill_context_check
+            if client_expects_chat_shape is None:
+                client_expects_chat_shape = "messages" in original_body or "chat/completions" in raw_request.url.path
             context = DispatchResponseContext(
                 api=raw_request.url.path.strip("/"),
                 raw_path=raw_request.url.path,
                 request_body=body,
                 dispatch=dispatch,
                 stream=bool(body.get("stream", False)),
+                client_return_token_ids=bool(original_body.get("return_token_ids", False)),
+                client_expects_chat_shape=client_expects_chat_shape,
             )
-            prepared = await self.dispatch_adapter.maybe_prepare_response(body, dispatch)
+            prepared = await self.dispatch_adapter.maybe_prepare_response(
+                body, dispatch, entry_api=raw_request.url.path.strip("/")
+            )
             if prepared is not None:
                 if await self.dispatch_adapter.should_finish_prepared_response(prepared, dispatch):
                     await self.dispatch_adapter.finish_dispatch(dispatch)
@@ -380,6 +406,210 @@ class InferEndpoint(Endpoint):
     async def _completion_body(self, raw_request: Request) -> Any:
         return await self._parse_openai_request(raw_request, self.completion_request)
 
+    async def _anthropic_messages_body(self, raw_request: Request) -> Any:
+        return await self._parse_openai_request(
+            raw_request,
+            self.anthropic_messages_request,
+            # Anthropic responses never take the OpenAI completion->chat
+            # adaptation, even though the request body has a "messages" field.
+            client_expects_chat_shape=False,
+        )
+
+    async def _handle_anthropic_messages(self, raw_request: Request) -> Any:
+        serving = getattr(self.app.state, "anthropic_serving_messages", None)
+        if self.anthropic_messages_request is None or serving is None:
+            return anthropic_error_response(
+                status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+                message="The model does not support the Anthropic Messages API.",
+            )
+        try:
+            request, prepared_response, context = await self._anthropic_messages_body(raw_request)
+            if prepared_response is not None:
+                return prepared_response
+            return await self._call_anthropic_serving(
+                lambda: serving.handle_request(request, raw_request),
+                context,
+            )
+        except HTTPException as e:
+            return anthropic_http_response_from_exception(e)
+        except Exception as e:
+            logger.exception("Anthropic messages request failed")
+            return anthropic_error_response(
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
+                message=str(e),
+            )
+
+    async def _handle_anthropic_metaserver_replay(
+        self,
+        engine_body: dict[str, Any],
+        raw_request: Request,
+        context: DispatchResponseContext,
+    ) -> Any:
+        """Replay a cached Anthropic-ingress prefill body for a metaserver trigger.
+
+        The body was cached by the ``/v1/messages`` prefill leg; it must be
+        validated against the Anthropic protocol and served by the Anthropic
+        serving layer so the same Anthropic->OpenAI conversion (system, tools,
+        stop_sequences, top_k) produces the exact prompt the decode leg
+        renders. Validating against the OpenAI chat protocol instead would
+        reject Anthropic-shaped tools and silently drop Anthropic-only fields,
+        computing KV for a different prompt.
+        """
+        serving = getattr(self.app.state, "anthropic_serving_messages", None)
+        if self.anthropic_messages_request is None or serving is None:
+            await self._handle_dispatch_failure(context)
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+                detail="The model does not support the Anthropic Messages API.",
+            )
+        try:
+            request = self.anthropic_messages_request.model_validate(engine_body)
+        except ValidationError as e:
+            await self._handle_dispatch_failure(context)
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST.value, detail=e.errors()) from e
+        return await self._call_openai_serving(
+            lambda: serving.handle_request(request, raw_request),
+            context,
+            normalize=False,
+        )
+
+    async def _handle_anthropic_count_tokens(self, raw_request: Request) -> Any:
+        serving = getattr(self.app.state, "anthropic_serving_messages", None)
+        if self.anthropic_count_tokens_request is None or serving is None:
+            return anthropic_error_response(
+                status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+                message="The model does not support the Anthropic Messages API.",
+            )
+        try:
+            try:
+                body = await raw_request.json()
+                request = self.anthropic_count_tokens_request.model_validate(body)
+            except json.JSONDecodeError as e:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST.value,
+                    detail=f"Invalid JSON body: {e.msg}",
+                ) from e
+            except ValidationError as e:
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST.value, detail=e.errors()) from e
+            return await serving.count_tokens(request, raw_request)
+        except HTTPException as e:
+            return anthropic_http_response_from_exception(e)
+        except Exception as e:
+            logger.exception("Anthropic count_tokens request failed")
+            return anthropic_error_response(
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
+                message=str(e),
+            )
+
+    async def _call_anthropic_serving(
+        self,
+        call: Callable[[], Awaitable[Any]],
+        context: DispatchResponseContext,
+    ) -> Any:
+        try:
+            response = await self._call_openai_serving(call, context, normalize=False)
+        except HTTPException as e:
+            return anthropic_http_response_from_exception(e)
+        normalized = await self._normalize_anthropic_response(response, context)
+        if not isinstance(normalized, StreamingResponse):
+            await self.dispatch_adapter.finish_dispatch(context.dispatch)
+        return normalized
+
+    async def _normalize_anthropic_response(
+        self,
+        response: Any,
+        context: DispatchResponseContext,
+    ) -> Any:
+        if isinstance(response, StreamingResponse):
+            return self._wrap_anthropic_streaming_response(response, context)
+        if isinstance(response, Response):
+            adapted = await self.dispatch_adapter.normalize_response(response, context)
+            return self._render_anthropic_nonstream(adapted, context)
+        return response
+
+    @staticmethod
+    def _render_anthropic_nonstream(response: Response, context: DispatchResponseContext) -> Response:
+        raw_body = getattr(response, "body", None)
+        if not raw_body:
+            return response
+        try:
+            body = json.loads(raw_body)
+        except (TypeError, json.JSONDecodeError, UnicodeDecodeError):
+            return response
+        if not isinstance(body, dict):
+            return response
+        status_code = getattr(response, "status_code", HTTPStatus.OK.value)
+        headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in ("content-length", "content-type")
+        }
+        if status_code >= HTTPStatus.BAD_REQUEST.value or body.get("error") is not None:
+            return anthropic_response_from_engine_error_body(body, status_code, headers=headers)
+        req_id = context.dispatch.root_request_id if context.dispatch is not None else ""
+        if not normalize_anthropic_nonstream_body(body, req_id=req_id):
+            return response
+        return JSONResponse(content=body, status_code=status_code, headers=headers)
+
+    def _wrap_anthropic_streaming_response(
+        self,
+        response: StreamingResponse,
+        context: DispatchResponseContext,
+    ) -> StreamingResponse:
+        req_id = context.dispatch.root_request_id if context.dispatch is not None else ""
+
+        async def _normalized_body():
+            stream_done = False
+            dispatch_finished = False
+            try:
+                state: dict[str, Any] = {}
+                async for chunk in response.body_iterator:
+                    if await self.dispatch_adapter.is_dispatch_stopped(context.dispatch):
+                        raise HTTPException(
+                            status_code=499,
+                            detail="Dispatch stopped by peer.",
+                        )
+                    normalized = await self.dispatch_adapter.normalize_stream_chunk(chunk, context, state)
+                    if normalized:
+                        normalized = normalize_anthropic_stream_chunk(normalized, req_id=req_id)
+                        if chunk_contains_message_stop(normalized):
+                            stream_done = True
+                        yield normalized
+            except asyncio.CancelledError:  # pylint: disable=try-except-raise
+                raise
+            except ClientDisconnect:
+                # The client is gone; emitting an error frame on a closed
+                # stream would fail. Tear the dispatch down quietly.
+                await self._handle_dispatch_failure(context)
+                dispatch_finished = True
+                return
+            except Exception as exc:
+                await self._handle_dispatch_failure(context)
+                dispatch_finished = True
+                self._log_serving_exception(exc, context)
+                # Once message_stop has been forwarded, the SSE stream is
+                # closed for clients. Emitting another error event would be an
+                # invalid post-termination frame.
+                if stream_done:
+                    return
+                yield anthropic_stream_error_frame(exc)
+            finally:
+                if not dispatch_finished:
+                    await self.dispatch_adapter.finish_dispatch(context.dispatch)
+
+        headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in ("content-length", "content-type")
+        }
+        return StreamingResponse(
+            _normalized_body(),
+            status_code=response.status_code,
+            media_type=response.media_type,
+            headers=headers,
+            background=response.background,
+        )
+
     def _register_profile_routes_if_enabled(self) -> None:
         """Mirror vLLM profile API: POST /start_profile, /stop_profile when profiler is configured."""
         args = self.config.get_args()
@@ -450,6 +680,20 @@ class InferEndpoint(Endpoint):
                 context,
             )
 
+        @self.app.post("/v1/messages")
+        @with_cancellation
+        async def create_anthropic_message(
+            raw_request: Request,
+        ):
+            return await self._handle_anthropic_messages(raw_request)
+
+        @self.app.post("/v1/messages/count_tokens")
+        @with_cancellation
+        async def create_anthropic_count_tokens(
+            raw_request: Request,
+        ):
+            return await self._handle_anthropic_count_tokens(raw_request)
+
         @self.app.post("/v1/metaserver")
         async def metaserver(raw_request: Request):
             try:
@@ -469,6 +713,8 @@ class InferEndpoint(Endpoint):
                 stream=False,
             )
             self._replace_request_body(raw_request, engine_body)
+            if is_anthropic_messages_api(metaserver_request.entry_api or ""):
+                return await self._handle_anthropic_metaserver_replay(engine_body, raw_request, context)
             try:
                 if "messages" in engine_body:
                     request = self.chat_completion_request.model_validate(engine_body)

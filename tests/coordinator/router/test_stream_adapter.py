@@ -114,18 +114,21 @@ def test_parse_stream_chunk_json_propagates_type_errors():
         parse_stream_chunk_json(None, logger=None)  # type: ignore[arg-type]
 
 
-def test_strip_stream_chunk_drops_invalid_utf8_when_parse_required():
+def test_strip_stream_chunk_passes_through_invalid_utf8_when_parse_required():
+    """Unparseable frames pass through byte-identically even when the token-id
+    fast path forced a parse: they may belong to a non-OpenAI protocol (e.g.
+    Anthropic event:/data: pairs) and must never be dropped.
+    """
     chunk = b'data: \xff"token_ids":[1]'
     assert parse_stream_chunk_json(chunk, logger=None) is None
-    assert strip_stream_chunk_bytes_for_client(chunk) == b""
+    assert strip_stream_chunk_bytes_for_client(chunk) is chunk
 
 
-def test_strip_stream_chunk_logs_invalid_chunk(caplog):
+def test_strip_stream_chunk_passes_through_truncated_json_when_parse_required():
     logger = logging.getLogger("test_stream_adapter.invalid_chunk")
     chunk = b'data: {"token_ids": ['
-    with caplog.at_level(logging.WARNING, logger=logger.name):
-        assert strip_stream_chunk_bytes_for_client(chunk, logger=logger) == b""
-    assert "Dropping invalid stream chunk after client normalization" in caplog.text
+    assert parse_stream_chunk_json(chunk, logger=logger) is None
+    assert strip_stream_chunk_bytes_for_client(chunk, logger=logger) is chunk
 
 
 def test_done_sentinel_is_preserved_exactly():

@@ -151,18 +151,6 @@ def stream_chunk_needs_client_strip_parse(
     return chunk_has_recomputed_stop_reason(chunk)
 
 
-def _drop_invalid_stream_chunk(chunk: bytes, logger: Any | None = None) -> bytes:
-    """Drop a non-[DONE] chunk whose JSON payload failed to parse."""
-    if is_done_stream_chunk(chunk):
-        return chunk
-    if logger is not None:
-        logger.warning(
-            "Dropping invalid stream chunk after client normalization (size=%d)",
-            len(chunk),
-        )
-    return b""
-
-
 def strip_openai_token_id_fields_for_client(
     obj: dict,
     *,
@@ -283,7 +271,9 @@ def strip_stream_chunk_bytes_for_client(
 
     chunk_json = parse_stream_chunk_json(chunk, logger=logger)
     if chunk_json is None:
-        return _drop_invalid_stream_chunk(chunk, logger=logger)
+        # Never drop an unparseable frame: it may belong to a non-OpenAI protocol
+        # (e.g. Anthropic event:/data: pairs). Pass it through byte-identical.
+        return chunk
     if not strip_openai_token_id_fields_for_client(
         chunk_json,
         client_return_token_ids=client_return_token_ids,
@@ -299,3 +289,63 @@ def strip_nonstream_response_body_for_client(
 ) -> None:
     """Strip token id fields from a non-streaming OpenAI-style JSON body (mutates ``body``)."""
     strip_openai_token_id_fields_for_client(body, client_return_token_ids=client_return_token_ids)
+
+
+def merge_anthropic_message_start_usage(chunk: bytes, usage: dict[str, Any]) -> bytes:
+    """Merge captured prefill input usage into an Anthropic ``message_start`` SSE frame.
+
+    Single documented Anthropic-aware stream edit: when the coordinator
+    captured the prefill leg's ``input_tokens``/``cache_read_input_tokens``/
+    ``cache_creation_input_tokens``, the decode leg's ``message_start`` frame carries
+    those values in ``message.usage`` (the decode leg's own values would report its
+    local cache state). Every other frame — and every frame when no usage was
+    captured — is returned byte-identical. The original framing is preserved: the
+    ``event:`` line is re-emitted (verbatim) iff the original had one, and the
+    trailing terminator keeps its exact byte sequence.
+
+    Args:
+        chunk: One raw SSE frame (``event:``/``data:`` lines, ``\\n\\n`` terminated).
+        usage: Captured Anthropic input usage; empty dict means pure passthrough.
+
+    Returns:
+        The (possibly edited) frame bytes.
+    """
+    if not usage or b"message_start" not in chunk:
+        return chunk
+    try:
+        text = chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        return chunk
+    terminator = ""
+    body = text
+    for suffix in ("\r\n\r\n", "\n\n", "\r\n", "\n"):
+        if body.endswith(suffix):
+            body, terminator = body[: -len(suffix)], suffix
+            break
+    sep = "\r\n" if "\r\n" in body else "\n"
+    event_line: str | None = None
+    data_line: str | None = None
+    for line in body.split(sep):
+        if line.startswith("event:"):
+            event_line = line
+        elif line.startswith("data:"):
+            data_line = line
+    if data_line is None:
+        return chunk
+    try:
+        payload = json.loads(data_line[len("data:") :].strip())
+    except json.JSONDecodeError:
+        return chunk
+    if not isinstance(payload, dict) or payload.get("type") != "message_start":
+        return chunk
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        return chunk
+    message_usage = message.get("usage")
+    if not isinstance(message_usage, dict):
+        return chunk
+    message_usage.update(usage)
+    lines = [f"data: {_compact_json_bytes(payload).decode('utf-8')}"]
+    if event_line is not None:
+        lines.insert(0, event_line)
+    return (sep.join(lines) + terminator).encode("utf-8")

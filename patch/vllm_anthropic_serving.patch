@@ -1,0 +1,115 @@
+# vllm_anthropic_serving.patch
+#
+# Backports for the Anthropic Messages serving of the bundled vLLM fork
+# (entrypoints/anthropic/{protocol,serving}.py, Apache-2.0,
+# Copyright contributors to the vLLM project), targeting vLLM releases/v0.23.0:
+# - AnthropicMessagesRequest: add the request_id field and forward it (required
+#   by pyMotor PD trigger/metaserver prefill replay; without it the prefill KV is
+#   registered under a random id and the decode side hangs). kv_transfer_params
+#   already exists upstream in 0.23.0 and is intentionally not patched.
+# - AnthropicUsage: map prompt_tokens_details.cached_tokens to
+#   cache_read_input_tokens / cache_creation_input_tokens (input_tokens
+#   clamped non-negative)
+# - messages_full_converter: tolerate empty/partial tool_call arguments
+# - emit stop_reason="tool_use" when the response carries tool_use blocks
+# Applied by patch/patch_apply.py (patch -p0, fuzz allowed).
+
+--- entrypoints/anthropic/protocol.py
++++ entrypoints/anthropic/protocol.py
+@@ -138,2 +138,6 @@
+     )
++    # motor: PD trigger/metaserver prefill replay must reuse the coordinator's
++    # request id, otherwise the prefill KV is registered under a random id and
++    # the decode side waits forever.
++    request_id: str | None = None
+     chat_template_kwargs: dict[str, Any] | None = Field(
+--- entrypoints/anthropic/serving.py
++++ entrypoints/anthropic/serving.py
+@@ -58,2 +58,21 @@
+
++def _motor_build_anthropic_usage(prompt_tokens, completion_tokens, usage):
++    """Backport of upstream _build_anthropic_usage: map vLLM cached_tokens to
++    Anthropic cache_read_input_tokens; input_tokens = max(0, total - cached); cache
++    creation has no vLLM analog (0). Fields omitted when cache info absent."""
++    cached = None
++    if usage is not None:
++        details = getattr(usage, "prompt_tokens_details", None)
++        if details is not None:
++            cached = getattr(details, "cached_tokens", None)
++    if cached is not None:
++        return AnthropicUsage(
++            input_tokens=max(0, prompt_tokens - cached),
++            output_tokens=completion_tokens or 0,
++            cache_read_input_tokens=cached,
++            cache_creation_input_tokens=0,
++        )
++    return AnthropicUsage(input_tokens=prompt_tokens, output_tokens=completion_tokens or 0)
++
++
+ class AnthropicServingMessages(OpenAIServingChat):
+@@ -132,2 +151,4 @@
+         req = cls._build_base_request(anthropic_request, openai_messages)
++        if getattr(anthropic_request, "request_id", None):
++            req.request_id = anthropic_request.request_id  # motor
+         cls._handle_streaming_options(req, anthropic_request)
+@@ -507,5 +528,6 @@
+             model=generator.model,
+-            usage=AnthropicUsage(
+-                input_tokens=generator.usage.prompt_tokens,
+-                output_tokens=generator.usage.completion_tokens,
++            usage=_motor_build_anthropic_usage(
++                prompt_tokens=generator.usage.prompt_tokens,
++                completion_tokens=generator.usage.completion_tokens,
++                usage=generator.usage,
+             ),
+@@ -538,3 +560,7 @@
+
+-        for tool_call in choice.message.tool_calls:
++        for tool_call in choice.message.tool_calls or []:
++            try:
++                tool_input = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
++            except json.JSONDecodeError:
++                tool_input = {}
+             anthropic_tool_call = AnthropicContentBlock(
+@@ -543,3 +569,3 @@
+                 name=tool_call.function.name,
+-                input=json.loads(tool_call.function.arguments),
++                input=tool_input,
+             )
+@@ -548,3 +574,4 @@
+         result.content = content
+-
++        if any(block.type == "tool_use" for block in content) and result.stop_reason == "end_turn":
++            result.stop_reason = "tool_use"  # motor
+         return result
+@@ -661,7 +688,8 @@
+                                     stop_sequence=None,
+-                                    usage=AnthropicUsage(
+-                                        input_tokens=origin_chunk.usage.prompt_tokens
++                                    usage=_motor_build_anthropic_usage(
++                                        prompt_tokens=origin_chunk.usage.prompt_tokens
+                                         if origin_chunk.usage
+                                         else 0,
+-                                        output_tokens=0,
++                                        completion_tokens=0,
++                                        usage=origin_chunk.usage,
+                                     ),
+@@ -681,2 +709,4 @@
+                             )
++                            if stop_reason == "end_turn" and tool_index_to_id:
++                                stop_reason = "tool_use"  # motor
+                             chunk = AnthropicStreamEvent(
+@@ -684,9 +714,10 @@
+                                 delta=AnthropicDelta(stop_reason=stop_reason),
+-                                usage=AnthropicUsage(
+-                                    input_tokens=origin_chunk.usage.prompt_tokens
++                                usage=_motor_build_anthropic_usage(
++                                    prompt_tokens=origin_chunk.usage.prompt_tokens
+                                     if origin_chunk.usage
+                                     else 0,
+-                                    output_tokens=origin_chunk.usage.completion_tokens
++                                    completion_tokens=origin_chunk.usage.completion_tokens
+                                     if origin_chunk.usage
+                                     else 0,
++                                    usage=origin_chunk.usage,
+                                 ),

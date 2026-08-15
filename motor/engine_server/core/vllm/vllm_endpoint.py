@@ -38,6 +38,7 @@ from motor.engine_server.core.vllm.openai.serving_chat import OpenAIServingChat
 from motor.engine_server.core.vllm.openai.serving_completion import OpenAIServingCompletion
 from motor.engine_server.core.vllm.vllm_openai_compat import (
     RequestLogger,
+    create_anthropic_renderer,
     create_openai_serving_render,
     process_lora_modules,
     vllm_openai_chat_needs_render,
@@ -140,25 +141,25 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.openai_serving_models = openai_serving_models
 
+        serving_render_base_kwargs = {
+            "model_registry": openai_serving_models.registry,
+            "request_logger": request_logger,
+            "chat_template": resolved_chat_template,
+            "chat_template_content_format": args.chat_template_content_format,
+            ATTR_TRUST_REQUEST_CHAT_TEMPLATE: getattr(args, ATTR_TRUST_REQUEST_CHAT_TEMPLATE, False),
+            "enable_auto_tools": getattr(args, ATTR_ENABLE_AUTO_TOOL_CHOICE, False),
+            ATTR_EXCLUDE_TOOLS_WHEN_TOOL_CHOICE_NONE: getattr(args, ATTR_EXCLUDE_TOOLS_WHEN_TOOL_CHOICE_NONE, False),
+            "tool_parser": getattr(args, ATTR_TOOL_CALL_PARSER, None),
+            ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS: getattr(args, ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS, None),
+            "log_error_stack": getattr(args, "log_error_stack", False),
+        }
+
         openai_serving_render = None
         if vllm_openai_chat_needs_render():
             try:
                 openai_serving_render = create_openai_serving_render(
                     engine_client,
-                    {
-                        "model_registry": openai_serving_models.registry,
-                        "request_logger": request_logger,
-                        "chat_template": resolved_chat_template,
-                        "chat_template_content_format": args.chat_template_content_format,
-                        ATTR_TRUST_REQUEST_CHAT_TEMPLATE: getattr(args, ATTR_TRUST_REQUEST_CHAT_TEMPLATE, False),
-                        "enable_auto_tools": getattr(args, ATTR_ENABLE_AUTO_TOOL_CHOICE, False),
-                        ATTR_EXCLUDE_TOOLS_WHEN_TOOL_CHOICE_NONE: getattr(
-                            args, ATTR_EXCLUDE_TOOLS_WHEN_TOOL_CHOICE_NONE, False
-                        ),
-                        "tool_parser": getattr(args, ATTR_TOOL_CALL_PARSER, None),
-                        ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS: getattr(args, ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS, None),
-                        "log_error_stack": getattr(args, "log_error_stack", False),
-                    },
+                    serving_render_base_kwargs,
                 )
             except ImportError as e:
                 raise RuntimeError(
@@ -217,6 +218,43 @@ async def _vllm_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error("InferEndpoint lifespan: Failed to create serving components: %s", e)
             raise
 
+        # Anthropic serving is optional: older forks without
+        # vllm.entrypoints.anthropic keep the routes at 501 while OpenAI
+        # serving keeps working.
+        app.state.anthropic_serving_messages = None
+        if "generate" in supported_tasks:
+            try:
+                from motor.engine_server.core.vllm.anthropic.serving_messages import AnthropicServingMessages
+
+                app.state.anthropic_serving_messages = AnthropicServingMessages(
+                    engine_client=engine_client,
+                    models=openai_serving_models,
+                    response_role=args.response_role,
+                    request_logger=request_logger,
+                    chat_template=resolved_chat_template,
+                    chat_template_content_format=args.chat_template_content_format,
+                    renderer=create_anthropic_renderer(engine_client, serving_render_base_kwargs),
+                    return_tokens_as_token_ids=getattr(args, "return_tokens_as_token_ids", False),
+                    reasoning_parser=getattr(args, "reasoning_parser", ""),
+                    enable_auto_tools=getattr(args, ATTR_ENABLE_AUTO_TOOL_CHOICE, False),
+                    tool_parser=getattr(args, ATTR_TOOL_CALL_PARSER, None),
+                    enable_prompt_tokens_details=getattr(args, "enable_prompt_tokens_details", False),
+                    enable_force_include_usage=getattr(args, "enable_force_include_usage", False),
+                    default_chat_template_kwargs=getattr(args, ATTR_DEFAULT_CHAT_TEMPLATE_KWARGS, None),
+                )
+                logger.info("InferEndpoint lifespan: Anthropic serving messages created successfully")
+            except ImportError:
+                logger.warning(
+                    "InferEndpoint lifespan: Installed vLLM does not provide Anthropic serving; "
+                    "/v1/messages routes will return 501."
+                )
+            except Exception as e:
+                logger.warning(
+                    "InferEndpoint lifespan: Failed to initialize Anthropic serving, "
+                    "/v1/messages routes will return 501: %s",
+                    e,
+                )
+
         log_stats_task: asyncio.Task[None] | None = None
         if app.state.log_stats:
             ec = engine_client
@@ -248,3 +286,13 @@ class VLLMEndpoint(InferEndpoint):
     def init_request_handlers(self) -> None:
         self.chat_completion_request = ChatCompletionRequest
         self.completion_request = CompletionRequest
+        try:
+            from vllm.entrypoints.anthropic.protocol import (
+                AnthropicCountTokensRequest,
+                AnthropicMessagesRequest,
+            )
+        except ImportError:
+            logger.warning("Installed vLLM does not ship the Anthropic protocol; /v1/messages routes will return 501.")
+            return
+        self.anthropic_messages_request = AnthropicMessagesRequest
+        self.anthropic_count_tokens_request = AnthropicCountTokensRequest

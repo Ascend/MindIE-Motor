@@ -89,6 +89,12 @@ class RequestInfo(BaseModel):
     _d_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
     _e_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
+    anthropic_input_usage: dict = Field(
+        default={},
+        description="Prefill leg's Anthropic input usage (input_tokens, "
+        "cache_read_input_tokens, cache_creation_input_tokens); empty when the engine "
+        "emits no cache details",
+    )
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")
     p_instance_id: int | None = Field(
@@ -115,12 +121,35 @@ class RequestInfo(BaseModel):
         """Path used for client-contract checks (Chat vs Completion); falls back to ``api``."""
         return self.entry_api or self.api
 
+    @property
+    def is_anthropic_entry(self) -> bool:
+        """True when the request entered via the Anthropic Messages API (``v1/messages*``).
+
+        OpenAI-shaped stream/response mutations (token-id caching/stripping,
+        completion-to-chat adaptation, ``prompt_tokens_details`` merge, ``stop_reason``
+        normalization) must be gated on this being ``False``.
+        """
+        return self.effective_entry_api().startswith("v1/messages")
+
+    @property
+    def is_count_tokens_entry(self) -> bool:
+        """True when the request entered via ``v1/messages/count_tokens``.
+
+        count_tokens is a lightweight single-instance tokenization call: it must
+        bypass PD-separated scheduling, generation-parameter rewrites, dispatch
+        metadata, and the encode/rescheduler machinery.
+        """
+        return self.effective_entry_api() == "v1/messages/count_tokens"
+
     def update_state(self, new_state: ReqState):
         self.state = new_state
         self.status[new_state] = time.time()
 
     def update_prompt_tokens_details(self, prompt_tokens_details: dict):
         self.prompt_tokens_details = prompt_tokens_details
+
+    def update_anthropic_input_usage(self, usage: dict):
+        self.anthropic_input_usage = usage
 
     def set_cancel_scope(self, cancel_scope: anyio.CancelScope, role: PDRole):
         if role == PDRole.ROLE_P:

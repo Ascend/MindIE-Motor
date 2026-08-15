@@ -121,13 +121,17 @@ class VLLMDispatchAdapter(DispatchAdapter):
         )
 
     async def maybe_prepare_response(
-        self, body: dict[str, Any], dispatch: MotorDispatch | None
+        self,
+        body: dict[str, Any],
+        dispatch: MotorDispatch | None,
+        *,
+        entry_api: str | None = None,
     ) -> dict[str, Any] | None:
         if dispatch is None or dispatch.role != "prefill":
             return None
         if self._uses_handoff(dispatch):
             return None
-        await self._registry.cache_prefill_body(dispatch, body)
+        await self._registry.cache_prefill_body(dispatch, body, entry_api=entry_api)
         return PrefillResult(
             root_request_id=dispatch.root_request_id,
             engine_request_id=dispatch.engine_request_id,
@@ -204,6 +208,7 @@ class VLLMDispatchAdapter(DispatchAdapter):
         return DispatchMetaserverRequest(
             engine_body=cached,
             dispatch=cached_entry.dispatch,
+            entry_api=cached_entry.entry_api,
         )
 
     async def normalize_response(self, response: Response, context: DispatchResponseContext) -> Response:
