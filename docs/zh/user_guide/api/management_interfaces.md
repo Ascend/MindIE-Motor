@@ -99,6 +99,40 @@ curl -X GET "http://{IP}:{Port}/readiness"
 
 ---
 
+## 健康状态查询接口
+
+**接口功能**
+
+查询服务的健康状态。
+
+**接口格式**
+
+请求类型：**GET**
+> URL：`http(s)://{IP}:{Port}/health`
+
+IP与端口参见[指标接口的IP/端口与配置](./README.md#指标接口的ip端口与配置)
+
+**请求参数**
+
+无
+
+**使用样例**
+
+```bash
+curl -X GET "http://{IP}:{Port}/health"
+```
+
+**响应示例**
+
+```JSON
+{ "status": "ok", "timestamp": "2026-07-02T10:00:00+00:00" }
+```
+
+>[!NOTE]说明
+>`/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`，K8s nodePort `31017`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上提供服务。
+
+---
+
 ## 实例刷新接口
 
 **接口功能**

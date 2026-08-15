@@ -51,7 +51,7 @@ nav:
           - 接口说明: user_guide/api/README.md
           - 服务接口: user_guide/api/service_interfaces.md
           - 管理接口: user_guide/api/management_interfaces.md
-          - 健康检查与 Metrics观测接口: user_guide/api/monitoring_interfaces.md
+          - 指标接口: user_guide/api/metrics_interfaces.md
           - 服务运行状态观测接口: user_guide/api/observability_interface.md
           - 容器快照内部接口: user_guide/api/engine_server_interfaces.md
   - 设计文档:

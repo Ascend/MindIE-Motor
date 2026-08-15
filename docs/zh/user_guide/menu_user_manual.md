@@ -35,7 +35,7 @@
   - [接口说明](./api/README.md)
   - [用户侧接口](./api/service_interfaces.md)
   - [管理接口](./api/management_interfaces.md)
-  - [监控接口](./api/monitoring_interfaces.md)
+  - [指标接口](./api/metrics_interfaces.md)
 - [问题定位]()
 - [集群管理组件]()
   - [概述]()
