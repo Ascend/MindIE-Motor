@@ -620,7 +620,7 @@ flowchart LR
 告警可通过 `POST /observability/add_alarm` 外部上报，通过 `GET /observability/alarms?source_id=xxx` 查询。
 
 > [!WARNING] 已弃用
-> `GET /observability/metrics` 已弃用，将在后续版本移除。请改为直接访问 Coordinator 的 `GET /metrics?type={type}&role={role}` 接口。Coordinator 的地址和端口见 [Coordinator 指标查询接口](../../user_guide/api/monitoring_interfaces.md#指标查询接口)。
+> `GET /observability/metrics` 已弃用，将在后续版本移除。请改为直接访问 Coordinator 的 `GET /metrics?type={type}&role={role}` 接口。Coordinator 的地址和端口见 [指标接口](../../user_guide/api/metrics_interfaces.md#接口格式)。
 
 ---
 

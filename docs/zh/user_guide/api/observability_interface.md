@@ -2,14 +2,13 @@
 
 ## 接口说明
 
-Observability 接口用于查询 Controller 汇聚的运维观测数据，包括模型服务清单、监控指标和告警信息。接口默认关闭，需要配置 `observability_config.observability_enable=true` 后生效。
+Observability 接口用于查询 Controller 汇聚的运维观测数据，包括模型服务清单和告警信息。接口默认关闭，需要配置 `observability_config.observability_enable=true` 后生效。
 
 Observability 查询接口使用独立端口：
 
 - 服务地址：`api_config.controller_api_host`，默认使用 Pod IP，未获取到时为 `127.0.0.1`。
 - Observability 端口：`api_config.observability_api_port`，默认 `1027`。
 - 安全协议：`observability_tls_config.enable_tls=true` 时使用 `https`，否则使用 `http`。
-- 指标缓存时间：`observability_config.metrics_ttl`，默认 `5` 秒。
 
 >[!NOTE]说明
 >
@@ -213,49 +212,12 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 >[!NOTE]说明
 >响应示例仅展示部分 Pod、NPU 与 DPGroup 内容。实际返回数量以运行时实例数、Pod 数、Endpoint 数和设备数为准。
 
-## 监控指标查询接口
+---
 
-**接口功能**
+## 监控指标查询接口（已弃用）
 
-查询 Coordinator 汇聚后的完整监控指标，返回 Prometheus 文本。指标采集结果会按 `observability_config.metrics_ttl` 缓存；缓存未过期时直接返回上次结果，缓存过期后重新向 Coordinator 获取。若重新获取失败且已有缓存，则返回旧缓存；若没有缓存，则返回空字符串。
-
-**接口格式**
-
-请求类型：**GET**
-> URL：`http(s)://{IP}:{Port}/observability/metrics`
-
-IP与端口参见[观测接口的IP/端口与配置](./README.md#观测接口的ip端口与配置)
-
-**请求参数**
-
-无
-
-**使用样例**
-
-```bash
-curl -X GET "http://{IP}:{Port}/observability/metrics"
-```
-
-**响应示例**
-
-```JSON
-{
-  "code": 200,
-  "message": "Success",
-  "data": "# HELP vllm:request_success_total Count of successfully processed requests.\n# TYPE vllm:request_success_total counter\nvllm:request_success_total{engine=\"0\",finished_reason=\"stop\",model_name=\"/job/model/Qwen2.5-0.5B-Instruct\"} 1.0\n"
-}
-```
-
-**输出说明**
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| code | integer | 响应码。 |
-| message | string | 响应消息。 |
-| data | string | Prometheus 文本格式指标。若当前无可用指标，返回空字符串。 |
-
->[!NOTE]说明
->该接口返回的是标准响应结构，Prometheus 文本位于 `data` 字段中。
+> [!WARNING] 已弃用
+> `GET /observability/metrics` 接口已弃用，该接口是转发到 Coordinator `/metrics` 的代理，仅作兼容保留（支持 `type` / `role` 参数，直接返回 Prometheus 文本）。**获取指标请直接使用 Coordinator Observability 端口的 [`GET /metrics`](./metrics_interfaces.md#接口格式) 接口**，支持更丰富的聚合视图（`full` / `instance` / `role` / `dp` / `node`）与返回格式（Prometheus / OpenTelemetry）。
 
 ## 告警查询接口
 
@@ -357,8 +319,7 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
 {
   "motor_controller_config": {
     "observability_config": {
-      "observability_enable": true,
-      "metrics_ttl": 5
+      "observability_enable": true
     },
     "api_config": {
       "observability_api_port": 1027
@@ -387,7 +348,7 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
 
 | 参数 | 说明 |
 | --- | --- |
-| `motor_controller_config.observability_config.observability_enable` | 开启 Controller Observability 查询接口，CCAE Reporter 依赖该接口获取清单、指标和告警。 |
+| `motor_controller_config.observability_config.observability_enable` | 开启 Controller Observability 查询接口，CCAE Reporter 依赖该接口获取清单和告警；指标由 Reporter 直接从 Coordinator 的 `/metrics` 获取。 |
 | `motor_controller_config.api_config.observability_api_port` | Observability 查询接口端口，默认 `1027`。 |
 | `motor_deploy_config.tls_config.north_tls_config` | Reporter 访问 CCAE 北向接口和 Kafka 时使用的 TLS 配置。 |
 | `north_config.name` | 北向 Reporter 名称，配置为 `ccae_reporter`。 |
@@ -428,7 +389,7 @@ Reporter 的主要交互流程如下：
 | 心跳 | `/readiness` | `/rest/ccaeommgmt/v1/managers/mindie/register` |
 | 告警 | `/observability/alarms?source_id={NORTH_PLATFORM}` | `/rest/ccaeommgmt/v1/managers/mindie/events` |
 | 实例清单 | `/observability/inventory` | `/rest/ccaeommgmt/v1/managers/mindie/inventory` |
-| 指标 | `/observability/metrics` | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
+| 指标 | Coordinator `/metrics`（参见[指标接口](./metrics_interfaces.md#接口格式)） | 随实例清单以 Base64 编码写入 `metrics.metric` 字段 |
 | 精度控制 | `/controller/check_instance`、`/controller/terminate_instance` | `/rest/ccaeommgmt/v1/managers/mindie/precisioncontrol` |
 | 日志 | 本地日志采集 | CCAE 返回的 Kafka topic |
 
