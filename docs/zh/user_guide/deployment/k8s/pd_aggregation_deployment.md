@@ -93,121 +93,125 @@ examples/
 - PD 混部示例配置位于 `examples/infer_engines/vllm/pd_hybrid/`。
 - 部署工具使用方法详见 `examples/deployer/README.md`。
 
-## 配置 `user_config.json`
+## 准备模型相关配置文件
+
+可参考 [**MindIE Motor 配置自动生成指导**](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，**自动生成**配置文件 `user_config.json` 与 `env.json`，如需手动配置，可参考以下内容。
+
+### 配置 `user_config.json`
 
 PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/user_config.json`。该文件根节点包含 `version`、`motor_deploy_config`、`motor_controller_config`、`motor_coordinator_config` 和 `motor_engine_union_config`。
 
-### motor_deploy_config（部署与资源）
+- **motor_deploy_config（部署与资源）**
 
-`motor_deploy_config` 为部署与资源相关配置。
+  `motor_deploy_config` 为部署与资源相关配置。
 
-**配置示例**：
+  **配置示例**：
 
-```json
-"motor_deploy_config": {
-  "deploy_mode": "infer_service_set",
-  "hybrid_instances_num": 1,
-  "single_hybrid_instance_pod_num": 1,
-  "hybrid_pod_npu_num": 2,
-  "image_name": "",
-  "job_id": "mindie-motor",
-  "hardware_type": "800I_A3",
-  "weight_mount_path": "/mnt/weight/"
-}
-```
-
-**配置项说明**：
-
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| deploy_mode | string | 部署方式。PD 混部推荐使用 `infer_service_set`，不配置时默认也是该方式 |
-| hybrid_instances_num | int | union 实例个数，≥1 且 ≤16 |
-| single_hybrid_instance_pod_num | int | 单个 union 实例对应的 Pod 数，≥1 |
-| hybrid_pod_npu_num | int | 单个 union Pod 占用的 NPU 卡数 |
-| image_name | string | 推理镜像名，需包含 MindIE Motor 与推理引擎运行环境 |
-| job_id | string | 部署任务名，同时作为 K8s 命名空间使用，如 `mindie-motor` |
-| hardware_type | string | 硬件类型：`800I_A2` 或 `800I_A3` |
-| weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 需与此挂载路径一致 |
-
-### motor_coordinator_config
-
-PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根据运行中的 `union` 实例自动选择 `PDHybridRouter`。
-
-**配置示例（默认负载均衡）**：
-
-```json
-"motor_coordinator_config": {}
-```
-
-**配置示例（KV Cache 亲和调度，可选）**：
-
-```json
-"motor_coordinator_config": {
-  "scheduler_config": {
-    "scheduler_type": "kv_cache_affinity",
-    "kv_affinity_mode": "unified",
-    "kv_affinity_load_weight": 1.0
+  ```json
+  "motor_deploy_config": {
+    "deploy_mode": "infer_service_set",
+    "hybrid_instances_num": 1,
+    "single_hybrid_instance_pod_num": 1,
+    "hybrid_pod_npu_num": 2,
+    "image_name": "",
+    "job_id": "mindie-motor",
+    "hardware_type": "800I_A3",
+    "weight_mount_path": "/mnt/weight/"
   }
-}
-```
+  ```
 
-启用 KV Cache 亲和时，在 `examples/infer_engines/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../../features/KV_cache_affinity.md)。
+  **配置项说明**：
 
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| scheduler_config.scheduler_type | string | 调度类型。默认 `load_balance`；启用 KV 亲和时配置为 `kv_cache_affinity` |
-| scheduler_config.kv_affinity_mode | string | KV 亲和子策略：`unified`（默认）或 `load_gated` |
-| scheduler_config.kv_affinity_load_weight | float | unified 模式下负载权重，默认 `1.0` |
-| scheduler_config.kv_affinity_overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数，默认 `1.0` |
-| scheduler_config.kv_affinity_prefill_load_scale | float | unified 模式下 prefill 成本权重，默认 `1.0` |
-| scheduler_config.kv_affinity_load_gate_topn | int | load_gated 模式下保留的最小负载 endpoint 数量；`0` 时回退为 `2` |
+  | 配置项 | 类型 | 说明 |
+  |--------|------|------|
+  | deploy_mode | string | 部署方式。PD 混部推荐使用 `infer_service_set`，不配置时默认也是该方式 |
+  | hybrid_instances_num | int | union 实例个数，≥1 且 ≤16 |
+  | single_hybrid_instance_pod_num | int | 单个 union 实例对应的 Pod 数，≥1 |
+  | hybrid_pod_npu_num | int | 单个 union Pod 占用的 NPU 卡数 |
+  | image_name | string | 推理镜像名，需包含 MindIE Motor 与推理引擎运行环境 |
+  | job_id | string | 部署任务名，同时作为 K8s 命名空间使用，如 `mindie-motor` |
+  | hardware_type | string | 硬件类型：`800I_A2` 或 `800I_A3` |
+  | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 需与此挂载路径一致 |
 
-### motor_engine_union_config（混部引擎）
+- **motor_coordinator_config**
 
-`motor_engine_union_config` 用于配置混部 Engine Server。其结构与 PD 分离中的 `motor_engine_prefill_config` / `motor_engine_decode_config` 类似，但无需分别配置 P/D 两套引擎，也无需配置 `kv_transfer_config` 的 producer/consumer 角色。
+  PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根据运行中的 `union` 实例自动选择 `PDHybridRouter`。
 
-**配置示例**：
+  **配置示例（默认负载均衡）**：
 
-```json
-"motor_engine_union_config": {
-  "engine_type": "vllm",
-  "engine_config": {
-    "served_model_name": "qwen3-8B",
-    "model": "/mnt/weight/qwen3_8B",
-    "gpu_memory_utilization": 0.9,
-    "data_parallel_size": 1,
-    "tensor_parallel_size": 1,
-    "pipeline_parallel_size": 1,
-    "enable_expert_parallel": false,
-    "data_parallel_rpc_port": 9000,
-    "enforce-eager": true,
-    "max_model_len": 2048
+  ```json
+  "motor_coordinator_config": {}
+  ```
+
+  **配置示例（KV Cache 亲和调度，可选）**：
+
+  ```json
+  "motor_coordinator_config": {
+    "scheduler_config": {
+      "scheduler_type": "kv_cache_affinity",
+      "kv_affinity_mode": "unified",
+      "kv_affinity_load_weight": 1.0
+    }
   }
-}
-```
+  ```
 
-**配置项说明**：
+  启用 KV Cache 亲和时，在 `examples/infer_engines/vllm/pd_hybrid/user_config.json` 中按上述示例修改 `motor_coordinator_config`、`motor_engine_union_config` 并增加 `kv_conductor_config` 即可，无需单独配置文件。KV Conductor 安装与部署说明见 [KV Cache 亲和部署](../../features/KV_cache_affinity.md)。
 
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| engine_type | string | 引擎类型，如 `vllm` |
-| engine_config | object | 引擎相关配置，含模型信息、并行策略和引擎原生参数 |
-| engine_config.served_model_name | string | 对外服务的模型名称 |
-| engine_config.model | string | 容器内模型权重路径，需与 `weight_mount_path` 挂载后一致 |
-| engine_config.gpu_memory_utilization | float | NPU 内存使用占比上限，0～1 |
-| engine_config.data_parallel_size | int | 数据并行大小 |
-| engine_config.tensor_parallel_size | int | 张量并行大小 |
-| engine_config.pipeline_parallel_size | int | 流水并行大小 |
-| engine_config.enable_expert_parallel | bool | 是否启用 EP |
-| engine_config.data_parallel_rpc_port | int | DP 侧 RPC 端口 |
-| engine_config.max_model_len | int | 最大模型上下文长度 |
-| engine_config.kv-events-config | object | 启用 KV Cache 亲和时配置 KV 事件发布（见 [KV Cache 亲和部署](../../features/KV_cache_affinity.md)） |
-| engine_config.enable-prefix-caching | bool | 启用 KV Cache 亲和时建议开启前缀缓存 |
-| 其它键 | - | 引擎原生参数，按所选引擎文档直接填写 |
+  | 配置项 | 类型 | 说明 |
+  |--------|------|------|
+  | scheduler_config.scheduler_type | string | 调度类型。默认 `load_balance`；启用 KV 亲和时配置为 `kv_cache_affinity` |
+  | scheduler_config.kv_affinity_mode | string | KV 亲和子策略：`unified`（默认）或 `load_gated` |
+  | scheduler_config.kv_affinity_load_weight | float | unified 模式下负载权重，默认 `1.0` |
+  | scheduler_config.kv_affinity_overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数，默认 `1.0` |
+  | scheduler_config.kv_affinity_prefill_load_scale | float | unified 模式下 prefill 成本权重，默认 `1.0` |
+  | scheduler_config.kv_affinity_load_gate_topn | int | load_gated 模式下保留的最小负载 endpoint 数量；`0` 时回退为 `2` |
 
-启用 KV Cache 亲和时，Coordinator 会从 `motor_engine_union_config.engine_config.kv-events-config` **自动合并** `prefill_kv_event_config`（无需再配置 `motor_engine_prefill_config`）。同时需在 `user_config.json` 根节点配置 `kv_conductor_config`（至少包含 `http_server_port`）。
+- **motor_engine_union_config（混部引擎）**
 
-## 配置 `env.json`
+  `motor_engine_union_config` 用于配置混部 Engine Server。其结构与 PD 分离中的 `motor_engine_prefill_config` / `motor_engine_decode_config` 类似，但无需分别配置 P/D 两套引擎，也无需配置 `kv_transfer_config` 的 producer/consumer 角色。
+
+  **配置示例**：
+
+  ```json
+  "motor_engine_union_config": {
+    "engine_type": "vllm",
+    "engine_config": {
+      "served_model_name": "qwen3-8B",
+      "model": "/mnt/weight/qwen3_8B",
+      "gpu_memory_utilization": 0.9,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "enable_expert_parallel": false,
+      "data_parallel_rpc_port": 9000,
+      "enforce-eager": true,
+      "max_model_len": 2048
+    }
+  }
+  ```
+
+  **配置项说明**：
+
+  | 配置项 | 类型 | 说明 |
+  |--------|------|------|
+  | engine_type | string | 引擎类型，如 `vllm` |
+  | engine_config | object | 引擎相关配置，含模型信息、并行策略和引擎原生参数 |
+  | engine_config.served_model_name | string | 对外服务的模型名称 |
+  | engine_config.model | string | 容器内模型权重路径，需与 `weight_mount_path` 挂载后一致 |
+  | engine_config.gpu_memory_utilization | float | NPU 内存使用占比上限，0～1 |
+  | engine_config.data_parallel_size | int | 数据并行大小 |
+  | engine_config.tensor_parallel_size | int | 张量并行大小 |
+  | engine_config.pipeline_parallel_size | int | 流水并行大小 |
+  | engine_config.enable_expert_parallel | bool | 是否启用 EP |
+  | engine_config.data_parallel_rpc_port | int | DP 侧 RPC 端口 |
+  | engine_config.max_model_len | int | 最大模型上下文长度 |
+  | engine_config.kv-events-config | object | 启用 KV Cache 亲和时配置 KV 事件发布（见 [KV Cache 亲和部署](../../features/KV_cache_affinity.md)） |
+  | engine_config.enable-prefix-caching | bool | 启用 KV Cache 亲和时建议开启前缀缓存 |
+  | 其它键 | - | 引擎原生参数，按所选引擎文档直接填写 |
+
+  启用 KV Cache 亲和时，Coordinator 会从 `motor_engine_union_config.engine_config.kv-events-config` **自动合并** `prefill_kv_event_config`（无需再配置 `motor_engine_prefill_config`）。同时需在 `user_config.json` 根节点配置 `kv_conductor_config`（至少包含 `http_server_port`）。
+
+### 配置 `env.json`
 
 PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/env.json`。混部 Engine Server 的环境变量配置在 `motor_engine_union_env` 中。
 

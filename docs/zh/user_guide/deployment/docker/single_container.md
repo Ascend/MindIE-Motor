@@ -45,116 +45,132 @@
 
 `examples` 获取方式见[快速入门](../../quick_start.md)的“服务部署”章节。从镜像拷贝至宿主机后，将后续 `prepare.sh` 中的 `EXAMPLES_PATH` 设置为该目录的绝对路径。
 
-### 准备user_config.json和env.json配置文件
+### 准备模型相关配置文件
 
-根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../../configuration/config_reference.md)。
+1. 准备 `user_config.json` 与 `env.json`文件
 
-两种模式均须配置：
+   配置字段的完整说明请参考 [user_config 全量参数说明](../../configuration/config_reference.md)。
 
-- `motor_deploy_config.deploy_mode`：必须设置为 `single_container`。
-- Coordinator 推理、管理和可观测端口分别推荐使用 `1025`、`1026`、`1027`。
-- Controller 管理和可观测端口推荐使用 `2026`、`2027`，避免与 Coordinator 冲突。
-- NodeManager 端口须配置在对应 engine section 的 `motor_nodemanger_config.api_config` 下。
+   - PD分离场景
 
-#### PD 分离配置
+     MindIE Motor已提供常用模型(deepseek_v4_flash、deepseek_v4_pro、glm 5.2等)的[**PD分离配置示例**](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
 
-```json
-{
-  "motor_deploy_config": {
-    ...
-    "deploy_mode": "single_container",
-    "p_instances_num": 1,
-    "d_instances_num": 1
-  },
-  "motor_controller_config": {
-    ...
-    "api_config": {
-      "controller_api_port": 2026,
-      "observability_api_port": 2027
-    }
-  },
-  "motor_coordinator_config": {
-    ...
-    "api_config": {
-      "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026,
-      "coordinator_obs_port": 1027
-    }
-  },
-  "motor_engine_prefill_config": {
-    ...
-    "motor_nodemanger_config": {
-      "api_config": {
-        "node_manager_port": 3026
+     对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+
+   - PD混部场景
+
+     可参考 [**MindIE Motor 配置自动生成指导**](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，**自动生成**PD混部场景下的配置文件 `user_config.json` 与 `env.json`。
+
+2. 调整端口配置
+
+   两种模式均须配置：
+
+   - `motor_deploy_config.deploy_mode`：必须设置为 `single_container`。
+   - Coordinator 推理、管理和可观测端口分别推荐使用 `1025`、`1026`、`1027`。
+   - Controller 管理和可观测端口推荐使用 `2026`、`2027`，避免与 Coordinator 冲突。
+   - NodeManager 端口须配置在对应 engine section 的 `motor_nodemanger_config.api_config` 下。
+
+    端口配置示例如下：
+
+    - PD分离场景端口配置示例
+
+      ```json
+      {
+        "motor_deploy_config": {
+          ...
+          "deploy_mode": "single_container",
+          "p_instances_num": 1,                 // 请勿修改
+          "d_instances_num": 1                  // 请勿修改
+        },
+        "motor_controller_config": {
+          ...
+          "api_config": {
+            "controller_api_port": 2026,
+            "observability_api_port": 2027
+          }
+        },
+        "motor_coordinator_config": {
+          ...
+          "api_config": {
+            "coordinator_api_infer_port": 1025,
+            "coordinator_api_mgmt_port": 1026,
+            "coordinator_obs_port": 1027
+          }
+        },
+        "motor_engine_prefill_config": {
+          ...
+          "motor_nodemanger_config": {
+            "api_config": {
+              "node_manager_port": 3026
+            }
+          }
+        },
+        "motor_engine_decode_config": {
+          ...
+          "motor_nodemanger_config": {
+            "api_config": {
+              "node_manager_port": 4026
+            }
+          }
+        },
+        ...
       }
-    }
-  },
-  "motor_engine_decode_config": {
-    ...
-    "motor_nodemanger_config": {
-      "api_config": {
-        "node_manager_port": 4026
+      ```
+
+      `env.json` 分别使用 `motor_engine_prefill_env` 和 `motor_engine_decode_env`。同时须在 P/D engine 配置中正确设置 `kv_transfer_config`；启用 KV Cache Store 时，还需准备对应环境变量。
+
+    - PD 混部场景端口配置
+
+      ```json
+      {
+        "motor_deploy_config": {
+          ...
+          "deploy_mode": "single_container",
+          "hybrid_instances_num": 1,            // 请勿修改
+          "single_hybrid_instance_pod_num": 1,  // 请勿修改
+          "hybrid_pod_npu_num": 2               // 请勿修改
+        },
+        "motor_controller_config": {
+          ...
+          "api_config": {
+            "controller_api_port": 2026,
+            "observability_api_port": 2027
+          }
+        },
+        "motor_coordinator_config": {
+          ...
+          "api_config": {
+            "coordinator_api_infer_port": 1025,
+            "coordinator_api_mgmt_port": 1026,
+            "coordinator_obs_port": 1027
+          }
+        },
+        "motor_engine_union_config": {
+          "engine_type": "vllm",
+          ...
+          "motor_nodemanger_config": {
+            "api_config": {
+              "node_manager_port": 3026
+            }
+          }
+        },
+        ...
       }
-    }
-  },
-  ...
-}
-```
+      ```
 
-`env.json` 分别使用 `motor_engine_prefill_env` 和 `motor_engine_decode_env`。同时须在 P/D engine 配置中正确设置 `kv_transfer_config`；启用 KV Cache Store 时，还需准备对应环境变量。
+      `env.json` 使用 `motor_engine_union_env` 配置 union 实例环境变量。PD 混部不需要 `kv_transfer_config`。
 
-#### PD 混部配置
+3. 端口配置规划说明
 
-```json
-{
-  "motor_deploy_config": {
-    ...
-    "deploy_mode": "single_container",
-    "hybrid_instances_num": 1,
-    "single_hybrid_instance_pod_num": 1,
-    "hybrid_pod_npu_num": 2
-  },
-  "motor_controller_config": {
-    ...
-    "api_config": {
-      "controller_api_port": 2026,
-      "observability_api_port": 2027
-    }
-  },
-  "motor_coordinator_config": {
-    ...
-    "api_config": {
-      "coordinator_api_infer_port": 1025,
-      "coordinator_api_mgmt_port": 1026,
-      "coordinator_obs_port": 1027
-    }
-  },
-  "motor_engine_union_config": {
-    "engine_type": "vllm",
-    ...
-    "motor_nodemanger_config": {
-      "api_config": {
-        "node_manager_port": 3026
-      }
-    }
-  },
-  ...
-}
-```
-
-`env.json` 使用 `motor_engine_union_env` 配置 union 实例环境变量。PD 混部不需要 `kv_transfer_config`。
-
-### 端口规划
-
-| 组件 | 推荐端口 | 说明 |
-| :--- | :--- | :--- |
-| Coordinator 推理 | 1025 | 通过 `-p 31015:1025` 暴露到宿主机 |
-| Coordinator 管理 | 1026 | 容器内部管理接口 |
-| Coordinator 可观测 | 1027 | 可按需通过 `-p 31017:1027` 暴露 |
-| Controller 管理 | 2026 | 避开 Coordinator 管理端口 |
-| Controller 可观测 | 2027 | 避开 Coordinator 可观测端口 |
-| union / Prefill NodeManager | 3026 起 | 按实例规划 |
-| Decode NodeManager | 4026 起 | 与 Prefill 区分 |
+    | 组件 | 推荐端口 | 说明 |
+    | :--- | :--- | :--- |
+    | Coordinator 推理 | 1025 | 通过 `-p 31015:1025` 暴露到宿主机 |
+    | Coordinator 管理 | 1026 | 容器内部管理接口 |
+    | Coordinator 可观测 | 1027 | 可按需通过 `-p 31017:1027` 暴露 |
+    | Controller 管理 | 2026 | 避开 Coordinator 管理端口 |
+    | Controller 可观测 | 2027 | 避开 Coordinator 可观测端口 |
+    | union / Prefill NodeManager | 3026 起 | 按实例规划 |
+    | Decode NodeManager | 4026 起 | 与 Prefill 区分 |
 
 若修改 `coordinator_api_infer_port`，`docker run` 端口映射的容器侧端口须同步修改。
 

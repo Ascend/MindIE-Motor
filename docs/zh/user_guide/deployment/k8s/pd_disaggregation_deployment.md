@@ -53,9 +53,11 @@
 
    更多 `examples` 目录内容，详见章末附录。
 
-## 生成配置文件
+## 准备模型相关配置文件
 
-参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+MindIE Motor已提供常用模型(deepseek_v4_flash、deepseek_v4_pro、glm 5.2等)的[**PD分离配置示例**](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
+
+对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 ## 服务部署与验证
 
