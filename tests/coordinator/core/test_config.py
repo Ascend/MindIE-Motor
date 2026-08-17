@@ -225,6 +225,118 @@ def test_from_json_maps_hybrid_instances(_temp_json_file):
     assert config.deploy_config.d_instances_num == 3
 
 
+def test_from_json_builds_aigw_from_union_config(_temp_json_file):
+    """PD hybrid: auto-build aigw metadata from motor_engine_union_config."""
+    user_config = {
+        "motor_coordinator_config": {},
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "qwen3-8B",
+                "max_model_len": 4096,
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.aigw_model is not None
+    assert config.aigw_model["id"] == "qwen3-8B"
+    assert config.aigw_model["object"] == "model"
+    assert config.aigw_model["owned_by"] == "motor"
+    assert config.aigw_model["p_max_seqlen"] == 4096
+    assert config.aigw_model["d_max_seqlen"] == 4096
+    assert config.aigw_model["slo_ttft"] == 1000
+    assert config.aigw_model["slo_tpot"] == 50
+
+
+def test_from_json_builds_aigw_from_pd_over_union(_temp_json_file):
+    """When both PD and union exist, prefer prefill/decode for aigw (same as historical PD path)."""
+    user_config = {
+        "motor_coordinator_config": {},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "pd-model",
+                "max_model_len": 8192,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "pd-model",
+                "max_model_len": 4096,
+            },
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "union-model",
+                "max_model_len": 2048,
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.aigw_model["id"] == "pd-model"
+    assert config.aigw_model["p_max_seqlen"] == 8192
+    assert config.aigw_model["d_max_seqlen"] == 4096
+
+
+def test_from_json_explicit_aigw_merges_with_union_defaults(_temp_json_file):
+    """Explicit aigw fields are kept; missing fields still filled from union path."""
+    user_config = {
+        "motor_coordinator_config": {
+            "aigw": {
+                "id": "custom-id",
+                "slo_ttft": 2000,
+            }
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "qwen3-8B",
+                "max_model_len": 2048,
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.aigw_model["id"] == "custom-id"
+    assert config.aigw_model["p_max_seqlen"] == 2048
+    assert config.aigw_model["d_max_seqlen"] == 2048
+    assert config.aigw_model["slo_ttft"] == 2000
+    assert config.aigw_model["slo_tpot"] == 50
+
+
+def test_from_json_union_missing_engine_config_logs_available_keys(_temp_json_file, caplog):
+    """Union without engine_config should warn with available section keys."""
+    user_config = {
+        "motor_coordinator_config": {},
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "model_config": {"model_name": "qwen3-8B"},
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    with caplog.at_level("WARNING"):
+        config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.aigw_model is None
+    assert any("Failed to build aigw model metadata" in record.message for record in caplog.records)
+    assert any("engine_config" in record.message and "Available keys" in record.message for record in caplog.records)
+
+
 def test_from_json_maps_pd_fallback_switch_from_scheduler_config(_temp_json_file):
     user_config = {
         "motor_deploy_config": {

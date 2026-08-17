@@ -26,6 +26,7 @@ from motor.config.standby import StandbyConfig
 from motor.config.tls_config import TLSConfig
 from motor.config.config_utils import (
     ConfigKey,
+    MOTOR_ENGINE_UNION_CONFIG,
     apply_config_path_metadata,
     apply_standby_persistence_rule,
     finalize_json_config_load,
@@ -61,6 +62,65 @@ SLO_TTFT = "slo_ttft"
 SLO_TPOT = "slo_tpot"
 
 logger = get_logger(__name__)
+
+
+def _require_engine_config(engine_section: dict[str, Any], *, source: str) -> dict[str, Any]:
+    if ENGINE_CONFIG not in engine_section:
+        raise KeyError(
+            f"'{ENGINE_CONFIG}' not found in {source} config. Available keys: {sorted(engine_section.keys())}"
+        )
+    return normalize_keys(engine_section[ENGINE_CONFIG])
+
+
+def _require_max_model_len(engine_cfg: dict[str, Any], *, source: str) -> Any:
+    if MAX_MODEL_LEN not in engine_cfg:
+        raise KeyError(
+            f"'{MAX_MODEL_LEN}' not found in {source} engine_config. Available keys: {sorted(engine_cfg.keys())}"
+        )
+    return engine_cfg[MAX_MODEL_LEN]
+
+
+def _apply_aigw_common_fields(aigw: dict[str, Any], *, model_id: str) -> None:
+    aigw.setdefault(AIGW_ID, model_id)
+    aigw.setdefault(AIGW_OBJECT, AIGW_OBJECT_MODEL)
+    aigw.setdefault(AIGW_OWNED_BY, AIGW_OWNED_BY_MOTOR)
+    aigw.setdefault(SLO_TTFT, 1000)
+    aigw.setdefault(SLO_TPOT, 50)
+
+
+def _build_aigw_model_metadata(cfg: dict[str, Any], user_config_data: dict[str, Any]) -> None:
+    """Fill ``cfg['aigw']`` from engine sections when possible.
+
+    Preference: complete PD (prefill+decode) over PD-hybrid union. Only missing
+    ``aigw`` keys are filled; explicit user values in ``motor_coordinator_config.aigw``
+    are preserved.
+    """
+    prefill = user_config_data.get(ConfigKey.MOTOR_ENGINE_PREFILL.value)
+    decode = user_config_data.get(ConfigKey.MOTOR_ENGINE_DECODE.value)
+    union = user_config_data.get(MOTOR_ENGINE_UNION_CONFIG)
+
+    if prefill and decode:
+        prefill_engine = _require_engine_config(prefill, source="prefill")
+        decode_engine = _require_engine_config(decode, source="decode")
+        if AIGW not in cfg:
+            cfg[AIGW] = {}
+        prefill_resolver = ConfigResolver(prefill)
+        _apply_aigw_common_fields(cfg[AIGW], model_id=prefill_resolver.get_model_name(""))
+        cfg[AIGW].setdefault(AIGW_P_MAX_SEQLEN, _require_max_model_len(prefill_engine, source="prefill"))
+        cfg[AIGW].setdefault(AIGW_D_MAX_SEQLEN, _require_max_model_len(decode_engine, source="decode"))
+        return
+
+    if isinstance(union, dict) and union:
+        union_engine = _require_engine_config(union, source="union")
+        if AIGW not in cfg:
+            cfg[AIGW] = {}
+        union_resolver = ConfigResolver(union)
+        _apply_aigw_common_fields(cfg[AIGW], model_id=union_resolver.get_model_name(""))
+        max_model_len = _require_max_model_len(union_engine, source="union")
+        # Hybrid has one engine; expose the same limit on both P/D fields for API parity.
+        cfg[AIGW].setdefault(AIGW_P_MAX_SEQLEN, max_model_len)
+        cfg[AIGW].setdefault(AIGW_D_MAX_SEQLEN, max_model_len)
+
 
 # Role shm and heartbeat (Coordinator Daemon liveness).
 # Not configurable; use these constants so Daemon and Mgmt stay in sync.
@@ -644,33 +704,7 @@ class CoordinatorConfig:
             # whether the user wrote an "aigw" key in motor_coordinator_config.
             if user_config_data:
                 try:
-                    prefill = user_config_data.get(ConfigKey.MOTOR_ENGINE_PREFILL.value)
-                    decode = user_config_data.get(ConfigKey.MOTOR_ENGINE_DECODE.value)
-                    if prefill and decode:
-                        if AIGW not in cfg:
-                            cfg[AIGW] = {}
-                        prefill_resolver = ConfigResolver(prefill)
-                        cfg[AIGW][AIGW_ID] = prefill_resolver.get_model_name("")
-                        cfg[AIGW][AIGW_OBJECT] = AIGW_OBJECT_MODEL
-                        cfg[AIGW][AIGW_OWNED_BY] = AIGW_OWNED_BY_MOTOR
-                        prefill_engine = normalize_keys(prefill[ENGINE_CONFIG])
-                        decode_engine = normalize_keys(decode[ENGINE_CONFIG])
-
-                        if MAX_MODEL_LEN not in prefill_engine:
-                            raise KeyError(
-                                f"'{MAX_MODEL_LEN}' not found in prefill engine_config. "
-                                f"Available keys: {sorted(prefill_engine.keys())}"
-                            )
-                        if MAX_MODEL_LEN not in decode_engine:
-                            raise KeyError(
-                                f"'{MAX_MODEL_LEN}' not found in decode engine_config. "
-                                f"Available keys: {sorted(decode_engine.keys())}"
-                            )
-
-                        cfg[AIGW][AIGW_P_MAX_SEQLEN] = prefill_engine[MAX_MODEL_LEN]
-                        cfg[AIGW][AIGW_D_MAX_SEQLEN] = decode_engine[MAX_MODEL_LEN]
-                        cfg[AIGW].setdefault(SLO_TTFT, 1000)
-                        cfg[AIGW].setdefault(SLO_TPOT, 50)
+                    _build_aigw_model_metadata(cfg, user_config_data)
                 except Exception as e:
                     logger.warning("Failed to build aigw model metadata: %s", e)
 

@@ -439,12 +439,12 @@ motor_coordinator_config字段配置样例如下所示：
 | etcd_timeout | int | ETCD 操作超时时间（秒）。默认值：5`。 |
 | etcd_lb_policy | string| ETCD负载均衡策略，默认值：round_robin。|
 | enable_etcd_persistence | bool | 是否启用 ETCD 持久化。可选：`true` / `false`。默认值：false。 |
-| **aigw_model字段** |-|该参数是AIGW模型元数据的集中配置，用于/v1/models等接口返回的模型信息。在user_config.json中对应motor_coordinator_config下的aigw对象；未使用时为null，其内部可配置项如下所示。|
-| id | string | 模型 ID，与 OpenAI 兼容接口中的模型名一致。若配置了 Prefill/Decode 的 model_name，部署时会自动填充为 Prefill 的 model_name |
-| object | string | 对象类型，固定为 `model`。部署时未配置则自动填充 |
-| owned_by | string | 模型归属标识，如 `motor`。部署时未配置则自动填充 |
-| p_max_seqlen | int | Prefill 端最大序列长度（正整数）。未配置时从 Prefill 的 `engine_config.max_model_len` 自动填充 |
-| d_max_seqlen | int | Decode 端最大序列长度（正整数）。未配置时从 Decode 的 `engine_config.max_model_len` 自动填充 |
+| **aigw_model字段** |-|该参数是AIGW模型元数据的集中配置，用于/v1/models等接口返回的模型信息。在user_config.json中对应motor_coordinator_config下的aigw对象；未使用时为null，其内部可配置项如下所示。启动时若存在完整 Prefill/Decode 配置，或 PD 混部的 `motor_engine_union_config`，会**仅填充未显式配置的字段**（P+D 优先于 union）；混部场景下缺失的 `p_max_seqlen` 与 `d_max_seqlen` 均取自 union 的 `max_model_len`。|
+| id | string | 模型 ID，与 OpenAI 兼容接口中的模型名一致。未配置时从 Prefill（或混部 union）的 model_name 自动填充；已显式配置则保留 |
+| object | string | 对象类型，固定为 `model`。未配置则自动填充 |
+| owned_by | string | 模型归属标识，如 `motor`。未配置则自动填充 |
+| p_max_seqlen | int | Prefill 端最大序列长度（正整数）。未配置时从 Prefill（或混部 union）的 `engine_config.max_model_len` 自动填充 |
+| d_max_seqlen | int | Decode 端最大序列长度（正整数）。未配置时从 Decode（或混部 union）的 `engine_config.max_model_len` 自动填充 |
 | slo_ttft | int | 首 token 时延 SLO（毫秒），用于调度/监控。默认值：`1000` |
 | slo_tpot | int | 每 token 时延 SLO（毫秒），用于调度/监控。默认值：`50` |
 | **api_config字段** |-|-|
