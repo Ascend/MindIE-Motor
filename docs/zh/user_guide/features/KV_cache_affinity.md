@@ -9,7 +9,7 @@ MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Con
 ## 前置说明
 
 - 必须已使用 MindIE Motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
-- 开启亲和性调度能力前请先参考 [MindIE Motor 快速开始](../quick_start_motor.md)，确保环境能正常完成基础的服务部署。
+- 开启亲和性调度能力前请先参考 [MindIE Motor 快速开始](../quick_start.md)，确保环境能正常完成基础的服务部署。
 - 当前 Mooncake Conductor 组件相关代码还未上库主线分支，当前镜像中不含 Mooncake Conductor，**需要基于现有镜像额外安装 Mooncake Conductor 服务组件**（见快速实践步骤二）。
 - 后续所有操作只在 k8s 集群的管理节点（master 节点）执行。
 
@@ -103,7 +103,7 @@ MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Con
 
 ### PD 分离配置示例
 
-以 [MindIE Motor 快速开始](../quick_start_motor.md) 中的 `user_config.json` 为基线，开启 KV Cache 亲和性调度后的完整配置示例如下：
+以 [MindIE Motor 快速开始](../quick_start.md) 中的 `user_config.json` 为基线，开启 KV Cache 亲和性调度后的完整配置示例如下：
 
 ```json
 {

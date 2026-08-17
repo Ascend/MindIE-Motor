@@ -13,7 +13,7 @@
 
 ### 准备 examples
 
-`examples` 获取方式见[快速入门](../../quick_start_motor.md)的“服务部署”章节。从镜像拷贝至宿主机后，将后续 `prepare.sh` 中的 `EXAMPLES_PATH` 设置为该目录的绝对路径。
+`examples` 获取方式见[快速入门](../../quick_start.md)的“服务部署”章节。从镜像拷贝至宿主机后，将后续 `prepare.sh` 中的 `EXAMPLES_PATH` 设置为该目录的绝对路径。
 
 ### 准备user_config.json和env.json配置文件
 

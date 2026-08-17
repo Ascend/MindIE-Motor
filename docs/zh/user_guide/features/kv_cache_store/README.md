@@ -12,7 +12,7 @@ MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和
 
 - 必须已使用MindIE Motor 部署 PD 分离推理服务，KV 池化在该服务基础上开启，不会对 Controller 和 Coordinator 产生影响。
 - KV 池化能力的约束条件，详情参考：[vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)。
-- 开启池化能力前请先参考[MindIE Motor快速开始](../../quick_start_motor.md)，确保环境能正常完成基础的PD分离服务部署。
+- 开启池化能力前请先参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 - **仅当 `vllm-ascend` 版本早于 `v0.17.0rc2`（不含 `v0.17.0rc2`）时才需要打补丁**（见下方应用补丁章节）；`v0.17.0rc2` 及以上版本请直接跳过补丁步骤。
 - 后续所有操作只在 k8s 集群的管理节点（master 节点）执行。
 
@@ -28,7 +28,7 @@ MindIE Motor KV池化能力基于vllm-ascend本身池化能力，能力介绍和
 
 MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其余配置项与不开启池化时保持一致即可。需要关注以下两处配置。
 
-> 注意：开启池化能力前请参考[MindIE Motor快速开始](../../quick_start_motor.md)，确保环境能正常完成基础的PD分离服务部署。
+> 注意：开启池化能力前请参考[MindIE Motor快速开始](../../quick_start.md)，确保环境能正常完成基础的PD分离服务部署。
 
 ### kv_transfer_config（P/D 实例 engine_config 内）
 
