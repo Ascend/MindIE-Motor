@@ -19,8 +19,6 @@ from motor.config.log_config import LoggingConfig
 
 class TestResolveLoggerName:
     def test_toplevel_components_use_first_level(self):
-        assert _resolve_logger_name("motor.engine_server.core.vllm_engine") == "engine_server"
-        assert _resolve_logger_name("motor.engine_server.cli.main") == "engine_server"
         assert _resolve_logger_name("motor.node_manager.api_client.controller_api_client") == "node_manager"
         assert _resolve_logger_name("motor.config.controller") == "config"
         assert _resolve_logger_name("motor.config.coordinator") == "config"
@@ -38,9 +36,9 @@ class TestLogFormatter:
     @pytest.fixture
     def record(self):
         record = logging.LogRecord(
-            name="engine_server",
+            name="node_manager",
             level=logging.INFO,
-            pathname="/app/motor/engine_server/cli/main.py",
+            pathname="/app/motor/node_manager/main.py",
             lineno=31,
             msg="successfully parsed vllm engine configuration",
             args=(),
@@ -56,7 +54,7 @@ class TestLogFormatter:
         formatter = NewLineFormatter(config.log_format, datefmt=config.log_date_format)
         output = formatter.format(record)
         assert output.startswith("(MainProcess pid=412) INFO ")
-        assert "[engine_server][main.py:31]" in output
+        assert "[node_manager][main.py:31]" in output
         assert output.endswith("successfully parsed vllm engine configuration")
 
     def test_colored_formatter_adds_ansi(self, record):
@@ -83,7 +81,7 @@ class TestLogFormatter:
         assert output.count("INFO") == 2
         assert "line one" in output
         assert "line two" in output
-        assert output.count("[engine_server][main.py:31]") == 2
+        assert output.count("[node_manager][main.py:31]") == 2
 
     def test_newline_formatter_without_message_placeholder(self, record):
         formatter = NewLineFormatter("%(levelname)s")

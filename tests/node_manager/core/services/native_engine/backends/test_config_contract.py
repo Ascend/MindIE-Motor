@@ -16,7 +16,6 @@ pre-move CLI contract.
 
 import copy
 import json
-import sys
 
 import pytest
 
@@ -318,17 +317,6 @@ def test_vllm_builder_output_is_stable_across_repeated_initialization():
     assert endpoint == first_endpoint
 
 
-def test_vllm_convert_preserves_process_argv(monkeypatch):
-    endpoint = _endpoint_config(engine_type="vllm")
-    config = VLLMConfig(endpoint_config=endpoint)
-    config.initialize()
-    monkeypatch.setattr(sys, "argv", ["contract-test", "--original"])
-
-    config.convert()
-
-    assert sys.argv == ["contract-test", "--original"]
-
-
 def test_sglang_union_cli_golden():
     endpoint = _endpoint_config(
         engine_type="sglang",
@@ -430,7 +418,7 @@ def test_factory_rejects_unknown_engine_type_before_importing_builder():
     endpoint = _endpoint_config(engine_type="unknown")
 
     with pytest.raises(ValueError, match="Unsupported engine type: unknown"):
-        ConfigFactory(endpoint).parse()
+        ConfigFactory(endpoint).build_cli_config()
 
 
 @pytest.mark.parametrize(

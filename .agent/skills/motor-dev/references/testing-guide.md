@@ -87,6 +87,5 @@ bash tests/run_tests.sh tests/config/           # Config changes
 bash tests/run_tests.sh tests/controller/       # Controller
 bash tests/run_tests.sh tests/coordinator/      # Coordinator
 bash tests/run_tests.sh tests/node_manager/     # NodeManager
-bash tests/run_tests.sh tests/engine_server/    # EngineServer
 bash tests/run_tests.sh tests/e2e/              # E2E integration
 ```

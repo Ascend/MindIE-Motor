@@ -24,7 +24,7 @@ P/D 实例的协同行为由引擎 Connector 推导出的 `dispatch_capabilities
 | `concurrent_engine_sync` | P/D 并发执行，由引擎同步 KV |
 | `prefill_handoff_decode` | Prefill 完成后将结果交给 Decode |
 
-NodeManager 会从 vLLM 的 `kv_transfer_config.kv_connector` 或显式 `dispatch_profile` 推导 capability；SGLang 自动上报 `concurrent_engine_sync`。Coordinator 只选择 P/D 两端共同支持的能力，不再通过 `pd_separate`、`cpcd_separate` 等人工模式名称猜测行为。
+NodeManager 会从 vLLM 的 `kv_transfer_config.kv_connector` 或显式 `dispatch_profile` 推导 capability；SGLang 自动上报 `concurrent_engine_sync`。Coordinator 根据实例 `engine_type` 选择原生协议 Adapter，并使用 P/D 两端的兼容元数据进行保护性校验。
 
 ### vLLM Connector 识别白名单
 
@@ -41,14 +41,16 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 - **`MultiConnector` 只看 `connectors[0]`（传输层）**。KV 池/存储类连接器（如 `AscendStoreConnector`、`MooncakeConnectorStoreV1`、`UCMConnector`、`LMCacheAscendConnector`）一般作为 `connectors[1]` 的后端使用，不参与 capability 判定，因此**无需**出现在白名单中。
 - 不在上表内、且 `connectors[0]` 也无法识别的连接器会被判为 `unknown`，**不产生任何 capability**。
 
-> ⚠️ **fail-closed**：当 P/D 两端没有共同 capability 时（例如顶层 `kv_connector` 或 `connectors[0]` 用了未识别的连接器），Coordinator 不会强行配对——`select_pair_and_allocate` 返回空、就绪判定为 `UNKNOWN`、路由返回 503。这是有意的保护，避免把不兼容的 P/D 配在一起、直到 KV 传输阶段才失败。
+> ⚠️ **fail-closed**：原生 vLLM P/D 启动只接受 handoff 语义；未知或不兼容 Connector 会在 NodeManager 构造启动命令时失败，避免把错误推迟到 KV 传输阶段。
 
-`dispatch_capabilities` 是 NodeManager 向 Coordinator 上报的内部字段，不支持在用户配置中显式填写。若需让**未被识别的连接器**作为 P/D 传输使用，请在 `motor_engine_prefill_config` / `motor_engine_decode_config` **顶层**（与 `engine_type` 同级，**不是** `engine_config` 内部）显式声明 `dispatch_profile` 作为逃生口：
+`dispatch_capabilities` 是 NodeManager 上报的兼容元数据，不支持在用户配置中直接填写。若需让**未被识别的连接器**作为 P/D 传输使用，请在 `motor_engine_prefill_config` / `motor_engine_decode_config` **顶层**（与 `engine_type` 同级，**不是** `engine_config` 内部）显式声明 `dispatch_profile`：
 
 | `dispatch_profile` | 推导出的 capability | 协同行为 |
 |--------------------|---------------------|----------|
-| `handoff` | `prefill_handoff_decode` | Prefill 完成后将结果交给 Decode |
+| `handoff` | `prefill_handoff_decode` | Prefill 完成后交给 Decode |
 | `trigger` | `concurrent_engine_sync` | P/D 并发执行，由引擎同步 KV |
+
+当前原生 vLLM P/D 运行时只接受 `handoff`；`trigger` 仅作为兼容分类保留，不可用于原生 vLLM P/D 启动。
 
 **配置示例**（自定义 connector 不在白名单内时）：
 
@@ -75,7 +77,16 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 }
 ```
 
-> Prefill 与 Decode **两端 `dispatch_profile` 必须一致**，且取值须与 connector 实际协同语义匹配，否则 Coordinator 仍无法配对（503）。字段说明见 [user_config 全量参数说明](../user_guide/configuration/config_reference.md#dispatch_profile)。
+> Prefill 与 Decode 两端 `dispatch_profile` 必须一致，且取值须与 Connector 实际协同语义匹配。字段说明见 [user_config 全量参数说明](../user_guide/configuration/config_reference.md#dispatch_profile)。
+
+### SGLang Bootstrap 元数据
+
+SGLang 使用原生 bootstrap 协议，不复用 vLLM 的 `kv_transfer_params`。NodeManager 从所选
+引擎配置的 `engine_config.disaggregation_bootstrap_port`（兼容
+`disaggregation-bootstrap-port`）派生每个 Pod 的 `bootstrap_port`，并在注册消息的 endpoint
+元数据中上报。Coordinator 的 SGLang Adapter 将 Prefill endpoint 的 `bootstrap_host`、
+`bootstrap_port` 和稳定的 `bootstrap_room` 注入 Prefill/Decode 请求；`business_port` 仍是
+推理 HTTP 服务端口，`mgmt_port` 仅为注册协议兼容字段。
 
 ## 数据流
 
@@ -85,8 +96,8 @@ flowchart LR
     Coord --> Roles[Inspect instance roles]
     Roles -->|P + D| Unified[UnifiedPDRouter]
     Roles -->|Union or P only| Hybrid[PDHybridRouter]
-    Unified --> Capability[Select shared connector capability]
-    Capability --> EngineP[Prefill instance]
-    Capability --> EngineD[Decode instance]
+    Unified --> Adapter[Select adapter by engine_type]
+    Adapter --> EngineP[Prefill instance]
+    Adapter --> EngineD[Decode instance]
     Hybrid --> EngineU[Union or fallback Prefill instance]
 ```

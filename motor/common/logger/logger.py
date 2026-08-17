@@ -98,8 +98,8 @@ env_log_dir = os.getenv('MOTOR_LOG_PATH')
 
 _MODULE_LOGGER_NAME = "common.logger"
 
-# Top-level packages that use only the first level (e.g. "engine_server", "node_manager", "config").
-_TOPLEVEL_COMPONENTS = frozenset({"engine_server", "node_manager", "config"})
+# Top-level packages that use only the first level (e.g. "node_manager", "config").
+_TOPLEVEL_COMPONENTS = frozenset({"node_manager", "config"})
 # Top-level packages that use only the second level (e.g. "fault_tolerance", "domain", "http").
 _SECONDLEVEL_COMPONENTS = frozenset({"controller", "coordinator", "common"})
 

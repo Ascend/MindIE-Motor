@@ -10,7 +10,7 @@
 
 """
 Shared API format constants (OpenAI/vLLM compatible).
-Used by coordinator and engine_server.
+Used by the coordinator and native-engine routing path.
 """
 
 __all__ = [

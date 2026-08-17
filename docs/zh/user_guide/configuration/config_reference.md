@@ -157,7 +157,7 @@ motor_controller_config字段配置样例如下所示：
 | event_consumer_sleep_interval | float | 事件队列轮询间隔，即每次处理事件后的等待时间，单位：秒，默认值：1.0。 |
 | coordinator_heartbeat_interval | float | Controller 与 Coordinator 间心跳上报间隔，单位：秒，默认值：10.0。 |
 |<a id="fault_tolerance_config"></a>**fault_tolerance_config字段**|-|-|
-| enable_fault_tolerance | bool | 是否启用故障自愈（高级 RAS），默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
+| enable_fault_tolerance | bool | 是否启用 Motor Controller 故障自愈（高级 RAS），默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul>该字段不等价于、也不会自动透传为 vLLM 开发分支的 `--enable-fault-tolerance`。 |
 | strategy_center_check_interval | int | 策略中心轮询间隔，单位：秒，默认值：1。 |
 | configmap_namespace |string|configmap命名空间，默认值："kube-system"。|
 | configmap_prefix |string|configmap前缀，默认值："mindx-dl-deviceinfo-"。|
@@ -493,7 +493,7 @@ motor_coordinator_config字段配置样例如下所示：
 
 ## motor_engine_union_config
 
-motor_engine_union_config字段用于**PD混部场景**，配置同一类union Engine Server实例。其结构与motor_engine_prefill_config/motor_engine_decode_config类似，但不区分P/D两套引擎配置，也无需配置 kv_transfer_config的producer/consumer角色。其配置样例如下所示。
+motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 原生引擎实例。其结构与motor_engine_prefill_config/motor_engine_decode_config类似，但不区分P/D两套引擎配置，也无需配置 kv_transfer_config的producer/consumer角色。其配置样例如下所示。
 
 ```json
 "motor_engine_union_config": {
@@ -575,14 +575,15 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类union E
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | engine_type | string | 引擎类型，如 `vllm` |
-| **engine_config字段** | - |engine_config字段中的参数说明详情请参见[vLLM官网参数配置](https://docs.vllm.ai/en/latest/api/vllm/config)|
+| **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip） |
 | api_config.node_manager_port |int | NodeManager 端口。默认值：`1026` |
 | endpoint_config.endpoint_num |int | 引擎端点数量，通常由 HCCL/并行配置推导。默认值：`0` |
 | endpoint_config.base_port |int | 端点端口起始号。默认值：`10000` |
-| endpoint_config.mgmt_ports |array | 各端点管控端口列表（整数数组）。默认值：`[]` |
+| endpoint_config.mgmt_ports |array | 各端点兼容管理端口列表（整数数组）。原生引擎不监听该端口，当前为注册协议兼容字段。默认值：`[]` |
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
+| endpoint_config.bootstrap_port |int/null | SGLang PD 原生 bootstrap 端口。由所选引擎配置中的 `engine_config.disaggregation_bootstrap_port`（兼容 `disaggregation-bootstrap-port`）派生；vLLM 或未配置时为空。 |
 | fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
 | fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：5.0。|
 | fault_tolerance_config.poll_timeout_sec |float|单次轮询的 HTTP 超时，单位：秒，默认值：5.0。|
@@ -612,7 +613,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类union E
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
-motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；可选配置dispatch_profile（PD协同语义）与health_check_config（虚推健康探测，见 [虚推健康探测](../features/sim_inference.md)）。配置示例如下所示。
+motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；`health_check_config` 用于配置原生 `/health` 超时与模型加载启动窗口。配置示例如下所示。
 
 ```json
 "motor_engine_prefill_config": {
@@ -773,14 +774,15 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | engine_type | string | 引擎类型，如 `vllm` |
-| **engine_config字段** | - | engine_config字段中的参数说明详情请参见[vLLM官网参数配置](https://docs.vllm.ai/en/latest/api/vllm/config) |
+| **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip） |
 | api_config.node_manager_port |int | NodeManager 端口。默认值：`1026` |
 | endpoint_config.endpoint_num |int | 引擎端点数量，通常由 HCCL/并行配置推导。默认值：`0` |
 | endpoint_config.base_port |int | 端点端口起始号。默认值：`10000` |
-| endpoint_config.mgmt_ports |array | 各端点管控端口列表（整数数组）。默认值：`[]` |
+| endpoint_config.mgmt_ports |array | 各端点兼容管理端口列表（整数数组）。原生引擎不监听该端口，当前为注册协议兼容字段。默认值：`[]` |
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
+| endpoint_config.bootstrap_port |int/null | SGLang PD 原生 bootstrap 端口。由所选引擎配置中的 `engine_config.disaggregation_bootstrap_port`（兼容 `disaggregation-bootstrap-port`）派生；vLLM 或未配置时为空。 |
 | fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
 | fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：5.0。|
 | fault_tolerance_config.poll_timeout_sec |float|单次轮询的 HTTP 超时，单位：秒，默认值：5.0。|
@@ -810,64 +812,28 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 
 ### dispatch_profile
 
-当engine_config.kv_transfer_config.kv_connector不在内置识别白名单内时，可在motor_engine_prefill_config/motor_engine_decode_config**顶层**显式声明 P/D 协同语义。NodeManager根据此推导并向Coordinator上报dispatch_capabilities。
-
-**表6** dispatch_profile参数说明
+当 `engine_config.kv_transfer_config.kv_connector` 不在内置识别白名单内时，可在 `motor_engine_prefill_config` / `motor_engine_decode_config` 顶层显式声明 P/D 协同语义。NodeManager 根据该字段推导兼容元数据，并在构造原生 vLLM 启动命令时校验其语义。
 
 | 配置项 | 类型 | 说明 |
-|--------|------|--------|
-| dispatch_profile | string | P/D 协同语义。默认值：未配时由 kv_connector白名单推断。<br>可选值：<ul><li>handoff：Prefill完成后交给Decode，推导出的capability为prefill_handoff_decode。</li><li>trigger：P/D并发，引擎同步KV，推导出的capability为concurrent_engine_sync。</li></ul>Prefill与Decode**两端须配置相同取值**。 |
-
-vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)。白名单内connector无需手动配置dispatch_profile。
+|--------|------|------|
+| dispatch_profile | string | 可选值为 `handoff` 或 `trigger`。当前原生 vLLM P/D 启动仅接受 `handoff`；SGLang 使用自身 bootstrap 协议。Prefill 与 Decode 两端应保持一致。 |
 
 >[!NOTE]说明
->
->- dispatch_profile写在motor_engine_*_config顶层，不是在engine_config字段内部。
->- 不支持用户直接填写dispatch_capabilities，配置后会被NodeManager丢弃。
->- 取值须与connector实际协同语义一致；P/D不一致或无共同capability时，Coordinator路由返回503。
-
-**配置示例**（自定义connector）：
-
-```json
-"motor_engine_prefill_config": {
-  "engine_type": "vllm",
-  "dispatch_profile": "handoff",
-  "engine_config": {
-    ...
-    "kv_transfer_config": {
-      "kv_connector": "YourCustomConnector",
-      "kv_role": "kv_producer",
-      ...
-    }
-  }
-},
-"motor_engine_decode_config": {
-  "engine_type": "vllm",
-  "dispatch_profile": "handoff",
-  "engine_config": {
-    ...
-    "kv_transfer_config": {
-      "kv_connector": "YourCustomConnector",
-      "kv_role": "kv_consumer",
-      ...
-    }
-  }
-}
-```
+> `dispatch_profile` 写在 `motor_engine_*_config` 顶层，不是在 `engine_config` 内部。`dispatch_capabilities` 为内部兼容字段，不支持用户直接填写。
 
 ### health_check_config
 
-可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块，默认关闭，机制说明见 [虚推健康探测](../features/sim_inference.md)。
+原生引擎健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块。
 
 **表7** health_check_config字段参数说明
 
 | 配置项 | 类型 | 说明 |
 |--------|------|--------|
-| enable_virtual_inference | bool | 虚推总开关，默认值：false。<br>取值为 `true` 时，在推理面 `/health` 正常后启动周期性虚推。<br>**仅允许在 ERROR 日志级别下开启**（`ASCEND_GLOBAL_LOG_LEVEL=3`，未配置默认 ERROR）；显式配置为非 ERROR 时 `deploy.py` 会强制关闭并打印 warning。 |
-| npu_usage_threshold | int | AI Cube 利用率阈值（%），默认值：3。<br>虚推仅在 `0 < npu_usage_threshold <= 100` 时启动；低于该阈值且虚推失败时累计失败次数加1。 |
-| max_failure_count | int | 连续虚推失败次数上限（在累计条件满足后），默认值：6。<br>达到后Engine Server `/status` 返回abnormal。 |
 | health_collector_timeout | int | 推理面 `GET /health` 探测超时（秒），默认值：5。 |
-| health_collector_timeout_retry_attempts | int | 推理面 `GET /health` 超时重试次数（含首次），默认值：3。<br>仅在探测超时时重试；连接失败、HTTP 错误等其它异常不重试。 |
+| health_collector_timeout_retry_attempts | int | 单次 `GET /health` 超时后的最大尝试次数（包含首次请求），默认值：3；仅超时重试。 |
+| startup_timeout | int | 原生引擎模型加载启动窗口（秒），默认值：1800。窗口内连接失败保持 STARTING，不判定实例异常。 |
+
+旧版 `enable_virtual_inference`、`npu_usage_threshold` 和 `max_failure_count` 字段仅为配置兼容保留，原生引擎运行时不消费。
 
 ---
 
@@ -875,7 +841,7 @@ vLLM内置识别的kv_connector白名单见[PD 分离特性说明](../../design/
 
 ### motor_engine_union_env字段
 
-PD混部场景下，union Engine Server 的环境变量配置在 `env.json` 的 `motor_engine_union_env` 中。示例可参考 `examples/infer_engines/vllm/pd_hybrid/env.json`。
+PD混部场景下，union 原生引擎的环境变量配置在 `env.json` 的 `motor_engine_union_env` 中。示例可参考 `examples/infer_engines/vllm/pd_hybrid/env.json`。
 
 **配置示例**：
 
@@ -900,8 +866,7 @@ PD混部场景下，union Engine Server 的环境变量配置在 `env.json` 的 
 ### prefill_kv_event_config 自动推导
 
 该字段加载 `user_config.json` 时由 Coordinator 合并，一般无需手动添加。
-Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据引擎 Connector 推导、由 NodeManager 内部上报的 `dispatch_capabilities` 选择并发或 handoff 行为。该字段不支持用户显式配置；自定义 Connector 可在 `motor_engine_prefill_config` / `motor_engine_decode_config` 顶层使用 `dispatch_profile` 声明语义，详情请参见[dispatch_profile](#dispatch_profile)。
-Connector 识别白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未识别连接器导致路由 503（fail-closed）的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
+Coordinator 会根据实例角色自动识别 P/D 分离或 union 混部拓扑，并根据 `engine_type` 选择 vLLM handoff 或 SGLang bootstrap Adapter。vLLM Connector 白名单、`MultiConnector` 取 `connectors[0]` 的规则，以及未知 Connector 在启动期 fail-closed 的处理，详情请参见[PD 分离特性说明](../../design/pd_disaggregation.md#vllm-connector-识别白名单)与[PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。
 
 **表9** prefill_kv_event_config说明
 

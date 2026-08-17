@@ -3,10 +3,10 @@
 
 ## MindIE Motor简介
 
-**MindIE Motor** 是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill 与 Decode 阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，向下对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)，旨在满足大语言模型的高性能推理需求。
+**MindIE Motor** 是面向大语言模型（LLM）分布式推理，如**PD分离推理**（Prefill 与 Decode 阶段分离）的请求调度框架。它通过开放、可扩展的推理服务化平台架构，对接 [vLLM-Ascend](https://github.com/vllm-project/vllm-ascend) 和 SGLang 原生运行时，旨在满足大语言模型的高性能推理需求。
 
 >[!NOTE]说明
->原 MindIE PyMotor 代码仓自 3.1.0 版本起更名为 MindIE Motor，后续版本将沿用该命名。其软件定位与基本功能保持不变，兼容 vLLM-Ascend 推理引擎。
+>原 MindIE PyMotor 代码仓自 3.1.0 版本起更名为 MindIE Motor，后续版本将沿用该命名。其软件定位与基本功能保持不变，当前以 vLLM-Ascend 为主，并支持 SGLang 原生引擎接入。
 
 ### 核心能力
 
@@ -55,19 +55,16 @@ MindIE Motor核心组件定义如下：
 - **LogCollector**：k8s日志收集脚本。
 - **BootHelper**：容器启动脚本，自动配置环境变量。
 
-### EngineServer
-
-节点推理服务入口，提供统一的RESTful EndPoints，包括OpenAI接口、Metrics等。北向对接Coordinator和Controller，南向对接vLLM/SGLang/MindIE框架。（当前版本仅支持vLLM）
-
 ### NodeManager
 
  节点级服务管理器，提供如下能力：
 
-- **节点级服务进程启动**：向Controller注册，获取实例身份，并拉起本节点的推理服务进程(EngineServer, vLLM等)。
+- **节点级服务进程启动**：向Controller注册，获取实例身份，并直接拉起本节点的原生 vLLM 或 SGLang 进程。
 - **节点级健康状态管理**：监控推理服务子进程状态，并向Controller上报健康状态和心跳。
 
 ### 周边组件
 
 - **[vLLM-Ascend](https://github.com/vllm-project/vllm-ascend)**: vLLM加速引擎，提供模型实例加速能力。
+- **SGLang**: 可通过 NodeManager 原生运行时接入的推理引擎，当前支持范围以[支持的推理引擎](./user_guide/features/supported_inference_engines.md)为准。
 - **[MindCluster](https://gitcode.com/Ascend/mind-cluster)**: 昇腾集群使能组件，提供Kubernetes底层支持能力，PD分离 CRD定义和配套Operator
 - **[CCAE](https://www.hiascend.com/software/ccae)**(可选)：华为算存网一体化运维可视化平台。

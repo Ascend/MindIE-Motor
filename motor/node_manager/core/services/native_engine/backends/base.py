@@ -8,11 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import argparse
-from abc import ABC, abstractmethod
 from typing import Protocol
 
-from motor.common.logger import get_logger
 from motor.config.endpoint import EndpointConfig
 from motor.node_manager.core.services.native_engine.models import (
     CommandSpec,
@@ -20,38 +17,6 @@ from motor.node_manager.core.services.native_engine.models import (
     LaunchSpec,
     ProbeSpec,
 )
-
-logger = get_logger(__name__)
-
-supported_engine = ["vllm", "sglang"]
-supported_role = ["prefill", "decode", "union"]
-
-
-class IConfig(ABC):
-    @abstractmethod
-    def initialize(self):
-        pass
-
-    @abstractmethod
-    def validate(self):
-        pass
-
-    @abstractmethod
-    def convert(self):
-        pass
-
-    @abstractmethod
-    def get_args(self) -> argparse.Namespace | None:
-        pass
-
-    @abstractmethod
-    def get_endpoint_config(self) -> EndpointConfig | None:
-        pass
-
-    @abstractmethod
-    def get_cli_args(self) -> list[str]:
-        """Return the CLI argument list suitable for native engine launch (vllm serve / sglang.launch_server)."""
-        pass
 
 
 class NativeEngineBackend(Protocol):
@@ -80,12 +45,10 @@ class BaseNativeEngineBackend:
             )
         self._validate_endpoint_config(endpoint_config)
 
-        # Import lazily so ConfigFactory can type against IConfig without a module cycle.
+        # Import lazily to keep backend selection independent from engine-specific config modules.
         from motor.node_manager.core.services.native_engine.config_factory import ConfigFactory
 
         config = ConfigFactory(endpoint_config=endpoint_config).build_cli_config()
-        config.convert()
-        config.validate()
         health_config = endpoint_config.deploy_config.health_check_config
         return LaunchSpec(
             command=CommandSpec(

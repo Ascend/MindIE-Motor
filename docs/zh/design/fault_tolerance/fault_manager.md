@@ -4,6 +4,9 @@
 
 FaultManager 是 MindIE Motor Controller 中负责故障容错管理的核心组件。它通过观察者模式监听实例生命周期事件，统一管理硬件故障（ConfigMap 上报）和软件故障（引擎异常），协调 ResourceMonitor 进行故障检测，并与 InstanceManager 配合进行实例隔离和恢复。
 
+> **能力边界：** Engine Server 已删除。NodeManager 直接轮询原生引擎的
+> `/fault_tolerance/status` HTTP 接口；该接口必须由目标引擎版本明确提供。
+
 ## 架构总览
 
 ### 模块拆分
@@ -45,6 +48,10 @@ Controller 侧:
   ├── 节点交换: _swap_node_ownership() → 跨 job 实例间节点所有权交换
   └── 数据持久化: ETCD Client
 
+跨组件通用基线:
+  ├── NodeManager: 进程状态、原生 /health、Pod 级恢复
+  └── Coordinator: 请求异常、熔断、实例隔离与恢复探测
+
 NodeManager 侧:
   FaultReporter (EngineManager 聚合)
   ├── HTTP 轮询 → GET {endpoint.business_port}/fault_tolerance/status (vLLM FT API)
@@ -53,7 +60,14 @@ NodeManager 侧:
   └── HTTP POST → Controller /controller/report_software_fault
 ```
 
-## 故障上报链路 (端到端)
+### 故障能力分层
+
+| 层级 | 来源 | 目标态要求 |
+|---|---|---|
+| 通用基线 | 原生进程状态、`/health`、请求 transport/5xx/协议异常、Coordinator 熔断、ConfigMap、Node Watch | 所有原生引擎部署必须保留 |
+| 引擎扩展 | vLLM `/fault_tolerance/status` | 启用 FaultReporter 时，目标引擎必须提供该 HTTP 接口 |
+
+## 原生引擎故障上报链路（端到端）
 
 ```text
 vllm EngineCore 异常 → 引擎状态变为 unhealthy/dead

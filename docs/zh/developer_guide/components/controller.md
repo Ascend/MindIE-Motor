@@ -13,7 +13,7 @@ flowchart LR
     Ctrl -->|实例变更事件| Coord[Coordinator<br/>调度面]
     Ctrl -->|持久化| ETCD[(ETCD)]
     Ctrl -->|Watch ConfigMap/Node| K8s[K8s API Server]
-    NM -->|拉起/监控| ES[EngineServer<br/>推理引擎]
+    NM -->|拉起/监控| ES[原生 vLLM/SGLang<br/>推理引擎]
     Coord -->|调度请求| ES
 ```
 
@@ -21,7 +21,7 @@ flowchart LR
 
 - **NodeManager**：每个推理 Pod 的节点代理，注册自身到 Controller，接收启动指令，上报心跳与故障。
 - **Coordinator**：推理请求的调度入口，Consumer 接收 Controller 推送的实例状态变更，据此决定路由策略。
-- **EngineServer**：实际执行推理的引擎进程（vLLM / SGLang），由 NodeManager 根据 Controller 下发的 StartCmd 拉起。
+- **原生推理引擎**：实际执行推理的 vLLM / SGLang 进程，由 NodeManager 根据 Controller 下发的 StartCmd 直接拉起。
 - **ETCD**：Controller 的持久化存储，支撑主备切换时状态恢复。
 - **K8s API Server**：Controller 通过 Watch 机制感知硬件故障（ConfigMap）和节点状态变化。
 
@@ -237,7 +237,7 @@ sequenceDiagram
     IA->>IM: add_instance(instance)
     IM->>IM: notify(INSTANCE_INITIAL)
     IA->>NM: NodeManagerApiClient.send_start_command()<br/>StartCmdMsg(job_name, instance_id, endpoints, master_dp_ip, ...)
-    NM->>NM: parse_start_cmd() + 拉起 EngineServer
+    NM->>NM: parse_start_cmd() + 拉起原生推理引擎
     NM->>API: POST /controller/heartbeat<br/>HeartbeatMsg(ins_id, pod_ip, status)
     API->>IM: handle_heartbeat(msg)
     IM->>IM: 状态机: INITIAL → ACTIVE
@@ -529,7 +529,11 @@ flowchart LR
 |------|----------|----------|----------|
 | ConfigMap Watch | NPU 卡故障 (`CardUnhealthy`)<br/>卡间网络故障 (`CardNetworkUnhealthy`)<br/>交换机故障 | K8s Watch API，每个 Node 一个 ResourceMonitor | `FaultInfo` → `NodeMetadata.hardware_fault_infos` |
 | Node Watch | 节点重启 / NotReady | K8s Watch API | `NODE_REBOOT` (fault_code: `0x0000001`) → L6 |
-| 软件故障上报 | Engine DEAD/UNHEALTHY | NodeManager FaultReporter → HTTP | `FaultInfo` → `NodeMetadata.software_fault_infos` |
+| 软件故障上报 | Engine DEAD/UNHEALTHY | 原生引擎 `/fault_tolerance/status` → NodeManager FaultReporter → HTTP | `FaultInfo` → `NodeMetadata.software_fault_infos` |
+
+> **原生引擎故障能力边界：** 启用 FaultReporter 时，目标引擎版本必须提供
+> `/fault_tolerance/status`。进程状态、原生 health、请求异常与熔断仍由
+> Node Manager/Coordinator 构成通用故障基线。
 
 #### 3.3.2 故障等级体系
 

@@ -40,7 +40,6 @@ nav:
           - ScaleP2D 故障恢复: user_guide/features/fault_tolerance/scale_p2d.md
           - 容器快照: user_guide/features/container_snapshot.md
           - D2D 权重加载加速: user_guide/features/startup_acceleration.md
-          - 虚推健康探测: user_guide/features/sim_inference.md
           - 故障场景重调度: user_guide/features/fault_tolerance/rescheduler.md
           - 精度检测: user_guide/features/precision_detection.md
       - 服务维护:
@@ -53,7 +52,6 @@ nav:
           - 管理接口: user_guide/api/management_interfaces.md
           - 指标接口: user_guide/api/metrics_interfaces.md
           - 服务运行状态观测接口: user_guide/api/observability_interface.md
-          - 容器快照内部接口: user_guide/api/engine_server_interfaces.md
   - 设计文档:
       - 概述: design/README.md
       - PD 分离: design/pd_disaggregation.md
@@ -75,5 +73,4 @@ nav:
       - 组件设计:
           - Controller: developer_guide/components/controller.md
           - Coordinator: developer_guide/components/coordinator.md
-          - Engine Server: developer_guide/components/engine_server.md
           - Node Manager: developer_guide/components/node_manager.md

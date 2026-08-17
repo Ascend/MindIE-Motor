@@ -4,7 +4,7 @@
 
 ### PD 混部介绍
 
-**PD 混部**将 Prefill 与 Decode 能力部署在同一类 Engine Server 实例中。部署时不再分别拉起 prefill、decode 两类角色，而是由 `union` 角色承载完整推理能力；Coordinator 以 `single_node` 调度模式将请求分发到可用的 union 实例。
+**PD 混部**将 Prefill 与 Decode 能力部署在同一类原生引擎实例中。部署时不再分别拉起 prefill、decode 两类角色，而是由 `union` 角色承载完整推理能力；Coordinator 以 `single_node` 调度模式将请求分发到可用的 union 实例。
 
 与 [PD 分离部署](./pd_disaggregation_deployment.md) 相比，PD 混部减少了 P/D 角色拆分和 KV 跨角色传输配置，适用于快速验证、中小规模服务、资源规模较小或暂不需要独立规划 P/D 实例比例的场景。若业务需要针对 Prefill、Decode 两阶段分别规划资源、独立扩缩容或使用 PD 分离相关能力，建议使用 PD 分离部署。
 
@@ -13,7 +13,7 @@
 部署流程围绕三个入口展开：
 
 1. `user_config.json`：部署与业务的总配置，PD 混部重点配置 `hybrid_*` 字段、`motor_engine_union_config` 以及 Coordinator 的 `single_node` 调度模式。
-2. `env.json`：各组件环境变量，PD 混部的 Engine Server 环境变量配置在 `motor_engine_union_env` 中。
+2. `env.json`：各组件环境变量，PD 混部的原生引擎环境变量配置在 `motor_engine_union_env` 中。
 3. 部署脚本 `deploy.py`：读取上述配置，生成 K8s YAML、更新启动脚本、创建 ConfigMap 并执行 `kubectl apply`。
 
 **部署方式**：PD 混部默认使用 CRD 方式（`infer_service_set`），由 InferServiceSet 中的 `union` 角色拉起混部实例。若需沿用传统多 YAML Deployment，可在 `motor_deploy_config.deploy_mode` 中显式配置为 `multi_deployment`；但推荐优先使用默认 CRD 方式。
@@ -167,7 +167,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 
 ### motor_engine_union_config（混部引擎）
 
-`motor_engine_union_config` 用于配置混部 Engine Server。其结构与 PD 分离中的 `motor_engine_prefill_config` / `motor_engine_decode_config` 类似，但无需分别配置 P/D 两套引擎，也无需配置 `kv_transfer_config` 的 producer/consumer 角色。
+`motor_engine_union_config` 用于配置混部原生引擎。其结构与 PD 分离中的 `motor_engine_prefill_config` / `motor_engine_decode_config` 类似，但无需分别配置 P/D 两套引擎，也无需配置 `kv_transfer_config` 的 producer/consumer 角色。
 
 **配置示例**：
 
@@ -212,7 +212,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 
 ## 配置 `env.json`
 
-PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/env.json`。混部 Engine Server 的环境变量配置在 `motor_engine_union_env` 中。
+PD 混部可直接参考 `examples/infer_engines/vllm/pd_hybrid/env.json`。混部原生引擎的环境变量配置在 `motor_engine_union_env` 中。
 
 **配置示例**：
 

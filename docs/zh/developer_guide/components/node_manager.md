@@ -94,7 +94,7 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 | `job_name` | string | 是 | 实例任务名，必须与本节点配置一致 |
 | `role` | string | 是 | 实例角色，如 `prefill`、`decode` 或 `union` |
 | `instance_id` | int | 是 | Controller 分配的实例 ID |
-| `endpoints` | array | 是 | 本节点管理的 endpoint；元素包含 `id`、`ip`、`business_port`、`mgmt_port`，SGLang PD endpoint 还可包含 `bootstrap_port` |
+| `endpoints` | array | 是 | 本节点管理的 endpoint；元素包含 `id`、`ip`、`business_port`、`mgmt_port`，SGLang PD endpoint 还可包含 `bootstrap_port`。`mgmt_port` 为注册协议兼容字段，原生引擎健康探测和快照控制均使用 `business_port` |
 | `master_dp_ip` | string | 是 | 数据并行主节点 IP |
 | `ranktable` | object/null | 否 | 实例级 ranktable，默认 `null` |
 | `d2d_peer_ips` | array/null | 否 | D2D 权重传输对端，Controller 使用 `<endpoint_id>:<peer_ip>` 编码，默认 `null` |
@@ -187,8 +187,8 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 | `fault_tolerance_config.poll_interval_sec` | `5.0` | 轮询引擎 FT 状态的时间间隔（秒） |
 | `fault_tolerance_config.poll_timeout_sec` | `5.0` | 单次轮询的 HTTP 超时（秒） |
 | `fault_tolerance_config.max_poll_failures` | `3` | 连续轮询失败阈值，达到后按 `dead` 上报 |
-| `snapshot_config.enable_snapshot` | `false` | 原生引擎运行时尚不支持容器快照；设为 `true` 会在配置校验阶段失败 |
-| `snapshot_config.snapshot_metadata_path` | 空 | 预留字段；当前原生引擎运行时不消费该路径 |
+| `snapshot_config.enable_snapshot` | `false` | 是否启用容器快照；当前仅 vLLM 原生引擎支持，SGLang 配置为 `true` 会校验失败 |
+| `snapshot_config.snapshot_metadata_path` | 空 | 容器快照元数据路径；为空时使用默认路径 `/snapshot/snapshot_metadata.json` |
 | `port_allocator_config.enable` | `true` | 是否在启动时自动检查并调整端口 |
 
 `endpoint_num`、`service_ports`、`mgmt_ports`、`device_num`、`parallel_config`、`model_name`、`engine_type` 和 `dispatch_capabilities` 主要由部署配置与引擎配置派生。`dispatch_capabilities` 不接受用户直接覆盖。
@@ -321,11 +321,14 @@ GET http://{endpoint.ip}:{endpoint.business_port}/fault_tolerance/status
 
 ## 容器快照
 
-当前 Node Manager 已切换为直接拉起原生 vLLM/SGLang，但原生 `suspend/resume/device-unlock`
-控制接口尚未接入。为避免仅校验 metadata 文件、实际却未执行快照操作，配置
-`snapshot_config.enable_snapshot=true` 会在启动前明确失败。
+当前 Node Manager 直接拉起原生 vLLM/SGLang；显存快照的保存与恢复由引擎自闭环完成，
+仅支持提供快照能力的 vLLM 镜像。配置 `snapshot_config.enable_snapshot=true` 且引擎类型为
+SGLang 时，配置校验会明确失败。
 
-待 Native Engine Backend 实现原生快照控制契约后，再恢复 metadata、checkpoint barrier 和恢复编排。
+启用容器快照后，Node Manager 只做框架侧编排：准备 `model_save_path` / `model_load_path` /
+`data_parallel_master_ip` 等元数据，快照恢复后刷新 `job_name`、Pod IP 与 Controller DNS，
+并通过引擎就绪状态和 Host 侧 `checkpoint` 标记感知保存/恢复是否完成。Node Manager 不调用
+引擎的 `/suspend`、`/device_unlock`、`/resume`。
 
 ## 使用样例
 

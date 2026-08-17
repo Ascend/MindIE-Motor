@@ -162,7 +162,7 @@ def test_logging_config_defaults(nm_config_data):
     assert config.logging_config.log_level == "INFO"
     assert config.logging_config.log_max_line_length == 8192
     assert config.logging_config.host_log_dir is not None
-    # Default format aligned with vLLM field order; engine_server uses single module bucket
+    # Default format aligned with vLLM field order; native engines use the NodeManager module bucket.
     assert config.logging_config.log_format == (
         '(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s [%(name)s][%(fileinfo)s:%(lineno)d] %(message)s'
     )
@@ -571,11 +571,20 @@ def test_from_json_loads_union_config_for_hybrid():
     assert config.endpoint_config.endpoint_num == 2
 
 
-def test_native_runtime_rejects_snapshot_configuration():
+def test_native_vllm_runtime_accepts_snapshot_configuration():
     config = NodeManagerConfig()
     config.snapshot_config.enable_snapshot = True
+    config.basic_config.engine_type = "vllm"
 
-    with pytest.raises(ValueError, match="Native engine runtime does not support snapshot yet"):
+    config.validate_config()
+
+
+def test_native_sglang_runtime_rejects_snapshot_configuration():
+    config = NodeManagerConfig()
+    config.snapshot_config.enable_snapshot = True
+    config.basic_config.engine_type = "sglang"
+
+    with pytest.raises(ValueError, match="Native Snapshot currently supports only the vllm engine type"):
         config.validate_config()
 
 

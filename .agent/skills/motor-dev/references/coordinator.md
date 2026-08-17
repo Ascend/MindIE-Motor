@@ -195,9 +195,8 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/router/strategies/` | | `BaseRouter` + `PDHybridRouter` + `UnifiedPDRouter` implementations |
 | `motor/coordinator/router/dispatch_session.py` | | Dispatch attempt session/state tracking |
 | `motor/coordinator/router/rescheduler/` | | `Rescheduler` (retry plans for failed requests) |
-| `motor/coordinator/router/dispatch_capability.py` | | P/D dispatch capability (kv_connector / dispatch_profile) checks |
-| `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `EngineServerApiClient` (HTTP clients to kv-conductor, controller, engine) |
-| `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `/instances/refresh` |
+| `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `NativeEngineApiClient` (HTTP clients to kv-conductor, controller, engine) |
+| `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `/instances/refresh`, `/precision/alarm_cleared` |
 | `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
 | `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic) |
 | `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared Scheduler ZMQ connection (used by Mgmt/Obs/Infer) |
@@ -219,8 +218,12 @@ Controller detects instance change
       → ZMQ REFRESH_INSTANCES to Scheduler
         → Scheduler updates master InstanceManager, bumps version
           → PUB socket: INSTANCE_CHANGE_TOPIC notification (+ delta frame for ADD/DEL)
-          → Workload SHM: instance_version bump in header
-            → Workers: patch/invalidate caches, re-fetch on next scheduling call
+            → Workload SHM: instance_version bump in header
+              → Workers: patch/invalidate caches, re-fetch on next scheduling call
+
+Controller clears a handled precision alarm
+  → POST /precision/alarm_cleared (clear scheduler precision-alarm state for a P/D group)
+    → Mgmt sends DISMISS_PRECISION_ALARM_STATE to Scheduler
 ```
 
 ## Fault Tolerance: Circuit Breaker & Precision Detection

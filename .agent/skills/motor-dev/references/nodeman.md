@@ -71,7 +71,7 @@ Controller sends `POST /node-manager/start` with `StartCmdMsg`:
 ``` text
 {
   instance_id, job_name, role,
-  endpoints: [{id, ip, business_port, mgmt_port, dp_rank, headless, ...}],
+  endpoints: [{id, ip, business_port, mgmt_port, bootstrap_port, dp_rank, headless, ...}],
   master_dp_ip, node_rank, d2d_peer_ips, ranktable
 }
 ```
@@ -113,10 +113,11 @@ enabled, `MC_USE_IPV6=1` is supplied unless the environment already defines it.
 | `VllmBackend` | Builds `vllm serve`; Native P/D only accepts the supported HANDOFF profile |
 | `SGLangBackend` | Builds `python3 -m sglang.launch_server`; encode role is rejected |
 
-The backend configuration adapters flatten engine-specific JSON into native CLI arguments. They
-must call the engine configuration converter and validator before returning a launch specification.
-`None` values are omitted from CLI arguments. SGLang receives `enable-metrics=true` because
-Coordinator metrics and PreStop drain depend on the native metrics endpoint.
+The backend configuration adapters initialize and flatten engine-specific JSON into native CLI
+arguments. Final argument validation is delegated to the native engine process; NodeManager does
+not import engine parser implementations. `None` values are omitted from CLI arguments. SGLang
+receives `enable-metrics=true` because Coordinator metrics and PreStop drain depend on the native
+metrics endpoint.
 
 For SGLang P/D roles, the backend sets `disaggregation-mode=prefill|decode`; union uses
 `disaggregation-mode=null`. Multi-node configurations validate `nnodes` and require
@@ -195,14 +196,19 @@ Records are removed after cleanup so concurrent status reads cannot report a sto
 
 ### Snapshot Boundary
 
-The Native Runtime path currently does not support container snapshot suspend/resume or native
-engine restore. `snapshot_config.enable_snapshot=true` is rejected during NodeManager config
-validation, and `snapshot_metadata_path` is not consumed by Native Runtime.
+Native Snapshot is implemented for vLLM only. Enabling snapshot with another engine type is rejected
+during NodeManager config validation. Device snapshot save and restore are owned by the engine
+image; NodeManager does not call `/suspend`, `/device_unlock`, or `/resume`.
 
-Legacy snapshot helpers and EngineServer compatibility code remain in the repository for the
-transition period, but they are not a supported Native Runtime launch path. Do not add new native
-runtime behavior that depends on `engine_server` management endpoints or snapshot metadata until a
-separate runtime contract is defined.
+When `enable_snapshot` is true, NodeManager only:
+
+1. Refreshes framework state around restore (`job_name`, `pod_ip`, Controller DNS) so the restored
+   pod can register with Controller.
+2. Prepares snapshot metadata (`model_save_path`, `model_load_path`, `data_parallel_master_ip`).
+3. Observes engine readiness and the host-side `checkpoint` marker to gate heartbeats and
+   readiness.
+
+SGLang remains unsupported until the engine image provides the same snapshot capability.
 
 ## Key Files
 
@@ -221,10 +227,10 @@ separate runtime contract is defined.
 | `motor/node_manager/core/services/registry.py` | Service registration and backend discovery |
 | `motor/node_manager/core/services/memcache/` | Optional KV-store service implementation |
 | `motor/node_manager/core/heartbeat_manager.py` | Native state polling, status mapping, heartbeat and suicide threshold |
-| `motor/node_manager/core/engine_manager.py` | Controller registration, StartCmdMsg validation, ranktable and legacy transition hooks |
+| `motor/node_manager/core/engine_manager.py` | Controller registration, StartCmdMsg validation, ranktable and snapshot metadata/restore helpers |
 | `motor/node_manager/api_client/controller_api_client.py` | Controller register, reregister and heartbeat HTTP client |
 | `motor/node_manager/core/fault_reporter.py` | Optional native engine software-fault polling |
-| `motor/config/node_manager.py` | NodeManager schema, endpoint derivation, ports and snapshot validation |
+| `motor/config/node_manager.py` | NodeManager schema, endpoint derivation, ports and vLLM-only snapshot validation |
 
 ## Port and Address Rules
 
@@ -250,7 +256,9 @@ separate runtime contract is defined.
   (`READY`/`NORMAL`).
 - New engine backends should add a backend/config package and tests without coupling `Daemon` to the
   engine-specific CLI.
-- Native Runtime snapshot support is intentionally disabled until its lifecycle contract is defined.
+- Native Runtime snapshot support is vLLM-only. NodeManager must not orchestrate engine snapshot
+  HTTP APIs; keep metadata preparation, registration refresh, and status observation on the
+  NodeManager side.
 
 ## Testing
 

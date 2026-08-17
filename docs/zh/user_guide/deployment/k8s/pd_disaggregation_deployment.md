@@ -136,7 +136,7 @@
 
 ## 特性配置指导
 
-上文 `user_config.json` 与 `env.json` 全量示例已默认开启主备倒换、异常实例重启、服务限流、虚推、KV 亲和性调度、KV 池化等能力。若只需调整某项能力，可对照本节做最小配置修改。
+上文 `user_config.json` 与 `env.json` 全量示例已默认开启主备倒换、异常实例重启、服务限流、KV 亲和性调度、KV 池化等能力。若只需调整某项能力，可对照本节做最小配置修改。
 
 ### 主备倒换
 
@@ -188,25 +188,23 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
 - **关闭**：删除 `rate_limit_config` 配置块，或将 `enable_rate_limit` 设为 `false`。
 - **注意**：字段详细说明请参见[motor_coordinator_config](../../configuration/config_reference.md#motor_coordinator_config)中的**rate_limit_config字段**。
 
-### 虚推健康检查 (Virtual Inference Health Check)
+### 原生引擎健康探测
 
-探测服务健康状态，避免静默故障带来业务损失。静默故障表现为：部分进程卡死，服务看似无问题，但无法正常推理。
+Engine Server 删除后，NodeManager 不再执行虚拟推理或采集 AI Cube 利用率。旧配置中的 `enable_virtual_inference`、`npu_usage_threshold` 和 `max_failure_count` 仅为配置兼容字段，原生运行时不消费。
 
-- **原理**：业务流量较小时发送轻量级推理请求；业务流量较大时查看 NPU 计算核心使用率。不健康的 P/D 实例会被重启以消除静默故障。
-- **开启**：
-   P 和 D 实例需要单独开启虚推功能：P 实例虚推健康检查开启方式如下，D 实例的开启方式相同。
+- **就绪探测**：NodeManager 轮询原生引擎业务端口的 `/health`，在 `startup_timeout` 窗口内保持 STARTING，成功后才允许调度。
+- **进程存活**：NodeManager 监管原生引擎进程组；主进程或工作进程异常退出时触发实例恢复。
+- **软件故障**：引擎提供 `/fault_tolerance/status` 时，可由 FaultReporter 补充软件故障上报。
 
   ```json
   "motor_engine_prefill_config": {
     "health_check_config": {
-      "enable_virtual_inference": true,
-      "npu_usage_threshold": 10
+      "health_collector_timeout": 5,
+      "health_collector_timeout_retry_attempts": 3,
+      "startup_timeout": 1800
     }
   }
   ```
-
-- **关闭**：删除 `health_check_config` 配置块，或将 `enable_virtual_inference` 设为 `false`。
-- **注意**：虚推**仅允许在 ERROR 日志级别下开启**（`ASCEND_GLOBAL_LOG_LEVEL=3`，未配置默认即为 ERROR）。若在 `env.json` 中显式配置为非 ERROR，`deploy.py` 会强制关闭虚推并打印 warning。该功能使用详情请参见[虚推健康检查](../../features/sim_inference.md)。
 
 ### KV Cache 亲和调度
 

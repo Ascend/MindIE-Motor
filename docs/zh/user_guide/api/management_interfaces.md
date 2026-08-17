@@ -180,7 +180,8 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
               "id": 0,
               "ip": "192.168.1.1",
               "business_port": "8080",
-              "mgmt_port": "8081"
+              "mgmt_port": "8081",
+              "bootstrap_port": 21000
             }
           }
         }
@@ -206,6 +207,9 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 
 **输出说明**
 
+`instances[].endpoints` 中的 `bootstrap_port` 为可选字段，仅用于 SGLang PD 原生 bootstrap
+对接；`mgmt_port` 仍是注册协议兼容字段，不代表原生引擎管理 HTTP 端口。
+
 | 参数名 | 类型 | 说明 |
 |---|---|---|
 | request_id | string | 请求标识。 |
@@ -215,6 +219,52 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 | data.timestamp | string | 事件时间。 |
 | data.event_type | string | 事件类型，与请求`event`对应。 |
 | data.instance_count | integer | 实例数量。 |
+
+---
+
+## 精度告警状态清理接口
+
+**接口功能**
+
+清理 Coordinator 调度器中指定 P/D 实例组的精度告警状态。该接口供 Controller/运维编排在
+精度告警已处理后调用，不负责终止实例。
+
+**接口格式**
+
+请求类型：**POST**
+> URL：`http(s)://{IP}:{Port}/precision/alarm_cleared`
+
+IP 与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+
+请求头：
+
+- 必选：`Content-Type: application/json`
+
+**请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `d_instance_id` | integer | 是 | Decode 实例 ID。 |
+| `p_instance_id` | integer | 否 | Prefill 实例 ID；不传表示仅按 Decode 实例清理。 |
+
+**使用样例**
+
+```bash
+curl -X POST "http://{IP}:{Port}/precision/alarm_cleared" \
+  -H "Content-Type: application/json" \
+  -d '{"d_instance_id": 2, "p_instance_id": 1}'
+```
+
+**响应示例**
+
+```json
+{
+  "request_id": "precision_alarm_cleared",
+  "status": "success",
+  "message": "Precision alarm state cleared",
+  "data": {"dismissed": true}
+}
+```
 
 ---
 
@@ -246,12 +296,13 @@ curl -X GET "http://{IP}:{Port}/"
 {
   "service": "Motor Coordinator Management Server",
   "version": "1.0.0",
-  "description": "Management plane: liveness, startup, readiness, instance refresh",
+  "description": "Management plane: liveness, startup, readiness, metrics, instance refresh",
   "endpoints": {
     "GET /liveness": "liveness check",
     "GET /startup": "startup probe",
     "GET /readiness": "readiness check",
-    "POST /instances/refresh": "refresh instances"
+    "POST /instances/refresh": "refresh instances",
+    "POST /precision/alarm_cleared": "clear precision alarm scheduler state"
   }
 }
 ```

@@ -51,7 +51,7 @@ SEPARATOR_WIDTH = 80
 
 KEY_STEPS = {
     'NodeManagerAPI server is ready': 10,
-    'engine_server --dp-rank': 20,
+    'vllm serve': 20,
     'Loading safetensors': 30,
     'Loading model weights': 80,
     'Graph capturing finished': 90,

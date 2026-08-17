@@ -5,12 +5,12 @@
 
 ## 项目简介
 
-MindIE-PyMotor 是面向大模型（LLM）分布式推理的控制器系统：Controller 管理实例生命周期，Coordinator 负责请求调度（PD 分离），NodeManager 管理引擎进程，EngineServer 封装 vLLM/SGLang，KV Conductor（Rust）提供 KV 缓存感知路由。
+MindIE-PyMotor 是面向大模型（LLM）分布式推理的控制器系统：Controller 管理实例生命周期，Coordinator 负责请求调度（PD 分离），NodeManager 直接管理 vLLM/SGLang 原生引擎进程，KV Conductor（Rust）提供 KV 缓存感知路由。
 
 ## 仓库结构
 
 ```text
-motor/                   Python 源码（coordinator / controller / node_manager / engine_server / common / config）
+motor/                   Python 源码（coordinator / controller / node_manager / common / config）
 motor/kv_conductor/      Rust KV Conductor（axum + tokio + ZMQ）
 tests/                   测试（目录镜像 motor/ 结构）
 examples/                部署配置示例（user_config.json、deployer）
@@ -88,6 +88,6 @@ bash tests/run_tests.sh --cov tests/
 深度开发规范在 `.agent/skills/motor-dev/`（Claude Code 中 `/motor-dev` 调用，其他 agent 直接读目录）：
 
 - `SKILL.md` — 硬性约束（测试伴随改动、run_tests.sh、license、类型语法）、渐进式测试工作流、Skill Sync 铁律（**发现文档与代码不符必须同步更新并同 PR 合入**）
-- `references/<module>.md` — 各模块架构（Coordinator/Controller/NodeManager/EngineServer/Metrics/KV Conductor）
+- `references/<module>.md` — 各模块架构（Coordinator/Controller/NodeManager/Metrics/KV Conductor）
 - `bug-fix-history/INDEX.md` — 持续学习案例索引（调试前先查）
 - `references/issue-reporting.md` — 定位问题后按模板提交 ISSUE（仅用户同意后加载）

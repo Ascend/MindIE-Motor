@@ -104,7 +104,6 @@ The skill body only covers core workflow. **When touching a specific module, rea
 | `motor/coordinator/` | `references/coordinator.md` |
 | `motor/coordinator/metrics/` | `references/metrics.md` |
 | `motor/node_manager/` | `references/nodeman.md` |
-| `motor/engine_server/` | `references/engine-server.md` |
 | `tests/e2e/` | `references/e2e-testing.md` |
 | `motor/kv_conductor/` | `references/kv-conductor.md` |
 | General testing / test options | `references/testing-guide.md` |
@@ -152,9 +151,6 @@ bash tests/run_tests.sh tests/coordinator/
 
 # NodeManager
 bash tests/run_tests.sh tests/node_manager/
-
-# EngineServer
-bash tests/run_tests.sh tests/engine_server/
 
 # E2E
 bash tests/run_tests.sh tests/e2e/

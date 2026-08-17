@@ -1,6 +1,6 @@
 # 接口说明
 
-MindIE Motor提供推理[业务接口](#业务接口)、[管理接口](#管理接口)、[指标接口](#指标接口)、[观测接口](#观测接口)和[内部接口](#内部接口)。
+MindIE Motor提供推理[业务接口](#业务接口)、[管理接口](#管理接口)、[指标接口](#指标接口)和[观测接口](#观测接口)。
 
 ## 业务接口
 
@@ -38,6 +38,7 @@ MindIE Motor提供下列管理接口：
 - [存活探针接口](./management_interfaces.md#存活探针接口)：`/liveness`
 - [就绪探针接口](./management_interfaces.md#就绪探针接口)：`/readiness`
 - [实例刷新接口](./management_interfaces.md#实例刷新接口)：`/instances/refresh`
+- [精度告警状态清理接口](./management_interfaces.md#精度告警状态清理接口)：`/precision/alarm_cleared`
 - [根路径服务信息接口](./management_interfaces.md#根路径服务信息接口)：`/`
 - [健康状态查询接口](./management_interfaces.md#健康状态查询接口)：`/health`
 
@@ -123,25 +124,6 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
   - 当使用Multi模式部署时，`yaml`文件参考[`examples/deployer/yaml_template/controller_template.yaml`](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/yaml_template/controller_template.yaml)。
 - 在Kubernetes集群内，观测接口端口使用[`user_config.json`](../configuration/config_reference.md#motor_controller_config)配置文件中`observability_api_port`定义的端口。
   - 当配置文件中无此配置项时，使用默认端口`1027`。
-
-## 内部接口
-
-EngineServer提供下列内部接口：
-
-- [Engine Server 快照接口](./engine_server_interfaces.md#engine-server-快照接口)，包括：
-  - [设备侧快照保存接口](./engine_server_interfaces.md#设备侧快照保存接口)：`/suspend`
-  - [设备解锁接口](./engine_server_interfaces.md#设备解锁接口)：`/device_unlock`
-  - [设备侧快照恢复接口](./engine_server_interfaces.md#设备侧快照恢复接口)：`/resume`
-- [MetaServer转发接口](./engine_server_interfaces.md#metaserver转发接口)：`/v1/metaserver`
-
->[!NOTE]说明
->
-> Engine Server 内部接口挂载在 Engine Server 推理面，**不在** Coordinator 推理接口上提供服务。
-
-### 内部接口的IP/端口
-
-- 内部接口IP：Engine Server 所在节点的 IP 或 `engine_server --host` 绑定的地址。
-- 内部接口端口：`engine_server --port` 指定的端口。
 
 ## 安全、认证与限流
 

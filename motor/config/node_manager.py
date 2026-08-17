@@ -149,10 +149,10 @@ class APIConfig:
 
 @dataclass
 class EndpointConfig:
-    # EngineServer's number
+    # Native engine endpoint count
     endpoint_num: int = 0
 
-    # EngineServer's Port configuration
+    # Native engine endpoint port configuration
     base_port: int = 10000
     mgmt_ports: list[str] = field(default_factory=list)
     service_ports: list[str] = field(default_factory=list)
@@ -793,8 +793,8 @@ class NodeManagerConfig:
         if self.basic_config.heartbeat_interval_seconds <= 0:
             errors.append("heartbeat_interval_seconds must be greater than 0")
 
-        if self.snapshot_config.enable_snapshot:
-            errors.append("Native engine runtime does not support snapshot yet; enable_snapshot must be false")
+        if self.snapshot_config.enable_snapshot and self.basic_config.engine_type != ENGINE_TYPE_VLLM:
+            errors.append("Native Snapshot currently supports only the vllm engine type")
 
         # Validate logging configuration
         valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]

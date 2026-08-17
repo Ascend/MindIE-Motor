@@ -97,7 +97,7 @@ MindIE Motor开启KV池化能力只需修改`user_config.json`配置文件，其
 | [MemCache](backend/memcache.md) | `memcache` | 默认后端，天然支持，无需额外安装 |
 | Yuanrong | `yuanrong` | TODO：后续版本支持 |
 
-> 关于 Connector 的更多原理，以及识别白名单与 `dispatch_profile` 逃生口，请参见 [PD 分离特性说明](../../../design/pd_disaggregation.md#connector-驱动执行计划)。
+> 关于 Connector 的 handoff 白名单和 `MultiConnector` 传输层规则，请参见 [PD 分离特性说明](../../../design/pd_disaggregation.md#connector-驱动执行计划)。
 
 ### kv_cache_store_config（全局配置）
 

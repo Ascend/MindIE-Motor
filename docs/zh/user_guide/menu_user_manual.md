@@ -1,7 +1,7 @@
 # MindIE Motor用户指南
 
 - [简介](../architecture.md)
-- [版本说明](../release_note.md)
+- [版本说明](../release_note_motor.md)
 - [快速入门](./quick_start_motor.md)
 - [安装指南](./maintenance/build_motor_image_from_vllm_ascend.md)
 - [基础环境准备](./environment_preparation.md)
@@ -42,5 +42,4 @@
   - [Controller](../developer_guide/components/controller.md)
   - [Coordinator](../developer_guide/components/coordinator.md)
   - [Coordinator支持的调度方式]()
-  - [Engine Server](../developer_guide/components/engine_server.md)
   - [Node Manager](../developer_guide/components/node_manager.md)

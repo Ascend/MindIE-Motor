@@ -8,7 +8,6 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import argparse
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -17,7 +16,6 @@ from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.config.endpoint import EndpointConfig
 from motor.common import engine_constants as constants
-from motor.node_manager.core.services.native_engine.backends.base import IConfig
 
 logger = get_logger(__name__)
 
@@ -43,34 +41,13 @@ def _add_argument_to_list(arg_list: list, key: str, value: Any):
 
 
 @dataclass
-class SGLangConfig(IConfig):
+class SGLangConfig:
     """SGLang engine configuration for hybrid and PD-disaggregated roles."""
 
-    args: argparse.Namespace | None = None
     endpoint_config: EndpointConfig | None = None
 
     def initialize(self):
         pass
-
-    def validate(self):
-        pass
-
-    def convert(self):
-        arg_list = self._get_param_list()
-        logger.info("engine server sglang arg_list: %s", arg_list)
-
-        from sglang.srt.server_args import ServerArgs
-
-        parser = argparse.ArgumentParser()
-        ServerArgs.add_cli_args(parser)
-        raw_args = parser.parse_args(arg_list)
-        self.args = ServerArgs.from_cli_args(raw_args)
-
-    def get_args(self) -> argparse.Namespace:
-        return self.args
-
-    def get_endpoint_config(self) -> EndpointConfig:
-        return self.endpoint_config
 
     def get_cli_args(self) -> list[str]:
         """Return CLI args for native 'sglang.launch_server' command."""

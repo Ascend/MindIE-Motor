@@ -2,7 +2,7 @@
 
 ## 特性介绍
 
-容器快照特性用于保存实例节点容器的运行状态，并在实例重调度等场景中快速恢复推理服务。Motor 服务框架负责 Device 侧的 suspend、resume 及恢复后的控制面注册；MindCluster 或用户负责对实例节点容器执行 Host 侧 checkpoint。
+容器快照特性用于保存实例节点容器的运行状态，并在实例重调度等场景中快速恢复推理服务。推理引擎负责 Device 侧的 suspend、resume；Motor 服务框架负责快照前后刷新控制面状态（Controller 域名、job_name、pod_ip）、准备快照元数据，并通过引擎状态感知保存/恢复是否完成。MindCluster 或用户负责对实例节点容器执行 Host 侧 checkpoint。
 
 容器快照由以下两部分组成：
 
@@ -24,12 +24,12 @@
 
 容器快照制作流程如下：
 
-1. 实例冷启动并进入健康状态后，Engine Server 自动执行 suspend，锁定 Device 状态、保存 Device 快照，并将运行时模型权重写入 `model_save_path`。
-2. 当本节点全部 Engine Server 均完成 suspend 后，实例节点容器到达稳态点。
+1. 实例冷启动并进入健康状态后，引擎完成 Device 侧 suspend：锁定 Device 状态、保存 Device 快照，并将运行时模型权重写入 `model_save_path`。Node Manager 仅准备快照元数据，不触发显存快照保存。
+2. 当本节点全部原生引擎 Endpoint 均完成 suspend 后，实例节点容器到达稳态点。
    - MindCluster 实例重调度场景：通过 Node Manager 的 `/readiness` 返回 `200` 判断。
    - 用户自定义应用场景：通过 `/node-manager/status` 返回 `200 {"status": true}` 判断。
 3. 到达稳态点后，MindCluster 或用户使用 grus 对实例节点容器执行 checkpoint，保存容器 Host 快照镜像。
-4. Host 侧 checkpoint 完成后，将元数据字段 `checkpoint` 更新为 `"done"`。Engine Server 检测到该状态后解锁 Device，冷启动实例恢复提供推理服务。
+4. Host 侧 checkpoint 完成后，将元数据字段 `checkpoint` 更新为 `"done"`。引擎检测到该状态后自行解锁 Device，冷启动实例恢复提供推理服务。
 
 处于 checkpoint 过程中的实例无法提供推理服务。到达稳态点但 `checkpoint` 尚未完成时，Node Manager 暂停向 Controller 上报正常心跳。
 
@@ -39,8 +39,8 @@
 
 1. MindCluster 或用户从 Host 快照镜像恢复实例节点容器，并挂载对应的运行时权重和快照元数据文件。
 2. Node Manager 从元数据读取 `job_name` 和 `namespace`，刷新 Pod IP 与 Controller DNS，然后向 Controller 重新注册。
-3. Controller 下发启动命令。Node Manager 更新快照元数据文件中的 `model_load_path` 与 `data_parallel_master_ip` 字段；快照恢复场景不会重新创建 Engine Server 进程。
-4. Engine Server 使用元数据中的 `model_load_path` 与 `data_parallel_master_ip` 执行 resume。全部 endpoint 恢复为 `NORMAL` 后，实例重新进入就绪状态。
+3. Controller 下发启动命令。Node Manager 更新快照元数据文件中的 `model_load_path` 与 `data_parallel_master_ip` 字段；快照恢复场景继续使用容器快照中恢复的原生引擎进程。
+4. 引擎读取元数据中的 `model_load_path` 与 `data_parallel_master_ip` 完成 resume。全部 Endpoint 恢复健康后，实例重新进入就绪状态。
 
 ## 启用制作容器快照配置
 
@@ -71,7 +71,7 @@
 | `job_name` | 快照恢复 | 从容器快照恢复前必须准备 | 推理实例的唯一标识，恢复后注册时用于更新 Node Manager 的任务名 |
 | `namespace` | 快照恢复 | Controller 使用集群内 `.svc.cluster.local` DNS 时必须准备 | 推理服务所属 namespace，用于更新 Controller DNS；非集群 DNS 场景可不配置 |
 | `data_parallel_master_ip` | 快照恢复 | 可不预先配置 | 实例 Master DP 所在 Pod 的 IP；优先使用文件中的值，未配置时由 Node Manager 写入 Controller 下发值 |
-| `checkpoint` | 快照制作 | Host 侧 checkpoint 完成后写入 | 更新为 `"done"` 后，Engine Server 解锁 Device，冷启动实例恢复推理服务 |
+| `checkpoint` | 快照制作 | Host 侧 checkpoint 完成后写入 | 更新为 `"done"` 后，引擎解锁 Device，冷启动实例恢复推理服务 |
 
 用户自定义应用场景，制作容器快照前, 需要准备 `model_save_path` 字段; 从容器快照恢复前，需要准备 `model_load_path` 和 `job_name`；使用集群内 Controller DNS 时还需准备 `namespace`。
 

@@ -8,13 +8,11 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import argparse
 import json
 from typing import Any
 from dataclasses import dataclass, field
 
 from motor.config.endpoint import EndpointConfig
-from motor.node_manager.core.services.native_engine.backends.base import IConfig
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.common import engine_constants as constants
@@ -56,8 +54,7 @@ def _get_default_mapping() -> dict[str, str]:
 
 
 @dataclass
-class VLLMConfig(IConfig):
-    args: argparse.Namespace | None = None
+class VLLMConfig:
     data_parallel_address: str | None = None
     data_parallel_rpc_port: int | None = None
     kv_transfer_config: str | None = None
@@ -74,32 +71,6 @@ class VLLMConfig(IConfig):
         if role in (constants.PREFILL_ROLE, constants.DECODE_ROLE):
             self._process_kv_transfer_config()
         self._process_d2d_config()
-
-    def validate(self):
-        if self.args is not None:
-            from vllm.entrypoints.openai.cli_args import validate_parsed_serve_args
-
-            validate_parsed_serve_args(self.args)
-
-    def convert(self):
-        arg_list = self._get_param_list()
-        logger.info(f'engine server parsed arg_list: {arg_list}')
-
-        try:
-            from vllm.utils import FlexibleArgumentParser
-        except ImportError:
-            from vllm.utils.argparse_utils import FlexibleArgumentParser
-        from vllm.entrypoints.openai.cli_args import make_arg_parser
-
-        parser = FlexibleArgumentParser(description="vLLM parser")
-        parser = make_arg_parser(parser)
-        self.args = parser.parse_args(arg_list)
-
-    def get_args(self) -> argparse.Namespace:
-        return self.args
-
-    def get_endpoint_config(self) -> EndpointConfig:
-        return self.endpoint_config
 
     def get_cli_args(self) -> list[str]:
         """Return CLI args for native 'vllm serve' command."""

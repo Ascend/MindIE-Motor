@@ -52,3 +52,9 @@ SGLang 在多轮对话、Agent 搜索、Few-shot 等依赖前缀复用的场景�
   }
 }
 ```
+
+SGLang PD 分离时，bootstrap 端口按 Pod/NodeManager 维度配置在
+`engine_config.disaggregation_bootstrap_port`（也兼容原生 CLI 风格的
+`disaggregation-bootstrap-port`）。NodeManager 将该端口作为 `bootstrap_port` 注册元数据，
+并由 Coordinator 的 SGLang Adapter 用于 Prefill/Decode 对接；它与推理业务端口
+`endpoint_config.service_ports` 是不同端口。未配置该字段时不生成 bootstrap 元数据。

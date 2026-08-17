@@ -19,10 +19,6 @@ from motor.common.resources.http_msg_spec import Ranktable, RegisterMsg, StartCm
 from motor.common.utils.env import Env
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
-from motor.config.node_manager import HardwareType, NodeManagerConfig
-from motor.node_manager.api_client.controller_api_client import ControllerApiClient
-from motor.node_manager.core.fault_reporter import FaultReporter
-from motor.node_manager.core.api_ready_event import wait_until_api_ready
 from motor.common.utils.snapshot_utils import (
     load_snapshot_metadata,
     update_snapshot_metadata,
@@ -33,6 +29,10 @@ from motor.common.utils.snapshot_utils import (
     MOTOR_SNAPSHOT_WEIGHT_DIR,
     MOTOR_SNAPSHOT_CONFIGMAP_DIR,
 )
+from motor.config.node_manager import HardwareType, NodeManagerConfig
+from motor.node_manager.api_client.controller_api_client import ControllerApiClient
+from motor.node_manager.core.fault_reporter import FaultReporter
+from motor.node_manager.core.api_ready_event import wait_until_api_ready
 
 logger = get_logger(__name__)
 

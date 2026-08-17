@@ -75,7 +75,7 @@ Singleton (`ThreadSafeSingleton`) with a background daemon thread:
 ``` text
 Periodic collect loop (every N seconds):
 
-  1. HTTP GET /metrics from every engine endpoint (EngineServerApiClient)
+  1. HTTP GET /metrics from every native engine endpoint (`NativeEngineApiClient`)
   2. Parse Prometheus exposition format → list[Metric]
 
      - Manual parser (not prometheus_client library)

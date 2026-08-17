@@ -121,8 +121,7 @@ def test_backend_prepares_command_and_probe_from_one_endpoint_config():
     build_endpoint.assert_called_once_with(context, "vllm")
     assert launch_spec.command.argv == ("vllm", "serve", "--model", "/models/glm-test")
     assert launch_spec.probe.path == "/health"
-    native_config.convert.assert_called_once_with()
-    native_config.validate.assert_called_once_with()
+    native_config.get_cli_args.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
@@ -256,7 +255,6 @@ def testbuild_endpoint_config_maps_launch_context_without_cli_globals():
     assert endpoint_config.dp_rank == 2
     assert endpoint_config.node_rank == 1
     assert endpoint_config.d2d_peer_ips == "10.0.0.3"
-    assert endpoint_config.snapshot_metadata is None
 
 
 def test_backend_builds_native_health_probe_from_engine_config():

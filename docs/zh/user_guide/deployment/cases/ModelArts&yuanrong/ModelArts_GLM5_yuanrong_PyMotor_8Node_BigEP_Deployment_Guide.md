@@ -935,9 +935,9 @@ user_config.json内容如下
                 }
             },
             "health_check_config": {
-                "enable_virtual_inference": false,
-                "npu_usage_threshold": 3,
-                "max_failure_count": 6
+                "health_collector_timeout": 5,
+                "health_collector_timeout_retry_attempts": 3,
+                "startup_timeout": 1800
             }
         }
     },

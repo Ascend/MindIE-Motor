@@ -96,7 +96,7 @@ InstanceAssembler._start_command_sender 发送 StartCmdMsg
         ▼
 NodeManager 接收 StartCmdMsg
   - parse_start_cmd(): 校验参数，存储 instance_id 和 endpoints
-  - Daemon.pull_engine(): 启动 engine_server 推理进程
+  - Daemon.pull_engine(): 启动原生推理引擎进程
   - HeartbeatManager.start(): 开始心跳上报
         │
         ▼

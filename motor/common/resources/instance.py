@@ -427,9 +427,9 @@ class Instance(BaseModel):
                 return True
             else:
                 # Pod sending heartbeat for an IP not registered in this instance's
-                # endpoints (e.g. stale engine-server after scale-down / pod eviction).
-                # The caller raises HTTPException so the engine-server knows to
-                # re-register.  Throttle to avoid flooding the log every heartbeat cycle.
+                # endpoints (e.g. a stale NodeManager after scale-down / Pod eviction).
+                # The caller raises HTTPException so the NodeManager knows to
+                # re-register. Throttle to avoid flooding the log every heartbeat cycle.
                 _rl.error_window(
                     f"hb_unknown_ip:{self.id}:{ip}",
                     "Instance %s not found endpoints for pod_ip %s" % (self.id, ip),

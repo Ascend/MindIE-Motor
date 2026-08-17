@@ -140,7 +140,7 @@ def _update_tls_config(
             updated_config[tls_key] = tls_config[tls_key]
 
 
-def _update_engine_server_tls_config(
+def _update_native_engine_tls_config(
     updated_config: dict[str, Any],
     user_config_data: dict[str, Any],
 ) -> None:

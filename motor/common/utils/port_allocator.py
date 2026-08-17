@@ -304,8 +304,8 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
         mgmt_port = _auto(int(mgmt_pref), f"mgmt_ports[{idx}]")
         new_service_ports.append(str(svc_port))
         new_mgmt_ports.append(str(mgmt_port))
-        rows.append(_row("EngineServer", host, svc_port, "auto", f"DP{idx} business"))
-        rows.append(_row("EngineServer", host, mgmt_port, "auto", f"DP{idx} mgmt"))
+        rows.append(_row("NativeEngine", host, svc_port, "auto", f"DP{idx} business"))
+        rows.append(_row("NodeManager", host, mgmt_port, "auto", f"DP{idx} reserved"))
 
     ep.service_ports = new_service_ports
     ep.mgmt_ports = new_mgmt_ports
@@ -313,13 +313,13 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     if sc.single_container_flag:
         if sc.kv_port is not None:
             sc.kv_port = _auto(sc.kv_port, "kv_port")
-            rows.append(_row("EngineServer", host, sc.kv_port, "auto", "KV transfer"))
+            rows.append(_row("NativeEngine", host, sc.kv_port, "auto", "KV transfer"))
         if sc.lookup_rpc_port is not None:
             sc.lookup_rpc_port = _auto(sc.lookup_rpc_port, "lookup_rpc_port")
-            rows.append(_row("EngineServer", host, sc.lookup_rpc_port, "auto", "KV lookup RPC"))
+            rows.append(_row("NativeEngine", host, sc.lookup_rpc_port, "auto", "KV lookup RPC"))
         if sc.dp_rpc_port is not None:
             sc.dp_rpc_port = _auto(sc.dp_rpc_port, "dp_rpc_port")
-            rows.append(_row("EngineServer", host, sc.dp_rpc_port, "auto", "DP RPC"))
+            rows.append(_row("NativeEngine", host, sc.dp_rpc_port, "auto", "DP RPC"))
 
     PortAllocator.print_matrix(rows)
 

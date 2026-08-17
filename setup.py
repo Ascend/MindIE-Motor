@@ -48,9 +48,4 @@ setup(
     package_data=_package_data,
     include_package_data=True,
     zip_safe=False,
-    entry_points={
-        "console_scripts": [
-            "engine_server = motor.engine_server.cli.main:main",
-        ]
-    },
 )

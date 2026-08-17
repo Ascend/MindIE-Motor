@@ -9,9 +9,21 @@
 # See the Mulan PSL v2 for more details.
 
 import importlib
+from typing import Protocol
 
 from motor.config.endpoint import EndpointConfig
-from motor.node_manager.core.services.native_engine.backends.base import IConfig
+
+
+class NativeEngineCLIConfig(Protocol):
+    """Contract implemented by engine-specific native CLI builders."""
+
+    def initialize(self) -> None:
+        """Load and normalize engine-specific configuration."""
+        ...
+
+    def get_cli_args(self) -> list[str]:
+        """Return arguments for the native engine command."""
+        ...
 
 
 class ConfigFactory:
@@ -25,17 +37,14 @@ class ConfigFactory:
     def __init__(self, endpoint_config: EndpointConfig):
         self.endpoint_config = endpoint_config
 
-    def build_cli_config(self) -> IConfig:
+    def build_cli_config(self) -> NativeEngineCLIConfig:
         """Build native CLI configuration without importing engine parsers."""
         engine_type = self.endpoint_config.engine_type
         config_class_path = self._ENGINE_CONFIG_MAP.get(engine_type)
 
         if not config_class_path:
             supported_types = list(self._ENGINE_CONFIG_MAP.keys())
-            raise ValueError(
-                f"Unsupported engine type: {engine_type}. "
-                f"Supported types are: {supported_types}."
-            )
+            raise ValueError(f"Unsupported engine type: {engine_type}. Supported types are: {supported_types}.")
 
         try:
             module_path, class_name = config_class_path.rsplit(".", 1)
@@ -47,10 +56,3 @@ class ConfigFactory:
             return config_instance
         except (ImportError, AttributeError) as e:
             raise ValueError(f"Failed to load config class for {engine_type}") from e
-
-    def parse(self) -> IConfig:
-        """Build and validate the transitional in-process EngineServer configuration."""
-        config_instance = self.build_cli_config()
-        config_instance.convert()
-        config_instance.validate()
-        return config_instance

@@ -4,7 +4,7 @@
 
 ## 内容侧重
 
-- 组件内部实现（Controller、Coordinator、Engine Server、Node Manager）
+- 组件内部实现（Controller、Coordinator、Node Manager 与原生引擎适配）
 - 类图、数据流、模块交互
 - 构建工具（文档构建、镜像制作）
 

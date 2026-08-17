@@ -8,7 +8,6 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-import argparse
 import json
 import os
 from dataclasses import dataclass, field
@@ -17,7 +16,7 @@ from typing import Any
 
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DISPATCH_PROFILE_KEY
-from motor.config.config_utils import _update_engine_server_tls_config
+from motor.config.config_utils import _update_native_engine_tls_config
 from motor.config.resolver import ConfigResolver, normalize_keys
 from motor.config.tls_config import TLSConfig
 from motor.common import engine_constants as constants
@@ -176,7 +175,7 @@ class DeployConfig:
                 "union": MOTOR_ENGINE_UNION_CONFIG_KEY,
             }
             data = raw_data.get(key_map.get(role, ""), {})
-            _update_engine_server_tls_config(data, raw_data)
+            _update_native_engine_tls_config(data, raw_data)
 
             resolver = ConfigResolver(data)
 
@@ -274,59 +273,6 @@ class EndpointConfig:
     d2d_peer_ips: str | None = None
     deploy_config: DeployConfig = None
 
-    snapshot_metadata: str | None = None
-
-    @classmethod
-    def parse_cli_args(cls) -> argparse.Namespace:
-        parser = argparse.ArgumentParser(description="EngineServer - Universal Inference Engine Service")
-        parser.add_argument("--host", help="EngineServer endpoint host")
-        parser.add_argument("--role", help="PD separate role, prefill/decode/union")
-        parser.add_argument("--kv-port", type=int, help="kv port")
-        parser.add_argument("--lookup-rpc-port", type=int, help="lookup rpc port")
-        parser.add_argument("--master-dp-ip", type=str, help="Master DP ip for distributed setup")
-        parser.add_argument("--dp-rpc-port", type=int, help="dp rpc port")
-        parser.add_argument("--port", type=int, help="EngineServer business interface port")
-        parser.add_argument("--mgmt-port", type=int, dest="mgmt_port", help="EngineServer management interface port")
-        parser.add_argument("--instance-id", type=int, default=0, help="Engine instance id")
-        parser.add_argument("--dp-rank", type=int, default=0, help="DP parallel rank")
-        parser.add_argument("--node-rank", type=int, default=0, help="PCP node rank (assigned by Motor Controller)")
-        parser.add_argument("--config-path", help="Path to engine-specific configuration file (JSON format)")
-        parser.add_argument(
-            "--d2d-peer-ips",
-            type=str,
-            default=None,
-            help="Comma-separated IPs of peer instances for D2D weight transfer",
-        )
-        parser.add_argument(
-            "--snapshot-metadata",
-            default=None,
-            help="Snapshot metadata file (JSON format), enable snapshot function",
-        )
-        return parser.parse_args()
-
-    @classmethod
-    def init_endpoint_config(cls) -> 'EndpointConfig':
-        cli_args = cls.parse_cli_args()
-        endpoint_config = cls(
-            host=cli_args.host,
-            role=cli_args.role,
-            kv_port=cli_args.kv_port,
-            lookup_rpc_port=cli_args.lookup_rpc_port,
-            master_dp_ip=cli_args.master_dp_ip,
-            dp_rpc_port=cli_args.dp_rpc_port,
-            port=cli_args.port,
-            mgmt_port=cli_args.mgmt_port,
-            instance_id=cli_args.instance_id,
-            config_path=cli_args.config_path,
-            dp_rank=cli_args.dp_rank,
-            d2d_peer_ips=cli_args.d2d_peer_ips,
-            node_rank=cli_args.node_rank,
-            snapshot_metadata=cli_args.snapshot_metadata,
-        )
-        endpoint_config.validate()
-        endpoint_config.load_deploy_config()
-        return endpoint_config
-
     def validate(self):
         if self.role not in supported_role:
             raise ValueError(f"role {self.role} is not supported.")
@@ -341,11 +287,6 @@ class EndpointConfig:
             raise ValueError(f"config file {self.config_path} does not exist")
         if not FileValidator(self.config_path).check_not_soft_link().check_file_size().check().is_valid():
             raise ValueError(f"{self.config_path} is not a valid file path.")
-        if self.snapshot_metadata is not None:
-            if not os.path.exists(self.snapshot_metadata):
-                raise ValueError(f"snapshot metadata file {self.snapshot_metadata} does not exist")
-            if not FileValidator(self.snapshot_metadata).check_not_soft_link().check_file_size().check().is_valid():
-                raise ValueError(f"{self.snapshot_metadata} is not a valid file path")
 
     def load_deploy_config(self):
         self.deploy_config = DeployConfig.load(self.config_path, role=self.role)
