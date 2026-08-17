@@ -39,8 +39,17 @@ class ConfigKey(Enum):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Hard-coded URLs for all probe types
+# Hard-coded URLs for controller/coordinator probe types
 PROBE_URLS = {'startup': '/startup', 'readiness': '/readiness', 'liveness': '/liveness'}
+
+# Hard-coded URLs for instance node probe types, /startup or /liveness is related to /node-manager/status
+# - startup/liveness: /node-manager/status (HTTP 200)
+# - readiness: /readiness (HTTP 200/503 based on nodemanager health)
+NODE_MANAGER_PROBE_URLS = {
+    'startup': '/node-manager/status',
+    'liveness': '/node-manager/status',
+    'readiness': '/readiness',
+}
 
 # Hard-coded default ports
 DEFAULT_PORTS = {
@@ -49,6 +58,11 @@ DEFAULT_PORTS = {
     'node_manager': 1026,
 }
 
+API_KEYS = {
+    "controller": "controller_api_port",
+    "coordinator": "coordinator_api_mgmt_port",
+    "node_manager": "node_manager_port",
+}
 
 ENGINE_ROLES = ("union", "prefill", "decode")
 
@@ -164,6 +178,12 @@ def get_config(role):
     return config
 
 
+def get_probe_url(role, probe_type):
+    if role == 'node_manager' or role in ENGINE_ROLES:
+        return NODE_MANAGER_PROBE_URLS[probe_type]
+    return PROBE_URLS[probe_type]
+
+
 def send_http_request(ip, port, url_path, config):
     """
     Send HTTP request to the probe endpoint.
@@ -252,7 +272,7 @@ def main():
     if role in ENGINE_ROLES:
         role = 'node_manager'
 
-    port_key = f'api_config.{role}_api_port'
+    port_key = f'api_config.{API_KEYS[role]}'
 
     port = get_val_by_key_path(config, port_key)
     if not isinstance(port, int) or port < 1024 or port > 65535:
@@ -262,7 +282,7 @@ def main():
             logger.error("Failed to get port")
             sys.exit(1)
 
-    url_path = PROBE_URLS[probe_type]
+    url_path = get_probe_url(role, probe_type)
     logger.info("Executing %s probe for %s at %s%s", probe_type, role, format_address(pod_ip, port), url_path)
     success = send_http_request(pod_ip, port, url_path, config)
 
