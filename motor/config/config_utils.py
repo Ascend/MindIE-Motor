@@ -51,6 +51,8 @@ HTTP_SERVER_PORT = "http_server_port"
 RE_REGISTER_INTERVAL_SEC = "re_register_interval_sec"
 DEFAULT_RE_REGISTER_INTERVAL_SEC = 30
 MODEL_PATH = "model_path"
+CONTEXT_BUDGET_MODE = "context_budget_mode"
+CONTEXT_BUDGET_ON = "on"
 SSL_ENABLE = "ssl_enable"
 SSL_CA_CERTS = "ssl_ca_certs"
 SSL_CERTFILE = "ssl_certfile"
@@ -253,8 +255,10 @@ def _build_prefill_kv_event_from_engine_section(
         return None
 
     kv_events_config = engine_config.get(KV_EVENTS_CONFIG)
-    if not isinstance(kv_events_config, dict):
+    if not isinstance(kv_events_config, dict) and not _is_context_budget_enabled(user_config_data):
         return None
+    if not isinstance(kv_events_config, dict):
+        kv_events_config = {}
 
     resolver = ConfigResolver(engine_section)
     return {
@@ -265,6 +269,13 @@ def _build_prefill_kv_event_from_engine_section(
         MODEL_PATH: resolver.get_model_path(""),
         RE_REGISTER_INTERVAL_SEC: _resolve_re_register_interval_sec(user_config_data),
     }
+
+
+def _is_context_budget_enabled(user_config_data: dict[str, Any]) -> bool:
+    coordinator_config = user_config_data.get(ConfigKey.MOTOR_COORDINATOR.value)
+    if not isinstance(coordinator_config, dict):
+        return False
+    return coordinator_config.get(CONTEXT_BUDGET_MODE) == CONTEXT_BUDGET_ON
 
 
 def _select_kv_event_engine_section(user_config_data: dict[str, Any]) -> dict[str, Any] | None:

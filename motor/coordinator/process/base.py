@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -29,6 +28,7 @@ class SupportsSpawnContext(Protocol):
     def set_daemon_pid(self, daemon_pid: int | None) -> None:
         """Set daemon PID so the child can detect orphan (getppid() != daemon_pid). Called by Daemon before start()."""
         ...
+
 
 logger = get_logger(__name__)
 

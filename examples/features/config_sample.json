@@ -131,6 +131,7 @@
     "precision_auto_recovery_enabled": false
   },
   "motor_coordinator_config": {
+    "context_budget_mode": "off",
     "logging_config": {
       "log_level": "INFO",
       "log_max_line_length": 8192,

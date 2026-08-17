@@ -793,3 +793,34 @@ def test_from_json_maps_prefill_kv_events_regression(_temp_json_file):
     assert pk.model_path == "/mnt/weight/qwen3_8B"
     assert pk.http_server_port == 15555
     assert pk.block_size == 32
+
+
+def test_context_budget_uses_engine_model_metadata_without_kv_events(_temp_json_file):
+    user_config = {
+        "motor_coordinator_config": {
+            "context_budget_mode": "on",
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/mnt/weight/model",
+                "max_model_len": 8192,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/mnt/weight/model",
+                "max_model_len": 4096,
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.context_budget_mode == "on"
+    assert config.prefill_kv_event_config.model_path == "/mnt/weight/model"
+    assert config.aigw_model["p_max_seqlen"] == 8192
+    assert config.aigw_model["d_max_seqlen"] == 4096

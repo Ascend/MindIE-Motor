@@ -386,6 +386,30 @@ class TestKvCacheAffinityTokenizationUtils(unittest.TestCase):
         # Original input must remain unchanged (deepcopy semantics).
         self.assertIsInstance(messages[0]["content"], list)
 
+    def test_preprocess_messages_for_standard_coerces_tool_call_arguments(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [{"type": "function", "function": {"name": "foo", "arguments": '{"a": 1}'}}],
+            }
+        ]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertEqual(processed[0]["tool_calls"][0]["function"]["arguments"], {"a": 1})
+        self.assertIsInstance(messages[0]["tool_calls"][0]["function"]["arguments"], str)
+
+    def test_preprocess_messages_for_standard_pops_empty_tool_calls(self):
+        messages = [{"role": "assistant", "content": "ok", "tool_calls": []}]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertNotIn("tool_calls", processed[0])
+        self.assertIn("tool_calls", messages[0])
+
+    def test_preprocess_messages_for_standard_flattens_tool_role_list_content(self):
+        messages = [{"role": "tool", "content": [{"type": "text", "text": "Weather data"}]}]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertEqual(processed[0]["content"], "Weather data")
+        self.assertIsInstance(messages[0]["content"], list)
+
     def test_preprocess_messages_for_dsv4_flattens_messages_and_sorts_tools(self):
         messages = [
             {
@@ -455,6 +479,33 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
             build(req_data),
             {"tokenize": True, "drop_thinking": True, "reasoning_effort": "none", "enable_thinking": True},
         )
+
+    def test_build_standard_chat_template_kwargs(self):
+        build = TokenizerManager._build_standard_chat_template_kwargs
+        self.assertEqual(
+            build(None, tokenize=True),
+            {"add_generation_prompt": True, "tokenize": True, "return_dict": False},
+        )
+        self.assertEqual(
+            build(None, tokenize=False),
+            {"add_generation_prompt": True, "tokenize": False},
+        )
+
+        kwargs = build(
+            {
+                "reasoning_effort": "none",
+                "chat_template_kwargs": {"foo": 1},
+                "continue_final_message": True,
+            },
+            tokenize=True,
+        )
+        self.assertFalse(kwargs["add_generation_prompt"])
+        self.assertTrue(kwargs["continue_final_message"])
+        self.assertEqual(kwargs["foo"], 1)
+        self.assertFalse(kwargs["enable_thinking"])
+
+        thinking_kwargs = build({"thinking": {"type": "disabled"}}, tokenize=True)
+        self.assertFalse(thinking_kwargs["enable_thinking"])
 
     def test_apply_chat_template_dsv4_passes_preprocessed_inputs_and_kwargs(self):
         tokenizer = Mock()
@@ -1110,17 +1161,39 @@ class TestExchangeArguments:
             assert tool["function"]["arguments"]["tool"] == f"tool{i + 1}"
             assert tool["function"]["arguments"]["value"] == i + 1
 
+    def test_empty_tool_calls_are_dropped(self):
+        message = {"role": "assistant", "content": "ok", "tool_calls": []}
+        exchange_arguments(message)
+        assert "tool_calls" not in message
+
+    def test_missing_or_empty_arguments_become_empty_dict(self):
+        message = {
+            "tool_calls": [
+                {"type": "function", "function": {"name": "a"}},
+                {"type": "function", "function": {"name": "b", "arguments": ""}},
+                {"type": "function", "function": {"name": "c", "arguments": None}},
+            ]
+        }
+        exchange_arguments(message)
+        for item in message["tool_calls"]:
+            assert item["function"]["arguments"] == {}
+
+    def test_tool_calls_string_is_ignored(self):
+        message = {"tool_calls": "not-a-list"}
+        original = deepcopy(message)
+        exchange_arguments(message)
+        assert message == original
+
 
 class TestExchangeToolContent:
     """Test exchange_tool_content function"""
 
     def test_tool_role_with_string_content(self):
-        """Test: role is tool, content is str"""
+        """vLLM keeps tool-role string content unchanged."""
         message = {"role": "tool", "content": "Tool execution result"}
+        original = deepcopy(message)
         exchange_tool_content(message)
-
-        expected = "{'type': 'text', 'text': 'Tool execution result'}"
-        assert message["content"] == expected
+        assert message == original
 
     def test_tool_role_with_dict_content(self):
         """Test: role is tool, content is dict"""
@@ -1151,11 +1224,27 @@ class TestExchangeToolContent:
         assert message == original
 
     def test_empty_string_content(self):
-        """Test: content is "" """
+        """Empty tool content remains an empty string."""
         message = {"role": "tool", "content": ""}
         exchange_tool_content(message)
-        expected = "{'type': 'text', 'text': ''}"
-        assert message["content"] == expected
+        assert message["content"] == ""
+
+    def test_tool_role_list_of_text_parts_joins_to_string(self):
+        message = {
+            "role": "tool",
+            "content": [{"type": "text", "text": "Weather data"}, {"type": "text", "text": "25C"}],
+        }
+        exchange_tool_content(message)
+        assert message["content"] == "Weather data\n25C"
+
+    def test_tool_role_list_with_non_text_is_kept(self):
+        message = {
+            "role": "tool",
+            "content": [{"type": "tool_reference", "name": "get_weather"}],
+        }
+        original = deepcopy(message)
+        exchange_tool_content(message)
+        assert message == original
 
 
 class TestExchangeTools:
@@ -1227,8 +1316,8 @@ class TestPreprocessInput:
 
         # test tool_calls arguments exchange
         assert isinstance(processed_messages[1]["tool_calls"][0]["function"]["arguments"], dict)
-        # test tool role content exchange
-        assert processed_messages[2]["content"] == "{'type': 'text', 'text': 'Weather data'}"
+        # vLLM keeps tool-role string content as a plain string
+        assert processed_messages[2]["content"] == "Weather data"
         assert processed_tools is None
 
     def test_with_tools(self):
@@ -1318,7 +1407,8 @@ class TestPreprocessInput:
 
         for msg in processed_messages[3:]:
             if msg["role"] == "tool":
-                assert "type" in msg["content"] and "text" in msg["content"]
+                assert isinstance(msg["content"], str)
+                assert "type" not in msg["content"]
 
         # test tool processe
         for tool in processed_tools:
@@ -1402,13 +1492,63 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
         _, kwargs = mock_tokenizer.apply_chat_template.call_args
         self.assertIsNone(kwargs.get("tools"))
 
+    def test_standard_path_coerces_tool_call_argument_strings(self) -> None:
+        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
+        mock_tokenizer.apply_chat_template.return_value = [1, 2, 3]
+        messages = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "foo", "arguments": '{"a": 1}'},
+                    }
+                ],
+            }
+        ]
+        tools = [{"type": "function", "function": {"name": "foo", "parameters": {}}}]
+        result = manager.apply_chat_template(messages, tools)
+        self.assertEqual(result, [1, 2, 3])
+        _, kwargs = mock_tokenizer.apply_chat_template.call_args
+        self.assertEqual(kwargs["conversation"][0]["tool_calls"][0]["function"]["arguments"], {"a": 1})
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+
+    def test_standard_path_forwards_chat_template_kwargs(self) -> None:
+        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
+        mock_tokenizer.apply_chat_template.return_value = [1]
+        req_data = {
+            "chat_template_kwargs": {"enable_thinking": False, "foo": 1},
+            "reasoning_effort": "none",
+        }
+        manager.apply_chat_template([{"role": "user", "content": "hi"}], None, req_data)
+        _, kwargs = mock_tokenizer.apply_chat_template.call_args
+        self.assertFalse(kwargs["enable_thinking"])
+        self.assertEqual(kwargs["reasoning_effort"], "none")
+        self.assertEqual(kwargs["foo"], 1)
+        self.assertTrue(kwargs["tokenize"])
+        self.assertTrue(kwargs["add_generation_prompt"])
+
+    def test_standard_path_maps_thinking_type_to_enable_thinking(self) -> None:
+        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
+        mock_tokenizer.apply_chat_template.return_value = [1]
+        manager.apply_chat_template(
+            [{"role": "user", "content": "hi"}],
+            None,
+            {"thinking": {"type": "enabled"}},
+        )
+        _, kwargs = mock_tokenizer.apply_chat_template.call_args
+        self.assertTrue(kwargs["enable_thinking"])
+
     def test_standard_exception_fallback_still_passes_tools(self) -> None:
-        """If primary call raises, fallback retries with the SAME tools (never silently drops it)."""
-        side_effects = [RuntimeError("first failure"), [9, 9, 9, 9]]
+        """If STANDARD fails, fallback renders a string and keeps tools."""
+        side_effects = [RuntimeError("first failure"), "rendered prompt"]
         manager, mock_tokenizer = _build_tokenizer_manager(
             openai_standard="STANDARD",
             apply_chat_template_side_effect=side_effects,
         )
+        mock_tokenizer.encode.return_value = [9, 9, 9, 9]
 
         messages = [{"role": "user", "content": "hi"}]
         tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
@@ -1416,8 +1556,13 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
         self.assertEqual(result, [9, 9, 9, 9])
 
         self.assertEqual(mock_tokenizer.apply_chat_template.call_count, 2)
-        for _, kwargs in mock_tokenizer.apply_chat_template.call_args_list:
-            self.assertEqual(kwargs.get("tools"), tools)
+        first_kwargs = mock_tokenizer.apply_chat_template.call_args_list[0].kwargs
+        second_kwargs = mock_tokenizer.apply_chat_template.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs.get("tools"), tools)
+        self.assertTrue(first_kwargs.get("tokenize"))
+        self.assertEqual(second_kwargs.get("tools"), tools)
+        self.assertFalse(second_kwargs.get("tokenize", True))
+        mock_tokenizer.encode.assert_called_once_with("rendered prompt")
 
     def test_total_failure_returns_empty_list(self) -> None:
         """Both primary and fallback failing -> empty list (let scheduler fall back to LB)."""

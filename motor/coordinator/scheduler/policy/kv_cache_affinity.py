@@ -16,7 +16,10 @@ from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy, WorkloadLedgerMixin
 from motor.config.coordinator import (
+    AIGW_D_MAX_SEQLEN,
+    AIGW_P_MAX_SEQLEN,
     CoordinatorConfig,
+    CONTEXT_BUDGET_ON,
     KV_AFFINITY_MODE_LOAD_GATED,
     KV_AFFINITY_MODE_UNIFIED,
 )
@@ -40,6 +43,57 @@ logger = get_logger(__name__)
 
 # Endpoints kept by the load-gated mode when kv_affinity_load_gate_topn is left unset (0).
 _DEFAULT_LOAD_GATE_TOPN = 2
+
+
+def adapt_context_budget(req_info: RequestInfo, config: CoordinatorConfig) -> None:
+    """Clamp a request's active output-token budget to the remaining context."""
+    if config.context_budget_mode != CONTEXT_BUDGET_ON:
+        return
+
+    req_data = req_info.req_data
+    parameters = (
+        (OpenAIField.MAX_COMPLETION_TOKENS, OpenAIField.MAX_TOKENS)
+        if OpenAIField.MESSAGES in req_data
+        else (OpenAIField.MAX_TOKENS,)
+    )
+    for parameter in parameters:
+        requested_tokens = req_data.get(parameter)
+        if isinstance(requested_tokens, int) and not isinstance(requested_tokens, bool) and requested_tokens > 0:
+            break
+    else:
+        return
+
+    context_limits = [
+        value
+        for value in (
+            (config.get_aigw_models() or {}).get(AIGW_P_MAX_SEQLEN),
+            (config.get_aigw_models() or {}).get(AIGW_D_MAX_SEQLEN),
+        )
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    ]
+    if not context_limits:
+        return
+
+    token_ids = KvCacheAffinityPolicy._ensure_token_ids(req_info)
+    max_model_len = min(context_limits)
+    prompt_token_len = len(token_ids)
+    available_tokens = max_model_len - prompt_token_len
+    if not token_ids or available_tokens < 1:
+        return
+
+    effective_tokens = min(requested_tokens, available_tokens)
+    req_data[parameter] = effective_tokens
+    if effective_tokens < requested_tokens:
+        logger.info(
+            "Context budget clamped req_id=%s parameter=%s "
+            "requested=%d effective=%d prompt_token_len=%d max_model_len=%d",
+            req_info.req_id,
+            parameter,
+            requested_tokens,
+            effective_tokens,
+            prompt_token_len,
+            max_model_len,
+        )
 
 
 class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
@@ -471,8 +525,9 @@ class TokenizerManager(ThreadSafeSingleton):
         self._is_dsv4 = False
 
         kv_config = config.prefill_kv_event_config
-        if kv_config.conductor_service == "":
-            logger.info("conductor_service is empty. disable TokenizerManager!")
+        context_budget_enabled = config.context_budget_mode == CONTEXT_BUDGET_ON
+        if kv_config.conductor_service == "" and not context_budget_enabled:
+            logger.info("KV affinity and context budget are disabled. disable TokenizerManager!")
             return
 
         model_path = kv_config.model_path
@@ -519,8 +574,8 @@ class TokenizerManager(ThreadSafeSingleton):
             if self._is_dsv4:
                 return self._apply_chat_template_dsv4(messages, tools, req_data)
             if self.openai_standard != "STANDARD":
-                return self._apply_chat_template_with_preprocess(messages, tools)
-            return self._apply_chat_template_standard(messages, tools)
+                return self._apply_chat_template_with_preprocess(messages, tools, req_data)
+            return self._apply_chat_template_standard(messages, tools, req_data)
         except Exception as e:
             if self._is_dsv4:
                 logger.error(
@@ -539,7 +594,7 @@ class TokenizerManager(ThreadSafeSingleton):
                 len(messages or []),
                 len(tools or []),
             )
-            return self._safe_fallback_encode(messages, tools)
+            return self._safe_fallback_encode(messages, tools, req_data)
 
     def encode(self, prompt: str) -> list[int]:
         """
@@ -600,6 +655,55 @@ class TokenizerManager(ThreadSafeSingleton):
 
         return kwargs
 
+    @staticmethod
+    def _build_standard_chat_template_kwargs(req_data: dict | None, *, tokenize: bool) -> dict:
+        """Mirror vLLM ChatCompletionRequest.build_chat_params for HF templates."""
+        kwargs: dict = {
+            "add_generation_prompt": True,
+            "tokenize": tokenize,
+        }
+        if tokenize:
+            kwargs["return_dict"] = False
+        if not req_data:
+            return kwargs
+
+        if isinstance(req_data.get("add_generation_prompt"), bool):
+            kwargs["add_generation_prompt"] = req_data["add_generation_prompt"]
+        if req_data.get("continue_final_message"):
+            kwargs["continue_final_message"] = True
+            kwargs["add_generation_prompt"] = False
+
+        documents = req_data.get("documents")
+        if documents is not None:
+            kwargs["documents"] = documents
+
+        chat_template_kwargs = req_data.get("chat_template_kwargs") or {}
+        if isinstance(chat_template_kwargs, dict):
+            reserved = {
+                "tokenize",
+                "return_dict",
+                "conversation",
+                "tools",
+                "add_generation_prompt",
+                "continue_final_message",
+            }
+            kwargs.update({key: value for key, value in chat_template_kwargs.items() if key not in reserved})
+
+        reasoning_effort = req_data.get("reasoning_effort")
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+            kwargs.setdefault("enable_thinking", reasoning_effort != "none")
+
+        thinking = req_data.get("thinking")
+        if isinstance(thinking, dict) and "enable_thinking" not in kwargs:
+            thinking_type = thinking.get("type")
+            if thinking_type == "enabled":
+                kwargs["enable_thinking"] = True
+            elif thinking_type == "disabled":
+                kwargs["enable_thinking"] = False
+
+        return kwargs
+
     def _apply_chat_template_dsv4(
         self,
         messages: list,
@@ -614,49 +718,59 @@ class TokenizerManager(ThreadSafeSingleton):
             return result
         return self.tokenizer.encode(result, add_special_tokens=False)
 
-    def _apply_chat_template_standard(self, messages: list, tools: list | None = None) -> list[int]:
+    def _apply_chat_template_standard(
+        self,
+        messages: list,
+        tools: list | None = None,
+        req_data: dict | None = None,
+    ) -> list[int]:
         """Standard OpenAI-compatible model path.
 
-        Calls the model tokenizer's jinja chat-template directly with ``tools``,
-        ``add_generation_prompt=True`` and ``tokenize=True`` so the resulting
-        token ids are byte-equivalent to what vLLM/SGLang prefill receives.
+        Calls the model tokenizer's jinja chat-template directly with the same
+        chat-template kwargs vLLM prefill uses.
         """
         messages = preprocess_messages_for_standard(messages)
+        kwargs = self._build_standard_chat_template_kwargs(req_data, tokenize=True)
         return self.tokenizer.apply_chat_template(
             conversation=messages,
             tools=tools,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=False,
+            **kwargs,
         )
 
-    def _apply_chat_template_with_preprocess(self, messages: list, tools: list | None = None) -> list[int]:
-        """Non-standard model path: normalise messages/tools then encode the
-        rendered prompt string. Kept for models whose chat-template cannot be
-        directly invoked with ``tokenize=True`` (e.g. require argument coercion
-        or reordering done by ``preprocess_input``).
-        """
+    def _apply_chat_template_with_preprocess(
+        self,
+        messages: list,
+        tools: list | None = None,
+        req_data: dict | None = None,
+    ) -> list[int]:
+        """Non-standard / fallback path: normalize then encode the rendered string."""
         messages_copy, tools_copy = preprocess_input(messages, tools)
-        messages_copy = preprocess_messages_for_standard(messages_copy)
-
+        kwargs = self._build_standard_chat_template_kwargs(req_data, tokenize=False)
         prompt = self.tokenizer.apply_chat_template(
             conversation=messages_copy,
             tools=tools_copy,
-            tokenize=False,
+            **kwargs,
         )
         return self.tokenizer.encode(prompt)
 
-    def _safe_fallback_encode(self, messages: list, tools: list | None = None) -> list[int]:
+    def _safe_fallback_encode(
+        self,
+        messages: list,
+        tools: list | None = None,
+        req_data: dict | None = None,
+    ) -> list[int]:
         """Last-resort tokenize that NEVER drops ``tools``.
 
-        Tries the tools-aware standard call once more; if that also fails,
-        returns ``[]`` so the affinity candidate path can fall back to load balance.
+        Retry through the opposite rendering path; if that also fails, return
+        ``[]`` so the affinity candidate path can fall back to load balance.
         Returning a partially-correct token list (e.g. messages without tools)
         would silently mislead conductor's longest_matched and is far worse
         than failing closed.
         """
         try:
-            return self._apply_chat_template_standard(messages, tools)
+            if self.openai_standard == "STANDARD":
+                return self._apply_chat_template_with_preprocess(messages, tools, req_data)
+            return self._apply_chat_template_standard(messages, tools, req_data)
         except Exception as e:
             logger.error(
                 "kv_affinity tokenize failed on both primary and fallback paths; "

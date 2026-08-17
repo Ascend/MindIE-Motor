@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -70,9 +69,7 @@ class SubprocessSupervisor:
             try:
                 await asyncio.sleep(self._check_interval)
                 supervised = (
-                    self._get_supervised_keys()
-                    if self._get_supervised_keys is not None
-                    else set(self._managers)
+                    self._get_supervised_keys() if self._get_supervised_keys is not None else set(self._managers)
                 )
                 for name, mgr in self._managers.items():
                     if name not in supervised:
@@ -108,4 +105,3 @@ class SubprocessSupervisor:
         if name not in self._restart_limits:
             self._restart_limits[name] = RestartLimiter(max_per_minute=MAX_RESTART_PER_MINUTE)
         self._restart_limits[name].record()
-

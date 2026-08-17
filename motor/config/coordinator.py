@@ -147,6 +147,11 @@ KV_AFFINITY_MODE_UNIFIED = "unified"
 KV_AFFINITY_MODE_LOAD_GATED = "load_gated"
 KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
 
+CONTEXT_BUDGET_MODE = "context_budget_mode"
+CONTEXT_BUDGET_OFF = "off"
+CONTEXT_BUDGET_ON = "on"
+CONTEXT_BUDGET_MODES = (CONTEXT_BUDGET_OFF, CONTEXT_BUDGET_ON)
+
 
 @dataclass
 class SchedulerConfig:
@@ -389,6 +394,9 @@ class PrefillKvEventConfig:
 class CoordinatorConfig:
     """Coordinator configuration class with validation, reload and error handling support"""
 
+    # Clamp the client output-token budget to the remaining model context before routing.
+    context_budget_mode: str = CONTEXT_BUDGET_OFF
+
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     prometheus_metrics_config: PrometheusMetricsConfig = field(default_factory=PrometheusMetricsConfig)
     exception_config: ExceptionConfig = field(default_factory=ExceptionConfig)
@@ -567,6 +575,9 @@ class CoordinatorConfig:
                 if section_name in cfg:
                     update_config_from_dict(config_obj, cfg[section_name], special_handlers)
 
+            if CONTEXT_BUDGET_MODE in cfg:
+                config.context_budget_mode = cfg[CONTEXT_BUDGET_MODE]
+
             if "precision_detection_config" not in cfg and "token_sampling_config" in cfg:
                 logger.warning(
                     "token_sampling_config is deprecated; use precision_detection_config for precision detection."
@@ -676,6 +687,25 @@ class CoordinatorConfig:
             self._errors.append(
                 f"kv_affinity_mode must be one of {KV_AFFINITY_MODES}, got {self.scheduler_config.kv_affinity_mode!r}"
             )
+        if self.context_budget_mode not in CONTEXT_BUDGET_MODES:
+            self._errors.append(
+                "context_budget_mode must be one of "
+                f"{CONTEXT_BUDGET_MODES}, got {self.context_budget_mode!r}"
+            )
+        if self.context_budget_mode == CONTEXT_BUDGET_ON:
+            if not self.prefill_kv_event_config.model_path:
+                self._errors.append("prefill_kv_event_config.model_path is required when context_budget_mode='on'")
+            aigw_model = self.get_aigw_models() or {}
+            context_limits = (
+                aigw_model.get(AIGW_P_MAX_SEQLEN),
+                aigw_model.get(AIGW_D_MAX_SEQLEN),
+            )
+            if not any(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in context_limits
+            ):
+                self._errors.append(
+                    "aigw.p_max_seqlen or aigw.d_max_seqlen is required when context_budget_mode='on'"
+                )
 
         # Validate host address
         self._validate_ip_or_hostname(self.api_config.coordinator_api_host, "coordinator_api_host")
@@ -859,7 +889,8 @@ class CoordinatorConfig:
             f"    ├─ Endpoint Instance Weight:   {self.scheduler_config.endpoint_instance_score_weight}\n"
             f"    ├─ KV Affinity Mode:           {self.scheduler_config.kv_affinity_mode}\n"
             f"    ├─ KV Affinity Load Weight:    {self.scheduler_config.kv_affinity_load_weight}\n"
-            f"    └─ KV Affinity Load Gate TopN: {self.scheduler_config.kv_affinity_load_gate_topn}\n"
+            f"    ├─ KV Affinity Load Gate TopN: {self.scheduler_config.kv_affinity_load_gate_topn}\n"
+            f"    └─ Context Budget Mode:        {self.context_budget_mode}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
             f"    └─ Num Workers: {self.inference_workers_config.num_workers}\n"
