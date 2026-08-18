@@ -326,28 +326,3 @@ class EndpointConfig:
         self.engine_type = str(self.deploy_config.engine_type)
         if self.engine_type not in supported_engine:
             raise ValueError(f"engine type {self.engine_type} is not supported.")
-
-    def update_engine_config(self):
-        split_str = "*:"
-        kv_events_config = self.deploy_config.engine_config.get("kv-events-config", None)
-        if kv_events_config is None:
-            return
-        endpoint = kv_events_config.get("endpoint", None)
-        if endpoint is None:
-            return
-        endpoint_info = endpoint.split(split_str)
-        if len(endpoint_info) != 2:
-            return
-        kv_events_config["endpoint"] = endpoint_info[0] + split_str + str(int(endpoint_info[1]) + self.dp_rank)
-
-        replay_endpoint = kv_events_config.get("replay_endpoint", None)
-        if replay_endpoint is None:
-            return
-        replay_endpoint_info = replay_endpoint.split(split_str)
-        if len(replay_endpoint_info) != 2:
-            return
-        kv_events_config["replay_endpoint"] = (
-            replay_endpoint_info[0] + split_str + str(int(replay_endpoint_info[1]) + self.dp_rank)
-        )
-
-        self.deploy_config.engine_config.set("kv-events-config", kv_events_config)

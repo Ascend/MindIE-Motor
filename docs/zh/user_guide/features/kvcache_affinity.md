@@ -31,7 +31,7 @@ kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 w
 
 - 已使用 MindIE Motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
 - 开启前请参考 [MindIE Motor 快速开始](../quick_start_motor.md)，确保基础服务部署正常。
-- 镜像需包含 kv-conductor 二进制。若使用官方发布镜像，二进制已随 motor wheel 打包；若自行构建，需 Rust 工具链（cargo），详见 [构建说明](#镜像构建)。
+- 镜像需包含 kv-conductor 二进制。若使用官方发布镜像，二进制已随 motor wheel 打包；若自行构建，可通过预编译二进制（`KV_CONDUCTOR_PREBUILT`）或 Rust 工具链（cargo）打包进 whl，详见 [构建说明](#构建)。
 - 后续操作均在 K8s 集群管理节点（master 节点）执行。
 
 ---
@@ -42,26 +42,22 @@ kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 w
 
 已使用 motor 部署 PD 分离推理服务且正常运行。
 
-<a id="镜像构建"></a>
+<a id="构建"></a>
 
-### 2. 镜像构建
+### 2. 构建
 
-kv-conductor 已集成在 motor wheel 包内，无需额外构建。`build.sh` 会检测 Rust 工具链：
+kv-conductor 已集成在 motor wheel 包内，随 `build.sh` 打包，按以下优先级获取二进制：
 
-```bash
-bash build.sh
-# 有 cargo 环境：自动编译 kv-conductor 并打包进 motor wheel
-# 无 cargo 环境：跳过编译，输出 [WARNING]，kv-conductor 不包含在 wheel 中（其他功能不受影响）
-```
+- **已有预编译二进制**（推荐，无需 Rust 工具链）：指定路径，`build.sh` 直接复制并打包进 whl：
 
-构建产物 `motor/kv_conductor/bin/kv-conductor` 会自动随 `setup.py` 的 `package_data` 打包进 wheel。
+  ```bash
+  KV_CONDUCTOR_PREBUILT=/path/to/kv-conductor bash build.sh
+  ```
 
-> **注意**：如果构建环境无 Rust 工具链，可安装后重试：
->
-> ```bash
-> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-> source "$HOME/.cargo/env"
-> ```
+- **有 cargo 环境**：`bash build.sh` 自动编译（cargo build --release）并打包。
+- **两者皆无**：跳过编译并输出 [WARNING]，kv-conductor 不包含在 wheel 中（其他功能不受影响）。
+
+使用官方发布镜像时，二进制已随 wheel 打包，以上均无需关心。
 
 ### 3. 修改 `user_config.json`
 
@@ -116,16 +112,7 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
   },
   "motor_coordinator_config": {
     "scheduler_config": {
-      "scheduler_type": "kv_cache_affinity",
-      "kv_affinity": {
-        "mode": "unified",
-        "load_weight": 1.0,
-        "overlap_credit": 1.0,
-        "prefill_load_scale": 1.0,
-        "w_npu": 1.0,
-        "w_cpu": 1.0,
-        "w_disk": 0.0
-      }
+      "scheduler_type": "kv_cache_affinity"
     }
   },
   "motor_engine_prefill_config": {
@@ -149,7 +136,6 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
   },
   "kv_conductor_config": {
     "block_size": 128,
-    "npu_endpoint": "tcp://*:50090",
     "http_server_port": 13333
   }
 }
@@ -168,10 +154,7 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
   "motor_coordinator_config": {
     "scheduler_config": {
       "deploy_mode": "single_node",
-      "scheduler_type": "kv_cache_affinity",
-      "kv_affinity": {
-        "mode": "unified"
-      }
+      "scheduler_type": "kv_cache_affinity"
     }
   },
   "motor_engine_union_config": {
@@ -190,11 +173,14 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
   },
   "kv_conductor_config": {
     "block_size": 128,
-    "npu_endpoint": "tcp://*:50090",
     "http_server_port": 13333
   }
 }
 ```
+
+> `kv_affinity` 子参数（`mode` / `load_weight` / `overlap_credit` / `prefill_load_scale` /
+> `w_npu` / `w_cpu` / `w_disk` 等）均有默认值，**示例中无需配置**；需要调整评分行为时按
+> [参数说明](#scheduler_config调度器亲和性参数)覆盖即可。
 
 PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)。
 
@@ -209,15 +195,15 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 | 配置项 | 类型 | 取值范围 | 说明 |
 |--------|------|----------|------|
-| **block_size** | uint | ≥ 1 | 事件广播的 hash 粒度（token 数）。须与引擎 `--block-size` / `hash_block_size` 一致。标准模型默认 128；**DeepSeek V4 必须设为 512** |
-| **npu_endpoint** | string | `tcp://*:<port>` | Per-DP HBM（NPU）端口模式。`*` 替换为 endpoint IP，端口加 `dp_rank`；注册时写入 `medium_endpoints.npu` |
+| **block_size** | uint | ≥ 1 | 事件广播的 hash 粒度（token 数）。须与引擎 `--block-size` / `hash_block_size` 一致。标准模型默认 128；**DeepSeek V4 的取值见 [DeepSeek V4 / 混合 KV Cache 模型](#deepseek-v4)** |
 | **http_server_port** | int | 1024–65535 | kv-conductor HTTP API 端口，Coordinator 通过此端口查询缓存命中，默认 `13333` |
-| **replay_endpoint** | string | `tcp://*:<port>` | Per-DP replay 端口，conductor 重启恢复时回放缓冲的 KV 事件（可选） |
 | **re_register_interval_sec** | int | ≥ 0 | 周期性重注册间隔（秒），0 或负数禁用（默认 0） |
 | **conductor_service** | string | hostname / IP | kv-conductor 服务地址；空则禁用。部署时也可由环境变量注入 |
 | **engine_type** | string | 如 `vLLM` | 注册时上报的引擎类型，默认 `vLLM` |
 | **model_path** | string | 路径 / 名称 | 注册时的 `modelname` |
-| **endpoint** | string | `tcp://*:<port>` | 旧版兜底端口模式；`npu_endpoint` 为空时回退使用 |
+| **endpoint** | string | `tcp://*:<port>` | 默认端口模式：`*` 替换为 endpoint IP，端口加 `dp_rank`；注册时写入 `medium_endpoints.npu`。**自动从引擎 `kv-events-config.endpoint` 推导，无需配置** |
+| **replay_endpoint** | string | `tcp://*:<port>` | Per-DP replay 端口，conductor 重启恢复时回放缓冲的 KV 事件（可选）。**自动从引擎 `kv-events-config.replay_endpoint` 推导，无需配置** |
+| **npu_endpoint** | string | `tcp://*:<port>` | Per-DP HBM（NPU）端口模式的显式覆盖项。**一般无需配置**（见下方端口推导说明），仅在需要覆盖自动推导的默认端口时使用 |
 
 以下参数为 CPU/Disk 二级缓存（L2）相关，开启池化后端时使用：
 
@@ -228,6 +214,15 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | **disk_endpoint** | string | `tcp://*:<port>` | Per-DP DISK/SSD 端口 |
 | **store_backend** | string | `Mooncake` / `Memcache` / `YuanRong` | 池化后端类型。Mooncake/Memcache：先注册 pool，再按 DP 注册 `npu`；YuanRong：按 DP 注册 `npu`/`cpu`/`disk` |
 
+> **端口推导与 DP 偏移**：注册给 kv-conductor 的事件端口**无需在 `kv_conductor_config` 中配置**，统一由引擎配置
+> `motor_engine_prefill_config.engine_config["kv-events-config"].endpoint`（如 `tcp://*:5557`）定义。
+> 启动时传入 vLLM 的即为该原始端口；vLLM 内部按 `data_parallel_rank` 对端口做偏移后实际监听
+> （如 DP0 → `tcp://*:5557`、DP1 → `tcp://*:5558`）。Coordinator 加载配置时自动将 `endpoint` /
+> `replay_endpoint` 推导进 `kv_conductor_config`，注册时按**同样的 DP 秩**将 `*` 替换为 endpoint IP、
+> 端口加 `dp_rank`（如 `tcp://10.0.0.1:5557`、`tcp://10.0.0.1:5558`），与 vLLM 实际监听端口一致。
+> 因此 prefill / decode / union 的引擎配置中配置好 `kv-events-config` 即可，`npu_endpoint` 等手动
+> 配置仅用于覆盖默认推导值。
+>
 > kv-conductor 进程本身仅接受 `--host` / `--port` 启动参数，**无**介质权重配置。
 
 ### `scheduler_config`（调度器亲和性参数）
@@ -256,9 +251,12 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 > **注意**：`kv-events-config` 是 vLLM 原生配置，控制引擎侧的 KV 事件发布行为；
 > `kv_conductor_config` 是 Motor 配置，控制 Coordinator 如何注册和查询 kv-conductor。
-> 两者分离，互不干扰。
+> 两者的端口信息由 Coordinator 自动打通——`kv_conductor_config.endpoint` / `replay_endpoint`
+> 自动从引擎的 `kv-events-config` 推导，**无需重复配置**。
 
 ---
+
+<a id="deepseek-v4"></a>
 
 ## DeepSeek V4 / 混合 KV Cache 模型
 
@@ -266,10 +264,13 @@ DeepSeek V4 部署时，引擎 `--block-size` 与 `kv_conductor_config.block_siz
 
 ```json
 "kv_conductor_config": {
-  "block_size": 512,
-  "npu_endpoint": "tcp://*:50090"
+  "block_size": 512
 }
 ```
+
+> `block_size` 与端口一样是**注册制**：Coordinator 注册实例时将其上报给 kv-conductor，取值须与该实例
+> 引擎的实际 `--block-size` 一致；未显式配置时自动从引擎配置推导。当前 Coordinator 按全局一个
+> `block_size` 注册所有实例，因此要求各引擎实例的 `--block-size` 保持一致。
 
 引擎侧启动参数示例：
 
@@ -284,6 +285,8 @@ vllm serve ... --block-size 512
 hash_block_size = 512
 ```
 
+> **DCP 特例**：vLLM 开启 DCP（Decode Context Parallel，解码上下文并行）后，引擎侧前缀哈希粒度按 DCP 大小放大，`kv_conductor_config.block_size` 需相应配置为 **引擎 `block_size` × DCP 大小**，否则 hash 粒度不匹配，conductor 查询命中率同样为 0。DeepSeek V4 开启 DCP（通常 DCP 大小为 2）后，引擎 block size 一般变为 1024，此时 `kv_conductor_config.block_size` 应配置为 1024。
+>
 > **警告**：若 `kv_conductor_config.block_size` 与引擎实际 `hash_block_size` 不一致（例如仍用默认 128），conductor 查询时 hash 粒度不匹配，命中率始终为 0。
 
 ---
@@ -403,9 +406,9 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 
 1. 检查 `kv_conductor_config.block_size` 是否与引擎实际的 `hash_block_size` 一致（见引擎日志）
 2. 确认 `kv-events-config.enable_kv_cache_events` 设为 `true`
-3. 确认 Coordinator 注册使用的是 `medium_endpoints.npu`（配置项为 `npu_endpoint`）
+3. 确认引擎 `kv-events-config.endpoint` 配置正确（Coordinator 会自动推导注册地址并做 DP 端口偏移）
 4. 查看 Coordinator 日志检查 kv-conductor 注册和查询是否有报错
 
 ### kv-conductor 未包含在 wheel 包中
 
-构建环境缺少 Rust 工具链，`build.sh` 已自动跳过。安装 rustup 后重新执行 `bash build.sh` 即可。详见 [镜像构建](#镜像构建)。
+构建环境缺少 Rust 工具链，`build.sh` 已自动跳过。安装 rustup 后重新执行 `bash build.sh` 即可。详见 [构建](#构建)。

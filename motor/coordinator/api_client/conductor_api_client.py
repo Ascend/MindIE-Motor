@@ -421,7 +421,9 @@ class ConductorApiClient:
                 else:
                     response = client.do_post("/query", data=query_data)
                 parsed = cls._decode_query_response(response, encoding)
-                logger.debug("conductor query ok: %s instances, %d bytes", len(parsed), len(response.content))
+                # INFO: full match result (per-instance longest_matched / per-DP
+                # matched blocks) is key observability data for KV-affinity tuning.
+                logger.info("conductor query response: %s", parsed)
                 cls._query_failures = 0  # reset on success
                 return parsed
         except Exception as e:

@@ -1528,7 +1528,10 @@ class AsyncSchedulerClient:
                 instance_id,
             )
         elif event == "success":
-            logger.info(
+            # Success reports fire on every completed inference — keep them at
+            # DEBUG so healthy traffic doesn't spam the log; failures stay at
+            # WARNING (logged above).
+            logger.debug(
                 "CircuitBreaker: reporting success to SchedulerServer: instance_id=%d",
                 instance_id,
             )
