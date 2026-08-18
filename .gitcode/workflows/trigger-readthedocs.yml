@@ -1,0 +1,33 @@
+name: trigger-readthedocs
+
+on:
+  push:
+    branches:
+      - master
+      - v3.1.0
+      - 'v*.*.*'
+    paths:
+      - 'mkdocs.yml'
+      - 'docs/**'
+      - 'requirements/mkdocs.txt'
+      - '.readthedocs.yaml'
+  workflow_dispatch:
+
+jobs:
+  trigger-rtd:
+    runs-on: [ubuntu-latest, x64, small]
+    steps:
+      - name: Trigger Read the Docs build
+        env:
+          RTD_WEBHOOK_URL: ${{ secrets.RTD_WEBHOOK_URL }}
+          RTD_WEBHOOK_TOKEN: ${{ secrets.RTD_WEBHOOK_TOKEN }}
+          BRANCH: ${{ atomgit.ref_name }}
+        run: |
+          set -eu
+          test -n "$RTD_WEBHOOK_URL"
+          test -n "$RTD_WEBHOOK_TOKEN"
+          echo "Triggering Read the Docs for branch: $BRANCH"
+          curl -fsS -X POST \
+            --data-urlencode "token=${RTD_WEBHOOK_TOKEN}" \
+            --data-urlencode "branches=${BRANCH}" \
+            "$RTD_WEBHOOK_URL"
