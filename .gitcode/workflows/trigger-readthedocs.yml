@@ -13,15 +13,16 @@ on:
       - '.readthedocs.yaml'
   workflow_dispatch:
 
+env:
+  RTD_WEBHOOK_URL: ${{ secrets.RTD_WEBHOOK_URL }}
+  RTD_WEBHOOK_TOKEN: ${{ secrets.RTD_WEBHOOK_TOKEN }}
+  BRANCH: ${{ atomgit.ref_name }}
+
 jobs:
   trigger-rtd:
     runs-on: [ubuntu-latest, x64, small]
     steps:
       - name: Trigger Read the Docs build
-        env:
-          RTD_WEBHOOK_URL: ${{ secrets.RTD_WEBHOOK_URL }}
-          RTD_WEBHOOK_TOKEN: ${{ secrets.RTD_WEBHOOK_TOKEN }}
-          BRANCH: ${{ atomgit.ref_name }}
         run: |
           set -eu
           test -n "$RTD_WEBHOOK_URL"
