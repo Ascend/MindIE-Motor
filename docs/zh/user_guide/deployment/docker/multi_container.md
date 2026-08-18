@@ -330,17 +330,17 @@ curl -X POST http://<IP0>:1025/v1/chat/completions \
 >
 >HTTP 协议存在安全风险，生产环境建议开启 HTTPS。接口和 TLS 配置请参考[业务接口](../../api/service_interfaces.md)。
 
-### Atlas 800I A3 超节点服务器 环境额外修改内容
+### Atlas 850 超节点服务器 环境额外修改内容
 
-Atlas 800I A3 超节点服务器创建容器时，需做如下调整：
+Atlas 850 超节点服务器创建容器时，需做如下调整：
 
-**网络**：正文 `docker run` 已使用 `--net=host`，Atlas 800I A3 超节点服务器 场景继续使用 host 网络。
+**网络**：正文 `docker run` 已使用 `--net=host`，Atlas 850 超节点服务器 场景继续使用 host 网络。
 
 **额外挂载路径**：
 
 | 宿主机路径 | 容器路径 | 说明 |
 | :--- | :--- | :--- |
-| `/dev/ummu` | `/dev/ummu` | 卡间 UB 互联内存设备，UB 内存池访问依赖此通路 |
+| `/dev/ummu` | `/dev/ummu` | Atlas 850 超节点服务器 卡间 UB 互联内存设备，UB 内存池访问依赖此通路 |
 | `/dev/uburma` | `/dev/uburma` | 服务器间 UB RDMA 通信设备节点 |
 | `/usr/lib64` | `/usr/lib64` | 提供 `liburma` 等 UB 用户态通信库 |
 | `/etc/hixlep` | `/etc/hixlep` | UB 链路拓扑结构 |
@@ -348,7 +348,7 @@ Atlas 800I A3 超节点服务器创建容器时，需做如下调整：
 | `/usr/local/bin/npu-smi` | `/usr/local/bin/npu-smi` | NPU 管理工具 |
 | `/usr/local/dcmi` | `/usr/local/dcmi` | DCMI 库目录，npu-smi 查卡/管卡的前端接口 |
 
-Atlas 800I A3 超节点服务器 启动示例片段（基于上述实例基础修改）：
+Atlas 850 超节点服务器 启动示例片段（基于上述实例基础修改）：
 
 ```shell
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
