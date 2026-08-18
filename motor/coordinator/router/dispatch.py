@@ -35,6 +35,7 @@ from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.agent_hint import (
+    apply_session_control_autofill,
     parse_agent_hint,
     ensure_minimum_messages_for_session_edits,
 )
@@ -361,6 +362,7 @@ async def __create_request_info(
     req_data = request_json.copy()
     client_expects_token_ids = bool(request_json.get("return_token_ids", False))
 
+    apply_session_control_autofill(request_json)
     ensure_minimum_messages_for_session_edits(request_json, req_data)
     agent_hint_info = parse_agent_hint(
         request_json,

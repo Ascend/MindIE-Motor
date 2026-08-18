@@ -1228,8 +1228,73 @@ class TestCoordinatorServerAdvanced:
             json=data,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
         )
-        assert response.status_code != 400, (
-            f"Empty messages with manage=true + target=session must bypass the non-empty check, got {response.status_code}: {response.text}"
+        assert response.status_code == 200, (
+            f"Empty messages with manage=true + target=session must bypass the non-empty check "
+            f"and reach the mocked handle_request (200), got {response.status_code}: {response.text}"
+        )
+
+    def test_validate_openai_request_empty_messages_session_control_allowed(self):
+        """session_control pause/stop/compact/resume must bypass the empty-messages check."""
+        data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {"session_control": {"type": "stop"}},
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 200, (
+            f"Empty messages with session_control must bypass the non-empty check "
+            f"and reach the mocked handle_request (200), got {response.status_code}: {response.text}"
+        )
+
+    def test_validate_openai_request_empty_messages_session_control_start_rejected(self):
+        """'start' carries no context semantics, so empty messages must still be rejected."""
+        data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {"session_control": {"type": "start"}},
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, (
+            f"Expected 400 for empty messages with session_control=start, got: {response.status_code}"
+        )
+
+    def test_validate_openai_request_empty_messages_session_control_invalid_cm_allowed(self):
+        """session_control=stop with an INVALID raw context_management (manage_request=False)
+        must still bypass the empty-messages check.
+
+        Regression: previously the mere presence of ``context_management`` triggered the
+        mutual-exclusion branch in ``_resolve_session_control`` and dropped session_control,
+        so a request like ``session_control=stop`` + ``context_management={manage_request: False}``
+        fell through to plain inference and was rejected for empty messages — silently
+        downgrading the client's ``stop`` intent.
+        """
+        data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [],
+            "agent_hint": {
+                "session_control": {"type": "stop"},
+                "context_management": {"manage_request": False, "edits": [{"type": "evict", "target": "session"}]},
+            },
+        }
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/chat/completions",
+            json=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 200, (
+            f"Invalid raw context_management must NOT block session_control=stop; "
+            f"expected 200 (reaches handle_request), got {response.status_code}: {response.text}"
         )
 
     def test_validate_openai_request_invalid_message_format(self):

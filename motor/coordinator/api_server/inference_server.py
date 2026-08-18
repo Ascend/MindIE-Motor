@@ -39,7 +39,7 @@ from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.dispatch import handle_request
 from motor.coordinator.tracer.tracing import TracerManager
-from motor.coordinator.domain.agent_hint import parse_manage_request
+from motor.coordinator.domain.agent_hint import agent_hint_implies_manage_request
 
 logger = get_logger(__name__)
 
@@ -47,40 +47,6 @@ logger = get_logger(__name__)
 def get_request_manager(request: Request) -> RequestManager:
     """FastAPI dependency: inject RequestManager from app.state."""
     return request.app.state.request_manager
-
-
-def _has_session_target_edit(body_json: dict[str, Any]) -> bool:
-    """Return True if any edit in agent_hint.context_management.edits targets 'session'.
-
-    An edit is considered 'session-targeted' when its `target` field is either
-    explicitly 'session' or absent (the V1.1 default in agent_hint.py is
-    'session' — see _EDIT_TARGET_DEFAULT). Malformed substructures are treated
-    as 'no session edit' so the original validation still triggers.
-    """
-    agent_hint = body_json.get("agent_hint")
-    if not isinstance(agent_hint, dict):
-        return False
-    context_management = agent_hint.get("context_management")
-    if not isinstance(context_management, dict):
-        return False
-    edits = context_management.get("edits")
-    if not isinstance(edits, list):
-        return False
-    for edit in edits:
-        if isinstance(edit, dict) and edit.get("target", "session") == "session":
-            return True
-    return False
-
-
-def _is_manage_request(body_json: dict[str, Any]) -> bool:
-    """Return True if agent_hint.context_management.manage_request is True."""
-    agent_hint = body_json.get("agent_hint")
-    if not isinstance(agent_hint, dict):
-        return False
-    context_management = agent_hint.get("context_management")
-    if not isinstance(context_management, dict):
-        return False
-    return parse_manage_request(context_management.get("manage_request"))
 
 
 def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens: bool = True) -> None:
@@ -131,9 +97,7 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid {OpenAIField.MESSAGES} field: must be a non-empty array",
         )
-    if len(body_json[OpenAIField.MESSAGES]) == 0 and not (
-        _is_manage_request(body_json) and _has_session_target_edit(body_json)
-    ):
+    if len(body_json[OpenAIField.MESSAGES]) == 0 and not agent_hint_implies_manage_request(body_json.get("agent_hint")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid {OpenAIField.MESSAGES} field: must be a non-empty array",
