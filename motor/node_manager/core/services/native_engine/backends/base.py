@@ -10,6 +10,7 @@
 
 from typing import Protocol
 
+from motor.common.logger import get_logger
 from motor.config.endpoint import EndpointConfig
 from motor.node_manager.core.services.native_engine.models import (
     CommandSpec,
@@ -17,6 +18,8 @@ from motor.node_manager.core.services.native_engine.models import (
     LaunchSpec,
     ProbeSpec,
 )
+
+logger = get_logger(__name__)
 
 
 class NativeEngineBackend(Protocol):

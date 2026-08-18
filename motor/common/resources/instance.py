@@ -359,6 +359,22 @@ class Instance(BaseModel):
                         return False
             return has_routable_endpoint
 
+    def is_all_endpoints_heartbeat_fresh(self, timeout: float = DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT) -> bool:
+        """True when every endpoint's last heartbeat is within ``timeout`` seconds.
+
+        Complements ``is_all_endpoints_ready``: the status field alone goes
+        stale when a NodeManager dies (nobody updates its endpoints), so an
+        instance must not flip ACTIVE on a lone surviving NodeManager's
+        heartbeat while another NodeManager's heartbeats have timed out.
+        """
+        now = time.time()
+        with self._lock:
+            for pod_endpoints in self.endpoints.values():
+                for endpoint in pod_endpoints.values():
+                    if not endpoint.is_alive(now, timeout):
+                        return False
+            return True
+
     def is_have_one_endpoint_abnormal(self) -> bool:
         abnormal_endpoints: dict[str, list[int]] = {}  # pod_ip -> [endpoint_id]
         with self._lock:

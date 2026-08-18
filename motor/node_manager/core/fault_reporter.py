@@ -114,7 +114,13 @@ class FaultReporter:
         self._enabled = self._compute_enabled(config)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
         self._endpoints: list[Endpoint] = []
+        # Per-endpoint poll state, kept across thread restarts so a restarted
+        # loop does not re-report statuses that were already delivered.
+        self._known_statuses: dict[int, str] = {}
+        self._consecutive_failures: dict[int, int] = {}
+        self._first_poll_time: dict[int, float] = {}
 
     @staticmethod
     def _compute_enabled(config: NodeManagerConfig) -> bool:
@@ -207,32 +213,52 @@ class FaultReporter:
             timeout = self._config.fault_tolerance_config.poll_timeout_sec
         return query_engine_ft_status(ep, timeout)
 
+    def pause(self) -> None:
+        """Suspend polling while the engines are being relaunched.
+
+        During a relaunch the engines are killed and re-pulled — their FT
+        endpoints are unreachable, so the poll failures would be reported as
+        deaths while the relaunch is in progress. The loop idles on the pause
+        event and resumes where it left off.
+        """
+        self._pause_event.set()
+        logger.info("FaultReporter paused (engine relaunch in progress)")
+
+    def resume(self) -> None:
+        """Resume polling after the relaunch; reset per-endpoint poll state.
+
+        The engines are fresh processes — the old statuses, poll-failure
+        counts and first-poll timestamps are meaningless. Clearing them
+        restarts the startup-grace window for the re-pulled engines, which
+        makes a separate grace-reset call unnecessary.
+        """
+        self._pause_event.clear()
+        self._known_statuses.clear()
+        self._consecutive_failures.clear()
+        self._first_poll_time.clear()
+        logger.info("FaultReporter resumed after engine relaunch")
+
     def _main_loop(self) -> None:
         """Poll every engine's FT status and forward faults to Controller."""
         logger.info("FaultReporter loop started.")
-        known_statuses: dict[int, str] = {}
-        consecutive_failures: dict[int, int] = {}
-        first_poll_time: dict[int, float] = {}
 
         while not self._stop_event.is_set():
+            if self._pause_event.is_set():
+                if self._stop_event.wait(self._poll_interval_sec()):
+                    break
+                continue
             with self._config_lock:
                 endpoints = list(self._endpoints)
             now = time.time()
             for ep in endpoints:
-                first_poll_time.setdefault(ep.id, now)
-                self._poll_engine(ep, known_statuses, consecutive_failures, first_poll_time)
+                self._first_poll_time.setdefault(ep.id, now)
+                self._poll_engine(ep)
             if self._stop_event.wait(self._poll_interval_sec()):
                 break
 
         logger.info("FaultReporter loop stopped.")
 
-    def _poll_engine(
-        self,
-        ep: Endpoint,
-        known_statuses: dict[int, str],
-        consecutive_failures: dict[int, int],
-        first_poll_time: dict[int, float],
-    ) -> None:
+    def _poll_engine(self, ep: Endpoint) -> None:
         """Poll a single engine: forward new non-healthy statuses, or count
         poll failures and report dead once the threshold is exceeded.
         """
@@ -241,22 +267,22 @@ class FaultReporter:
         except Exception as e:
             # A poll failure must never kill the polling thread — count it
             # and let the consecutive-failures threshold decide the engine's fate.
-            failures = consecutive_failures.get(ep.id, 0) + 1
-            consecutive_failures[ep.id] = failures
+            failures = self._consecutive_failures.get(ep.id, 0) + 1
+            self._consecutive_failures[ep.id] = failures
             _rl.error_window(
                 f"node_manager.fault_reporter.poll.{ep.id}",
                 f"Failed to poll engine {ep.id} FT status: {e}",
             )
             if failures >= self._max_poll_failures():
-                self._report_unreachable_dead(ep, failures, known_statuses, first_poll_time)
+                self._report_unreachable_dead(ep, failures)
             return
 
-        consecutive_failures[ep.id] = 0
+        self._consecutive_failures[ep.id] = 0
         try:
             if not isinstance(payload, dict):
                 raise TypeError(f"unexpected FT status payload type: {type(payload).__name__}")
             for engine in payload.get("engines", []):
-                self._process_engine_status(ep.id, engine, known_statuses)
+                self._process_engine_status(ep.id, engine)
         except Exception as e:
             # A malformed payload must never kill the polling thread — log and
             # continue with the next round.
@@ -269,7 +295,6 @@ class FaultReporter:
         self,
         ep_id: int,
         engine: dict,
-        known_statuses: dict[int, str],
     ) -> None:
         """Report a single engine's status if it is non-healthy and new.
 
@@ -285,10 +310,10 @@ class FaultReporter:
             raise TypeError(f"engine entry of endpoint {ep_id} has no valid status")
 
         if status == ENGINE_STATUS_HEALTHY:
-            known_statuses[ep_id] = status
+            self._known_statuses[ep_id] = status
             return
 
-        if known_statuses.get(ep_id) == status:
+        if self._known_statuses.get(ep_id) == status:
             return  # already reported
 
         engine_status = _ENGINE_STATUS_NAME_TO_INT.get(status)
@@ -315,23 +340,17 @@ class FaultReporter:
         }
         # Only mark as reported after successful delivery to Controller
         if self._send_fault_to_controller(fault_data):
-            known_statuses[ep_id] = status
+            self._known_statuses[ep_id] = status
 
-    def _report_unreachable_dead(
-        self,
-        ep: Endpoint,
-        failures: int,
-        known_statuses: dict[int, str],
-        first_poll_time: dict[int, float],
-    ) -> None:
+    def _report_unreachable_dead(self, ep: Endpoint, failures: int) -> None:
         """Report an engine as dead after repeated poll failures (deduped).
 
         Poll failures during the startup grace period (engine model load)
         are not reported as dead.
         """
-        if known_statuses.get(ep.id) == ENGINE_STATUS_DEAD:
+        if self._known_statuses.get(ep.id) == ENGINE_STATUS_DEAD:
             return
-        first_poll = first_poll_time.get(ep.id, time.time())
+        first_poll = self._first_poll_time.get(ep.id, time.time())
         if time.time() - first_poll < _STARTUP_GRACE_SEC:
             logger.debug(
                 "Engine %d unreachable but within startup grace period, not reporting dead",
@@ -345,7 +364,7 @@ class FaultReporter:
             "engine_status": 1,
         }
         if self._send_fault_to_controller(fault_data):
-            known_statuses[ep.id] = ENGINE_STATUS_DEAD
+            self._known_statuses[ep.id] = ENGINE_STATUS_DEAD
 
     def _send_fault_to_controller(self, fault_data: dict) -> bool:
         """Inject pod_ip and forward a single fault to Controller.

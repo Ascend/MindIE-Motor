@@ -16,7 +16,7 @@ from motor.common.utils.env import Env
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_server.node_manager_api import NodeManagerAPI
 from motor.node_manager.core.daemon import Daemon
-from motor.node_manager.core.engine_manager import EngineManager
+from motor.node_manager.core.register_manager import RegisterManager
 from motor.node_manager.core.heartbeat_manager import HeartbeatManager
 
 logger = get_logger(__name__)
@@ -26,7 +26,7 @@ class NodeManager(Application):
     """Orchestrates NodeManager modules and daemon lifecycle.
 
     Module set depends on the active service profile:
-    * engine active  → EngineManager + HeartbeatManager (registration, heartbeats)
+    * engine active  → RegisterManager + HeartbeatManager (registration, heartbeats)
     * engine absent  → only Daemon + NodeManagerAPI (KV-only pod)
     """
 
@@ -48,7 +48,7 @@ class NodeManager(Application):
         self.add_module("NodeManagerAPI", NodeManagerAPI(config=self.config))
 
         if daemon.has_engine:
-            self.add_module("EngineManager", EngineManager(self.config))
+            self.add_module("RegisterManager", RegisterManager(self.config))
             self.add_module("HeartbeatManager", HeartbeatManager(self.config))
 
         logger.info(
@@ -81,7 +81,7 @@ class NodeManager(Application):
 
     def _on_daemon_tick(self) -> None:
         if self._check_suicide():
-            logger.error("Detected suicide flag from HeartbeatManager")
+            logger.error("Detected suicide flag from Daemon (k8s pod rescheduling)")
             self.stop_event.set()
 
     def shutdown(self) -> None:
@@ -94,8 +94,8 @@ class NodeManager(Application):
     # ------------------------------------------------------------------
 
     def _check_suicide(self) -> bool:
-        """True when HeartbeatManager requests pod rescheduling."""
-        hb = self.get_module("HeartbeatManager")
-        if hb is None:
+        """True when the Daemon (suicide arbitrator) requests pod rescheduling."""
+        daemon = self.get_module("Daemon")
+        if daemon is None:
             return False
-        return hb.should_suicide()
+        return daemon.should_suicide()

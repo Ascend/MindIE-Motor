@@ -7,36 +7,10 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-from abc import ABC, abstractmethod
-import threading
 from collections.abc import Callable
 from motor.config.controller import ControllerConfig
-from motor.controller.fault_tolerance.fault_types import FaultLevel
-
-
-class StrategyBase(ABC):
-    """Strategy base class"""
-
-    def __init__(self) -> None:
-        self.event = threading.Event()
-        self.name = self.__class__.__name__
-        self._is_finished = False
-        self._lock = threading.Lock()
-
-    @abstractmethod
-    def execute(self, instance_id: int):
-        """
-        Execute the strategy with the instance id.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def stop(self) -> None:
-        raise NotImplementedError
-
-    def is_finished(self) -> bool:
-        with self._lock:
-            return self._is_finished
+from motor.controller.fault_tolerance.fault_types import FaultLevel, SpecialFaultCode
+from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 
 def healthy_strategy(fault_code: int, instance_id: int, config: ControllerConfig) -> type[StrategyBase] | None:
@@ -49,15 +23,22 @@ def level1_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
 
 
 def level2_strategy(fault_code: int, instance_id: int, config: ControllerConfig) -> type[StrategyBase] | None:
-    # Software fault strategies (ENGINE_DEAD, ENGINE_UNHEALTHY) not implemented yet.
-    # Software faults still update the instance fault level, but no automatic recovery.
+    # A dead engine cannot be recovered in place — run the fallback relaunch
+    # (restart engines, then containers). ENGINE_UNHEALTHY keeps the current
+    # no-op behavior (fast-recovery strategies take it over once merged).
+    if fault_code == int(SpecialFaultCode.ENGINE_DEAD):
+        if not config.fault_tolerance_config.enable_engine_relaunch:
+            return None
+        from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+
+        return EngineRelaunchStrategy
 
     # Hardware L2 faults: only handle whitelisted fault codes (token reinference)
     if not config.fault_tolerance_config.enable_token_reinference:
         return None
 
     if fault_code in [0x00F1FEF5, 0x08520003]:
-        from motor.controller.fault_tolerance.strategy import TokenReinferenceStrategy
+        from motor.controller.fault_tolerance.strategy.token_reinference import TokenReinferenceStrategy
 
         return TokenReinferenceStrategy
     return None
@@ -74,7 +55,7 @@ def level4_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
         return None
 
     from motor.controller.core.instance_manager import InstanceManager
-    from motor.controller.fault_tolerance.strategy import ScaleP2DStrategy
+    from motor.controller.fault_tolerance.strategy.scale_p2d import ScaleP2DStrategy
 
     instance = InstanceManager().get_instance(instance_id)
     if instance is not None and instance.role == "decode":

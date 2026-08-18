@@ -245,7 +245,7 @@ def test_dead_process_is_stopped_without_http_probe(mock_popen):
 
     assert supervisor.state(3, "10.0.0.1", 8000) == RuntimeState.STOPPED
     with patch.object(supervisor, "_kill_group") as kill_group:
-        assert supervisor.dead_pids() == [12345]
+        assert supervisor.dead_pids() == [(12345, 3)]
     kill_group.assert_called_once()
     assert supervisor.dead_pids() == []
     assert supervisor.pid_list() == []

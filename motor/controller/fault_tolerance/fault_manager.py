@@ -534,11 +534,26 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             current_level = ins_metadata.strategy_fault_level
             current_cls_name = current_strategy.__class__.__name__ if current_strategy else None
 
-            new_strategy_cls = (
-                self.strategies[fault_level](fault_code, ins_id, self.config)
-                if fault_level != FaultLevel.HEALTHY
-                else None
-            )
+            # Escalation chain: when the previous strategy finished without
+            # restoring health, run the fallback (EngineRelaunchStrategy —
+            # restart engines, then containers) instead of re-running the
+            # same strategy in a loop. Honours the enable_engine_relaunch
+            # switch like the level2_strategy hook: disabling it restores the
+            # legacy behavior (heartbeat suicide -> k8s pod restart only).
+            if (
+                fault_level != FaultLevel.HEALTHY
+                and ins_metadata.prev_strategy_failed
+                and self.config.fault_tolerance_config.enable_engine_relaunch
+            ):
+                from motor.controller.fault_tolerance.strategy import EngineRelaunchStrategy
+
+                new_strategy_cls = EngineRelaunchStrategy
+            else:
+                new_strategy_cls = (
+                    self.strategies[fault_level](fault_code, ins_id, self.config)
+                    if fault_level != FaultLevel.HEALTHY
+                    else None
+                )
 
             if new_strategy_cls is not None:
                 should_switch = False
@@ -584,6 +599,11 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                         ins_metadata.strategy.__class__.__name__,
                         ins_metadata.strategy_fault_level.name,
                     )
+                    # Escalation bookkeeping: a failed strategy leaves the
+                    # software faults in place (so the fault level stays) and
+                    # marks the instance for the fallback strategy; a
+                    # successful one clears the marker.
+                    ins_metadata.prev_strategy_failed = ins_metadata.strategy.is_failed()
                     ins_metadata.strategy = None
                     ins_metadata.strategy_fault_level = FaultLevel.HEALTHY
                     need_post_completion = True

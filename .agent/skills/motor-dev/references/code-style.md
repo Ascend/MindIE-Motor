@@ -132,7 +132,7 @@ The hook also removes now-unused `from typing import ...` lines. `Any` remains t
 
 ### ThreadSafeSingleton Pattern
 
-Used by all core components (InstanceManager, FaultManager, EngineManager, HeartbeatManager, MetricsCollector):
+Used by all core components (InstanceManager, FaultManager, RegisterManager, HeartbeatManager, MetricsCollector):
 
 ```python
 class MyComponent(ThreadSafeSingleton):

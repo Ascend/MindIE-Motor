@@ -296,6 +296,25 @@ class NodeManagerFaultToleranceConfig:
     #: HTTP timeout for a single status poll.
     max_poll_failures: int = 3
     #: Consecutive poll failures before the engine is reported as dead.
+    #: In-place engine relaunch (container keeps running). Mirrors the
+    #: Controller-side switch of the same name — the NodeManager holds its
+    #: own copy because the two run in separate processes with separate
+    #: configs. Disabling it restores the legacy behavior: a dead engine is
+    #: reported but the suicide arbitration is not frozen, so the pod
+    #: self-terminates (k8s restarts the container) instead.
+    enable_engine_relaunch: bool = True
+    #: Suicide-freeze window after a successful death report while waiting
+    #: for the Controller to dispatch the relaunch. Must cover the worst-case
+    #: dispatch latency: death report (~15s) + strategy-center cycle
+    #: (strategy_center_check_interval, default 10s) + serial probe/dispatch
+    #: per NodeManager (retries + backoff). A false alarm unfreezes when the
+    #: deadline expires.
+    engine_restart_wait_timeout_sec: float = 180.0
+    #: Suicide-freeze window while engines are being re-pulled. Must exceed
+    #: the Controller relaunch completion timeout (600s) plus margin; the
+    #: deadline (not a boolean) keeps the container-restart fallback alive
+    #: even when the abort message is lost.
+    engine_restart_freeze_sec: float = 720.0
 
 
 @dataclass
@@ -803,6 +822,14 @@ class NodeManagerConfig:
 
         if self.logging_config.log_max_line_length <= 0:
             errors.append("log_max_line_length must be greater than 0")
+
+        # Validate fault tolerance configuration
+        ft_config = self.fault_tolerance_config
+        if not (60 <= ft_config.engine_restart_wait_timeout_sec <= 3600):
+            errors.append("engine_restart_wait_timeout_sec must be in range 60-3600")
+
+        if not (120 <= ft_config.engine_restart_freeze_sec <= 7200):
+            errors.append("engine_restart_freeze_sec must be in range 120-7200")
 
         raise_if_config_errors(errors)
 

@@ -15,6 +15,8 @@ handling, and a select-based daemon loop.  Subclasses implement
 :meth:`init_modules` and optionally override :meth:`run`.
 """
 
+import asyncio
+import inspect
 import select
 import signal
 import sys
@@ -95,7 +97,12 @@ class Application(ABC):
         for name, module in reversed(list(self.modules.items())):
             if hasattr(module, "stop"):
                 try:
-                    module.stop()
+                    result = module.stop()
+                    # Modules may declare async stop() (e.g. the FastAPI
+                    # server); the daemon main loop is synchronous, so run
+                    # the coroutine to completion instead of dropping it.
+                    if inspect.iscoroutine(result):
+                        asyncio.run(result)
                 except Exception:
                     logger.exception("Failed to stop module %r", name)
         self.modules.clear()

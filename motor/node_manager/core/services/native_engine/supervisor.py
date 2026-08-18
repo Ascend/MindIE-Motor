@@ -118,7 +118,13 @@ class ProcessSupervisor:
             logger.warning("Native health probe failed for endpoint %s: %s", endpoint_id, err)
             return self._commit_state(endpoint_id, runtime, RuntimeState.UNHEALTHY)
 
-    def dead_pids(self) -> list[int]:
+    def dead_pids(self) -> list[tuple[int, int]]:
+        """Return ``(pid, endpoint_id)`` for processes that died.
+
+        The endpoint id is included so the caller can report the death per
+        endpoint (the Daemon's engine-relaunch flow dedups and reports by
+        pid/endpoint).
+        """
         with self._lock:
             dead = []
             dead_runtimes = []
@@ -126,7 +132,7 @@ class ProcessSupervisor:
                 if runtime.state == RuntimeState.STOPPING or runtime.process.poll() is None:
                     continue
                 runtime.state = RuntimeState.STOPPED
-                dead.append(runtime.process.pid)
+                dead.append((runtime.process.pid, endpoint_id))
                 dead_runtimes.append(runtime)
                 self._processes.pop(endpoint_id, None)
 

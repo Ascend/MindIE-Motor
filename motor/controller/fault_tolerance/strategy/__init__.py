@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,6 +7,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
 """
 Fault tolerance strategy module - contains fault recovery strategies.
 """
@@ -17,8 +17,11 @@ __all__ = [
     "generate_strategy_map",
     "ScaleP2DStrategy",
     "TokenReinferenceStrategy",
+    "EngineRelaunchStrategy",
 ]
 
-from .strategy import StrategyBase, generate_strategy_map
+from .base import StrategyBase
+from .strategy import generate_strategy_map
 from .scale_p2d import ScaleP2DStrategy
 from .token_reinference import TokenReinferenceStrategy
+from .engine_relaunch import EngineRelaunchStrategy

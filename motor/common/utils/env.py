@@ -99,10 +99,6 @@ class _Environment:
     # --- Daemon behaviour ---
 
     @property
-    def motor_restart_engine(self):
-        return os.getenv("MOTOR_RESTART_ENGINE", "0") == "1"
-
-    @property
     def motor_restart_local_service(self):
         return os.getenv("MOTOR_RESTART_LOCAL_SERVICE", "1") == "1"
 

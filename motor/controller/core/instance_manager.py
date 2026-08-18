@@ -127,6 +127,8 @@ class InstanceManager(ThreadSafeSingleton):
         }
 
         self.instances_management_thread = None
+        # instance ids for which the partial-loss shutdown was already dispatched
+        self._partial_loss_shutdown_sent: set[int] = set()
 
         self._initialized = True
         logger.info("InstanceManager initialized.")
@@ -638,6 +640,9 @@ class InstanceManager(ThreadSafeSingleton):
     def _handle_active(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.ACTIVE:
             return
+        # The instance recovered (or a new one with this id was assembled) —
+        # allow the shutdown dispatch again for a future loss episode.
+        self._partial_loss_shutdown_sent.discard(instance.id)
         if condition_event in (InsConditionEvent.INSTANCE_NORMAL, InsConditionEvent.INSTANCE_RESUMED):
             instance.update_instance_status(InsStatus.ACTIVE)
             if condition_event == InsConditionEvent.INSTANCE_RESUMED:
@@ -669,11 +674,13 @@ class InstanceManager(ThreadSafeSingleton):
             # After failure, node_manager easily reports heartbeats to the wrong pod, leading to
             # heartbeat timeout and instance isolation. Therefore, we need the controller to
             # directly query once using ip+port when heartbeat times out to avoid such situations.]
-            if self._check_node_managers_status(instance):
+            has_abnormal, reachable_nms = self._check_node_managers_status(instance)
+            if has_abnormal:
                 instance.update_instance_status(InsStatus.INACTIVE)
                 self.notify(instance, ObserverEvent.INSTANCE_SEPARATED)
                 self._report_inst_alarm(instance)
                 self._report_coordinator_alarm(instance)
+                self._dispatch_partial_loss_shutdown(instance, reachable_nms)
             else:
                 # If node managers are all normal, do not set to INACTIVE
                 # and we need to refresh the heartbeat to avoid immediate timeout
@@ -688,6 +695,37 @@ class InstanceManager(ThreadSafeSingleton):
                 instance.update_instance_status(InsStatus.PAUSED)
                 self.notify(instance, ObserverEvent.INSTANCE_PAUSED)
                 self._report_inst_alarm(instance)
+
+    def _dispatch_partial_loss_shutdown(self, instance: Instance, reachable_nms: list) -> None:
+        """Tell the surviving NodeManagers to exit after a partial instance loss.
+
+        One NodeManager is gone (heartbeats timed out and the probe confirmed
+        it), so the surviving half must restart together with it — a
+        cross-machine instance cannot run split. ``/node-manager/stop`` is the
+        existing suicide instruction (engines stopped, then the NodeManager
+        exits and k8s restarts the pod). Dispatched once per loss episode; the
+        marker clears when the instance recovers to ACTIVE or is deleted (a
+        re-assembled instance gets a fresh id).
+        """
+        if instance.id in self._partial_loss_shutdown_sent:
+            return
+        self._partial_loss_shutdown_sent.add(instance.id)
+        logger.warning(
+            "Instance %d partially lost: dispatching stop to %d surviving node manager(s)",
+            instance.id,
+            len(reachable_nms),
+        )
+        for node_mgr in reachable_nms:
+            try:
+                NodeManagerApiClient.stop(node_mgr)
+                logger.error(
+                    "Stop dispatched to node manager %s:%s (instance %d partially lost)",
+                    node_mgr.pod_ip,
+                    node_mgr.port,
+                    instance.id,
+                )
+            except Exception as e:
+                logger.error("Failed to dispatch stop to node manager %s: %s", node_mgr.pod_ip, e)
 
     def _report_inst_alarm(self, instance: Instance, is_cleared: bool = False) -> None:
         from motor.controller.observability.observability import Observability
@@ -731,14 +769,22 @@ class InstanceManager(ThreadSafeSingleton):
             logger.warning(
                 "No node managers found for instance %s(id:%d), setting to INACTIVE", instance.job_name, instance.id
             )
-            return True
+            return True, []
 
+        # Probe ALL node managers before returning — an early exit on the first
+        # abnormal one would drop the still-reachable survivors from
+        # `reachable_nms` and the partial-loss shutdown would miss them.
+        reachable_nms = []
+        has_abnormal = False
         for node_mgr in node_managers:
             try:
                 response = NodeManagerApiClient.query_status(node_mgr)
                 if isinstance(response, dict) and "status" in response:
                     is_normal = response.get("status", False)
-                    if not is_normal:
+                    if is_normal:
+                        reachable_nms.append(node_mgr)
+                    else:
+                        has_abnormal = True
                         logger.warning(
                             "Node manager %s:%s reports abnormal endpoints for instance %s(id:%d)",
                             node_mgr.pod_ip,
@@ -746,8 +792,8 @@ class InstanceManager(ThreadSafeSingleton):
                             instance.job_name,
                             instance.id,
                         )
-                        return True
                 else:
+                    has_abnormal = True
                     logger.warning(
                         "Invalid response from node manager %s:%s for instance %s(id:%d): %s",
                         node_mgr.pod_ip,
@@ -756,8 +802,8 @@ class InstanceManager(ThreadSafeSingleton):
                         instance.id,
                         response,
                     )
-                    return True
             except Exception as e:
+                has_abnormal = True
                 logger.warning(
                     "Failed to check node manager %s:%s status for instance %s(id:%d): %s",
                     node_mgr.pod_ip,
@@ -766,10 +812,11 @@ class InstanceManager(ThreadSafeSingleton):
                     instance.id,
                     e,
                 )
-                return True
 
+        if has_abnormal:
+            return True, reachable_nms
         logger.info("All node managers report normal status for instance %s(id:%d)", instance.job_name, instance.id)
-        return False
+        return False, reachable_nms
 
     def _handle_deleted(self, from_state: InsStatus, condition_event: InsConditionEvent, instance: Instance) -> None:
         if from_state == InsStatus.DELETED:
@@ -802,6 +849,18 @@ class InstanceManager(ThreadSafeSingleton):
             event = InsConditionEvent.INSTANCE_PAUSED
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_all_endpoints_ready():
+            if not instance.is_all_endpoints_heartbeat_fresh():
+                # Every endpoint reports NORMAL but some endpoint's heartbeat
+                # timed out (its NodeManager is gone and nobody updates its
+                # status field anymore). A lone surviving NodeManager's
+                # heartbeat must not flip the instance ACTIVE — the
+                # management loop owns the timeout flow, so leave the state
+                # untouched this round.
+                logger.debug(
+                    "Instance %d ready by status but has stale heartbeats; skipping state transition",
+                    instance.id,
+                )
+                return True
             event = InsConditionEvent.INSTANCE_NORMAL
             to_state = self.transitions.get((from_state, event), None)
         elif instance.is_have_one_endpoint_abnormal():

@@ -26,12 +26,16 @@ class DaemonService(Protocol):
         """Stop the service.  Must be idempotent."""
         ...
 
-    def health_check(self) -> None:
+    def health_check(self) -> list | None:
         """Check service health and self-restart if needed.
 
         Called by the Daemon process monitor on every tick (~5 s).
         The implementation handles its own failure detection and recovery
         (e.g. ``os.kill`` for subprocess PIDs, ``thread.is_alive`` for threads).
+
+        Returns a list of death events ``[(pid, endpoint_id), ...]`` for
+        services with subprocesses (the engine service); other services may
+        return None.
         """
         ...
 

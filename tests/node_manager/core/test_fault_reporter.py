@@ -229,28 +229,28 @@ def test_update_config_no_restart_on_poll_interval_change(reporter, config, endp
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_healthy_updates_known_no_report(mock_report, reporter):
-    known = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "healthy"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "healthy"})
     mock_report.assert_not_called()
-    assert known == {0: "healthy"}
+    assert reporter._known_statuses == {0: "healthy"}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_unhealthy_with_fault_info(mock_report, reporter):
-    known = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy", "fault_info": "RuntimeError"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy", "fault_info": "RuntimeError"})
     mock_report.assert_called_once()
     called = mock_report.call_args[0][0]
     assert called["engine_id"] == 0
     assert called["engine_status"] == 2
     assert called["exception_type"] == "RuntimeError"
-    assert known == {0: "unhealthy"}
+    assert reporter._known_statuses == {0: "unhealthy"}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_unhealthy_without_fault_info(mock_report, reporter):
-    known = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"})
     mock_report.assert_called_once()
     called = mock_report.call_args[0][0]
     assert called["exception_type"] == "EngineUnhealthyError"
@@ -258,40 +258,40 @@ def test_process_unhealthy_without_fault_info(mock_report, reporter):
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_dead(mock_report, reporter):
-    known = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"})
     mock_report.assert_called_once()
     called = mock_report.call_args[0][0]
     assert called["engine_id"] == 0
     assert called["engine_status"] == 1
     assert called["exception_type"] == "EngineDeadError"
-    assert known == {0: "dead"}
+    assert reporter._known_statuses == {0: "dead"}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_dedup_same_status(mock_report, reporter):
-    known = {0: "dead"}
-    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+    reporter._known_statuses = {0: "dead"}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"})
     mock_report.assert_not_called()
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_unknown_status(mock_report, reporter):
-    known = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "weird"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "weird"})
     mock_report.assert_not_called()
-    assert known == {}
+    assert reporter._known_statuses == {}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_process_recovered_then_faulted_again(mock_report, reporter):
     """After a healthy recovery resets the known status, a new fault is reported."""
-    known = {0: "unhealthy"}
-    reporter._process_engine_status(0, {"id": 0, "status": "healthy"}, known)
+    reporter._known_statuses = {0: "unhealthy"}
+    reporter._process_engine_status(0, {"id": 0, "status": "healthy"})
     mock_report.assert_not_called()
-    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"}, known)
+    reporter._process_engine_status(0, {"id": 0, "status": "unhealthy"})
     mock_report.assert_called_once()
-    assert known == {0: "unhealthy"}
+    assert reporter._known_statuses == {0: "unhealthy"}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
@@ -300,11 +300,11 @@ def test_process_failed_report_not_deduped(mock_report, reporter):
     NOT be marked as known so it will be retried on the next poll.
     """
     mock_report.return_value = False
-    known: dict[int, str] = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"})
 
     mock_report.assert_called_once()
-    assert 0 not in known
+    assert 0 not in reporter._known_statuses
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
@@ -313,11 +313,11 @@ def test_process_successful_report_marked_as_known(mock_report, reporter):
     IS marked as known so subsequent identical polls are deduplicated.
     """
     mock_report.return_value = True
-    known: dict[int, str] = {}
-    reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+    reporter._known_statuses = {}
+    reporter._process_engine_status(0, {"id": 0, "status": "dead"})
 
     mock_report.assert_called_once()
-    assert known == {0: "dead"}
+    assert reporter._known_statuses == {0: "dead"}
 
 
 # -- status polling ------------------------------------------------------------
@@ -341,36 +341,36 @@ def test_query_engine_status_uses_business_port(mock_client_cls, config, endpoin
 def test_poll_engine_healthy_resets_failures(reporter, endpoints):
     """A successful poll clears the consecutive-failure counter and reports nothing."""
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    failures: dict[int, int] = {0: 2}
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {0: 2}
 
     with patch.object(
         reporter,
         "_query_engine_status",
         return_value={"engines": [{"id": 0, "status": "healthy"}]},
     ):
-        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+        reporter._poll_engine(ep)
 
-    assert failures == {0: 0}
-    assert known == {0: "healthy"}
+    assert reporter._consecutive_failures == {0: 0}
+    assert reporter._known_statuses == {0: "healthy"}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
 def test_poll_engine_unhealthy_reports(mock_report, reporter, endpoints):
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    failures: dict[int, int] = {}
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
 
     with patch.object(
         reporter,
         "_query_engine_status",
         return_value={"engines": [{"id": 0, "status": "unhealthy", "fault_info": "KeyError"}]},
     ):
-        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+        reporter._poll_engine(ep)
 
     mock_report.assert_called_once()
-    assert known == {0: "unhealthy"}
-    assert failures == {0: 0}
+    assert reporter._known_statuses == {0: "unhealthy"}
+    assert reporter._consecutive_failures == {0: 0}
 
 
 def test_poll_failures_below_threshold_no_report(reporter, endpoints):
@@ -378,15 +378,15 @@ def test_poll_failures_below_threshold_no_report(reporter, endpoints):
     config = reporter._config
     config.fault_tolerance_config.max_poll_failures = 3
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    failures: dict[int, int] = {}
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
 
     with patch.object(reporter, "_query_engine_status", side_effect=RuntimeError("boom")):
-        reporter._poll_engine(ep, known, failures, {ep.id: 0})
-        reporter._poll_engine(ep, known, failures, {ep.id: 0})
+        reporter._poll_engine(ep)
+        reporter._poll_engine(ep)
 
-    assert failures == {0: 2}
-    assert known == {}
+    assert reporter._consecutive_failures == {0: 2}
+    assert reporter._known_statuses == {}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
@@ -395,12 +395,13 @@ def test_poll_failures_reach_threshold_reports_dead(mock_report, reporter, endpo
     config = reporter._config
     config.fault_tolerance_config.max_poll_failures = 3
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    failures: dict[int, int] = {}
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
+    reporter._first_poll_time = {0: 0}  # long ago, startup grace period over
 
     with patch.object(reporter, "_query_engine_status", side_effect=RuntimeError("boom")):
         for _ in range(3):
-            reporter._poll_engine(ep, known, failures, {ep.id: 0})
+            reporter._poll_engine(ep)
 
     mock_report.assert_called_once()
     called = mock_report.call_args[0][0]
@@ -408,7 +409,7 @@ def test_poll_failures_reach_threshold_reports_dead(mock_report, reporter, endpo
     assert called["engine_status"] == 1
     assert called["exception_type"] == "EngineDeadError"
     assert "unreachable" in called["exception_message"]
-    assert known == {0: "dead"}
+    assert reporter._known_statuses == {0: "dead"}
 
 
 @patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault")
@@ -417,12 +418,12 @@ def test_poll_failures_dedup_dead(mock_report, reporter, endpoints):
     config = reporter._config
     config.fault_tolerance_config.max_poll_failures = 2
     ep = endpoints[0]
-    known: dict[int, str] = {0: "dead"}  # already reported
-    failures: dict[int, int] = {}
+    reporter._known_statuses = {0: "dead"}  # already reported
+    reporter._consecutive_failures = {}
 
     with patch.object(reporter, "_query_engine_status", side_effect=RuntimeError("boom")):
         for _ in range(5):
-            reporter._poll_engine(ep, known, failures, {ep.id: 0})
+            reporter._poll_engine(ep)
 
     mock_report.assert_not_called()
 
@@ -434,8 +435,8 @@ def test_poll_failures_then_recover(reporter, endpoints):
     config = reporter._config
     config.fault_tolerance_config.max_poll_failures = 3
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    failures: dict[int, int] = {}
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
 
     side_effects = [
         RuntimeError("boom"),
@@ -445,11 +446,11 @@ def test_poll_failures_then_recover(reporter, endpoints):
     ]
     with patch.object(reporter, "_query_engine_status", side_effect=side_effects):
         for _ in range(4):
-            reporter._poll_engine(ep, known, failures, {ep.id: 0})
+            reporter._poll_engine(ep)
 
     # 2 failures -> success (reset) -> 1 failure
-    assert failures == {0: 1}
-    assert known == {0: "healthy"}
+    assert reporter._consecutive_failures == {0: 1}
+    assert reporter._known_statuses == {0: "healthy"}
 
 
 # -- main loop -----------------------------------------------------------------
@@ -464,7 +465,7 @@ def test_main_loop_polls_all_endpoints_then_stops(reporter, endpoints):
 
     polled: list[int] = []
 
-    def fake_poll(ep, known, failures, first_poll_time):
+    def fake_poll(ep):
         polled.append(ep.id)
         r._stop_event.set()  # stop after the first full round
 
@@ -505,52 +506,52 @@ def test_main_loop_reports_via_sentinel(mock_report, config, endpoints):
 def test_poll_engine_malformed_payload_does_not_raise(reporter, endpoints):
     """A malformed FT status payload must not kill the polling thread."""
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    failures: dict[int, int] = {}
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {}
 
     for bad_payload in ([], None, "ok", {"engines": [{"id": 0}]}, {"engines": ["x"]}):
         with patch.object(reporter, "_query_engine_status", return_value=bad_payload):
-            reporter._poll_engine(ep, known, failures, {ep.id: 0})  # must not raise
+            reporter._poll_engine(ep)  # must not raise
 
 
 def test_process_engine_status_uses_endpoint_id_key(reporter):
     """Dedup keys are endpoint ids, not payload ids — multi-endpoint safe."""
-    known: dict[int, str] = {}
+    reporter._known_statuses = {}
     # endpoint 0 dead, endpoint 1 healthy: payload ids collide on 0, keys must not.
     with patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault") as mock_report:
         mock_report.return_value = True
-        reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
-        reporter._process_engine_status(1, {"id": 0, "status": "healthy"}, known)
-        reporter._process_engine_status(0, {"id": 0, "status": "dead"}, known)
+        reporter._process_engine_status(0, {"id": 0, "status": "dead"})
+        reporter._process_engine_status(1, {"id": 0, "status": "healthy"})
+        reporter._process_engine_status(0, {"id": 0, "status": "dead"})
 
-    assert known == {0: "dead", 1: "healthy"}
+    assert reporter._known_statuses == {0: "dead", 1: "healthy"}
     mock_report.assert_called_once()  # dedup: second dead report suppressed
 
 
 def test_report_unreachable_dead_within_grace_period_not_reported(reporter, endpoints):
     """Poll failures during engine startup (model load) are not reported dead."""
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    first_poll_time = {ep.id: __import__("time").time()}
+    reporter._known_statuses = {}
+    reporter._first_poll_time = {ep.id: __import__("time").time()}
 
     with patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault") as mock_report:
-        reporter._report_unreachable_dead(ep, 3, known, first_poll_time)
+        reporter._report_unreachable_dead(ep, 3)
 
     mock_report.assert_not_called()
-    assert known == {}
+    assert reporter._known_statuses == {}
 
 
 def test_report_unreachable_dead_after_grace_period_reported(reporter, endpoints):
     ep = endpoints[0]
-    known: dict[int, str] = {}
-    first_poll_time = {ep.id: 0}  # long ago, grace period over
+    reporter._known_statuses = {}
+    reporter._first_poll_time = {ep.id: 0}  # long ago, grace period over
 
     with patch("motor.node_manager.core.fault_reporter.ControllerApiClient.report_software_fault") as mock_report:
         mock_report.return_value = True
-        reporter._report_unreachable_dead(ep, 3, known, first_poll_time)
+        reporter._report_unreachable_dead(ep, 3)
 
     mock_report.assert_called_once()
-    assert known == {0: "dead"}
+    assert reporter._known_statuses == {0: "dead"}
 
 
 def test_engine_ft_enabled_int_value(tmp_path):
@@ -569,3 +570,20 @@ def test_engine_ft_enabled_ignores_non_engine_sections(tmp_path):
         {"motor_deploy_config": {"engine_config": {"enable_fault_tolerance": True}}},
     )
     assert _engine_ft_enabled(path) is False
+
+
+def test_pause_suspends_and_resume_resets_state(reporter, endpoints):
+    """pause() suspends polling; resume() clears all per-endpoint poll state."""
+    ep = endpoints[0]
+    reporter._first_poll_time[ep.id] = 100.0
+    reporter._consecutive_failures[ep.id] = 2
+    reporter._known_statuses[ep.id] = "dead"
+
+    reporter.pause()
+    assert reporter._pause_event.is_set()
+
+    reporter.resume()
+    assert not reporter._pause_event.is_set()
+    assert reporter._first_poll_time == {}
+    assert reporter._consecutive_failures == {}
+    assert reporter._known_statuses == {}

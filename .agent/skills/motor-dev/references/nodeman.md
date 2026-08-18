@@ -11,31 +11,61 @@ Controller heartbeats.
 NodeManager (Application)
 │
 ├── NodeManagerAPI (FastAPI thread)
-│     POST /node-manager/start   — validate StartCmdMsg and launch native engines
-│     POST /node-manager/stop    — stop native process groups
-│     POST /node-manager/pause   — mark endpoints PAUSED for PreStop
-│     POST /node-manager/resume  — restore PAUSED endpoints
-│     GET  /node-manager/status  — report endpoint readiness
-│     GET  /readiness            — Kubernetes readiness
+│     POST /node-manager/start   — spawn engines with StartCmdMsg
+│     POST /node-manager/stop    — kill engines + delayed SIGTERM self (exit -1 →
+│                                  k8s pod restart) — the "suicide" instruction
+│     POST /node-manager/engine-restart — relaunch engines in place, no pod restart
+│                                  body {"action": "restart"|"abort", "instance_id"?}
+│                                  (thin route: restart delegates the whole
+│                                   relaunch to Daemon.restart_engine, maps
+│                                   its errors to 400/409/500;
+│                                   abort   = unfreeze suicide → heartbeat fallback)
+│     POST /node-manager/pause   — pause endpoints (snapshot/upgrade flow)
+│     POST /node-manager/resume  — resume endpoints
+│     GET  /node-manager/status  — current engine states (relaxed=true for relaunch poll)
+│     GET  /readiness            — k8s readiness probe
+│     (TLS via mgmt_tls_config)
 │
-├── Daemon
-│     service registry for engine and optional KV-store services
-│     5-second service monitor → health_check()
+├── RegisterManager (ThreadSafeSingleton)
+│     Registration protocol: POST /controller/register (with retry)
+│     Ranktable file writing: saves ranktable JSON for engine RPC
+│     Persists master_dp_ip/role/endpoints for engine relaunch (get_restart_params)
 │
-├── NativeEngineService
-│     builds LaunchContext, selects Native Engine Backend, delegates lifecycle to ProcessSupervisor
+├── Daemon (ThreadSafeSingleton)
+│     Service registry orchestration (core/services/registry.py):
+│       "engine" services  → EngineService (subprocess.Popen, device pinning)
+│       "kv-store" backends → memcache/lifecycle services
+│     Device pinning via ASCEND_RT_VISIBLE_DEVICES env var
+│     SIGKILL on stop (no graceful shutdown — engines are stateless)
+│     5s process monitor thread → svc.health_check() for every service
+│       (PID death → freeze suicide + report ENGINE_DEAD to Controller)
+│     3s suicide-arbitration thread (single pod-rescheduling decision point):
+│       5 consecutive ABNORMAL observations after the grace period → suicide flag;
+│       freeze window (deadline-based) suspends counting; only endpoints that
+│       were NORMAL before are reported as dead (cold-start guard)
+│     restart_engine(instance_id): owns the whole relaunch — serializes
+│       (in-progress flag, EngineRestartInProgressError on overlap), resolves
+│       launch params from RegisterManager (EngineRestartParamError on
+│       missing/mismatch), freezes suicide (unfreezes on failure), pauses the
+│       FaultReporter for the relaunch window and resumes after (fresh engines
+│       restart their startup grace)
+│     FaultReporter (owned here, third monitoring source): started in
+│       pull_engine, stopped in stop(), (re)configured in update_config
 │
-├── ProcessSupervisor
-│     subprocess.Popen(start_new_session=True)
-│     owns RuntimeProcess records, process groups and native health probes
-│
-├── HeartbeatManager
-│     polls ProcessSupervisor every second
-│     reports Controller heartbeat at configured interval
-│     preserves STARTING/STOPPING/PAUSED semantics and suicide threshold
+├── HeartbeatManager (ThreadSafeSingleton)
+│     Two daemon threads:
+│       _engine_server_status_thread — poll each engine GET /status every interval
+│       _heartbeat_report_thread     — POST /controller/heartbeat every interval
+│     Endpoint-state facts only (status polling + heartbeat reporting) —
+│       arbitration lives in the Daemon, not here
+│     No engine-readiness logic: status probing waits for the Daemon's
+│       engine-ready handoff (mgmt ports up), injected at start()
 │
 └── FaultReporter
-      optional GET {business_port}/fault_tolerance/status polling for engine software faults
+      HTTP poll GET {business_port}/fault_tolerance/status per engine
+      (vLLM FT REST API) → report_software_fault to Controller
+      pause()/resume(): suspended by the Daemon across an engine relaunch —
+      resume() clears poll state so re-pulled engines get a fresh startup grace
 ```
 
 `motor/node_manager/core/services/native_engine/` is the native engine service boundary. Its
@@ -48,11 +78,35 @@ depend on these node-local runtime states.
 ### Phase 1: Startup and Registration
 
 ``` text
-main.py
-  → NodeManagerConfig.from_json()
-  → port allocation / configuration validation
-  → NodeManager(Application).run()
-  → init_modules(): Daemon, NodeManagerAPI, EngineManager, HeartbeatManager
+
+1. main.py is a thin wrapper (41 lines): load config → port setup → NodeManager(config).run()
+
+   The real orchestration lives in NodeManager(Application) (motor/node_manager/node_manager.py)
+   and the Application base class (motor/common/app/application.py): signal handlers,
+   daemon tick loop, module init/start, graceful shutdown. There is no separate
+   suicide_procedure() function — suicide is driven by the tick loop (see Phase 4).
+
+2. NodeManager.init_modules() — registration order:
+   Daemon → NodeManagerAPI → [RegisterManager → HeartbeatManager]
+
+   RegisterManager/HeartbeatManager are registered ONLY when daemon.has_engine
+   is True. A KV-only pod (kv_cache_store_config mode="separated") registers
+   just Daemon + NodeManagerAPI.
+
+3. RegisterManager._register() [background thread]
+
+   Loop:
+     wait_until_api_ready(timeout=30.0)      # NodeManagerAPI must be serving
+     POST /controller/register (with instance metadata, capabilities)
+     → 200: registration accepted, break
+     → non-200: retry with exponential backoff (2, 4, 8, 16, 32s, max 5 retries)
+     → max retries exceeded: os.kill(SIGTERM) — pod restart by k8s
+
+4. Main loop (Application.run()) blocks until stop_event
+   - SIGTERM/SIGINT → cleanup and exit
+   - stdin EOF → cleanup and exit
+   - each daemon tick also checks the HeartbeatManager suicide flag
+
 ```
 
 `EngineManager` and `HeartbeatManager` are initialized only when the active service registry
@@ -133,11 +187,43 @@ HTTP status failures, TLS errors, connection errors and other exceptions are not
 `ProcessSupervisor.state()` follows this state model:
 
 ``` text
-start → STARTING
-  ├─ headless process alive → RUNNING
-  ├─ /health success         → READY
-  ├─ process exits           → STOPPED
-  └─ startup timeout expires while probe fails → UNHEALTHY
+Grace period: 120s hardcoded from engine start
+  (engines need time to load models — don't kill them during warmup)
+
+Daemon suicide arbitration (loop paced by heartbeat_interval_seconds,
+threshold 5 ≈ 15s of continuous ABNORMAL with the default 3s interval):
+  - endpoint generation change → counter reset (endpoints were (re)set)
+  - freeze window (engine relaunch / successful death report) → counting
+    suspended; deadline-based freeze, so a lost abort message still expires
+  - has_abnormal_endpoints → counter += 1; else reset + clear report dedup
+  - counter >= 5 → _should_suicide = True
+    → NodeManager._on_daemon_tick() detects the flag → stop_event.set()
+    → main loop exits → shutdown() gracefully stops all modules
+      (Daemon.stop SIGKILLs engine subprocesses — no os._exit(-1))
+    → run() returns exit code -1
+    → Kubernetes restarts the pod → fresh registration
+
+Engine death detection (two signal sources, both report to Controller via
+report_software_fault and freeze suicide ONLY on a successful report —
+dedup by PID / endpoint id):
+  1. process monitor (5s): engine PID death (EngineDeadError)
+  2. arbitration: ABNORMAL endpoint that was NORMAL before — covers
+     EngineServer alive but executor dead (vLLM EngineCore crash)
+  Cold-start guard: an endpoint never NORMAL yet is still loading — no report.
+  Report failure (Controller unreachable) → NO freeze: the arbitration keeps
+  counting and the container-restart fallback stays live (freezing on a
+  failed report would leave the pod permanently dead-ended).
+
+Controller-dispatched suicide — POST /node-manager/stop:
+  Daemon.stop() (kill engines) + delayed SIGTERM self → graceful shutdown →
+  exit -1 → k8s restarts the pod. Used for instance teardown and for
+  partial-loss coordination (a surviving NodeManager exits so the whole
+  cross-machine instance restarts together).
+
+HTTP 503 from Controller:
+  → Controller restarted → HeartbeatManager._reregister()
+  → POST /controller/reregister (ReregisterMsg) — single attempt, no backoff;
+    a later heartbeat exception triggers the next retry
 ```
 
 During `startup_timeout` a failed probe keeps `STARTING`; this prevents slow model loading from
@@ -174,10 +260,13 @@ non-headless endpoints. `resume` changes only `PAUSED` records back to `NORMAL`.
 
 ### Phase 4: Fault Detection and Recovery
 
-`Daemon` calls each service's `health_check()` every 5 seconds. If `NativeEngineService` observes a dead
-native launcher, it removes the record, cleans the process group, and requests one Pod-level
-recovery through `SIGTERM` when `motor_restart_engine` is enabled. `_recovery_requested` prevents
-duplicate recovery signals until a successful new pull resets it.
+`Daemon` calls each service's `health_check()` every 5 seconds. `NativeEngineService` surfaces dead
+PIDs (`(pid, endpoint_id)`); the Daemon decides the recovery path. Dead engines are reported to the
+Controller via the software-fault channel; when `enable_engine_relaunch` is set (NodeManager
+`fault_tolerance_config`, mirroring the Controller-side switch of the same name) the suicide
+arbitration is frozen for `engine_restart_wait_timeout_sec` so the in-place relaunch can complete.
+Without the switch the freeze is skipped and the pod self-terminates (k8s restarts the container)
+once the abnormal-report threshold is reached.
 
 `HeartbeatManager` counts consecutive successful heartbeat reports containing `ABNORMAL` endpoints.
 After five consecutive abnormal reports it sets the suicide flag. The main application tick sees
@@ -188,11 +277,15 @@ shared long-lived client with bounded retry behavior in `ControllerApiClient`.
 
 ### Phase 5: Shutdown
 
-Shutdown stops modules in reverse initialization order. `Daemon.stop()` asks each service to stop;
-`NativeEngineService` marks records `STOPPING`, sends SIGTERM to each native process group, and waits up to
-the configured grace period for the launcher. It then checks the cached PGID: a group still present after
-the launcher exits is force-killed too, so surviving workers cannot retain NPU, port or memory resources.
-Records are removed after cleanup so concurrent status reads cannot report a stopped process as a fresh endpoint.
+``` text
+NodeManager.shutdown() — stop modules in reverse registration order:
+  HeartbeatManager.stop()  → join threads
+  RegisterManager.stop()     → stop registration thread
+  NodeManagerAPI.stop()    → shutdown FastAPI
+  Daemon.stop()            → stop 5s monitor thread, then stop each service
+                             in reverse registration order (SIGKILL engine PIDs)
+  (there is no NodeManagerConfig.stop() — the config object has no lifecycle)
+```
 
 ### Snapshot Boundary
 

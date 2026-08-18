@@ -29,7 +29,7 @@ Test cases are organized according to the following logical blocks:
 import pytest
 from unittest.mock import Mock, patch
 
-from motor.controller.fault_tolerance.fault_types import FaultLevel
+from motor.controller.fault_tolerance.fault_types import FaultLevel, SpecialFaultCode
 from motor.controller.fault_tolerance.strategy.strategy import (
     StrategyBase,
     healthy_strategy,
@@ -329,3 +329,33 @@ def test_level6_strategy_respects_config_switch(mock_instance_manager, decode_in
 
     result = level6_strategy(0x0000, 1, mock_config_scale_p2d_disabled)
     assert result is None
+
+
+# -- engine relaunch (fallback) hooking ----------------------------------------
+
+
+def test_level2_engine_dead_returns_engine_relaunch(mock_config):
+    """ENGINE_DEAD (L2 software fault) escalates to the relaunch fallback."""
+    from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+
+    assert level2_strategy(int(SpecialFaultCode.ENGINE_DEAD), 1, mock_config) is EngineRelaunchStrategy
+
+
+def test_level2_engine_dead_respects_switch(mock_config):
+    """enable_engine_relaunch=False restores the legacy no-op behavior."""
+    mock_config.fault_tolerance_config.enable_engine_relaunch = False
+    assert level2_strategy(int(SpecialFaultCode.ENGINE_DEAD), 1, mock_config) is None
+
+
+def test_level2_engine_unhealthy_stays_none(mock_config):
+    """ENGINE_UNHEALTHY keeps the current no-op behavior (fast-recovery domain)."""
+    assert level2_strategy(int(SpecialFaultCode.ENGINE_UNHEALTHY), 1, mock_config) is None
+
+
+def test_strategy_base_failed_semantics():
+    """mark_failed/is_failed round-trip; finished stays independent."""
+    strategy = TokenReinferenceStrategy()
+    assert not strategy.is_failed()
+    strategy.mark_failed()
+    assert strategy.is_failed()
+    assert not strategy.is_finished()

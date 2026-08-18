@@ -1130,3 +1130,25 @@ def test_cross_node_pp_not_divisible_raises():
             NodeManagerConfig.from_json(temp_path)
     finally:
         os.unlink(temp_path)
+
+
+def test_config_engine_restart_freeze_defaults():
+    """The engine-restart suicide freeze knobs default to sane values."""
+    config = NodeManagerConfig()
+    ft = config.fault_tolerance_config
+    assert ft.engine_restart_wait_timeout_sec == 180.0
+    assert ft.engine_restart_freeze_sec == 720.0
+
+
+@pytest.mark.parametrize(
+    "attr,value,expected",
+    [
+        ("engine_restart_wait_timeout_sec", 30, "engine_restart_wait_timeout_sec must be in range 60-3600"),
+        ("engine_restart_freeze_sec", 60, "engine_restart_freeze_sec must be in range 120-7200"),
+    ],
+)
+def test_config_engine_restart_validation(attr, value, expected):
+    with pytest.raises(ValueError, match=expected):
+        config = NodeManagerConfig()
+        setattr(config.fault_tolerance_config, attr, value)
+        config.validate_config()

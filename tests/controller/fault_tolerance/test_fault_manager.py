@@ -2108,16 +2108,16 @@ def test_manually_separate_l6_not_excluded_by_affects_instance():
     )
 
     # ManuallySeparateNPU is NOT PreSeparateNPU → filter returns True
-    assert _affects_instance(FAULT_MANUALLY_SEPARATE_L6, node_with_instances) is True, (
+    assert _affects_instance(FAULT_MANUALLY_SEPARATE_L6.model_copy(), node_with_instances) is True, (
         "ManuallySeparateNPU L6 should always be included"
     )
 
     # PreSeparateNPU L6: included when instance still on node
-    assert _affects_instance(FAULT_PRE_SEPARATE_L6, node_with_instances) is True, (
+    assert _affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_with_instances) is True, (
         "PreSeparateNPU L6 should be included when instances remain on node"
     )
     # PreSeparateNPU L6: excluded when no instances on node (already moved)
-    assert _affects_instance(FAULT_PRE_SEPARATE_L6, node_no_instances) is False, (
+    assert _affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_no_instances) is False, (
         "PreSeparateNPU L6 should be excluded when instance has left the node"
     )
 
@@ -2151,3 +2151,67 @@ def test_node_has_active_instances_true_when_any_instance_active(fault_manager):
     with patch(_CORE_IM) as mock_im_class:
         mock_im_class.return_value = mock_im
         assert fault_manager._node_has_active_instances(node) is True
+
+
+def test_process_instance_strategy_escalates_after_failed_strategy(fault_manager_with_instances):
+    """A failed strategy escalates to the EngineRelaunch fallback next round."""
+    manager = fault_manager_with_instances
+    manager.instances[1].fault_level = FaultLevel.L2
+    manager.instances[1].fault_code = int(SpecialFaultCode.ENGINE_DEAD)
+    manager.instances[1].prev_strategy_failed = True
+    manager.instances[1].strategy = None
+
+    # A running (not yet finished) failed-strategy marker must trigger the fallback selection.
+    # executor.submit is mocked so the strategy stays "running" (is_finished=False) — without
+    # the mock the strategy would execute and finish instantly (mocked InstanceManager) and the
+    # completion hook would clear it, making this assertion race the executor thread.
+    with (
+        patch("motor.controller.core.instance_manager.InstanceManager") as mock_im_class,
+        patch.object(manager.executor, "submit") as mock_submit,
+    ):
+        mock_im = MagicMock()
+        mock_im_class.return_value = mock_im
+
+        manager._process_instance_strategy(1)
+
+        from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+
+        mock_submit.assert_called_once()
+        assert manager.instances[1].strategy is not None
+        assert isinstance(manager.instances[1].strategy, EngineRelaunchStrategy)
+
+
+def test_strategy_completion_records_failure_flag(fault_manager_with_instances):
+    """A finished failed strategy marks prev_strategy_failed on the instance."""
+    manager = fault_manager_with_instances
+
+    failed_strategy = MagicMock()
+    failed_strategy.is_finished.return_value = True
+    failed_strategy.is_failed.return_value = True
+    manager.instances[1].strategy = failed_strategy
+    manager.instances[1].strategy_fault_level = FaultLevel.L2
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as mock_im_class:
+        mock_im_class.return_value = MagicMock()
+        manager._process_instance_strategy(1)
+
+    assert manager.instances[1].prev_strategy_failed is True
+    assert manager.instances[1].strategy is None
+
+
+def test_strategy_completion_clears_failure_flag(fault_manager_with_instances):
+    """A finished successful strategy clears prev_strategy_failed."""
+    manager = fault_manager_with_instances
+
+    ok_strategy = MagicMock()
+    ok_strategy.is_finished.return_value = True
+    ok_strategy.is_failed.return_value = False
+    manager.instances[1].strategy = ok_strategy
+    manager.instances[1].strategy_fault_level = FaultLevel.L2
+    manager.instances[1].prev_strategy_failed = True
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as mock_im_class:
+        mock_im_class.return_value = MagicMock()
+        manager._process_instance_strategy(1)
+
+    assert manager.instances[1].prev_strategy_failed is False

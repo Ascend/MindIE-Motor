@@ -11,10 +11,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from motor.common.resources.endpoint import Endpoint
-from motor.common.resources.instance import PDRole
 from motor.node_manager.core.services.native_engine.service import NativeEngineService
-from motor.node_manager.core.services.native_engine.models import CommandSpec, LaunchSpec, ProbeSpec
 
 
 def _native_engine_service() -> NativeEngineService:
@@ -34,29 +31,16 @@ def _native_engine_service() -> NativeEngineService:
     return service
 
 
-def test_successful_pull_clears_recovery_latch():
+def test_health_check_returns_dead_pids():
+    """health_check only surfaces dead PIDs; recovery routing is the Daemon's."""
     service = _native_engine_service()
-    service._recovery_requested = True
-    service.backend.prepare.return_value = LaunchSpec(
-        command=CommandSpec(argv=("python", "-m", "sglang.launch_server"), env={}),
-        probe=ProbeSpec(path="/health", timeout_seconds=1, startup_timeout_seconds=10),
-    )
-    service.supervisor.start.return_value = True
-    endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8001")
+    service.supervisor.dead_pids.return_value = [(101, 0)]
 
-    service.pull(PDRole.ROLE_D, [endpoint], instance_id=1, master_dp_ip="127.0.0.1")
-
-    assert service._recovery_requested is False
-    service.supervisor.start.assert_called_once()
+    assert service.health_check() == [(101, 0)]
 
 
-@patch("motor.node_manager.core.services.native_engine.service.os.kill")
-def test_health_check_requests_recovery_only_once(mock_kill):
+def test_health_check_empty_when_no_deaths():
     service = _native_engine_service()
-    service.restart_on_failure = True
-    service.supervisor.dead_pids.side_effect = [[101], [102]]
+    service.supervisor.dead_pids.return_value = []
 
-    service.health_check()
-    service.health_check()
-
-    mock_kill.assert_called_once()
+    assert service.health_check() == []

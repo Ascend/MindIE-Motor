@@ -31,13 +31,12 @@ from motor.common.utils.snapshot_utils import (
 )
 from motor.config.node_manager import HardwareType, NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
-from motor.node_manager.core.fault_reporter import FaultReporter
 from motor.node_manager.core.api_ready_event import wait_until_api_ready
 
 logger = get_logger(__name__)
 
 
-class EngineManager(ThreadSafeSingleton):
+class RegisterManager(ThreadSafeSingleton):
     def __init__(self, config: NodeManagerConfig | None = None) -> None:
         if hasattr(self, "_initialized"):
             return
@@ -52,12 +51,14 @@ class EngineManager(ThreadSafeSingleton):
         self.instance_id: int = 0
         self.d2d_peer_ips: list[str] | None = None
         self.node_rank: int = 0
+        # Persisted from the start command for later engine relaunch (the
+        # Controller does not re-send StartCmdMsg on relaunch).
+        self.master_dp_ip: str = ""
+        self.role: str = ""
         self.is_working = False
 
         # for snapshot restore, should be recorded during a snapshot-enabled cold start
         self.is_snapshot_master = False
-
-        self._fault_reporter = FaultReporter(config)
 
         self._register_thread = threading.Thread(target=self._register, daemon=True, name="engine_register")
         self._register_thread.start()
@@ -65,22 +66,11 @@ class EngineManager(ThreadSafeSingleton):
         self._initialized = True
         logger.info("Engine Manager module initialized.")
 
-    def start(self) -> None:
-        """Start engine manager background threads."""
-        self._fault_reporter.start(self.endpoints)
-        logger.info("EngineManager started.")
-
     def update_config(self, config: NodeManagerConfig) -> None:
-        """Update configuration for the engine manager.
-
-        Supports dynamically enabling/disabling the fault reporting thread
-        when enable_fault_tolerance changes.
-        """
+        """Update configuration for the engine manager."""
         with self.config_lock:
             self._config = config
-
-        self._fault_reporter.update_config(config, self.endpoints)
-        logger.info("EngineManager configuration updated.")
+        logger.info("RegisterManager configuration updated.")
 
     def get_snapshot_metadata_path(self) -> str:
         # if snapshot_metadata_path is set, return it, otherwise using configmap mounted snapshot_metadata.json and return default MOTOR_SNAPSHOT_METADATA_PATH
@@ -228,6 +218,8 @@ class EngineManager(ThreadSafeSingleton):
         self.endpoints = start_cmd.endpoints
         self.d2d_peer_ips = start_cmd.d2d_peer_ips
         self.node_rank = start_cmd.node_rank
+        self.master_dp_ip = start_cmd.master_dp_ip
+        self.role = start_cmd.role
 
         if (
             self._config.snapshot_config.enable_snapshot
@@ -239,8 +231,25 @@ class EngineManager(ThreadSafeSingleton):
         self._write_ranktable_to_file(start_cmd.ranktable)
         return True
 
+    def get_restart_params(self) -> dict | None:
+        """Snapshot of the parameters needed to relaunch the engines.
+
+        Returns None when no start command was received yet (nothing to
+        relaunch); the Controller does not re-send StartCmdMsg on relaunch,
+        so the Daemon rebuilds the pull arguments from this snapshot.
+        """
+        if self.instance_id <= 0 or not self.endpoints or not self.role:
+            return None
+        return {
+            "role": self.role,
+            "endpoints": list(self.endpoints),
+            "instance_id": self.instance_id,
+            "master_dp_ip": self.master_dp_ip,
+            "d2d_peer_ips": self.d2d_peer_ips,
+            "node_rank": self.node_rank,
+        }
+
     def stop(self) -> None:
-        self._fault_reporter.stop()
         try:
             if hasattr(self, "_register_thread") and self._register_thread.is_alive():
                 self._register_thread.join(timeout=2.0)

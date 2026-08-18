@@ -9,12 +9,11 @@
 # See the Mulan PSL v2 for more details.
 
 import os
-import signal
 import threading
+import time
 
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole
-from motor.common.utils.env import Env
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.node_manager.core.services.native_engine.factory import get_backend
@@ -72,9 +71,9 @@ class NativeEngineService:
         self.backend = get_backend(self.engine_type)
         self.supervisor = ProcessSupervisor()
         self._pull_lock = threading.Lock()
-
-        self.restart_on_failure = Env.motor_restart_engine
-        self._recovery_requested = False
+        # Number of engine relaunches performed in this container's lifetime;
+        # used to label the log separators between successive engine launches.
+        self._restart_count = 0
 
     def pull(
         self,
@@ -141,12 +140,10 @@ class NativeEngineService:
                 if self.supervisor.start(endpoint.id, launch_spec.command, launch_spec.probe):
                     started_endpoint_ids.append(endpoint.id)
 
-            self._recovery_requested = False
-
         except Exception as e:
             for endpoint_id in reversed(started_endpoint_ids):
                 self.supervisor.stop(endpoint_id)
-            raise RuntimeError("Failed to pull engine: %s" % e) from e
+            raise RuntimeError(f"Failed to pull engine: {e}") from e
 
     def stop(self) -> list[int]:
         """Gracefully stop all native process groups, then force-kill on timeout."""
@@ -168,27 +165,88 @@ class NativeEngineService:
         scheme = "https" if probe.tls_config and probe.tls_config.enable_tls else "http"
         return f"{scheme}://{format_address(endpoint.ip, endpoint.business_port)}/metrics"
 
-    def health_check(self) -> None:
-        """Trigger Pod-level recovery when any native engine process exits."""
-        dead_pids = self.supervisor.dead_pids()
-        if not dead_pids:
-            return
-        logger.warning(
-            "Engine PIDs %s died (restart_on_failure=%s)",
-            dead_pids,
-            self.restart_on_failure,
+    def restart(
+        self,
+        pd_role_info: PDRole,
+        endpoints_info: list[Endpoint],
+        instance_id: int,
+        master_dp_ip: str,
+        d2d_peer_ips: list[str] | None = None,
+        node_rank: int = 0,
+    ) -> None:
+        """Relaunch the native engines in place: stop the old process groups,
+        then pull fresh ones. Owns the whole relaunch lifecycle (the Daemon
+        stays engine-agnostic).
+
+        The engines inherit this process's stdout/stderr, so every relaunch
+        appends to the same container log file — a prominent separator is
+        printed between the old and the new engine logs to mark the relaunch
+        number.
+        """
+        logger.info("Restarting native engines for instance %d (stop -> pull)", instance_id)
+        self.stop()
+        self._log_restart_separator(instance_id)
+        self.pull(pd_role_info, endpoints_info, instance_id, master_dp_ip, d2d_peer_ips, node_rank)
+
+    def _log_restart_separator(self, instance_id: int) -> None:
+        """Print a prominent separator marking the N-th engine relaunch.
+
+        Engine subprocesses inherit this process's stdout/stderr, so their
+        logs accumulate in the same container log file. This banner (printed
+        between the old engines' stop and the new engines' pull) makes each
+        relaunch clearly delimited and greppable: ``[ENGINE RELAUNCH #N]``.
+        """
+        self._restart_count += 1
+        banner = (
+            "\n"
+            f"{'=' * 24} [ENGINE RELAUNCH #{self._restart_count}] "
+            f"instance_id={instance_id} {time.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"{'=' * 24}\n"
         )
-        if self.restart_on_failure and not self._recovery_requested:
-            self._recovery_requested = True
-            logger.info("Engine failure requires Pod-level recovery")
-            os.kill(os.getpid(), signal.SIGTERM)
+        # Straight to the container stdout stream (k8s collects it as the
+        # container log file) — independent of this process's logger setup.
+        print(banner, flush=True)
+        logger.info("Engine relaunch #%d separator printed to container log", self._restart_count)
+
+    def wait_ready(self, endpoints: list[Endpoint], timeout: float = 60.0) -> None:
+        """Wait until every native engine's readiness probe succeeds.
+
+        The probe hits the engine's business port (the OpenAI API), which only
+        accepts connections once the model finished loading — so this waits
+        out the (potentially long) model load. Returns on timeout as well:
+        the HeartbeatManager's STARTING-preserves-status semantics keep the
+        loading window from being misreported as a death.
+        """
+        deadline = time.monotonic() + timeout
+        for endpoint in endpoints:
+            address = format_address(endpoint.ip, endpoint.business_port)
+            logger.info("Waiting for native engine at %s to become ready...", address)
+            while time.monotonic() < deadline:
+                if self.supervisor.state(endpoint.id, endpoint.ip, int(endpoint.business_port)) == RuntimeState.READY:
+                    logger.info("Native engine at %s is ready.", address)
+                    break
+                time.sleep(1)
+
+    def health_check(self) -> list:
+        """Return deaths ``[(pid, endpoint_id)]`` for the Daemon's death handling.
+
+        Whether to freeze suicide arbitration and wait for an in-place
+        relaunch, or let the pod self-terminate (k8s restarts the container),
+        is the Daemon's decision — gated by ``enable_engine_relaunch`` in the
+        NodeManager config. This service only surfaces dead PIDs.
+        """
+        dead = self.supervisor.dead_pids()
+        if not dead:
+            return []
+        logger.warning("Engine PIDs %s died", [pid for pid, _ in dead])
+        return dead
 
     def _calc_visible_device_ids(self, index: int, device_size: int) -> str:
         local_world_size = self.parallel_config.local_world_size
         start_device_id = index * local_world_size % device_size
         end_device_id = start_device_id + local_world_size
         if end_device_id > device_size:
-            device_ids = list(range(start_device_id, device_size)) + list(range(0, end_device_id - device_size))
+            device_ids = list(range(start_device_id, device_size)) + list(range(end_device_id - device_size))
         else:
             device_ids = list(range(start_device_id, end_device_id))
         if self.single_container_flag:

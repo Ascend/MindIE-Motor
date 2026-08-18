@@ -1284,3 +1284,100 @@ def test_restore_data_with_malformed_numeric_data():
 
         # Instance should not be created due to validation error
         assert len(manager.instances) == 0
+
+
+def test_stale_heartbeat_blocks_reactivation(instance_manager):
+    """All endpoints NORMAL by status, but one endpoint's heartbeat timed out:
+    the surviving NM's heartbeat must NOT flip the instance ACTIVE.
+    """
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(301, "test_stale", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.INACTIVE)
+
+    for ep in instance.endpoints["192.168.1.1"].values():
+        ep.status = EndpointStatus.NORMAL
+        ep.hb_timestamp = time.time() - 60  # NM 1 is gone
+    for ep in instance.endpoints["192.168.1.2"].values():
+        ep.status = EndpointStatus.NORMAL
+        ep.hb_timestamp = time.time()  # NM 2 alive
+
+    result = manager._handle_state_transition(instance)
+
+    assert result is True
+    assert instance.status == InsStatus.INACTIVE, (
+        f"Expected INACTIVE but got {instance.status} — stale heartbeats must block ACTIVE"
+    )
+
+
+def test_fresh_heartbeats_still_activate(instance_manager):
+    """With all heartbeats fresh, the NORMAL transition works as before."""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(302, "test_fresh", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.INACTIVE)
+
+    for ep in instance.endpoints["192.168.1.1"].values():
+        ep.status = EndpointStatus.NORMAL
+        ep.hb_timestamp = time.time()
+    for ep in instance.endpoints["192.168.1.2"].values():
+        ep.status = EndpointStatus.NORMAL
+        ep.hb_timestamp = time.time()
+
+    result = manager._handle_state_transition(instance)
+
+    assert result is True
+    assert instance.status == InsStatus.ACTIVE
+
+
+def test_check_node_managers_status_probes_all_before_returning(instance_manager):
+    """An abnormal NM earlier in the list must not drop the later reachable survivors."""
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(305, "test_probe_all", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+
+    nm_abnormal = MagicMock(pod_ip="192.168.1.1", port="8080")
+    nm_normal = MagicMock(pod_ip="192.168.1.2", port="8080")
+    with (
+        patch.object(Instance, "get_node_managers", return_value=[nm_abnormal, nm_normal]),
+        patch("motor.controller.core.instance_manager.NodeManagerApiClient") as mock_client_cls,
+    ):
+        mock_client_cls.query_status.side_effect = [{"status": False}, {"status": True}]
+
+        has_abnormal, reachable = manager._check_node_managers_status(instance)
+
+    assert has_abnormal is True
+    # the survivor behind the abnormal NM is still discovered
+    assert reachable == [nm_normal]
+
+
+def test_partial_loss_dispatches_stop_with_dedup(instance_manager):
+    """Partial loss dispatches stop to the reachable NM once per episode; the
+    dedup marker clears when the instance recovers to ACTIVE.
+    """
+    manager = create_instance_manager_with_config()
+    instance = create_test_instance(303, "test_loss", ["192.168.1.1", "192.168.1.2"])
+    manager.add_instance(instance)
+    instance.update_instance_status(InsStatus.ACTIVE)
+
+    reachable = [MagicMock(pod_ip="192.168.1.2", port="8080")]
+    with (
+        patch.object(manager, "_check_node_managers_status", return_value=(True, reachable)),
+        patch("motor.controller.core.instance_manager.NodeManagerApiClient") as mock_client_cls,
+    ):
+        mock_client_cls.stop.return_value = True
+
+        manager._handle_inactive(InsStatus.ACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT, instance)
+        assert mock_client_cls.stop.call_count == 1
+        mock_client_cls.stop.assert_called_once_with(reachable[0])
+
+        # second episode round in the same episode: deduped
+        manager._handle_inactive(InsStatus.ACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT, instance)
+        assert mock_client_cls.stop.call_count == 1
+
+        # instance recovers (INACTIVE -> ACTIVE via _handle_active)
+        manager._handle_active(InsStatus.INACTIVE, InsConditionEvent.INSTANCE_NORMAL, instance)
+
+        # a new loss episode dispatches again
+        manager._handle_inactive(InsStatus.ACTIVE, InsConditionEvent.INSTANCE_HEARTBEAT_TIMEOUT, instance)
+        assert mock_client_cls.stop.call_count == 2

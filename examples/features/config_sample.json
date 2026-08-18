@@ -100,7 +100,12 @@
       "k8s_cert_path": "",
       "enable_scale_p2d": true,
       "enable_token_reinference": true,
-      "scale_p2d_d_instance_reinit_wait_timeout": 60
+      "scale_p2d_d_instance_reinit_wait_timeout": 60,
+      "enable_engine_relaunch": true,
+      "engine_relaunch_complete_timeout_sec": 600,
+      "engine_relaunch_poll_interval_sec": 5.0,
+      "engine_relaunch_dispatch_retries": 3,
+      "engine_relaunch_nm_unreachable_threshold": 3
     },
     "observability_config": {
       "observability_enable": false,
@@ -360,7 +365,10 @@
       "enable_fault_tolerance": false,
       "poll_interval_sec": 5.0,
       "poll_timeout_sec": 5.0,
-      "max_poll_failures": 3
+      "max_poll_failures": 3,
+      "enable_engine_relaunch": true,
+      "engine_restart_wait_timeout_sec": 180.0,
+      "engine_restart_freeze_sec": 720.0
     },
     "port_allocator_config": {
       "enable": true,

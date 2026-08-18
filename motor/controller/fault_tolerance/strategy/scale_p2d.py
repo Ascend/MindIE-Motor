@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from motor.common.logger import get_logger
 from motor.common.alarm.scale_p2d_event import ScaleP2DEvent, ScaleP2DReason
-from motor.controller.fault_tolerance.strategy import StrategyBase
+from motor.controller.fault_tolerance.strategy.base import StrategyBase
 from motor.controller.core.instance_manager import InstanceManager
 from motor.common.resources import Instance, PDRole, InsStatus
 from motor.controller.fault_tolerance.fault_types import FaultLevel
@@ -75,7 +75,7 @@ class ScaleP2DStrategy(StrategyBase):
     def _resolve_d_instance_reinit_wait_timeout() -> int:
         # Local import to avoid circular dependency:
         # fault_tolerance/__init__ → fault_manager → strategy/__init__ → scale_p2d
-        from motor.controller.fault_tolerance.fault_manager import FaultManager
+        from motor.controller.fault_tolerance.fault_manager import FaultManager  # pylint: disable=cyclic-import
 
         return FaultManager().config.fault_tolerance_config.scale_p2d_d_instance_reinit_wait_timeout
 
@@ -282,7 +282,7 @@ class ScaleP2DStrategy(StrategyBase):
         try:
             # Local import to avoid circular dependency:
             # fault_tolerance/__init__ → fault_manager → strategy/__init__ → scale_p2d
-            from motor.controller.fault_tolerance.fault_manager import FaultManager
+            from motor.controller.fault_tolerance.fault_manager import FaultManager  # pylint: disable=cyclic-import
 
             node_fault_levels = FaultManager().get_node_fault_levels(d_instance.id)
 

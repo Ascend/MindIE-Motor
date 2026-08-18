@@ -463,7 +463,9 @@ class _ResourceManagerMixin:
 
             node_metadata.hardware_fault_infos.clear()
             for code, infos in grouped.items():
-                info = max(infos, key=lambda i: i.fault_level.value)
+                # Copy before adjusting: the dynamic PreSeparateNPU downgrade
+                # below must not mutate the caller's FaultInfo object.
+                info = max(infos, key=lambda i: i.fault_level.value).model_copy()
                 info.fault_category = FaultCategory.HARDWARE
 
                 # Dynamically adjust PreSeparateNPU fault level based on

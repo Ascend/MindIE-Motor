@@ -128,6 +128,20 @@ class FaultToleranceConfig:
     enable_token_reinference: bool = True  # Enable/disable token reinference strategy
     scale_p2d_d_instance_reinit_wait_timeout: int = 60  # seconds to wait for D instance re-init before ScaleP2D
 
+    # Fallback engine relaunch (restart engines in place, then containers):
+    # when an engine is reported DEAD or a fast-recovery strategy fails, the
+    # strategy center escalates to EngineRelaunchStrategy. Disabling restores
+    # the legacy behavior (heartbeat suicide -> k8s pod restart only).
+    enable_engine_relaunch: bool = True
+    #: Total budget for relaunching engines (dispatch + model loading).
+    engine_relaunch_complete_timeout_sec: int = 600
+    #: Polling interval while waiting for the engines to come back.
+    engine_relaunch_poll_interval_sec: float = 5.0
+    #: Dispatch retries (with 2s backoff) per NodeManager.
+    engine_relaunch_dispatch_retries: int = 3
+    #: Consecutive poll failures before a NodeManager counts as unreachable.
+    engine_relaunch_nm_unreachable_threshold: int = 3
+
 
 @dataclass
 class ControllerConfig:
@@ -303,6 +317,19 @@ class ControllerConfig:
 
         if not (1 <= self.fault_tolerance_config.scale_p2d_d_instance_reinit_wait_timeout <= 600):
             errors.append("scale_p2d_d_instance_reinit_wait_timeout must be in range 1-600")
+
+        ft_config = self.fault_tolerance_config
+        if not (60 <= ft_config.engine_relaunch_complete_timeout_sec <= 3600):
+            errors.append("engine_relaunch_complete_timeout_sec must be in range 60-3600")
+
+        if not (1 <= ft_config.engine_relaunch_poll_interval_sec <= 60):
+            errors.append("engine_relaunch_poll_interval_sec must be in range 1-60")
+
+        if not (0 <= ft_config.engine_relaunch_dispatch_retries <= 10):
+            errors.append("engine_relaunch_dispatch_retries must be in range 0-10")
+
+        if not (1 <= ft_config.engine_relaunch_nm_unreachable_threshold <= 10):
+            errors.append("engine_relaunch_nm_unreachable_threshold must be in range 1-10")
 
         # Validate standby configuration
         if self.standby_config.master_standby_check_interval <= 0:

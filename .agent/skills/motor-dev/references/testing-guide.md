@@ -72,6 +72,13 @@ motor/controller/core/bar.py     → tests/controller/core/test_bar.py
 
 If no test file exists, create one following `test_<module_name>.py`.
 
+## Test Style Conventions
+
+- **平铺函数，不用测试类**：新增测试一律写模块级 `def test_*` 函数，不新建 `class TestXxx`（既有文件已用类的，跟随该文件既有风格）。
+- **不用 `# -- xxx ----` 章节分隔注释与多余空行**：函数之间标准 2 空行即可，分隔注释是多行视觉噪音。
+- **不测纯日志输出**：日志文案（打印了哪个 banner、分隔符等）是实现细节，不是可观察行为——只断言通过公共 API 可观察的行为。
+- **测试量随功能复杂度**：一个「小功能」不需要十几个用例；同类输入用 `@pytest.mark.parametrize` 合并，同函数多个分支优先合并到一个用例里断言（原则 4：测试 diff 明显大于代码 diff 就先砍）。
+
 ## Mock & Fixture Patterns
 
 - **Mocking external services**: use `unittest.mock.patch` for HTTP clients and network calls

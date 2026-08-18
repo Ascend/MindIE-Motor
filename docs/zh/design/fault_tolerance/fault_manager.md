@@ -53,10 +53,11 @@ Controller 侧:
   └── Coordinator: 请求异常、熔断、实例隔离与恢复探测
 
 NodeManager 侧:
-  FaultReporter (EngineManager 聚合)
+  FaultReporter (Daemon 持有)
   ├── HTTP 轮询 → GET {endpoint.business_port}/fault_tolerance/status (vLLM FT API)
   ├── 状态去重 → 仅上报 dead/unhealthy 变更
   ├── 连续 max_poll_failures 次轮询失败 → 按 dead 上报
+  ├── 引擎重拉期间由 Daemon 暂停/恢复（重拉后清空轮询状态重起启动宽限）
   └── HTTP POST → Controller /controller/report_software_fault
 ```
 

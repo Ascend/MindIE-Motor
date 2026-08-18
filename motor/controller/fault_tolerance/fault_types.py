@@ -260,6 +260,10 @@ class InstanceMetadata(BaseModel):
     strategy_fault_level: FaultLevel = Field(
         default=FaultLevel.HEALTHY, description="Fault level of the currently running strategy"
     )
+    #: Set when the last strategy finished without restoring health; the
+    #: strategy center then escalates to the fallback strategy
+    #: (EngineRelaunchStrategy) instead of re-running the same strategy.
+    prev_strategy_failed: bool = Field(default=False, description="Last strategy failed to recover")
 
     # Non-serializable fields (excluded from serialization)
     lock: Any = Field(default=None, exclude=True)

@@ -823,3 +823,34 @@ def test_tls_config_path_strings():
     config.mgmt_tls_config.key_file = ""
     assert config.mgmt_tls_config.cert_file == ""
     assert config.mgmt_tls_config.key_file == ""
+
+
+def test_config_engine_relaunch_defaults():
+    """The relaunch knobs default to sane values."""
+    config = ControllerConfig()
+    ft = config.fault_tolerance_config
+    assert ft.enable_engine_relaunch is True
+    assert ft.engine_relaunch_complete_timeout_sec == 600
+    assert ft.engine_relaunch_poll_interval_sec == 5.0
+    assert ft.engine_relaunch_dispatch_retries == 3
+    assert ft.engine_relaunch_nm_unreachable_threshold == 3
+
+
+@pytest.mark.parametrize(
+    "attr,value,expected",
+    [
+        ("engine_relaunch_complete_timeout_sec", 30, "engine_relaunch_complete_timeout_sec must be in range 60-3600"),
+        ("engine_relaunch_poll_interval_sec", 0, "engine_relaunch_poll_interval_sec must be in range 1-60"),
+        ("engine_relaunch_dispatch_retries", 11, "engine_relaunch_dispatch_retries must be in range 0-10"),
+        (
+            "engine_relaunch_nm_unreachable_threshold",
+            0,
+            "engine_relaunch_nm_unreachable_threshold must be in range 1-10",
+        ),
+    ],
+)
+def test_config_engine_relaunch_validation(attr, value, expected):
+    with pytest.raises(ValueError, match=expected):
+        config = ControllerConfig()
+        setattr(config.fault_tolerance_config, attr, value)
+        config.validate_config()
