@@ -190,21 +190,28 @@ P/D 实例出现异常时，重启推理实例，避免实例长时间处于异�
 
 ### 原生引擎健康探测
 
-Engine Server 删除后，NodeManager 不再执行虚拟推理或采集 AI Cube 利用率。旧配置中的 `enable_virtual_inference`、`npu_usage_threshold` 和 `max_failure_count` 仅为配置兼容字段，原生运行时不消费。
+NodeManager 负责原生引擎的就绪探测、进程监管和虚推健康探测：
 
-- **就绪探测**：NodeManager 轮询原生引擎业务端口的 `/health`，在 `startup_timeout` 窗口内保持 STARTING，成功后才允许调度。
-- **进程存活**：NodeManager 监管原生引擎进程组；主进程或工作进程异常退出时触发实例恢复。
+- **就绪探测**：轮询原生引擎业务端口的 `/health`，在 `startup_timeout` 窗口内保持 STARTING，成功后才允许调度。
+- **进程存活**：监管原生引擎进程组；主进程或工作进程异常退出时触发实例恢复。
+- **vLLM 虚推**：对 DP0 实例发送轻量级推理请求，并结合 AI Cube 利用率识别静默故障；达到失败阈值后降级状态，但不直接杀进程。
+- **SGLang 健康探测**：使用 SGLang 原生生成式 `GET /health`，不创建 Motor 虚推 monitor。
 - **软件故障**：引擎提供 `/fault_tolerance/status` 时，可由 FaultReporter 补充软件故障上报。
 
   ```json
   "motor_engine_prefill_config": {
     "health_check_config": {
+      "enable_virtual_inference": true,
+      "npu_usage_threshold": 10,
       "health_collector_timeout": 5,
       "health_collector_timeout_retry_attempts": 3,
       "startup_timeout": 1800
     }
   }
   ```
+
+- **关闭 vLLM 虚推**：将 `enable_virtual_inference` 设为 `false`；这不会关闭 SGLang 原生生成式 `GET /health`。
+- **日志级别限制**：vLLM 虚推仅允许在最终引擎环境 `ASCEND_GLOBAL_LOG_LEVEL=3`（未配置时默认为 ERROR）时开启。详情参见[虚推健康探测](../../features/sim_inference.md)。
 
 ### KV Cache 亲和调度
 

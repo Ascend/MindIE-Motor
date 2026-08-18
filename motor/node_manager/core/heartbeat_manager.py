@@ -264,6 +264,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         with self._endpoint_lock:
             endpoints_snapshot = list(self._endpoints)
             generation_at_start = self._endpoints_generation
+            instance_id_at_start = self._instance_id
 
         if not endpoints_snapshot:
             return
@@ -277,7 +278,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         for item in endpoints_snapshot:
             original_status = item.status
             try:
-                runtime_state = daemon.get_engine_runtime_state(item)
+                runtime_state = daemon.get_engine_runtime_state(item, instance_id_at_start)
             except Exception as e:
                 logger.error(
                     "Failed to probe native engine at %s: %s",
@@ -331,6 +332,13 @@ class HeartbeatManager(ThreadSafeSingleton):
             if generation_at_start != self._endpoints_generation:
                 return
             self._endpoints = updated_endpoints
+            # Once an endpoint has proved READY, subsequent ABNORMAL states
+            # are runtime failures rather than cold-start noise.  Ending the
+            # global grace period lets the Daemon report those failures; its
+            # per-endpoint NORMAL history still protects endpoints that have
+            # not completed startup yet.
+            if any(item.status == EndpointStatus.NORMAL for item in updated_endpoints):
+                self._is_within_grace_period = False
 
     def _report_heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():

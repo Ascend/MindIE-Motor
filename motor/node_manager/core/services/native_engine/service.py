@@ -12,13 +12,22 @@ import os
 import threading
 import time
 
+from motor.common.resources.dispatch import classify_vllm_dispatch_profile
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.node_manager.core.services.native_engine.factory import get_backend
-from motor.node_manager.core.services.native_engine.models import LaunchContext, RuntimeState
+from motor.node_manager.core.services.native_engine.models import LaunchContext, LaunchSpec, RuntimeState
 from motor.node_manager.core.services.native_engine.supervisor import ProcessSupervisor
+from motor.node_manager.core.services.native_engine.virtual_inference import (
+    ASCEND_GLOBAL_LOG_LEVEL_ENV,
+    ASCEND_GLOBAL_LOG_LEVEL_ERROR,
+    VirtualInferenceSpec,
+    VirtualInferenceWorker,
+    is_error_ascend_global_log_level,
+    should_enable_vllm_virtual_inference,
+)
 from motor.node_manager.core.services.registry import SERVICE_ENGINE, register_service
 
 logger = get_logger(__name__)
@@ -70,7 +79,12 @@ class NativeEngineService:
         self.dp_rpc_port = dp_rpc_port
         self.backend = get_backend(self.engine_type)
         self.supervisor = ProcessSupervisor()
+        # Serializes pull/stop so a completed stop() cannot be followed by a late monitor install.
         self._pull_lock = threading.Lock()
+        # Monitor slot only; worker.start()/stop() run outside this lock (may block).
+        self._monitor_lock = threading.Lock()
+        self._virtual_monitor: VirtualInferenceWorker | None = None
+
         # Number of engine relaunches performed in this container's lifetime;
         # used to label the log separators between successive engine launches.
         self._restart_count = 0
@@ -98,6 +112,7 @@ class NativeEngineService:
         node_rank: int,
     ) -> None:
         started_endpoint_ids: list[int] = []
+        desired_spec: VirtualInferenceSpec | None = None
         try:
             base_env = os.environ.copy()
             pod_ip = base_env.get("POD_IP")
@@ -137,23 +152,66 @@ class NativeEngineService:
                 launch_spec = self.backend.prepare(context)
                 cmd = list(launch_spec.command.argv)
                 logger.info(" ".join(cmd))
-                if self.supervisor.start(endpoint.id, launch_spec.command, launch_spec.probe):
+                started = self.supervisor.start(endpoint.id, launch_spec.command, launch_spec.probe)
+                if started:
                     started_endpoint_ids.append(endpoint.id)
 
+                # Spec build is optional; failure disables virtual inference but keeps the engine.
+                try:
+                    spec = self._build_virtual_spec(endpoint, context, launch_spec)
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception(
+                        "Failed to build virtual inference spec for endpoint %s; "
+                        "virtual inference disabled but engine remains started",
+                        endpoint.id,
+                    )
+                    spec = None
+                if spec is not None:
+                    if desired_spec is not None:
+                        raise RuntimeError(
+                            "Multiple eligible virtual inference DP0 targets in one pull: "
+                            f"endpoints {desired_spec.endpoint_id} and {spec.endpoint_id}"
+                        )
+                    desired_spec = spec
+
         except Exception as e:
+            rolled_back_endpoint_ids: list[int] = []
             for endpoint_id in reversed(started_endpoint_ids):
-                self.supervisor.stop(endpoint_id)
-            raise RuntimeError(f"Failed to pull engine: {e}") from e
+                try:
+                    self.supervisor.stop(endpoint_id)
+                    rolled_back_endpoint_ids.append(endpoint_id)
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception("Failed to stop engine endpoint %s during pull rollback", endpoint_id)
+            # Keep the monitor when the target engine may still be alive (different launch spec, non-DP0 rollback).
+            self._clear_virtual_monitor_if_target_stopped(rolled_back_endpoint_ids)
+            raise RuntimeError("Failed to pull engine: %s" % e) from e
+
+        self._reconcile_virtual_monitor(desired_spec)
 
     def stop(self) -> list[int]:
-        """Gracefully stop all native process groups, then force-kill on timeout."""
-        return self.supervisor.stop_all()
+        """Stop virtual inference monitor, then all native process groups (serialized with pull via _pull_lock)."""
+        with self._pull_lock:
+            self._clear_virtual_monitor()
+            return self.supervisor.stop_all()
 
     def pid_list(self) -> list[int]:
         return self.supervisor.pid_list()
 
-    def runtime_state(self, endpoint: Endpoint) -> RuntimeState:
-        return self.supervisor.state(endpoint.id, endpoint.ip, int(endpoint.business_port))
+    def runtime_state(self, endpoint: Endpoint, instance_id: int) -> RuntimeState:
+        state = self.supervisor.state(endpoint.id, endpoint.ip, int(endpoint.business_port))
+        with self._monitor_lock:
+            worker = self._virtual_monitor
+            if worker is None or not self._endpoint_matches_monitor(worker, endpoint, instance_id):
+                return state
+        if state != RuntimeState.READY:
+            return state
+        worker.start()  # Outside monitor lock; may block on subprocess check or thread spawn.
+        with self._monitor_lock:
+            if self._virtual_monitor is not worker:
+                return state  # Monitor replaced/cleared during start(); ignore stale abnormal state.
+            if worker.is_abnormal():
+                return RuntimeState.UNHEALTHY  # Degrades state only; never kills or restarts the engine.
+            return state
 
     def metrics_target(self, endpoint: Endpoint) -> str | None:
         """Return the native metrics URL for a routable local endpoint."""
@@ -240,6 +298,153 @@ class NativeEngineService:
             return []
         logger.warning("Engine PIDs %s died", [pid for pid, _ in dead])
         return dead
+
+    def _build_virtual_spec(
+        self,
+        endpoint: Endpoint,
+        context: LaunchContext,
+        launch_spec: LaunchSpec,
+    ) -> VirtualInferenceSpec | None:
+        """Build virtual inference spec for vLLM DP0, or None when disabled (SGLang uses native /health)."""
+        if self.engine_type != "vllm":
+            return None
+        deploy_config = launch_spec.deploy_config
+        if deploy_config is None:
+            return None
+        health_config = deploy_config.health_check_config
+
+        if not should_enable_vllm_virtual_inference(
+            enable_virtual_inference=health_config.enable_virtual_inference,
+            dp_rank=context.dp_rank,
+            headless=context.headless,
+            npu_usage_threshold=health_config.npu_usage_threshold,
+        ):
+            return None
+
+        # Gate on final engine launch env (launch_spec.command.env), not NodeManager os.environ.
+        raw_log_level = launch_spec.command.env.get(ASCEND_GLOBAL_LOG_LEVEL_ENV)
+        if not is_error_ascend_global_log_level(raw_log_level):
+            logger.warning(
+                "Virtual inference requires ASCEND_GLOBAL_LOG_LEVEL=%s (ERROR); "
+                "got %r from final engine launch env. "
+                "Not creating vLLM virtual inference monitor.",
+                ASCEND_GLOBAL_LOG_LEVEL_ERROR,
+                raw_log_level,
+            )
+            return None
+
+        profile = classify_vllm_dispatch_profile(
+            deploy_config.engine_config,
+            explicit_profile=deploy_config.dispatch_profile,
+        )
+        return VirtualInferenceSpec(
+            instance_id=context.instance_id,
+            endpoint_id=endpoint.id,
+            host=endpoint.ip,
+            port=int(endpoint.business_port),
+            role=context.role,
+            engine_type=self.engine_type,
+            model_name=deploy_config.model_config.model_name,
+            dispatch_profile=profile,
+            tls_config=deploy_config.infer_tls_config,
+            enabled=True,
+            npu_usage_threshold=health_config.npu_usage_threshold,
+            max_failure_count=health_config.max_failure_count,
+            request_timeout_seconds=float(health_config.virtual_inference_timeout),
+        )
+
+    def _reconcile_virtual_monitor(self, desired_spec: VirtualInferenceSpec | None) -> None:
+        """Reconcile the single monitor to desired_spec (full spec equality; CAS install after unlocked build)."""
+        if desired_spec is None:
+            self._stop_detached(self._detach_virtual_monitor())
+            return
+
+        with self._monitor_lock:
+            expected_current = self._virtual_monitor
+            if expected_current is not None and expected_current.spec == desired_spec:
+                return
+
+        # Worker build failure must not roll back the engine; detach only if still expected.
+        try:
+            worker = VirtualInferenceWorker(desired_spec)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Failed to build virtual inference worker for endpoint %s; "
+                "virtual inference disabled but engine remains started",
+                desired_spec.endpoint_id,
+            )
+            self._stop_detached(self._detach_virtual_monitor_if_current(expected_current))
+            return
+
+        if self._install_virtual_monitor_if_current(expected_current, worker):
+            if expected_current is not None:
+                self._stop_worker(expected_current)
+        else:
+            self._stop_worker(worker)  # CAS failed: discard candidate, never overwrite newer monitor.
+
+    def _detach_virtual_monitor(self) -> VirtualInferenceWorker | None:
+        """Atomically clear and return the currently installed monitor worker."""
+        with self._monitor_lock:
+            worker = self._virtual_monitor
+            self._virtual_monitor = None
+        return worker
+
+    def _detach_virtual_monitor_if_current(
+        self, expected: VirtualInferenceWorker | None
+    ) -> VirtualInferenceWorker | None:
+        """Clear the monitor only if it is still ``expected``; return it or None."""
+        with self._monitor_lock:
+            if self._virtual_monitor is not expected:
+                return None
+            self._virtual_monitor = None
+            return expected
+
+    def _install_virtual_monitor_if_current(
+        self, expected: VirtualInferenceWorker | None, new_worker: VirtualInferenceWorker
+    ) -> bool:
+        """Install ``new_worker`` only if the current monitor is still ``expected``."""
+        with self._monitor_lock:
+            if self._virtual_monitor is not expected:
+                return False
+            self._virtual_monitor = new_worker
+            return True
+
+    def _clear_virtual_monitor(self) -> None:
+        """Clear the monitor and stop the detached worker outside the lock."""
+        self._stop_detached(self._detach_virtual_monitor())
+
+    def _clear_virtual_monitor_if_target_stopped(self, rolled_back_endpoint_ids: list[int]) -> None:
+        """Clear the monitor only when this pull stopped its target endpoint (process killed)."""
+        with self._monitor_lock:
+            worker = self._virtual_monitor
+            if worker is None or worker.spec.identity.endpoint_id not in rolled_back_endpoint_ids:
+                return
+            self._virtual_monitor = None
+        self._stop_worker(worker)
+
+    def _stop_detached(self, worker: VirtualInferenceWorker | None) -> None:
+        if worker is not None:
+            self._stop_worker(worker)
+
+    def _stop_worker(self, worker: VirtualInferenceWorker) -> None:
+        try:
+            worker.stop()
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Failed to stop virtual inference worker for endpoint %s",
+                worker.spec.endpoint_id,
+            )
+
+    @staticmethod
+    def _endpoint_matches_monitor(worker: VirtualInferenceWorker, endpoint: Endpoint, instance_id: int) -> bool:
+        """Return whether a runtime probe refers to the current monitor target."""
+        identity = worker.spec.identity
+        return (
+            identity.instance_id == instance_id
+            and identity.endpoint_id == endpoint.id
+            and identity.host == endpoint.ip
+            and identity.port == int(endpoint.business_port)
+        )
 
     def _calc_visible_device_ids(self, index: int, device_size: int) -> str:
         local_world_size = self.parallel_config.local_world_size

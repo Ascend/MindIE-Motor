@@ -823,17 +823,19 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 
 ### health_check_config
 
-原生引擎健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块。
+可选虚推（虚拟推理）健康探测配置，位于 `motor_engine_prefill_config` / `motor_engine_decode_config` 模块，默认关闭，机制说明见 [虚推健康探测](../features/sim_inference.md)。
 
 **表7** health_check_config字段参数说明
 
 | 配置项 | 类型 | 说明 |
-|--------|------|--------|
-| health_collector_timeout | int | 推理面 `GET /health` 探测超时（秒），默认值：5。 |
+|--------|------|------|
+| enable_virtual_inference | bool | Motor 主动虚推开关，默认值：false。取值为 `true` 时，在推理面 `/health` 首次 READY 后启动周期性虚推。仅对 vLLM 的 DP rank 0、非 headless endpoint 生效；设为 `false` 不会关闭 SGLang 原生生成式 `GET /health`。仅允许在最终引擎环境 `ASCEND_GLOBAL_LOG_LEVEL=3`（未配置时默认为 ERROR）时开启。 |
+| npu_usage_threshold | int | AI Cube 利用率阈值（%），默认值：3。仅 vLLM Motor 虚推使用，且须满足 `0 < npu_usage_threshold <= 100`。 |
+| max_failure_count | int | 连续虚推失败次数上限，默认值：6。仅 vLLM Motor 虚推使用；达到阈值后 endpoint 降级为 ABNORMAL，但不触发进程重启。 |
+| virtual_inference_timeout | float | 周期性主动虚推请求超时（秒），默认值：5.0，必须为正数。仅对 vLLM Motor 虚推生效；首次 warmup 请求固定为 180 秒。 |
+| health_collector_timeout | int | 推理面 `GET /health` 探测超时（秒），默认值：5。vLLM 与 SGLang 心跳均使用。 |
 | health_collector_timeout_retry_attempts | int | 单次 `GET /health` 超时后的最大尝试次数（包含首次请求），默认值：3；仅超时重试。 |
 | startup_timeout | int | 原生引擎模型加载启动窗口（秒），默认值：1800。窗口内连接失败保持 STARTING，不判定实例异常。 |
-
-旧版 `enable_virtual_inference`、`npu_usage_threshold` 和 `max_failure_count` 字段仅为配置兼容保留，原生引擎运行时不消费。
 
 ---
 

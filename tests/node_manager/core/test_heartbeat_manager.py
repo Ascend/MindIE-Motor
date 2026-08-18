@@ -195,6 +195,53 @@ class TestHeartBeatManager:
 
         assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
         assert heart_beat_manager._endpoints[1].status == EndpointStatus.NORMAL
+        assert heart_beat_manager.is_within_grace_period() is False
+
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_refresh_native_engine_status_passes_instance_id(self, mock_daemon, heart_beat_manager, sample_endpoints):
+        """runtime refresh must pass the snapshotted instance_id down to the daemon."""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.READY
+
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = sample_endpoints.copy()
+            heart_beat_manager._instance_id = 42
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        calls = mock_daemon.return_value.get_engine_runtime_state.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            assert call.args[1] == 42
+
+    @patch('motor.node_manager.core.daemon.Daemon')
+    def test_refresh_native_engine_status_snapshots_instance_id_once(
+        self, mock_daemon, heart_beat_manager, sample_endpoints, sample_start_cmd_msg
+    ):
+        """instance_id is snapshotted under lock together with endpoints/generation."""
+        from motor.node_manager.core.services.native_engine.models import RuntimeState
+
+        mock_daemon.return_value.get_engine_runtime_state.return_value = RuntimeState.READY
+        endpoint = sample_endpoints[0]
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [endpoint]
+            heart_beat_manager._instance_id = 7
+
+        seen_instance_ids = []
+
+        def probe(*args, **kwargs):
+            seen_instance_ids.append(args[1])
+            heart_beat_manager.update_endpoint(sample_start_cmd_msg)
+            return RuntimeState.READY
+
+        mock_daemon.return_value.get_engine_runtime_state.side_effect = probe
+
+        heart_beat_manager._refresh_native_engine_status()
+
+        # The probe ran against the snapshotted instance_id=7 even though the
+        # mid-probe update_endpoint reset _instance_id to the start-cmd value.
+        assert seen_instance_ids == [7]
 
     @patch('motor.node_manager.core.daemon.Daemon')
     def test_refresh_native_engine_status_keeps_initial_while_loading(self, mock_daemon, heart_beat_manager):

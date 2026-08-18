@@ -27,11 +27,13 @@ def _context(
     *,
     role: PDRole = PDRole.ROLE_P,
     headless: bool = False,
+    dp_rank: int = 2,
+    environment: dict | None = None,
 ) -> LaunchContext:
     return LaunchContext(
         role=role,
         instance_id=7,
-        dp_rank=2,
+        dp_rank=dp_rank,
         node_rank=1,
         host="10.0.0.2",
         business_port=8002,
@@ -42,7 +44,7 @@ def _context(
         lookup_rpc_port=6002,
         dp_rpc_port=7002,
         d2d_peer_ips=("10.0.0.3",),
-        environment={"VLLM_HOST_IP": "10.0.0.2"},
+        environment=environment or {"VLLM_HOST_IP": "10.0.0.2"},
         headless=headless,
     )
 
@@ -52,6 +54,8 @@ def _endpoint(
     engine_type: str,
     role: str,
     connector: str | None = None,
+    enable_virtual_inference: bool = False,
+    npu_usage_threshold: int = 3,
 ):
     engine_config = {}
     if connector is not None:
@@ -66,6 +70,8 @@ def _endpoint(
                 health_collector_timeout=5,
                 health_collector_timeout_retry_attempts=3,
                 startup_timeout=1800,
+                enable_virtual_inference=enable_virtual_inference,
+                npu_usage_threshold=npu_usage_threshold,
             ),
             infer_tls_config=None,
         ),
@@ -233,6 +239,84 @@ def test_sglang_backend_rejects_encode_before_loading_config():
         SGLangBackend().prepare(context)
 
     build_endpoint.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# SGLang generative health endpoint switch
+# ------------------------------------------------------------------
+
+
+def _sglang_prepare(*, dp_rank: int = 0, headless: bool = False, env=None):
+    context = _context(role=PDRole.ROLE_D, dp_rank=dp_rank, headless=headless, environment=env)
+    endpoint = _endpoint(engine_type="sglang", role="decode")
+    return _prepare_with_config(SGLangBackend(), context, endpoint)
+
+
+@pytest.mark.parametrize(
+    "dp_rank, headless",
+    [
+        (0, False),
+        (1, False),
+        (0, True),
+    ],
+    ids=["dp0", "non_dp0", "headless"],
+)
+def test_sglang_backend_generation_env_always_true(dp_rank, headless):
+    """Motor never runs virtual inference for SGLang: the generative /health
+    switch is always pinned to true regardless of DP rank or headless.
+    """
+    spec = _sglang_prepare(dp_rank=dp_rank, headless=headless)
+
+    assert spec.command.env["SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"] == "true"
+
+
+def test_sglang_backend_overrides_external_generation_env():
+    """The generative /health switch is pinned true, overriding any external value."""
+    external_env = {"VLLM_HOST_IP": "10.0.0.2", "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false"}
+    spec = _sglang_prepare(env=external_env)
+
+    assert spec.command.env["SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"] == "true"
+    assert spec.command.env["VLLM_HOST_IP"] == "10.0.0.2"
+
+
+def test_sglang_generation_env_true_even_with_non_error_log_level():
+    """Log-level gate is vLLM-only; SGLang generative /health stays forced on."""
+    spec = _sglang_prepare(env={"ASCEND_GLOBAL_LOG_LEVEL": "1"})
+
+    assert spec.command.env["SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"] == "true"
+    assert spec.probe.path == "/health"
+
+
+def test_sglang_backend_probe_stays_lightweight_health():
+    spec = _sglang_prepare()
+
+    assert spec.probe.path == "/health"
+
+
+def test_sglang_backend_pins_generation_env_when_deploy_config_missing():
+    """Generative /health must stay pinned even if a stub/base path omits deploy_config."""
+    from motor.node_manager.core.services.native_engine.models import CommandSpec, LaunchSpec, ProbeSpec
+
+    context = _context(role=PDRole.ROLE_D, dp_rank=0)
+    base_spec = LaunchSpec(
+        command=CommandSpec(
+            argv=("python3", "-m", "sglang.launch_server"),
+            env={"SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false", "KEEP": "1"},
+        ),
+        probe=ProbeSpec(path="/health", timeout_seconds=5.0, startup_timeout_seconds=1800.0),
+        deploy_config=None,
+    )
+    backend = SGLangBackend()
+    with patch(
+        "motor.node_manager.core.services.native_engine.backends.base.BaseNativeEngineBackend.prepare",
+        return_value=base_spec,
+    ):
+        spec = backend.prepare(context)
+
+    assert spec.deploy_config is None
+    assert spec.command.env["SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"] == "true"
+    assert spec.command.env["KEEP"] == "1"
+    assert spec.probe.path == "/health"
 
 
 def test_get_backend_rejects_unknown_engine():

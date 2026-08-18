@@ -129,6 +129,14 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 - 更新 endpoint 时使用 generation 标记，避免旧探测结果覆盖 Controller 新下发的数据。
 - 手动设置的 `PAUSED` 状态不会被轮询结果覆盖。
 
+#### 虚推（虚拟推理）
+
+启用虚推时（见 [虚推健康探测](../../user_guide/features/sim_inference.md)），`NativeEngineService` 每个实例维护**单个**虚推 monitor，**仅对 vLLM** 绑定有效的 DP0 target（`TargetIdentity` 不可变，含 instance/endpoint/host/port/engine_type；`VirtualInferenceSpec` 含 role/model/TLS/阈值/超时）。SGLang 不创建 Motor 虚推 monitor/worker：由自身在 `GET /health` 中执行生成式健康检查（拉起时强制 `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=true`），NodeManager/`ProcessSupervisor` 仅做现有 `/health` 心跳。pull 成功后按 spec 幂等 reconcile（相同 spec 复用、变化则替换；非 vLLM 的 desired 为 `None` 并走正常 reconcile 清理），`runtime_state(endpoint, instance_id)` 在 target 身份匹配且首次观察到原生 `/health` `READY` 后幂等启动 `VirtualInferenceWorker`（`motor/node_manager/core/services/native_engine/virtual_inference/`，由 Node Manager 直接执行，不依赖 Engine Server）：
+
+- 虚推模块负责 vLLM 虚推请求（`POST /v1/completions`）、AI Cube 利用率采样与连续失败计数；`ProcessSupervisor` 仍只负责进程与 `/health`。
+- `runtime_state()` 合并二者：虚推标记 abnormal 时，`READY` 降级为 `UNHEALTHY`，心跳照常上报 `ABNORMAL`，连续 5 次后触发自杀重调度。
+- 虚推**只改变状态，不杀进程、不重启引擎**；`stop()` 与无有效 target 的 pull 会可靠清理 monitor 及其虚推线程、HTTP client。启动回滚仅在**本轮真正停止 monitor 目标进程**时清理该 monitor；若目标引擎仍存活（如 start 报 "different launch spec" 或仅非 DP0 endpoint 被回滚）则保留原 monitor 继续服务（`stop()` 与 `pull()` 通过 `_pull_lock` 串行）。
+
 ## 原生引擎启动
 
 `NativeEngineService` 构造 `LaunchContext`，Native Engine Backend 加载角色对应配置并直接生成原生命令：

@@ -20,7 +20,7 @@ from motor.node_manager.core.services.registry import SERVICE_ENGINE
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole, ParallelConfig
-from motor.node_manager.core.services.native_engine.models import CommandSpec, LaunchSpec, ProbeSpec
+from motor.node_manager.core.services.native_engine.models import CommandSpec, LaunchSpec, ProbeSpec, RuntimeState
 
 
 def _recording_backend():
@@ -175,6 +175,20 @@ class TestDaemon:
                 daemon.pull_engine(PDRole.ROLE_P, endpoints, instance_id=1, master_dp_ip="192.168.1.100")
 
         stop.assert_called_once_with(endpoints[1].id)
+
+    def test_get_engine_runtime_state_passes_instance_id(self, daemon):
+        engine = daemon._services[SERVICE_ENGINE]
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        with patch.object(engine, "runtime_state", return_value=RuntimeState.READY) as runtime_state:
+            result = daemon.get_engine_runtime_state(endpoint, instance_id=42)
+
+        assert result == RuntimeState.READY
+        runtime_state.assert_called_once_with(endpoint, 42)
+
+    def test_get_engine_runtime_state_no_engine_returns_stopped(self, daemon):
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        with patch.object(daemon, "_services", {}):
+            assert daemon.get_engine_runtime_state(endpoint, instance_id=1) == RuntimeState.STOPPED
 
     @patch('subprocess.Popen')
     def test_native_metrics_target_uses_business_port(self, mock_popen, daemon):

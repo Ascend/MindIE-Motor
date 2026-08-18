@@ -14,6 +14,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from motor.common.resources.instance import PDRole
+from motor.config.endpoint import DeployConfig
 from motor.config.tls_config import TLSConfig
 
 
@@ -73,10 +74,18 @@ class ProbeSpec:
 
 @dataclass(frozen=True)
 class LaunchSpec:
-    """Command and readiness probe built from one validated engine config."""
+    """Command and readiness probe built from one validated engine config.
+
+    ``deploy_config`` is the already-loaded and validated role-specific deploy
+    configuration the backend consumed while building the launch spec. It lets
+    NodeManager-owned features (e.g. virtual inference) read the health check
+    configuration without re-loading the config file; it may be None when a
+    backend does not load a deploy config.
+    """
 
     command: CommandSpec
     probe: ProbeSpec
+    deploy_config: DeployConfig | None = None
 
 
 class RuntimeState(str, Enum):

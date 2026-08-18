@@ -66,6 +66,7 @@ class BaseNativeEngineBackend:
                 tls_config=endpoint_config.deploy_config.infer_tls_config,
                 process_only=context.headless,
             ),
+            deploy_config=endpoint_config.deploy_config,
         )
 
     def _validate_context(self, context: LaunchContext) -> None:

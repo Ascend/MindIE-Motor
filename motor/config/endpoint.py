@@ -114,8 +114,11 @@ class HealthCheckConfig:
     # HTTP endpoint starts accepting connections.
     startup_timeout: int = 1800
     npu_usage_threshold: int = 3
+    # Motor virtual inference (vLLM DP0 only); SGLang uses native generative GET /health instead.
     enable_virtual_inference: bool = False
     max_failure_count: int = 6
+    # Per-request timeout for vLLM POST /v1/completions virtual inference probes.
+    virtual_inference_timeout: float = 5.0
 
     @staticmethod
     def _as_positive_int(name: str, value: Any) -> int:
@@ -126,12 +129,25 @@ class HealthCheckConfig:
             raise ValueError(f"{name} must be >= 1, got {value}")
         return value
 
+    @staticmethod
+    def _as_positive_float(name: str, value: Any) -> float:
+        # bool is a subclass of int; reject it to avoid true/false silently becoming 1.0/0.0.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a number, got {value!r}")
+        value = float(value)
+        if value <= 0:
+            raise ValueError(f"{name} must be > 0, got {value}")
+        return value
+
     def __post_init__(self):
         self.health_collector_timeout = self._as_positive_int("health_collector_timeout", self.health_collector_timeout)
         self.health_collector_timeout_retry_attempts = self._as_positive_int(
             "health_collector_timeout_retry_attempts", self.health_collector_timeout_retry_attempts
         )
         self.startup_timeout = self._as_positive_int("startup_timeout", self.startup_timeout)
+        self.virtual_inference_timeout = self._as_positive_float(
+            "virtual_inference_timeout", self.virtual_inference_timeout
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HealthCheckConfig":

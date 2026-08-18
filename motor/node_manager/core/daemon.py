@@ -289,12 +289,12 @@ class Daemon(ThreadSafeSingleton):
         """True when the engine service is active (i.e. this pod runs inference)."""
         return SERVICE_ENGINE in self._services
 
-    def get_engine_runtime_state(self, endpoint: Endpoint) -> RuntimeState:
+    def get_engine_runtime_state(self, endpoint: Endpoint, instance_id: int) -> RuntimeState:
         """Return the native runtime state for one locally managed endpoint."""
         engine = self._services.get(SERVICE_ENGINE)
         if engine is None:
             return RuntimeState.STOPPED
-        return engine.runtime_state(endpoint)  # type: ignore[attr-defined]
+        return engine.runtime_state(endpoint, instance_id)  # type: ignore[attr-defined]
 
     def get_engine_metrics_target(self, endpoint: Endpoint) -> str | None:
         engine = self._services.get(SERVICE_ENGINE)

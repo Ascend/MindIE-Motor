@@ -52,6 +52,19 @@ NodeManager (Application)
 │     FaultReporter (owned here, third monitoring source): started in
 │       pull_engine, stopped in stop(), (re)configured in update_config
 │
+├── NativeEngineService
+│     builds LaunchContext, selects Native Engine Backend, delegates lifecycle to ProcessSupervisor
+│     owns a single per-instance VirtualInferenceWorker bound to the eligible vLLM DP0 target
+│     (worker started after the target's first /health READY)
+│
+├── ProcessSupervisor
+│     subprocess.Popen(start_new_session=True)
+│     owns RuntimeProcess records, process groups and native health probes
+│
+├── VirtualInferenceWorker (single, per-instance vLLM DP0 target)
+│     POST /v1/completions virtual requests + npu-smi AI Cube usage sampling + failure counting
+│     reaching max_failure_count only marks the endpoint abnormal — never kills the process
+│
 ├── HeartbeatManager (ThreadSafeSingleton)
 │     Two daemon threads:
 │       _engine_server_status_thread — poll each engine GET /status every interval
@@ -72,6 +85,53 @@ NodeManager (Application)
 engine backends are stateless converters: they turn a validated `LaunchContext` into an immutable
 `LaunchSpec` containing a `CommandSpec` and a `ProbeSpec`. The Coordinator and Controller do not
 depend on these node-local runtime states.
+
+### Virtual Inference (虚推)
+
+Virtual inference probes engine liveness beyond `/health` (which can pass while the engine is unable to infer, e.g. NPU hang or driver fault). It is implemented under `motor/node_manager/core/services/native_engine/virtual_inference/` and runs inside the NodeManager process — it never depends on `motor.engine_server`.
+
+**Split by engine type:**
+
+| Engine | Motor role | Health path |
+|--------|------------|-------------|
+| vLLM | DP0 instance-level `VirtualInferenceWorker` (completions + AI Cube) | Motor probes `POST /v1/completions`; `ProcessSupervisor` still uses `GET /health` |
+| SGLang | **Never** creates a Motor monitor/worker/requester | SGLang runs its own generative check inside `GET /health`; Motor only heartbeats `/health` |
+
+| File | Role |
+|------|------|
+| `capabilities.py` | `should_enable_vllm_virtual_inference(...)` — vLLM-only feature gate; `is_error_ascend_global_log_level(raw)` — ERROR-level gate on final engine env (no IntFlag / Protocol / policy registry) |
+| `spec.py` | Immutable `TargetIdentity` (instance id / endpoint id / host / port / engine type) + immutable `VirtualInferenceSpec` (identity + role, model, dispatch profile, TLS, thresholds, timeout) — the only inputs the worker consumes |
+| `requesters.py` | `VllmCompletionsRequester` (POST /v1/completions, PD-aware) plus request-id helpers; no requester Protocol / factory / SGLang requester |
+| `worker.py` | `VirtualInferenceWorker`: constructs `VllmCompletionsRequester(spec)` directly; warmup + periodic loop, AI Cube sampling thread, consecutive failure counting, thread/HTTP-client cleanup |
+
+vLLM enablement gates (all must hold, decided at `pull()` time before building desired spec):
+
+1. `engine_type == "vllm"` (non-vLLM → desired spec `None`, cleared via normal `reconcile(None)`)
+2. `should_enable_vllm_virtual_inference(...)`: `enable_virtual_inference == true`, `dp_rank == 0`, `headless == false`, `0 < npu_usage_threshold <= 100` (ineligible → silent `None`, **no** log-level warning)
+3. Only for otherwise-eligible targets: final engine launch env `launch_spec.command.env["ASCEND_GLOBAL_LOG_LEVEL"]` is ERROR: unset / `None` / `""` / whitespace → treat as ERROR (allow); `str(...).strip() == "3"` allow; any other explicit value → desired `None`, warning, engine process kept, old monitor cleared via `reconcile(None)`. Uses final backend-prepared env, **not** NodeManager `os.environ` and **not** deploy rewriting `user_config`. SGLang generative `/health` is unaffected.
+
+vLLM virtual request:
+
+| Engine | Requester | Request | PD body |
+|--------|-----------|---------|---------|
+| vLLM | `VllmCompletionsRequester` | POST `/v1/completions` `{model, prompt:"1", max_tokens:1}`, `X-Request-Id: {ts}_virtual` | decode+trigger only (`kv_transfer_params.do_virtual`) |
+
+SGLang launch env switch (`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION`): `SGLangBackend.prepare()` always pins the variable to `"true"` in the command env (overriding any container-level value, including `"false"`). This pin is **independent of** `enable_virtual_inference`: setting that flag to `false` only disables Motor's vLLM proactive virtual inference and must never turn off SGLang's native generative `/health`. Motor never calls `/health_generate` and never builds an SGLang virtual worker; NodeManager / `ProcessSupervisor` only request `GET /health`, using the existing `health_collector_timeout` / retries / `startup_timeout` (not `virtual_inference_timeout`).
+
+Periodic vLLM request client timeout comes from `health_check_config.virtual_inference_timeout` (default 5.0, must be positive, **vLLM Motor virtual inference only**; retained for config compatibility) and flows through `VirtualInferenceSpec.request_timeout_seconds` into `httpx.Timeout` per loop iteration. The first warmup request after READY keeps a fixed 180s timeout (`_VIRTUAL_WARMUP_TIMEOUT_SEC`), independent from `virtual_inference_timeout`. SGLang ignores `virtual_inference_timeout` and uses `health_collector_timeout` for `/health`.
+
+The backend loads and validates the deploy config in `prepare()` and returns it on `LaunchSpec.deploy_config`; `NativeEngineService._build_virtual_spec()` reads `health_check_config` from it — no second config load.
+
+Lifecycle:
+
+- The service holds **at most one** monitor (`_virtual_monitor: VirtualInferenceWorker | None`), bound to the eligible vLLM DP0 target. Identity/spec are read from the same `worker.spec` snapshot; CAS install/detach compares worker object identity with `is`.
+- On pull, an immutable `VirtualInferenceSpec` is built for the vLLM DP0 endpoint only (non-vLLM → `None`); the monitor is reconciled (`_reconcile_virtual_monitor`) after the whole pull succeeds — never half-installed. Candidate CAS failure must stop the candidate and must not overwrite or stop the newer current.
+- Reconciliation is idempotent on the full spec (identity + role/model/profile/TLS/timeout/threshold): an identical re-pull keeps the worker; an identity or config change replaces it (stop old, install new). Installation uses compare-and-swap so a stale reconcile cannot overwrite a newer monitor.
+- The virtual loop is **not** started at pull time. `NativeEngineService.runtime_state(endpoint, instance_id)` matches the probe against the monitor's `TargetIdentity` (from `worker.spec`); on the first `READY` observation it calls `worker.start()` (idempotent — a `_started` latch prevents duplicate threads), then re-checks identity under the lock so a replaced monitor cannot leak stale abnormal state.
+- `worker.start()` verifies once (cached) that the HDK supports `npu-smi info watch -s u` (AI Cube Usage); unsupported HDK disables the worker.
+- The loop: 180s-warmup first virtual request (fixed, legacy behavior), then 5s interval (20s when AI Cube peak >= 80%). Periodic requests use `health_check_config.virtual_inference_timeout` (default 5s, vLLM only) — the warmup timeout is independent from it. Consecutive failures are counted only when AI Cube usage is available and below `npu_usage_threshold`; reaching `max_failure_count` sets the abnormal flag. Unexpected monitor-loop exceptions are logged and backed off only — they do **not** mark the engine abnormal.
+- `runtime_state()` merges the worker: `READY + abnormal → UNHEALTHY`. The heartbeat layer maps `UNHEALTHY` to `ABNORMAL` as usual — virtual inference never kills or restarts the engine process (no `SIGTERM`/recovery from the worker).
+- `stop()` and a pull with no eligible target reliably detach and stop the monitor (join threads, close the HTTP client on its event loop, clear the registration). A failed pull only detaches the monitor when its target endpoint was actually rolled back (its process stopped) this pull; if the target engine is still alive (e.g. start raised "different launch spec", or only a non-DP0 endpoint was rolled back) the monitor is kept. `stop()` is serialized with `pull()` via `_pull_lock`.
 
 ## Complete Lifecycle
 
@@ -187,8 +247,9 @@ HTTP status failures, TLS errors, connection errors and other exceptions are not
 `ProcessSupervisor.state()` follows this state model:
 
 ``` text
-Grace period: 120s hardcoded from engine start
-  (engines need time to load models — don't kill them during warmup)
+Grace period: starts when endpoints are set and ends after the first endpoint
+  reaches NORMAL (the per-endpoint NORMAL-history guard continues to protect
+  other endpoints that are still loading)
 
 Daemon suicide arbitration (loop paced by heartbeat_interval_seconds,
 threshold 5 ≈ 15s of continuous ABNORMAL with the default 3s interval):
@@ -268,9 +329,9 @@ arbitration is frozen for `engine_restart_wait_timeout_sec` so the in-place rela
 Without the switch the freeze is skipped and the pod self-terminates (k8s restarts the container)
 once the abnormal-report threshold is reached.
 
-`HeartbeatManager` counts consecutive successful heartbeat reports containing `ABNORMAL` endpoints.
-After five consecutive abnormal reports it sets the suicide flag. The main application tick sees
-the flag, stops modules, and exits for platform rescheduling.
+`Daemon` counts consecutive `ABNORMAL` observations from `HeartbeatManager`. After five observations
+it sets the suicide flag. The main application tick sees the flag, stops modules, and exits for
+platform rescheduling.
 
 Controller HTTP 503 triggers the existing re-registration path. Heartbeat HTTP requests use a
 shared long-lived client with bounded retry behavior in `ControllerApiClient`.
@@ -317,6 +378,8 @@ SGLang remains unsupported until the engine image provides the same snapshot cap
 | `motor/node_manager/core/services/native_engine/config_factory.py` | Lazily loads engine-specific CLI configuration adapters |
 | `motor/node_manager/core/services/native_engine/backends/` | vLLM/SGLang command construction, configuration conversion and validation |
 | `motor/node_manager/core/services/native_engine/supervisor.py` | Process groups, bounded native health probes and runtime state ownership |
+| `motor/node_manager/core/services/native_engine/virtual_inference/` | vLLM-only DP0 virtual inference: enablement gate, immutable spec and worker (completions + AI Cube sampling + failure counting); SGLang uses generative GET /health instead |
+| `motor/common/utils/ai_cube.py` | `npu-smi info watch -s u` AI Cube usage sampling (shared, no engine_server dependency) |
 | `motor/node_manager/core/services/registry.py` | Service registration and backend discovery |
 | `motor/node_manager/core/services/memcache/` | Optional KV-store service implementation |
 | `motor/node_manager/core/heartbeat_manager.py` | Native state polling, status mapping, heartbeat and suicide threshold |
@@ -368,7 +431,10 @@ Important test areas:
 - `tests/node_manager/core/services/native_engine/test_supervisor.py`: process-group ownership, state races, bounded
   timeout retries, headless liveness and cleanup.
 - `tests/node_manager/core/services/native_engine/test_backends.py`: vLLM/SGLang command construction and ProbeSpec
-  mapping.
+  mapping; SGLang always pins `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=true` and keeps probe `GET /health`.
 - `tests/node_manager/core/test_heartbeat_manager.py`: generation-safe status mapping and heartbeat
   behavior.
-- `tests/node_manager/core/services/native_engine/test_service.py`: recovery latch and process-death handling.
+- `tests/node_manager/core/services/native_engine/test_service.py`: recovery latch, process-death handling, vLLM virtual worker registration gates (SGLang never creates a Motor monitor), runtime-state merge, CAS install, pull/stop serialization and rollback identity rules.
+- `tests/node_manager/core/services/native_engine/virtual_inference/test_worker.py`: warmup, loop intervals, failure threshold, abnormal flag, idempotent start and thread/client cleanup (vLLM requester only).
+- `tests/node_manager/core/services/native_engine/virtual_inference/test_capabilities.py`: `should_enable_vllm_virtual_inference` gates (config / DP0 / headless / threshold).
+- `tests/common/utils/test_ai_cube.py`: npu-smi watch support detection and usage parsing.
