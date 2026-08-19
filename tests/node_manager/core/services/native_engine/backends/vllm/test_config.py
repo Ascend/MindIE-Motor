@@ -396,3 +396,38 @@ def test_mooncake_connector_preserves_pp_layer_partition():
     assert extra["prefill"]["tp_size"] == 16
     assert "pp_size" in extra["prefill"]
     assert "pp_size" in extra["decode"]
+
+
+def test_access_log_endpoints_excluded_by_default():
+    """Health/metrics are excluded from the vLLM access log unless user configures otherwise."""
+    endpoint_config = _make_endpoint_config()
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    config.initialize()
+    flattened = config._flatten_config()
+
+    assert flattened["disable_access_log_for_endpoints"] == "/health,/metrics"
+    cli_args = config.get_cli_args()
+    assert cli_args[cli_args.index("--disable-access-log-for-endpoints") + 1] == "/health,/metrics"
+
+
+def test_access_log_endpoints_user_override_wins():
+    """A user-set access-log exclusion list overrides the default."""
+    endpoint_config = _make_endpoint_config()
+    endpoint_config.deploy_config.engine_config.set("disable_access_log_for_endpoints", "/ping")
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    config.initialize()
+    flattened = config._flatten_config()
+
+    assert flattened["disable_access_log_for_endpoints"] == "/ping"
+
+
+def test_access_log_endpoints_dash_style_user_override_wins():
+    """vLLM-native dash style key wins and must not duplicate the default into two args."""
+    endpoint_config = _make_endpoint_config()
+    endpoint_config.deploy_config.engine_config.set("disable-access-log-for-endpoints", "/v1/models")
+    config = VLLMConfig(endpoint_config=endpoint_config)
+    config.initialize()
+    flattened = config._flatten_config()
+
+    assert "disable_access_log_for_endpoints" not in flattened
+    assert flattened["disable-access-log-for-endpoints"] == "/v1/models"

@@ -115,6 +115,8 @@ def test_vllm_union_cli_golden_preserves_order_types_and_precedence():
         json.dumps({"rope_type": "yarn", "factor": 2.0}),
         "--tensor-parallel-size",
         "8",
+        "--disable-access-log-for-endpoints",
+        "/health,/metrics",
         "--model",
         "/models/glm-test",
         "--served-model-name",
@@ -172,6 +174,8 @@ def test_vllm_pd_cli_golden_injects_handoff_metadata(role, kv_role):
     assert config.get_cli_args() == [
         "--kv-transfer-config",
         json.dumps(expected_kv),
+        "--disable-access-log-for-endpoints",
+        "/health,/metrics",
         "--model",
         "/models/glm-test",
         "--served-model-name",

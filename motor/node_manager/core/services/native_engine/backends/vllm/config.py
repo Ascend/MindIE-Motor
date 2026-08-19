@@ -19,6 +19,12 @@ from motor.common import engine_constants as constants
 
 logger = get_logger(__name__)
 
+# High-frequency endpoint paths excluded from the vLLM uvicorn access log by default:
+# NodeManager health probes (/health) and metrics scraping (/metrics) fire every few
+# seconds and would otherwise flood the api-server log. Per-instance override via
+# engine_config key disable_access_log_for_endpoints.
+DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS = "/health,/metrics"
+
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):
     if value is None:
@@ -240,6 +246,17 @@ class VLLMConfig:
         deploy_config = self.endpoint_config.deploy_config
 
         flattened.update(deploy_config.engine_config.configs)
+
+        # Default: keep health probes and metrics scraping out of the api-server access
+        # log. A user-set value in engine_config wins; accept vLLM's native dash style too.
+        if "disable-access-log-for-endpoints" not in flattened and "disable_access_log_for_endpoints" not in flattened:
+            flattened["disable_access_log_for_endpoints"] = DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS
+            logger.info(
+                "Motor default: suppress vLLM uvicorn access logs for %s to avoid "
+                "health-probe / metrics-scraping log spam; override via engine_config "
+                "disable_access_log_for_endpoints",
+                DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS,
+            )
 
         model_config = deploy_config.model_config
         for server_key, vllm_key in self.mapping.items():
