@@ -119,7 +119,7 @@ chmod -R 755 /mnt/weight
              "enforce-eager": true,
              "max_model_len": 2048,
              "kv_transfer_config": {
-               "kv_connector": "MooncakeLayerwiseConnector",
+               "kv_connector": "MooncakeConnectorV1",
                "kv_buffer_device": "npu",
                "kv_role": "kv_producer",
                "kv_parallel_size": 1,
@@ -144,7 +144,7 @@ chmod -R 755 /mnt/weight
              "enable_expert_parallel": false,
              "max_model_len": 2048,
              "kv_transfer_config": {
-               "kv_connector": "MooncakeLayerwiseConnector",
+               "kv_connector": "MooncakeConnectorV1",
                "kv_buffer_device": "npu",
                "kv_role": "kv_consumer",
                "kv_parallel_size": 1,

@@ -510,7 +510,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
     "enforce-eager": true,
     "max_model_len": 2048,
     "kv_transfer_config": {
-      "kv_connector": "MooncakeLayerwiseConnector",
+      "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
       "kv_parallel_size": 1,
       "kv_port": "30001",
@@ -630,7 +630,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "enforce-eager": true,
     "max_model_len": 2048,
     "kv_transfer_config": {
-      "kv_connector": "MooncakeLayerwiseConnector",
+      "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
       "kv_role": "kv_producer",
       "kv_parallel_size": 1,
@@ -705,7 +705,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "enforce-eager": true,
     "max_model_len": 2048,
     "kv_transfer_config": {
-      "kv_connector": "MooncakeLayerwiseConnector",
+      "kv_connector": "MooncakeConnectorV1",
       "kv_buffer_device": "npu",
       "kv_role": "kv_producer",
       "kv_parallel_size": 1,
