@@ -33,6 +33,7 @@ nav:
               - 概述: user_guide/features/kv_cache_store/README.md
               - MemCache 后端: user_guide/features/kv_cache_store/backend/memcache.md
               - Mooncake 后端: user_guide/features/kv_cache_store/backend/mooncake.md
+              - UCM 部署: user_guide/features/kv_cache_store/backend/ucm.md
               - Yuanrong 后端: user_guide/features/kv_cache_store/backend/yuanrong.md
           - 手动扩缩容: user_guide/features/manual_scaling.md
           - 主备倒换: user_guide/features/fault_tolerance/standby.md

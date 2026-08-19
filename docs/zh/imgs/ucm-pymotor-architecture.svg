@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 680" role="img" aria-labelledby="title desc">
+  <title id="title">PyMotor 中 UCM Prefix Cache 的部署架构</title>
+  <desc id="desc">上方展示请求经过 Coordinator、Prefill、Mooncake 和 Decode 的实时传输路径；下方展示 Prefill 中的 UCMConnector 与 Cache Store、Posix Store 之间的前缀缓存读写路径。动画虚线沿两条路径流动，并在系统启用减少动态效果时停用。</desc>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#0f9f8f"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <style>
+    text { font-family: Inter, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #0f172a; }
+    .eyebrow { font-size: 14px; font-weight: 800; letter-spacing: 1.8px; fill: #e43f5a; }
+    .title { font-size: 30px; font-weight: 780; }
+    .subtitle { font-size: 16px; fill: #526178; }
+    .lane-label { font-size: 13px; font-weight: 800; letter-spacing: .5px; }
+    .node-title { font-size: 17px; font-weight: 750; }
+    .node-subtitle { font-size: 13px; fill: #64748b; }
+    .connector-title { font-size: 14px; font-weight: 750; }
+    .connector-note { font-size: 12px; fill: #64748b; }
+    .line-label { font-size: 12px; font-weight: 700; fill: #64748b; }
+    .blue-line { fill: none; stroke: #93c5fd; stroke-width: 3; marker-end: url(#arrow-blue); }
+    .green-line { fill: none; stroke: #6ee7b7; stroke-width: 3; marker-start: url(#arrow-green); marker-end: url(#arrow-green); }
+    .flow-blue, .flow-green {
+      fill: none;
+      stroke-width: 4;
+      stroke-linecap: round;
+      stroke-dasharray: 12 20;
+      animation: travel 1.35s linear infinite;
+    }
+    .flow-blue { stroke: #2563eb; }
+    .flow-green { stroke: #0f9f8f; }
+    .delay-1 { animation-delay: -.35s; }
+    .delay-2 { animation-delay: -.7s; }
+    @keyframes travel { to { stroke-dashoffset: -64; } }
+    @media (prefers-reduced-motion: reduce) {
+      .flow-blue, .flow-green { animation: none; opacity: 0; }
+    }
+  </style>
+
+  <rect width="1280" height="680" rx="28" fill="#ffffff"/>
+  <text x="56" y="47" class="eyebrow">PYMOTOR × UCM</text>
+  <text x="56" y="87" class="title">两条路径，各司其职</text>
+  <text x="56" y="118" class="subtitle">Mooncake 负责单次请求的 P/D KV 传输；UCM 在 Prefill 侧复用跨请求前缀。</text>
+
+  <rect x="48" y="148" width="1184" height="282" rx="24" fill="#f8fafc" stroke="#dbeafe" stroke-width="1.5"/>
+  <rect x="72" y="170" width="124" height="30" rx="15" fill="#dbeafe"/>
+  <text x="93" y="190" class="lane-label" fill="#1d4ed8">在线请求路径</text>
+
+  <g filter="url(#shadow)">
+    <rect x="80" y="246" width="140" height="92" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/>
+    <circle cx="108" cy="275" r="12" fill="#e43f5a" opacity=".14"/>
+    <circle cx="108" cy="275" r="5" fill="#e43f5a"/>
+    <text x="130" y="281" class="node-title">请求</text>
+    <text x="104" y="312" class="node-subtitle">OpenAI API</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="270" y="246" width="165" height="92" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/>
+    <text x="294" y="281" class="node-title">Coordinator</text>
+    <text x="294" y="312" class="node-subtitle">选择 Prefill / Decode</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="485" y="190" width="330" height="202" rx="20" fill="#ffffff" stroke="#f3a0af" stroke-width="1.6"/>
+    <text x="510" y="225" class="node-title">Prefill Engine</text>
+    <text x="510" y="247" class="node-subtitle">vLLM 计算新 KV</text>
+
+    <rect x="510" y="266" width="280" height="48" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+    <rect x="524" y="278" width="28" height="23" rx="11.5" fill="#2563eb"/>
+    <text x="538" y="294" text-anchor="middle" font-size="11" font-weight="800" fill="#ffffff">0</text>
+    <text x="564" y="286" class="connector-title">Mooncake 传输 Connector</text>
+    <text x="564" y="302" class="connector-note">按 PD 方案选择具体实现</text>
+
+    <rect x="510" y="326" width="280" height="48" rx="11" fill="#ecfdf5" stroke="#6ee7b7"/>
+    <rect x="524" y="338" width="28" height="23" rx="11.5" fill="#0f9f8f"/>
+    <text x="538" y="354" text-anchor="middle" font-size="11" font-weight="800" fill="#ffffff">1</text>
+    <text x="564" y="346" class="connector-title">UCMConnector</text>
+    <text x="564" y="362" class="connector-note">查询、加载、保存前缀</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="930" y="212" width="250" height="158" rx="20" fill="#ffffff" stroke="#93c5fd" stroke-width="1.6"/>
+    <text x="955" y="248" class="node-title">Decode Engine</text>
+    <text x="955" y="270" class="node-subtitle">vLLM 生成后续 Token</text>
+    <rect x="955" y="294" width="200" height="48" rx="11" fill="#eff6ff" stroke="#93c5fd"/>
+    <text x="973" y="315" class="connector-title">Mooncake Connector</text>
+    <text x="973" y="331" class="connector-note">与 Prefill 传输配置匹配</text>
+  </g>
+
+  <path d="M220 292H260" class="blue-line"/>
+  <path d="M435 292H475" class="blue-line"/>
+  <path d="M790 290H920" class="blue-line"/>
+  <path d="M220 292H260" class="flow-blue"/>
+  <path d="M435 292H475" class="flow-blue delay-1"/>
+  <path d="M790 290H920" class="flow-blue delay-2"/>
+  <text x="834" y="278" class="line-label">P/D KV</text>
+
+  <rect x="48" y="456" width="1184" height="166" rx="24" fill="#f0fdfa" stroke="#a7f3d0" stroke-width="1.5"/>
+  <rect x="72" y="478" width="152" height="30" rx="15" fill="#ccfbf1"/>
+  <text x="92" y="498" class="lane-label" fill="#0f766e">跨请求前缀缓存</text>
+  <text x="88" y="546" class="node-title">UCM 只接入 Prefill</text>
+  <text x="88" y="571" class="node-subtitle">Decode 不加载 UCMConnector</text>
+
+  <g filter="url(#shadow)">
+    <rect x="528" y="518" width="244" height="72" rx="16" fill="#ffffff" stroke="#6ee7b7" stroke-width="1.4"/>
+    <text x="554" y="548" class="node-title">Cache Store</text>
+    <text x="554" y="573" class="node-subtitle">Device ↔ Host Memory</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="850" y="518" width="282" height="72" rx="16" fill="#ffffff" stroke="#6ee7b7" stroke-width="1.4"/>
+    <text x="876" y="548" class="node-title">Posix Store</text>
+    <text x="876" y="573" class="node-subtitle">/mnt/ucm · PVC / NFS / HostPath</text>
+  </g>
+
+  <path d="M650 374V508" class="green-line"/>
+  <path d="M650 374V508" class="flow-green"/>
+  <text x="670" y="451" class="line-label">lookup / load / save</text>
+  <path d="M772 554H840" class="green-line"/>
+  <path d="M772 554H840" class="flow-green delay-1"/>
+  <text x="782" y="540" class="line-label">dump / load</text>
+
+  <text x="56" y="654" class="node-subtitle">配置顺序：connectors[0] = Mooncake 传输 Connector，connectors[1] = UCMConnector。</text>
+</svg>
