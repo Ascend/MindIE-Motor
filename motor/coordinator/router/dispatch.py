@@ -42,6 +42,7 @@ from motor.coordinator.domain.agent_hint import (
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
+from motor.coordinator.scheduler.policy.kv_cache_affinity import adapt_context_budget
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
     render_transport_error,
@@ -282,6 +283,8 @@ async def handle_request(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
         )
+
+    adapt_context_budget(req_info, config)
 
     router_impl_class = await select_router_class(scheduler, req_info=req_info, config=config)
 

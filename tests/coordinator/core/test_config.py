@@ -996,3 +996,61 @@ def test_from_json_nested_kv_affinity_wins_over_legacy_flat(_temp_json_file):
     affinity = config.scheduler_config.kv_affinity
     assert affinity.mode == "unified"
     assert affinity.load_weight == 1.5
+
+
+def test_invalid_context_budget_mode_is_rejected():
+    config = CoordinatorConfig()
+    config.context_budget_mode = "truncate"
+
+    with pytest.raises(ValueError, match="context_budget_mode"):
+        config.validate_config()
+
+
+def test_context_budget_on_requires_model_metadata():
+    config = CoordinatorConfig()
+    config.context_budget_mode = "on"
+
+    with pytest.raises(ValueError, match="kv_conductor_config.model_path"):
+        config.validate_config()
+
+
+def test_context_budget_reuses_engine_model_config_without_kv_events(_temp_json_file):
+    """All schedulers can reuse engine sections for tokenizer path and context limits."""
+    user_config = {
+        "motor_coordinator_config": {
+            "context_budget_mode": "on",
+            "scheduler_config": {
+                "scheduler_type": "load_balance",
+                "kv_conductor_config": {
+                    "conductor_service": "manual-conductor",
+                },
+            },
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "glm-5.2",
+                "model": "/mnt/weight/glm-5.2",
+                "max_model_len": 8192,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "glm-5.2",
+                "model": "/mnt/weight/glm-5.2",
+                "max_model_len": 4096,
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.scheduler_config.scheduler_type.value == "load_balance"
+    assert config.context_budget_mode == "on"
+    assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/glm-5.2"
+    assert config.scheduler_config.kv_conductor_config.conductor_service == "manual-conductor"
+    assert config.aigw_model["p_max_seqlen"] == 8192
+    assert config.aigw_model["d_max_seqlen"] == 4096

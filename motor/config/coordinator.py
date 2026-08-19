@@ -208,6 +208,14 @@ KV_AFFINITY_MODE_UNIFIED = "unified"
 KV_AFFINITY_MODE_LOAD_GATED = "load_gated"
 KV_AFFINITY_MODES = (KV_AFFINITY_MODE_UNIFIED, KV_AFFINITY_MODE_LOAD_GATED)
 
+CONTEXT_BUDGET_MODE = "context_budget_mode"
+CONTEXT_BUDGET_OFF = "off"
+CONTEXT_BUDGET_ON = "on"
+CONTEXT_BUDGET_MODES = (
+    CONTEXT_BUDGET_OFF,
+    CONTEXT_BUDGET_ON,
+)
+
 # Legacy flat scheduler_config keys → nested kv_affinity field names.
 _LEGACY_KV_AFFINITY_FLAT_KEYS = {
     "kv_affinity_mode": "mode",
@@ -582,6 +590,10 @@ class PrefillKvEventConfig:
 class CoordinatorConfig:
     """Coordinator configuration class with validation, reload and error handling support"""
 
+    # Tokenize the prompt once and clamp the client output budget before routing.
+    # Applies uniformly to every scheduler type.
+    context_budget_mode: str = CONTEXT_BUDGET_OFF
+
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     prometheus_metrics_config: PrometheusMetricsConfig = field(default_factory=PrometheusMetricsConfig)
     exception_config: ExceptionConfig = field(default_factory=ExceptionConfig)
@@ -738,6 +750,9 @@ class CoordinatorConfig:
                 if section_name in cfg:
                     update_config_from_dict(config_obj, cfg[section_name], special_handlers)
 
+            if CONTEXT_BUDGET_MODE in cfg:
+                config.context_budget_mode = cfg[CONTEXT_BUDGET_MODE]
+
             if "precision_detection_config" not in cfg and "token_sampling_config" in cfg:
                 logger.warning(
                     "token_sampling_config is deprecated; use precision_detection_config for precision detection."
@@ -861,6 +876,25 @@ class CoordinatorConfig:
         )
         if affinity.mode not in KV_AFFINITY_MODES:
             self._errors.append(f"kv_affinity.mode must be one of {KV_AFFINITY_MODES}, got {affinity.mode!r}")
+        if self.context_budget_mode not in CONTEXT_BUDGET_MODES:
+            self._errors.append(
+                f"context_budget_mode must be one of {CONTEXT_BUDGET_MODES}, got {self.context_budget_mode!r}"
+            )
+        if self.context_budget_mode == CONTEXT_BUDGET_ON:
+            model_path = self.scheduler_config.kv_conductor_config.model_path or getattr(
+                self.prefill_kv_event_config, "model_path", ""
+            )
+            if not model_path:
+                self._errors.append("kv_conductor_config.model_path is required when context_budget_mode='on'")
+            aigw_model = self.get_aigw_models() or {}
+            context_limits = (
+                aigw_model.get(AIGW_P_MAX_SEQLEN),
+                aigw_model.get(AIGW_D_MAX_SEQLEN),
+            )
+            if not any(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in context_limits
+            ):
+                self._errors.append("aigw.p_max_seqlen or aigw.d_max_seqlen is required when context_budget_mode='on'")
 
         # Validate kv-conductor query wire encoding
         valid_query_encodings = ["msgpack", "json"]
@@ -1055,7 +1089,8 @@ class CoordinatorConfig:
             f"    ├─ KV Affinity Load Gate TopN: {self.scheduler_config.kv_affinity.load_gate_topn}\n"
             f"    ├─ KV Affinity W NPU:          {self.scheduler_config.kv_affinity.w_npu}\n"
             f"    ├─ KV Affinity W CPU:          {self.scheduler_config.kv_affinity.w_cpu}\n"
-            f"    └─ KV Affinity W Disk:         {self.scheduler_config.kv_affinity.w_disk}\n"
+            f"    ├─ KV Affinity W Disk:         {self.scheduler_config.kv_affinity.w_disk}\n"
+            f"    └─ Context Budget Mode:        {self.context_budget_mode}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
             f"    └─ Num Workers: {self.inference_workers_config.num_workers}\n"

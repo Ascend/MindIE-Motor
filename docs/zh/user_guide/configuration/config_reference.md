@@ -229,6 +229,7 @@ motor_coordinator_config字段配置样例如下所示：
     "infer_timeout": 3600,
     "upstream_error_body_max_bytes": 65536
   },
+  "context_budget_mode": "off",
   "scheduler_config": {
     "scheduler_type": "load_balance",
     "enable_pd_separation_fallback_to_hybrid": true,
@@ -361,6 +362,7 @@ motor_coordinator_config字段配置样例如下所示：
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
+| context_budget_mode | string | 请求路由前使用模型 tokenizer 计算 prompt token 数，并将实际生效的 `max_tokens` / `max_completion_tokens` 裁剪到模型剩余上下文。适用于 `load_balance`、`round_robin`、`kv_cache_affinity`。可选值：`off`（默认）或 `on`；开启 `on` 时，P/D 引擎配置必须提供 `model` 与 `max_model_len`。 |
 | log_level | string | 日志级别。默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul> |
 | log_max_line_length | int | 单行日志最大长度，超过则截断。默认值：8192 |
 | log_format | string | 日志格式模板，支持 Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s" |

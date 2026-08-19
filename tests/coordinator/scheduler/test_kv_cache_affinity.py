@@ -20,7 +20,17 @@ import pytest
 from copy import deepcopy
 
 from motor.common.resources.instance import PDRole
-from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy, TokenizerManager
+from motor.config.coordinator import (
+    CoordinatorConfig,
+    CONTEXT_BUDGET_ON,
+    SchedulerType,
+)
+from motor.coordinator.scheduler.policy.kv_cache_affinity import (
+    adapt_context_budget,
+    KvCacheAffinityPolicy,
+    TokenizerManager,
+)
+from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.api_client.conductor_api_client import TENANT_ID
 from motor.coordinator.scheduler.policy.utils import (
     preprocess_input,
@@ -582,6 +592,43 @@ class TestKvCacheAffinityTokenizationUtils(unittest.TestCase):
         # Original input must remain unchanged (deepcopy semantics).
         self.assertIsInstance(messages[0]["content"], list)
 
+    def test_preprocess_messages_for_standard_coerces_tool_call_arguments(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "foo", "arguments": '{"a": 1}'},
+                    }
+                ],
+            }
+        ]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertIsInstance(processed[0]["tool_calls"][0]["function"]["arguments"], dict)
+        self.assertEqual(processed[0]["tool_calls"][0]["function"]["arguments"], {"a": 1})
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+
+    def test_preprocess_messages_for_standard_pops_empty_tool_calls(self):
+        messages = [{"role": "assistant", "content": "ok", "tool_calls": []}]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertNotIn("tool_calls", processed[0])
+        self.assertEqual(messages[0]["tool_calls"], [])
+
+    def test_preprocess_messages_for_standard_flattens_tool_role_list_content(self):
+        messages = [
+            {
+                "role": "tool",
+                "content": [{"type": "text", "text": "Weather data"}],
+                "tool_call_id": "call_1",
+            }
+        ]
+        processed = preprocess_messages_for_standard(messages)
+        self.assertEqual(processed[0]["content"], "Weather data")
+        self.assertIsInstance(messages[0]["content"], list)
+
     def test_preprocess_messages_for_dsv4_flattens_messages_and_sorts_tools(self):
         messages = [
             {
@@ -651,6 +698,31 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
             build(req_data),
             {"tokenize": True, "drop_thinking": True, "reasoning_effort": "none", "enable_thinking": True},
         )
+
+    def test_build_standard_chat_template_kwargs(self):
+        build = TokenizerManager._build_standard_chat_template_kwargs
+        self.assertEqual(
+            build(None, tokenize=True),
+            {"add_generation_prompt": True, "tokenize": True, "return_dict": False},
+        )
+        self.assertEqual(
+            build(None, tokenize=False),
+            {"add_generation_prompt": True, "tokenize": False},
+        )
+        req_data = {
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"foo": 1},
+            "continue_final_message": True,
+        }
+        kwargs = build(req_data, tokenize=True)
+        self.assertFalse(kwargs["add_generation_prompt"])
+        self.assertTrue(kwargs["continue_final_message"])
+        self.assertEqual(kwargs["foo"], 1)
+        self.assertEqual(kwargs["reasoning_effort"], "none")
+        self.assertFalse(kwargs["enable_thinking"])
+
+        thinking_kwargs = build({"thinking": {"type": "disabled"}}, tokenize=True)
+        self.assertFalse(thinking_kwargs["enable_thinking"])
 
     def test_apply_chat_template_dsv4_passes_preprocessed_inputs_and_kwargs(self):
         tokenizer = Mock()
@@ -967,6 +1039,30 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         self.assertEqual(ids2, [7, 8, 9])
         mock_tokenizer.encode.assert_called_once()
 
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.attach_block_offsets')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_ensure_token_ids_attaches_chat_block_offsets(self, mock_tokenizer_manager, mock_attach_block_offsets):
+        """Chat tokenization must keep the server-side block-offset translation wired in."""
+        messages = [{"role": "user", "content": "hi"}]
+        tools = [{"type": "function", "function": {"name": "lookup"}}]
+        tokenizer_manager = mock_tokenizer_manager.return_value
+        tokenizer_manager.apply_chat_template.return_value = [7, 8, 9]
+        tokenizer_manager.tokenizer = object()
+
+        req = Mock()
+        req.req_data = {"messages": messages, "tools": tools}
+        req.token_ids = None
+
+        token_ids = KvCacheAffinityPolicy._ensure_token_ids(req)
+
+        self.assertEqual(token_ids, [7, 8, 9])
+        mock_attach_block_offsets.assert_called_once_with(
+            req,
+            messages,
+            tools,
+            tokenizer=tokenizer_manager.tokenizer,
+        )
+
 
 class TestKvAffinityFallbackConsolidation(unittest.TestCase):
     """Consolidated kv_cache_affinity -> load_balance -> round_robin fallback chain (#5)."""
@@ -1103,23 +1199,27 @@ class TestTokenizerManagerFunction(unittest.TestCase):
     def tearDown(self):
         _reset_tokenizer_manager_singleton()
 
-    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.CoordinatorConfig')
-    @patch('transformers.AutoTokenizer')
-    def test_init_with_model_path(self, mock_auto_tokenizer, mock_config_class):
+    @patch('motor.config.coordinator.CoordinatorConfig')
+    def test_init_with_model_path(self, mock_config_class):
         """Test tokenizer manager"""
         mock_config = Mock()
         mock_config.scheduler_config.kv_conductor_config.conductor_service = "test_service"
         mock_config.scheduler_config.kv_conductor_config.model_path = "/path/to/model"
+        mock_config.scheduler_config.kv_conductor_config.engine_type = "vllm"
+        mock_config.tracer_config.endpoint = ""
         mock_config_class.return_value = mock_config
 
         # Mock tokenizer
         mock_tokenizer = Mock()
         mock_tokenizer.apply_chat_template.return_value = [1, 2, 3]
         mock_tokenizer.encode.return_value = [4, 5, 6]
-        mock_auto_tokenizer.from_pretrained.return_value = mock_tokenizer
+        transformers_mod = Mock()
+        transformers_mod.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
 
         # Create TokenizerManager
-        tokenizer_manager = TokenizerManager(mock_config)
+        with patch.dict("sys.modules", {"transformers": transformers_mod}):
+            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=False):
+                tokenizer_manager = TokenizerManager(mock_config)
 
         # Verifying Initialization
         self.assertTrue(hasattr(tokenizer_manager, '_initialized'))
@@ -1152,27 +1252,28 @@ class TestTokenizerManagerFunction(unittest.TestCase):
         # verification result
         self.assertEqual(result, [])
 
-    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.CoordinatorConfig')
-    @patch('transformers.AutoTokenizer')
-    def test_dsv4_tokenizer_only_for_vllm_engine(self, mock_auto_tokenizer, mock_config_class):
+    @patch('motor.config.coordinator.CoordinatorConfig')
+    def test_dsv4_tokenizer_only_for_vllm_engine(self, mock_config_class):
         """DeepSeek V4 vLLM tokenizer must only be used when engine_type=vllm."""
         mock_config = Mock()
-        mock_config.prefill_kv_event_config.conductor_service = "test_service"
-        mock_config.prefill_kv_event_config.model_path = "/path/to/model"
-        mock_config.prefill_kv_event_config.engine_type = "sglang"
+        mock_config.scheduler_config.kv_conductor_config.conductor_service = "test_service"
+        mock_config.scheduler_config.kv_conductor_config.model_path = "/path/to/model"
+        mock_config.scheduler_config.kv_conductor_config.engine_type = "sglang"
         mock_config.tracer_config.endpoint = ""
         mock_config_class.return_value = mock_config
 
         # If the code accidentally tries to import vllm.tokenizers.deepseek_v4 on sglang,
         # environments without vllm installed would crash. We assert we fall back to transformers.
-        with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
-            mock_tokenizer = Mock()
-            mock_auto_tokenizer.from_pretrained.return_value = mock_tokenizer
-            manager = TokenizerManager(mock_config)
+        mock_tokenizer = Mock()
+        transformers_mod = Mock()
+        transformers_mod.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
+        with patch.dict("sys.modules", {"transformers": transformers_mod}):
+            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+                manager = TokenizerManager(mock_config)
 
         self.assertIs(manager.tokenizer, mock_tokenizer)
         self.assertFalse(manager._is_dsv4)
-        mock_auto_tokenizer.from_pretrained.assert_called_once()
+        transformers_mod.AutoTokenizer.from_pretrained.assert_called_once()
 
 
 class TestTokenizerManagerInitialize(unittest.TestCase):
@@ -1264,17 +1365,39 @@ class TestExchangeArguments:
             assert tool["function"]["arguments"]["tool"] == f"tool{i + 1}"
             assert tool["function"]["arguments"]["value"] == i + 1
 
+    def test_empty_tool_calls_are_dropped(self):
+        message = {"role": "assistant", "content": "ok", "tool_calls": []}
+        exchange_arguments(message)
+        assert "tool_calls" not in message
+
+    def test_missing_or_empty_arguments_become_empty_dict(self):
+        message = {
+            "tool_calls": [
+                {"type": "function", "function": {"name": "a"}},
+                {"type": "function", "function": {"name": "b", "arguments": ""}},
+                {"type": "function", "function": {"name": "c", "arguments": None}},
+            ]
+        }
+        exchange_arguments(message)
+        for item in message["tool_calls"]:
+            assert item["function"]["arguments"] == {}
+
+    def test_tool_calls_string_is_ignored(self):
+        message = {"tool_calls": "not-a-list"}
+        original = deepcopy(message)
+        exchange_arguments(message)
+        assert message == original
+
 
 class TestExchangeToolContent:
     """Test exchange_tool_content function"""
 
     def test_tool_role_with_string_content(self):
-        """Test: role is tool, content is str"""
+        """vLLM keeps tool-role string content as a plain string."""
         message = {"role": "tool", "content": "Tool execution result"}
+        original = deepcopy(message)
         exchange_tool_content(message)
-
-        expected = "{'type': 'text', 'text': 'Tool execution result'}"
-        assert message["content"] == expected
+        assert message == original
 
     def test_tool_role_with_dict_content(self):
         """Test: role is tool, content is dict"""
@@ -1305,11 +1428,27 @@ class TestExchangeToolContent:
         assert message == original
 
     def test_empty_string_content(self):
-        """Test: content is "" """
+        """Empty string stays an empty string (vLLM does not wrap it)."""
         message = {"role": "tool", "content": ""}
         exchange_tool_content(message)
-        expected = "{'type': 'text', 'text': ''}"
-        assert message["content"] == expected
+        assert message["content"] == ""
+
+    def test_tool_role_list_of_text_parts_joins_to_string(self):
+        message = {
+            "role": "tool",
+            "content": [{"type": "text", "text": "Weather data"}, {"type": "text", "text": "25C"}],
+        }
+        exchange_tool_content(message)
+        assert message["content"] == "Weather data\n25C"
+
+    def test_tool_role_list_with_non_text_is_kept(self):
+        message = {
+            "role": "tool",
+            "content": [{"type": "tool_reference", "name": "get_weather"}],
+        }
+        original = deepcopy(message)
+        exchange_tool_content(message)
+        assert message == original
 
 
 class TestExchangeTools:
@@ -1381,8 +1520,8 @@ class TestPreprocessInput:
 
         # test tool_calls arguments exchange
         assert isinstance(processed_messages[1]["tool_calls"][0]["function"]["arguments"], dict)
-        # test tool role content exchange
-        assert processed_messages[2]["content"] == "{'type': 'text', 'text': 'Weather data'}"
+        # vLLM keeps tool-role string content as a plain string
+        assert processed_messages[2]["content"] == "Weather data"
         assert processed_tools is None
 
     def test_with_tools(self):
@@ -1472,7 +1611,8 @@ class TestPreprocessInput:
 
         for msg in processed_messages[3:]:
             if msg["role"] == "tool":
-                assert "type" in msg["content"] and "text" in msg["content"]
+                assert isinstance(msg["content"], str)
+                assert "type" not in msg["content"]
 
         # test tool processe
         for tool in processed_tools:
@@ -1556,13 +1696,64 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
         _, kwargs = mock_tokenizer.apply_chat_template.call_args
         self.assertIsNone(kwargs.get("tools"))
 
+    def test_standard_path_coerces_tool_call_argument_strings(self) -> None:
+        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
+        mock_tokenizer.apply_chat_template.return_value = [1, 2, 3]
+        messages = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "foo", "arguments": '{"a": 1}'},
+                    }
+                ],
+            }
+        ]
+        tools = [{"type": "function", "function": {"name": "foo", "parameters": {}}}]
+        result = manager.apply_chat_template(messages, tools)
+        self.assertEqual(result, [1, 2, 3])
+        _, kwargs = mock_tokenizer.apply_chat_template.call_args
+        conversation = kwargs["conversation"]
+        self.assertEqual(conversation[0]["tool_calls"][0]["function"]["arguments"], {"a": 1})
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+
+    def test_standard_path_forwards_chat_template_kwargs(self) -> None:
+        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
+        mock_tokenizer.apply_chat_template.return_value = [1]
+        req_data = {
+            "chat_template_kwargs": {"enable_thinking": False, "foo": 1},
+            "reasoning_effort": "none",
+        }
+        manager.apply_chat_template([{"role": "user", "content": "hi"}], None, req_data)
+        _, kwargs = mock_tokenizer.apply_chat_template.call_args
+        self.assertFalse(kwargs.get("enable_thinking"))
+        self.assertEqual(kwargs.get("reasoning_effort"), "none")
+        self.assertEqual(kwargs.get("foo"), 1)
+        self.assertTrue(kwargs.get("tokenize"))
+        self.assertTrue(kwargs.get("add_generation_prompt"))
+
+    def test_standard_path_maps_thinking_type_to_enable_thinking(self) -> None:
+        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
+        mock_tokenizer.apply_chat_template.return_value = [1]
+        manager.apply_chat_template(
+            [{"role": "user", "content": "hi"}],
+            None,
+            {"thinking": {"type": "enabled"}},
+        )
+        _, kwargs = mock_tokenizer.apply_chat_template.call_args
+        self.assertTrue(kwargs.get("enable_thinking"))
+
     def test_standard_exception_fallback_still_passes_tools(self) -> None:
-        """If primary call raises, fallback retries with the SAME tools (never silently drops it)."""
-        side_effects = [RuntimeError("first failure"), [9, 9, 9, 9]]
+        """If primary STANDARD raises, fallback uses preprocess (tokenize=False) and keeps tools."""
+        side_effects = [RuntimeError("first failure"), "rendered prompt"]
         manager, mock_tokenizer = _build_tokenizer_manager(
             openai_standard="STANDARD",
             apply_chat_template_side_effect=side_effects,
         )
+        mock_tokenizer.encode.return_value = [9, 9, 9, 9]
 
         messages = [{"role": "user", "content": "hi"}]
         tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
@@ -1570,8 +1761,13 @@ class TestApplyChatTemplateStandard(unittest.TestCase):
         self.assertEqual(result, [9, 9, 9, 9])
 
         self.assertEqual(mock_tokenizer.apply_chat_template.call_count, 2)
-        for _, kwargs in mock_tokenizer.apply_chat_template.call_args_list:
-            self.assertEqual(kwargs.get("tools"), tools)
+        first_kwargs = mock_tokenizer.apply_chat_template.call_args_list[0].kwargs
+        second_kwargs = mock_tokenizer.apply_chat_template.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs.get("tools"), tools)
+        self.assertTrue(first_kwargs.get("tokenize"))
+        self.assertEqual(second_kwargs.get("tools"), tools)
+        self.assertFalse(second_kwargs.get("tokenize", True))
+        mock_tokenizer.encode.assert_called_once_with("rendered prompt")
 
     def test_total_failure_returns_empty_list(self) -> None:
         """Both primary and fallback failing -> empty list (let scheduler fall back to LB)."""
@@ -1650,23 +1846,27 @@ class TestKvCacheAffinityWithToolsEndToEnd(unittest.TestCase):
     def tearDown(self) -> None:
         _reset_tokenizer_manager_singleton()
 
-    def _stub_tokenizer_manager(self, ids_with_tools, ids_without_tools):
+    def _stub_tokenizer_client(self, ids_with_tools, ids_without_tools):
         """Patch TokenizerManager().apply_chat_template so it differentiates tools/no-tools."""
-        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
 
         def _apply(*args, **kwargs):
             tools = kwargs.get("tools")
+            if tools is None and len(args) >= 2:
+                tools = args[1]
             return ids_with_tools if tools else ids_without_tools
 
-        mock_tokenizer.apply_chat_template.side_effect = _apply
-        return manager
+        patcher = patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+        mock_client_cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        mock_client_cls.return_value.apply_chat_template.side_effect = _apply
+        return mock_client_cls
 
     @patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=16)
     @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
     def test_query_conductor_receives_tokens_including_tools(self, mock_query, _mock_block_size) -> None:
         ids_with_tools = list(range(20))
         ids_without_tools = list(range(5))
-        self._stub_tokenizer_manager(ids_with_tools, ids_without_tools)
+        self._stub_tokenizer_client(ids_with_tools, ids_without_tools)
 
         instance = Mock()
         instance.id = 1
@@ -1704,8 +1904,10 @@ class TestKvCacheAffinityWithToolsEndToEnd(unittest.TestCase):
     @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
     def test_tokenize_total_failure_falls_back_to_empty_ids(self, mock_query, _mock_block_size) -> None:
         """If both tokenize attempts fail, encoded_ids must be [] and conductor queried with []."""
-        manager, mock_tokenizer = _build_tokenizer_manager(openai_standard="STANDARD")
-        mock_tokenizer.apply_chat_template.side_effect = RuntimeError("boom")
+        patcher = patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+        mock_client_cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        mock_client_cls.return_value.apply_chat_template.side_effect = RuntimeError("boom")
 
         instance = Mock()
         instance.id = 1
@@ -1724,3 +1926,89 @@ class TestKvCacheAffinityWithToolsEndToEnd(unittest.TestCase):
         mock_query.assert_called_once()
         sent_instances, sent_ids = mock_query.call_args[0]
         self.assertEqual(sent_ids, [])
+
+
+def _context_budget_config(scheduler_type: SchedulerType = SchedulerType.KV_CACHE_AFFINITY):
+    config = CoordinatorConfig()
+    config.scheduler_config.scheduler_type = scheduler_type
+    config.context_budget_mode = CONTEXT_BUDGET_ON
+    config.aigw_model = {"p_max_seqlen": 16, "d_max_seqlen": 20}
+    return config
+
+
+def _context_budget_request(req_data: dict, token_count: int = 5) -> RequestInfo:
+    return RequestInfo(
+        req_id="context-budget",
+        req_data=req_data,
+        req_len=token_count,
+        token_ids=list(range(token_count)),
+        api="/v1/chat/completions" if "messages" in req_data else "/v1/completions",
+    )
+
+
+def test_context_budget_clamps_only_active_chat_field():
+    req_info = _context_budget_request(
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 50,
+            "max_completion_tokens": 20,
+        }
+    )
+
+    adapt_context_budget(req_info, _context_budget_config())
+
+    assert req_info.req_data["max_completion_tokens"] == 11
+    assert req_info.req_data["max_tokens"] == 50
+
+
+@pytest.mark.parametrize(
+    "scheduler_type",
+    [
+        SchedulerType.LOAD_BALANCE,
+        SchedulerType.ROUND_ROBIN,
+        SchedulerType.KV_CACHE_AFFINITY,
+    ],
+)
+def test_context_budget_clamps_completion_max_tokens(scheduler_type):
+    req_info = _context_budget_request({"prompt": "hello", "max_tokens": 50})
+
+    adapt_context_budget(req_info, _context_budget_config(scheduler_type))
+
+    assert req_info.req_data["max_tokens"] == 11
+
+
+def test_load_balance_context_budget_tokenizes_when_token_ids_are_missing():
+    req_info = RequestInfo(
+        req_id="context-budget",
+        req_data={"prompt": "hello", "max_tokens": 50},
+        req_len=5,
+        api="/v1/completions",
+    )
+
+    with patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager") as mock_client_cls:
+        mock_client_cls.return_value.encode.return_value = list(range(5))
+        adapt_context_budget(req_info, _context_budget_config(SchedulerType.LOAD_BALANCE))
+
+    assert req_info.token_ids == list(range(5))
+    mock_client_cls.return_value.encode.assert_called_once_with("hello")
+
+
+def test_context_budget_is_disabled_by_default():
+    req_info = _context_budget_request({"prompt": "hello", "max_tokens": 50})
+    config = _context_budget_config()
+    config.context_budget_mode = "off"
+
+    adapt_context_budget(req_info, config)
+
+    assert req_info.req_data["max_tokens"] == 50
+
+
+def test_context_budget_leaves_exhausted_prompt_to_engine_validation():
+    req_info = _context_budget_request(
+        {"prompt": "hello", "max_tokens": 8},
+        token_count=16,
+    )
+
+    adapt_context_budget(req_info, _context_budget_config())
+
+    assert req_info.req_data["max_tokens"] == 8

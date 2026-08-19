@@ -412,3 +412,8 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 ### kv-conductor 未包含在 wheel 包中
 
 构建环境缺少 Rust 工具链，`build.sh` 已自动跳过。安装 rustup 后重新执行 `bash build.sh` 即可。详见 [构建](#构建)。
+
+## 输出预算裁剪（context_budget_mode）
+
+`max_tokens` 自适应不依赖 KV Cache 亲和调度，也适用于 `load_balance` 和 `round_robin`。
+功能原理、配置方法与边界行为请参考 [max_tokens 自适应](max_tokens_adaptation.md)。

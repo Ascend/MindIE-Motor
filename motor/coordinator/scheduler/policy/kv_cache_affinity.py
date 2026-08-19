@@ -12,12 +12,16 @@ import threading
 from pathlib import Path
 
 from motor.common.resources.instance import Instance, PDRole
+from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
 from motor.coordinator.domain.block_offset_translator import attach_block_offsets
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy, WorkloadLedgerMixin
 from motor.config.coordinator import (
+    AIGW_D_MAX_SEQLEN,
+    AIGW_P_MAX_SEQLEN,
     CoordinatorConfig,
+    CONTEXT_BUDGET_ON,
     KV_AFFINITY_MODE_LOAD_GATED,
     KV_AFFINITY_MODE_UNIFIED,
 )
@@ -29,18 +33,74 @@ from motor.coordinator.api_client.conductor_api_client import (
     TENANT_ID,
     conductor_instance_id,
 )
-from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.coordinator.scheduler.policy.utils import (
     preprocess_input,
     preprocess_messages_for_dsv4,
     preprocess_messages_for_standard,
 )
 
+__all__ = ["KvCacheAffinityPolicy", "TokenizerManager", "adapt_context_budget"]
 
 logger = get_logger(__name__)
 
 # Endpoints kept by the load-gated mode when kv_affinity.load_gate_topn is left unset (0).
 _DEFAULT_LOAD_GATE_TOPN = 2
+
+
+def adapt_context_budget(
+    req_info: RequestInfo,
+    config: CoordinatorConfig,
+) -> None:
+    """Clamp the active output-token limit before routing, independent of scheduler type."""
+    if config.context_budget_mode != CONTEXT_BUDGET_ON:
+        return
+
+    req_data = req_info.req_data
+    parameters = (
+        (OpenAIField.MAX_COMPLETION_TOKENS, OpenAIField.MAX_TOKENS)
+        if OpenAIField.MESSAGES in req_data
+        else (OpenAIField.MAX_TOKENS,)
+    )
+    for parameter in parameters:
+        requested_tokens = req_data.get(parameter)
+        if isinstance(requested_tokens, int) and not isinstance(requested_tokens, bool) and requested_tokens > 0:
+            break
+    else:
+        return
+
+    aigw_model = config.get_aigw_models() or {}
+    context_limits = [
+        value
+        for value in (
+            aigw_model.get(AIGW_P_MAX_SEQLEN),
+            aigw_model.get(AIGW_D_MAX_SEQLEN),
+        )
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    ]
+    if not context_limits:
+        return
+
+    token_ids = KvCacheAffinityPolicy._ensure_token_ids(req_info)
+    if not token_ids:
+        return
+
+    max_model_len = min(context_limits)
+    available_tokens = max_model_len - len(token_ids)
+    if available_tokens < 1:
+        return
+
+    effective_tokens = min(requested_tokens, available_tokens)
+    req_data[parameter] = effective_tokens
+    if effective_tokens < requested_tokens:
+        logger.info(
+            "Context budget clamped req_id=%s parameter=%s requested=%d effective=%d prompt_tokens=%d max_model_len=%d",
+            req_info.req_id,
+            parameter,
+            requested_tokens,
+            effective_tokens,
+            len(token_ids),
+            max_model_len,
+        )
 
 
 class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
@@ -204,10 +264,9 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         """
         Tokenize the prompt once and cache it on ``req_info.token_ids`` for reuse.
 
-        The same token ids feed (a) the conductor prefix query, (b) ``isl`` for the prefill cost,
-        and (c) ``calculate_demand_workload`` so the committed prefill load is in real tokens
-        rather than the byte-length heuristic. Returns the cached list when already present so a
-        request is tokenized at most once.
+        The same token ids feed context budgeting, the conductor prefix query, prefill cost,
+        and workload accounting. Returns the cached list when already present so a request is
+        tokenized at most once.
         """
         cached = getattr(req_info, "token_ids", None)
         if isinstance(cached, list):
@@ -215,26 +274,43 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         encoded_ids: list[int] = []
         messages = req_info.req_data.get(OpenAIField.MESSAGES, None)
         tools = req_info.req_data.get(OpenAIField.TOOLS, None)
-        if messages is not None:
-            tokenizer_manager = TokenizerManager()
-            encoded_ids = tokenizer_manager.apply_chat_template(messages, tools, req_data=req_info.req_data)
-            attach_block_offsets(req_info, messages, tools, tokenizer=tokenizer_manager.tokenizer)
-        else:
-            prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
-            if prompt is not None:
-                encoded_ids = TokenizerManager().encode(prompt)
+        try:
+            if messages is not None:
+                tokenizer_manager = TokenizerManager()
+                encoded_ids = tokenizer_manager.apply_chat_template(messages, tools, req_data=req_info.req_data)
+                attach_block_offsets(req_info, messages, tools, tokenizer=tokenizer_manager.tokenizer)
+            else:
+                prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
+                if isinstance(prompt, str):
+                    encoded_ids = TokenizerManager().encode(prompt)
+                elif (
+                    isinstance(prompt, list)
+                    and prompt
+                    and all(isinstance(token_id, int) and not isinstance(token_id, bool) for token_id in prompt)
+                ):
+                    encoded_ids = prompt.copy()
+                elif prompt is not None:
+                    logger.info(
+                        "kv_cache_affinity: unsupported prompt type %s; falling back to load_balance",
+                        type(prompt).__name__,
+                    )
+        except Exception as e:
+            logger.warning("kv_cache_affinity tokenization failed; falling back to load_balance: %s", e)
+            encoded_ids = []
+        if not isinstance(encoded_ids, list) or any(
+            not isinstance(token_id, int) or isinstance(token_id, bool) for token_id in encoded_ids
+        ):
+            logger.warning("kv_cache_affinity tokenizer returned invalid token ids; falling back to load_balance")
+            encoded_ids = []
         try:
             req_info.token_ids = encoded_ids
         except Exception as e:  # pragma: no cover - req_info may be immutable in some callers
             logger.debug("Could not cache token_ids on req_info: %s", e)
-        # Visibility for the validated invariant: tools, when present, MUST inflate
-        # the encoded token sequence. Operators can grep this line to verify
-        # function-call requests are being tokenised correctly.
         logger.debug(
             "kv_affinity tokenize ok: msgs=%d tools=%d encoded_ids=%d",
-            len(messages or []),
-            len(tools or []),
-            len(encoded_ids or []),
+            len(messages) if isinstance(messages, list) else 0,
+            len(tools) if isinstance(tools, list) else 0,
+            len(encoded_ids),
         )
         return encoded_ids
 
@@ -505,39 +581,40 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
 
 
 class TokenizerManager(ThreadSafeSingleton):
-    """
-    Tracer Manager class, Singleton class
-    """
+    """Tokenizer shared directly by KV affinity and context-budget routing."""
 
     def __init__(self, config: CoordinatorConfig | None = None):
-        """TracerManager init"""
-        # If the instance manager is already initialized, return.
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
         self._initialized = True
         self.config_lock = threading.RLock()
-
         if config is None:
             config = CoordinatorConfig()
 
         self.endpoint = config.tracer_config.endpoint
-
         self.tokenizer = None
         self._is_dsv4 = False
-
-        kv_config = config.scheduler_config.kv_conductor_config
-        if kv_config.conductor_service == "":
-            logger.info("conductor_service is empty. disable TokenizerManager!")
+        scheduler_config = getattr(config, "scheduler_config", None)
+        kv_config = getattr(scheduler_config, "kv_conductor_config", None) if scheduler_config else None
+        if kv_config is None:
+            kv_config = getattr(config, "prefill_kv_event_config", None)
+        scheduler_type = getattr(scheduler_config, "scheduler_type", None) if scheduler_config else None
+        scheduler_value = getattr(scheduler_type, "value", scheduler_type)
+        needs_tokenizer = bool(
+            (kv_config and getattr(kv_config, "conductor_service", ""))
+            or scheduler_value == "kv_cache_affinity"
+            or config.context_budget_mode == CONTEXT_BUDGET_ON
+        )
+        if not needs_tokenizer:
+            logger.info("KV affinity and context budget are disabled. disable TokenizerManager!")
             return
 
-        model_path = kv_config.model_path
+        model_path = getattr(kv_config, "model_path", "") if kv_config else ""
         if model_path:
-            os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
+            os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
             engine_type = str(getattr(kv_config, "engine_type", "vllm") or "vllm").strip().lower()
-            is_vllm_engine = engine_type == "vllm"
-
-            if is_vllm_engine and self._is_deepseek_v4_model(model_path):
-                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer  # pylint: disable=no-name-in-module
+            if engine_type == "vllm" and self._is_deepseek_v4_model(model_path):
+                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
 
                 self.tokenizer = DeepseekV4Tokenizer.from_pretrained(model_path, trust_remote_code=True)
                 self._is_dsv4 = True
@@ -545,180 +622,129 @@ class TokenizerManager(ThreadSafeSingleton):
                 from transformers import AutoTokenizer
 
                 self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-
-        logger.info(
-            "TokenizerManager init.(model_path:%s, is_dsv4:%s)",
-            model_path,
-            self._is_dsv4,
-        )
-
         self.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
+        logger.info("TokenizerManager init.(model_path:%s, is_dsv4:%s)", model_path, self._is_dsv4)
 
-    def apply_chat_template(
-        self,
-        messages: list,
-        tools: list | None = None,
-        req_data: dict | None = None,
-    ) -> list[int]:
-        """Render messages (and optional tools) into token ids for KV-cache affinity.
-
-        The output token sequence is the *same* one vLLM/SGLang sees during
-        actual inference, so conductor's ``longest_matched`` truly reflects the
-        cluster's KV-cache distribution. ``tools`` MUST be forwarded on every
-        path - dropping it silently was the bug fixed in this revision.
-        """
+    def apply_chat_template(self, messages: list, tools: list | None = None, req_data: dict | None = None) -> list[int]:
         if self.tokenizer is None:
             return []
-
         try:
             if self._is_dsv4:
                 return self._apply_chat_template_dsv4(messages, tools, req_data)
             if self.openai_standard != "STANDARD":
-                return self._apply_chat_template_with_preprocess(messages, tools)
-            return self._apply_chat_template_standard(messages, tools)
-        except Exception as e:
+                return self._apply_chat_template_with_preprocess(messages, tools, req_data)
+            return self._apply_chat_template_standard(messages, tools, req_data)
+        except Exception as exc:
             if self._is_dsv4:
-                logger.error(
-                    "kv_affinity dsv4 tokenize failed on primary path; "
-                    "no separate fallback available, returning [] so scheduler "
-                    "falls back to LoadBalance. "
-                    "msgs=%d tools=%d err=%s",
-                    len(messages or []),
-                    len(tools or []),
-                    e,
-                )
+                logger.error("kv_affinity dsv4 tokenize failed; returning []: %s", exc)
                 return []
-            logger.warning(
-                "kv_affinity primary tokenize path failed: %s; trying tools-aware fallback (msgs=%d, tools=%d)",
-                e,
-                len(messages or []),
-                len(tools or []),
-            )
-            return self._safe_fallback_encode(messages, tools)
+            logger.warning("kv_affinity primary tokenize path failed: %s; trying fallback", exc)
+            return self._safe_fallback_encode(messages, tools, req_data)
 
     def encode(self, prompt: str) -> list[int]:
-        """
-        When the inference API /v1/completions is called,
-        this method is used for encoding.
-        """
-        if self.tokenizer is None:
-            return []
-        result = self.tokenizer.encode(prompt)
-        return result
+        return [] if self.tokenizer is None else self.tokenizer.encode(prompt)
 
     @staticmethod
     def _read_model_config_dict(model_path: str) -> dict | None:
-        """Read ``config.json`` locally without invoking ``AutoConfig``."""
         try:
-            config_file = Path(model_path) / "config.json"
-            if not config_file.is_file():
-                return None
-            with open(config_file, encoding="utf-8") as f:
-                data = json.load(f)
+            with open(Path(model_path) / "config.json", encoding="utf-8") as file:
+                data = json.load(file)
             return data if isinstance(data, dict) else None
-        except Exception as e:  # pragma: no cover - best-effort read
-            logger.debug("Could not read config.json from %s: %s", model_path, e)
+        except (OSError, ValueError) as exc:
+            logger.debug("Could not read config.json from %s: %s", model_path, exc)
             return None
 
     @staticmethod
     def _is_deepseek_v4_model(model_path: str) -> bool:
-        """Detect DeepSeek V4 from ``config.json`` without ``AutoConfig``.
-
-        Transformers may not register ``deepseek_v4`` yet; vLLM loads the
-        tokenizer via ``PreTrainedTokenizerFast`` plus custom ``encode_messages``.
-        """
         config_dict = TokenizerManager._read_model_config_dict(model_path)
         if not config_dict:
             return False
-        if config_dict.get("model_type") == "deepseek_v4":
-            return True
-        architectures = config_dict.get("architectures") or []
-        return "DeepseekV4ForCausalLM" in architectures
+        return config_dict.get("model_type") == "deepseek_v4" or "DeepseekV4ForCausalLM" in (
+            config_dict.get("architectures") or []
+        )
 
     @staticmethod
     def _build_dsv4_chat_template_kwargs(req_data: dict | None) -> dict:
-        """Mirror vLLM ChatCompletionRequest.build_chat_params for DeepSeek V4."""
         kwargs: dict = {"tokenize": True, "drop_thinking": True}
         if not req_data:
             return kwargs
-
         reasoning_effort = req_data.get("reasoning_effort")
         if reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
-
         chat_template_kwargs = req_data.get("chat_template_kwargs") or {}
         if isinstance(chat_template_kwargs, dict):
             kwargs.update(chat_template_kwargs)
-
         if reasoning_effort is not None and "enable_thinking" not in kwargs:
             kwargs["enable_thinking"] = reasoning_effort != "none"
-
         return kwargs
 
-    def _apply_chat_template_dsv4(
-        self,
-        messages: list,
-        tools: list | None = None,
-        req_data: dict | None = None,
-    ) -> list[int]:
-        """DeepSeek V4 path: use vLLM's custom encode_messages-based template."""
+    @staticmethod
+    def _build_standard_chat_template_kwargs(req_data: dict | None, *, tokenize: bool) -> dict:
+        kwargs: dict = {"add_generation_prompt": True, "tokenize": tokenize}
+        if tokenize:
+            kwargs["return_dict"] = False
+        if not req_data:
+            return kwargs
+        if isinstance(req_data.get("add_generation_prompt"), bool):
+            kwargs["add_generation_prompt"] = req_data["add_generation_prompt"]
+        if req_data.get("continue_final_message"):
+            kwargs["continue_final_message"] = True
+            kwargs["add_generation_prompt"] = False
+        if req_data.get("documents") is not None:
+            kwargs["documents"] = req_data["documents"]
+        template_kwargs = req_data.get("chat_template_kwargs") or {}
+        if isinstance(template_kwargs, dict):
+            reserved = {
+                "tokenize",
+                "return_dict",
+                "conversation",
+                "tools",
+                "add_generation_prompt",
+                "continue_final_message",
+            }
+            kwargs.update({key: value for key, value in template_kwargs.items() if key not in reserved})
+        reasoning_effort = req_data.get("reasoning_effort")
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+            kwargs.setdefault("enable_thinking", reasoning_effort != "none")
+        thinking = req_data.get("thinking")
+        if isinstance(thinking, dict) and "enable_thinking" not in kwargs:
+            if thinking.get("type") == "enabled":
+                kwargs["enable_thinking"] = True
+            elif thinking.get("type") == "disabled":
+                kwargs["enable_thinking"] = False
+        return kwargs
+
+    def _apply_chat_template_dsv4(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         messages, tools = preprocess_messages_for_dsv4(messages, tools)
-        kwargs = self._build_dsv4_chat_template_kwargs(req_data)
-        result = self.tokenizer.apply_chat_template(messages, tools=tools, **kwargs)
-        if isinstance(result, list):
-            return result
-        return self.tokenizer.encode(result, add_special_tokens=False)
+        result = self.tokenizer.apply_chat_template(
+            messages, tools=tools, **self._build_dsv4_chat_template_kwargs(req_data)
+        )
+        return result if isinstance(result, list) else self.tokenizer.encode(result, add_special_tokens=False)
 
-    def _apply_chat_template_standard(self, messages: list, tools: list | None = None) -> list[int]:
-        """Standard OpenAI-compatible model path.
-
-        Calls the model tokenizer's jinja chat-template directly with ``tools``,
-        ``add_generation_prompt=True`` and ``tokenize=True`` so the resulting
-        token ids are byte-equivalent to what vLLM/SGLang prefill receives.
-        """
-        messages = preprocess_messages_for_standard(messages)
+    def _apply_chat_template_standard(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         return self.tokenizer.apply_chat_template(
-            conversation=messages,
+            conversation=preprocess_messages_for_standard(messages),
             tools=tools,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=False,
+            **self._build_standard_chat_template_kwargs(req_data, tokenize=True),
         )
 
-    def _apply_chat_template_with_preprocess(self, messages: list, tools: list | None = None) -> list[int]:
-        """Non-standard model path: normalise messages/tools then encode the
-        rendered prompt string. Kept for models whose chat-template cannot be
-        directly invoked with ``tokenize=True`` (e.g. require argument coercion
-        or reordering done by ``preprocess_input``).
-        """
-        messages_copy, tools_copy = preprocess_input(messages, tools)
-        messages_copy = preprocess_messages_for_standard(messages_copy)
-
+    def _apply_chat_template_with_preprocess(
+        self, messages: list, tools: list | None, req_data: dict | None
+    ) -> list[int]:
+        messages, tools = preprocess_input(messages, tools)
         prompt = self.tokenizer.apply_chat_template(
-            conversation=messages_copy,
-            tools=tools_copy,
-            tokenize=False,
+            conversation=messages,
+            tools=tools,
+            **self._build_standard_chat_template_kwargs(req_data, tokenize=False),
         )
         return self.tokenizer.encode(prompt)
 
-    def _safe_fallback_encode(self, messages: list, tools: list | None = None) -> list[int]:
-        """Last-resort tokenize that NEVER drops ``tools``.
-
-        Tries the tools-aware standard call once more; if that also fails,
-        returns ``[]`` so the affinity candidate path can fall back to load balance.
-        Returning a partially-correct token list (e.g. messages without tools)
-        would silently mislead conductor's longest_matched and is far worse
-        than failing closed.
-        """
+    def _safe_fallback_encode(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         try:
-            return self._apply_chat_template_standard(messages, tools)
-        except Exception as e:
-            logger.error(
-                "kv_affinity tokenize failed on both primary and fallback paths; "
-                "returning [] so scheduler falls back to LoadBalance. "
-                "msgs=%d tools=%d err=%s",
-                len(messages or []),
-                len(tools or []),
-                e,
-            )
+            if self.openai_standard == "STANDARD":
+                return self._apply_chat_template_with_preprocess(messages, tools, req_data)
+            return self._apply_chat_template_standard(messages, tools, req_data)
+        except Exception as exc:
+            logger.error("kv_affinity tokenize failed on both primary and fallback paths; returning []: %s", exc)
             return []

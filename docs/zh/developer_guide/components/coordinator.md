@@ -4,26 +4,41 @@
 
 Coordinator 进程入口为 `motor/coordinator/main.py`：异步 `main()` 中构造 `CoordinatorConfig.from_json()`，按需 `reconfigure_logging`，再创建并运行 **`CoordinatorDaemon`**（`motor/coordinator/daemon/coordinator_daemon.py`）。
 
-`CoordinatorDaemon` 负责统一管理三类子进程（键名见 `motor/coordinator/process/constants.py`）：
+`CoordinatorDaemon` 负责统一管理四类子进程（键名见 `motor/coordinator/process/constants.py`）：
 
 | 进程字典键（常量名 / 值） | 管理类 | 说明（来自 `CoordinatorDaemon` 模块文档字符串与 `run` 实现） |
 |--------|--------|---------------------------------------------------------------|
 | `PROCESS_KEY_SCHEDULER`（`"SchedulerProcess"`） | `SchedulerProcessManager` | 调度器进程 |
 | `PROCESS_KEY_MGMT`（`"MgmtProcess"`） | `MgmtProcessManager` | 管理面 API 进程 |
+| `PROCESS_KEY_OBS`（`"ObsProcess"`） | `ObsProcessManager` | 可观测性 API 进程 |
 | `PROCESS_KEY_INFERENCE`（`"InferenceWorkers"`） | `InferenceProcessManager` | 推理 Worker 进程（含推理 HTTP、可选 metaserver 端口等） |
 
-启动顺序上，文档写明：**先 Scheduler，再 Mgmt**，以便 Mgmt 能成功 `connect`。未启用主备时，在 Scheduler/Mgmt 之后会启动 Inference。启用 `standby_config.enable_master_standby` 时，通过 `StandbyManager` 的 `on_become_master` / `on_become_standby` 仅在主机上启停 Infer 相关子进程；并可配合共享内存 `RoleShmHolder` 写入角色字节（详见同文件注释）。
+启动顺序上，文档写明：**先 Scheduler，再 Mgmt、Obs**，以便后两者能成功连接 Scheduler。
+未启用主备时，最后启动 Inference。启用 `standby_config.enable_master_standby` 时，通过
+`StandbyManager` 的 `on_become_master` / `on_become_standby` 仅在主机上启停 Infer 相关子进程；
+并可配合共享内存 `RoleShmHolder` 写入角色字节（详见同文件注释）。
 
 启停常量来自 `motor/coordinator/process/constants.py`：
 
-- `START_ORDER = [SchedulerProcess, MgmtProcess, InferenceWorkers]`
-- `STOP_ORDER = [InferenceWorkers, MgmtProcess, SchedulerProcess]`
+- `START_ORDER = [SchedulerProcess, MgmtProcess, ObsProcess, InferenceWorkers]`
+- `STOP_ORDER = [InferenceWorkers, ObsProcess, MgmtProcess, SchedulerProcess]`
 
-也即：**停止顺序与启动顺序相反**，先收 Inference 流量、再停 Mgmt、最后停 Scheduler，避免在停止过程中产生悬空连接。
+也即：**停止顺序与启动顺序相反**，先收 Inference 流量、再停 Obs 和 Mgmt、最后停 Scheduler，
+避免在停止过程中产生悬空连接。
 
 子进程由 `SubprocessSupervisor` 监控；Daemon 主循环中处理信号与退出（见 `CoordinatorDaemon.run` 后半部分）。
 
 推理面 OpenAI 兼容路径与 metaserver 行为见 [服务接口](../../user_guide/api/service_interfaces.md)。
+
+### 路由前 Token 处理
+
+Inference worker 在启动阶段初始化进程内的 `TokenizerManager` 单例；多个 worker 各自持有 tokenizer，
+Coordinator 不会为此创建独立的 tokenizer 服务进程。请求进入路由选择前，`context_budget_mode=on`
+会使用模型 tokenizer 计算输入 token，并按模型剩余上下文裁剪输出上限；同一份 token ID 还会被
+KV Cache 亲和调度复用。Chat 请求带有需要服务端管理的 `agent_hint` 时，同一 tokenization 路径还会
+执行消息/工具索引到 KV block 坐标的翻译。功能配置和边界行为见
+[max_tokens 自适应](../../user_guide/features/max_tokens_adaptation.md) 与
+[KV Cache 亲和调度](../../user_guide/features/kvcache_affinity.md)。
 
 ## 环境准备
 

@@ -54,8 +54,8 @@ class RequestInfo(BaseModel):
     req_len: int = Field(..., description="Request body length")
     token_ids: list[int] | None = Field(
         default=None,
-        description="Prompt token ids tokenized once at routing (KV affinity); reused for "
-        "prefill load accounting so load and affinity share the same token unit",
+        description="Prompt token ids tokenized once before routing; reused for context budgeting, "
+        "prefill load accounting, and KV affinity",
     )
     kv_affinity_debug: dict | None = Field(
         default=None,

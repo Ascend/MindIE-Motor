@@ -69,8 +69,12 @@ def content_parts_to_string(content) -> str:
     return str(content)
 
 
+def _shared_message_processors() -> list:
+    return [_flatten_message_content_to_string, exchange_arguments]
+
+
 def preprocess_messages_for_standard(messages: list[dict]) -> list[dict]:
-    """Flatten multipart ``content`` to strings for jinja chat templates.
+    """Normalize messages for standard jinja chat templates.
 
     Many model templates (e.g. Qwen) treat non-string ``content`` as empty, which
     would under-count tokens for OpenAI multipart requests. vLLM prefill flattens
@@ -80,7 +84,7 @@ def preprocess_messages_for_standard(messages: list[dict]) -> list[dict]:
     processed_messages, _ = _preprocess_items(
         messages=messages,
         tools=None,
-        message_processors=[_flatten_message_content_to_string],
+        message_processors=_shared_message_processors(),
         tool_processors=[],
     )
     return processed_messages
@@ -99,7 +103,7 @@ def preprocess_messages_for_dsv4(
     return _preprocess_items(
         messages=messages,
         tools=tools,
-        message_processors=[exchange_arguments, _flatten_message_content_to_string],
+        message_processors=_shared_message_processors(),
         tool_processors=[exchange_tools],
     )
 
@@ -118,13 +122,16 @@ def preprocess_input(messages: list[dict], tools: list[dict] | None = None) -> t
     return _preprocess_items(
         messages=messages,
         tools=tools,
-        message_processors=[exchange_arguments, exchange_tool_content],
+        message_processors=_shared_message_processors(),
         tool_processors=[exchange_tools],
     )
 
 
 def _flatten_message_content_to_string(message: dict) -> None:
-    if OpenAIField.CONTENT not in message:
+    if not isinstance(message, dict) or OpenAIField.CONTENT not in message:
+        return
+    if message.get(OpenAIField.ROLE) == "tool":
+        exchange_tool_content(message)
         return
     message[OpenAIField.CONTENT] = content_parts_to_string(message[OpenAIField.CONTENT])
 
@@ -135,15 +142,22 @@ def _preprocess_items(
     message_processors: list,
     tool_processors: list,
 ) -> tuple[list[dict], list[dict] | None]:
-    processed_messages = copy.deepcopy(messages)
-    for message in processed_messages:
-        for processor in message_processors:
-            processor(message)
+    if not isinstance(messages, list):
+        processed_messages: list[dict] = []
+    else:
+        processed_messages = copy.deepcopy(messages)
+        for message in processed_messages:
+            if not isinstance(message, dict):
+                continue
+            for processor in message_processors:
+                processor(message)
 
     processed_tools = None
     if tools:
         processed_tools = copy.deepcopy(tools)
         for tool in processed_tools:
+            if not isinstance(tool, dict):
+                continue
             for processor in tool_processors:
                 processor(tool)
 
@@ -160,15 +174,25 @@ def exchange_arguments(message: dict) -> None:
     Returns:
         None: The message dictionary is modified in place.
     """
-    if OpenAIField.TOOLS_CALLS not in message:
+    if not isinstance(message, dict) or OpenAIField.TOOLS_CALLS not in message:
         return
-    for tool in message[OpenAIField.TOOLS_CALLS]:
-        if OpenAIField.FUNCTION not in tool:
+    tool_calls = message.get(OpenAIField.TOOLS_CALLS)
+    if not isinstance(tool_calls, list):
+        return
+    if not tool_calls:
+        message.pop(OpenAIField.TOOLS_CALLS, None)
+        return
+    for tool in tool_calls:
+        if not isinstance(tool, dict):
             continue
-        if isinstance(tool[OpenAIField.FUNCTION][OpenAIField.ARGUMENTS], str):
-            tool[OpenAIField.FUNCTION][OpenAIField.ARGUMENTS] = json.loads(
-                tool[OpenAIField.FUNCTION][OpenAIField.ARGUMENTS]
-            )
+        function = tool.get(OpenAIField.FUNCTION)
+        if tool.get("type", "function") != "function" or not isinstance(function, dict):
+            continue
+        arguments = function.get(OpenAIField.ARGUMENTS)
+        if not arguments:
+            function[OpenAIField.ARGUMENTS] = {}
+        elif not isinstance(arguments, (dict, list)):
+            function[OpenAIField.ARGUMENTS] = json.loads(arguments)
 
 
 def exchange_tool_content(message: dict) -> None:
@@ -181,16 +205,19 @@ def exchange_tool_content(message: dict) -> None:
     Returns:
         None: The input message dictionary is directly modified.
     """
-    if OpenAIField.ROLE not in message:
+    if not isinstance(message, dict) or OpenAIField.ROLE not in message:
         return
     if message[OpenAIField.ROLE] != "tool":
         return
     if OpenAIField.CONTENT not in message:
         return
     content = message[OpenAIField.CONTENT]
-    if isinstance(content, str):
-        exchange_content = {"type": "text", "text": content}
-        message[OpenAIField.CONTENT] = f"{exchange_content}"
+    if not isinstance(content, list):
+        return
+    if any(isinstance(item, dict) and item.get("type") != "text" for item in content):
+        return
+    texts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
+    message[OpenAIField.CONTENT] = "\n".join(texts) if texts else ""
 
 
 def exchange_tools(tool: dict) -> None:
@@ -203,7 +230,7 @@ def exchange_tools(tool: dict) -> None:
     Returns:
         None: The passed tool dictionary is modified directly
     """
-    if OpenAIField.FUNCTION not in tool:
+    if not isinstance(tool, dict) or OpenAIField.FUNCTION not in tool:
         return
 
     max_seq = 100
