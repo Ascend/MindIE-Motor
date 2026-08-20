@@ -7,6 +7,7 @@ MindIE Motor提供推理[业务接口](#业务接口)、[管理接口](#管理�
 MindIE Motor提供下列推理业务接口：
 
 - [OpenAI Chat Completion 接口](./service_interfaces.md#openai-chat-completion-接口)：`/v1/chat/completions`
+- [OpenAI Responses 接口](./service_interfaces.md#openai-responses-接口)：`/v1/responses`
 - [OpenAI Completion 接口](./service_interfaces.md#openai-completion-接口)：`/v1/completions`
 - [Anthropic Messages 接口](./service_interfaces.md#anthropic-messages-接口)：`/v1/messages`
 - [Anthropic Count Tokens 接口](./service_interfaces.md#anthropic-count-tokens-接口)：`/v1/messages/count_tokens`
@@ -131,7 +132,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 - 请求头：
   - 必选：`Content-Type: application/json`
   - 可选：API Key
-    - 对 `/v1/completions`、`/v1/chat/completions`、`/v1/messages`、`/v1/messages/count_tokens` 生效
+    - 对 `/v1/completions`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/messages/count_tokens` 生效
     - Header 名称：`api_key_config.header_name`（默认 `Authorization`）
     - 前缀：`api_key_config.key_prefix`（默认 `Bearer`）
 - 限流（可选）：`rate_limit_config.enable_rate_limit=true` 时启用，超限返回 `429`

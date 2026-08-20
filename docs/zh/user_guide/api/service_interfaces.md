@@ -147,6 +147,102 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 ---
 
+## OpenAI Responses 接口
+
+**接口功能**
+
+提供与 OpenAI Responses API（`/v1/responses`）兼容的文本生成入口，适用于统一的响应式生成场景。
+
+**接口格式**
+
+请求类型：**POST**
+> URL：`http(s)://{IP}:{Port}/v1/responses`
+
+IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的ip端口与配置)
+
+**请求参数**
+
+| 参数名 | 类型 | 说明 |
+|---|---|---|
+| model | string | 必选；模型名称。 |
+| input | string/array/object | 必选；输入内容。 |
+| stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
+
+其余兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用参数说明与 Chat Completion 接口保持一致。
+
+> **响应格式说明**：Coordinator 作为透明代理，响应内容由后端推理引擎直接返回，不做二次包装。
+> 实际返回格式取决于引擎侧对 OpenAI Responses API 的实现（如 vLLM 0.22+ 原生支持）。
+> 下方响应样例为 OpenAI 标准格式，供参考。
+
+**使用样例**
+
+- 非流式使用样例：
+
+  ```bash
+  curl -X POST "http://{IP}:{Port}/v1/responses" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer {API_KEY}" \\
+    -d '{
+      "model": "qwen3",
+      "input": "Hello there!"
+    }'
+  ```
+
+- 流式使用样例：
+
+  ```bash
+  curl -N -X POST "http://{IP}:{Port}/v1/responses" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer {API_KEY}" \\
+    -d '{
+      "model": "qwen3",
+      "input": "Hello there!",
+      "stream": true
+    }'
+  ```
+
+**响应样例**
+
+```JSON
+{
+  "id": "resp-xxx",
+  "object": "response",
+  "created": 1765856304,
+  "model": "qwen3",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Hello there!"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**输出说明**
+
+- 非流式响应参数说明：
+
+  | 参数名 | 类型 | 说明 |
+  |---|---|---|
+  | id | string | 本次请求ID。 |
+  | object | string | 返回对象类型：`response`。 |
+  | created | integer | 创建时间戳（秒）。 |
+  | model | string | 模型名称。 |
+  | output | array | 输出内容列表。 |
+  | output[].type | string | 输出类型，如`message`。 |
+  | output[].role | string | 输出角色，通常为`assistant`。 |
+  | output[].content | array | 输出内容片段列表。 |
+  | output[].content[].type | string | 内容类型，如`output_text`。 |
+  | output[].content[].text | string | 生成文本。 |
+
+---
+
 ## OpenAI Completion 接口
 
 **接口功能**

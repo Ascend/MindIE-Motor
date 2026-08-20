@@ -208,17 +208,42 @@ class TestCoordinatorServer:
                 request_type = "completions"
             elif request.url.path.endswith("/chat/completions"):
                 request_type = "chat_completions"
+            elif request.url.path.endswith("/responses"):
+                request_type = "responses"
 
             # Generate request_id (simulate)
             import hashlib
 
             request_id = f"req-{hashlib.md5(str(body_json).encode()).hexdigest()[:8]}"
 
-            response_data = {
-                "request_id": request_id,
-                "status": "success",
-                "data": {"input_data": input_data, "is_stream": bool(is_stream), "request_type": request_type},
-            }
+            # /v1/responses returns OpenAI-native response format (engine passthrough)
+            if request_type == "responses":
+                import time
+
+                response_data = {
+                    "id": request_id,
+                    "object": "response",
+                    "created": int(time.time()),
+                    "model": body_json.get("model", ""),
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": str(body_json.get("input", "")),
+                                }
+                            ],
+                        }
+                    ],
+                }
+            else:
+                response_data = {
+                    "request_id": request_id,
+                    "status": "success",
+                    "data": {"input_data": input_data, "is_stream": bool(is_stream), "request_type": request_type},
+                }
 
             return JSONResponse(content=response_data)
 
@@ -515,6 +540,39 @@ class TestCoordinatorServer:
             assert "input_data" in data["data"], "Response data missing input_data"
             assert "is_stream" in data["data"], "Response data missing is_stream"
             assert "request_type" in data["data"], "Response data missing request_type"
+
+    def test_openai_responses_api(self):
+        """Test OpenAI Responses API — standard /v1/responses path.
+
+        The Coordinator is a transparent proxy for /v1/responses:
+        it accepts the request and forwards it to the backend engine
+        (e.g. vLLM 0.22+), which returns the OpenAI-native format.
+        The Coordinator does NOT wrap the response in request_id/status/data.
+        """
+        response = self.openai_client.post(
+            "/v1/responses",
+            json={
+                "model": "gpt-4o-mini",
+                "input": "Hello there!",
+                "max_tokens": 64,
+            },
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+
+        assert response.status_code == 200, f"Responses API failed: {response.status_code}"
+
+        data = response.json()
+        # OpenAI-native response format: id, object, created, model, output
+        assert "id" in data, "Response missing id"
+        assert "object" in data, "Response missing object"
+        assert data["object"] == "response", f"Expected object='response', got '{data['object']}'"
+        assert "created" in data, "Response missing created"
+        assert "model" in data, "Response missing model"
+        assert "output" in data, "Response missing output"
+        assert isinstance(data["output"], list), "output must be an array"
+        assert len(data["output"]) > 0, "output must not be empty"
+        assert data["output"][0]["type"] == "message"
+        assert data["output"][0]["role"] == "assistant"
 
     def test_streaming_requests(self):
         """Test streaming requests"""
@@ -839,17 +897,42 @@ class TestCoordinatorServerAdvanced:
                 request_type = "completions"
             elif request.url.path.endswith("/chat/completions"):
                 request_type = "chat_completions"
+            elif request.url.path.endswith("/responses"):
+                request_type = "responses"
 
             # Generate request_id (simulate)
             import hashlib
 
             request_id = f"req-{hashlib.md5(str(body_json).encode()).hexdigest()[:8]}"
 
-            response_data = {
-                "request_id": request_id,
-                "status": "success",
-                "data": {"input_data": input_data, "is_stream": bool(is_stream), "request_type": request_type},
-            }
+            # /v1/responses returns OpenAI-native response format (engine passthrough)
+            if request_type == "responses":
+                import time
+
+                response_data = {
+                    "id": request_id,
+                    "object": "response",
+                    "created": int(time.time()),
+                    "model": body_json.get("model", ""),
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": str(body_json.get("input", "")),
+                                }
+                            ],
+                        }
+                    ],
+                }
+            else:
+                response_data = {
+                    "request_id": request_id,
+                    "status": "success",
+                    "data": {"input_data": input_data, "is_stream": bool(is_stream), "request_type": request_type},
+                }
 
             return JSONResponse(content=response_data)
 
@@ -1345,6 +1428,56 @@ class TestCoordinatorServerAdvanced:
         )
 
         assert response.status_code == 400, f"Expected 400 for invalid role, got: {response.status_code}"
+
+    def test_validate_responses_input_empty_array(self):
+        """Test _validate_openai_request rejects empty input array on /v1/responses."""
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/responses",
+            json={"model": "gpt-4o-mini", "input": []},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, f"Expected 400 for empty input array, got: {response.status_code}"
+
+    def test_validate_responses_input_elements_not_dict(self):
+        """Test _validate_openai_request rejects input array with non-dict elements."""
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/responses",
+            json={"model": "gpt-4o-mini", "input": [1, 2, 3]},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, f"Expected 400 for non-dict input elements, got: {response.status_code}"
+
+    def test_validate_responses_input_missing_role_or_content(self):
+        """Test _validate_openai_request rejects input element missing role or content."""
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/responses",
+            json={"model": "gpt-4o-mini", "input": [{"role": "user"}]},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, f"Expected 400 for missing content, got: {response.status_code}"
+
+    def test_validate_responses_input_invalid_role(self):
+        """Test _validate_openai_request rejects input element with invalid role."""
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/responses",
+            json={"model": "gpt-4o-mini", "input": [{"role": "invalid", "content": "x"}]},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 400, f"Expected 400 for invalid role, got: {response.status_code}"
+
+    def test_validate_responses_input_string_is_valid(self):
+        """Test _validate_openai_request accepts string input (non-array) on /v1/responses."""
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/responses",
+            json={"model": "gpt-4o-mini", "input": "Hello there!"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 200, f"Expected 200 for string input, got: {response.status_code}"
 
     def test_handle_openai_request_unavailable_instances(self):
         """Test _handle_openai_request when instances are unavailable (503)."""

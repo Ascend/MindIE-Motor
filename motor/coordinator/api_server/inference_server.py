@@ -10,7 +10,7 @@
 
 """
 Inference plane: Worker subprocess only; provides /v1/completions, /v1/chat/completions,
-/v1/messages, /v1/messages/count_tokens, /v1/models, etc.
+/v1/responses, /v1/messages, /v1/messages/count_tokens, /v1/models, etc.
 """
 
 import asyncio
@@ -76,33 +76,14 @@ def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens
             )
 
 
-def _validate_openai_request(body_json: dict[str, Any], request_type: RequestType) -> None:
-    """Validate OpenAI-style request body. Raises HTTPException on invalid."""
-    if OpenAIField.MODEL not in body_json:
+def _validate_message_array(messages: list[Any], field_name: str) -> None:
+    """Validate a message array (messages or input). Raises HTTPException on invalid."""
+    if len(messages) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing required field: {OpenAIField.MODEL}",
+            detail=f"Invalid {field_name} field: must be a non-empty array",
         )
-    if request_type != RequestType.OPENAI:
-        return
-    if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing required field: {OpenAIField.PROMPT} or {OpenAIField.MESSAGES}",
-        )
-    if OpenAIField.MESSAGES not in body_json:
-        return
-    if not isinstance(body_json[OpenAIField.MESSAGES], list):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid {OpenAIField.MESSAGES} field: must be a non-empty array",
-        )
-    if len(body_json[OpenAIField.MESSAGES]) == 0 and not agent_hint_implies_manage_request(body_json.get("agent_hint")):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid {OpenAIField.MESSAGES} field: must be a non-empty array",
-        )
-    for i, message in enumerate(body_json[OpenAIField.MESSAGES]):
+    for i, message in enumerate(messages):
         if not isinstance(message, dict):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -122,6 +103,35 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
                     "user, or assistant"
                 ),
             )
+
+
+def _validate_openai_request(body_json: dict[str, Any], request_type: RequestType) -> None:
+    """Validate OpenAI-style request body. Raises HTTPException on invalid."""
+    if OpenAIField.MODEL not in body_json:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Missing required field: {OpenAIField.MODEL}",
+        )
+    if request_type != RequestType.OPENAI:
+        return
+    if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json and "input" not in body_json:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Missing required field: {OpenAIField.PROMPT} or {OpenAIField.MESSAGES} or input",
+        )
+    if OpenAIField.MESSAGES in body_json:
+        if not isinstance(body_json[OpenAIField.MESSAGES], list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid {OpenAIField.MESSAGES} field: must be an array",
+            )
+        # Allow empty messages for manage requests (context_management or session_control)
+        if len(body_json[OpenAIField.MESSAGES]) == 0 and agent_hint_implies_manage_request(body_json.get("agent_hint")):
+            pass
+        else:
+            _validate_message_array(body_json[OpenAIField.MESSAGES], OpenAIField.MESSAGES)
+    if "input" in body_json and isinstance(body_json["input"], list):
+        _validate_message_array(body_json["input"], "input")
 
 
 class InferenceServer(BaseCoordinatorServer):
@@ -383,6 +393,15 @@ class InferenceServer(BaseCoordinatorServer):
         @self._inference_app.post("/v1/chat/completions")
         @self.timeout_handler()
         async def openai_chat_completions(
+            request: Request,
+            request_manager: RequestManager = Depends(get_request_manager),
+        ):
+            self.verify_api_key(request)
+            return await self._handle_openai_request(request, RequestType.OPENAI, request_manager)
+
+        @self._inference_app.post("/v1/responses")
+        @self.timeout_handler()
+        async def openai_responses(
             request: Request,
             request_manager: RequestManager = Depends(get_request_manager),
         ):
