@@ -211,19 +211,23 @@ def test_prestop_missing_required_metric_is_not_treated_as_drained():
 
 
 def test_prestop_retries_when_metrics_are_temporarily_unavailable():
+    # Patch prestop's `time` name, not stdlib time.sleep/monotonic. Patching
+    # attributes on the shared time module records sleeps from other threads
+    # (pytest workers, leaked heartbeat loops) and makes this assertion flake.
+    fake_time = MagicMock()
+    fake_time.monotonic.side_effect = [0, 0, 1, 1]
     with (
         patch(
             "examples.deployer.prestop.prestop.get_engine_metrics",
             side_effect=[None, {"waiting": 0, "running": 0}],
         ) as get_metrics,
-        patch("examples.deployer.prestop.prestop.time.monotonic", side_effect=[0, 0, 1, 1]),
-        patch("examples.deployer.prestop.prestop.time.sleep") as sleep,
+        patch("examples.deployer.prestop.prestop.time", fake_time),
     ):
         drained = wait_for_engine_drain(["http://engine/metrics"], {}, "sglang", 10, 3)
 
     assert drained is True
     assert get_metrics.call_count == 2
-    sleep.assert_called_once_with(3)
+    fake_time.sleep.assert_called_once_with(3)
 
 
 @patch.dict("os.environ", {"ROLE": "decode"}, clear=False)
