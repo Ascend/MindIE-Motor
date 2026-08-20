@@ -39,6 +39,8 @@ from motor.common.resources.instance import (  # noqa: E402
     InsConditionEvent,
     PDRole,
 )
+
+from motor.controller.core.observer import ObserverEvent  # noqa: E402
 from examples.deployer.prestop.prestop import (  # noqa: E402
     build_curl_tls_args,
     get_engine_metrics,
@@ -46,6 +48,7 @@ from examples.deployer.prestop.prestop import (  # noqa: E402
     get_infer_tls_config,
     wait_for_engine_drain,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,8 +95,7 @@ class TestHeartbeatManagerPrestop:
             mock_cfg.return_value = MagicMock()
             mock_thread.return_value = MagicMock()
             # Clear singleton
-            if hasattr(HeartbeatManager, '_instances'):
-                HeartbeatManager._instances.clear()
+            HeartbeatManager._instances.clear()
             mgr = HeartbeatManager(MagicMock())
             yield mgr
 
@@ -315,8 +317,7 @@ class TestControllerInstanceManagerPrestop:
             mock_thread.return_value = MagicMock()
             mock_ep.return_value = MagicMock()
             # Clear singleton
-            if hasattr(InstanceManager, '_instances'):
-                InstanceManager._instances.clear()
+            InstanceManager._instances.clear()
             mgr = InstanceManager(MagicMock())
             yield mgr
 
@@ -347,15 +348,12 @@ class TestControllerInstanceManagerPrestop:
         assert result is True
         assert active_instance.status == InsStatus.PAUSED
 
-        # Notification sent
-        from motor.controller.core.observer import ObserverEvent
-
         mock_obs.update.assert_called_once()
         call_args = mock_obs.update.call_args
         assert call_args[0][1] == ObserverEvent.INSTANCE_PAUSED
 
     def test_handle_state_transition_paused_to_active_on_resume(self, im):
-        """PAUSED + endpoints back to NORMAL → ACTIVE (via _handle_active, INSTANCE_READY)."""
+        """PAUSED + endpoints back to NORMAL → ACTIVE (via INSTANCE_RESUMED → ObserverEvent.INSTANCE_RESUMED)."""
         endpoints = {
             "10.0.0.1": {
                 0: _make_endpoint(0, "10.0.0.1", EndpointStatus.NORMAL),
@@ -371,11 +369,51 @@ class TestControllerInstanceManagerPrestop:
         assert result is True
         assert inst.status == InsStatus.ACTIVE
 
-        from motor.controller.core.observer import ObserverEvent
-
         call_args = mock_obs.update.call_args
         # When PAUSED + NORMAL endpoints, is_all_endpoints_ready() is True,
-        # which triggers INSTANCE_NORMAL → _handle_active → INSTANCE_READY.
+        # from_state == PAUSED → triggers INSTANCE_RESUMED → _handle_active → ObserverEvent.INSTANCE_RESUMED.
+        assert call_args[0][1] == ObserverEvent.INSTANCE_RESUMED
+
+    def test_handle_state_transition_initial_to_active_sends_ready(self, im):
+        """INITIAL + all endpoints ready → ACTIVE, sends INSTANCE_READY (not INSTANCE_RESUMED)."""
+        endpoints = {
+            "10.0.0.1": {
+                0: _make_endpoint(0, "10.0.0.1", EndpointStatus.NORMAL),
+            },
+        }
+        inst = _make_instance(1, "test-job", endpoints=endpoints)
+        inst.status = InsStatus.INITIAL
+
+        mock_obs = MagicMock()
+        im.observers.append(mock_obs)
+
+        result = im._handle_state_transition(inst)
+        assert result is True
+        assert inst.status == InsStatus.ACTIVE
+
+        call_args = mock_obs.update.call_args
+        # from_state is INITIAL (not PAUSED) → INSTANCE_NORMAL → _handle_active → INSTANCE_READY.
+        assert call_args[0][1] == ObserverEvent.INSTANCE_READY
+
+    def test_handle_state_transition_inactive_to_active_sends_ready(self, im):
+        """INACTIVE + all endpoints ready → ACTIVE, sends INSTANCE_READY (not INSTANCE_RESUMED)."""
+        endpoints = {
+            "10.0.0.1": {
+                0: _make_endpoint(0, "10.0.0.1", EndpointStatus.NORMAL),
+            },
+        }
+        inst = _make_instance(1, "test-job", endpoints=endpoints)
+        inst.status = InsStatus.INACTIVE
+
+        mock_obs = MagicMock()
+        im.observers.append(mock_obs)
+
+        result = im._handle_state_transition(inst)
+        assert result is True
+        assert inst.status == InsStatus.ACTIVE
+
+        call_args = mock_obs.update.call_args
+        # from_state is INACTIVE (not PAUSED) → INSTANCE_NORMAL → _handle_active → INSTANCE_READY.
         assert call_args[0][1] == ObserverEvent.INSTANCE_READY
 
     def test_paused_detection_priority_over_ready(self, im, active_instance):
@@ -454,8 +492,6 @@ class TestEventPusherPrestop:
 
     def test_update_instance_paused_removes_from_instances(self, pusher):
         """PAUSED event removes the instance from local tracking."""
-        from motor.controller.core.observer import ObserverEvent
-
         mock_inst = MagicMock()
         mock_inst.job_name = "test-job"
         mock_inst.to_instance.return_value = _make_instance(1, "test-job")
@@ -475,8 +511,6 @@ class TestEventPusherPrestop:
 
     def test_update_instance_resumed_adds_back(self, pusher):
         """RESUMED event adds instance back to local tracking."""
-        from motor.controller.core.observer import ObserverEvent
-
         mock_inst = MagicMock()
         mock_inst.job_name = "test-job"
         mock_inst.to_instance.return_value = _make_instance(1, "test-job")
@@ -490,8 +524,6 @@ class TestEventPusherPrestop:
 
     def test_update_paused_does_nothing_for_unknown_instance(self, pusher):
         """PAUSED for an instance not in local dict is silently ignored."""
-        from motor.controller.core.observer import ObserverEvent
-
         mock_inst = MagicMock()
         mock_inst.job_name = "unknown-job"
         mock_inst.to_instance.return_value = _make_instance(99, "unknown-job")
@@ -716,7 +748,6 @@ class TestE2EPrestopFlow:
 
         # --- Step 3: State transition ACTIVE → PAUSED ---
         from motor.controller.core.instance_manager import InstanceManager
-        from motor.controller.core.observer import ObserverEvent
 
         with (
             patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
@@ -725,8 +756,7 @@ class TestE2EPrestopFlow:
         ):
             mock_etcd.return_value = MagicMock()
             mock_thread.return_value = MagicMock()
-            if hasattr(InstanceManager, '_instances'):
-                InstanceManager._instances.clear()
+            InstanceManager._instances.clear()
             im = InstanceManager(MagicMock())
             mock_obs = MagicMock()
             im.observers.append(mock_obs)
@@ -813,3 +843,92 @@ class TestE2EPrestopFlow:
         im_c._resume_instances([inst])
         assert inst.id in im_c.get_available_instances(PDRole.ROLE_P)
         assert inst.id not in im_c._paused_pool
+
+    def test_full_flow_pause_then_resume_emits_resumed_event(self):
+        """E2E: pause then resume → Controller emits INSTANCE_RESUMED (not INSTANCE_READY).
+
+        This test validates the key behavior introduced by the state transition fix:
+        only PAUSED→ACTIVE path triggers INSTANCE_RESUMED observer event (which routes
+        to EventType.RESUME through EventPusher), while other →ACTIVE paths still use
+        the regular INSTANCE_READY event.
+        """
+        from motor.controller.core.instance_manager import InstanceManager
+
+        endpoints_dict = {
+            "10.0.0.1": {
+                0: _make_endpoint(0, "10.0.0.1", EndpointStatus.NORMAL),
+            },
+        }
+        inst = _make_instance(1, "e2e-pause-resume", endpoints=endpoints_dict)
+        inst.status = InsStatus.ACTIVE
+
+        with (
+            patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
+            patch('threading.Thread') as mock_thread,
+            patch('motor.controller.core.instance_manager.EventPusher'),
+        ):
+            mock_etcd.return_value = MagicMock()
+            mock_thread.return_value = MagicMock()
+            InstanceManager._instances.clear()
+            im = InstanceManager(MagicMock())
+            mock_obs = MagicMock()
+            im.observers.append(mock_obs)
+
+            # --- Phase 1: Pause (ACTIVE → PAUSED) ---
+            for pod_eps in inst.endpoints.values():
+                for ep in pod_eps.values():
+                    ep.status = EndpointStatus.PAUSED
+
+            result = im._handle_state_transition(inst)
+            assert result is True
+            assert inst.status == InsStatus.PAUSED
+            mock_obs.update.assert_called_once()
+            assert mock_obs.update.call_args[0][1] == ObserverEvent.INSTANCE_PAUSED
+            mock_obs.reset_mock()
+
+            # --- Phase 2: Resume (PAUSED → ACTIVE) ---
+            for pod_eps in inst.endpoints.values():
+                for ep in pod_eps.values():
+                    ep.status = EndpointStatus.NORMAL
+
+            result = im._handle_state_transition(inst)
+            assert result is True
+            assert inst.status == InsStatus.ACTIVE
+            mock_obs.update.assert_called_once()
+            # Critical assertion: resume from PAUSED must emit RESUMED, not READY
+            assert mock_obs.update.call_args[0][1] == ObserverEvent.INSTANCE_RESUMED
+
+    def test_full_flow_cross_pod_both_resumed_emits_resumed(self):
+        """Cross-pod E2E: both pods paused then both resumed → INSTANCE_RESUMED event."""
+        from motor.controller.core.instance_manager import InstanceManager
+
+        endpoints_dict = {
+            "10.0.0.1": {0: _make_endpoint(0, "10.0.0.1", EndpointStatus.PAUSED)},
+            "10.0.0.2": {1: _make_endpoint(1, "10.0.0.2", EndpointStatus.PAUSED)},
+        }
+        inst = _make_instance(1, "cross-pod-resume", endpoints=endpoints_dict)
+        inst.status = InsStatus.PAUSED
+        assert inst.is_all_endpoints_paused() is True
+
+        with (
+            patch('motor.controller.core.instance_manager.EtcdClient') as mock_etcd,
+            patch('threading.Thread') as mock_thread,
+            patch('motor.controller.core.instance_manager.EventPusher'),
+        ):
+            mock_etcd.return_value = MagicMock()
+            mock_thread.return_value = MagicMock()
+            InstanceManager._instances.clear()
+            im = InstanceManager(MagicMock())
+            mock_obs = MagicMock()
+            im.observers.append(mock_obs)
+
+            # Resume both pods
+            for pod_eps in inst.endpoints.values():
+                for ep in pod_eps.values():
+                    ep.status = EndpointStatus.NORMAL
+
+            result = im._handle_state_transition(inst)
+            assert result is True
+            assert inst.status == InsStatus.ACTIVE
+            mock_obs.update.assert_called_once()
+            assert mock_obs.update.call_args[0][1] == ObserverEvent.INSTANCE_RESUMED

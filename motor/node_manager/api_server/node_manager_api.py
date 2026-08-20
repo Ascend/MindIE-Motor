@@ -400,7 +400,7 @@ class NodeManagerAPI:
 
             logger.info("Node Manager server started: https://%s", format_address(self.host, self.port))
         else:
-            logger.info("Node Manager server stated: http://%s", format_address(self.host, self.port))
+            logger.info("Node Manager server started: http://%s", format_address(self.host, self.port))
 
         self.server = uvicorn.Server(config)
         try:
