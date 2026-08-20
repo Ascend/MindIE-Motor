@@ -161,7 +161,11 @@ def _instance_from_dict(data: dict) -> Instance | None:
 
 
 def _serialize_instance_minimal(instance: Instance | None) -> dict:
-    """Serialize minimal fields for select/allocate result (forward and release); reduce ZMQ payload."""
+    """Serialize minimal fields for select/allocate result (forward and release); reduce ZMQ payload.
+
+    Must keep ``dispatch_capabilities``: ALLOCATE_ONLY responses are rebuilt into Instance on the
+    Worker and used by UnifiedPDRouter._select_coordination_mode (TRIGGER vs HANDOFF).
+    """
     if instance is None:
         return {}
     return {
@@ -170,6 +174,7 @@ def _serialize_instance_minimal(instance: Instance | None) -> dict:
         "job_name": instance.job_name,
         "model_name": instance.model_name,
         "engine_type": instance.engine_type,
+        "dispatch_capabilities": list(instance.dispatch_capabilities or []),
     }
 
 

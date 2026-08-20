@@ -89,6 +89,8 @@ class RequestInfo(BaseModel):
     _p_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
     _d_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
     _e_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
+    # Bound UnifiedPD trigger attempt; looked up by the Worker metaserver callback.
+    _trigger_attempt: object | None = PrivateAttr(default=None)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")

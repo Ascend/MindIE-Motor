@@ -18,10 +18,23 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from motor.common.constants import CHAT_COMPLETION_PREFIX, COMPLETION_PREFIX, COMPLETION_SUFFIX
+
 
 class CoordinationMode(str, Enum):
     HANDOFF = "handoff"
     BOOTSTRAP = "bootstrap"
+    TRIGGER = "trigger"
+
+
+def trim_vllm_engine_request_id(request_id: str) -> str:
+    """Strip vLLM/OpenAI prefixes so Coordinator can look up the original req_id."""
+    value = str(request_id or "").strip()
+    if value.startswith(CHAT_COMPLETION_PREFIX):
+        return value.removeprefix(CHAT_COMPLETION_PREFIX)
+    if value.startswith(COMPLETION_PREFIX) and value.endswith(COMPLETION_SUFFIX):
+        return value.removeprefix(COMPLETION_PREFIX).removesuffix(COMPLETION_SUFFIX)
+    return value
 
 
 @dataclass(frozen=True)
@@ -161,6 +174,42 @@ class VllmProtocolAdapter:
     def inject_request_id(self, body: dict[str, Any], request_id: str) -> None:
         body.pop("rid", None)
         body["request_id"] = request_id
+
+    def build_trigger_decode_request(
+        self,
+        request: Mapping[str, Any],
+        context: LegContext,
+        metaserver_url: str,
+    ) -> EngineRequest:
+        body = deepcopy(dict(request))
+        self.inject_request_id(body, context.engine_request_id)
+        body["kv_transfer_params"] = {
+            "do_remote_decode": False,
+            "do_remote_prefill": True,
+            "metaserver": metaserver_url,
+        }
+        return EngineRequest(api=context.api, body=body)
+
+    def build_trigger_prefill_request(
+        self,
+        request: Mapping[str, Any],
+        context: LegContext,
+        kv_transfer_params: Mapping[str, Any],
+    ) -> EngineRequest:
+        body = deepcopy(dict(request))
+        self.inject_request_id(body, context.engine_request_id)
+        body["stream"] = False
+        body["max_tokens"] = 1
+        body["min_tokens"] = 1
+        body.pop("stream_options", None)
+        if "max_completion_tokens" in body:
+            body["max_completion_tokens"] = 1
+        params = deepcopy(dict(kv_transfer_params))
+        params["do_remote_decode"] = True
+        params["do_remote_prefill"] = False
+        params.pop("metaserver", None)
+        body["kv_transfer_params"] = params
+        return EngineRequest(api=context.api, body=body)
 
     def build_abort_request(self, context: LegContext) -> EngineRequest | None:
         del context

@@ -44,6 +44,14 @@ def detect_family(host: str) -> int:
     return socket.AF_INET6 if _is_ipv6_literal(host) else socket.AF_INET
 
 
+def is_unspecified_host(host: str) -> bool:
+    """Return whether ``host`` is the IPv4 or IPv6 unspecified address."""
+    try:
+        return ipaddress.ip_address(_strip_brackets(host)).is_unspecified
+    except ValueError:
+        return False
+
+
 def format_host(host: str) -> str:
     """Wrap an IPv6 literal in brackets so it is safe to embed in URLs."""
     if not host:

@@ -584,9 +584,7 @@ class NodeManagerConfig:
                 native_engine_config,
                 explicit_profile=engine_config.get(DISPATCH_PROFILE_KEY),
             )
-            # The native vLLM runtime implements only the explicit handoff contract.
-            # Do not advertise trigger/concurrent support that runtime validation rejects.
-            capabilities = dispatch_capabilities_for_profile(profile) if profile == DispatchProfile.HANDOFF else []
+            capabilities = dispatch_capabilities_for_profile(profile)
             if not capabilities and profile == DispatchProfile.UNKNOWN:
                 logger.warning(
                     "Unable to infer vLLM dispatch capability from kv_transfer_config. "

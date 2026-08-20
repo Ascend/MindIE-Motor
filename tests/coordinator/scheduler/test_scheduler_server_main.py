@@ -193,14 +193,24 @@ class TestSerializeInstanceMinimal:
 
     def test_valid_instance_returns_minimal_fields(self):
         inst = _make_instance(7, (70,), role=PDRole.ROLE_D)
+        inst.dispatch_capabilities = ["concurrent_engine_sync"]
+        inst.engine_type = "vllm"
         result = _serialize_instance_minimal(inst)
         assert result["id"] == 7
         assert result["role"] == PDRole.ROLE_D
         assert result["job_name"] == inst.job_name
         assert result["model_name"] == "test_model"
-        assert result["engine_type"] is None
-        assert "dispatch_capabilities" not in result
-        assert len(result) == 5
+        assert result["engine_type"] == "vllm"
+        assert result["dispatch_capabilities"] == ["concurrent_engine_sync"]
+        assert len(result) == 6
+
+    def test_allocate_only_roundtrip_keeps_trigger_capability(self):
+        """ALLOCATE_ONLY minimal payload must keep caps so Worker can select TRIGGER."""
+        inst = _make_instance(8, (80,), role=PDRole.ROLE_D, engine_type="vllm")
+        inst.dispatch_capabilities = ["concurrent_engine_sync"]
+        restored = _instance_from_dict(_serialize_instance_minimal(inst))
+        assert restored is not None
+        assert restored.dispatch_capabilities == ["concurrent_engine_sync"]
 
 
 class TestSerializeEndpointMinimal:

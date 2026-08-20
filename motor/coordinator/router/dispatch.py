@@ -39,6 +39,8 @@ from motor.coordinator.domain.agent_hint import (
     parse_agent_hint,
     ensure_minimum_messages_for_session_edits,
 )
+from motor.coordinator.router.adapters.pd_protocol import trim_vllm_engine_request_id
+from motor.coordinator.router.dispatch_session import AttemptContext
 from motor.coordinator.router.strategies.base import BaseRouter
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
@@ -333,6 +335,75 @@ async def handle_request(
         )
         if isinstance(e, HTTPException):
             raise e
+        safe_error_msg = sanitize_error_message(str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg) from e
+
+
+def _parse_trigger_attempt_seq(raw_request: Request) -> int:
+    raw_value = raw_request.query_params.get("attempt")
+    if raw_value is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing attempt query parameter")
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid attempt query parameter",
+        ) from exc
+
+
+@with_cancellation
+async def handle_metaserver_request(
+    raw_request: Request,
+    config: CoordinatorConfig,
+    scheduler=None,
+    *,
+    request_manager: RequestManager,
+) -> dict:
+    """Handle Decode-side layerwise callback and forward Prefill to a scheduled P instance."""
+    try:
+        body = await raw_request.json()
+    except Exception as e:
+        logger.warning("Metaserver JSON parse failed: %s", e)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format") from e
+    if not isinstance(body, dict) or not body:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")
+
+    request_id = trim_vllm_engine_request_id(str(body.get("request_id") or ""))
+    if not request_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing request_id")
+    req_info = await request_manager.get_req_info(request_id)
+    if req_info is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Request ID {request_id} not found",
+        )
+
+    attempt_seq = _parse_trigger_attempt_seq(raw_request)
+    attempt = req_info._trigger_attempt
+    if not isinstance(attempt, AttemptContext):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trigger attempt not found")
+    if attempt.attempt_seq != attempt_seq:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger attempt callback")
+
+    if scheduler is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
+        )
+
+    router_impl = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+    try:
+        return await router_impl.handle_metaserver_request(body)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error occurred in metaserver endpoint: %s", e, exc_info=True)
         safe_error_msg = sanitize_error_message(str(e))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=safe_error_msg) from e
 

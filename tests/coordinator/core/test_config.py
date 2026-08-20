@@ -554,6 +554,43 @@ def test_config_validation_errors(param, value, expected_error):
         config.validate_config()
 
 
+def test_worker_metaserver_base_port_defaults_to_12000():
+    config = CoordinatorConfig()
+    assert config.inference_workers_config.worker_metaserver_base_port == 12000
+    config.validate_config()
+
+
+def test_worker_metaserver_base_port_zero_is_disabled():
+    config = CoordinatorConfig()
+    config.inference_workers_config.worker_metaserver_base_port = 0
+    config.validate_config()
+
+
+def test_worker_metaserver_base_port_overflow_is_rejected():
+    config = CoordinatorConfig()
+    config.inference_workers_config.num_workers = 4
+    config.inference_workers_config.worker_metaserver_base_port = 65534
+    with pytest.raises(ValueError, match="worker_metaserver_base_port \\+ num_workers - 1"):
+        config.validate_config()
+
+
+def test_worker_metaserver_startup_allows_unspecified_listen_host_without_pod_ip(monkeypatch):
+    """Listen 0.0.0.0 is valid; unreachable callback host is checked only on Trigger."""
+    monkeypatch.delenv("POD_IP", raising=False)
+    config = CoordinatorConfig()
+    config.api_config.coordinator_api_host = "0.0.0.0"
+
+    config.validate_config()
+
+
+def test_worker_metaserver_accepts_pod_ip_with_unspecified_listen_host(monkeypatch):
+    monkeypatch.setenv("POD_IP", "10.0.0.8")
+    config = CoordinatorConfig()
+    config.api_config.coordinator_api_host = "0.0.0.0"
+
+    config.validate_config()
+
+
 def test_config_validation_query_encoding_defaults_ok():
     """Default query_encoding (msgpack) and json both validate."""
     config = CoordinatorConfig()

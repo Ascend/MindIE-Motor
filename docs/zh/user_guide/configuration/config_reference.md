@@ -246,7 +246,8 @@ motor_coordinator_config字段配置样例如下所示：
     }
   },
   "inference_workers_config": {
-    "num_workers": 4
+    "num_workers": 4,
+    "worker_metaserver_base_port": 12000
   },
   "timeout_config": {
     "request_timeout": 30,
@@ -270,7 +271,8 @@ motor_coordinator_config字段配置样例如下所示：
       "/openapi.json",
       "/readiness",
       "/redoc",
-      "/startup"
+      "/startup",
+      "/v1/metaserver"
     ],
     "encryption_algorithm": "PBKDF2_SHA256"
   },
@@ -288,7 +290,8 @@ motor_coordinator_config字段配置样例如下所示：
       "/openapi.json",
       "/readiness",
       "/redoc",
-      "/startup"
+      "/startup",
+      "/v1/metaserver"
     ],
     "error_message": "too many requests, please try again later",
     "error_status_code": 429,
@@ -404,6 +407,7 @@ motor_coordinator_config字段配置样例如下所示：
 | w_disk | float | 互斥 Disk 命中块权重。默认值：`0.0` |
 | **inference_workers_config字段** |-|-|
 | num_workers | int | Coordinator中业务面worker个数，默认值：4。 |
+| worker_metaserver_base_port | int | vLLM layerwise/trigger PD 时每个 Inference Worker 的 metaserver 起始端口。默认值：`12000`。Worker `i` 监听 `base+i`，仅暴露 `POST /v1/metaserver`。设为 `0` 关闭。须保证 `base+num_workers-1 <= 65535`。同一集群不可混部 handoff 与 trigger。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`（不绑 loopback）。`coordinator_api_host=0.0.0.0`/`::` 仍可启动；走 Trigger 时须有 `POD_IP` 或可达的 `coordinator_api_host`，否则该请求返回 503。端口占用或 metaserver 启动失败时推理口继续服务，该 Worker 的 Trigger 请求返回 503。 |
 | **timeout_config字段** |-|-|
 | request_timeout | int | 单次 HTTP 请求超时时间（秒）。默认值：`30` |
 | connection_timeout | int | 建立连接的超时时间（秒）。默认值：`10` |
@@ -415,7 +419,7 @@ motor_coordinator_config字段配置样例如下所示：
 | valid_keys | array | 合法的 API Key 字符串列表。默认值：`[]` |
 | header_name | string | 携带 API Key 的 HTTP 头名称。默认值：`Authorization` |
 | key_prefix | string | 头中 Key 的前缀，如`Bearer`。默认值：`Bearer`|
-| skip_paths | array | 不校验 API Key 的路径列表（如 `/metrics`、`/liveness`、`/docs` 等），可自定义 |
+| skip_paths | array | 不校验 API Key 的路径列表（如 `/metrics`、`/liveness`、`/docs`、`/v1/metaserver` 等），可自定义。代码默认包含 `/v1/metaserver`（Decode layerwise 回调不带 Key）。 |
 | encryption_algorithm | string | Key 校验使用的加密算法，如 `PBKDF2_SHA256`。默认值：`PBKDF2_SHA256` |
 | **rate_limit_config字段** |-|-|
 | enable_rate_limit | bool | 是否开启请求限流。可选：`true` / `false`。默认值：`false` |
@@ -818,7 +822,7 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
-| dispatch_profile | string | 可选值为 `handoff` 或 `trigger`。当前原生 vLLM P/D 启动仅接受 `handoff`；SGLang 使用自身 bootstrap 协议。Prefill 与 Decode 两端应保持一致。 |
+| dispatch_profile | string | 可选值为 `handoff` 或 `trigger`。原生 vLLM P/D 同时接受二者：`handoff` 为 Prefill 完成后交给 Decode；`trigger` 为 Decode 先启动并经 Worker metaserver 触发 Prefill（`MooncakeLayerwiseConnector` 自动推导为 `trigger`）。SGLang 使用自身 bootstrap 协议。Prefill 与 Decode 两端应保持一致。 |
 
 >[!NOTE]说明
 > `dispatch_profile` 写在 `motor_engine_*_config` 顶层，不是在 `engine_config` 内部。`dispatch_capabilities` 为内部兼容字段，不支持用户直接填写。

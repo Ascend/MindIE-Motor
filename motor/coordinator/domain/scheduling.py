@@ -162,3 +162,7 @@ class SchedulingFacade(Protocol):
     async def get_unblocked_instances(self, role: PDRole) -> list[int]:
         """Return instance IDs of the given role that are NOT blocked by circuit breaker."""
         ...
+
+    async def get_local_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
+        """Return the local instance view; warm-up only when the cache is empty."""
+        ...

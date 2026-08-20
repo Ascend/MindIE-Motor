@@ -269,3 +269,58 @@ def test_sglang_abort_uses_native_request_id():
 
 def test_vllm_does_not_claim_an_unverified_abort_endpoint():
     assert VllmProtocolAdapter().build_abort_request(_context()) is None
+
+
+def test_trim_vllm_engine_request_id_strips_openai_prefixes():
+    from motor.coordinator.router.adapters.pd_protocol import trim_vllm_engine_request_id
+
+    assert trim_vllm_engine_request_id("chatcmpl-abc") == "abc"
+    assert trim_vllm_engine_request_id("cmpl-abc-0") == "abc"
+    assert trim_vllm_engine_request_id("raw-id") == "raw-id"
+
+
+def test_vllm_trigger_decode_request_keeps_generation_and_sets_metaserver():
+    adapter = VllmProtocolAdapter()
+    request = {
+        "model": "glm",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+        "max_tokens": 128,
+        "rid": "wrong",
+    }
+    original = deepcopy(request)
+
+    engine_request = adapter.build_trigger_decode_request(request, _context(), "http://127.0.0.1:12000/v1/metaserver")
+
+    assert request == original
+    assert engine_request.body["request_id"] == "engine-1"
+    assert engine_request.body["stream"] is True
+    assert engine_request.body["max_tokens"] == 128
+    assert engine_request.body["kv_transfer_params"] == {
+        "do_remote_decode": False,
+        "do_remote_prefill": True,
+        "metaserver": "http://127.0.0.1:12000/v1/metaserver",
+    }
+
+
+def test_vllm_trigger_prefill_request_uses_decode_kv_params():
+    adapter = VllmProtocolAdapter()
+    request = {"model": "glm", "messages": [], "stream": True, "max_tokens": 32, "max_completion_tokens": 16}
+    kv_params = {
+        "request_id": "engine-1",
+        "do_remote_decode": True,
+        "remote_block_ids": [1, 2],
+        "remote_host": "10.0.0.2",
+        "metaserver": "http://ignored",
+    }
+
+    engine_request = adapter.build_trigger_prefill_request(request, _context(), kv_params)
+
+    assert engine_request.body["stream"] is False
+    assert engine_request.body["max_tokens"] == 1
+    assert engine_request.body["min_tokens"] == 1
+    assert engine_request.body["max_completion_tokens"] == 1
+    assert engine_request.body["kv_transfer_params"]["do_remote_decode"] is True
+    assert engine_request.body["kv_transfer_params"]["do_remote_prefill"] is False
+    assert engine_request.body["kv_transfer_params"]["remote_block_ids"] == [1, 2]
+    assert "metaserver" not in engine_request.body["kv_transfer_params"]

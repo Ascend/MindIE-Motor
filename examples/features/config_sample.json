@@ -186,7 +186,8 @@
       }
     },
     "inference_workers_config": {
-      "num_workers": 4
+      "num_workers": 4,
+      "worker_metaserver_base_port": 12000
     },
     "timeout_config": {
       "request_timeout": 30,
@@ -210,7 +211,8 @@
         "/liveness",
         "/redoc",
         "/instances/refresh",
-        "/metrics"
+        "/metrics",
+        "/v1/metaserver"
       ],
       "encryption_algorithm": "PBKDF2_SHA256"
     },
@@ -228,7 +230,8 @@
         "/redoc",
         "/openapi.json",
         "/favicon.ico",
-        "/startup"
+        "/startup",
+        "/v1/metaserver"
       ],
       "error_message": "too many requests, please try again later",
       "error_status_code": 429,

@@ -169,7 +169,6 @@ def test_vllm_backend_accepts_multi_connector_with_handoff_transport():
 @pytest.mark.parametrize(
     "connector,profile",
     [
-        ("MooncakeLayerwiseConnector", "trigger"),
         ("UnknownConnector", "unknown"),
     ],
 )
@@ -186,7 +185,17 @@ def test_vllm_backend_rejects_non_handoff_pd_connector(connector, profile):
         VllmBackend().prepare(context)
 
 
-def test_vllm_backend_rejects_explicit_trigger_profile():
+def test_vllm_backend_accepts_layerwise_connector():
+    context = _context()
+    spec = _build_with_config(
+        VllmBackend(),
+        context,
+        _endpoint(engine_type="vllm", role="prefill", connector="MooncakeLayerwiseConnector"),
+    )
+    assert spec.argv[:2] == ("vllm", "serve")
+
+
+def test_vllm_backend_accepts_explicit_trigger_profile():
     context = _context()
     endpoint = _endpoint(
         engine_type="vllm",
@@ -195,13 +204,8 @@ def test_vllm_backend_rejects_explicit_trigger_profile():
     )
     endpoint.deploy_config.dispatch_profile = "trigger"
 
-    with (
-        patch(
-            "motor.node_manager.core.services.native_engine.backends.base.build_endpoint_config", return_value=endpoint
-        ),
-        pytest.raises(ValueError, match="resolved dispatch profile is trigger"),
-    ):
-        VllmBackend().prepare(context)
+    spec = _build_with_config(VllmBackend(), context, endpoint)
+    assert spec.argv[:2] == ("vllm", "serve")
 
 
 def test_vllm_backend_allows_union_without_kv_connector():

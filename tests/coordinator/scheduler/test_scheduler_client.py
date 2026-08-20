@@ -688,6 +688,48 @@ class TestAsyncSchedulerClient:
         assert result == {PDRole.ROLE_P, PDRole.ROLE_D}
         self.mock_transport.send_request.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_get_local_instances_uses_cache_without_transport(self):
+        """A warm cache is the local instance view; do not issue GET_AVAILABLE_INSTANCES."""
+        mock_p = _make_instance(1, "prefill")
+
+        def _get_instances_side_effect(role):
+            return [mock_p] if role == PDRole.ROLE_P else []
+
+        self.mock_cache.get_instances.side_effect = _get_instances_side_effect
+
+        result = await self.client.get_local_instances(PDRole.ROLE_P)
+
+        assert result[1] is mock_p
+        self.mock_transport.send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_local_instances_warms_up_when_cache_empty(self):
+        """An empty local view may warm-up once via GET_AVAILABLE_INSTANCES."""
+        inst_dict = _build_instance_dict(instance_id=7, role="prefill")
+        self._mock_send_request(
+            SchedulerResponseType.SUCCESS,
+            {"instances": [inst_dict]},
+        )
+        cached: dict[PDRole, list] = {
+            PDRole.ROLE_E: [],
+            PDRole.ROLE_P: [],
+            PDRole.ROLE_D: [],
+            PDRole.ROLE_U: [],
+        }
+
+        async def _replace_all(role, instances):
+            cached[role] = list(instances)
+
+        self.mock_cache.replace_all = AsyncMock(side_effect=_replace_all)
+        self.mock_cache.get_instances.side_effect = lambda role: cached.get(role, [])
+
+        result = await self.client.get_local_instances(PDRole.ROLE_P)
+
+        self.mock_transport.send_request.assert_awaited_once()
+        assert 7 in result
+        assert result[7].id == 7
+
     # -- test_has_required_instances ----------------------------------------
 
     @pytest.mark.asyncio

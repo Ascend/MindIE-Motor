@@ -24,6 +24,7 @@ except ImportError:
 from motor.common.http.cert_util import CertUtil
 from motor.common.utils.config_watcher import ConfigWatcher
 from motor.common.http.http_client import HTTPClientPool
+from motor.common.utils.env import Env
 from motor.common.utils.net import detect_family, format_address
 from motor.common.logger import get_logger, reconfigure_logging
 from motor.config.coordinator import CoordinatorConfig
@@ -40,6 +41,86 @@ def _socket_host(host: str) -> str:
     if host.startswith("[") and host.endswith("]"):
         return host[1:-1]
     return host
+
+
+def metaserver_bind_host(config: CoordinatorConfig) -> str:
+    """Listen address for the per-worker metaserver.
+
+    Prefer POD_IP so the socket is not bound on every interface when the infer
+    API listens on 0.0.0.0. Fall back to coordinator_api_host (not loopback)
+    so cross-node Decode callbacks still work without POD_IP.
+    """
+    return Env.pod_ip or config.api_config.coordinator_api_host
+
+
+def _disable_worker_metaserver(config: CoordinatorConfig) -> None:
+    """Drop this process's metaserver port so Trigger requests fail closed with 503."""
+    config.worker_metaserver_port = None
+
+
+async def serve_worker_metaserver(
+    server: Any,
+    config: CoordinatorConfig,
+    worker_index: int,
+    host: str,
+    port: int,
+) -> None:
+    """Run the per-worker metaserver without taking down the infer socket.
+
+    Bind/serve failures are logged and disable Trigger on this Worker. Handoff
+    traffic on the infer port must keep running (default base port 12000 can
+    collide with unrelated services).
+    """
+    try:
+        await server.serve()
+    except Exception as e:
+        logger.error(
+            "Worker %s: metaserver failed on %s:%s: %s; infer port continues, trigger PD will return 503",
+            worker_index,
+            host,
+            port,
+            e,
+            exc_info=True,
+        )
+        _disable_worker_metaserver(config)
+
+
+async def run_inference_and_metaserver(
+    infer_server: Any,
+    infer_sockets: list[socket.socket] | None,
+    metaserver_server: Any | None,
+    config: CoordinatorConfig,
+    worker_index: int,
+    metaserver_host: str,
+) -> None:
+    """Serve infer as the primary task; metaserver is a best-effort sidecar."""
+    infer_task = asyncio.create_task(
+        infer_server.serve(sockets=infer_sockets),
+        name=f"infer-{worker_index}",
+    )
+    meta_task: asyncio.Task | None = None
+    if metaserver_server is not None:
+        meta_port = config.worker_metaserver_port or 0
+        meta_task = asyncio.create_task(
+            serve_worker_metaserver(
+                metaserver_server,
+                config,
+                worker_index,
+                metaserver_host,
+                meta_port,
+            ),
+            name=f"metaserver-{worker_index}",
+        )
+    try:
+        await infer_task
+    finally:
+        if meta_task is not None and not meta_task.done() and metaserver_server is not None:
+            metaserver_server.should_exit = True
+            meta_task.cancel()
+            try:
+                await meta_task
+            except asyncio.CancelledError:
+                pass
 
 
 def run_inference_worker_proc(
@@ -65,8 +146,12 @@ def run_inference_worker_proc(
 
     # Set process title
     set_process_title(name=str(worker_index))
+    config.worker_index = worker_index
+    base_metaserver_port = config.inference_workers_config.worker_metaserver_base_port
+    if base_metaserver_port > 0:
+        config.worker_metaserver_port = base_metaserver_port + worker_index
 
-    logger.info(f"Inference worker process {worker_index} starting (PID: {os.getpid()})")
+    logger.info("Inference worker process %s starting (PID: %s)", worker_index, os.getpid())
 
     # Create RequestManager first, then InferenceServer (business plane only)
     request_manager = RequestManager(config)
@@ -125,9 +210,50 @@ def run_inference_worker_proc(
 
     # Create and run server(s)
     server = uvicorn.Server(uvicorn_config)
+    metaserver_server = None
+    metaserver_host = ""
+    if config.worker_metaserver_port:
+        metaserver_host = metaserver_bind_host(config)
+        metaserver_port = config.worker_metaserver_port
+        try:
+            metaserver_app = inference_server.create_metaserver_app()
+            metaserver_kwargs = InferenceServer.create_base_uvicorn_config(
+                metaserver_app,
+                metaserver_host,
+                metaserver_port,
+            )
+            metaserver_kwargs["lifespan"] = "off"
+            metaserver_config = uvicorn.Config(**metaserver_kwargs)
+            metaserver_config.load()
+            metaserver_server = uvicorn.Server(metaserver_config)
+            logger.info(
+                "Worker %s: metaserver port enabled: %s (base=%s bind_host=%s)",
+                worker_index,
+                metaserver_port,
+                base_metaserver_port,
+                metaserver_host,
+            )
+        except Exception as e:
+            logger.error(
+                "Worker %s: metaserver failed to initialize on %s:%s: %s; infer port continues, trigger PD will return 503",
+                worker_index,
+                metaserver_host,
+                metaserver_port,
+                e,
+                exc_info=True,
+            )
+            _disable_worker_metaserver(config)
+            metaserver_server = None
 
     async def _run_servers():
-        await server.serve(sockets=[sock] if sock else None)
+        await run_inference_and_metaserver(
+            server,
+            [sock] if sock else None,
+            metaserver_server,
+            config,
+            worker_index,
+            metaserver_host,
+        )
 
     try:
         # Run server with shared socket.

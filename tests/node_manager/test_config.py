@@ -700,7 +700,9 @@ def test_vllm_multi_connector_infers_transport_connector_capability():
     assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("NixlConnector")) == [
         DispatchPlan.PREFILL_HANDOFF_DECODE.value
     ]
-    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeLayerwiseConnector")) == []
+    assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeLayerwiseConnector")) == [
+        DispatchPlan.CONCURRENT_ENGINE_SYNC.value
+    ]
 
 
 def test_vllm_multi_connector_ignores_non_transport_connector_profiles():
@@ -720,7 +722,7 @@ def test_vllm_multi_connector_ignores_non_transport_connector_profiles():
         },
     }
 
-    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == []
+    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
 
 
 def test_vllm_multi_connector_requires_transport_and_store_connectors():
@@ -786,7 +788,7 @@ def test_user_dispatch_capabilities_cannot_enable_unknown_connector():
     assert config_data["basic_config"]["dispatch_capabilities"] == []
 
 
-def test_vllm_layerwise_connector_does_not_advertise_unsupported_native_capability():
+def test_vllm_layerwise_connector_advertises_concurrent_capability():
     capabilities = NodeManagerConfig._infer_dispatch_capabilities(
         {
             "engine_type": "vllm",
@@ -798,7 +800,7 @@ def test_vllm_layerwise_connector_does_not_advertise_unsupported_native_capabili
         }
     )
 
-    assert capabilities == []
+    assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
 
 
 def test_sglang_infers_concurrent_capability():

@@ -59,6 +59,7 @@ class AttemptContext:
     prefill_completed: bool = False
     decode_dispatched: bool = False
     decode_completed: bool = False
+    trigger_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     config: CoordinatorConfig | None = None
 
@@ -106,20 +107,31 @@ class AttemptContext:
 
     async def cancel(self, reason: str = ""):
         tasks = []
-        if self.prefill_task and not self.prefill_task.done() and not self.prefill_task.cancelled():
+        current_task = asyncio.current_task()
+        if (
+            self.prefill_task
+            and self.prefill_task is not current_task
+            and not self.prefill_task.done()
+            and not self.prefill_task.cancelled()
+        ):
             logger.info(
                 "Cancelling prefill task: %s %s because %s",
-                self.prefill_resource.endpoint.ip,
-                self.prefill_resource.instance.job_name,
+                self.prefill_resource.endpoint.ip if self.prefill_resource else "pending",
+                self.prefill_resource.instance.job_name if self.prefill_resource else "pending",
                 reason,
             )
             self.prefill_task.cancel(msg=reason)
             tasks.append(self.prefill_task)
-        if self.decode_task and not self.decode_task.done() and not self.decode_task.cancelled():
+        if (
+            self.decode_task
+            and self.decode_task is not current_task
+            and not self.decode_task.done()
+            and not self.decode_task.cancelled()
+        ):
             logger.info(
                 "Cancelling decode task: %s %s because %s",
-                self.decode_resource.endpoint.ip,
-                self.decode_resource.instance.job_name,
+                self.decode_resource.endpoint.ip if self.decode_resource else "pending",
+                self.decode_resource.instance.job_name if self.decode_resource else "pending",
                 reason,
             )
             self.decode_task.cancel(msg=reason)

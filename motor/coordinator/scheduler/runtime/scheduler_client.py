@@ -1383,6 +1383,26 @@ class AsyncSchedulerClient:
             cached = self._cache.get_instances(role)
         return [inst.id for inst in cached if inst.id not in self._cb_blocked_instances]
 
+    def _instances_from_cache(self, role: PDRole | None = None) -> dict[int, Instance]:
+        if role is not None:
+            return {inst.id: inst for inst in self._cache.get_instances(role)}
+        instances: dict[int, Instance] = {}
+        for cached_role in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
+            for inst in self._cache.get_instances(cached_role):
+                instances[inst.id] = inst
+        return instances
+
+    async def get_local_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
+        """Return cached instances; RPC warm-up only when the local view is empty."""
+        instances = self._instances_from_cache(role)
+        if instances:
+            return instances
+        try:
+            await self.get_available_instances(None)
+        except Exception as e:
+            logger.debug("get_local_instances: warm-up fetch failed: %s", e)
+        return self._instances_from_cache(role)
+
     async def has_required_instances(self) -> InstanceReadiness:
         """Return InstanceReadiness from cache; warm-up fetch if needed."""
 

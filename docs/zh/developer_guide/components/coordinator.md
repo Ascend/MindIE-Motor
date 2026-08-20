@@ -28,7 +28,7 @@ Coordinator 进程入口为 `motor/coordinator/main.py`：异步 `main()` 中构
 
 子进程由 `SubprocessSupervisor` 监控；Daemon 主循环中处理信号与退出（见 `CoordinatorDaemon.run` 后半部分）。
 
-推理面 OpenAI 兼容路径与 metaserver 行为见 [服务接口](../../user_guide/api/service_interfaces.md)。
+推理面 OpenAI 兼容路径见 [服务接口](../../user_guide/api/service_interfaces.md)。vLLM layerwise metaserver 行为见 [PD 分离](../../design/pd_disaggregation.md)。
 
 ### 路由前 Token 处理
 
@@ -50,7 +50,8 @@ KV Cache 亲和调度复用。Chat 请求带有需要服务端管理的 `agent_h
 请以 [配置参考](../../user_guide/configuration/config_reference.md) 中 **`motor_coordinator_config`** 章节为权威字段说明。代码中与 Daemon 强相关的包括：
 
 - `standby_config.enable_master_standby`：是否走主备与 Infer 启停分支。
-- `scheduler_config`：`deploy_mode`、`scheduler_type` 等，影响推理路由（见 [PD 分离](../../design/pd_disaggregation.md)）。
+- `scheduler_config`：`scheduler_type` 等。推理 Router 由当前实例角色与 `dispatch_capabilities` 动态选择，不再读取 `deploy_mode`（见 [PD 分离](../../design/pd_disaggregation.md)）。
+- `inference_workers_config.worker_metaserver_base_port`：vLLM layerwise/trigger 时每 Worker 独立 metaserver 端口；默认 `12000`，设为 `0` 关闭。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`。端口冲突时推理口继续，Trigger 返回 503。
 - `api_config`：推理端口、管理端口等（与 `interface_description.md` 一致处为准）。
 
 ## 使用样例

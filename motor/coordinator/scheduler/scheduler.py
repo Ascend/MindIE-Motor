@@ -232,6 +232,10 @@ class Scheduler:
         """
         return dict(self._instance_provider.get_available_instances(role))
 
+    async def get_local_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
+        """Return the in-process instance view without going through GET_AVAILABLE_INSTANCES."""
+        return dict(self._instance_provider.get_available_instances(role))
+
     async def get_available_instance_roles(self) -> set[PDRole]:
         """Return roles from the in-process instance provider without scheduler IPC."""
         roles: set[PDRole] = set()

@@ -11,7 +11,7 @@
 import asyncio
 import time
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -20,7 +20,10 @@ from fastapi.responses import JSONResponse, Response
 
 import motor.common.utils.error as cancel_error
 from motor.common.utils.error import RequestCancelledError
+from motor.common.utils.env import Env
+from motor.common.utils.net import format_address, is_unspecified_host
 from motor.common.resources.endpoint import WorkloadAction
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import PDRole
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import (
@@ -57,6 +60,7 @@ from motor.coordinator.router.adapters.pd_protocol import (
     LegContext,
     PDProtocolAdapter,
     PrefillMetadata,
+    VllmProtocolAdapter,
 )
 from motor.coordinator.router.adapters.stream import (
     parse_stream_chunk_json,
@@ -75,6 +79,8 @@ from motor.coordinator.router.upstream_error import (
 )
 
 _SGLANG_PROTOCOL_ADAPTER = ADAPTERS["sglang"]
+_TRIGGER_CAPABILITY = DispatchPlan.CONCURRENT_ENGINE_SYNC.value
+_HANDOFF_CAPABILITY = DispatchPlan.PREFILL_HANDOFF_DECODE.value
 
 
 @dataclass(frozen=True)
@@ -152,6 +158,7 @@ class UnifiedPDRouter(BaseRouter):
         self._stream_body_sent = False
         self._active_retry_plan: RetryRequestPlan | None = None
         self._hybrid_stream_fallback_attempted = False  # A request is only allowed to fallback once.
+        self._pd_uses_trigger: bool | None = None
         # Task -> its bookkeeping record (dedup key, logging context, computed work item).
         self._release_records: dict[asyncio.Task[bool], _ReleaseTaskRecord] = {}
         # Dedup reverse index: release key -> the single in-flight task for that key.
@@ -229,22 +236,23 @@ class UnifiedPDRouter(BaseRouter):
 
     @staticmethod
     def _adapter_for_attempt(attempt: AttemptContext | None) -> PDProtocolAdapter | None:
-        if attempt is None or attempt.prefill_resource is None:
+        if attempt is None:
             return None
-        engine_type = getattr(attempt.prefill_resource.instance, "engine_type", None)
+        resource = attempt.prefill_resource or attempt.decode_resource
+        if resource is None:
+            return None
+        engine_type = getattr(resource.instance, "engine_type", None)
         if not isinstance(engine_type, str):
             return None
-        normalized = engine_type.strip().lower()
-        return ADAPTERS.get(normalized)
+        return ADAPTERS.get(engine_type.strip().lower())
 
     @staticmethod
     def _require_adapter_for_attempt(attempt: AttemptContext) -> PDProtocolAdapter:
         adapter = UnifiedPDRouter._adapter_for_attempt(attempt)
         if adapter is not None:
             return adapter
-        engine_type = None
-        if attempt.prefill_resource is not None:
-            engine_type = getattr(attempt.prefill_resource.instance, "engine_type", None)
+        resource = attempt.prefill_resource or attempt.decode_resource
+        engine_type = getattr(resource.instance, "engine_type", None) if resource is not None else None
         raise RuntimeError(f"Unsupported native engine type for P/D coordination: {engine_type!r}")
 
     @staticmethod
@@ -280,8 +288,12 @@ class UnifiedPDRouter(BaseRouter):
     async def handle_request(self) -> Response:
         await self.do_encode()
         self.is_meta = False
+        uses_trigger = await self._pd_cluster_uses_trigger()
+        if uses_trigger:
+            self._ensure_trigger_metaserver()
         if self.req_info.req_data.get("stream", False):
-            self._stream_commit_controller = StreamCommitController.requiring({"prefill", "decode"})
+            commit_parts = {"decode"} if uses_trigger else {"prefill", "decode"}
+            self._stream_commit_controller = StreamCommitController.requiring(commit_parts)
             return CommitAwareStreamingResponse(
                 self._generate_stream_response(),
                 self._stream_commit_controller,
@@ -638,6 +650,11 @@ class UnifiedPDRouter(BaseRouter):
 
     async def _create_attempt(self, session: PDDispatchSession) -> AttemptContext:
         attempt_seq = session._attempt_seq + 1
+        if await self._pd_cluster_uses_trigger():
+            self._ensure_trigger_metaserver()
+            d_resource = await self._prepare_attempt_resource(PDRole.ROLE_D, attempt_seq)
+            return session.new_attempt(None, d_resource, self.config)
+
         p_resource = await self._prepare_attempt_resource(PDRole.ROLE_P, attempt_seq)
 
         # Handoff connectors (CPCD-style) do not need a concrete decode endpoint while prefill runs.
@@ -675,11 +692,93 @@ class UnifiedPDRouter(BaseRouter):
         adapter = ADAPTERS.get(engine_type.strip().lower())
         return adapter is not None and adapter.coordination_mode == CoordinationMode.HANDOFF
 
+    async def _pd_cluster_uses_trigger(self) -> bool:
+        if self._pd_uses_trigger is not None:
+            return self._pd_uses_trigger
+        self._pd_uses_trigger = await self._detect_vllm_trigger_cluster()
+        return self._pd_uses_trigger
+
+    async def _detect_vllm_trigger_cluster(self) -> bool:
+        p_plans = await self._vllm_dispatch_plans(PDRole.ROLE_P)
+        d_plans = await self._vllm_dispatch_plans(PDRole.ROLE_D)
+        combined = p_plans | d_plans
+        if not combined:
+            return False
+        if _TRIGGER_CAPABILITY in combined and _HANDOFF_CAPABILITY in combined:
+            raise HTTPException(
+                status_code=503,
+                detail="Mixed vLLM handoff and layerwise/trigger P/D instances are not supported",
+            )
+        return combined == {_TRIGGER_CAPABILITY}
+
+    async def _vllm_dispatch_plans(self, role: PDRole) -> set[str]:
+        get_instances = getattr(self._scheduler, "get_local_instances", None)
+        if get_instances is None:
+            get_instances = getattr(self._scheduler, "get_available_instances", None)
+        if get_instances is None:
+            return set()
+        get_unblocked = getattr(self._scheduler, "get_unblocked_instances", None)
+        unblocked_ids = set(await get_unblocked(role)) if get_unblocked is not None else None
+        instances = await get_instances(role)
+        plans: set[str] = set()
+        for inst in instances.values():
+            if unblocked_ids is not None and inst.id not in unblocked_ids:
+                continue
+            if str(getattr(inst, "engine_type", "") or "").strip().lower() != "vllm":
+                continue
+            caps = list(getattr(inst, "dispatch_capabilities", None) or [])
+            if _TRIGGER_CAPABILITY in caps:
+                plans.add(_TRIGGER_CAPABILITY)
+            else:
+                plans.add(_HANDOFF_CAPABILITY)
+        return plans
+
+    def _ensure_trigger_metaserver(self) -> None:
+        port = getattr(self.config, "worker_metaserver_port", None)
+        if not isinstance(port, int) or isinstance(port, bool) or port <= 0:
+            raise HTTPException(
+                status_code=503,
+                detail=("layerwise/trigger PD requires inference_workers_config.worker_metaserver_base_port > 0"),
+            )
+
+    def _trigger_metaserver_url(self, attempt: AttemptContext) -> str:
+        host = Env.pod_ip or self.config.api_config.coordinator_api_host
+        if is_unspecified_host(host):
+            self.logger.error(
+                "Trigger metaserver callback host is unreachable: advertised_host=%s. "
+                "Wildcard listen addresses (0.0.0.0/::) cannot be used as Decode callback targets; "
+                "set POD_IP or a concrete coordinator_api_host",
+                host,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Trigger metaserver requires POD_IP or a concrete coordinator_api_host",
+            )
+        port = self.config.worker_metaserver_port
+        return f"http://{format_address(host, port)}/v1/metaserver?attempt={attempt.attempt_seq}"
+
+    def _bind_trigger_attempt(self, attempt: AttemptContext) -> None:
+        self.req_info._trigger_attempt = attempt
+
+    def _trigger_decode_request_for_attempt(self, attempt: AttemptContext) -> tuple[dict[str, Any], str]:
+        adapter = self._require_adapter_for_attempt(attempt)
+        if not isinstance(adapter, VllmProtocolAdapter):
+            raise RuntimeError(f"Trigger decode requires vLLM adapter, got {adapter.engine_type}")
+        req, api = self._base_request_for_attempt(PDRole.ROLE_D)
+        context = replace(
+            self._native_leg_context(attempt, PDRole.ROLE_D, api),
+            engine_request_id=self.req_info.req_id,
+        )
+        engine_request = adapter.build_trigger_decode_request(req, context, self._trigger_metaserver_url(attempt))
+        return engine_request.body, engine_request.api
+
     async def _run_stream_attempt(
         self, attempt: AttemptContext, coordination_mode: CoordinationMode
     ) -> AsyncGenerator[str, None]:
         if coordination_mode == CoordinationMode.HANDOFF:
             run_func = self._run_handoff_stream_attempt
+        elif coordination_mode == CoordinationMode.TRIGGER:
+            run_func = self._run_trigger_stream_attempt
         else:
             run_func = self._run_bootstrap_stream_attempt
         async with aclosing(run_func(attempt)) as attempt_stream:
@@ -930,8 +1029,135 @@ class UnifiedPDRouter(BaseRouter):
     ) -> dict[str, Any]:
         if coordination_mode == CoordinationMode.HANDOFF:
             return await self._run_handoff_nonstream_attempt(attempt)
-        else:
-            return await self._run_bootstrap_nonstream_attempt(attempt)
+        if coordination_mode == CoordinationMode.TRIGGER:
+            return await self._run_trigger_nonstream_attempt(attempt)
+        return await self._run_bootstrap_nonstream_attempt(attempt)
+
+    async def _run_trigger_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
+        self._bind_trigger_attempt(attempt)
+        attempt.transition(AttemptState.ACTIVE)
+        d_req, d_api = self._trigger_decode_request_for_attempt(attempt)
+        stream_adapter_state = {}
+        sampling_state = self._init_sampling_state()
+        async with self._client_for(attempt.decode_resource) as d_client:
+            async with aclosing(
+                self._run_stream_decode_phase(
+                    attempt,
+                    d_client,
+                    d_api,
+                    d_req,
+                    stream_adapter_state,
+                    sampling_state=sampling_state,
+                )
+            ) as decode_stream:
+                async for chunk in decode_stream:
+                    yield chunk
+
+    async def _run_trigger_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
+        self._bind_trigger_attempt(attempt)
+        attempt.transition(AttemptState.ACTIVE)
+        d_req, d_api = self._trigger_decode_request_for_attempt(attempt)
+        sampling_state = self._init_sampling_state()
+        async with self._client_for(attempt.decode_resource) as d_client:
+            return await self._await_nonstream_decode(
+                attempt,
+                d_api,
+                d_req,
+                d_client,
+                sampling_state=sampling_state,
+            )
+
+    async def handle_metaserver_request(self, kv_transfer_params: dict[str, Any]) -> dict[str, Any]:
+        """Forward Decode's layerwise metaserver callback to a scheduled Prefill instance."""
+        t0_metaserver = time.perf_counter()
+        attempt = self.req_info._trigger_attempt
+        if not isinstance(attempt, AttemptContext):
+            raise HTTPException(status_code=404, detail="Trigger attempt not found")
+        async with attempt.trigger_lock:
+            if self.req_info.is_cancelled:
+                raise HTTPException(status_code=409, detail="Request already cancelled")
+            if attempt.state in (AttemptState.STOPPING, AttemptState.STOPPED, AttemptState.DONE):
+                raise HTTPException(status_code=409, detail="Trigger attempt is no longer active")
+            if attempt.decode_resource is None:
+                raise HTTPException(status_code=409, detail="Trigger decode resource is missing")
+            if attempt.prefill_completed:
+                return {}
+            if attempt.prefill_dispatched:
+                raise HTTPException(status_code=409, detail="Prefill dispatch did not complete")
+
+            adapter = self._require_adapter_for_attempt(attempt)
+            if not isinstance(adapter, VllmProtocolAdapter):
+                raise HTTPException(status_code=500, detail="Trigger metaserver requires vLLM")
+
+            current_task = asyncio.current_task()
+            if current_task is None:
+                raise RuntimeError("Metaserver callback must run in an asyncio task")
+            attempt.register_prefill_task(current_task)
+            p_instance_id = None
+            try:
+                if attempt.prefill_resource is None:
+                    attempt.prefill_resource = await self._prepare_attempt_resource(
+                        PDRole.ROLE_P,
+                        attempt.attempt_seq,
+                        required_engine_type=str(attempt.decode_resource.instance.engine_type),
+                    )
+                if self.req_info.is_cancelled or attempt.state in (
+                    AttemptState.STOPPING,
+                    AttemptState.STOPPED,
+                    AttemptState.DONE,
+                ):
+                    raise HTTPException(status_code=409, detail="Trigger attempt is no longer active")
+
+                req, api = self._base_request_for_attempt(PDRole.ROLE_P)
+                context = replace(
+                    self._native_leg_context(attempt, PDRole.ROLE_P, api),
+                    engine_request_id=self.req_info.req_id,
+                )
+                engine_request = adapter.build_trigger_prefill_request(req, context, kv_transfer_params)
+                p_instance_id = attempt.prefill_resource.instance.id
+                async with self._client_for(attempt.prefill_resource) as p_client:
+                    attempt.register_canceller()
+                    attempt.mark_dispatched(PDRole.ROLE_P.value)
+                    response = await self.forward_request(
+                        engine_request.api,
+                        engine_request.body,
+                        p_client,
+                        self.config.exception_config.first_token_timeout,
+                    )
+                    attempt.mark_completed(PDRole.ROLE_P.value)
+                    body = response.json()
+                    self._record_prefill_complete(body)
+                    await self._scheduler.report_cb_event(p_instance_id, "success")
+                    self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
+                    elapsed_ms = (time.perf_counter() - t0_metaserver) * 1000
+                    self.logger.info(
+                        "Scheduling latency stage=metaserver_request_total elapsed_ms=%.2f role=ROLE_P req_id=%s",
+                        elapsed_ms,
+                        self.req_info.req_id,
+                    )
+                    return body
+            except asyncio.CancelledError:
+                self.logger.info("Metaserver request was cancelled req_id=%s", self.req_info.req_id)
+                if attempt.state not in (AttemptState.STOPPING, AttemptState.STOPPED, AttemptState.DONE):
+                    await self._stop_attempt(attempt, AttemptStopReason.PEER_FAILED)
+                raise
+            except Exception as e:
+                elapsed_ms = (time.perf_counter() - t0_metaserver) * 1000
+                self.logger.warning(
+                    "Scheduling latency stage=metaserver_request_total elapsed_ms=%.2f error=%s req_id=%s",
+                    elapsed_ms,
+                    e,
+                    self.req_info.req_id,
+                )
+                if p_instance_id is not None and is_cb_reportable_failure(e):
+                    await self._scheduler.report_cb_event(p_instance_id, "failure")
+                if isinstance(e, UpstreamHTTPError):
+                    attempt.mark_completed(PDRole.ROLE_P.value)
+                await self._stop_attempt(attempt, AttemptStopReason.PEER_FAILED)
+                raise
+            finally:
+                if attempt.prefill_task is current_task:
+                    attempt.prefill_task = None
 
     async def _run_bootstrap_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
@@ -1281,15 +1507,47 @@ class UnifiedPDRouter(BaseRouter):
 
     def _select_coordination_mode(self, attempt: AttemptContext) -> CoordinationMode:
         adapter = self._require_adapter_for_attempt(attempt)
-        if adapter.coordination_mode == CoordinationMode.BOOTSTRAP and attempt.decode_resource is None:
-            raise RuntimeError(f"{adapter.engine_type} bootstrap requires a decode instance")
-        if attempt.decode_resource is not None:
+        if adapter.coordination_mode == CoordinationMode.BOOTSTRAP:
+            if attempt.decode_resource is None:
+                raise RuntimeError(f"{adapter.engine_type} bootstrap requires a decode instance")
+            if attempt.prefill_resource is not None:
+                decode_engine_type = getattr(attempt.decode_resource.instance, "engine_type", None)
+                if not isinstance(decode_engine_type, str) or decode_engine_type.strip().lower() != adapter.engine_type:
+                    raise RuntimeError(
+                        f"P/D engine types must match: prefill={adapter.engine_type}, decode={decode_engine_type!r}"
+                    )
+            return CoordinationMode.BOOTSTRAP
+        # Prefer cluster detection already done in create_attempt: ALLOCATE_ONLY historically
+        # dropped dispatch_capabilities, which would otherwise fall back to adapter HANDOFF.
+        if self._pd_uses_trigger:
+            return self._require_trigger_decode(attempt)
+        resource = attempt.prefill_resource or attempt.decode_resource
+        caps = list(getattr(resource.instance, "dispatch_capabilities", None) or []) if resource is not None else []
+        if _TRIGGER_CAPABILITY in caps:
+            return self._require_trigger_decode(attempt)
+        if attempt.decode_resource is not None and attempt.prefill_resource is not None:
             decode_engine_type = getattr(attempt.decode_resource.instance, "engine_type", None)
             if not isinstance(decode_engine_type, str) or decode_engine_type.strip().lower() != adapter.engine_type:
                 raise RuntimeError(
                     f"P/D engine types must match: prefill={adapter.engine_type}, decode={decode_engine_type!r}"
                 )
         return adapter.coordination_mode
+
+    def _require_trigger_decode(self, attempt: AttemptContext) -> CoordinationMode:
+        if attempt.decode_resource is None:
+            self.logger.error(
+                "Trigger mode selected without a decode resource req_id=%s attempt=%s",
+                self.req_info.req_id,
+                attempt.attempt_seq,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Trigger P/D requires a decode instance; cluster detection and "
+                    "allocated instance capabilities are inconsistent"
+                ),
+            )
+        return CoordinationMode.TRIGGER
 
     async def _prepare_attempt_resource(
         self,
@@ -1316,15 +1574,18 @@ class UnifiedPDRouter(BaseRouter):
                 raise HTTPException(status_code=503, detail=error_message)
             raise RuntimeError(error_message)
         ins, endpoint, workload = result
-        await self._record_attempt_workload(attempt_seq, role, workload)
-        self.req_info.update_state(ReqState.P_ALLOCATED if role == PDRole.ROLE_P else ReqState.D_ALLOCATED)
-        return ScheduledResource(instance=ins, endpoint=endpoint)
-
-    async def _record_attempt_workload(self, attempt_seq: int, role: PDRole, workload) -> None:
-        if not await self._request_manager.add_req_attempt_workload(self.req_info.req_id, attempt_seq, role, workload):
+        if not await self._request_manager.add_req_attempt_workload(
+            self.req_info.req_id,
+            attempt_seq,
+            role,
+            workload,
+        ):
+            await self._rollback_allocated_workload(ins, endpoint, role, workload)
             raise RuntimeError(
                 f"Request {self.req_info.req_id} already allocated for attempt {attempt_seq} role {role}"
             )
+        self.req_info.update_state(ReqState.P_ALLOCATED if role == PDRole.ROLE_P else ReqState.D_ALLOCATED)
+        return ScheduledResource(instance=ins, endpoint=endpoint)
 
     async def _release_attempt(self, attempt: AttemptContext, *, wait: bool = True) -> None:
         if attempt.prefill_resource:

@@ -11,6 +11,8 @@
 """
 Inference plane: Worker subprocess only; provides /v1/completions, /v1/chat/completions,
 /v1/responses, /v1/messages, /v1/messages/count_tokens, /v1/models, etc.
+Dedicated per-worker metaserver (POST /v1/metaserver) is served on worker_metaserver_port
+when inference_workers_config.worker_metaserver_base_port > 0.
 """
 
 import asyncio
@@ -37,7 +39,7 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
-from motor.coordinator.router.dispatch import handle_request
+from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.agent_hint import agent_hint_implies_manage_request
 
@@ -164,6 +166,21 @@ class InferenceServer(BaseCoordinatorServer):
     def app(self) -> FastAPI:
         """Inference FastAPI app, run by process_worker with uvicorn."""
         return self._inference_app
+
+    def create_metaserver_app(self) -> FastAPI:
+        """Dedicated per-worker app for Decode layerwise callbacks. No API key / TLS."""
+        app = FastAPI(title="Inference Worker Metaserver")
+
+        @app.post("/v1/metaserver")
+        async def metaserver(request: Request):
+            return await handle_metaserver_request(
+                request,
+                self.coordinator_config,
+                scheduler=self._get_scheduler_client(),
+                request_manager=self._request_manager,
+            )
+
+        return app
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):

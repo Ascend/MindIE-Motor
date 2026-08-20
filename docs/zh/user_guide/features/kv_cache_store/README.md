@@ -108,7 +108,7 @@ KV池化主要通过 `user_config.json` 配置；使用 UCM 功能时还需要�
 | [MemCache](backend/memcache.md) | `memcache` | 默认后端，天然支持，无需额外安装 |
 | Yuanrong | `yuanrong` | TODO：后续版本支持 |
 
-> 关于 Connector 的 handoff 白名单和 `MultiConnector` 传输层规则，请参见 [PD 分离特性说明](../../../design/pd_disaggregation.md#connector-驱动执行计划)。
+> 关于 Connector 的识别白名单和 `MultiConnector` 传输层规则，请参见 [PD 分离特性说明](../../../design/pd_disaggregation.md#connector-驱动执行计划)。
 
 #### kv_cache_store_config（全局配置）
 
@@ -201,7 +201,7 @@ KV池化主要通过 `user_config.json` 配置；使用 UCM 功能时还需要�
 > - InferServiceSet 模板中若无 `kv-store` role（未使用 KV 池化的精简模板），deployer 会跳过 kv_store 域名解析，不影响部署。
 > - 使用 `--update_instance_num` 扩缩容时，multi_deployment 模式同样会解析 `target_job_id`，确保新扩容的 engine Pod 能连上正确的 kv_store。
 
-### 使用 `UCMConnector` 
+### 使用 `UCMConnector`
 
 UCM  属于 KV池化功能，但不复用 `AscendStoreConnector` 的 backend 机制，而是通过 `UCMConnector` 接入：
 

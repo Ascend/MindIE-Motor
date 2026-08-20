@@ -144,6 +144,7 @@ def _default_skip_paths() -> set[str]:
         "/redoc",
         "/openapi.json",
         "/favicon.ico",
+        "/v1/metaserver",
     }
 
 
@@ -157,6 +158,7 @@ def default_rate_limit_skip_paths() -> list[str]:
         "/openapi.json",
         "/favicon.ico",
         "/startup",
+        "/v1/metaserver",
     ]
 
 
@@ -481,6 +483,8 @@ class APIKeyConfig:
 @dataclass
 class InferenceWorkersConfig:
     num_workers: int = 4  # Number of inference API worker processes; >1 = multiprocess
+    # Base port for per-worker metaserver; 0=disabled. Worker i listens on base+i.
+    worker_metaserver_base_port: int = 12000
 
 
 @dataclass
@@ -621,6 +625,7 @@ class CoordinatorConfig:
     last_modified: float | None = field(default=None, init=False)
     _errors: list[str] = field(default_factory=list, init=False)
     worker_index: int | None = field(default=None, repr=False)
+    worker_metaserver_port: int | None = field(default=None, repr=False)
 
     def __post_init__(self):
         """Validate configuration after initialization"""
@@ -831,6 +836,7 @@ class CoordinatorConfig:
             self.inference_workers_config.num_workers,
             "num_workers",
         )
+        self._validate_worker_metaserver_ports()
 
         # Validate scheduler score configuration
         self._validate_positive_number(
@@ -1001,7 +1007,7 @@ class CoordinatorConfig:
         return reload_dataclass_config_from_json(
             self,
             self.from_json,
-            skip=frozenset({"worker_index"}),
+            skip=frozenset({"worker_index", "worker_metaserver_port"}),
             skip_private=True,
         )
 
@@ -1093,7 +1099,9 @@ class CoordinatorConfig:
             f"    └─ Context Budget Mode:        {self.context_budget_mode}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
-            f"    └─ Num Workers: {self.inference_workers_config.num_workers}\n"
+            f"    ├─ Num Workers: {self.inference_workers_config.num_workers}\n"
+            f"    └─ Worker Metaserver Base: "
+            f"{self.inference_workers_config.worker_metaserver_base_port or 'disabled'}\n"
             "\n"
             "  Security:\n"
             f"    ├─ Infer TLS:           {'Enabled' if self.infer_tls_config.enable_tls else 'Disabled'}\n"
@@ -1124,6 +1132,18 @@ class CoordinatorConfig:
             self._errors.append(f"{field_name} cannot be negative")
         elif not allow_zero and value <= 0:
             self._errors.append(f"{field_name} must be greater than 0")
+
+    def _validate_worker_metaserver_ports(self) -> None:
+        """Allow 0 (disabled); otherwise each worker port must fit in 1-65535."""
+        base_port = self.inference_workers_config.worker_metaserver_base_port
+        if base_port == 0:
+            return
+        if not isinstance(base_port, int) or isinstance(base_port, bool) or base_port < 1:
+            self._errors.append("worker_metaserver_base_port must be 0 or a TCP port in 1-65535")
+            return
+        last_port = base_port + self.inference_workers_config.num_workers - 1
+        if last_port > 65535:
+            self._errors.append("worker_metaserver_base_port + num_workers - 1 must be in range 1-65535")
 
     def _validate_port_range(self, port: int, field_name: str) -> None:
         """Validate that a port number is in valid range (1-65535)"""

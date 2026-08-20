@@ -159,6 +159,30 @@ no routable topology at all                         → HTTP 503
 - `PDHybridRouter` (strategies/pd_hybrid.py): single instance runs prefill+decode together; also the degradation target when PD separation is unavailable (e.g., P/D instances circuit-broken or advertising no shared dispatch).
 - Both subclass `BaseRouter` (strategies/base.py); `_is_pd_hybrid_deploy` / `_is_pd_separation_fallback_to_hybrid_enabled` gates fallback (config `scheduler_config.enable_pd_separation_fallback_to_hybrid`, default true).
 
+**vLLM P/D coordination modes** (`UnifiedPDRouter`):
+
+| Instance `dispatch_capabilities` | Mode | Order |
+|---|---|---|
+| homogeneous `prefill_handoff_decode` | HANDOFF | allocate P → prefill → allocate D → decode |
+| homogeneous `concurrent_engine_sync` (vLLM layerwise / `dispatch_profile=trigger`) | TRIGGER | allocate D first → decode with `do_remote_prefill` + `metaserver` → D POSTs Worker `/v1/metaserver` → same Worker allocates P and forwards prefill |
+| mixed handoff + trigger in one cluster | — | HTTP 503 |
+
+Mode selection uses allocated-instance `dispatch_capabilities` **and** cluster detection from the Worker-local instance cache (`get_local_instances`). That cache already holds `dispatch_capabilities`; SHM only has workload numbers. `GET_AVAILABLE_INSTANCES` remains a force-refresh RPC and must not run on every request. `ALLOCATE_ONLY` responses go through `_serialize_instance_minimal`, which must keep `dispatch_capabilities` (not only `id/role/job_name/model_name/engine_type`); otherwise Worker rebuilds empty caps and falls back to adapter HANDOFF while still allocating Decode first. If the selected mode is TRIGGER but the attempt has no decode resource (handoff-style P-first / D-deferred), fail closed with HTTP 503 — do not return TRIGGER and then `RuntimeError` into retry→500.
+
+SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is unchanged.
+
+**Trigger metaserver (per Worker, not on the infer port):**
+
+- `RequestInfo` is process-local. Infer workers share `coordinator_api_infer_port` via `SO_REUSEPORT`, so Decode's metaserver callback cannot land on the infer socket.
+- `inference_workers_config.worker_metaserver_base_port` default **12000**. Worker `i` listens on `base+i`; set to `0` to disable.
+- Dedicated uvicorn app (`InferenceServer.create_metaserver_app()`) exposes only `POST /v1/metaserver` — no API key, no infer TLS (`lifespan=off`). Default API-key / rate-limit skip sets include `/v1/metaserver`. Decode engine callbacks have no API key; do not require one on this socket. Infer is the primary uvicorn; metaserver is a sidecar. Bind/init/`serve()` failure logs ERROR, clears this process's `worker_metaserver_port`, and leaves the infer port running. Trigger requests then 503 via `_ensure_trigger_metaserver`. Infer exit sets `should_exit` and cancels the sidecar.
+- The metaserver listen host prefers `POD_IP` when set, otherwise `api_config.coordinator_api_host` (same fallback as the advertised callback URL). Do not bind loopback: Decode may run on another node. Infer uvicorn still listens on `coordinator_api_host`.
+- The callback URL advertises `POD_IP` when available, otherwise `api_config.coordinator_api_host`; IPv6 literals are RFC 3986 bracketed. `0.0.0.0`/`::` remain valid listen hosts at startup (including default `worker_metaserver_base_port=12000`). Trigger rejects them as advertised callback addresses when `POD_IP` is absent (HTTP 503 + error log), because wildcard listen addresses are not routable Decode callback destinations.
+- Callback `request_id` is trimmed (`chatcmpl-` / `cmpl-…-0`) then looked up in that Worker's `RequestManager`. Query `?attempt=` must match the bound attempt (404 unknown request, 409 stale attempt).
+- Each trigger attempt serializes callbacks with `AttemptContext.trigger_lock`. The active callback is registered as the attempt's Prefill task so disconnect/Decode failure during TTFT cancels it; a retry after Prefill completion returns idempotent success without allocating P again.
+- If Scheduler allocation succeeds but Worker-local attempt workload registration fails, the allocation is rolled back directly with the returned workload delta.
+- Runtime field `CoordinatorConfig.worker_metaserver_port` is per-process (`base+worker_index`) and is in the hot-reload skip-set.
+
 **Request lifecycle:**
 
 1. `prepare_resource(plan)` — scheduling policy selects best instance → allocates workload slot
@@ -191,14 +215,14 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/scheduler/runtime/workload_shm/` | | SHM layout (`layout.py`) + reader/writer |
 | `motor/coordinator/domain/instance_manager.py` | | Central instance pool (available/unavailable, per-role sub-pools) |
 | `motor/coordinator/domain/request_manager.py` | | Request ID generation, workload tracking per request |
-| `motor/coordinator/router/dispatch.py` | | `select_router_class` (dynamic router selection from live topology) + `handle_request` |
+| `motor/coordinator/router/dispatch.py` | | `select_router_class` (dynamic router selection from live topology) + `handle_request` + `handle_metaserver_request` |
 | `motor/coordinator/router/strategies/` | | `BaseRouter` + `PDHybridRouter` + `UnifiedPDRouter` implementations |
 | `motor/coordinator/router/dispatch_session.py` | | Dispatch attempt session/state tracking |
 | `motor/coordinator/router/rescheduler/` | | `Rescheduler` (retry plans for failed requests) |
 | `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `NativeEngineApiClient` (HTTP clients to kv-conductor, controller, engine) |
 | `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `/instances/refresh`, `/precision/alarm_cleared` |
 | `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
-| `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic) |
+| `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
 | `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared Scheduler ZMQ connection (used by Mgmt/Obs/Infer) |
 | `motor/coordinator/domain/circuit_breaker.py` | | Per-instance circuit breaker state (closed/open) |
 | `motor/coordinator/domain/scheduling_pin.py` | | Pinned-instance resolution, endpoint selection for an instance |

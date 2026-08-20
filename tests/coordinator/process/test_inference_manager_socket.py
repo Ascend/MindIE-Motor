@@ -11,10 +11,15 @@
 """IPv6 single-stack: create_shared_socket must pick the right address family."""
 
 import socket
+import sys
+from unittest.mock import MagicMock
 
 import pytest
 
-from motor.coordinator.process.inference_manager import create_shared_socket
+sys.modules.setdefault("uvloop", MagicMock())
+
+from motor.config.coordinator import CoordinatorConfig  # noqa: E402
+from motor.coordinator.process.inference_manager import create_shared_socket, metaserver_bind_host  # noqa: E402
 
 
 @pytest.mark.skipif(not hasattr(socket, "SO_REUSEPORT"), reason="SO_REUSEPORT not available")
@@ -50,3 +55,19 @@ class TestCreateSharedSocket:
             assert sock.family == socket.AF_INET6
         finally:
             sock.close()
+
+
+def test_metaserver_bind_host_prefers_pod_ip(monkeypatch):
+    monkeypatch.setenv("POD_IP", "10.0.0.8")
+    config = CoordinatorConfig()
+    config.api_config.coordinator_api_host = "0.0.0.0"
+
+    assert metaserver_bind_host(config) == "10.0.0.8"
+
+
+def test_metaserver_bind_host_falls_back_to_api_host(monkeypatch):
+    monkeypatch.delenv("POD_IP", raising=False)
+    config = CoordinatorConfig()
+    config.api_config.coordinator_api_host = "192.168.1.10"
+
+    assert metaserver_bind_host(config) == "192.168.1.10"

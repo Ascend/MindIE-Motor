@@ -28,7 +28,8 @@ class VllmBackend(BaseNativeEngineBackend):
             deploy_config.engine_config,
             explicit_profile=deploy_config.dispatch_profile,
         )
-        if profile != DispatchProfile.HANDOFF:
+        if profile not in (DispatchProfile.HANDOFF, DispatchProfile.TRIGGER):
             raise ValueError(
-                f"Native vLLM P/D launch only supports handoff connectors; resolved dispatch profile is {profile.value}"
+                "Native vLLM P/D launch only supports handoff or trigger connectors; "
+                f"resolved dispatch profile is {profile.value}"
             )
