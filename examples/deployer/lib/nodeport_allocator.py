@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -48,6 +49,10 @@ class PlannedNodePort:
     service_namespace: str
     purpose: str
     container_port: int | None
+    # InferServiceSet context: the CRD renames Services, so the cluster name
+    # differs from the name declared in yaml (see _is_self_owned).
+    infer_set_name: str | None = None
+    role_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,8 @@ def _planned_from_service_spec(
     svc_name: str,
     svc_ns: str,
     svc_spec: dict,
+    infer_set_name: str | None = None,
+    role_name: str | None = None,
 ) -> list[PlannedNodePort]:
     planned: list[PlannedNodePort] = []
     for port_entry in (svc_spec or {}).get("ports") or []:
@@ -126,6 +133,8 @@ def _planned_from_service_spec(
                 service_namespace=svc_ns,
                 purpose=_purpose_for(svc_name, container_port_i),
                 container_port=container_port_i,
+                infer_set_name=infer_set_name,
+                role_name=role_name,
             )
         )
     return planned
@@ -145,6 +154,7 @@ def _collect_from_infer_service_set(doc: dict, yaml_path: str) -> list[PlannedNo
     """Collect nodePorts nested under InferServiceSet roles[].services[]."""
     meta = doc.get("metadata") or {}
     svc_ns = meta.get("namespace") or ""
+    infer_set_name = meta.get("name") or ""
     planned: list[PlannedNodePort] = []
     template = (doc.get("spec") or {}).get("template") or {}
     if not isinstance(template, dict):
@@ -182,6 +192,8 @@ def _collect_from_infer_service_set(doc: dict, yaml_path: str) -> list[PlannedNo
                             service_namespace=svc_ns,
                             purpose="Controller observability",
                             container_port=container_port_i,
+                            infer_set_name=infer_set_name,
+                            role_name=role_name,
                         )
                     )
                 continue
@@ -191,6 +203,8 @@ def _collect_from_infer_service_set(doc: dict, yaml_path: str) -> list[PlannedNo
                     svc_name=svc_name,
                     svc_ns=svc_ns,
                     svc_spec=svc.get("spec") or {},
+                    infer_set_name=infer_set_name,
+                    role_name=role_name,
                 )
             )
     return planned
@@ -301,10 +315,26 @@ def collect_cluster_nodeports() -> dict[int, ClusterNodePort]:
     return used
 
 
+def _matches_crd_service_name(planned: PlannedNodePort, owner_name: str) -> bool:
+    """InferServiceSet creates Services as {svc}-{inferSetName}-{index}-{role}."""
+    if not planned.infer_set_name or not planned.role_name:
+        return False
+    pattern = (
+        rf"^{re.escape(planned.service_name)}"
+        rf"-{re.escape(planned.infer_set_name)}"
+        rf"-\d+-{re.escape(planned.role_name)}$"
+    )
+    return re.match(pattern, owner_name, re.IGNORECASE) is not None
+
+
 def _is_self_owned(planned: PlannedNodePort, owner: ClusterNodePort, job_id: str) -> bool:
-    """Treat same job namespace + same service name as our own (re-deploy)."""
+    """Treat same job namespace + same service as our own (re-deploy / scaling)."""
     planned_ns = planned.service_namespace or job_id
-    return owner.namespace == planned_ns and owner.service_name == planned.service_name
+    if owner.namespace != planned_ns:
+        return False
+    if owner.service_name == planned.service_name:
+        return True
+    return _matches_crd_service_name(planned, owner.service_name)
 
 
 def find_conflicts(

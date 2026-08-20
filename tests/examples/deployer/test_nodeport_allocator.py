@@ -356,6 +356,33 @@ def test_resolve_dry_run_does_not_clear_existing_warning_files(tmp_path: Path, m
     assert warn_path.read_text(encoding="utf-8") == "keep-me\n"
 
 
+def test_resolve_scaling_keeps_ports_owned_by_own_crd_services(tmp_path: Path):
+    """Scaling an existing InferServiceSet deploy: CRD-renamed Services are ours, not conflicts."""
+    yaml_path = tmp_path / "infer.yaml"
+    _write_infer_service_set_yaml(yaml_path, "mindie-b")
+    cluster = {
+        31015: ClusterNodePort(31015, "mindie-b", "mindie-motor-coordinator-infer-vllm-0-coordinator"),
+        31017: ClusterNodePort(31017, "mindie-b", "mindie-motor-coordinator-obs-vllm-0-coordinator"),
+        # Non-zero index: InferServiceSet replicas > 1 must still be recognised as ours.
+        31027: ClusterNodePort(31027, "mindie-b", "mindie-motor-observability-vllm-1-controller"),
+    }
+
+    with (
+        patch("lib.nodeport_allocator.collect_cluster_nodeports", return_value=cluster),
+        patch("lib.nodeport_allocator.sys.stdin") as stdin,
+        patch("builtins.input", return_value="N") as prompt,
+    ):
+        stdin.isatty.return_value = True
+        remapping = resolve_and_rewrite_nodeports([str(yaml_path)], "mindie-b")
+
+    assert remapping == {}
+    prompt.assert_not_called()
+    text = yaml_path.read_text(encoding="utf-8")
+    assert "nodePort: 31015" in text
+    assert "nodePort: 31017" in text
+    assert "nodePort: 31027" in text
+
+
 def test_is_observability_service_name_avoids_robust_false_positive():
     assert is_observability_service_name("mindie-motor-coordinator-obs")
     assert is_observability_service_name("mindie-motor-observability")

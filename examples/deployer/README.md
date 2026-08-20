@@ -180,6 +180,8 @@ Node selector 字段均为 JSON 对象。自定义标签会与 deployer 根据 `
 
 非 TTY（脚本/CI）场景按 `N` 处理。建议 NodePort 范围：`30000-32767`。
 
+同一 namespace 下由本服务自己占用的端口不算冲突，因此重复部署与 `--update_instance_num` 扩缩容不会被误判。InferServiceSet 模式下 CRD 会把 Service 重命名为 `{service_name}-{InferServiceSet 名}-{索引}-{role}`，该命名同样识别为本服务自有端口。
+
 说明：交互 remap 只修改本次部署使用的 `output_yamls`，**不会**自动回写 `user_config.json`。若需要把新端口持久化到配置里，请手动同步修改 `motor_deploy_config` 中对应的 `*_node_port` 字段。
 
 ### env.json
