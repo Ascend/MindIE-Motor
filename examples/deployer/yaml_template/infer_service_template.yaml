@@ -377,12 +377,11 @@ spec:
                 mountPath: /var/coredump
               - name: mnt
                 mountPath: /mnt
-              - name: hccn-tool
-                mountPath: /usr/local/Ascend/driver/tools/hccn_tool
-              - name: driver-version
-                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+                readOnly: true
               - name: weight-mount
                 mountPath: /mnt/weight
               - name: plog-path
@@ -409,16 +408,12 @@ spec:
             - name: mnt
               hostPath:
                 path: /mnt
-            - name: hccn-tool
-              hostPath:
-                path: /usr/local/Ascend/driver/tools/hccn_tool
-            - name: driver-version
-              hostPath:
-                path: /usr/local/Ascend/driver/version.info
-                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
+            - name: ascend-driver
+              hostPath:
+                path: /usr/local/Ascend/driver
             - name: weight-mount
               hostPath:
                 path: /mnt/weight
@@ -503,12 +498,11 @@ spec:
                 mountPath: /var/coredump
               - name: mnt
                 mountPath: /mnt
-              - name: hccn-tool
-                mountPath: /usr/local/Ascend/driver/tools/hccn_tool
-              - name: driver-version
-                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+                readOnly: true
               - name: weight-mount
                 mountPath: /mnt/weight
               - name: plog-path
@@ -535,16 +529,12 @@ spec:
             - name: mnt
               hostPath:
                 path: /mnt
-            - name: hccn-tool
-              hostPath:
-                path: /usr/local/Ascend/driver/tools/hccn_tool
-            - name: driver-version
-              hostPath:
-                path: /usr/local/Ascend/driver/version.info
-                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
+            - name: ascend-driver
+              hostPath:
+                path: /usr/local/Ascend/driver
             - name: weight-mount
               hostPath:
                 path: /mnt/weight
@@ -629,12 +619,11 @@ spec:
                 mountPath: /var/coredump
               - name: mnt
                 mountPath: /mnt
-              - name: hccn-tool
-                mountPath: /usr/local/Ascend/driver/tools/hccn_tool
-              - name: driver-version
-                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+                readOnly: true
               - name: weight-mount
                 mountPath: /mnt/weight
               - name: plog-path
@@ -661,16 +650,12 @@ spec:
             - name: mnt
               hostPath:
                 path: /mnt
-            - name: hccn-tool
-              hostPath:
-                path: /usr/local/Ascend/driver/tools/hccn_tool
-            - name: driver-version
-              hostPath:
-                path: /usr/local/Ascend/driver/version.info
-                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
+            - name: ascend-driver
+              hostPath:
+                path: /usr/local/Ascend/driver
             - name: weight-mount
               hostPath:
                 path: /mnt/weight
@@ -755,12 +740,11 @@ spec:
                 mountPath: /var/coredump
               - name: mnt
                 mountPath: /mnt
-              - name: hccn-tool
-                mountPath: /usr/local/Ascend/driver/tools/hccn_tool
-              - name: driver-version
-                mountPath: /usr/local/Ascend/driver/version.info
               - name: hccn-conf
                 mountPath: /etc/hccn.conf
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+                readOnly: true
               - name: weight-mount
                 mountPath: /mnt/weight
               - name: plog-path
@@ -787,16 +771,12 @@ spec:
             - name: mnt
               hostPath:
                 path: /mnt
-            - name: hccn-tool
-              hostPath:
-                path: /usr/local/Ascend/driver/tools/hccn_tool
-            - name: driver-version
-              hostPath:
-                path: /usr/local/Ascend/driver/version.info
-                type: File
             - name: hccn-conf
               hostPath:
                 path: /etc/hccn.conf
+            - name: ascend-driver
+              hostPath:
+                path: /usr/local/Ascend/driver
             - name: weight-mount
               hostPath:
                 path: /mnt/weight
