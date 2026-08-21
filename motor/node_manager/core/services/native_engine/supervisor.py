@@ -13,6 +13,7 @@ import signal
 import subprocess
 import threading
 import time
+from http import HTTPStatus
 
 import requests
 
@@ -62,6 +63,48 @@ class ProcessSupervisor:
             )
             return True
 
+    def rebind_endpoint_ids(self, new_endpoint_ids: list[int]) -> dict[int, int]:
+        """Re-key local runtimes when restore start_cmd remaps endpoint ids.
+
+        Registration order can assign a different contiguous id block to this
+        node (e.g. 0..3 -> 4..7). Pair sorted existing keys with sorted
+        ``new_endpoint_ids``. Returns ``{old_id: new_id}``.
+        """
+        with self._lock:
+            old_ids = sorted(self._processes.keys())
+            new_ids = sorted(new_endpoint_ids)
+            if not old_ids:
+                logger.warning("[snapshot] No local engine runtimes to rebind after restore")
+                return {}
+            if len(old_ids) != len(new_ids):
+                raise RuntimeError(
+                    "Cannot rebind engine endpoints after restore: local runtime "
+                    f"count {len(old_ids)} ({old_ids}) != start_cmd endpoint count "
+                    f"{len(new_ids)} ({new_ids})"
+                )
+            if old_ids == new_ids:
+                return {endpoint_id: endpoint_id for endpoint_id in old_ids}
+
+            moved: dict[int, RuntimeProcess] = {}
+            mapping: dict[int, int] = {}
+            for old_id, new_id in zip(old_ids, new_ids):
+                runtime = self._processes.pop(old_id)
+                runtime.endpoint_id = new_id
+                # Resume may still be in progress on the new pod IP; allow startup grace.
+                if runtime.state not in (RuntimeState.STOPPING, RuntimeState.STOPPED):
+                    runtime.state = RuntimeState.STARTING
+                    runtime.ready_at = None
+                    runtime.started_at = time.monotonic()
+                moved[new_id] = runtime
+                mapping[old_id] = new_id
+            self._processes.update(moved)
+            logger.info(
+                "[snapshot] Rebound local engine endpoint ids after restore "
+                "(old_endpoint_id -> new_endpoint_id from start_cmd): %s",
+                ", ".join(f"{old_id} -> {new_id}" for old_id, new_id in mapping.items()),
+            )
+            return mapping
+
     def pid_list(self) -> list[int]:
         with self._lock:
             return [runtime.process.pid for runtime in self._processes.values()]
@@ -93,7 +136,7 @@ class ProcessSupervisor:
             ) as client:
                 for attempt in range(1, runtime.probe.max_attempts + 1):
                     try:
-                        client.do_get(runtime.probe.path)
+                        response = client.do_get(runtime.probe.path)
                         break
                     except Exception as err:
                         if not self._is_timeout_error(err) or attempt == runtime.probe.max_attempts:
@@ -104,6 +147,11 @@ class ProcessSupervisor:
                             attempt,
                             runtime.probe.max_attempts,
                         )
+            if runtime.probe.path == "/snapshot/health":
+                if response.status_code == HTTPStatus.ACCEPTED:
+                    return self._commit_state(endpoint_id, runtime, RuntimeState.RUNNING)
+                if response.status_code != HTTPStatus.OK:
+                    raise RuntimeError("Unexpected snapshot health status: %s" % response.status_code)
             return self._commit_state(endpoint_id, runtime, RuntimeState.READY, ready=True)
         except Exception as err:
             elapsed = time.monotonic() - runtime.started_at

@@ -85,6 +85,19 @@ def test_no_pcp_params_when_nnodes_is_one():
     assert "headless" not in flattened
 
 
+def test_snapshot_config_enables_auto_checkpoint_for_vllm_cli():
+    endpoint_config = _make_endpoint_config()
+    endpoint_config.snapshot_metadata = "/snapshot/metadata.json"
+    endpoint_config.enable_auto_checkpoint = True
+
+    flattened = VLLMConfig(endpoint_config=endpoint_config)._flatten_config()
+
+    assert flattened["snapshot_config"] == {
+        "snapshot_metadata": "/snapshot/metadata.json",
+        "enable_auto_checkpoint": True,
+    }
+
+
 def test_no_pcp_params_when_nnodes_gt_1_but_no_master_port():
     """When nnodes > 1 but master_port is missing, no PCP params added."""
     endpoint_config = _make_endpoint_config(nnodes=2, master_port=None)
@@ -405,9 +418,9 @@ def test_access_log_endpoints_excluded_by_default():
     config.initialize()
     flattened = config._flatten_config()
 
-    assert flattened["disable_access_log_for_endpoints"] == "/health,/metrics"
+    assert flattened["disable_access_log_for_endpoints"] == "/health,/metrics,/snapshot/health"
     cli_args = config.get_cli_args()
-    assert cli_args[cli_args.index("--disable-access-log-for-endpoints") + 1] == "/health,/metrics"
+    assert cli_args[cli_args.index("--disable-access-log-for-endpoints") + 1] == "/health,/metrics,/snapshot/health"
 
 
 def test_access_log_endpoints_user_override_wins():

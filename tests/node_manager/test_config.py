@@ -579,10 +579,10 @@ def test_native_vllm_runtime_accepts_snapshot_configuration():
     config.validate_config()
 
 
-def test_native_sglang_runtime_rejects_snapshot_configuration():
+def test_native_non_vllm_runtime_rejects_snapshot_configuration():
     config = NodeManagerConfig()
-    config.snapshot_config.enable_snapshot = True
     config.basic_config.engine_type = "sglang"
+    config.snapshot_config.enable_snapshot = True
 
     with pytest.raises(ValueError, match="Native Snapshot currently supports only the vllm engine type"):
         config.validate_config()

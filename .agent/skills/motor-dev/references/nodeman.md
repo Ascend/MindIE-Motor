@@ -20,7 +20,7 @@ NodeManager (Application)
 │                                   relaunch to Daemon.restart_engine, maps
 │                                   its errors to 400/409/500;
 │                                   abort   = unfreeze suicide → heartbeat fallback)
-│     POST /node-manager/pause   — pause endpoints (snapshot/upgrade flow)
+│     POST /node-manager/pause   — pause endpoints (upgrade flow)
 │     POST /node-manager/resume  — resume endpoints
 │     GET  /node-manager/status  — current engine states (relaxed=true for relaunch poll)
 │     GET  /readiness            — k8s readiness probe
@@ -247,6 +247,22 @@ HTTP status failures, TLS errors, connection errors and other exceptions are not
 `ProcessSupervisor.state()` follows this state model:
 
 ``` text
+start → STARTING
+  ├─ headless process alive → RUNNING
+  ├─ /health success         → READY
+  ├─ /snapshot/health 200    → READY
+  ├─ /snapshot/health 202    → RUNNING
+  ├─ process exits           → STOPPED
+  └─ startup timeout expires while probe fails → UNHEALTHY
+```
+
+During `startup_timeout` a failed probe keeps `STARTING`; this prevents slow model loading from
+being reported as a fault. A headless process is only proven alive, not independently ready. The
+heartbeat layer maps `RUNNING` to `WAIT2START` and `READY` to `NORMAL`.
+
+Related Daemon / Heartbeat arbitration context:
+
+``` text
 Grace period: starts when endpoints are set and ends after the first endpoint
   reaches NORMAL (the per-endpoint NORMAL-history guard continues to protect
   other endpoints that are still loading)
@@ -286,10 +302,6 @@ HTTP 503 from Controller:
   → POST /controller/reregister (ReregisterMsg) — single attempt, no backoff;
     a later heartbeat exception triggers the next retry
 ```
-
-During `startup_timeout` a failed probe keeps `STARTING`; this prevents slow model loading from
-being reported as a fault. A headless process is only proven alive, not independently ready. The
-heartbeat layer maps `RUNNING` to `WAIT2START` and `READY` to `NORMAL`.
 
 `ProcessSupervisor` protects state updates with a lock and performs HTTP probes outside the lock.
 Each launch uses `start_new_session=True` on POSIX, caches the process-group ID, and treats the
@@ -348,21 +360,36 @@ NodeManager.shutdown() — stop modules in reverse registration order:
   (there is no NodeManagerConfig.stop() — the config object has no lifecycle)
 ```
 
-### Snapshot Boundary
+### Container Snapshot
 
-Native Snapshot is implemented for vLLM only. Enabling snapshot with another engine type is rejected
-during NodeManager config validation. Device snapshot save and restore are owned by the engine
-image; NodeManager does not call `/suspend`, `/device_unlock`, or `/resume`.
+When `snapshot_config.enable_snapshot=true`, Native Runtime supports snapshot only for vLLM. The
+resolved metadata path is forwarded in `vllm serve --snapshot-config` together with
+`enable_auto_checkpoint=true`; routable endpoints use `/snapshot/health` instead of `/health` for
+NodeManager readiness probes.
 
-When `enable_snapshot` is true, NodeManager only:
+The vLLM snapshot-aware contract is:
 
-1. Refreshes framework state around restore (`job_name`, `pod_ip`, Controller DNS) so the restored
-   pod can register with Controller.
-2. Prepares snapshot metadata (`model_save_path`, `model_load_path`, `data_parallel_master_ip`).
-3. Observes engine readiness and the host-side `checkpoint` marker to gate heartbeats and
-   readiness.
+| Response | Runtime state | Meaning |
+|----------|---------------|---------|
+| `200` | `READY` | engine health and the current suspend/resume phase are complete |
+| `202` | `RUNNING` | engine is healthy but suspend/resume is still in progress |
+| request failure / non-2xx | `STARTING` or `UNHEALTHY` | still within `startup_timeout` → keep `STARTING`; otherwise `UNHEALTHY` |
 
-SGLang remains unsupported until the engine image provides the same snapshot capability.
+Suspend / resume lifecycle stays inside vLLM. NodeManager still owns the Motor-side glue:
+
+1. Forward snapshot metadata into the native `vllm serve` CLI and select `/snapshot/health` probes.
+2. Prepare / refresh snapshot metadata and framework state around restore (`job_name`, `pod_ip`,
+   Controller DNS, model save/load paths, `data_parallel_master_ip`).
+3. After host-side restore `start_cmd`, rebind local engine runtime endpoint ids before heartbeat
+   probes use the new id block.
+4. Gate cold-start heartbeat until checkpoint is done, and gate restore readiness until
+   `start_cmd` has completed (`started_after_restore`).
+5. Start suicide arbitration only after `HeartbeatManager` is bound.
+
+The vLLM sentinel continues to use the engine-only `/health` route internally. During cold start,
+`/snapshot/health` READY means suspend has completed; the `checkpoint` field in snapshot metadata
+barriers heartbeat until the container checkpoint is done. During container snapshot restore,
+`/snapshot/health` READY means resume has completed and the engine is ready.
 
 ## Key Files
 
@@ -383,7 +410,7 @@ SGLang remains unsupported until the engine image provides the same snapshot cap
 | `motor/node_manager/core/services/registry.py` | Service registration and backend discovery |
 | `motor/node_manager/core/services/memcache/` | Optional KV-store service implementation |
 | `motor/node_manager/core/heartbeat_manager.py` | Native state polling, status mapping, heartbeat and suicide threshold |
-| `motor/node_manager/core/engine_manager.py` | Controller registration, StartCmdMsg validation, ranktable and snapshot metadata/restore helpers |
+| `motor/node_manager/core/register_manager.py` | Controller registration, StartCmdMsg validation, ranktable and snapshot metadata/restore helpers |
 | `motor/node_manager/api_client/controller_api_client.py` | Controller register, reregister and heartbeat HTTP client |
 | `motor/node_manager/core/fault_reporter.py` | Optional native engine software-fault polling |
 | `motor/config/node_manager.py` | NodeManager schema, endpoint derivation, ports and vLLM-only snapshot validation |
@@ -412,9 +439,9 @@ SGLang remains unsupported until the engine image provides the same snapshot cap
   (`READY`/`NORMAL`).
 - New engine backends should add a backend/config package and tests without coupling `Daemon` to the
   engine-specific CLI.
-- Native Runtime snapshot support is vLLM-only. NodeManager must not orchestrate engine snapshot
-  HTTP APIs; keep metadata preparation, registration refresh, and status observation on the
-  NodeManager side.
+- Keep the snapshot lifecycle (suspend/resume) inside vLLM. NodeManager forwards metadata, consumes
+  the `/snapshot/health` readiness contract, prepares restore metadata, rebinds endpoint ids after
+  restore, and gates heartbeat/readiness around checkpoint and restore `start_cmd`.
 
 ## Testing
 

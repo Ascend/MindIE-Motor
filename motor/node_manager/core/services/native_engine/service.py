@@ -17,6 +17,7 @@ from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
+from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
 from motor.node_manager.core.services.native_engine.factory import get_backend
 from motor.node_manager.core.services.native_engine.models import LaunchContext, LaunchSpec, RuntimeState
 from motor.node_manager.core.services.native_engine.supervisor import ProcessSupervisor
@@ -47,6 +48,11 @@ def _create_native_engine(hardware_type: str, config):
         kv_port=config.single_container_config.kv_port,
         lookup_rpc_port=config.single_container_config.lookup_rpc_port,
         dp_rpc_port=config.single_container_config.dp_rpc_port,
+        snapshot_metadata=(
+            config.snapshot_config.snapshot_metadata_path or MOTOR_SNAPSHOT_METADATA_PATH
+            if config.snapshot_config.enable_snapshot
+            else None
+        ),
     )
 
 
@@ -66,6 +72,7 @@ class NativeEngineService:
         kv_port: int | None = None,
         lookup_rpc_port: int | None = None,
         dp_rpc_port: int | None = None,
+        snapshot_metadata: str | None = None,
     ):
         self.engine_type = str(engine_type).strip().lower()
         self.config_path = config_path
@@ -77,6 +84,7 @@ class NativeEngineService:
         self.kv_port = kv_port
         self.lookup_rpc_port = lookup_rpc_port
         self.dp_rpc_port = dp_rpc_port
+        self.snapshot_metadata = snapshot_metadata
         self.backend = get_backend(self.engine_type)
         self.supervisor = ProcessSupervisor()
         # Serializes pull/stop so a completed stop() cannot be followed by a late monitor install.
@@ -148,6 +156,7 @@ class NativeEngineService:
                     d2d_peer_ips=peer_ips,
                     environment=env,
                     headless=endpoint.headless,
+                    snapshot_metadata=self.snapshot_metadata,
                 )
                 launch_spec = self.backend.prepare(context)
                 cmd = list(launch_spec.command.argv)
@@ -196,6 +205,10 @@ class NativeEngineService:
 
     def pid_list(self) -> list[int]:
         return self.supervisor.pid_list()
+
+    def rebind_endpoints_after_restore(self, endpoints: list[Endpoint]) -> dict[int, int]:
+        """Remap supervisor runtime keys to start_cmd endpoint ids after host snapshot restore."""
+        return self.supervisor.rebind_endpoint_ids([endpoint.id for endpoint in endpoints])
 
     def runtime_state(self, endpoint: Endpoint, instance_id: int) -> RuntimeState:
         state = self.supervisor.state(endpoint.id, endpoint.ip, int(endpoint.business_port))

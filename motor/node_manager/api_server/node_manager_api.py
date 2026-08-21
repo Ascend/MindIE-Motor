@@ -79,6 +79,9 @@ async def start_instance(request: Request):
         # Update endpoint and set started after restore flag
         if is_restored_from_host_side_snapshot():
             await asyncio.to_thread(RegisterManager().engine_resume_prepare, start_msg)
+            # Registration order may assign a different endpoint.id block than at
+            # cold start; rekey supervisor runtimes before HB probes with new ids.
+            await asyncio.to_thread(Daemon().rebind_engine_endpoints_after_restore, start_msg.endpoints)
             HeartbeatManager().update_endpoint(start_msg)
             HeartbeatManager().set_started_after_restore(True)
             return {}

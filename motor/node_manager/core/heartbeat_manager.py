@@ -298,8 +298,10 @@ class HeartbeatManager(ThreadSafeSingleton):
                 # If restored from host side snapshot and not started after restore(pod_ip do not refresh yet), keep original status
                 logger.info(
                     "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
-                    "keeping stale status: %s",
+                    "keeping stale status: %s, old endpoint ip=%s, new endpoint ip=%s",
                     original_status,
+                    item.ip,
+                    self._config.api_config.pod_ip,
                 )
                 item.status = original_status
             elif runtime_state in (RuntimeState.STARTING, RuntimeState.STOPPING):

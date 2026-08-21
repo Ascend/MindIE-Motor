@@ -151,7 +151,6 @@ class Daemon(ThreadSafeSingleton):
 
         self._initialized = True
         self._start_process_monitor()
-        self._start_suicide_arbitration()
 
     # ------------------------------------------------------------------
     # public API
@@ -288,6 +287,14 @@ class Daemon(ThreadSafeSingleton):
     def has_engine(self) -> bool:
         """True when the engine service is active (i.e. this pod runs inference)."""
         return SERVICE_ENGINE in self._services
+
+    def rebind_engine_endpoints_after_restore(self, endpoints: list[Endpoint]) -> dict[int, int]:
+        """Rebind local engine runtimes to restore start_cmd endpoint ids."""
+        engine = self._services.get(SERVICE_ENGINE)
+        if engine is None:
+            logger.warning("[snapshot] No engine service to rebind after restore")
+            return {}
+        return engine.rebind_endpoints_after_restore(endpoints)  # type: ignore[attr-defined]
 
     def get_engine_runtime_state(self, endpoint: Endpoint, instance_id: int) -> RuntimeState:
         """Return the native runtime state for one locally managed endpoint."""
@@ -429,6 +436,10 @@ class Daemon(ThreadSafeSingleton):
         except Exception as e:
             logger.error("Failed to report engine death to Controller: %s", e)
             return False
+
+    def start_suicide_arbitration(self) -> None:
+        """Public entry: start suicide arbitration after HeartbeatManager is bound."""
+        self._start_suicide_arbitration()
 
     def _start_suicide_arbitration(self) -> None:
         """Dedicated 3s suicide-arbitration loop.

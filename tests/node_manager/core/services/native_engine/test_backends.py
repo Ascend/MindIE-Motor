@@ -29,6 +29,7 @@ def _context(
     headless: bool = False,
     dp_rank: int = 2,
     environment: dict | None = None,
+    snapshot_metadata: str | None = None,
 ) -> LaunchContext:
     return LaunchContext(
         role=role,
@@ -46,6 +47,7 @@ def _context(
         d2d_peer_ips=("10.0.0.3",),
         environment=environment or {"VLLM_HOST_IP": "10.0.0.2"},
         headless=headless,
+        snapshot_metadata=snapshot_metadata,
     )
 
 
@@ -63,6 +65,7 @@ def _endpoint(
     return SimpleNamespace(
         engine_type=engine_type,
         role=role,
+        snapshot_metadata=None,
         deploy_config=SimpleNamespace(
             engine_config=engine_config,
             dispatch_profile=None,
@@ -345,6 +348,28 @@ def testbuild_endpoint_config_maps_launch_context_without_cli_globals():
     assert endpoint_config.d2d_peer_ips == "10.0.0.3"
 
 
+@pytest.mark.parametrize(
+    ("snapshot_metadata", "expected_enable_auto_checkpoint"),
+    [
+        ("/snapshot/metadata.json", True),
+        (None, False),
+    ],
+)
+def test_build_endpoint_config_enables_auto_checkpoint_from_snapshot_metadata(
+    snapshot_metadata, expected_enable_auto_checkpoint
+):
+    context = _context(snapshot_metadata=snapshot_metadata)
+
+    with (
+        patch.object(EndpointConfig, "validate"),
+        patch.object(EndpointConfig, "load_deploy_config"),
+    ):
+        endpoint_config = build_endpoint_config(context, "vllm")
+
+    assert endpoint_config.snapshot_metadata == snapshot_metadata
+    assert endpoint_config.enable_auto_checkpoint is expected_enable_auto_checkpoint
+
+
 def test_backend_builds_native_health_probe_from_engine_config():
     context = _context()
     tls_config = TLSConfig(enable_tls=True, ca_file="/certs/ca.crt")
@@ -364,6 +389,20 @@ def test_backend_builds_native_health_probe_from_engine_config():
     assert probe.startup_timeout_seconds == 900
     assert probe.tls_config is tls_config
     assert probe.process_only is False
+
+
+def test_vllm_backend_uses_snapshot_health_probe():
+    context = _context(snapshot_metadata="/snapshot/metadata.json")
+    endpoint = _endpoint(
+        engine_type="vllm",
+        role="prefill",
+        connector="MooncakeConnectorV1",
+    )
+    endpoint.snapshot_metadata = context.snapshot_metadata
+
+    probe = _prepare_with_config(VllmBackend(), context, endpoint).probe
+
+    assert probe.path == "/snapshot/health"
 
 
 def test_headless_backend_uses_process_only_probe():

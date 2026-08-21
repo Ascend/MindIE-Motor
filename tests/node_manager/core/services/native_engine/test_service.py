@@ -58,7 +58,7 @@ def _make_launch_spec(deploy_config=None, env=None) -> LaunchSpec:
     )
 
 
-def _native_engine_service(engine_type: str = "sglang") -> NativeEngineService:
+def _native_engine_service(snapshot_metadata: str | None = None, engine_type: str = "sglang") -> NativeEngineService:
     with (
         patch("motor.node_manager.core.services.native_engine.service.get_backend") as get_backend,
         patch("motor.node_manager.core.services.native_engine.service.ProcessSupervisor") as supervisor_class,
@@ -69,6 +69,7 @@ def _native_engine_service(engine_type: str = "sglang") -> NativeEngineService:
             device_num=1,
             parallel_config=SimpleNamespace(local_world_size=1),
             enable_multi_endpoints=False,
+            snapshot_metadata=snapshot_metadata,
         )
     service.backend = get_backend.return_value
     service.supervisor = supervisor_class.return_value
@@ -113,6 +114,21 @@ def _log_level_warning_emitted(mock_warning) -> bool:
     return any(
         "ASCEND_GLOBAL_LOG_LEVEL" in str(call.args[0]) if call.args else False for call in mock_warning.call_args_list
     )
+
+
+def test_pull_forwards_snapshot_metadata_to_launch_context():
+    service = _native_engine_service("/snapshot/metadata.json")
+    service.backend.prepare.return_value = LaunchSpec(
+        command=CommandSpec(argv=("vllm", "serve"), env={}),
+        probe=ProbeSpec(path="/snapshot/health", timeout_seconds=1, startup_timeout_seconds=10),
+    )
+    service.supervisor.start.return_value = True
+    endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8001")
+
+    service.pull(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="127.0.0.1")
+
+    context = service.backend.prepare.call_args.args[0]
+    assert context.snapshot_metadata == "/snapshot/metadata.json"
 
 
 def test_health_check_returns_dead_pids():

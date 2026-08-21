@@ -59,7 +59,7 @@ class BaseNativeEngineBackend:
                 env=context.environment,
             ),
             probe=ProbeSpec(
-                path="/health",
+                path="/snapshot/health" if endpoint_config.snapshot_metadata is not None else "/health",
                 timeout_seconds=float(health_config.health_collector_timeout),
                 startup_timeout_seconds=float(health_config.startup_timeout),
                 max_attempts=health_config.health_collector_timeout_retry_attempts,
@@ -93,6 +93,8 @@ def build_endpoint_config(context: LaunchContext, engine_type: str) -> EndpointC
         node_rank=context.node_rank,
         config_path=context.config_path,
         d2d_peer_ips=",".join(context.d2d_peer_ips) if context.d2d_peer_ips else None,
+        snapshot_metadata=context.snapshot_metadata,
+        enable_auto_checkpoint=(context.snapshot_metadata is not None),
     )
     endpoint_config.validate()
     endpoint_config.load_deploy_config()

@@ -37,6 +37,7 @@ class LaunchContext:
     d2d_peer_ips: tuple[str, ...]
     environment: Mapping[str, str]
     headless: bool = False
+    snapshot_metadata: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "d2d_peer_ips", tuple(self.d2d_peer_ips))

@@ -50,6 +50,8 @@ class NodeManager(Application):
         if daemon.has_engine:
             self.add_module("RegisterManager", RegisterManager(self.config))
             self.add_module("HeartbeatManager", HeartbeatManager(self.config))
+            # Bind shared config first, then allow Daemon to touch HeartbeatManager.
+            daemon.start_suicide_arbitration()
 
         logger.info(
             "All modules initialized (has_engine=%s, services=%d)",

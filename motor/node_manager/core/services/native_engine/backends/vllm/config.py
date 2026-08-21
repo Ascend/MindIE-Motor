@@ -20,10 +20,10 @@ from motor.common import engine_constants as constants
 logger = get_logger(__name__)
 
 # High-frequency endpoint paths excluded from the vLLM uvicorn access log by default:
-# NodeManager health probes (/health) and metrics scraping (/metrics) fire every few
+# NodeManager health probes (/health, /snapshot/health) and metrics scraping (/metrics) fire every few
 # seconds and would otherwise flood the api-server log. Per-instance override via
 # engine_config key disable_access_log_for_endpoints.
-DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS = "/health,/metrics"
+DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS = "/health,/metrics,/snapshot/health"
 
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):
@@ -277,6 +277,11 @@ class VLLMConfig:
             flattened.setdefault("prefill_context_parallel_size", parallel_config.pcp_size)
 
         flattened.update({"host": self.endpoint_config.host, "port": self.endpoint_config.port})
+        if self.endpoint_config.snapshot_metadata is not None:
+            flattened["snapshot_config"] = {
+                "snapshot_metadata": self.endpoint_config.snapshot_metadata,
+                "enable_auto_checkpoint": self.endpoint_config.enable_auto_checkpoint,
+            }
         if self.data_parallel_address is not None:
             flattened["data_parallel_address"] = self.data_parallel_address
             flattened["data_parallel_rpc_port"] = self.data_parallel_rpc_port

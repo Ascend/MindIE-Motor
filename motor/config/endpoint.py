@@ -288,6 +288,8 @@ class EndpointConfig:
     config_path: str | None = None
     d2d_peer_ips: str | None = None
     deploy_config: DeployConfig = None
+    snapshot_metadata: str | None = None
+    enable_auto_checkpoint: bool = False
 
     def validate(self):
         if self.role not in supported_role:
@@ -303,6 +305,11 @@ class EndpointConfig:
             raise ValueError(f"config file {self.config_path} does not exist")
         if not FileValidator(self.config_path).check_not_soft_link().check_file_size().check().is_valid():
             raise ValueError(f"{self.config_path} is not a valid file path.")
+        if self.snapshot_metadata is not None:
+            if not os.path.exists(self.snapshot_metadata):
+                raise ValueError(f"snapshot metadata file {self.snapshot_metadata} does not exist")
+            if not FileValidator(self.snapshot_metadata).check_not_soft_link().check_file_size().check().is_valid():
+                raise ValueError(f"{self.snapshot_metadata} is not a valid file path")
 
     def load_deploy_config(self):
         self.deploy_config = DeployConfig.load(self.config_path, role=self.role)
