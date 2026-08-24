@@ -95,10 +95,10 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 | `src/indexer/` | Indexer (DashMap), IndexerEntry (hbm_tree + cpu/disk flat + offload cache), query, two-phase matching (`mod.rs`, `tests.rs`) |
 | `src/concurrent_tree.rs` | ConcurrentRadixTree (`Arc<RwLock<Block>>`), find_matches/apply_store/remove_worker |
 | `src/backend.rs` | StoreBackend enum + MatchMode, IP→DP resolution |
-| `src/zmq_subscriber.rs` | ZMQ SUB socket I/O, 2-format payload dispatch, reconnect loop, replay DEALER→ROUTER |
+| `src/zmq_subscriber.rs` | ZMQ SUB socket I/O, 3-format payload dispatch, reconnect loop, replay DEALER→ROUTER |
 | `src/events/mod.rs` | Event module root: re-exports, attention-group filtering docs |
 | `src/events/vllm.rs` | VllmEventMap parsing + `apply_vllm_event()` + `parse_vllm_batch()` |
-| `src/events/pool.rs` | PoolEvent parsing + `apply_pool_event()` |
+| `src/events/pool.rs` | PoolEvent / MemcacheEventBatch parsing + `apply_pool_event()` |
 | `src/events/flex_hash.rs` | FlexHash: polymorphic u64 deserializer (int/binary/string) |
 | `src/events/helpers.rs` | `resolve_medium()`, `resolve_workers()` |
 | `src/events/tests.rs` | Unit tests for event parsing |
@@ -350,16 +350,17 @@ Each node has independent ZMQ PUB ports per storage medium. HBM, CPU and Disk ev
 
 ---
 
-## ZMQ Event Ingestion (2-Format Dispatch)
+## ZMQ Event Ingestion (3-Format Dispatch)
 
 Events arrive via ZMQ PUB as 3-part messages: `[topic] [seq: u64 BE] [msgpack payload]`.
 
-The payload is dispatched in 2 formats, tried in order by `process_payload()`:
+The payload is dispatched in 3 formats, tried in order by `process_payload()`:
 
 | # | Format | Structure | Source |
 |---|------|------|
 | 1 | vLLM batch | `[ts, [events...], dp_rank]` — `parse_vllm_batch()` tries both `[ts, events, dp_rank]` and `[ts, dp_rank, events]` field orders (msgspec/version robustness); ts may be `f64` or int | vLLM engine (preferred) |
-| 2 | Pool batch | `(i64, Vec<PoolEvent>, u32)` via `rmp_serde` | Pool backends |
+| 2 | Pool batch | `(i64, Vec<PoolEvent>, u32)` via `rmp_serde` | Mooncake master |
+| 3 | Memcache batch | `{"events": [PoolEvent, ...]}` via `rmp_serde` (`MemcacheEventBatch`); per-event map carries `backend_id` (node Pod IP), optional fields as nil, `seq_hashes` uint64 array (`hash_as_int=true`) or hex strings | memcache MetaService (memcache PR #334) |
 
 The former vLLM bare / Pool legacy array (`ZmqEventMap`) / Pool bare formats have been removed — the `ZmqEventMap` type no longer exists.
 
@@ -368,7 +369,7 @@ The former vLLM bare / Pool legacy array (`ZmqEventMap`) / Pool bare formats hav
 **FlexHash:** Polymorphic u64 deserializer for vLLM's `ExternalBlockHash = bytes | int`:
 
 - msgpack uint → `u64`
-- msgpack binary ≤8 bytes → `u64` (big-endian); **>8 bytes → deserialization error** (too-long hashes are rejected, not truncated)
+- msgpack binary ≤8 bytes → `u64` (big-endian); **>8 bytes (vLLM default 32-byte sha256) → trailing 8 bytes = low 64 bits**, matching vLLM int mode (`& (1 << 64) - 1`) and memcache `BlockHashHexToU64` — this is what makes engine offload events (sha256 bytes) match pool confirmations (u64)
 - msgpack string (hex `0xABCD` or decimal) → parsed `u64`
 
 Truncation does exist, but only in the separate `rmpv::Value::Binary` path in `events/vllm.rs` (used when parsing vLLM event arrays field-by-field): there, >8-byte binaries are truncated to their last 8 bytes instead of erroring.

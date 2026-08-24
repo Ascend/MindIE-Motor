@@ -47,5 +47,4 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
-
-（暂无案例——第一个修复完成后按「新增案例流程」在此追加一行并创建案例文件）
+| 2026-08-21 | kv_conductor | MultiConnector 顶层配置下引擎 offload 事件被静默丢弃 | `kv_conductor/multi-connector-kv-events-dropped.md` | MultiConnector、offload 事件丢失、两阶段匹配、kv_transfer_config |

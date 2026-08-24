@@ -441,10 +441,10 @@ impl VllmEventMap {
             num_block_hashes = self.block_hashes.as_ref().map(|v| v.len()).unwrap_or(0),
             num_token_ids = self.token_ids.as_ref().map(|v| v.len()).unwrap_or(0),
             block_size = self.block_size,
-            medium = %self.medium.as_deref().unwrap_or("-"),
+            medium = %StorageMedium::parse(self.medium.as_deref().unwrap_or("npu")).log_str(),
             spec_kind = %self.kv_cache_spec_kind.as_deref().unwrap_or("-"),
             group_idx = self.group_idx,
-            "vLLM event"
+            "kv_event event_parsed backend=vllm"
         );
 
         let is_cleared = self.event_type.as_str() == "AllBlocksCleared";
@@ -452,7 +452,8 @@ impl VllmEventMap {
         if !is_cleared && !is_main_attention_kind(self.kv_cache_spec_kind.as_deref()) {
             tracing::trace!(
                 spec_kind = %self.kv_cache_spec_kind.as_deref().unwrap_or("-"),
-                "vLLM event filtered (non-main attention)"
+                reason = "non_main_attention",
+                "kv_event dropped"
             );
             return VllmEvent::Ignored;
         }
@@ -517,28 +518,38 @@ impl VllmEventMap {
 /// tried to be robust against msgspec / version variations.
 pub(crate) fn parse_vllm_batch(payload: &[u8]) -> Option<(Vec<VllmEvent>, u32)> {
     // Format A: [ts, events: [...], dp_rank: int|null]
-    if let Ok((_ts, events, dp_rank)) =
-        rmp_serde::from_slice::<(serde::de::IgnoredAny, Vec<VllmEventMap>, Option<i32>)>(payload)
+    match rmp_serde::from_slice::<(serde::de::IgnoredAny, Vec<VllmEventMap>, Option<i32>)>(payload)
     {
-        let parsed: Vec<VllmEvent> = events.iter().map(|e| e.normalize()).collect();
-        tracing::trace!(
-            num_events = parsed.len(),
-            dp_rank = dp_rank.unwrap_or(0),
-            "vLLM batch parsed (format A: [ts, events, dp_rank])"
-        );
-        return Some((parsed, dp_rank.unwrap_or(0) as u32));
+        Ok((_ts, events, dp_rank)) => {
+            let parsed: Vec<VllmEvent> = events.iter().map(|e| e.normalize()).collect();
+            tracing::debug!(
+                num_events = parsed.len(),
+                dp_rank = dp_rank.unwrap_or(0),
+                layout = "events,dp_rank",
+                "kv_event parsed backend=vllm"
+            );
+            return Some((parsed, dp_rank.unwrap_or(0) as u32));
+        }
+        Err(e) => {
+            tracing::trace!(error = %e, layout = "events,dp_rank", "kv_event parse_failed backend=vllm")
+        }
     }
     // Format B: [ts, dp_rank: int|null, events: [...]]
-    if let Ok((_ts, dp_rank, events)) =
-        rmp_serde::from_slice::<(serde::de::IgnoredAny, Option<i32>, Vec<VllmEventMap>)>(payload)
+    match rmp_serde::from_slice::<(serde::de::IgnoredAny, Option<i32>, Vec<VllmEventMap>)>(payload)
     {
-        let parsed: Vec<VllmEvent> = events.iter().map(|e| e.normalize()).collect();
-        tracing::trace!(
-            num_events = parsed.len(),
-            dp_rank = dp_rank.unwrap_or(0),
-            "vLLM batch parsed (format B: [ts, dp_rank, events])"
-        );
-        return Some((parsed, dp_rank.unwrap_or(0) as u32));
+        Ok((_ts, dp_rank, events)) => {
+            let parsed: Vec<VllmEvent> = events.iter().map(|e| e.normalize()).collect();
+            tracing::debug!(
+                num_events = parsed.len(),
+                dp_rank = dp_rank.unwrap_or(0),
+                layout = "dp_rank,events",
+                "kv_event parsed backend=vllm"
+            );
+            return Some((parsed, dp_rank.unwrap_or(0) as u32));
+        }
+        Err(e) => {
+            tracing::trace!(error = %e, layout = "dp_rank,events", "kv_event parse_failed backend=vllm")
+        }
     }
     None
 }
@@ -594,7 +605,8 @@ pub(crate) fn apply_vllm_event(
                     %backend_id, dp = subscriber_dp_rank,
                     block_size,
                     registered = registered_block_size,
-                    "vLLM BlockStored filtered (non-matching block_size)"
+                    reason = "block_size_mismatch",
+                    "kv_event dropped backend=vllm"
                 );
                 return Ok(());
             }
@@ -639,20 +651,20 @@ pub(crate) fn apply_vllm_event(
                     model = %model_name, tenant = %tenant_id,
                     num = triples.len(),
                     ?preview_hashes,
-                    medium = %event_medium,
-                    "vLLM non-HBM: ingesting offload blocks"
+                    medium = %StorageMedium::parse(event_medium).log_str(),
+                    "kv_event offload_ingesting backend=vllm"
                 );
 
                 let matched = entry.ingest_offload_blocks(&triples);
                 let total_matched: usize = matched.values().map(|v| v.len()).sum();
 
                 if !matched.is_empty() {
-                    tracing::trace!(
+                    tracing::info!(
                         model = %model_name, tenant = %tenant_id,
                         num_blocks = total_matched,
                         num_workers = matched.len(),
-                        medium = %event_medium,
-                        "vLLM non-HBM: matched pending pool events, applying to tree"
+                        medium = %StorageMedium::parse(event_medium).log_str(),
+                        "kv_event matched backend=vllm"
                     );
                     // Apply one `Stored` event per block, each with its own
                     // `parent_hash`, instead of batching them under
@@ -672,18 +684,19 @@ pub(crate) fn apply_vllm_event(
 
                 let cached = num.saturating_sub(total_matched);
                 if cached > 0 {
-                    tracing::trace!(
+                    tracing::debug!(
                         model = %model_name, tenant = %tenant_id,
                         num_blocks = cached,
-                        medium = %event_medium,
-                        "vLLM non-HBM: cached blocks waiting for pool confirmation"
+                        medium = %StorageMedium::parse(event_medium).log_str(),
+                        "kv_event offload_cached backend=vllm"
                     );
                 }
             } else {
                 tracing::trace!(
                     model = %model_name, tenant = %tenant_id,
-                    num_blocks = num, medium = %event_medium,
-                    "vLLM HBM: inserting blocks into radix tree"
+                    num_blocks = num,
+                    medium = %StorageMedium::parse(event_medium).log_str(),
+                    "kv_event applied backend=vllm"
                 );
                 let blocks: Vec<KvCacheStoredBlockData> = (0..num)
                     .map(|i| KvCacheStoredBlockData {

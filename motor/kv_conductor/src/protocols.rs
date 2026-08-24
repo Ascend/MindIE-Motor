@@ -124,6 +124,17 @@ impl StorageMedium {
         }
     }
 
+    /// Lowercase medium name for event logs, matching the wire values
+    /// (`xpu` / `cpu` / `disk`) so `grep medium=cpu` works uniformly.
+    pub fn log_str(&self) -> &'static str {
+        match self {
+            Self::Npu => "xpu",
+            Self::Cpu => "cpu",
+            Self::Disk => "disk",
+            Self::Unknown => "unknown",
+        }
+    }
+
     /// Whether `s` names the device-HBM tier (npu / gpu / xpu / hbm / device).
     pub fn is_hbm_key(s: &str) -> bool {
         matches!(Self::parse(s), Self::Npu)

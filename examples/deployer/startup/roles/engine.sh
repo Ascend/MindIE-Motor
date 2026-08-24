@@ -31,7 +31,7 @@ if is_a5_hardware; then
     set_a5_engine_env
 fi
 
-apply_shuffle_safetensors_patch
+apply_patches || exit 1
 
 # for SGLang
 set_mf_store_env

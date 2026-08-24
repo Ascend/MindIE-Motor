@@ -16,6 +16,7 @@ import msgspec
 from motor.common.logger import get_logger
 from motor.common.resources.instance import Instance, Endpoint, PDRole
 from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.utils.env import Env
 from motor.common.utils.net import format_address, format_host
 from motor.config.coordinator import CoordinatorConfig
 
@@ -24,6 +25,10 @@ TENANT_ID = "default"
 logger = get_logger(__name__)
 # Roles whose KV events should be registered with the conductor.
 _KVA_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
+
+# Canonical store_backend names. Input config is matched case-insensitively
+# (same as kv-conductor's StoreBackend::parse).
+_STORE_BACKEND_NAMES = ("Mooncake", "Memcache", "YuanRong")
 
 # Content-Type for MessagePack query bodies / responses.
 MSGPACK_CONTENT_TYPE = "application/msgpack"
@@ -68,7 +73,14 @@ class ConductorApiClient:
 
     @classmethod
     def _resolve_store_backend(cls) -> str:
-        return cls._kv_reg().store_backend or "Mooncake"
+        """Return the store_backend in canonical casing (input is case-insensitive)."""
+        raw = (cls._kv_reg().store_backend or "").strip()
+        if not raw:
+            return "Mooncake"
+        for canonical in _STORE_BACKEND_NAMES:
+            if raw.lower() == canonical.lower():
+                return canonical
+        return raw
 
     @classmethod
     def _resolve_backend_mode(cls) -> str:
@@ -116,17 +128,40 @@ class ConductorApiClient:
     # ── Pool registration (Mooncake / Memcache) ──────────────────────
 
     @classmethod
+    def _resolve_pool_endpoint(cls, pattern: str) -> str | None:
+        """Resolve the centralized pool endpoint, substituting ``*`` with the kv-store domain.
+
+        The ``*`` placeholder cannot be sent to kv-conductor as-is; it is
+        replaced with the KVS master service FQDN injected via the
+        ``KVS_MASTER_SERVICE`` env (e.g. "tcp://*:5557" →
+        "tcp://mindie-motor-kvs-master.mindie.svc.cluster.local:5557").
+        """
+        if not pattern:
+            return None
+        if "*" not in pattern:
+            return pattern
+        host = Env.kvs_master_service
+        if not host:
+            logger.warning(
+                "pool_endpoint %s uses '*' but KVS_MASTER_SERVICE is unset, skipping pool registration",
+                pattern,
+            )
+            return None
+        return pattern.replace("*", format_host(host))
+
+    @classmethod
     def _register_pool(cls, reg, store_backend: str) -> None:
         """Register the centralized pool once per cluster (domain name)."""
         if cls._pool_registered:
             return
-        if not reg.pool_endpoint:
+        endpoint = cls._resolve_pool_endpoint(reg.pool_endpoint)
+        if not endpoint:
             logger.warning("No pool_endpoint for %s, skipping pool registration", store_backend)
             return
 
         register_data: dict = {
             "instance_id": f"{store_backend.lower()}-pool",
-            "endpoint": reg.pool_endpoint,
+            "endpoint": endpoint,
             "type": reg.engine_type,
             "store_backend": store_backend,
             "modelname": reg.model_path or "default",

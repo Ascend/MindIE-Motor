@@ -813,6 +813,70 @@ def test_memcache_registration_same_as_mooncake_different_store_backend(mock_htt
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_memcache_store_backend_matches_case_insensitively(mock_http):
+    """Lowercase / odd-cased store_backend still resolves to pool mode.
+
+    kv-conductor's StoreBackend::parse is case-insensitive; the Python
+    client must accept the same spellings (e.g. "memcache") instead of
+    silently falling back to per_dp mode.
+    """
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    for store_backend in ("memcache", "MEMCACHE", "mEmCaChE"):
+        instance = _make_mock_instance(1)
+        ConductorApiClient._pool_registered = False
+        with _setup_reg_config(store_backend, pool_endpoint="tcp://kvp-master:5557", npu_endpoint="tcp://*:50090"):
+            ConductorApiClient.register_kv_instance([instance])
+
+        calls = mock_client.post.call_args_list
+        # pool + HBM DP; pool payload normalized to canonical "Memcache"
+        assert len(calls) == 2, f"store_backend={store_backend} must register pool + HBM"
+        assert calls[0][0][1]["store_backend"] == "Memcache"
+        assert calls[0][0][1]["instance_id"] == "memcache-pool"
+        mock_client.post.reset_mock()
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_pool_endpoint_star_resolved_with_kvs_master_service(mock_http, monkeypatch):
+    """'*' in pool_endpoint is replaced with the KVS master service domain."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    monkeypatch.setenv("KVS_MASTER_SERVICE", "mindie-motor-kvs-master.mindie.svc.cluster.local")
+
+    instance = _make_mock_instance(1)
+    ConductorApiClient._pool_registered = False
+    with _setup_reg_config("Memcache", pool_endpoint="tcp://*:5557", npu_endpoint="tcp://*:50090"):
+        ConductorApiClient.register_kv_instance([instance])
+
+    calls = mock_client.post.call_args_list
+    assert len(calls) == 2
+    assert calls[0][0][1]["endpoint"] == "tcp://mindie-motor-kvs-master.mindie.svc.cluster.local:5557"
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_pool_endpoint_star_without_kvs_master_service_skips_pool(mock_http, monkeypatch):
+    """Unset KVS_MASTER_SERVICE: '*' pool_endpoint cannot resolve, pool registration skipped."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    monkeypatch.delenv("KVS_MASTER_SERVICE", raising=False)
+
+    instance = _make_mock_instance(1)
+    ConductorApiClient._pool_registered = False
+    with _setup_reg_config("Memcache", pool_endpoint="tcp://*:5557", npu_endpoint="tcp://*:50090"):
+        ConductorApiClient.register_kv_instance([instance])
+
+    calls = mock_client.post.call_args_list
+    assert len(calls) == 1  # HBM DP only
+    assert "pool" not in calls[0][0][1].get("instance_id", "")
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
 def test_replay_endpoint_included_in_registration(mock_http):
     """replay_endpoint is resolved and included in registration payloads."""
     mock_client = Mock()

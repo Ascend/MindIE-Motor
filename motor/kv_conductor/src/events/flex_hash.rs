@@ -14,7 +14,9 @@
 //!   - non-negative integer (u64, i64, u32, …; negative i64 is rejected)
 //!   - decimal string   "12345678901234567890"
 //!   - hex string       "0xABCD1234…" or "ABCD1234…"
-//!   - binary bytes     up to 8 bytes, big-endian (vLLM BlockHash compat)
+//!   - binary bytes     ≤ 8 bytes big-endian; > 8 bytes use the trailing
+//!     8 bytes (low 64 bits, vLLM sha256 default) — matching vLLM's int
+//!     mode (`& (1 << 64) - 1`) and memcache's `BlockHashHexToU64`
 
 use serde::Deserialize;
 
@@ -74,7 +76,19 @@ impl<'de> Deserialize<'de> for FlexHash {
 
         fn bytes_to_flex<E: serde::de::Error>(v: &[u8]) -> Result<FlexHash, E> {
             if v.len() > 8 {
-                return Err(E::custom(format!("hash bytes too long: {} > 8", v.len())));
+                // vLLM block hashes default to 32-byte sha256. Consumers
+                // (vLLM int mode, memcache BlockHashHexToU64) all use the
+                // low 64 bits — take the trailing 8 bytes (big-endian low
+                // half) to stay consistent. Log every truncation: it used to
+                // be a hard parse error, and silently truncating a non-sha256
+                // long binary hash would corrupt matching.
+                let low = u64::from_be_bytes(v[v.len() - 8..].try_into().unwrap());
+                tracing::trace!(
+                    len = v.len(),
+                    low64 = low,
+                    "flex hash: >8-byte binary truncated to low 64 bits"
+                );
+                return Ok(FlexHash(low));
             }
             let mut buf = [0u8; 8];
             buf[8 - v.len()..].copy_from_slice(v);

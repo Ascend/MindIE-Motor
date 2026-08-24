@@ -45,7 +45,7 @@ pub(crate) mod vllm;
 // Re-export key types so callers don't need to reach into sub-modules.
 #[allow(unused_imports)]
 pub(crate) use flex_hash::FlexHash; // used by tests via `use super::*`
-pub(crate) use pool::{apply_pool_event, PoolEvent};
+pub(crate) use pool::{apply_pool_event, MemcacheEventBatch, PoolEvent};
 #[allow(unused_imports)]
 pub(crate) use vllm::{
     apply_vllm_event, is_main_attention_kind, parse_vllm_batch, VllmEvent, VllmEventMap,

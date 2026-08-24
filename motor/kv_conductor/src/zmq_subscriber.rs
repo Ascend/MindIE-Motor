@@ -12,8 +12,8 @@
 //!
 //! Connects to engine-side ZMQ PUB sockets, receives multi-part msgpack
 //! messages, and delegates event parsing and application to the [`events`]
-//! module.  Supports Mooncake Master (pool backend) and vLLM engine (native
-//! msgspec) event formats.
+//! module.  Supports Mooncake Master and Memcache MetaService (pool
+//! backends) and vLLM engine (native msgspec) event formats.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -309,49 +309,103 @@ fn process_payload(
     let payload_bytes: &[u8] = payload_msg;
 
     // Log the first byte so we can see which msgpack type is arriving.
+    let (source, backend) = subscriber_source_backend(backend_id);
     tracing::trace!(
         %backend_id, dp_rank,
+        source,
+        backend,
         len = payload_bytes.len(),
         b0 = format!("0x{:02x}", payload_bytes.first().copied().unwrap_or(0)),
         b1 = format!("0x{:02x}", payload_bytes.get(1).copied().unwrap_or(0)),
-        "ZMQ payload received"
+        "kv_event received"
     );
 
-    // Format 1 — vLLM msgspec batch: [ts, events: [...], dp_rank]
-    if let Some((vllm_events, _bdp)) = events::parse_vllm_batch(payload_bytes) {
-        *batch_count += 1;
-        for vllm_event in &vllm_events {
-            *event_count += 1;
-            if let Err(e) = events::apply_vllm_event(
-                indexer,
-                vllm_event,
-                model_name,
-                tenant_id,
-                backend_id,
-                dp_rank,
-                default_media,
-                match_mode,
-                hbm_ip_index,
-                block_size,
-            ) {
-                *parse_errors += 1;
-                tracing::warn!(%backend_id, dp_rank, "vLLM event apply error: {e}");
+    // Dispatch on the msgpack first byte: Memcache publishes a fixmap
+    // (`{"events": [...]}`), while vLLM and Mooncake publish arrays
+    // (`[ts, events, dp_rank]`). Parsing Memcache batches directly by shape
+    // avoids futile vLLM/Mooncake attempts (and their log noise) on every
+    // Memcache batch.
+    let is_memcache_map = matches!(
+        payload_bytes.first(),
+        Some(0x80..=0x8f) | Some(0xde) | Some(0xdf)
+    );
+
+    if is_memcache_map {
+        // Format 3 — Memcache KvEvent batch: {"events": [PoolEvent, ...]}
+        if let Ok(batch) = rmp_serde::from_slice::<events::MemcacheEventBatch>(payload_bytes) {
+            *batch_count += 1;
+            tracing::debug!(
+                %backend_id, dp_rank,
+                num_events = batch.events.len(),
+                event_backend_id = %batch
+                    .events
+                    .first()
+                    .and_then(|e| e.backend_id.as_deref())
+                    .unwrap_or(""),
+                "kv_event parsed backend=memcache"
+            );
+            for zmq_event in &batch.events {
+                *event_count += 1;
+                // Log the event's own backend_id (the originating LocalService's
+                // Pod IP) — distinct from the subscriber's `backend_id` context.
+                tracing::trace!(
+                    %backend_id, dp_rank,
+                    event_backend_id = %zmq_event.backend_id.as_deref().unwrap_or(""),
+                    event_type = %zmq_event.event_type.as_deref().unwrap_or("unknown"),
+                    medium = %zmq_event.medium.as_deref().unwrap_or(""),
+                    "kv_event event_parsed backend=memcache"
+                );
+                if let Err(e) = events::apply_pool_event(
+                    indexer,
+                    zmq_event,
+                    model_name,
+                    tenant_id,
+                    backend_id,
+                    dp_rank,
+                    default_media,
+                    match_mode,
+                    hbm_ip_index,
+                ) {
+                    *parse_errors += 1;
+                    tracing::warn!(%backend_id, dp_rank, event_id = zmq_event.event_id, "{e}");
+                }
             }
+        } else {
+            *parse_errors += 1;
+            log_unparsed_payload(backend_id, dp_rank, payload_bytes, "kv_event dropped");
         }
     } else {
-        tracing::trace!(
-            %backend_id, dp_rank,
-            "vLLM batch parse failed, trying Mooncake format"
-        );
+        // Format 1 — vLLM msgspec batch: [ts, events: [...], dp_rank]
+        if let Some((vllm_events, _bdp)) = events::parse_vllm_batch(payload_bytes) {
+            *batch_count += 1;
+            for vllm_event in &vllm_events {
+                *event_count += 1;
+                if let Err(e) = events::apply_vllm_event(
+                    indexer,
+                    vllm_event,
+                    model_name,
+                    tenant_id,
+                    backend_id,
+                    dp_rank,
+                    default_media,
+                    match_mode,
+                    hbm_ip_index,
+                    block_size,
+                ) {
+                    *parse_errors += 1;
+                    tracing::warn!(%backend_id, dp_rank, "kv_event apply_error backend=vllm: {e}");
+                }
+            }
+        }
         // Format 2 — Mooncake pool backend batch: (timestamp_ms, events_vec, dp_rank)
-        if let Ok((_timestamp, events_vec, bdp)) =
+        else if let Ok((_timestamp, events_vec, bdp)) =
             rmp_serde::from_slice::<(i64, Vec<PoolEvent>, u32)>(payload_bytes)
         {
             *batch_count += 1;
-            tracing::trace!(
+            tracing::debug!(
                 %backend_id, dp_rank, bdp,
                 num_events = events_vec.len(),
-                "ZMQ Mooncake batch parsed"
+                "kv_event parsed backend=mooncake"
             );
             for zmq_event in &events_vec {
                 *event_count += 1;
@@ -371,34 +425,56 @@ fn process_payload(
                 }
             }
         }
-        // Both formats rejected
+        // All array formats rejected
         else {
             *parse_errors += 1;
-            let preview: String = payload_bytes
-                .iter()
-                .take(32)
-                .map(|b| format!("{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(" ");
-            // Decode the msgpack type marker for diagnostics.
-            let type_hint = match payload_bytes.first().copied() {
-                Some(0x93) => "3-element fixarray",
-                Some(0x92) => "2-element fixarray",
-                Some(0x91) => "1-element fixarray",
-                Some(0x80..=0x8f) => "fixmap",
-                Some(0xdc) | Some(0xdd) => "array",
-                Some(0xde) | Some(0xdf) => "map",
-                _ => "unknown",
-            };
-            tracing::warn!(
-                %backend_id, dp_rank,
-                payload_len = payload_bytes.len(),
-                type_hint,
-                preview = %preview,
-                "msgpack parse error: payload matches neither vLLM nor Mooncake batch format"
-            );
+            log_unparsed_payload(backend_id, dp_rank, payload_bytes, "kv_event dropped");
         }
     }
+}
+
+/// Infer the event source/backend from the subscriber's `backend_id` context
+/// (e.g. `vllm-prefill-2` → engine/vllm, `memcache-pool` → pool/memcache).
+fn subscriber_source_backend(backend_id: &str) -> (&'static str, &'static str) {
+    if backend_id.starts_with("vllm-") || backend_id.starts_with("sglang-") {
+        ("engine", "vllm")
+    } else if backend_id.starts_with("memcache") {
+        ("pool", "memcache")
+    } else if backend_id.starts_with("mooncake") {
+        ("pool", "mooncake")
+    } else {
+        ("pool", "pool")
+    }
+}
+
+/// Log an unparsable ZMQ payload with a hex preview and msgpack type hint.
+fn log_unparsed_payload(backend_id: &str, dp_rank: u32, payload_bytes: &[u8], message: &str) {
+    let (source, backend) = subscriber_source_backend(backend_id);
+    let preview: String = payload_bytes
+        .iter()
+        .take(32)
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Decode the msgpack type marker for diagnostics.
+    let type_hint = match payload_bytes.first().copied() {
+        Some(0x93) => "3-element fixarray",
+        Some(0x92) => "2-element fixarray",
+        Some(0x91) => "1-element fixarray",
+        Some(0x80..=0x8f) => "fixmap",
+        Some(0xdc) | Some(0xdd) => "array",
+        Some(0xde) | Some(0xdf) => "map",
+        _ => "unknown",
+    };
+    tracing::warn!(
+        %backend_id, dp_rank,
+        source,
+        backend,
+        payload_len = payload_bytes.len(),
+        type_hint,
+        preview = %preview,
+        "{message}"
+    );
 }
 
 fn zmq_errno_reasonable(e: &zmq::Error) -> bool {

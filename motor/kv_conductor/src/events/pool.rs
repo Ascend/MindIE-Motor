@@ -26,6 +26,18 @@ use crate::protocols::*;
 use super::flex_hash::FlexHash;
 use super::helpers::{resolve_medium, resolve_workers};
 
+/// Memcache KvEvent batch — wire format `{"events": [PoolEvent, ...]}`.
+///
+/// Published by the memcache MetaService (memcache PR #334). Each event
+/// map carries its own `backend_id` (the originating LocalService's Pod
+/// IP), `event_type` ("stored"/"removed"/"cleared"), `medium`, and
+/// `seq_hashes` (uint64 array when `hash_as_int=true`, else hex strings).
+#[derive(Debug, Deserialize)]
+pub(crate) struct MemcacheEventBatch {
+    #[serde(default)]
+    pub(crate) events: Vec<PoolEvent>,
+}
+
 /// Deserialized msgpack event from a pool backend ZMQ PUB frame.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PoolEvent {
@@ -137,7 +149,8 @@ pub(crate) fn apply_pool_event(
             event_type,
             backend_id = pool_event.backend_id.as_deref().unwrap_or(backend_id),
             dp_rank = pool_event.dp_rank.unwrap_or(subscriber_dp_rank),
-            "pool event has no seq_hashes or block_hashes — skipping"
+            reason = "no_hashes",
+            "kv_event dropped"
         );
         return Ok(());
     }
@@ -154,20 +167,20 @@ pub(crate) fn apply_pool_event(
                     model = %mn, tenant = %tid,
                     event_type,
                     total = seq_hashes.len(),
-                    medium = %worker.medium.as_str(),
+                    medium = %worker.medium.log_str(),
                     ?preview,
                     worker = %worker.instance_id,
-                    "pool stored: no matching offload blocks yet — queued for later"
+                    "kv_event queued"
                 );
             } else {
-                tracing::trace!(
+                tracing::info!(
                     model = %mn, tenant = %tid,
                     matched = blocks.len(),
                     total = seq_hashes.len(),
-                    medium = %worker.medium.as_str(),
+                    medium = %worker.medium.log_str(),
                     ?preview,
                     worker = %worker.instance_id,
-                    "pool confirm: resolved mapping, inserting into tree"
+                    "kv_event confirmed"
                 );
                 // Apply one `Stored` event per block, each with its own
                 // `parent_hash` (resolved from the offload cache, retained
@@ -192,16 +205,18 @@ pub(crate) fn apply_pool_event(
                     model = %mn, tenant = %tid,
                     event_type,
                     total = seq_hashes.len(),
-                    medium = %worker.medium.as_str(),
-                    "pool removed: all blocks were still pending — evicted from cache"
+                    medium = %worker.medium.log_str(),
+                    reason = "still_pending",
+                    "kv_event dropped"
                 );
             } else {
-                tracing::trace!(
+                tracing::debug!(
                     model = %mn, tenant = %tid,
+                    event_type,
                     tree_blocks = tree_hashes.len(),
                     total = seq_hashes.len(),
-                    medium = %worker.medium.as_str(),
-                    "pool removed: applying tree removal for matched blocks"
+                    medium = %worker.medium.log_str(),
+                    "kv_event applied"
                 );
                 entry.apply_event(
                     worker,
@@ -216,7 +231,8 @@ pub(crate) fn apply_pool_event(
                 model = %mn,
                 backend_id = %be_id,
                 dp_rank,
-                "pool event type not recognized (neither stored/removed/cleared) — skipping"
+                reason = "unknown_type",
+                "kv_event dropped"
             );
         }
     }

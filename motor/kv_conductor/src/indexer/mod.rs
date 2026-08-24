@@ -248,7 +248,7 @@ impl IndexerEntry {
             block_size,
             num_hashes = block_hashes.len(),
             hash_us,
-            matched = overlap.blocks.len(),
+            matched_workers = overlap.blocks.len(),
             "hash_computed"
         );
         overlap
@@ -712,6 +712,7 @@ impl IndexerEntry {
             .retain(|_bh, e| now.duration_since(e.inserted_at) < content_ttl);
         pruned += before_content - state.content.len();
 
+        let before_pending = state.pending_pool.len();
         state.pending_pool.retain(|_bh, entries| {
             entries.retain(|e| {
                 let keep = now.duration_since(e.inserted_at) < pending_ttl;
@@ -722,6 +723,14 @@ impl IndexerEntry {
             });
             !entries.is_empty()
         });
+        let expired_pending = before_pending - state.pending_pool.len();
+        if expired_pending > 0 {
+            tracing::debug!(
+                expired = expired_pending,
+                pending_ttl_secs = pending_ttl.as_secs(),
+                "kv_event pending_expired"
+            );
+        }
 
         if pruned > 0 {
             tracing::debug!(
@@ -983,7 +992,7 @@ impl Indexer {
             block_size,
             num_hashes = block_hashes.len(),
             hash_us,
-            matched = overlap.blocks.len(),
+            matched_workers = overlap.blocks.len(),
             "hash_computed"
         );
         let t_tree = t0.elapsed();
@@ -991,11 +1000,20 @@ impl Indexer {
         let resp = self.build_response(&overlap, &medium_ends, model_name, tenant_id, block_size);
         let total = t0.elapsed();
 
+        // Longest per-medium coverage across workers, in blocks.
+        let npu_blocks = medium_ends.values().map(|m| m.npu).max().unwrap_or(0);
+        let cpu_blocks = medium_ends.values().map(|m| m.cpu).max().unwrap_or(0);
+        let disk_blocks = medium_ends.values().map(|m| m.disk).max().unwrap_or(0);
+
         tracing::debug!(
             num_tokens = token_ids.len(),
             block_size,
-            hash_us = t_tree.as_micros(),
+            hash_us,
+            match_us = t_tree.as_micros(),
             total_us = total.as_micros(),
+            npu_blocks,
+            cpu_blocks,
+            disk_blocks,
             "query profile"
         );
         resp

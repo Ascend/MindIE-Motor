@@ -257,7 +257,7 @@ impl ConcurrentRadixTree {
 
         tracing::debug!(
             seq_len = sequence.len(),
-            depth = matched_depth,
+            matched_blocks = matched_depth,
             active_workers = results.len(),
             elapsed_us = t0.elapsed().as_micros(),
             "find_matches"

@@ -1,0 +1,27 @@
+--- a/vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py	2026-08-21 14:21:37.387512399 +0800
++++ b/vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py	2026-08-21 14:21:37.387211652 +0800
+@@ -167,3 +167,23 @@
+         self._requests_to_connector.pop(request.request_id, None)
+
+         return async_saves > 0, kv_txfer_params
++
++    def get_kv_connector_kv_cache_events(self) -> "KVConnectorKVEvents | None":
++        """Collect kv cache events from all child connectors.
++
++        Proxy for child connectors' worker-side kv cache events. Without
++        this, a top-level MultiConnector silently drops connector events
++        (upstream vLLM leaves this unimplemented as a TODO).
++        """
++        # motor-patch: kv-events proxy (do not remove)
++        combined = None
++        for c in self._connectors:
++            events = c.get_kv_connector_kv_cache_events()
++            if events is None:
++                continue
++            if combined is None:
++                combined = events
++            else:
++                combined.add_events(events.get_all_events())
++                combined.increment_workers(events.get_number_of_workers())
++        return combined
++

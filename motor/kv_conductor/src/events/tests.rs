@@ -58,10 +58,21 @@ fn test_flex_hash_i64_negative_rejected() {
 }
 
 #[test]
-fn test_flex_hash_bytes_too_long_rejected() {
-    let packed = rmp_serde::to_vec(&vec![vec![0u8; 9]]).unwrap();
-    let result: Result<Vec<FlexHash>, _> = from_slice(&packed);
-    assert!(result.is_err());
+fn test_flex_hash_bytes_long_uses_low_64_bits() {
+    // vLLM block hashes default to 32-byte sha256. vLLM int mode and
+    // memcache's BlockHashHexToU64 both use the low 64 bits, so a long
+    // byte string keeps its trailing 8 bytes (big-endian).
+    let sha256: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+    let data = msgpack_bin(&sha256);
+    let hashes: Vec<FlexHash> = from_slice(&data).unwrap();
+    assert_eq!(
+        hashes[0].0,
+        u64::from_be_bytes([0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f])
+    );
 }
 
 #[test]
@@ -620,6 +631,111 @@ fn test_pool_backend_store_ignores_unknown_hash() {
         assert!(
             state.pending_pool.contains_key(&0xDEAD),
             "pool event should be queued in pending_pool"
+        );
+    }
+}
+
+/// Replicate the memcache MetaService wire batch as a msgpack map
+/// ({"events": [...]}): optional fields packed as nil, timestamp as
+/// uint64, seq_hashes as uint64 array. Matches memcache's
+/// EmitEventMapFields output byte-for-byte in structure.
+fn memcache_wire_batch(seq_hash: u64) -> rmpv::Value {
+    let event = rmpv::Value::Map(vec![
+        (rmpv::Value::from("event_id"), rmpv::Value::from(1u64)),
+        (
+            rmpv::Value::from("timestamp"),
+            rmpv::Value::from(1752999546000u64),
+        ),
+        (rmpv::Value::from("event_type"), rmpv::Value::from("stored")),
+        (rmpv::Value::from("model_name"), rmpv::Value::Nil),
+        (rmpv::Value::from("block_size"), rmpv::Value::Nil),
+        (rmpv::Value::from("additional_salt"), rmpv::Value::Nil),
+        (rmpv::Value::from("lora_name"), rmpv::Value::Nil),
+        (rmpv::Value::from("tenant_id"), rmpv::Value::from("default")),
+        (rmpv::Value::from("medium"), rmpv::Value::from("xpu")),
+        (
+            rmpv::Value::from("backend_id"),
+            rmpv::Value::from("10.244.0.5"),
+        ),
+        (rmpv::Value::from("dp_rank"), rmpv::Value::Nil),
+        (
+            rmpv::Value::from("seq_hashes"),
+            rmpv::Value::Array(vec![rmpv::Value::from(seq_hash)]),
+        ),
+        (rmpv::Value::from("base_block_idx"), rmpv::Value::Nil),
+        (rmpv::Value::from("parent_hash"), rmpv::Value::Nil),
+        (rmpv::Value::from("token_ids"), rmpv::Value::Nil),
+    ]);
+    rmpv::Value::Map(vec![(
+        rmpv::Value::from("events"),
+        rmpv::Value::Array(vec![event]),
+    )])
+}
+
+#[test]
+fn test_memcache_batch_parse_and_apply_ip_only() {
+    use crate::indexer::Indexer;
+    use crate::protocols::HbmIpIndex;
+
+    let indexer = Indexer::new();
+    let ip_index = HbmIpIndex::default();
+    ip_index
+        .write()
+        .entry("10.244.0.5".to_string())
+        .or_default()
+        .push(("vllm-prefill-1".to_string(), 0));
+
+    let token_ids = vec![1i64, 2, 3, 4];
+    let block_size = 4u32;
+    let hash = compute_block_hash_for_seq(&token_ids, block_size)[0].0;
+
+    let packed = rmp_serde::to_vec(&memcache_wire_batch(hash)).unwrap();
+    let parsed: MemcacheEventBatch = from_slice(&packed).unwrap();
+    assert_eq!(parsed.events.len(), 1);
+
+    let event = &parsed.events[0];
+    assert_eq!(event.event_type.as_deref(), Some("stored"));
+    assert_eq!(event.backend_id.as_deref(), Some("10.244.0.5"));
+    assert_eq!(event.tenant_id.as_deref(), Some("default"));
+    assert_eq!(event.medium.as_deref(), Some("xpu"));
+    assert_eq!(event.dp_rank, None);
+    let hashes: Vec<u64> = event
+        .seq_hashes
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|h| h.0)
+        .collect();
+    assert_eq!(hashes, vec![hash]);
+
+    // Apply under IpOnly: the event's backend_id (node IP) fans out to all
+    // DPs registered on that IP.
+    apply_pool_event(
+        &indexer,
+        event,
+        "test-model",
+        "default",
+        "memcache-pool", // subscriber's own backend_id — ignored under IpOnly
+        0,
+        &[StorageMedium::Npu, StorageMedium::Cpu, StorageMedium::Disk],
+        MatchMode::IpOnly,
+        &Some(ip_index),
+    )
+    .unwrap();
+
+    // Pool-first semantics: memcache stored events carry only block hashes
+    // (token_ids / parent_hash are nil placeholders on the memcache wire),
+    // so the block is queued in pending_pool waiting for an engine offload
+    // event with matching token hashes — not inserted into the tree yet.
+    // (An empty worker resolution under IpOnly would queue nothing, so the
+    // pending entry also proves the backend_id → hbm_ip_index → node DP
+    // routing worked.)
+    let entry = indexer.get_or_create("test-model", "default");
+    {
+        let state = entry.offload_pool_state.read();
+        assert!(
+            state.pending_pool.contains_key(&hash),
+            "memcache stored event should be queued in pending_pool at the node-IP worker (IpOnly)"
         );
     }
 }

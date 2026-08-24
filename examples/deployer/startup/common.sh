@@ -124,13 +124,16 @@ setup_ascend_cache_path() {
     fi
 }
 
-apply_shuffle_safetensors_patch() {
-    local patch_script="${MOTOR_PATCH_ROOT}/patch_apply_shuffle_safetensors.py"
+apply_patches() {
+    local patch_script="${MOTOR_PATCH_ROOT}/patch_apply.py"
     if [ ! -f "$patch_script" ]; then
-        echo "Warning: shuffle safetensors patch script not found: $patch_script"
+        echo "Warning: patch orchestrator not found: $patch_script"
         return 0
     fi
-    python3 "$patch_script"
+    if ! python3 "$patch_script"; then
+        echo "ERROR: patch application failed (see log above); KV events may be silently dropped"
+        return 1
+    fi
 }
 
 setup_jemalloc() {
@@ -205,6 +208,16 @@ sync_mmc_local_config() {
             sed -E -i.bak "s|tcp://[^[:space:]]+:([0-9]+)|tcp://${_host}:\1|g" "$_dst"
             rm -f "${_dst}.bak"
         fi
+
+        # Replace backend_id placeholder with the Pod IP (kv_event node identity).
+        # On non-K8s (bare-metal) deploys POD_IP may be unset: replace with an
+        # empty value instead of leaving the literal "<POD_IP>" — memcache then
+        # falls back to MMC_LOCAL_SERVICE_BACKEND_ID / logs a warning, rather
+        # than broadcasting "<POD_IP>" as a bogus backend_id that silently
+        # breaks IpOnly matching.
+        local _backend_id="${POD_IP:-}"
+        sed -E -i.bak "s|^(ock\.mmc\.local_service\.backend_id)\s*=.*|\1 = ${_backend_id}|" "$_dst"
+        rm -f "${_dst}.bak"
     }
 
     _sync_one_mmc_conf "local-inprocess" || return

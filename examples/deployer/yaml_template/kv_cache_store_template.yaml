@@ -106,6 +106,10 @@ spec:
     port: 50090
     protocol: TCP
     targetPort: 50090
+  - name: kv-events
+    port: 5557
+    protocol: TCP
+    targetPort: 5557
   selector:
     app: mindie-motor-kv-store
   sessionAffinity: None
