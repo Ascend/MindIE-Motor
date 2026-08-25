@@ -1,0 +1,36 @@
+name: codeql
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: '0 0 2 * * ?'
+
+jobs:
+  codeql:
+    name: codeql
+    runs-on: default
+    steps:
+      - name: checkout
+        uses: checkout
+
+      - name: codeql-analysis
+        identifier: codeql
+        uses: codeql-action
+        with:
+          language: "python"
+          query-suite: security-and-quality
+          report-path: ./codeql-report.md
+          output-path: ./
+          build-mode: autobuild
+          ram: 8192
+          threads: 0
+          verbose: "true"
+
+      - name: upload sarif to openlibing
+        uses: openlibing-upload-sarif
+        with:
+          sarif_file: ./codeql-results-python.sarif
+          obs_ak: ${{ secrets.OPENLIBING_OBS_AK }}
+          obs_sk: ${{ secrets.OPENLIBING_OBS_SK }}
+          apig_app_key: ${{ secrets.OPENLIBING_KEY }}
+          apig_app_secret: ${{ secrets.OPENLIBING_SECRET }}
