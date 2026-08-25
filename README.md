@@ -16,6 +16,8 @@
     </a>
 </p>
 
+简体中文 | [English](./README_en.md)
+
 # 最新消息
 
 [2026/03] 🚀 MindIE-PyMotor正式开源，新增代码仓智能体。

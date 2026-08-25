@@ -16,6 +16,8 @@
     </a>
 </p>
 
+English | [简体中文](./README.md)
+
 # What's New
 
 [2026/03] 🚀 MindIE-PyMotor officially open sourced, with the addition of the code repository agents.
