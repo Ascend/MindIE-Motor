@@ -272,6 +272,7 @@ $ASCEND_DEVICES \
 -v /usr/local/sbin:/usr/local/sbin \
 -v /var/log/npu/:/usr/slog \
 -v /mnt:/mnt \
+-v /root/.cache:/root/.cache \
 -v $CONFIGMAP_PATH:$CONFIGMAP_PATH \
 -v $WEIGHT_MOUNT_PATH:$WEIGHT_MOUNT_PATH:ro \
 -p 31015:1025 \
@@ -280,7 +281,7 @@ $IMAGE_NAME \
 bash -c "export POD_IP=\$(grep \$(hostname) /etc/hosts | cut -f1) && source /mnt/motor/start_motor.sh"
 ```
 
-**注意：挂载路径要包含/mnt**
+**注意：挂载路径要包含 `/mnt` 和 `/root/.cache`**
 
 ### 启动Docker
 

@@ -109,6 +109,8 @@ spec:
             mountPath: /mnt/weight
           - name: plog-path
             mountPath: /root/ascend/log
+          - name: cache-path
+            mountPath: /root/.cache
       volumes:
       - name: data
         hostPath:
@@ -143,6 +145,10 @@ spec:
       - name: plog-path
         hostPath:
           path: /root/ascend/log
+          type: DirectoryOrCreate
+      - name: cache-path
+        hostPath:
+          path: /root/.cache
           type: DirectoryOrCreate
 ---
 apiVersion: v1

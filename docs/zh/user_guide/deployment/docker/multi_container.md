@@ -225,6 +225,7 @@ $ASCEND_DEVICES \
 -v /usr/local/sbin:/usr/local/sbin \
 -v /var/log/npu/:/usr/slog \
 -v /mnt:/mnt \
+-v /root/.cache:/root/.cache \
 -v $CONFIGMAP_PATH:$CONFIGMAP_PATH \
 -v $WEIGHT_MOUNT_PATH:$WEIGHT_MOUNT_PATH:ro \
 $IMAGE_NAME \

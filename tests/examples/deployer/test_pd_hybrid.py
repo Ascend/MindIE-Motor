@@ -154,6 +154,11 @@ def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV] if C.VALUE in item}
     node_selector = data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR]
     assert env[C.ENV_ROLE] == C.ROLE_UNION
+    mounts = {item[C.NAME]: item[C.MOUNT_PATH] for item in container[C.VOLUME_MOUNTS]}
+    volumes = {item[C.NAME]: item for item in data[C.SPEC][C.TEMPLATE][C.SPEC][C.VOLUMES]}
+    assert mounts[C.CACHE_PATH] == C.DEFAULT_CACHE_MOUNT_PATH
+    assert volumes[C.CACHE_PATH][C.HOST_PATH]["path"] == C.DEFAULT_CACHE_MOUNT_PATH
+    assert volumes[C.CACHE_PATH][C.HOST_PATH]["type"] == "DirectoryOrCreate"
     assert data[C.SPEC][C.REPLICAS] == 1
     assert container[C.RESOURCES][C.REQUESTS][C.ASCEND_910_NPU_NUM] == 4
     assert container[C.RESOURCES][C.LIMITS][C.ASCEND_910_NPU_NUM] == 4

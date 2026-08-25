@@ -126,6 +126,8 @@ SERVER_BASE_NAME_MAP = {
     ENGINE_TYPE_SGLANG: ENGINE_TYPE_SGLANG,
 }
 LOG_PATH = "plog-path"
+CACHE_PATH = "cache-path"
+DEFAULT_CACHE_MOUNT_PATH = "/root/.cache"
 DEPLOY_YAML_ROOT_PATH = "./yaml_template"
 OUTPUT_ROOT_PATH = "./output_yamls"
 SELECTOR = "selector"

@@ -83,6 +83,8 @@ spec:
             mountPath: /mnt/weight
           - name: plog-path
             mountPath: /root/ascend/log
+          - name: cache-path
+            mountPath: /root/.cache
           - name: rdma
             mountPath: /dev/infiniband
           - name: hisi-hdc
@@ -121,6 +123,10 @@ spec:
       - name: plog-path
         hostPath:
           path: /root/ascend/log
+          type: DirectoryOrCreate
+      - name: cache-path
+        hostPath:
+          path: /root/.cache
           type: DirectoryOrCreate
       - name: rdma
         hostPath:
