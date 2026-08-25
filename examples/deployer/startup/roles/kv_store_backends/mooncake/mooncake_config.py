@@ -94,6 +94,13 @@ def generate_kv_cache_store_config(output_path: str, user_config_path: str) -> b
 
     out_cfg: dict[str, Any] = dict(kv_cfg)
 
+    out_cfg.setdefault("metadata_server", "P2PHANDSHAKE")
+
+    # Standalone: the store process contributes memory; engines contribute nothing but keep a staging buffer.
+    if kv_cfg.get("store_mode") == "standalone":
+        out_cfg["global_segment_size"] = 0
+        out_cfg["local_buffer_size"] = kv_cfg.get("local_buffer_size") or "1GB"
+
     kvp_master_service = os.getenv("KVS_MASTER_SERVICE", "")
     if not kvp_master_service:
         logging.error("Env KVS_MASTER_SERVICE is required but not set, cannot generate kv_cache_store_config")

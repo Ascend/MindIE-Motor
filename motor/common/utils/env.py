@@ -108,6 +108,12 @@ class _Environment:
     def mmc_local_config_path(self):
         return os.getenv("MMC_LOCAL_CONFIG_PATH", "")
 
+    # --- Mooncake store ---
+
+    @property
+    def mooncake_config_path(self):
+        return os.getenv("MOONCAKE_CONFIG_PATH", "")
+
     @property
     def mmc_local_service_mode(self):
         return os.getenv("MMC_LOCAL_SERVICE_MODE", "")

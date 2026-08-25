@@ -51,6 +51,7 @@ SERVICE_KV_STORE: str = "kv_store"
 _DEFAULT_MODULE_MAP: dict[str | None, list[str]] = {
     "engine": ["motor.node_manager.core.services.native_engine.service"],
     "memcache": ["motor.node_manager.core.services.memcache.lifecycle"],
+    "mooncake": ["motor.node_manager.core.services.mooncake.lifecycle"],
 }
 
 

@@ -337,6 +337,24 @@ class KVCacheStoreConfig:
     # "standalone" / "inprocess" — the only user-facing config key for memcache.
     local_config_path: str = "/usr/local/Ascend/pyMotor/conf/mmc-local-inprocess.conf"
 
+    # --- Mooncake ---
+    store_mode: str = ""
+    # "" / "embedded" (default): engines contribute memory themselves.
+    # "standalone": the daemon runs a dedicated store process; engines are pure requesters.
+    global_segment_size: str = ""
+    # Pool memory contributed by this pod, e.g. "600GB"; consumed by the engine
+    # connector in embedded mode, by the store process in standalone mode.
+    local_buffer_size: str = ""
+    # Engine-side staging buffer in standalone mode (default "1GB"); the store always uses 0.
+    store_http_port: int = 0
+    # REST port of mooncake_store_service (its --port arg). 0 = ephemeral port:
+    # the API has no consumer in Motor deployments and only needs to bind
+    # successfully, so let the kernel pick a free port to avoid conflicts
+    # (hostNetwork pods on the same node share the host port space).
+    metadata_server: str = "P2PHANDSHAKE"
+    protocol: str = "ascend"
+    device_name: str = ""
+
 
 @dataclass
 class NodeManagerConfig:
@@ -720,6 +738,26 @@ class NodeManagerConfig:
         if config_path:
             kcfg.local_config_path = config_path
 
+        # --- Mooncake ---
+        if kcfg.backend == "mooncake":
+            if "store_mode" in kv:
+                kcfg.store_mode = kv["store_mode"]
+            if kcfg.store_mode not in ("", "embedded", "standalone"):
+                logger.warning(
+                    "kv_cache_store_config.store_mode=%r is invalid, falling back to 'embedded'",
+                    kcfg.store_mode,
+                )
+                kcfg.store_mode = "embedded"
+            kcfg.global_segment_size = kv.get("global_segment_size", "") or kcfg.global_segment_size
+            kcfg.local_buffer_size = kv.get("local_buffer_size", "") or kcfg.local_buffer_size
+            kcfg.metadata_server = kv.get("metadata_server", "") or kcfg.metadata_server
+            kcfg.protocol = kv.get("protocol", "") or kcfg.protocol
+            if "device_name" in kv:
+                kcfg.device_name = kv["device_name"]
+            store_http_port = kv.get("store_http_port", 0)
+            if store_http_port:
+                kcfg.store_http_port = int(store_http_port)
+
     @classmethod
     def _set_device_count_for_single_container(cls, config: "NodeManagerConfig"):
         """Set device count for single container mode using parallel_config.world_size"""
@@ -906,6 +944,8 @@ class NodeManagerConfig:
             f"    ├─ Service:              {self.kv_cache_store_config.service or '(env: KVS_MASTER_SERVICE)'}\n"
             f"    ├─ Deploy Mode:          {self.kv_cache_store_config.mode}\n"
             f"    ├─ Runtime Mode:         {self.kv_cache_store_config.local_service_mode or '(default)'}\n"
+            f"    ├─ Store Mode:           {self.kv_cache_store_config.store_mode or '(embedded)'}\n"
+            f"    ├─ Global Segment Size:  {self.kv_cache_store_config.global_segment_size or '(default)'}\n"
             f"    ├─ Port:                 {self.kv_cache_store_config.port}\n"
             f"    └─ Local Config Path:    {self.kv_cache_store_config.local_config_path}\n"
             f"{'=' * 80}"

@@ -220,14 +220,14 @@ class TestServiceRegistry:
 
     def test_add_discovery_path(self):
         registry = _ServiceRegistry()
-        registry.add_discovery_path("mooncake", "tests.node_manager.test_registry")
-        assert "mooncake" in registry._module_map
-        assert "tests.node_manager.test_registry" in registry._module_map["mooncake"]
+        registry.add_discovery_path("memcache", "tests.node_manager.test_registry")
+        assert "memcache" in registry._module_map
+        assert "tests.node_manager.test_registry" in registry._module_map["memcache"]
 
     def test_add_discovery_path_multiple(self):
         registry = _ServiceRegistry()
-        registry.add_discovery_path("mooncake", "mod.a", "mod.b")
-        assert registry._module_map["mooncake"] == ["mod.a", "mod.b"]
+        registry.add_discovery_path("future_backend", "mod.a", "mod.b")
+        assert registry._module_map["future_backend"] == ["mod.a", "mod.b"]
 
 
 # ---------------------------------------------------------------------------

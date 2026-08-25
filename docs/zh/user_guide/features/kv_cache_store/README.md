@@ -140,8 +140,11 @@ KV池化主要通过 `user_config.json` 配置；使用 UCM 功能时还需要�
 | `global_segment_size` | string | `1GB` | 全局共享显存段大小 |
 | `port` | int（可选） | `50088` | KV Pool 服务端口；未配置时 deploy.py 将按默认值补齐 |
 | `default_kv_lease_ttl` | int（可选） | `11000` | KV 对象默认租约 TTL（毫秒）；配置值需大于 `env.json` 中 vllm 实例的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT` |
-| `eviction_high_watermark_ratio` | float | 0.9 | 池化空间高水位驱逐线，传递给 `mooncake_master` 进程 |
-| `eviction_ratio` | float | 0.1 | 单次驱逐比例，传递给 `mooncake_master` 进程 |
+| `eviction_high_watermark_ratio` | float | 无（**必填**） | 池化空间高水位驱逐线，传递给 `mooncake_master` 进程；deploy.py 对 mooncake 后端强制校验，缺失报错，建议值 0.9 |
+| `eviction_ratio` | float | 无（**必填**） | 单次驱逐比例，传递给 `mooncake_master` 进程；deploy.py 对 mooncake 后端强制校验，缺失报错，建议值 0.1 |
+| `store_mode` | string（可选） | `embedded` | store 部署模式：`embedded`（引擎进程贡献内存，旧行为）或 `standalone`（每个引擎 Pod 由 NodeManager 拉起独立的 `mooncake_store_service` 进程贡献内存，引擎故障不清池，store 故障原地重拉）。详见 [Mooncake 后端文档](backend/mooncake.md) |
+| `local_buffer_size` | string（可选） | `1GB` | standalone 模式下引擎侧传输 staging buffer |
+| `store_http_port` | int（可选） | `0` | standalone 模式下 store 进程的 REST 端口；默认 `0` 由内核分配临时端口（该接口无消费者，避免 hostNetwork 下同机端口冲突） |
 
 **MemCache 专属参数**
 

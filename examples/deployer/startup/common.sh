@@ -291,8 +291,29 @@ is_a5_hardware() {
 }
 
 set_a5_engine_env() {
+    local if_name ip
+    if_name=$(awk '$2 == "00000000" {print $1; exit}' /proc/net/route)
+    ip="${POD_IP:-$HOST_IP}"  # POD_IP is the pod-net IP valid in the pod; HOST_IP (host IP) only works under hostNetwork
+
+    if [ -z "$if_name" ]; then
+        # Skip auto-detection only; never unset — the user may have exported these explicitly.
+        echo "Warning: failed to detect default route interface from /proc/net/route, skip GLOO/TP/HCCL socket ifname env" >&2
+    else
+        export GLOO_SOCKET_IFNAME="$if_name"
+        export TP_SOCKET_IFNAME="$if_name"
+        export HCCL_SOCKET_IFNAME="$if_name"
+    fi
+
+    if [ -z "$ip" ]; then
+        # Skip auto-detection only; never unset — the user may have exported it explicitly.
+        echo "Warning: HOST_IP and POD_IP are both empty, skip HCCL_IF_IP env" >&2
+    else
+        export HCCL_IF_IP="$ip"
+    fi
+
     export PATH="$PATH:/usr/local/go/bin"
     export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/lib64:${LD_LIBRARY_PATH:-}"
+    export ASCEND_LOCAL_COMM_RES_PATH="${ASCEND_LOCAL_COMM_RES_PATH:-/etc/hixlep}"
 }
 
 gen_ranktable_config() {

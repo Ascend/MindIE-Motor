@@ -1150,3 +1150,61 @@ def test_config_engine_restart_validation(attr, value, expected):
         config = NodeManagerConfig()
         setattr(config.fault_tolerance_config, attr, value)
         config.validate_config()
+
+
+# ===================================================================
+# kv_cache_store_config — Mooncake standalone store mode
+# ===================================================================
+
+
+def _parse_kv(raw_kv: dict):
+    config = NodeManagerConfig()
+    NodeManagerConfig._parse_kv_cache_store_config(config, {"kv_cache_store_config": raw_kv})
+    return config.kv_cache_store_config
+
+
+def test_kv_config_mooncake_standalone_fields():
+    kcfg = _parse_kv(
+        {
+            "backend": "mooncake",
+            "store_mode": "standalone",
+            "global_segment_size": "600GB",
+            "local_buffer_size": "2GB",
+            "store_http_port": 9090,
+            "metadata_server": "etcd://10.0.0.1:2379",
+            "protocol": "tcp",
+            "device_name": "mlx5_0",
+        }
+    )
+    assert kcfg.enable is True
+    assert kcfg.store_mode == "standalone"
+    assert kcfg.global_segment_size == "600GB"
+    assert kcfg.local_buffer_size == "2GB"
+    assert kcfg.store_http_port == 9090
+    assert kcfg.metadata_server == "etcd://10.0.0.1:2379"
+    assert kcfg.protocol == "tcp"
+    assert kcfg.device_name == "mlx5_0"
+
+
+def test_kv_config_mooncake_defaults():
+    """Omitted mooncake fields fall back to embedded mode and Ascend defaults."""
+    kcfg = _parse_kv({"backend": "mooncake"})
+    assert kcfg.store_mode == ""
+    assert kcfg.global_segment_size == ""
+    assert kcfg.local_buffer_size == ""
+    assert kcfg.store_http_port == 0
+    assert kcfg.metadata_server == "P2PHANDSHAKE"
+    assert kcfg.protocol == "ascend"
+    assert kcfg.device_name == ""
+
+
+def test_kv_config_mooncake_invalid_store_mode_falls_back():
+    kcfg = _parse_kv({"backend": "mooncake", "store_mode": "bogus"})
+    assert kcfg.store_mode == "embedded"
+
+
+def test_kv_config_memcache_ignores_mooncake_fields():
+    """Mooncake-only fields are not parsed for the memcache backend."""
+    kcfg = _parse_kv({"backend": "memcache", "store_mode": "standalone", "global_segment_size": "1GB"})
+    assert kcfg.store_mode == ""
+    assert kcfg.global_segment_size == ""
