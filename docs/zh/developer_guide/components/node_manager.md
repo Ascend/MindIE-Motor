@@ -18,8 +18,8 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
 | `NodeManager` | `motor/node_manager/node_manager.py` | `Application` 子类：组装模块并运行 daemon loop，每 tick 检查自杀标志 |
 | `NodeManagerConfig` | `motor/config/node_manager.py` | 加载、校验和重载节点配置，推导 endpoint 数量与端口 |
 | `NodeManagerAPI` | `motor/node_manager/api_server/node_manager_api.py` | 在后台线程中运行 FastAPI/uvicorn，提供启动、停止和探针接口 |
-| `Daemon` | `motor/node_manager/core/daemon.py` | 服务编排器：根据配置发现并实例化 Engine 和 KV-store 服务，维护进程监控器与自杀仲裁线程，持有 FaultReporter |
-| `EngineService` | `motor/node_manager/core/services/engine.py` | Engine 子进程生命周期管理：组装命令、拉起/追踪/停止 `engine_server` 进程、重拉编排（`restart`）、端口就绪等待（`wait_ready`） |
+| `Daemon` | `motor/node_manager/core/daemon.py` | 服务编排器：根据配置发现并实例化原生 Engine 与 KV-store 服务，维护进程监控器与自杀仲裁线程，持有 FaultReporter |
+| `NativeEngineService` | `motor/node_manager/core/services/native_engine/service.py` | 原生引擎子进程生命周期管理：构造 `LaunchContext`、拉起/追踪/停止 vLLM/SGLang 进程组、重拉编排（`restart`）、`/health` 就绪等待（`wait_ready`） |
 | `LocalService` | `motor/node_manager/core/services/memcache/lifecycle.py` | memcache 后端生命周期管理：配置准备、子进程拉起（通过 `memcache/worker.py`）、健康检查与重启 |
 | `RegisterManager` | `motor/node_manager/core/register_manager.py` | 注册/重注册、校验启动命令、处理 ranktable、快照元数据、持久化引擎重拉参数 |
 | `HeartbeatManager` | `motor/node_manager/core/heartbeat_manager.py` | 轮询 endpoint 状态、上报心跳、维护暂停/恢复状态；仅报告状态事实，自杀裁决在 Daemon |
@@ -53,7 +53,7 @@ Controller 调用 `POST /node-manager/start` 后，处理流程为：
 2. 校验 `job_name`、endpoint 数量以及每个 endpoint 的 IP 是否与本节点配置一致。
 3. 保存 `instance_id`、endpoints、`node_rank` 和 D2D peer 信息；如配置了 `RANKTABLE_PATH`，将实例 ranktable 写入该文件。
 4. 准备快照运行目录和元数据。
-5. `Daemon.pull_engine()` 为每个 endpoint 拉起一个 `engine_server` 子进程，并启动 `Daemon` 持有的 `FaultReporter`（仅在故障容忍功能开启时生效）。
+5. `Daemon.pull_engine()` 为每个 endpoint 拉起一个原生引擎进程组（`vllm serve` / SGLang），并启动 `Daemon` 持有的 `FaultReporter`（仅在故障容忍功能开启时生效）。
 6. 更新 `HeartbeatManager` 中的 endpoint，并启动状态轮询和心跳线程。
 
 从宿主机侧快照恢复时，第 5 步不会再次拉起引擎，而是更新恢复元数据、endpoint 和恢复状态。
@@ -61,7 +61,7 @@ Controller 调用 `POST /node-manager/start` 后，处理流程为：
 ### 停止与重调度
 
 - 收到 `SIGINT`、`SIGTERM` 或标准输入命令 `stop` 时，`Application._handle_signal()` 设置 `stop_event`，daemon loop 退出后执行 `shutdown()`：按注册逆序调用每个模块的 `stop()`，然后停止配置 watcher。
-- `Daemon.stop()` 遍历所有 service 调用 `stop()`：`EngineService.stop()` 对记录的 Engine Server PID 发送 `SIGKILL`；`LocalService.stop()` 对 memcache worker 子进程发送 `SIGKILL`。
+- `Daemon.stop()` 遍历所有 service 调用 `stop()`：`NativeEngineService.stop()` 对记录的原生引擎进程组发送 `SIGKILL`；`LocalService.stop()` 对 memcache worker 子进程发送 `SIGKILL`。
 - 自杀裁决由 `Daemon` 独立 3s 仲裁线程执行：任一 endpoint 连续 5 轮观察保持 `ABNORMAL`（约 15s）时设置自杀标志（引擎重拉/死亡上报的冻结窗口内暂停计数）。daemon loop 每 tick 检查该标志，触发后 `stop_event.set()` 并返回 `-1`，用于触发重调度。
 - `exit_code` 默认返回 `-1`，与旧行为一致（-1 表示 rescheduling）。
 
@@ -71,10 +71,10 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 
 | 方法 | 路径 | 响应 | 说明 |
 |------|------|----------|------|
-| `POST` | `/node-manager/start` | `200 {}` | 校验启动命令并拉起 Engine Server；快照恢复时执行恢复准备 |
-| `POST` | `/node-manager/stop` | `200 {"message": "All engine processes stopped successfully."}` | 停止全部 Engine Server 进程后延时 SIGTERM 自身（退出码 `-1` → k8s 重启 Pod），即 Controller 下发的「自杀」指令，用于实例拆除与跨机部分失联协同 |
+| `POST` | `/node-manager/start` | `200 {}` | 校验启动命令并拉起原生引擎；快照恢复时执行恢复准备 |
+| `POST` | `/node-manager/stop` | `200 {"message": "All engine processes stopped successfully."}` | 停止全部原生引擎进程后延时 SIGTERM 自身（退出码 `-1` → k8s 重启 Pod），即 Controller 下发的「自杀」指令，用于实例拆除与跨机部分失联协同 |
 | `POST` | `/node-manager/engine-restart` | `200 {"message": ...}` | Controller 驱动的容器内引擎重拉：body `{"action": "restart"\|"abort", "instance_id"?}`。`restart` 整体委托 `Daemon.restart_engine`（Daemon 解析启动参数、冻结自杀仲裁、暂停/恢复 FaultReporter、杀掉并重拉全部引擎，KV store 不动）；`abort` = 解冻自杀仲裁（重拉失败回退容器重启）。并发 409、快照恢复中 409、无启动记录 400、重拉失败 500 且解冻 |
-| `POST` | `/node-manager/pause` | `200 {"status":"ok", ...}` | 将全部 endpoint 标记为 `PAUSED`，并返回 Engine Server 管理地址 |
+| `POST` | `/node-manager/pause` | `200 {"status":"ok", ...}` | 将全部 endpoint 标记为 `PAUSED`，并返回非 headless 原生引擎的 `engine_metrics_targets` |
 | `POST` | `/node-manager/resume` | `200 {"status":"ok", ...}` | 仅将 `PAUSED` endpoint 恢复为 `NORMAL` |
 | `GET` | `/node-manager/status` | `200 {"status": true/false}` | 返回全部 endpoint 是否为 `NORMAL`；`relaxed=true`（引擎重拉轮询）时无 `ABNORMAL` 即 `true`；无 endpoint 时为 `false` |
 | `GET` | `/readiness` | `200` 或 `503` | Kubernetes Readiness Probe 接口。实例节点 Pod 默认不配置该探针；仅在容器快照默认应用场景下配置，用于判断执行容器 checkpoint 前的稳态点。未到达稳态点时返回 `503`，到达后返回 `200` |
@@ -90,7 +90,7 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 | `job_name` | string | 是 | 实例任务名，必须与本节点配置一致 |
 | `role` | string | 是 | 实例角色，如 `prefill`、`decode` 或 `union` |
 | `instance_id` | int | 是 | Controller 分配的实例 ID |
-| `endpoints` | array | 是 | 本节点管理的 endpoint；元素包含 `id`、`ip`、`business_port`、`mgmt_port`，SGLang PD endpoint 还可包含 `bootstrap_port`。`mgmt_port` 为注册协议兼容字段，原生引擎健康探测和快照控制均使用 `business_port` |
+| `endpoints` | array | 是 | 本节点管理的 endpoint；元素包含 `id`、`ip`、`business_port`，SGLang PD endpoint 还可包含 `bootstrap_port`。原生引擎健康探测使用 `business_port` |
 | `master_dp_ip` | string | 是 | 数据并行主节点 IP |
 | `ranktable` | object/null | 否 | 实例级 ranktable，默认 `null` |
 | `d2d_peer_ips` | array/null | 否 | D2D 权重传输对端，Controller 使用 `<endpoint_id>:<peer_ip>` 编码，默认 `null` |
@@ -195,7 +195,7 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 | `snapshot_config.snapshot_metadata_path` | 空 | 容器快照元数据路径；为空时使用默认路径 `/snapshot/snapshot_metadata.json` |
 | `port_allocator_config.enable` | `true` | 是否在启动时自动检查并调整端口 |
 
-`endpoint_num`、`service_ports`、`mgmt_ports`、`device_num`、`parallel_config`、`model_name`、`engine_type` 和 `dispatch_capabilities` 主要由部署配置与引擎配置派生。`dispatch_capabilities` 不接受用户直接覆盖。
+`endpoint_num`、`service_ports`、`device_num`、`parallel_config`、`model_name`、`engine_type` 和 `dispatch_capabilities` 主要由部署配置与引擎配置派生。`dispatch_capabilities` 不接受用户直接覆盖。
 
 当 `pod_ip` 为空时，API 服务根据 `POD_IP` 判断监听协议族：IPv6 使用 `::`，其他情况使用 `0.0.0.0`。只有直接构造且不传入配置的 `NodeManagerAPI` 才使用内部兜底端口 `8080`，正常启动流程使用配置端口。
 

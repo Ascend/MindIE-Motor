@@ -113,7 +113,6 @@ def _make_instance(
                 id=ep_id,
                 ip=f"10.0.0.{instance_id}",
                 business_port=f"80{idx}",
-                mgmt_port=f"90{idx}",
                 status=EndpointStatus.NORMAL,
                 workload=Workload(),
             )
@@ -218,19 +217,18 @@ class TestSerializeEndpointMinimal:
         assert _serialize_endpoint_minimal(None) == {}
 
     def test_endpoint_without_status(self):
-        ep = Endpoint(id=11, ip="1.2.3.4", business_port="8080", mgmt_port="9090")
+        ep = Endpoint(id=11, ip="1.2.3.4", business_port="8080")
         result = _serialize_endpoint_minimal(ep)
         assert result["id"] == 11
         assert result["ip"] == "1.2.3.4"
         assert result["business_port"] == "8080"
-        assert result["mgmt_port"] == "9090"
+        assert "mgmt_port" not in result
 
     def test_endpoint_with_status_serializes_value(self):
         ep = Endpoint(
             id=12,
             ip="5.6.7.8",
             business_port="8081",
-            mgmt_port="9090",
             status=EndpointStatus.NORMAL,
         )
         result = _serialize_endpoint_minimal(ep)
@@ -241,7 +239,6 @@ class TestSerializeEndpointMinimal:
             id=14,
             ip="10.0.0.14",
             business_port="8014",
-            mgmt_port="9014",
             bootstrap_port=9114,
         )
 
@@ -249,12 +246,6 @@ class TestSerializeEndpointMinimal:
         restored = Endpoint.model_validate(result)
 
         assert restored.bootstrap_port == 9114
-
-    def test_endpoint_with_empty_mgmt_port_defaults_empty_string(self):
-        """mgmt_port='' → serializer returns empty string (falsy → or '' branch)."""
-        ep = Endpoint(id=13, ip="9.9.9.9", business_port="9000", mgmt_port="")
-        result = _serialize_endpoint_minimal(ep)
-        assert result["mgmt_port"] == ""
 
 
 class TestDispatchUnknownType:

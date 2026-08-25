@@ -48,3 +48,6 @@
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
 | 2026-08-21 | kv_conductor | MultiConnector 顶层配置下引擎 offload 事件被静默丢弃 | `kv_conductor/multi-connector-kv-events-dropped.md` | MultiConnector、offload 事件丢失、两阶段匹配、kv_transfer_config |
+| 2026-08-24 | coordinator | 实例注册接受 ID 碰撞和不完整引擎就绪 | [instance-registration-validation.md](coordinator/instance-registration-validation.md) | CRC32 collision, instance ID, Endpoint extra fields, empty models |
+| 2026-08-24 | coordinator | Coordinator models 与 domain 包循环导入 | [domain-model-circular-import.md](coordinator/domain-model-circular-import.md) | circular import, domain __init__, models.request, lazy exports |
+| 2026-08-25 | controller | 增量实例刷新失败后未及时收敛 | [incremental-refresh-set-fallback.md](controller/incremental-refresh-set-fallback.md) | EventPusher, incremental refresh, SET reconciliation, fingerprint |

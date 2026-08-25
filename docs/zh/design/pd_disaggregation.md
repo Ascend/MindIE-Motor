@@ -88,7 +88,7 @@ SGLang 使用原生 bootstrap 协议，不复用 vLLM 的 `kv_transfer_params`�
 `disaggregation-bootstrap-port`）派生每个 Pod 的 `bootstrap_port`，并在注册消息的 endpoint
 元数据中上报。Coordinator 的 SGLang Adapter 将 Prefill endpoint 的 `bootstrap_host`、
 `bootstrap_port` 和稳定的 `bootstrap_room` 注入 Prefill/Decode 请求；`business_port` 仍是
-推理 HTTP 服务端口，`mgmt_port` 仅为注册协议兼容字段。
+推理 HTTP 服务端口。
 
 ## 数据流
 

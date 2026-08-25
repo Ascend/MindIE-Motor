@@ -281,7 +281,6 @@ class EndpointConfig:
     master_dp_ip: str | None = None
     dp_rpc_port: int | None = None
     port: int = 8000
-    mgmt_port: int = 9001
     instance_id: int = 0
     dp_rank: int = 0
     node_rank: int = 0
@@ -298,7 +297,6 @@ class EndpointConfig:
             raise ValueError(f"instance_id {self.instance_id} illegal.")
         ip_valid_check(self.host)
         port_valid_check(int(self.port))
-        port_valid_check(int(self.mgmt_port))
         if self.dp_rank < 0 or self.dp_rank > 65535:
             raise ValueError(f"{self.dp_rank} is not supported.")
         if not os.path.exists(self.config_path):

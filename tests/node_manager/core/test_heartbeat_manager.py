@@ -84,8 +84,8 @@ class TestHeartBeatManager:
     def _sample_endpoints_fixture(self):
         """return sample endpoints"""
         return [
-            Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL),
-            Endpoint(id=2, ip="192.168.1.2", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL),
+            Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL),
+            Endpoint(id=2, ip="192.168.1.2", business_port="8080", status=EndpointStatus.NORMAL),
         ]
 
     @pytest.fixture(name="sample_start_cmd_msg")
@@ -162,12 +162,11 @@ class TestHeartBeatManager:
 
     @patch('motor.node_manager.core.daemon.Daemon')
     def test_engine_metrics_targets_exclude_headless(self, mock_daemon, heart_beat_manager):
-        routable = Endpoint(id=1, ip="10.0.0.1", business_port="8001", mgmt_port="9001")
+        routable = Endpoint(id=1, ip="10.0.0.1", business_port="8001")
         headless = Endpoint(
             id=2,
             ip="10.0.0.2",
             business_port="8002",
-            mgmt_port="9002",
             headless=True,
         )
         mock_daemon.return_value.get_engine_metrics_target.return_value = "https://10.0.0.1:8001/metrics"
@@ -252,7 +251,6 @@ class TestHeartBeatManager:
             id=1,
             ip="192.168.1.1",
             business_port="8080",
-            mgmt_port="9090",
             status=EndpointStatus.INITIAL,
         )
         with heart_beat_manager._endpoint_lock:
@@ -271,7 +269,6 @@ class TestHeartBeatManager:
             id=1,
             ip="192.168.1.2",
             business_port="8080",
-            mgmt_port="9090",
             status=EndpointStatus.INITIAL,
             headless=True,
         )
@@ -293,7 +290,6 @@ class TestHeartBeatManager:
             id=0,
             ip="10.0.0.28",
             business_port="8080",
-            mgmt_port="9090",
             status=EndpointStatus.NORMAL,
         )
 
@@ -335,7 +331,7 @@ class TestHeartBeatManager:
         heart_beat_manager.stop_event.clear()  # Ensure stop_event is not set initially
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
 
         mock_sleep.side_effect = mock_stop_sleep
@@ -367,7 +363,7 @@ class TestHeartBeatManager:
         heart_beat_manager.stop_event.clear()  # Ensure stop_event is not set initially
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
 
         mock_sleep.side_effect = mock_stop_sleep
@@ -555,7 +551,7 @@ class TestHeartBeatManager:
         # pod_ip is already set during initialization
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
 
         mock_sleep.side_effect = mock_stop_sleep
@@ -642,7 +638,7 @@ class TestHeartBeatManager:
         heart_beat_manager.stop_event.clear()
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
 
         heart_beat_manager._report_heartbeat_loop()
@@ -693,7 +689,7 @@ class TestHeartBeatManager:
         heart_beat_manager.stop_event.clear()
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
 
         heart_beat_manager._report_heartbeat_loop()
@@ -726,7 +722,7 @@ class TestHeartBeatManager:
         heart_beat_manager.stop_event.clear()
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
 
         heart_beat_manager._report_heartbeat_loop()
@@ -738,14 +734,14 @@ class TestHeartBeatManager:
     def test_has_abnormal_endpoints_true(self, heart_beat_manager):
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.ABNORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.ABNORMAL)
             ]
         assert heart_beat_manager.has_abnormal_endpoints() is True
 
     def test_has_abnormal_endpoints_false(self, heart_beat_manager):
         with heart_beat_manager._endpoint_lock:
             heart_beat_manager._endpoints = [
-                Endpoint(id=1, ip="192.168.1.1", business_port="8080", mgmt_port="9090", status=EndpointStatus.NORMAL)
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.NORMAL)
             ]
         assert heart_beat_manager.has_abnormal_endpoints() is False
 

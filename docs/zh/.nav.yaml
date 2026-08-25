@@ -17,6 +17,7 @@ nav:
           - Docker 部署:
               - 单容器部署: user_guide/deployment/docker/single_container.md
               - 多容器部署: user_guide/deployment/docker/multi_container.md
+          - Coordinator 独立部署: user_guide/deployment/standalone.md
           - 部署案例:
               - ModelArts 与元戎:
                   - 简介: user_guide/deployment/cases/ModelArts&yuanrong/README.md

@@ -311,7 +311,6 @@
     "endpoint_config": {
       "endpoint_num": 0,
       "base_port": 10000,
-      "mgmt_ports": [],
       "service_ports": []
     },
     "basic_config": {

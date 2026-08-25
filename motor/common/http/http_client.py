@@ -79,6 +79,7 @@ class SafeHTTPSClient:
         tls_config: TLSConfig | None = None,
         mode: ConnectionMode = ConnectionMode.SHORT,
         timeout: float = 5,
+        headers: dict[str, str] | None = None,
     ):
         self.protocol = protocol
         self.timeout = timeout
@@ -108,6 +109,8 @@ class SafeHTTPSClient:
                 'Content-Type': 'application/json',
             }
         )
+        if headers:
+            self.session.headers.update(headers)
         logger.debug(
             "SafeHTTPSClient initialized. address=%s, tls=%s, mode=%s, timeout=%s",
             address,

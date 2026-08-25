@@ -41,7 +41,6 @@ def _make_resource(role: PDRole) -> ScheduledResource:
         id=10,
         ip="127.0.0.1",
         business_port="8080",
-        mgmt_port="9090",
         status=EndpointStatus.NORMAL,
     )
     return ScheduledResource(instance=instance, endpoint=endpoint)

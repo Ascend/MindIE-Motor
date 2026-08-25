@@ -104,10 +104,7 @@ def daemon(config_data):
 
 @pytest.fixture
 def endpoints():
-    return [
-        Endpoint(id=i, ip=f"192.168.1.{100 + i}", business_port=str(8000 + i * 2), mgmt_port=str(9000 + i * 2))
-        for i in range(3)
-    ]
+    return [Endpoint(id=i, ip=f"192.168.1.{100 + i}", business_port=str(8000 + i * 2)) for i in range(3)]
 
 
 class TestDaemon:
@@ -143,7 +140,7 @@ class TestDaemon:
         mock_process = MagicMock(pid=12345)
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
 
         with patch.dict(os.environ, launch_env, clear=True):
             daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
@@ -178,7 +175,7 @@ class TestDaemon:
 
     def test_get_engine_runtime_state_passes_instance_id(self, daemon):
         engine = daemon._services[SERVICE_ENGINE]
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
         with patch.object(engine, "runtime_state", return_value=RuntimeState.READY) as runtime_state:
             result = daemon.get_engine_runtime_state(endpoint, instance_id=42)
 
@@ -186,7 +183,7 @@ class TestDaemon:
         runtime_state.assert_called_once_with(endpoint, 42)
 
     def test_get_engine_runtime_state_no_engine_returns_stopped(self, daemon):
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
         with patch.object(daemon, "_services", {}):
             assert daemon.get_engine_runtime_state(endpoint, instance_id=1) == RuntimeState.STOPPED
 
@@ -195,7 +192,7 @@ class TestDaemon:
         process = MagicMock(pid=12345)
         process.poll.return_value = None
         mock_popen.return_value = process
-        endpoint = Endpoint(id=0, ip="2001:db8::8", business_port="8000", mgmt_port="9000")
+        endpoint = Endpoint(id=0, ip="2001:db8::8", business_port="8000")
         daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
         assert daemon.get_engine_metrics_target(endpoint) == "http://[2001:db8::8]:8000/metrics"
@@ -210,7 +207,7 @@ class TestDaemon:
         mock_process.poll.return_value = None  # Process is still running
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=5, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=5, ip="10.0.0.1", business_port="9000")
         instance_id = 1
         master_dp_ip = "192.168.1.100"
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id, master_dp_ip)
@@ -229,7 +226,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
         daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
         context = _last_launch_context(daemon)
@@ -262,7 +259,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
         daemon.pull_engine(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
         context = _last_launch_context(daemon)
@@ -278,7 +275,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
         d2d_peer_ips = ["0:192.168.1.10", "0:192.168.1.11"]
 
         daemon.pull_engine(
@@ -300,7 +297,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
 
         daemon.pull_engine(
             PDRole.ROLE_P,
@@ -321,7 +318,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
 
         daemon.pull_engine(
             PDRole.ROLE_P,
@@ -342,8 +339,8 @@ class TestDaemon:
         mock_popen.return_value = mock_process
 
         endpoints = [
-            Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090"),
-            Endpoint(id=1, ip="10.0.0.1", business_port="9001", mgmt_port="9091"),
+            Endpoint(id=0, ip="10.0.0.1", business_port="9000"),
+            Endpoint(id=1, ip="10.0.0.1", business_port="9001"),
         ]
         d2d_peer_ips = ["0:192.168.1.10", "1:192.168.1.11"]
 
@@ -367,7 +364,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="9000")
         d2d_peer_ips = ["0:192.168.1.10"]
 
         daemon.pull_engine(
@@ -388,7 +385,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="9000")
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id=1, master_dp_ip="192.168.1.100")
 
         assert _last_launch_context(daemon).node_rank == 0
@@ -400,7 +397,7 @@ class TestDaemon:
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
 
-        endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="9000", mgmt_port="9090")
+        endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="9000")
         daemon.pull_engine(PDRole.ROLE_P, [endpoint], instance_id=1, master_dp_ip="192.168.1.100", node_rank=2)
 
         assert _last_launch_context(daemon).node_rank == 2
@@ -417,10 +414,7 @@ def _patch_restart_params(restart_params):
 def _restart_params():
     return {
         "role": "prefill",
-        "endpoints": [
-            Endpoint(id=i, ip=f"192.168.1.{100 + i}", business_port=str(8000 + i * 2), mgmt_port=str(9000 + i * 2))
-            for i in range(2)
-        ],
+        "endpoints": [Endpoint(id=i, ip=f"192.168.1.{100 + i}", business_port=str(8000 + i * 2)) for i in range(2)],
         "instance_id": 1,
         "master_dp_ip": "192.168.1.100",
         "d2d_peer_ips": None,

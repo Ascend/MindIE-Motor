@@ -47,7 +47,6 @@ def _make_endpoint(
     endpoint_id: int = 1,
     ip: str = "127.0.0.1",
     business_port: str = "8080",
-    mgmt_port: str = "8081",
     status: EndpointStatus = EndpointStatus.NORMAL,
     active_tokens: float = 0.0,
 ) -> Endpoint:
@@ -56,7 +55,6 @@ def _make_endpoint(
         id=endpoint_id,
         ip=ip,
         business_port=business_port,
-        mgmt_port=mgmt_port,
         status=status,
         workload=Workload(active_tokens=active_tokens),
     )
@@ -84,7 +82,7 @@ def _make_instance(
 
 def _build_instance_dict(instance_id: int = 1, role: str = "prefill") -> dict:
     """Serialize a minimal Instance to dict (for ZMQ response payloads)."""
-    ep = Endpoint(id=1, ip="127.0.0.1", business_port="8080", mgmt_port="8081", status="normal")
+    ep = Endpoint(id=1, ip="127.0.0.1", business_port="8080", status="normal")
     inst = Instance(
         job_name="test-job",
         model_name="test-model",
@@ -811,18 +809,20 @@ class TestAsyncSchedulerClient:
         mock_inst = Mock(spec=Instance)
         mock_inst.model_dump = Mock(return_value={"id": 1, "role": "prefill"})
 
-        await self.client.refresh_instances("ADDED", [mock_inst])
+        result = await self.client.refresh_instances("ADDED", [mock_inst])
+        assert result is True
         self.mock_transport.send_request.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_refresh_instances_error_response(self):
-        """refresh_instances handles error response without raising."""
+        """refresh_instances reports a rejected Scheduler update."""
         self._mock_send_request(
             SchedulerResponseType.ERROR,
             error="Refresh failed",
         )
 
-        await self.client.refresh_instances("REMOVED", [])
+        result = await self.client.refresh_instances("REMOVED", [])
+        assert result is False
         self.mock_transport.send_request.assert_awaited_once()
 
     # -- test_on_instance_change_notify ------------------------------------
@@ -983,9 +983,10 @@ class TestAsyncSchedulerClient:
 
     @pytest.mark.asyncio
     async def test_client_not_connected_refresh_instances(self):
-        """When not connected, refresh_instances handles gracefully (no raise)."""
+        """When not connected, refresh_instances reports that no update was accepted."""
         self.mock_transport.connected = False
         self.mock_transport.send_request = AsyncMock(return_value=None)
 
-        await self.client.refresh_instances("ADDED", [])
+        result = await self.client.refresh_instances("ADDED", [])
+        assert result is False
         self.mock_transport.send_request.assert_awaited_once()

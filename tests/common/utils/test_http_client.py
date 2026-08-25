@@ -74,6 +74,12 @@ def test_init_without_certificates(base_url):
     assert client.protocol == 'http://'
 
 
+def test_init_applies_custom_headers(base_url):
+    client = SafeHTTPSClient(address=base_url, headers={"X-Motor-Management-Key": "test-key"})
+
+    assert client.session.headers["X-Motor-Management-Key"] == "test-key"
+
+
 def test_url_construction(base_url):
     """test url construction"""
     client = SafeHTTPSClient(address=base_url)

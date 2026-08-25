@@ -61,6 +61,9 @@ class EventPusher(Observer):
         # Last successfully sent instance-ID fingerprint; used to suppress noisy periodic SET logs
         self._last_sent_fingerprint: tuple[int, ...] | None = None
 
+        # Coalesce consecutive incremental refresh failures into one queued SET.
+        self._failed_incremental_set_pending = False
+
         # Track whether we've already sent SET for the current ready=False period.
         # Prevents repeated SET pushes when Coordinator stays not-ready (e.g. only
         # decode instances remain after a prefill failure).
@@ -179,6 +182,8 @@ class EventPusher(Observer):
                 continue
             if event is not None:
                 event_type = event.event_type
+                if event_type == EventType.SET:
+                    self._failed_incremental_set_pending = False
                 set_fingerprint: tuple | None = None
                 if event_type == EventType.ADD:
                     event_msg = InsEventMsg(event=event_type, instances=[event.instance])
@@ -207,12 +212,22 @@ class EventPusher(Observer):
                     continue
 
                 if event_msg is not None:
+                    success = False
                     try:
-                        CoordinatorApiClient.send_instance_refresh(event_msg)
-                        if event_type == EventType.SET:
-                            self._last_sent_fingerprint = set_fingerprint
+                        success = CoordinatorApiClient.send_instance_refresh(event_msg)
                     except Exception as e:
                         logger.error("Failed to send instance refresh event, error: %s", e)
+                    if not success:
+                        if event_type != EventType.SET and not self._failed_incremental_set_pending:
+                            self._failed_incremental_set_pending = True
+                            self.event_queue.put(Event(EventType.SET, None))
+                            logger.warning(
+                                "Incremental instance refresh %s failed; queued a full SET reconciliation",
+                                event_type,
+                            )
+                        continue
+                    if event_type == EventType.SET:
+                        self._last_sent_fingerprint = set_fingerprint
 
     def _coordinator_heartbeat_detector(self) -> None:
         """

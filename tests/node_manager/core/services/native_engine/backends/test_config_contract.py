@@ -80,7 +80,6 @@ def _endpoint_config(
         role=role,
         host=host,
         port=port,
-        mgmt_port=9001,
         master_dp_ip=master_dp_ip,
         dp_rank=dp_rank,
         node_rank=node_rank,

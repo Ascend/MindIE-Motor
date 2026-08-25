@@ -33,7 +33,6 @@ def _make_endpoint_config(engine_cfg: dict) -> EndpointConfig:
         deploy_config=deploy_config,
         host="192.168.196.59",
         port=10000,
-        mgmt_port=10001,
         role="union",
         node_rank=0,
         master_dp_ip="192.168.196.59",

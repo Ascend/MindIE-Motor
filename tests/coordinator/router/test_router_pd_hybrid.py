@@ -103,7 +103,7 @@ class TestRouterPDHybrid:
     def setup_pd_hybrid(self, monkeypatch: MonkeyPatch):
         # Create proper instance for PD hybrid flow
         mock_instance = self.create_mock_instance(0, PDRole.ROLE_U)
-        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
         # Mock functions (Scheduler uses get_required_instances_status for readiness)
@@ -356,7 +356,7 @@ class TestRouterPDHybrid:
     async def test_pd_hybrid_fallback_to_prefill_when_hybrid_pool_empty(self, monkeypatch: MonkeyPatch, caplog):
         """PD degradation: pre-check empty U pool, schedule ROLE_P directly without U attempt."""
         mock_instance = self.create_mock_instance(0, PDRole.ROLE_P)
-        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
         called_roles = []
 
@@ -426,7 +426,7 @@ class TestRouterPDHybrid:
     async def test_pd_hybrid_schedules_union_when_hybrid_pool_available(self, monkeypatch: MonkeyPatch):
         """True hybrid: pre-check finds U pool, schedule ROLE_U only."""
         mock_instance = self.create_mock_instance(0, PDRole.ROLE_U)
-        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
         called_roles = []
 
@@ -542,7 +542,7 @@ class TestPDHybridTracer:
     @pytest.fixture
     def setup_role_u_hybrid(self, monkeypatch: MonkeyPatch):
         mock_instance = TestRouterPDHybrid.create_mock_instance(0, PDRole.ROLE_U)
-        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
         async def mock_get_available_instance_roles(self):
@@ -700,7 +700,7 @@ class TestPDHybridTracer:
     @pytest.mark.asyncio
     async def test_role_fallback_scheduling_events(self, monkeypatch: MonkeyPatch):
         mock_instance = TestRouterPDHybrid.create_mock_instance(0, PDRole.ROLE_P)
-        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
         async def mock_get_available_instance_roles(self):
@@ -820,7 +820,7 @@ class TestPDHybridCancelReschedule:
     @pytest.fixture(name="hybrid_pool")
     def _hybrid_pool(self, monkeypatch: MonkeyPatch):
         mock_instance = TestRouterPDHybrid.create_mock_instance(0, PDRole.ROLE_U)
-        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
+        mock_endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
         mock_instance.endpoints = {"127.0.0.1": {0: mock_endpoint}}
 
         async def mock_get_available_instance_roles(self):

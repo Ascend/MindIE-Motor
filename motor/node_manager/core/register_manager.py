@@ -372,7 +372,6 @@ class RegisterManager(ThreadSafeSingleton):
             role = self._config.basic_config.role
             pod_ip = self._config.api_config.pod_ip
             business_port = self._config.endpoint_config.service_ports
-            mgmt_port = self._config.endpoint_config.mgmt_ports
             bootstrap_port = self._config.endpoint_config.bootstrap_port
             node_manager_port = self._config.api_config.node_manager_port
             parallel_config = self._config.basic_config.parallel_config
@@ -388,7 +387,6 @@ class RegisterManager(ThreadSafeSingleton):
             role=role,
             pod_ip=pod_ip,
             business_port=business_port,
-            mgmt_port=mgmt_port,
             bootstrap_port=bootstrap_port,
             nm_port=str(node_manager_port),
             parallel_config=parallel_config,

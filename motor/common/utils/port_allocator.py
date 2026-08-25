@@ -281,7 +281,7 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     api = config.api_config
     ep = config.endpoint_config
 
-    reserved = {api.node_manager_port} | {int(p) for p in ep.service_ports + ep.mgmt_ports}
+    reserved = {api.node_manager_port} | {int(p) for p in ep.service_ports}
     sc = config.single_container_config
     if sc.single_container_flag:
         reserved |= {p for p in (sc.kv_port, sc.lookup_rpc_port, sc.dp_rpc_port) if p}
@@ -298,17 +298,12 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     rows.append(_row("NodeManager", host, api.node_manager_port, "auto", "NM API"))
 
     new_service_ports: list[str] = []
-    new_mgmt_ports: list[str] = []
-    for idx, (svc_pref, mgmt_pref) in enumerate(zip(ep.service_ports, ep.mgmt_ports)):
+    for idx, svc_pref in enumerate(ep.service_ports):
         svc_port = _auto(int(svc_pref), f"service_ports[{idx}]")
-        mgmt_port = _auto(int(mgmt_pref), f"mgmt_ports[{idx}]")
         new_service_ports.append(str(svc_port))
-        new_mgmt_ports.append(str(mgmt_port))
         rows.append(_row("NativeEngine", host, svc_port, "auto", f"DP{idx} business"))
-        rows.append(_row("NodeManager", host, mgmt_port, "auto", f"DP{idx} reserved"))
 
     ep.service_ports = new_service_ports
-    ep.mgmt_ports = new_mgmt_ports
 
     if sc.single_container_flag:
         if sc.kv_port is not None:

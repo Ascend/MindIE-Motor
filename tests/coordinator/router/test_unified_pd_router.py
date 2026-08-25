@@ -60,7 +60,6 @@ def _instance(
         id=instance_id,
         ip="127.0.0.1",
         business_port=str(8100 + instance_id),
-        mgmt_port=str(9100 + instance_id),
         bootstrap_port=bootstrap_port,
         status=EndpointStatus.NORMAL,
     )

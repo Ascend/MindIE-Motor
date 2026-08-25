@@ -186,7 +186,6 @@ def _serialize_endpoint_minimal(endpoint: Endpoint | None) -> dict:
         "id": endpoint.id,
         "ip": endpoint.ip,
         "business_port": endpoint.business_port,
-        "mgmt_port": getattr(endpoint, "mgmt_port", "") or "",
         "bootstrap_port": endpoint.bootstrap_port,
     }
     if hasattr(endpoint, "status") and endpoint.status is not None:

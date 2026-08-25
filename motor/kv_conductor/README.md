@@ -92,14 +92,18 @@ Coordinator 调度器（`kv_affinity_w_*`）在计分时应用。
 
 ### HBM（NPU）— 统一模型
 
-引擎 Worker 通过 ZMQ PUB 或 HTTP 将 KV 事件**直接推送给** conductor。
+引擎 Worker 通过 ZMQ PUB 或 HTTP 将 KV 事件发给 conductor。
+ZMQ 模式下事件端点由引擎 Worker 绑定，conductor 作为 SUB **主动 connect 到引擎**
+（连接方向 conductor → 引擎，事件数据流引擎 → conductor）；HTTP 模式下引擎 Worker
+将 KV 事件 POST 到 conductor 的 `/events` 接口。
 所有后端（Mooncake / Memcache / YuanRong）的 HBM 事件链路一致：
 
 ```text
 Engine Worker                        KV Conductor
 (vLLM/SGLang)
       │                                │
-      │  ZMQ PUB / HTTP POST           │
+      │  ZMQ PUB（引擎绑定，conductor   │
+      │  SUB 主动 connect）/ HTTP POST │
       │  {type: "stored",              │
       │   token_ids, block_hashes,     │
       │   parent_hash, medium: "npu"}  │
@@ -254,13 +258,14 @@ Coordinator 通过 `ConductorApiClient` 与 conductor 通信。`user_config.json
   },
   "kv_conductor_config": {
     "block_size": 128,
-    "npu_endpoint": "tcp://*:50090",
+    "npu_endpoint": "tcp://*:5557",
     "http_server_port": 13333
   }
 }
 ```
 
-`npu_endpoint` 模式中的 `*` 会被替换为 endpoint IP，端口会加上 `dp_rank`。
+`npu_endpoint` 必须与引擎 `--kv-events-config` 的 `endpoint` 一致（`tcp://*:5557` 为 vLLM 常用值）；
+模式中的 `*` 会被替换为 endpoint IP，端口会加上 `dp_rank`，conductor 主动 connect 到各引擎节点绑定的事件端口。
 注册时写入 conductor 的 `medium_endpoints` key 为 `"npu"`。
 
 详见 [KV Cache 亲和性调度文档](../../docs/zh/user_guide/features/kvcache_affinity.md)。

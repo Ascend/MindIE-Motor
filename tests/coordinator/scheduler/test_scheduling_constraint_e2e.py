@@ -29,7 +29,7 @@ def _make_instance(instance_id: int, role: PDRole) -> Instance:
         parallel_config=ParallelConfig(dp_size=1, tp_size=1),
         endpoints={},
     )
-    ep = Endpoint(id=instance_id, ip="127.0.0.1", business_port=str(8000 + instance_id), mgmt_port="8000")
+    ep = Endpoint(id=instance_id, ip="127.0.0.1", business_port=str(8000 + instance_id))
     inst.endpoints = {"127.0.0.1": {instance_id: ep}}
     return inst
 

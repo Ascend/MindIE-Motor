@@ -135,7 +135,6 @@ def create_register_msg(job_name: str, pod_ip: str, config: dict, **kwargs) -> R
         'model_name': "test_model",
         'role': config['role'],
         'business_port': ["8080", "8084"],
-        'mgmt_port': ["9090", "9094"],
         'nm_port': "8088",
         'parallel_config': config['parallel_config'],
         'enable_multi_endpoints': True,
@@ -1380,8 +1379,8 @@ def test_filter_abnormal_endpoints_with_abnormal(instance_assembler, test_config
     instance.add_node_mgr("127.0.0.2", "8088")
 
     # Add endpoints for both nodes
-    endpoints1 = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001", mgmt_port="9001")}
-    endpoints2 = {2: Endpoint(id=2, ip="127.0.0.2", business_port="1002", mgmt_port="9002")}
+    endpoints1 = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001")}
+    endpoints2 = {2: Endpoint(id=2, ip="127.0.0.2", business_port="1002")}
     instance.add_endpoints("127.0.0.1", endpoints1)
     instance.add_endpoints("127.0.0.2", endpoints2)
 
@@ -1412,7 +1411,7 @@ def test_filter_abnormal_endpoints_invalid_response(instance_assembler, test_con
 
     # Add node manager and endpoints
     instance.add_node_mgr("127.0.0.1", "8088")
-    endpoints = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001", mgmt_port="9001")}
+    endpoints = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001")}
     instance.add_endpoints("127.0.0.1", endpoints)
 
     # Mock NodeManagerApiClient.query_status to return invalid response but no exception
@@ -1439,7 +1438,7 @@ def test_filter_abnormal_endpoints_connection_error(instance_assembler, test_con
 
     # Add node manager and endpoints
     instance.add_node_mgr("127.0.0.1", "8088")
-    endpoints = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001", mgmt_port="9001")}
+    endpoints = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001")}
     instance.add_endpoints("127.0.0.1", endpoints)
 
     # Mock NodeManagerApiClient.query_status to raise exception
@@ -1468,8 +1467,8 @@ def test_filter_abnormal_endpoints_mixed_scenarios(instance_assembler, test_conf
     instance.add_node_mgr("127.0.0.1", "8088")  # Will be reachable
     instance.add_node_mgr("127.0.0.2", "8088")  # Will fail connection
 
-    endpoints1 = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001", mgmt_port="9001")}
-    endpoints2 = {2: Endpoint(id=2, ip="127.0.0.2", business_port="1002", mgmt_port="9002")}
+    endpoints1 = {1: Endpoint(id=1, ip="127.0.0.1", business_port="1001")}
+    endpoints2 = {2: Endpoint(id=2, ip="127.0.0.2", business_port="1002")}
     instance.add_endpoints("127.0.0.1", endpoints1)
     instance.add_endpoints("127.0.0.2", endpoints2)
 
@@ -1518,7 +1517,7 @@ def test_assemble_instance_with_abnormal_endpoints(instance_assembler, test_conf
     # Add exactly dp_size endpoints
     for i in range(1, 5):
         pod_ip = f"127.0.0.{i}"
-        endpoints = {i: Endpoint(id=i, ip=pod_ip, business_port=f"100{i}", mgmt_port=f"900{i}")}
+        endpoints = {i: Endpoint(id=i, ip=pod_ip, business_port=f"100{i}")}
         instance.add_endpoints(pod_ip, endpoints)
         instance.add_node_mgr(pod_ip, "8088")
 
@@ -1554,7 +1553,7 @@ def test_assemble_instance_with_healthy_endpoints(instance_assembler, test_confi
     # Add exactly dp_size endpoints
     for i in range(1, 5):
         pod_ip = f"127.0.0.{i}"
-        endpoints = {i: Endpoint(id=i, ip=pod_ip, business_port=f"100{i}", mgmt_port=f"900{i}")}
+        endpoints = {i: Endpoint(id=i, ip=pod_ip, business_port=f"100{i}")}
         instance.add_endpoints(pod_ip, endpoints)
         instance.add_node_mgr(pod_ip, "8088")
 
@@ -1630,16 +1629,16 @@ def test_is_endpoints_enough_multi_endpoint_disabled():
     )
     # Add 2 endpoints (less than dp_size=4)
     endpoints = {
-        0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000"),
-        1: Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="9001"),
+        0: Endpoint(id=0, ip="127.0.0.1", business_port="8000"),
+        1: Endpoint(id=1, ip="127.0.0.1", business_port="8001"),
     }
     instance4.add_endpoints("127.0.0.1", endpoints)
     assert instance4.is_endpoints_enough() is False  # Need 4 endpoints
 
     # Add more endpoints to reach dp_size
     endpoints2 = {
-        2: Endpoint(id=2, ip="127.0.0.2", business_port="8002", mgmt_port="9002"),
-        3: Endpoint(id=3, ip="127.0.0.2", business_port="8003", mgmt_port="9003"),
+        2: Endpoint(id=2, ip="127.0.0.2", business_port="8002"),
+        3: Endpoint(id=3, ip="127.0.0.2", business_port="8003"),
     }
     instance4.add_endpoints("127.0.0.2", endpoints2)
     assert instance4.is_endpoints_enough() is True  # Have 4 endpoints
@@ -1659,9 +1658,9 @@ def test_get_all_endpoints_multi_endpoint_disabled():
 
     # Add multiple endpoints
     endpoints = {
-        0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000"),
-        1: Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="9001"),
-        2: Endpoint(id=2, ip="127.0.0.1", business_port="8002", mgmt_port="9002"),
+        0: Endpoint(id=0, ip="127.0.0.1", business_port="8000"),
+        1: Endpoint(id=1, ip="127.0.0.1", business_port="8001"),
+        2: Endpoint(id=2, ip="127.0.0.1", business_port="8002"),
     }
     instance1.add_endpoints("127.0.0.1", endpoints)
 
@@ -1696,12 +1695,12 @@ def test_get_all_endpoints_multi_endpoint_disabled():
 
     # Add endpoints from multiple pods
     endpoints_pod1 = {
-        0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000"),
-        1: Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="9001"),
+        0: Endpoint(id=0, ip="127.0.0.1", business_port="8000"),
+        1: Endpoint(id=1, ip="127.0.0.1", business_port="8001"),
     }
     endpoints_pod2 = {
-        2: Endpoint(id=2, ip="127.0.0.2", business_port="8002", mgmt_port="9002"),
-        3: Endpoint(id=3, ip="127.0.0.2", business_port="8003", mgmt_port="9003"),
+        2: Endpoint(id=2, ip="127.0.0.2", business_port="8002"),
+        3: Endpoint(id=3, ip="127.0.0.2", business_port="8003"),
     }
     instance3.add_endpoints("127.0.0.1", endpoints_pod1)
     instance3.add_endpoints("127.0.0.2", endpoints_pod2)
@@ -1728,8 +1727,8 @@ def test_assemble_instance_multi_endpoint_disabled(instance_assembler):
     instance.add_node_mgr("127.0.0.2", "8081", device_num=8)
 
     # Add endpoints (only id=0 for each pod)
-    endpoints1 = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
-    endpoints2 = {0: Endpoint(id=0, ip="127.0.0.2", business_port="8000", mgmt_port="9000")}
+    endpoints1 = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000")}
+    endpoints2 = {0: Endpoint(id=0, ip="127.0.0.2", business_port="8000")}
     instance.add_endpoints("127.0.0.1", endpoints1)
     instance.add_endpoints("127.0.0.2", endpoints2)
 
@@ -1767,7 +1766,7 @@ def test_assemble_instance_multi_endpoint_disabled_not_enough_nodes(instance_ass
     instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
 
     # Add endpoint
-    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
+    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000")}
     instance.add_endpoints("127.0.0.1", endpoints)
 
     # Create metadata
@@ -1804,7 +1803,7 @@ def _make_mock_readonly_instance(
         ep_id = endpoint_ids[idx] if endpoint_ids is not None else endpoint_id
         inst.add_endpoints(
             f"pod-{job_name}-{idx}",
-            {0: Endpoint(id=ep_id, ip=ip, business_port="8000", mgmt_port="9000")},
+            {0: Endpoint(id=ep_id, ip=ip, business_port="8000")},
         )
     return ReadOnlyInstance(inst)
 
@@ -1821,7 +1820,7 @@ def _make_mock_peer_instance_cross_node(job_name: str, role: str, ip_by_rank: di
     for dp_rank, ip in ip_by_rank.items():
         inst.add_endpoints(
             f"pod-{job_name}-{dp_rank}",
-            {0: Endpoint(id=dp_rank, ip=ip, business_port="8000", mgmt_port="9000")},
+            {0: Endpoint(id=dp_rank, ip=ip, business_port="8000")},
         )
     return ReadOnlyInstance(inst)
 
@@ -1838,9 +1837,7 @@ def test_collect_d2d_peer_ips_queries_active_only(instance_assembler, test_confi
     metadata = AssembleInstanceMetadata(instance=instance)
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[]) as mock_get:
-        instance_assembler._collect_d2d_peer_ips(
-            metadata, [Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")]
-        )
+        instance_assembler._collect_d2d_peer_ips(metadata, [Endpoint(id=0, ip="127.0.0.1", business_port="8000")])
         mock_get.assert_called_once_with({InsStatus.ACTIVE})
 
 
@@ -1860,9 +1857,9 @@ def test_collect_d2d_peer_ips_matches_dp_rank(instance_assembler, test_config):
         test_config['role'],
         {0: "10.0.0.1", 1: "10.0.0.2", 2: "10.0.0.3", 3: "10.0.0.4"},
     )
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
-    ep2 = Endpoint(id=2, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
-    ep5 = Endpoint(id=5, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
+    ep2 = Endpoint(id=2, ip="127.0.0.1", business_port="8000")
+    ep5 = Endpoint(id=5, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]):
         assert instance_assembler._collect_d2d_peer_ips(metadata, [ep0]) == ["0:10.0.0.1"]
@@ -1882,7 +1879,7 @@ def test_collect_d2d_peer_ips_active_same_role(instance_assembler, test_config):
     metadata = AssembleInstanceMetadata(instance=instance)
 
     mock_peer = _make_mock_readonly_instance("peer_job", test_config['role'], ["10.0.0.1", "10.0.0.2"])
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer]):
         result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
@@ -1902,7 +1899,7 @@ def test_collect_d2d_peer_ips_excludes_own_job_name(instance_assembler, test_con
 
     mock_self = _make_mock_readonly_instance("my_job", test_config['role'], ["10.0.0.1"])
     mock_peer = _make_mock_readonly_instance("other_job", test_config['role'], ["10.0.0.2"])
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_self, mock_peer]):
         result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
@@ -1922,7 +1919,7 @@ def test_collect_d2d_peer_ips_excludes_different_role(instance_assembler, test_c
 
     mock_same = _make_mock_readonly_instance("peer_prefill", "prefill", ["10.0.0.1"])
     mock_diff = _make_mock_readonly_instance("peer_decode", "decode", ["10.0.0.2"])
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_same, mock_diff]):
         result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
@@ -1942,7 +1939,7 @@ def test_collect_d2d_peer_ips_deduplicates(instance_assembler, test_config):
 
     mock_peer1 = _make_mock_readonly_instance("peer1", test_config['role'], ["10.0.0.1", "10.0.0.2"])
     mock_peer2 = _make_mock_readonly_instance("peer2", test_config['role'], ["10.0.0.2", "10.0.0.3"])
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[mock_peer1, mock_peer2]):
         result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
@@ -1959,7 +1956,7 @@ def test_collect_d2d_peer_ips_no_peers(instance_assembler, test_config):
         parallel_config=test_config['parallel_config'],
     )
     metadata = AssembleInstanceMetadata(instance=instance)
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[]):
         result = instance_assembler._collect_d2d_peer_ips(metadata, [ep0])
@@ -2098,16 +2095,16 @@ def test_collect_d2d_peer_ips_includes_headless(instance_assembler, test_config)
     )
     mock_peer.add_endpoints(
         "10.0.0.1",
-        {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")},
+        {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000")},
     )
     mock_peer.add_endpoints(
         "10.0.0.2",
-        {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000", headless=True)},
+        {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", headless=True)},
     )
     ro_peer = ReadOnlyInstance(mock_peer)
 
-    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
-    ep1 = Endpoint(id=1, ip="127.0.0.1", business_port="8000", mgmt_port="9000")
+    ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
+    ep1 = Endpoint(id=1, ip="127.0.0.1", business_port="8000")
 
     with patch.object(InstanceManager(), 'get_instances', return_value=[ro_peer]):
         # Master endpoint (id=0) matches peer's non-headless endpoint
@@ -2129,7 +2126,7 @@ def test_cross_node_pcp_assembly_waits_for_all_nodes(instance_assembler):
 
     # Add only 1 node manager (nnodes=2, need 2)
     instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
-    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
+    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000")}
     instance.add_endpoints("127.0.0.1", endpoints)
 
     metadata = AssembleInstanceMetadata(
@@ -2146,7 +2143,7 @@ def test_cross_node_pcp_assembly_waits_for_all_nodes(instance_assembler):
 
     # Add second node manager
     instance.add_node_mgr("127.0.0.2", "8080", device_num=8)
-    endpoints2 = {0: Endpoint(id=1, ip="127.0.0.2", business_port="8000", mgmt_port="9000")}
+    endpoints2 = {0: Endpoint(id=1, ip="127.0.0.2", business_port="8000")}
     instance.add_endpoints("127.0.0.2", endpoints2)
 
     with patch.object(instance_assembler, '_filter_abnormal_endpoints'):
@@ -2169,7 +2166,7 @@ def test_nnodes_default_backward_compatible(instance_assembler):
 
     # Add 1 node manager with 1 endpoint
     instance.add_node_mgr("127.0.0.1", "8080", device_num=8)
-    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="9000")}
+    endpoints = {0: Endpoint(id=0, ip="127.0.0.1", business_port="8000")}
     instance.add_endpoints("127.0.0.1", endpoints)
 
     # nnodes=1 (default) — should use is_endpoints_enough()
@@ -2200,9 +2197,7 @@ def test_cross_node_pcp_assembly_extra_nodes(instance_assembler):
     # Add 3 node managers when nnodes=2
     for ip_suffix in ["1", "2", "3"]:
         instance.add_node_mgr(f"127.0.0.{ip_suffix}", "8080", device_num=8)
-        endpoints = {
-            0: Endpoint(id=int(ip_suffix) - 1, ip=f"127.0.0.{ip_suffix}", business_port="8000", mgmt_port="9000")
-        }
+        endpoints = {0: Endpoint(id=int(ip_suffix) - 1, ip=f"127.0.0.{ip_suffix}", business_port="8000")}
         instance.add_endpoints(f"127.0.0.{ip_suffix}", endpoints)
 
     metadata = AssembleInstanceMetadata(
@@ -2233,7 +2228,7 @@ def test_cross_node_pcp_with_dp_waits_for_all_groups(instance_assembler):
         instance.add_node_mgr(f"10.0.0.{i + 1}", "8080", device_num=16)
         instance.add_endpoints(
             f"10.0.0.{i + 1}",
-            {0: Endpoint(id=i, ip=f"10.0.0.{i + 1}", business_port="8000", mgmt_port="9000")},
+            {0: Endpoint(id=i, ip=f"10.0.0.{i + 1}", business_port="8000")},
         )
 
     metadata = AssembleInstanceMetadata(instance=instance, nnodes=2)
@@ -2245,7 +2240,7 @@ def test_cross_node_pcp_with_dp_waits_for_all_groups(instance_assembler):
 
     # Add the 8th node
     instance.add_node_mgr("10.0.0.8", "8080", device_num=16)
-    instance.add_endpoints("10.0.0.8", {0: Endpoint(id=7, ip="10.0.0.8", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.8", {0: Endpoint(id=7, ip="10.0.0.8", business_port="8000")})
 
     with patch.object(instance_assembler, "_filter_abnormal_endpoints"):
         instance_assembler._assemble_instance(metadata)
@@ -2270,9 +2265,9 @@ def test_send_start_command_assigns_node_rank(instance_assembler):
     instance.add_node_mgr("10.0.0.3", "8080", device_num=8)
 
     # Add endpoints for each
-    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000", mgmt_port="9000")})
-    instance.add_endpoints("10.0.0.1", {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")})
-    instance.add_endpoints("10.0.0.3", {0: Endpoint(id=0, ip="10.0.0.3", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000")})
+    instance.add_endpoints("10.0.0.1", {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000")})
+    instance.add_endpoints("10.0.0.3", {0: Endpoint(id=0, ip="10.0.0.3", business_port="8000")})
 
     metadata = AssembleInstanceMetadata(instance=instance, nnodes=3)
 
@@ -2312,7 +2307,7 @@ def test_send_start_command_node_rank_modulo_for_dp_pcp(instance_assembler):
         instance.add_node_mgr(f"10.0.0.{i + 1}", "8080", device_num=8)
         instance.add_endpoints(
             f"10.0.0.{i + 1}",
-            {0: Endpoint(id=i, ip=f"10.0.0.{i + 1}", business_port="8000", mgmt_port="9000")},
+            {0: Endpoint(id=i, ip=f"10.0.0.{i + 1}", business_port="8000")},
         )
 
     metadata = AssembleInstanceMetadata(instance=instance, nnodes=2)
@@ -2376,7 +2371,7 @@ def test_reregister_preserves_nnodes(instance_assembler, test_config):
     instance_assembler.instances.clear()
 
     # Reregister with nnodes
-    endpoint = Endpoint(id=0, ip=config['pod_ip1'], business_port="8000", mgmt_port="9000")
+    endpoint = Endpoint(id=0, ip=config['pod_ip1'], business_port="8000")
     reregister_msg = ReregisterMsg(
         job_name=job_name,
         model_name="test_model",
@@ -2413,8 +2408,8 @@ def test_cross_node_pcp_marks_slave_endpoints_headless(instance_assembler):
     instance.add_node_mgr("10.0.0.2", "8080", device_num=8)
 
     # Add endpoints for both
-    instance.add_endpoints("10.0.0.10", {0: Endpoint(id=0, ip="10.0.0.10", business_port="8000", mgmt_port="9000")})
-    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.10", {0: Endpoint(id=0, ip="10.0.0.10", business_port="8000")})
+    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000")})
 
     metadata = AssembleInstanceMetadata(instance=instance, nnodes=2)
 
@@ -2442,8 +2437,8 @@ def test_cross_node_pcp_marks_slave_endpoints_headless(instance_assembler):
 def test_cross_node_pcp_reregister_preserves_headless(instance_assembler):
     """Re-registration uses node_rank from ReregisterMsg, not registration order."""
     # Simulate slave re-registering first after Controller restart
-    slave_endpoint = Endpoint(id=0, ip="10.0.0.200", business_port="8000", mgmt_port="9000")
-    master_endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="8000", mgmt_port="9000")
+    slave_endpoint = Endpoint(id=0, ip="10.0.0.200", business_port="8000")
+    master_endpoint = Endpoint(id=1, ip="10.0.0.1", business_port="8000")
 
     # Slave (node_rank=1) re-registers first
     slave_msg = ReregisterMsg(
@@ -2502,8 +2497,8 @@ def test_cross_node_pcp_no_headless_when_nnodes_is_one(instance_assembler):
 
     instance.add_node_mgr("10.0.0.1", "8080", device_num=8)
     instance.add_node_mgr("10.0.0.2", "8080", device_num=8)
-    instance.add_endpoints("10.0.0.1", {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000", mgmt_port="9000")})
-    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000", mgmt_port="9000")})
+    instance.add_endpoints("10.0.0.1", {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000")})
+    instance.add_endpoints("10.0.0.2", {0: Endpoint(id=1, ip="10.0.0.2", business_port="8000")})
 
     metadata = AssembleInstanceMetadata(instance=instance, nnodes=1)
 

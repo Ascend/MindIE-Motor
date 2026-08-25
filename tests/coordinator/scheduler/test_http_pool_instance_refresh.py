@@ -41,7 +41,6 @@ def _make_instance(instance_id: int, role: PDRole, endpoints: list[tuple[str, st
             id=instance_id * 10 + i,
             ip=ip,
             business_port=port,
-            mgmt_port=f"9{port}",
             status=status,
             workload=Workload(),
         )
@@ -238,7 +237,7 @@ async def test_on_instance_refreshed_callback_invoked_on_version_change():
     alloc_response.response_type = SchedulerResponseType.SUCCESS
     alloc_response.data = {
         "instance": {"id": 1, "job_name": "j", "model_name": "m", "role": "prefill"},
-        "endpoint": {"id": 11, "ip": "10.0.0.1", "business_port": "8001", "mgmt_port": "9001", "status": "normal"},
+        "endpoint": {"id": 11, "ip": "10.0.0.1", "business_port": "8001", "status": "normal"},
     }
 
     with patch.object(client, "get_available_instances", side_effect=mock_get_available_instances):

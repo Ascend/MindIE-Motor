@@ -277,9 +277,7 @@ def test_generate_endpoint_ports(nm_config_data):
     NodeManagerConfig._generate_endpoint_ports(config)
 
     assert config.endpoint_config.endpoint_num == 2
-    assert len(config.endpoint_config.mgmt_ports) == 2
     assert len(config.endpoint_config.service_ports) == 2
-    assert config.endpoint_config.mgmt_ports == ["10001", "10003"]
     assert config.endpoint_config.service_ports == ["10000", "10002"]
 
 
@@ -525,7 +523,6 @@ def test_generate_endpoint_ports_with_cp_prefill():
     # prefill with cp=2 needs cp*tp*pp = 4 devices/endpoint => 8 devices gives 2 endpoints
     assert config.endpoint_config.endpoint_num == 2
     assert len(config.endpoint_config.service_ports) == 2
-    assert len(config.endpoint_config.mgmt_ports) == 2
 
 
 @patch.dict('os.environ', {'ROLE': 'both'})
@@ -923,7 +920,6 @@ def test_cross_node_pcp_generate_endpoint_ports():
     # endpoint_num = min(dp=1, 16//16) = 1
     assert config.endpoint_config.endpoint_num == 1
     assert len(config.endpoint_config.service_ports) == 1
-    assert len(config.endpoint_config.mgmt_ports) == 1
 
 
 # --- single_container port path with UCM as MultiConnector store -------------------------

@@ -24,6 +24,8 @@ Controller process
 │
 ├── EventPusher (Observer) — subscribes READY/SEPARATED/PAUSED/RESUMED/REMOVED
 │     pushes ADD/DEL/PAUSE/RESUME events to Coordinator over HTTP
+│     failed incremental pushes enqueue one full SET reconciliation; a failed
+│       SET is not recursively queued and does not advance the sent fingerprint
 │     runs Coordinator heartbeat detection (2 consecutive losses → full SET push)
 │     and periodic full-instance SET sync (coordinator_set_sync_interval)
 ├── FaultManager (Observer) — subscribes INSTANCE_INITIAL/INSTANCE_SEPARATED/INSTANCE_REMOVED

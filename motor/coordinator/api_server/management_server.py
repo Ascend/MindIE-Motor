@@ -10,11 +10,12 @@
 
 """
 Management plane: runs in the dedicated Mgmt process only (spawned by CoordinatorDaemon via MgmtProcessManager).
-Provides readiness, liveness, metrics, instances/refresh.
+Provides readiness, liveness, metrics, instances/refresh, instances list.
 Does not create or start inference Workers; those are started by CoordinatorDaemon via InferenceProcessManager.
 """
 
 import asyncio
+import secrets
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -29,13 +30,13 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.http.security_utils import sanitize_error_message, log_audit_event
-from motor.config.coordinator import CoordinatorConfig
+from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 from motor.coordinator.models.response import RequestResponse
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
-from motor.coordinator.domain.instance_manager import InstanceManager, TYPE_MGMT
+from motor.coordinator.domain.instance_manager import InstanceIdConflictError, InstanceManager, TYPE_MGMT
 from motor.coordinator.domain.probe import (
     DaemonLivenessProvider,
     LivenessProbe,
@@ -69,6 +70,30 @@ def _build_readiness_response(message: str, ready: bool) -> dict[str, Any]:
     return {"status": "ok", "message": message, "ready": ready}
 
 
+def _summarize_instance(instance: Any) -> dict[str, Any]:
+    endpoints: list[dict[str, Any]] = []
+    for pod_eps in (instance.endpoints or {}).values():
+        for ep in (pod_eps or {}).values():
+            endpoints.append(
+                {
+                    "id": ep.id,
+                    "ip": ep.ip,
+                    "business_port": str(ep.business_port),
+                    "headless": bool(getattr(ep, "headless", False)),
+                }
+            )
+    status = instance.status.value if hasattr(instance.status, "value") else instance.status
+    role = instance.role.value if hasattr(instance.role, "value") else instance.role
+    return {
+        "id": instance.id,
+        "role": role,
+        "job_name": instance.job_name,
+        "model_name": instance.model_name,
+        "status": status,
+        "endpoints": endpoints,
+    }
+
+
 INSTANCE_REFRESH = "instance_refresh"
 INSTANCE_REFRESH_URL = "/instances/refresh"
 PRECISION_ALARM_CLEARED = "precision_alarm_cleared"
@@ -89,6 +114,8 @@ class ManagementServer(BaseCoordinatorServer):
     ):
         super().__init__(config)
         self._mgmt_ssl_config = self.coordinator_config.mgmt_tls_config
+        self._mgmt_api_key_config = self.coordinator_config.mgmt_api_key_config
+        self._mgmt_api_key = self._load_mgmt_api_key()
         self._daemon_liveness = daemon_liveness or RoleShmDaemonLivenessProvider(
             daemon_pid=daemon_pid,
         )
@@ -107,6 +134,7 @@ class ManagementServer(BaseCoordinatorServer):
         self.management_app = self._app_builder.create_management_app(lifespan=self._lifespan)
         self._readiness_was_ready: bool | None = None
         self._readiness_last_503_result: ReadinessResult | None = None
+        self._refresh_lock = asyncio.Lock()
         self._re_register_task: asyncio.Task | None = None
         self._re_register_executor: ThreadPoolExecutor | None = None
         self._register_routes()
@@ -217,7 +245,28 @@ class ManagementServer(BaseCoordinatorServer):
 
     def _apply_config_changes(self, new_config: CoordinatorConfig) -> None:
         """Apply Mgmt-specific config changes."""
+        new_mgmt_api_key_config = new_config.mgmt_api_key_config
+        new_mgmt_api_key = new_mgmt_api_key_config.load_api_key() if new_mgmt_api_key_config.enable_api_key else ""
         self._mgmt_ssl_config = new_config.mgmt_tls_config
+        self._mgmt_api_key_config = new_mgmt_api_key_config
+        self._mgmt_api_key = new_mgmt_api_key
+
+    def _load_mgmt_api_key(self) -> str:
+        if not self._mgmt_api_key_config.enable_api_key:
+            return ""
+        return self._mgmt_api_key_config.load_api_key()
+
+    def _verify_mgmt_api_key(self, request: Request) -> None:
+        if not self._mgmt_api_key_config.enable_api_key:
+            return
+        api_key = request.headers.get(MGMT_API_KEY_HEADER)
+        if not api_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Missing {MGMT_API_KEY_HEADER} header",
+            )
+        if not secrets.compare_digest(api_key.encode("utf-8"), self._mgmt_api_key.encode("utf-8")):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid management API key")
 
     def _log_configuration(self) -> None:
         super()._log_configuration()
@@ -329,10 +378,19 @@ class ManagementServer(BaseCoordinatorServer):
             self._readiness_was_ready = out.is_ready
             return _build_readiness_response(msg, out.is_ready)
 
+        @self.management_app.get("/instances")
+        async def list_instances(request: Request):
+            self._verify_mgmt_api_key(request)
+            tracked = await self._instance_manager.snapshot_instances()
+            summaries = [_summarize_instance(inst) for inst in tracked]
+            summaries.sort(key=lambda item: (item.get("role") or "", item.get("id") or 0))
+            return {"count": len(summaries), "instances": summaries}
+
         @self.management_app.post("/instances/refresh", response_model=RequestResponse)
         @self.timeout_handler()
         async def refresh_instances(request: Request) -> RequestResponse:
             try:
+                self._verify_mgmt_api_key(request)
                 result = await self._handle_refresh_instances(request)
                 log_audit_event(
                     request=request,
@@ -354,6 +412,7 @@ class ManagementServer(BaseCoordinatorServer):
         @self.timeout_handler()
         async def precision_alarm_cleared(request: Request) -> RequestResponse:
             try:
+                self._verify_mgmt_api_key(request)
                 result = await self._handle_precision_alarm_cleared(request)
                 log_audit_event(
                     request=request,
@@ -376,11 +435,12 @@ class ManagementServer(BaseCoordinatorServer):
             return {
                 "service": "Motor Coordinator Management Server",
                 "version": "1.0.0",
-                "description": "Management plane: liveness, startup, readiness, metrics, instance refresh",
+                "description": "Management plane: liveness, startup, readiness, metrics, instance list/refresh",
                 "endpoints": {
                     "GET /liveness": "liveness check",
                     "GET /startup": "startup probe",
                     "GET /readiness": "readiness check",
+                    "GET /instances": "list registered instances",
                     "POST /instances/refresh": "refresh instances",
                     "POST /precision/alarm_cleared": "clear precision alarm scheduler state",
                 },
@@ -514,11 +574,25 @@ class ManagementServer(BaseCoordinatorServer):
                 detail=f"Invalid request format: {str(e)}",
             ) from e
 
-        await self._scheduler_connection.ensure_connected()
-        client = self._scheduler_connection.get_client()
-        if client is not None:
-            await client.refresh_instances(event_msg.event, event_msg.instances)
-        await self._instance_manager.refresh_instances(event_msg.event, event_msg.instances)
+        async with self._refresh_lock:
+            try:
+                await self._instance_manager.validate_refresh_instances(event_msg.event, event_msg.instances)
+            except InstanceIdConflictError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+
+            await self._scheduler_connection.ensure_connected()
+            client = self._scheduler_connection.get_client()
+            if client is not None:
+                accepted = await client.refresh_instances(event_msg.event, event_msg.instances)
+                if accepted is False:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Scheduler rejected the instance refresh",
+                    )
+            await self._instance_manager.refresh_instances(event_msg.event, event_msg.instances)
 
         return RequestResponse(
             request_id="refresh_request",

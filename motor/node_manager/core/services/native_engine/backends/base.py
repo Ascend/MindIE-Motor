@@ -87,7 +87,6 @@ def build_endpoint_config(context: LaunchContext, engine_type: str) -> EndpointC
         master_dp_ip=context.master_dp_ip,
         dp_rpc_port=context.dp_rpc_port,
         port=context.business_port,
-        mgmt_port=context.mgmt_port,
         instance_id=context.instance_id,
         dp_rank=context.dp_rank,
         node_rank=context.node_rank,

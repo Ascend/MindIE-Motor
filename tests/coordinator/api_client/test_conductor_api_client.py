@@ -31,13 +31,11 @@ def _make_endpoint(
     ep_id: int = 0,
     ip: str = "127.0.0.1",
     business_port: str = "8000",
-    mgmt_port: str = "8001",
 ) -> Endpoint:
     return Endpoint(
         id=ep_id,
         ip=ip,
         business_port=business_port,
-        mgmt_port=mgmt_port,
     )
 
 

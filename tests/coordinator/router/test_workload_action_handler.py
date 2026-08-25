@@ -170,7 +170,6 @@ class TestWorkloadActionHandler:
             id=1,
             ip="127.0.0.1",
             business_port="8080",
-            mgmt_port="8080",
             status=EndpointStatus.NORMAL,
         )
         return ScheduledResource(instance=instance, endpoint=endpoint)
@@ -235,7 +234,6 @@ class TestWorkloadActionHandler:
             id=1,
             ip="127.0.0.1",
             business_port="8080",
-            mgmt_port="8080",
             status=EndpointStatus.NORMAL,
         )
         resource = ScheduledResource(instance=instance, endpoint=endpoint)
@@ -275,7 +273,6 @@ class TestWorkloadActionHandler:
             id=1,
             ip="127.0.0.1",
             business_port="8080",
-            mgmt_port="8080",
             status=EndpointStatus.NORMAL,
         )
         resource = ScheduledResource(instance=instance, endpoint=endpoint)

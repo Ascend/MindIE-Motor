@@ -194,7 +194,7 @@ class HeartbeatManager(ThreadSafeSingleton):
                         "Endpoint %d at %s:%s is in status %s",
                         endpoint.id,
                         endpoint.ip,
-                        endpoint.mgmt_port,
+                        endpoint.business_port,
                         endpoint.status,
                     )
                     return False
@@ -246,10 +246,10 @@ class HeartbeatManager(ThreadSafeSingleton):
             self._is_started_after_restore = is_started
 
     def _refresh_endpoints_status_loop(self, engine_ready_event: threading.Event | None = None) -> None:
-        # Wait for the Daemon's engine-ready handoff (mgmt ports up) before
-        # probing — engine readiness is the Daemon's/engine service's concern,
-        # not this module's. The event is always set eventually (also when the
-        # engines died), so this never blocks indefinitely.
+        # Wait for the Daemon's engine-ready handoff (native /health on
+        # business_port) before probing — readiness is the Daemon/native
+        # engine service's concern, not this module's. The event is always set
+        # eventually (also when the engines died), so this never blocks forever.
         if engine_ready_event is not None:
             while not self.stop_event.is_set():
                 if engine_ready_event.wait(timeout=1.0):

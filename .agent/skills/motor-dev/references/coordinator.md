@@ -82,7 +82,7 @@ CoordinatorDaemon (parent process, async main loop)
 ``` text
 Offset  Size   Field
 0       4B     magic              = 0x574B4C44 ("WKLD")
-4       2B     schema_version     — fixed SCHEMA_VERSION=2 (layout compatibility)
+4       2B     schema_version     — fixed SCHEMA_VERSION=3 (layout compatibility)
 6       2B     (padding)
 8       8B     sequence           — seqlock write counter, bumped on every write
 16      4B     entry_count        — number of valid entries
@@ -92,10 +92,10 @@ Offset  Size   Field
 40      8B     prefill_sequence   — per-role workload change counter
 48      8B     decode_sequence    — per-role workload change counter
 56      8B     hybrid_sequence    — per-role workload change counter
-64      N×32B  entries            — per-endpoint workload slots (max 10240)
+64      N×24B  entries            — per-endpoint workload slots (max 10240)
 ```
 
-Header is 64B, each entry 32B (`instance_id 4B, endpoint_id 4B, role 1B, padding 3B, active_tokens 8B, active_kv_cache 8B, padding 4B`), and entries start at offset 64. `sequence` follows seqlock semantics: odd = writer in progress, even = readers may accept the snapshot after a matching second header read. Readers additionally verify the three per-role sequences are unchanged across the read for consistency.
+Header is 64B, each entry is 24B (`instance_id 4B, endpoint_id 4B, role 1B, padding 3B, active_tokens 8B, padding 4B`), and entries start at offset 64. Instance and endpoint IDs are signed 32-bit integers. `sequence` follows seqlock semantics: odd = writer in progress, even = readers may accept the snapshot after a matching second header read. Readers additionally verify the three per-role sequences are unchanged across the read for consistency.
 
 **SHM name:** `mindie_workload_<scheduler_pid>` — includes PID for uniqueness and orphan detection.
 
@@ -191,7 +191,7 @@ SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is un
 
 ### Hot-Reload
 
-Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemon's loop): when the config file changes, it calls `CoordinatorConfig.reload()` (re-parse from JSON) and pushes the updated config into the running `ManagementServer`. The reload skip-set is exactly `frozenset({"worker_index", "worker_metaserver_port"})` — runtime-only fields that must not change mid-flight; everything else re-applies. If no valid config path exists, hot-reload is disabled.
+Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemon's loop): when the config file changes, it calls `CoordinatorConfig.reload()` (re-parse from JSON) and pushes the updated config into the running `ManagementServer`. The reload skip-set is exactly `frozenset({"worker_index"})` — the runtime-only field that must not change mid-flight; everything else re-applies. If no valid config path exists, hot-reload is disabled.
 
 ## Key Files
 
@@ -213,14 +213,14 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/scheduler/runtime/scheduler_client.py` | | `AsyncSchedulerClient`: ZMQ DEALER + instance cache + SHM reader |
 | `motor/coordinator/scheduler/runtime/zmq_protocol.py` | | Request/response types, msgpack framing, topic constants |
 | `motor/coordinator/scheduler/runtime/workload_shm/` | | SHM layout (`layout.py`) + reader/writer |
-| `motor/coordinator/domain/instance_manager.py` | | Central instance pool (available/unavailable, per-role sub-pools) |
+| `motor/coordinator/domain/instance_manager.py` | | Central instance pool (available/unavailable/paused); `snapshot_instances()` for mgmt list |
 | `motor/coordinator/domain/request_manager.py` | | Request ID generation, workload tracking per request |
 | `motor/coordinator/router/dispatch.py` | | `select_router_class` (dynamic router selection from live topology) + `handle_request` + `handle_metaserver_request` |
 | `motor/coordinator/router/strategies/` | | `BaseRouter` + `PDHybridRouter` + `UnifiedPDRouter` implementations |
 | `motor/coordinator/router/dispatch_session.py` | | Dispatch attempt session/state tracking |
 | `motor/coordinator/router/rescheduler/` | | `Rescheduler` (retry plans for failed requests) |
 | `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `NativeEngineApiClient` (HTTP clients to kv-conductor, controller, engine) |
-| `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `/instances/refresh`, `/precision/alarm_cleared` |
+| `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `GET /instances`, `/instances/refresh`, `/precision/alarm_cleared` |
 | `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
 | `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
 | `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared Scheduler ZMQ connection (used by Mgmt/Obs/Infer) |
@@ -238,17 +238,49 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 ``` text
 Controller detects instance change
   → POST /instances/refresh (InsEventMsg: ADD/DEL/SET + instance list)
-    → Mgmt receives, updates local InstanceManager mirror
+    → Mgmt rejects duplicate request IDs and pre-validates global ID ownership under its refresh lock
       → ZMQ REFRESH_INSTANCES to Scheduler
         → Scheduler updates master InstanceManager, bumps version
-          → PUB socket: INSTANCE_CHANGE_TOPIC notification (+ delta frame for ADD/DEL)
-            → Workload SHM: instance_version bump in header
-              → Workers: patch/invalidate caches, re-fetch on next scheduling call
+          → Mgmt updates its local InstanceManager mirror
+            → PUB socket: INSTANCE_CHANGE_TOPIC notification (+ delta frame for ADD/DEL)
+              → Workload SHM: instance_version bump in header
+                → Workers: patch/invalidate caches, re-fetch on next scheduling call
 
 Controller clears a handled precision alarm
   → POST /precision/alarm_cleared (clear scheduler precision-alarm state for a P/D group)
     → Mgmt sends DISMISS_PRECISION_ALARM_STATE to Scheduler
 ```
+
+`InstanceManager` treats instance IDs as globally unique across all roles and the available, unavailable, and paused
+pools. ADD is idempotent only when ID, role, job name, and endpoint structure match; otherwise it is a conflict. SET
+rejects duplicate request IDs before building its ID-keyed diff while preserving same-ID structural updates. An
+endpoint-based DEL validates the role plus the order-independent physical endpoint multiset (`ip`, business/bootstrap
+ports, and `headless`) while ignoring order-derived endpoint IDs and endpoint map keys. An explicit ID-only DEL remains
+available for administrative removal.
+
+Standalone `motor.coordinator.register` IDs occupy signed-int32 range `0x40000000..0x7fffffff` and hash the role plus
+the sorted complete endpoint group. The same normalization also determines job names and endpoint IDs, so CLI input
+order does not change registration identity. This namespace separates them from ordinary low sequential Controller
+IDs but does not make CRC32 collision-free. The CLI checks `GET /instances`, and the management server remains the
+authoritative collision boundary. Endpoint-based deletion resolves the registered ID from `GET /instances` by role
+plus an order-independent network endpoint signature instead of deleting a recomputed ID. ID-only deletion also
+looks up the registered instance first and submits its actual role, job name, model name, and engine type.
+Scheduler refresh acknowledgement is required before the Mgmt mirror is updated; a Scheduler rejection returns 503 and
+leaves the mirror unchanged.
+
+`motor.coordinator.domain` keeps its package-level compatibility exports (for example `InstanceReadiness` and
+`RequestManager`) behind module `__getattr__` lazy loading. Domain submodules are imported directly by Coordinator models,
+so `domain/__init__.py` must not eagerly import modules that depend on `models.request`; doing so creates a
+`models.request → domain package → request_manager/scheduling → models.request` cycle in a fresh process.
+
+### Management API Authentication
+
+`mgmt_api_key_config.enable_api_key` enables a dedicated shared-secret boundary for privileged management APIs.
+The secret is read from `api_key_file` and supplied in `X-Motor-Management-Key`. It protects `GET /instances`,
+`POST /instances/refresh`, and `POST /precision/alarm_cleared`; `/startup`, `/liveness`, and `/readiness` remain
+unauthenticated so Kubernetes probes continue to work. Controller and standalone `motor.coordinator.register` clients
+load the same secret from a mounted/local file. This authentication is independent from inference `api_key_config`
+and from `mgmt_tls_config`; use TLS as well when management traffic crosses an untrusted network.
 
 ## Fault Tolerance: Circuit Breaker & Precision Detection
 

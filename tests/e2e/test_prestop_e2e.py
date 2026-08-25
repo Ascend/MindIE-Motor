@@ -60,7 +60,6 @@ def _make_endpoint(endpoint_id: int, ip: str, status: EndpointStatus = EndpointS
         id=endpoint_id,
         ip=ip,
         business_port="8000",
-        mgmt_port="9000",
         status=status,
         hb_timestamp=time.time(),
     )

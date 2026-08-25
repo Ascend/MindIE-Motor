@@ -136,10 +136,10 @@ class TestRouterNativeTrigger:
     def trigger_pair(self, monkeypatch):
         host = "127.0.0.1"
         instance_p = _trigger_instance(0, PDRole.ROLE_P)
-        endpoint_p = Endpoint(id=0, ip=host, business_port="8000", mgmt_port="8000", status=EndpointStatus.NORMAL)
+        endpoint_p = Endpoint(id=0, ip=host, business_port="8000", status=EndpointStatus.NORMAL)
         instance_p.endpoints = {host: {0: endpoint_p}}
         instance_d = _trigger_instance(1, PDRole.ROLE_D)
-        endpoint_d = Endpoint(id=1, ip=host, business_port="8001", mgmt_port="8001", status=EndpointStatus.NORMAL)
+        endpoint_d = Endpoint(id=1, ip=host, business_port="8001", status=EndpointStatus.NORMAL)
         instance_d.endpoints = {host: {1: endpoint_d}}
         self._patch_instances(monkeypatch, instance_p, instance_d, endpoint_p, endpoint_d)
         return instance_p, instance_d, endpoint_p, endpoint_d
@@ -189,10 +189,10 @@ class TestRouterNativeTrigger:
         """Handoff allocates P first; TRIGGER caps without D must fail-closed 503, not retry to 500."""
         host = "127.0.0.1"
         instance_p = _handoff_instance(0, PDRole.ROLE_P)
-        endpoint_p = Endpoint(id=0, ip=host, business_port="8000", mgmt_port="8000", status=EndpointStatus.NORMAL)
+        endpoint_p = Endpoint(id=0, ip=host, business_port="8000", status=EndpointStatus.NORMAL)
         instance_p.endpoints = {host: {0: endpoint_p}}
         instance_d = _handoff_instance(1, PDRole.ROLE_D)
-        endpoint_d = Endpoint(id=1, ip=host, business_port="8001", mgmt_port="8001", status=EndpointStatus.NORMAL)
+        endpoint_d = Endpoint(id=1, ip=host, business_port="8001", status=EndpointStatus.NORMAL)
         instance_d.endpoints = {host: {1: endpoint_d}}
         self._patch_instances(monkeypatch, instance_p, instance_d, endpoint_p, endpoint_d)
 
@@ -505,10 +505,10 @@ class TestRouterNativeTrigger:
     async def test_mixed_handoff_and_trigger_returns_503(self, monkeypatch):
         host = "127.0.0.1"
         instance_p = _handoff_instance(0, PDRole.ROLE_P)
-        endpoint_p = Endpoint(id=0, ip=host, business_port="8000", mgmt_port="8000", status=EndpointStatus.NORMAL)
+        endpoint_p = Endpoint(id=0, ip=host, business_port="8000", status=EndpointStatus.NORMAL)
         instance_p.endpoints = {host: {0: endpoint_p}}
         instance_d = _trigger_instance(1, PDRole.ROLE_D)
-        endpoint_d = Endpoint(id=1, ip=host, business_port="8001", mgmt_port="8001", status=EndpointStatus.NORMAL)
+        endpoint_d = Endpoint(id=1, ip=host, business_port="8001", status=EndpointStatus.NORMAL)
         instance_d.endpoints = {host: {1: endpoint_d}}
         self._patch_instances(monkeypatch, instance_p, instance_d, endpoint_p, endpoint_d)
 

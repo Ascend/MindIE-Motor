@@ -48,7 +48,7 @@ class TestInstanceManager:
             job_name="test-hybrid", model_name="test-model", id=3, role=PDRole.ROLE_U, endpoints={}
         )
 
-        self.endpoint = Endpoint(id=1, ip="127.0.0.1", business_port="8080", mgmt_port="8080")
+        self.endpoint = Endpoint(id=1, ip="127.0.0.1", business_port="8080")
 
     def test_init(self):
         """Test InstanceManager initialization"""
@@ -173,6 +173,16 @@ class TestInstanceManager:
         assert 4 not in self.instance_manager._available_pool
         assert 4 not in self.instance_manager._unavailable_pool
 
+    @pytest.mark.asyncio
+    async def test_snapshot_instances_includes_paused(self):
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        self.instance_manager._unavailable_pool[2] = self.decode_instance
+        self.instance_manager._paused_pool[3] = self.hybrid_instance
+
+        snapshot = await self.instance_manager.snapshot_instances()
+
+        assert {inst.id for inst in snapshot} == {1, 2, 3}
+
     def test_find_available_pool(self):
         """Test _find_available_pool method"""
         # Add instances to pools
@@ -246,7 +256,7 @@ class TestInstanceManager:
     @pytest.mark.asyncio
     async def test_update_instance_workload_rebuilds_aggregate_after_sibling_overrelease(self):
         """An over-release on one endpoint must not hide load on sibling endpoints."""
-        sibling = Endpoint(id=2, ip="127.0.0.2", business_port="8080", mgmt_port="8080")
+        sibling = Endpoint(id=2, ip="127.0.0.2", business_port="8080")
         self.prefill_instance.add_endpoints("127.0.0.1", {self.endpoint.id: self.endpoint})
         self.prefill_instance.add_endpoints("127.0.0.2", {sibling.id: sibling})
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
@@ -390,7 +400,7 @@ class TestInstanceManager:
         await self.instance_manager.refresh_instances(EventType.ADD, instances)
 
         # Verify warning was logged
-        assert "Instance ID 1 (role: prefill, job_name: test-prefill) already exists in available pool" in caplog.text
+        assert "Instance ID 1 (role: prefill, job_name: test-prefill) already exists in instance pool" in caplog.text
 
     @pytest.mark.asyncio
     async def test_refresh_instances_add_duplicate_in_unavailable_pool(self, caplog):
@@ -403,7 +413,26 @@ class TestInstanceManager:
         await self.instance_manager.refresh_instances(EventType.ADD, instances)
 
         # Verify warning was logged
-        assert "Instance ID 1 (role: prefill, job_name: test-prefill) already exists in unavailable pool" in caplog.text
+        assert "Instance ID 1 (role: prefill, job_name: test-prefill) already exists in instance pool" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_refresh_instances_add_rejects_cross_role_id_collision(self):
+        """An ID owned by prefill cannot be overwritten by a decode instance."""
+        self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
+        conflicting = Instance(
+            job_name="conflicting-decode",
+            model_name="test-model",
+            id=self.prefill_instance.id,
+            role=PDRole.ROLE_D,
+            endpoints={},
+        )
+
+        with pytest.raises(ValueError, match="already belongs to another instance"):
+            await self.instance_manager.refresh_instances(EventType.ADD, [conflicting])
+
+        assert self.instance_manager._available_pool[1] is self.prefill_instance
+        assert 1 in self.instance_manager._prefill_pool
+        assert 1 not in self.instance_manager._decode_pool
 
     @pytest.mark.asyncio
     async def test_refresh_instances_add_unknown_role(self):
@@ -460,6 +489,64 @@ class TestInstanceManager:
         assert "Instance ID 1 (role: prefill, job_name: test-prefill) not found in instance pool" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_refresh_instances_del_rejects_identity_mismatch(self):
+        """Endpoint-based deletion must not delete another instance that happens to share its ID."""
+        existing = Instance(
+            job_name="existing-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.1": {0: Endpoint(id=0, ip="10.0.0.1", business_port="8000")}},
+        )
+        mismatched = Instance(
+            job_name="other-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={"10.0.0.2": {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000")}},
+        )
+        self.instance_manager._add_instance_to_available_pool(existing)
+
+        with pytest.raises(ValueError, match="does not match the registered instance"):
+            await self.instance_manager.refresh_instances(EventType.DEL, [mismatched])
+
+        assert self.instance_manager._available_pool[1] is existing
+
+    @pytest.mark.asyncio
+    async def test_refresh_instances_del_accepts_reordered_endpoint_group(self):
+        """Endpoint IDs derived from input order must not change delete identity."""
+        existing = Instance(
+            job_name="existing-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={
+                "10.0.0.1": {
+                    0: Endpoint(id=0, ip="10.0.0.1", business_port="8000"),
+                    1: Endpoint(id=1, ip="10.0.0.1", business_port="8001"),
+                }
+            },
+        )
+        reordered = Instance(
+            job_name="existing-prefill",
+            model_name="test-model",
+            id=1,
+            role=PDRole.ROLE_P,
+            endpoints={
+                "10.0.0.1": {
+                    0: Endpoint(id=0, ip="10.0.0.1", business_port="8001"),
+                    1: Endpoint(id=1, ip="10.0.0.1", business_port="8000"),
+                }
+            },
+        )
+        self.instance_manager._add_instance_to_available_pool(existing)
+
+        changed = await self.instance_manager.refresh_instances(EventType.DEL, [reordered])
+
+        assert changed is True
+        assert 1 not in self.instance_manager._available_pool
+
+    @pytest.mark.asyncio
     async def test_refresh_instances_set_success(self, caplog):
         """Test refresh_instances method with SET event"""
         # Create new instances for setting
@@ -480,6 +567,25 @@ class TestInstanceManager:
         assert 20 in self.instance_manager._decode_pool
         assert "Added instance ID 10" in caplog.text and "to available pool successfully" in caplog.text
         assert "Added instance ID 20" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_refresh_instances_set_rejects_duplicate_ids_before_mutation(self):
+        """SET must reject duplicate IDs before constructing its ID-keyed diff mapping."""
+        conflicting = Instance(
+            job_name="conflicting-decode",
+            model_name="test-model",
+            id=self.prefill_instance.id,
+            role=PDRole.ROLE_D,
+            endpoints={},
+        )
+
+        with pytest.raises(ValueError, match="duplicate instance IDs"):
+            await self.instance_manager.refresh_instances(
+                EventType.SET,
+                [self.prefill_instance, conflicting],
+            )
+
+        assert not self.instance_manager._available_pool
 
     @pytest.mark.asyncio
     async def test_refresh_instances_set_with_existing_instances(self, caplog):
@@ -721,7 +827,7 @@ class TestInstanceManager:
 
         # Instance should still be there (not removed, not duplicated)
         assert 1 in self.instance_manager._available_pool
-        assert "already exists in available pool" in caplog.text
+        assert "already exists in instance pool" in caplog.text
 
     def test_add_instances_same_job_name_multiple_new_instances(self, caplog):
         """Multiple new instances with unique job_names are all added; no cross-talk."""
@@ -748,14 +854,14 @@ class TestInstanceManager:
             model_name="m",
             id=1,
             role=PDRole.ROLE_P,
-            endpoints={"10.0.0.1": {1: Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")}},
+            endpoints={"10.0.0.1": {1: Endpoint(id=1, ip="10.0.0.1", business_port="8080")}},
         )
         new = Instance(
             job_name="test",
             model_name="m",
             id=1,
             role=PDRole.ROLE_P,
-            endpoints={"10.0.0.2": {2: Endpoint(id=2, ip="10.0.0.2", business_port="8080", mgmt_port="8080")}},
+            endpoints={"10.0.0.2": {2: Endpoint(id=2, ip="10.0.0.2", business_port="8080")}},
         )
         assert InstanceManager._instance_needs_update(existing, new) is True
 
@@ -775,7 +881,7 @@ class TestInstanceManager:
         """_instance_needs_update returns False when structural fields are identical
         (runtime state like workload is ignored).
         """
-        ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")
+        ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080")
         # Existing instance has accumulated runtime workload
         existing = Instance(
             job_name="test",
@@ -788,7 +894,7 @@ class TestInstanceManager:
         ep.workload = Workload(active_tokens=100)
 
         # New instance from SET event has no workload
-        new_ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080", mgmt_port="8080")
+        new_ep = Endpoint(id=1, ip="10.0.0.1", business_port="8080")
         new = Instance(
             job_name="test",
             model_name="m",
@@ -967,7 +1073,7 @@ class TestInstanceManagerThreadSafety:
             job_name="test-hybrid", model_name="test-model", id=3, role=PDRole.ROLE_U, endpoints={}
         )
 
-        self.endpoint = Endpoint(id=1, ip="127.0.0.1", business_port="8080", mgmt_port="8080")
+        self.endpoint = Endpoint(id=1, ip="127.0.0.1", business_port="8080")
 
     def test_concurrent_add_and_delete_instances(self):
         """Test concurrent add and delete operations on instances with enhanced concurrency"""

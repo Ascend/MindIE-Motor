@@ -117,6 +117,7 @@ def test_default_config_initialization():
     assert config.scheduler_config.scheduler_type.value == "load_balance"
     assert config.timeout_config.request_timeout == 30
     assert config.api_key_config.enable_api_key is False
+    assert config.mgmt_api_key_config.enable_api_key is False
     assert config.rate_limit_config.enable_rate_limit is False
     assert config.api_config.coordinator_api_infer_port == 1025
     assert config.api_config.coordinator_api_mgmt_port == 1026
@@ -133,6 +134,10 @@ def test_from_json_success(_temp_json_file):
             "valid_keys": ["test-key"],
             "header_name": "X-API-Key",
             "key_prefix": "Bearer ",
+        },
+        "mgmt_api_key_config": {
+            "enable_api_key": True,
+            "api_key_file": "/run/secrets/motor-mgmt-api-key",
         },
         "rate_limit_config": {
             "enable_rate_limit": True,
@@ -151,6 +156,8 @@ def test_from_json_success(_temp_json_file):
     assert config.exception_config.max_retry == 10
     assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.api_key_config.enable_api_key is True
+    assert config.mgmt_api_key_config.enable_api_key is True
+    assert config.mgmt_api_key_config.api_key_file == "/run/secrets/motor-mgmt-api-key"
     assert config.rate_limit_config.enable_rate_limit is True
     assert config.config_path == _temp_json_file
 
@@ -504,6 +511,14 @@ def test_config_validation_success():
     config.validate_config()
 
 
+def test_config_validation_rejects_enabled_management_auth_without_key_file():
+    config = CoordinatorConfig()
+    config.mgmt_api_key_config.enable_api_key = True
+
+    with pytest.raises(ValueError, match="api_key_file cannot be empty"):
+        config.validate_config()
+
+
 @pytest.mark.parametrize(
     "param,value,expected_error",
     [
@@ -636,6 +651,7 @@ def test_to_dict():
         'etcd_tls_config',
         'timeout_config',
         'api_key_config',
+        'mgmt_api_key_config',
         'rate_limit_config',
         'standby_config',
         'etcd_config',

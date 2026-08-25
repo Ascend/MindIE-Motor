@@ -488,7 +488,6 @@ class InstanceAssembler(ThreadSafeSingleton):
                 id=id_offset,
                 ip=msg.pod_ip,
                 business_port=msg.business_port[0],
-                mgmt_port=msg.mgmt_port[0],
                 bootstrap_port=msg.bootstrap_port,
                 device_infos=device_infos,
             )
@@ -533,7 +532,6 @@ class InstanceAssembler(ThreadSafeSingleton):
                 id=id_offset + i,
                 ip=msg.pod_ip,
                 business_port=port,
-                mgmt_port=msg.mgmt_port[i],
                 bootstrap_port=msg.bootstrap_port,
                 device_infos=device_infos,
             )

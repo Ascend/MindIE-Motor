@@ -28,6 +28,58 @@ logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
 
 
+class InstanceIdConflictError(ValueError):
+    """Raised when an instance ID is already owned by a different instance identity."""
+
+
+def _endpoint_identity(instance: Instance) -> tuple[tuple[str, int, str, str, int | None, bool], ...]:
+    """Return stable endpoint structural fields, excluding runtime health and workload state."""
+    return tuple(
+        sorted(
+            (
+                pod_ip,
+                endpoint.id,
+                endpoint.ip,
+                str(endpoint.business_port),
+                endpoint.bootstrap_port,
+                endpoint.headless,
+            )
+            for pod_ip, pod_endpoints in (instance.endpoints or {}).items()
+            for endpoint in (pod_endpoints or {}).values()
+        )
+    )
+
+
+def _same_add_identity(existing: Instance, new: Instance) -> bool:
+    return (
+        existing.role == new.role
+        and existing.job_name == new.job_name
+        and _endpoint_identity(existing) == _endpoint_identity(new)
+    )
+
+
+def _delete_endpoint_identity(instance: Instance) -> tuple[tuple[str, str, int, bool], ...]:
+    """Return physical endpoint identity without order-derived endpoint IDs or map keys."""
+    return tuple(
+        sorted(
+            (
+                endpoint.ip,
+                str(endpoint.business_port),
+                endpoint.bootstrap_port or 0,
+                endpoint.headless,
+            )
+            for pod_endpoints in (instance.endpoints or {}).values()
+            for endpoint in (pod_endpoints or {}).values()
+        )
+    )
+
+
+def _same_delete_identity(existing: Instance, requested: Instance) -> bool:
+    return existing.role == requested.role and _delete_endpoint_identity(existing) == _delete_endpoint_identity(
+        requested
+    )
+
+
 def _role_to_pdrole(role: PDRole | str) -> PDRole:
     """Normalize role to PDRole for use as _available_role_pools key (avoid str/enum key mismatch)."""
     return PDRole(role) if isinstance(role, str) else role
@@ -161,6 +213,20 @@ class InstanceManager:
             avail_items = list(self._available_pool.items())
             unavail_items = list(self._unavailable_pool.items())
         return dict(avail_items), dict(unavail_items)
+
+    async def snapshot_instances(self) -> list[Instance]:
+        """Snapshot available, unavailable and paused instances."""
+        async with self._lock:
+            return [
+                *self._available_pool.values(),
+                *self._unavailable_pool.values(),
+                *self._paused_pool.values(),
+            ]
+
+    async def validate_refresh_instances(self, event_type: EventType, instances: list[Instance]) -> None:
+        """Validate an instance refresh without modifying pools."""
+        async with self._lock:
+            self._validate_refresh_instances(event_type, instances)
 
     def update_instance_workload_sync(
         self,
@@ -329,6 +395,7 @@ class InstanceManager:
     async def refresh_instances(self, event_type: EventType, instances: list[Instance]) -> bool:
         """Apply instance refresh; return True if pools were modified (for Scheduler notify)."""
         async with self._lock:
+            self._validate_refresh_instances(event_type, instances)
             # Log instance change summary: event type, count, and instance ids
             change_summary = [(inst.id, getattr(inst, "role", None)) for inst in instances]
             logger.info(
@@ -369,6 +436,33 @@ class InstanceManager:
             return None
         return self._available_role_pools.get(_role_to_pdrole(instance.role))
 
+    def _find_instance_by_id(self, instance_id: int) -> Instance | None:
+        """Find an instance by ID across all state pools."""
+        return (
+            self._available_pool.get(instance_id)
+            or self._unavailable_pool.get(instance_id)
+            or self._paused_pool.get(instance_id)
+        )
+
+    def _validate_refresh_instances(self, event_type: EventType, instances: list[Instance]) -> None:
+        """Validate request-level uniqueness and existing identity ownership while locked."""
+        instance_ids = [instance.id for instance in instances]
+        if len(instance_ids) != len(set(instance_ids)):
+            raise ValueError("duplicate instance IDs in one request")
+
+        if event_type == EventType.ADD:
+            for instance in instances:
+                existing = self._find_instance_by_id(instance.id)
+                if existing is not None and not _same_add_identity(existing, instance):
+                    raise InstanceIdConflictError(f"instance ID {instance.id} already belongs to another instance")
+        elif event_type == EventType.DEL:
+            for instance in instances:
+                existing = self._find_instance_by_id(instance.id)
+                if existing is None or not instance.endpoints:
+                    continue
+                if not _same_delete_identity(existing, instance):
+                    raise InstanceIdConflictError(f"instance ID {instance.id} does not match the registered instance")
+
     def _register_kv_instance(self, instances: list[Instance], is_register: bool = True) -> None:
         """Only the Mgmt process registers KV instances (Scheduler/Obs are mirrors)."""
         if self.typename != TYPE_MGMT:
@@ -408,10 +502,12 @@ class InstanceManager:
         instances_tmp = []
         replaced_instances = []
         for instance in instances:
-            if instance.id in self._unavailable_pool:
+            existing_by_id = self._find_instance_by_id(instance.id)
+            if existing_by_id is not None:
+                if not _same_add_identity(existing_by_id, instance):
+                    raise InstanceIdConflictError(f"instance ID {instance.id} already belongs to another instance")
                 logger.warning(
-                    "Instance ID %d (role: %s, job_name: %s) already exists in unavailable pool, "
-                    "cannot add instance again",
+                    "Instance ID %d (role: %s, job_name: %s) already exists in instance pool, cannot add again",
                     instance.id,
                     instance.role,
                     instance.job_name,
@@ -539,13 +635,13 @@ class InstanceManager:
         if existing_nms != new_nms:
             return True
 
-        # Compare endpoints structurally: (pod_ip, endpoint_id, ip, business_port, mgmt_port).
+        # Compare endpoints structurally: (pod_ip, endpoint_id, ip, business_port).
         # Runtime fields (workload, hb_timestamp, status) are ignored.
         def _ep_sig(eps: dict[str, dict[int, object]] | None) -> set[tuple]:
             if not eps:
                 return set()
             return {
-                (pod_ip, ep.id, ep.ip, ep.business_port, ep.mgmt_port)
+                (pod_ip, ep.id, ep.ip, ep.business_port)
                 for pod_ip, pod_eps in eps.items()
                 for ep in (pod_eps or {}).values()
             }
@@ -689,7 +785,7 @@ class InstanceManager:
                 instance.job_name,
             )
             return False
-        if instance.id in update_pool:
+        if instance.id in self._available_pool:
             logger.warning(
                 "Instance ID %d (role: %s, job_name: %s) already exists in available pool, cannot add instance again",
                 instance.id,

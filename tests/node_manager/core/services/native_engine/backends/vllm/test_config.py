@@ -54,7 +54,6 @@ def _make_endpoint_config(
         deploy_config=deploy_config,
         host="127.0.0.1",
         port=8000,
-        mgmt_port=9001,
         role="union",
         node_rank=node_rank,
         master_dp_ip=master_dp_ip,

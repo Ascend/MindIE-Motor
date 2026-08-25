@@ -218,37 +218,66 @@ def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client)
         mock_http_client.assert_called()
 
 
-def test_event_consumer_exception_handling(event_pusher, mock_http_client):
-    """test event consumer exception handling"""
-    # set mock to return False (indicating failure)
+@pytest.mark.parametrize("event_type", [EventType.ADD, EventType.DEL, EventType.PAUSE, EventType.RESUME])
+def test_event_consumer_failed_incremental_event_queues_set(event_pusher, mock_http_client, event_type):
+    """A failed incremental refresh must trigger one full-state reconciliation."""
     mock_http_client.return_value = False
-
-    # add instances
     test_instance = Instance(job_name="test_job", model_name="test_model", id=1, role="prefill")
     readonly_instance = ReadOnlyInstance(test_instance)
     event_pusher.instances["test_job"] = readonly_instance
+    test_event = Event(event_type=event_type, instance=readonly_instance.to_instance())
 
-    test_event = Event(event_type=EventType.ADD, instance=readonly_instance.to_instance())
-
-    event_pusher.event_queue.put(test_event)
-    event_pusher.event_queue.put(None)
-
-    _original_get = event_pusher.event_queue.get
-
-    def mock_get(timeout=None):
-        try:
-            return _original_get(block=False)
-        except queue.Empty:
-            raise StopIteration
-
-    with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
+    with patch.object(event_pusher.event_queue, 'get', side_effect=[test_event, StopIteration]):
         try:
             event_pusher._event_consumer()
         except StopIteration:
             pass
 
-        # check send_instance_refresh is called
-        mock_http_client.assert_called_once()
+    mock_http_client.assert_called_once()
+    reconciliation = event_pusher.event_queue.get_nowait()
+    assert reconciliation.event_type == EventType.SET
+    assert reconciliation.instance is None
+    assert event_pusher.event_queue.empty()
+
+
+def test_event_consumer_failed_set_does_not_mark_synced_or_loop(event_pusher, mock_http_client):
+    """A failed SET stays eligible for later reconciliation without recursively requeueing itself."""
+    mock_http_client.return_value = False
+    test_instance = Instance(job_name="test_job", model_name="test_model", id=1, role="prefill")
+    event_pusher.instances["test_job"] = ReadOnlyInstance(test_instance)
+    test_event = Event(event_type=EventType.SET, instance=None)
+
+    with patch.object(event_pusher.event_queue, 'get', side_effect=[test_event, StopIteration]):
+        try:
+            event_pusher._event_consumer()
+        except StopIteration:
+            pass
+
+    mock_http_client.assert_called_once()
+    assert event_pusher._last_sent_fingerprint is None
+    assert event_pusher.event_queue.empty()
+
+
+def test_event_consumer_coalesces_consecutive_failed_incremental_events(event_pusher, mock_http_client):
+    """Consecutive incremental failures must share one pending SET reconciliation."""
+    mock_http_client.return_value = False
+    test_instance = Instance(job_name="test_job", model_name="test_model", id=1, role="prefill")
+    readonly_instance = ReadOnlyInstance(test_instance)
+    events = [
+        Event(event_type=EventType.ADD, instance=readonly_instance.to_instance()),
+        Event(event_type=EventType.DEL, instance=readonly_instance.to_instance()),
+    ]
+
+    with patch.object(event_pusher.event_queue, 'get', side_effect=[*events, StopIteration]):
+        try:
+            event_pusher._event_consumer()
+        except StopIteration:
+            pass
+
+    assert mock_http_client.call_count == 2
+    reconciliation = event_pusher.event_queue.get_nowait()
+    assert reconciliation.event_type == EventType.SET
+    assert event_pusher.event_queue.empty()
 
 
 def test_heartbeat_detector_normal(event_pusher):

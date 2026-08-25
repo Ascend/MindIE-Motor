@@ -296,7 +296,6 @@ class TestRouterNativeHandoff:
             id=0,
             ip=host,
             business_port="8000",
-            mgmt_port="8000",
             status=EndpointStatus.NORMAL,
         )
         mock_instance_p.endpoints = {host: {0: mock_endpoint_p}}
@@ -306,7 +305,6 @@ class TestRouterNativeHandoff:
             id=1,
             ip=host,
             business_port="8001",
-            mgmt_port="8001",
             status=EndpointStatus.NORMAL,
         )
         mock_instance_d.endpoints = {host: {1: mock_endpoint_d}}
@@ -730,7 +728,7 @@ class TestRouterNativeHandoff:
         # Mock InstanceManager.get_available_instances
         host = "127.0.0.1"
         mock_instance_p = self.create_mock_instance(0, PDRole.ROLE_P)
-        mock_endpoint_p = Endpoint(id=0, ip=host, business_port="8000", mgmt_port="8000")
+        mock_endpoint_p = Endpoint(id=0, ip=host, business_port="8000")
         mock_instance_p.endpoints = {host: {0: mock_endpoint_p}}
 
         def mock_get_available_instances(self, role=None):

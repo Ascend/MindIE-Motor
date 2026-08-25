@@ -33,7 +33,7 @@ NodeManager (Application)
 │
 ├── Daemon (ThreadSafeSingleton)
 │     Service registry orchestration (core/services/registry.py):
-│       "engine" services  → EngineService (subprocess.Popen, device pinning)
+│       "engine" services  → NativeEngineService (vllm serve / SGLang, device pinning)
 │       "kv-store" backends → memcache/lifecycle services
 │     Device pinning via ASCEND_RT_VISIBLE_DEVICES env var
 │     SIGKILL on stop (no graceful shutdown — engines are stateless)
@@ -67,12 +67,12 @@ NodeManager (Application)
 │
 ├── HeartbeatManager (ThreadSafeSingleton)
 │     Two daemon threads:
-│       _engine_server_status_thread — poll each engine GET /status every interval
-│       _heartbeat_report_thread     — POST /controller/heartbeat every interval
+│       _engine_status_thread     — poll ProcessSupervisor / native /health every 1s
+│       _heartbeat_report_thread  — POST /controller/heartbeat every interval
 │     Endpoint-state facts only (status polling + heartbeat reporting) —
 │       arbitration lives in the Daemon, not here
 │     No engine-readiness logic: status probing waits for the Daemon's
-│       engine-ready handoff (mgmt ports up), injected at start()
+│       engine-ready handoff (native /health on business_port), injected at start()
 │
 └── FaultReporter
       HTTP poll GET {business_port}/fault_tolerance/status per engine
@@ -185,7 +185,7 @@ Controller sends `POST /node-manager/start` with `StartCmdMsg`:
 ``` text
 {
   instance_id, job_name, role,
-  endpoints: [{id, ip, business_port, mgmt_port, bootstrap_port, dp_rank, headless, ...}],
+  endpoints: [{id, ip, business_port, bootstrap_port, dp_rank, headless, ...}],
   master_dp_ip, node_rank, d2d_peer_ips, ranktable
 }
 ```
@@ -285,7 +285,7 @@ report_software_fault and freeze suicide ONLY on a successful report —
 dedup by PID / endpoint id):
   1. process monitor (5s): engine PID death (EngineDeadError)
   2. arbitration: ABNORMAL endpoint that was NORMAL before — covers
-     EngineServer alive but executor dead (vLLM EngineCore crash)
+     native engine process alive but /health failed (e.g. vLLM EngineCore crash)
   Cold-start guard: an endpoint never NORMAL yet is still loading — no report.
   Report failure (Controller unreachable) → NO freeze: the arbitration keeps
   counting and the container-restart fallback stays live (freezing on a

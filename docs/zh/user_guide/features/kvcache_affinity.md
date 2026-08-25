@@ -9,6 +9,7 @@ KV Cache 亲和性调度通过自研 **kv-conductor** 组件（Rust 实现），
 
 kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 wheel 包。
 部署时通过 `python -m motor.kv_conductor` 启动，无需额外安装独立二进制。
+不部署 Controller / Node Manager 时，见 [Coordinator 独立部署](../deployment/standalone.md)。
 
 **分工**：
 
@@ -296,7 +297,7 @@ hash_block_size = 512
 ### 整体流程
 
 1. **KV Cache 事件发布**：P 实例完成 prefill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 block hashes、token IDs、parent hash 等）。
-2. **Conductor 索引**：kv-conductor 通过 ZMQ SUB 订阅引擎事件，根据 token IDs 重算 XXH3 内容哈希，构建 HBM RadixTree + CPU/Disk continuation-edge 索引。
+2. **Conductor 索引**：kv-conductor 作为 ZMQ SUB **主动 connect 到各 P 节点绑定的事件端点**（连接方向 conductor → P，事件数据流 P → conductor），根据 token IDs 重算 XXH3 内容哈希，构建 HBM RadixTree + CPU/Disk continuation-edge 索引。
 3. **亲和性调度决策**：Coordinator（`scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度，再按评分策略选择最优 Worker。
 
 ### Conductor 查询结果
@@ -400,7 +401,7 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 
 ### P 实例发布 KV Cache 事件失败
 
-检查 `kv-events-config` 中 `endpoint` 和 `replay_endpoint` 配置是否正确，以及 P 实例与 kv-conductor 之间的网络是否可达。
+检查 `kv-events-config` 中 `endpoint` 和 `replay_endpoint` 配置是否正确（P 侧绑定），`kv_conductor_config.npu_endpoint` 是否与其一致，以及 **conductor → P** 方向的网络是否可达（conductor 主动 connect P 的事件端口）。
 
 ### 命中率始终为 0
 

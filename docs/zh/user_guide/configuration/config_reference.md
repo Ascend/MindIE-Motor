@@ -276,6 +276,10 @@ motor_coordinator_config字段配置样例如下所示：
     ],
     "encryption_algorithm": "PBKDF2_SHA256"
   },
+  "mgmt_api_key_config": {
+    "enable_api_key": false,
+    "api_key_file": ""
+  },
   "rate_limit_config": {
     "enable_rate_limit": false,
     "provider": "simple",
@@ -421,6 +425,9 @@ motor_coordinator_config字段配置样例如下所示：
 | key_prefix | string | 头中 Key 的前缀，如`Bearer`。默认值：`Bearer`|
 | skip_paths | array | 不校验 API Key 的路径列表（如 `/metrics`、`/liveness`、`/docs`、`/v1/metaserver` 等），可自定义。代码默认包含 `/v1/metaserver`（Decode layerwise 回调不带 Key）。 |
 | encryption_algorithm | string | Key 校验使用的加密算法，如 `PBKDF2_SHA256`。默认值：`PBKDF2_SHA256` |
+| **mgmt_api_key_config字段** |-|管理面独立 API Key 配置，仅保护实例查询、实例刷新和精度告警状态清理接口。启动、存活和就绪探针不鉴权。请求头固定为 `X-Motor-Management-Key`。|
+| enable_api_key | bool | 是否开启管理面 API Key 鉴权。可选：`true` / `false`。默认值：`false`。|
+| api_key_file | string | API Key 文件路径。开启鉴权时必填；文件必须仅含一行非空密钥。Controller 与 Coordinator 分开部署时需挂载内容相同的密钥文件。|
 | **rate_limit_config字段** |-|-|
 | enable_rate_limit | bool | 是否开启请求限流。可选：`true` / `false`。默认值：`false` |
 | provider |string|限流提供者。simple使用内置令牌桶；OLC使用过载控制库（需额外安装及配置）。|
@@ -531,7 +538,6 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
     "endpoint_config": {
       "endpoint_num": 0,
       "base_port": 10000,
-      "mgmt_ports": [],
       "service_ports": []
     },
     "basic_config": {...
@@ -587,7 +593,6 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | api_config.node_manager_port |int | NodeManager 端口。默认值：`1026` |
 | endpoint_config.endpoint_num |int | 引擎端点数量，通常由 HCCL/并行配置推导。默认值：`0` |
 | endpoint_config.base_port |int | 端点端口起始号。默认值：`10000` |
-| endpoint_config.mgmt_ports |array | 各端点兼容管理端口列表（整数数组）。原生引擎不监听该端口，当前为注册协议兼容字段。默认值：`[]` |
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
 | endpoint_config.bootstrap_port |int/null | SGLang PD 原生 bootstrap 端口。由所选引擎配置中的 `engine_config.disaggregation_bootstrap_port`（兼容 `disaggregation-bootstrap-port`）派生；vLLM 或未配置时为空。 |
 | fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
@@ -654,7 +659,6 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "endpoint_config": {
       "endpoint_num": 0,
       "base_port": 10000,
-      "mgmt_ports": [],
       "service_ports": []
     },
     "basic_config": {...
@@ -729,7 +733,6 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "endpoint_config": {
       "endpoint_num": 0,
       "base_port": 10000,
-      "mgmt_ports": [],
       "service_ports": []
     },
     "basic_config": {...
@@ -786,7 +789,6 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | api_config.node_manager_port |int | NodeManager 端口。默认值：`1026` |
 | endpoint_config.endpoint_num |int | 引擎端点数量，通常由 HCCL/并行配置推导。默认值：`0` |
 | endpoint_config.base_port |int | 端点端口起始号。默认值：`10000` |
-| endpoint_config.mgmt_ports |array | 各端点兼容管理端口列表（整数数组）。原生引擎不监听该端口，当前为注册协议兼容字段。默认值：`[]` |
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
 | endpoint_config.bootstrap_port |int/null | SGLang PD 原生 bootstrap 端口。由所选引擎配置中的 `engine_config.disaggregation_bootstrap_port`（兼容 `disaggregation-bootstrap-port`）派生；vLLM 或未配置时为空。 |
 | fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|

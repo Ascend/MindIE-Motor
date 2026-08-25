@@ -99,7 +99,6 @@ def _mk_instance(instance_id: int, role: PDRole, endpoint_id: int | None = None)
                     id=endpoint_id,
                     ip=f"10.0.0.{instance_id}",
                     business_port="8000",
-                    mgmt_port="9000",
                     status=EndpointStatus.NORMAL,
                 )
             },

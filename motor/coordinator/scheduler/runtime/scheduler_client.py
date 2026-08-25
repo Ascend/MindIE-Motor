@@ -1433,7 +1433,7 @@ class AsyncSchedulerClient:
         """Interface compat; returns empty (Mgmt process uses local InstanceManager)."""
         return {}, {}
 
-    async def refresh_instances(self, event_type, instances: list[Instance]) -> None:
+    async def refresh_instances(self, event_type, instances: list[Instance]) -> bool:
         request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.REFRESH_INSTANCES,
@@ -1447,9 +1447,13 @@ class AsyncSchedulerClient:
         response = await self._transport.send_request(request)
 
         if response and response.response_type == SchedulerResponseType.SUCCESS:
-            logger.info(f"Successfully refreshed instances: {(response.data or {}).get('message', '')}")
-        elif response:
-            logger.error(f"Failed to refresh instances: {response.error}")
+            logger.info("Successfully refreshed instances: %s", (response.data or {}).get("message", ""))
+            return True
+        if response:
+            logger.error("Failed to refresh instances: %s", response.error)
+        else:
+            logger.error("Failed to refresh instances: Scheduler did not respond")
+        return False
 
     async def _on_instance_change_notify(self, version: int | None, delta: dict | None = None) -> None:
         """Called when SUB receives instance-change from Scheduler; dedup by version, then apply the

@@ -154,7 +154,6 @@ class EndpointConfig:
 
     # Native engine endpoint port configuration
     base_port: int = 10000
-    mgmt_ports: list[str] = field(default_factory=list)
     service_ports: list[str] = field(default_factory=list)
     bootstrap_port: int | None = None
 
@@ -662,7 +661,6 @@ class NodeManagerConfig:
                 config.basic_config.device_num = 0
                 config.endpoint_config.endpoint_num = 0
                 config.endpoint_config.service_ports = []
-                config.endpoint_config.mgmt_ports = []
                 return
 
             if config.single_container_config.single_container_flag:
@@ -677,7 +675,6 @@ class NodeManagerConfig:
             config.basic_config.device_num = 0
             config.endpoint_config.endpoint_num = 0
             config.endpoint_config.service_ports = []
-            config.endpoint_config.mgmt_ports = []
 
     @classmethod
     def _parse_kv_cache_store_config(cls, config: "NodeManagerConfig", raw: dict | None):
@@ -780,14 +777,10 @@ class NodeManagerConfig:
         config.endpoint_config.service_ports = [
             str(config.endpoint_config.base_port + i * 2) for i in range(config.endpoint_config.endpoint_num)
         ]
-        config.endpoint_config.mgmt_ports = [
-            str(config.endpoint_config.base_port + i * 2 + 1) for i in range(config.endpoint_config.endpoint_num)
-        ]
 
         logger.info(
-            "Generate endpoint ports successfully: endpoint_num: %d, mgmt_ports: %s, service_ports: %s.",
+            "Generate endpoint ports successfully: endpoint_num: %d, service_ports: %s.",
             config.endpoint_config.endpoint_num,
-            config.endpoint_config.mgmt_ports,
             config.endpoint_config.service_ports,
         )
 

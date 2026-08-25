@@ -56,7 +56,6 @@ def _make_endpoint(ep_id: int, active_tokens: float = 0.0) -> Endpoint:
         id=ep_id,
         ip="127.0.0.1",
         business_port="8000",
-        mgmt_port="8001",
         workload=Workload(active_tokens=active_tokens),
     )
 

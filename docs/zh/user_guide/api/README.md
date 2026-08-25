@@ -38,6 +38,7 @@ MindIE Motor提供下列管理接口：
 - [启动探针接口](./management_interfaces.md#启动探针接口)：`/startup`
 - [存活探针接口](./management_interfaces.md#存活探针接口)：`/liveness`
 - [就绪探针接口](./management_interfaces.md#就绪探针接口)：`/readiness`
+- [实例查询接口](./management_interfaces.md#实例查询接口)：`/instances`
 - [实例刷新接口](./management_interfaces.md#实例刷新接口)：`/instances/refresh`
 - [精度告警状态清理接口](./management_interfaces.md#精度告警状态清理接口)：`/precision/alarm_cleared`
 - [根路径服务信息接口](./management_interfaces.md#根路径服务信息接口)：`/`
@@ -129,6 +130,7 @@ Controller 观测接口提供模型服务清单与告警等运维观测数据（
 ## 安全、认证与限流
 
 - 安全协议：`infer_tls_config.enable_tls` / `mgmt_tls_config.enable_tls` 为 `true` 时，推理/管理接口端口使用 `https`
+- 管理面鉴权：`mgmt_api_key_config.enable_api_key=true` 时，实例查询、实例刷新和精度告警状态清理接口必须携带 `X-Motor-Management-Key`；探针接口免鉴权。密钥由 `api_key_file` 指定的文件提供
 - 请求头：
   - 必选：`Content-Type: application/json`
   - 可选：API Key

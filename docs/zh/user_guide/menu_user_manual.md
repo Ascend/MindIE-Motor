@@ -12,6 +12,7 @@
   - [Controller支持RAS能力]()
   - [单容器docker only PD分离部署](./deployment/docker/single_container.md)
   - [多容器docker only PD分离部署](./deployment/docker/multi_container.md)
+  - [Coordinator 独立部署](./deployment/standalone.md)
   - [Deployer部署配置参考](./deployment/k8s/README.md)
   - [配置参数说明]()
     - [user_config.json配置文件参考](./configuration/config_reference.md)

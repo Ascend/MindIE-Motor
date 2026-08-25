@@ -47,7 +47,7 @@ def _fake_deploy_config(
 
 
 def _make_endpoint(endpoint_id: int, *, headless: bool = False) -> Endpoint:
-    return Endpoint(id=endpoint_id, ip="127.0.0.1", business_port="8000", mgmt_port="8001", headless=headless)
+    return Endpoint(id=endpoint_id, ip="127.0.0.1", business_port="8000", headless=headless)
 
 
 def _make_launch_spec(deploy_config=None, env=None) -> LaunchSpec:
@@ -123,7 +123,7 @@ def test_pull_forwards_snapshot_metadata_to_launch_context():
         probe=ProbeSpec(path="/snapshot/health", timeout_seconds=1, startup_timeout_seconds=10),
     )
     service.supervisor.start.return_value = True
-    endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8001")
+    endpoint = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
 
     service.pull(PDRole.ROLE_U, [endpoint], instance_id=1, master_dp_ip="127.0.0.1")
 

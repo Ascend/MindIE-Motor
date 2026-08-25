@@ -10,6 +10,7 @@
 
 import threading
 import time
+from typing import Any
 
 import requests
 
@@ -18,7 +19,7 @@ from motor.common.http.http_client import ConnectionMode, SafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.config.controller import ControllerConfig
-from motor.config.coordinator import CoordinatorConfig
+from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 
 logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
@@ -198,7 +199,7 @@ class CoordinatorApiClient:
     @staticmethod
     def query_status(params: dict[str, str] | None = None) -> dict[str, str]:
         try:
-            client_ars = CoordinatorApiClient._generate_client_args()
+            client_ars = CoordinatorApiClient._generate_client_args(include_mgmt_api_key=False)
             client = SafeHTTPSClient(**client_ars, timeout=3)
             response = client.get("/readiness", params=params)
             _rl.record_success("controller.coordinator.query_status")
@@ -209,7 +210,7 @@ class CoordinatorApiClient:
             )
             return response
         except Exception as e:
-            address = CoordinatorApiClient._generate_client_args().get("address", "unknown")
+            address = CoordinatorApiClient._generate_client_args(include_mgmt_api_key=False).get("address", "unknown")
             # Rate-limit: the heartbeat detector runs frequently and repeated
             # connection failures flood the log.  Collapse into periodic summaries.
             _rl.error_window(
@@ -280,11 +281,15 @@ class CoordinatorApiClient:
                 client.close()
 
     @classmethod
-    def _generate_client_args(cls) -> dict[str, str]:
+    def _generate_client_args(cls, include_mgmt_api_key: bool = True) -> dict[str, Any]:
         tls_config = cls.controller_config.mgmt_tls_config
         api_config = cls.coordinator_config.api_config
         address = f"{api_config.coordinator_api_dns}:{api_config.coordinator_api_mgmt_port}"
-        return {"address": f"{address}", "tls_config": tls_config}
+        client_args: dict[str, Any] = {"address": address, "tls_config": tls_config}
+        mgmt_api_key_config = cls.coordinator_config.mgmt_api_key_config
+        if include_mgmt_api_key and mgmt_api_key_config.enable_api_key:
+            client_args["headers"] = {MGMT_API_KEY_HEADER: mgmt_api_key_config.load_api_key()}
+        return client_args
 
     @classmethod
     def _generate_obs_client_args(cls) -> dict[str, str]:

@@ -121,8 +121,8 @@ def config():
 @pytest.fixture
 def endpoints():
     return [
-        Endpoint(id=0, ip="192.168.1.1", business_port="8000", mgmt_port="9000"),
-        Endpoint(id=1, ip="192.168.1.1", business_port="8001", mgmt_port="9001"),
+        Endpoint(id=0, ip="192.168.1.1", business_port="8000"),
+        Endpoint(id=1, ip="192.168.1.1", business_port="8001"),
     ]
 
 
@@ -192,7 +192,7 @@ def test_update_config_restart_on_endpoints_change(config, endpoints):
     new_config = NodeManagerConfig()
     new_config.fault_tolerance_config.enable_fault_tolerance = True
     new_config.api_config.pod_ip = "192.168.1.1"
-    new_endpoints = endpoints + [Endpoint(id=2, ip="192.168.1.1", business_port="8002", mgmt_port="9002")]
+    new_endpoints = endpoints + [Endpoint(id=2, ip="192.168.1.1", business_port="8002")]
 
     r.update_config(new_config, new_endpoints)
 

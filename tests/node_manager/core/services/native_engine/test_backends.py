@@ -38,7 +38,6 @@ def _context(
         node_rank=1,
         host="10.0.0.2",
         business_port=8002,
-        mgmt_port=9002,
         config_path="/config/user_config.json",
         master_dp_ip="10.0.0.1",
         kv_port=5002,

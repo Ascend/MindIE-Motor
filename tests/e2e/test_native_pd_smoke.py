@@ -73,7 +73,6 @@ def _instance(
         id=instance_id,
         ip=host,
         business_port=str(port),
-        mgmt_port=str(port),
         bootstrap_port=bootstrap_port,
         status=EndpointStatus.NORMAL,
     )

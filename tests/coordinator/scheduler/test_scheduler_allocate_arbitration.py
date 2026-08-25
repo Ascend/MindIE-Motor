@@ -73,7 +73,6 @@ def _make_prefill_instance(
                 id=endpoint_id,
                 ip=f"10.0.0.{instance_id}",
                 business_port=f"80{idx}",
-                mgmt_port=f"90{idx}",
                 status=EndpointStatus.NORMAL,
                 workload=Workload(),
             )

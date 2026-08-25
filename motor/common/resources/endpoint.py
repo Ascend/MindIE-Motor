@@ -66,7 +66,6 @@ class Endpoint(BaseModel):
     id: int = Field(..., description="Endpoint ID, it associated with data parallel rank id")
     ip: str = Field(..., description="IP address")
     business_port: str = Field(..., description="Business port")
-    mgmt_port: str = Field(..., description="Management port")
     bootstrap_port: int | None = Field(default=None, ge=1, le=65535, description="Native PD bootstrap port")
     status: EndpointStatus = Field(default=EndpointStatus.INITIAL, description="Endpoint status")
     device_infos: list[DeviceInfo] = Field(default_factory=list, description="List of DeviceInfo")
@@ -79,7 +78,6 @@ class Endpoint(BaseModel):
         id: int,
         ip: str,
         business_port: str,
-        mgmt_port: str,
         bootstrap_port: int | None = None,
         status: EndpointStatus | None = None,
         device_infos: list[DeviceInfo] | None = None,
@@ -91,7 +89,6 @@ class Endpoint(BaseModel):
             id=id,
             ip=ip,
             business_port=business_port,
-            mgmt_port=mgmt_port,
             bootstrap_port=bootstrap_port,
             status=status if status is not None else EndpointStatus.INITIAL,
             device_infos=device_infos if device_infos is not None else [],
@@ -99,7 +96,7 @@ class Endpoint(BaseModel):
             workload=workload if workload is not None else Workload(),
             headless=headless,
         )
-        logger.debug("Init endpoint with id:%s ip:%s business_port:%s mgmt_port:%s", id, ip, business_port, mgmt_port)
+        logger.debug("Init endpoint with id:%s ip:%s business_port:%s", id, ip, business_port)
 
     def add_device(self, device_info: DeviceInfo) -> None:
         if device_info not in self.device_infos:

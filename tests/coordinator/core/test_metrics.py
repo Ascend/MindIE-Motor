@@ -104,12 +104,12 @@ class TestMetrics:
         self.config = CoordinatorConfig()
         self.instance_manager = InstanceManager(self.config)
 
-        ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000", mgmt_port="8000")
-        ep1 = Endpoint(id=1, ip="127.0.0.1", business_port="8001", mgmt_port="8001")
-        ep2 = Endpoint(id=2, ip="127.0.0.1", business_port="8002", mgmt_port="8002")
-        ep3 = Endpoint(id=3, ip="127.0.0.1", business_port="8003", mgmt_port="8003")
-        ep4 = Endpoint(id=4, ip="127.0.0.1", business_port="8004", mgmt_port="8004")
-        ep5 = Endpoint(id=5, ip="127.0.0.1", business_port="8005", mgmt_port="8005")
+        ep0 = Endpoint(id=0, ip="127.0.0.1", business_port="8000")
+        ep1 = Endpoint(id=1, ip="127.0.0.1", business_port="8001")
+        ep2 = Endpoint(id=2, ip="127.0.0.1", business_port="8002")
+        ep3 = Endpoint(id=3, ip="127.0.0.1", business_port="8003")
+        ep4 = Endpoint(id=4, ip="127.0.0.1", business_port="8004")
+        ep5 = Endpoint(id=5, ip="127.0.0.1", business_port="8005")
         self.p_ins = Instance(
             job_name="test-prefill",
             model_name="test-model",
@@ -881,7 +881,6 @@ http_request_duration_seconds_created{handler="/v1/chat/completions",method="POS
             id=7,
             ip="2001:db8::7",
             business_port="8007",
-            mgmt_port="9007",
         )
         instance = Instance(
             job_name="native-metrics",

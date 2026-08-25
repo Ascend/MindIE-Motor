@@ -35,7 +35,7 @@ cd "$ROOT_DIR"
 # Check if grpcio-tools is installed
 if ! python -c "import grpc_tools.protoc" 2>/dev/null; then
     echo "Error: grpcio-tools is not installed."
-    echo "Please install it with: pip install grpcio-tools>=1.40.0"
+    echo "Please install it with: pip install 'grpcio-tools>=1.82.1' 'protobuf>=7.35.1,<8.0.0'"
     exit 1
 fi
 
@@ -120,4 +120,3 @@ for proto_file in $PROTO_FILES; do
 done
 
 echo "All protobuf files generated successfully."
-

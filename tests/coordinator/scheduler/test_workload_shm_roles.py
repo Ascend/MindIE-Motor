@@ -39,7 +39,6 @@ def _make_encode_instance() -> Instance:
                 id=10,
                 ip="10.0.0.1",
                 business_port="8000",
-                mgmt_port="9000",
                 status=EndpointStatus.NORMAL,
                 workload=Workload(active_tokens=7),
             )

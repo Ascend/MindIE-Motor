@@ -40,7 +40,6 @@ def create_test_instance(instance_id: int, job_name: str, pod_ips: list[str], ro
                 id=0,
                 ip=pod_ip,
                 business_port=f"80{0}{i}",
-                mgmt_port=f"80{1}{i}",
                 status=EndpointStatus.NORMAL,
                 hb_timestamp=time.time(),
             )
@@ -49,13 +48,12 @@ def create_test_instance(instance_id: int, job_name: str, pod_ips: list[str], ro
     return Instance(id=instance_id, job_name=job_name, model_name="test_model", role=role, endpoints=endpoints)
 
 
-def _create_endpoint(endpoint_id: int, ip: str, business_port: str = "9090", mgmt_port: str = "8080") -> Endpoint:
+def _create_endpoint(endpoint_id: int, ip: str, business_port: str = "9090") -> Endpoint:
     """Helper function to create an Endpoint with default values"""
     return Endpoint(
         id=endpoint_id,
         ip=ip,
         business_port=business_port,
-        mgmt_port=mgmt_port,
         status=EndpointStatus.INITIAL,
         device_infos=[],
         hb_timestamp=time.time(),
@@ -190,9 +188,7 @@ def instance_manager(test_config):
         port_temp = 8080
         endpoints[pod_ip] = {}
         for i in range(0, 8):
-            endpoints[pod_ip][i] = _create_endpoint(
-                endpoint_id=i, ip=pod_ip, business_port=str(port_temp), mgmt_port=str(port_temp + 1000)
-            )
+            endpoints[pod_ip][i] = _create_endpoint(endpoint_id=i, ip=pod_ip, business_port=str(port_temp))
             port_temp += 1
 
         d_instance.add_endpoints(pod_ip, endpoints[pod_ip])

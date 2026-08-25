@@ -28,7 +28,6 @@ class LaunchContext:
     node_rank: int
     host: str
     business_port: int
-    mgmt_port: int
     config_path: str
     master_dp_ip: str | None
     kv_port: int | None

@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from motor.common.logger import get_logger
 from motor.common.resources.instance import Instance, ParallelConfig
@@ -50,7 +50,6 @@ class RegisterMsg(BaseModel):
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")
     business_port: list[str] = Field(..., description="Business port for all endpoints managed by this nm")
-    mgmt_port: list[str] = Field(..., description="Management port for all endpoints managed by this nm")
     bootstrap_port: int | None = Field(default=None, ge=1, le=65535, description="Native PD bootstrap port")
     nm_port: str = Field(..., description="Node manager communication port")
     parallel_config: ParallelConfig = Field(..., description="Parallel configuration")
@@ -159,3 +158,11 @@ class InsEventMsg(BaseModel):
 
     event: EventType = Field(..., description="event type: add, del, set")
     instances: list[Instance] = Field(..., description="instances for coordinator")
+
+    @model_validator(mode="after")
+    def validate_unique_instance_ids(self) -> "InsEventMsg":
+        """Reject duplicate IDs before consumers convert the list into an ID-keyed mapping."""
+        instance_ids = [instance.id for instance in self.instances]
+        if len(instance_ids) != len(set(instance_ids)):
+            raise ValueError("duplicate instance IDs in one request")
+        return self

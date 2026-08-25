@@ -147,7 +147,6 @@ class NativeEngineService:
                     node_rank=node_rank,
                     host=endpoint.ip,
                     business_port=int(endpoint.business_port),
-                    mgmt_port=int(endpoint.mgmt_port),
                     config_path=self.config_path,
                     master_dp_ip=master_dp_ip,
                     kv_port=self.kv_port if self.single_container_flag else None,

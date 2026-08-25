@@ -2,7 +2,18 @@
 
 >[!NOTE]说明
 >
-> 管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
+> Kubernetes 部署应通过 ClusterIP、NetworkPolicy 等限制管理端口的访问范围。裸机独立部署如需对外监听，建议同时启用管理面 API Key 和 `mgmt_tls_config`；API Key 负责身份校验，TLS 负责防窃听。
+
+## 管理面 API Key 鉴权
+
+配置 `mgmt_api_key_config.enable_api_key=true` 后，下列特权接口必须携带请求头
+`X-Motor-Management-Key: <key>`：
+
+- `GET /instances`
+- `POST /instances/refresh`
+- `POST /precision/alarm_cleared`
+
+`/startup`、`/liveness`、`/readiness` 和根路径保持免鉴权，Kubernetes 探针无需改动。缺少请求头返回 `401`，密钥错误返回 `403`。密钥从 `mgmt_api_key_config.api_key_file` 指定的单行文件读取，不应直接写入 JSON 配置。API Key 本身不加密传输，跨主机访问应同时开启管理面 TLS。
 
 ## 启动探针接口
 
@@ -133,6 +144,91 @@ curl -X GET "http://{IP}:{Port}/health"
 
 ---
 
+## 实例查询接口
+
+**接口功能**
+
+查询 Coordinator 当前登记的实例（含 available / unavailable / paused）。
+
+**接口格式**
+
+请求类型：**GET**
+> URL：`http(s)://{IP}:{Port}/instances`
+
+IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+
+**请求参数**
+无
+
+**使用样例**
+
+```bash
+curl -X GET "http://{IP}:{Port}/instances" \
+  -H "X-Motor-Management-Key: <key>"
+```
+
+独立部署也可用：
+
+```bash
+python3 -m motor.coordinator.register list
+```
+
+**响应示例**
+
+```JSON
+{
+  "count": 2,
+  "instances": [
+    {
+      "id": 7,
+      "role": "decode",
+      "job_name": "Qwen3-8B-decode-10.10.0.12-8000",
+      "model_name": "Qwen3-8B",
+      "status": "active",
+      "endpoints": [
+        {
+          "id": 0,
+          "ip": "10.10.0.12",
+          "business_port": "8000",
+          "headless": false
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "role": "prefill",
+      "job_name": "Qwen3-8B-prefill-10.10.0.11-8000",
+      "model_name": "Qwen3-8B",
+      "status": "active",
+      "endpoints": [
+        {
+          "id": 0,
+          "ip": "10.10.0.11",
+          "business_port": "8000",
+          "headless": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+**输出说明**
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `count` | int | 当前登记的实例数量。 |
+| `instances` | array | 实例摘要列表，按 `role`、`id` 排序。 |
+| `instances[].id` | int | 实例 ID。独立部署注册时由 `role` + 排序后的完整 endpoint 组派生。 |
+| `instances[].role` | string | 实例角色：`prefill` / `decode` / `union`。 |
+| `instances[].job_name` | string | 实例作业名。 |
+| `instances[].model_name` | string | 模型名。 |
+| `instances[].status` | string | 实例状态，如 `active` / `inactive` / `paused`。 |
+| `instances[].endpoints` | array | 该实例下的业务 endpoint。 |
+| `instances[].endpoints[].business_port` | string | 引擎 HTTP 端口。 |
+
+---
+
 ## 实例刷新接口
 
 **接口功能**
@@ -149,7 +245,7 @@ IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的
 请求头：
 
 - 必选：`Content-Type: application/json`
-- 可选：无
+- 启用管理面 API Key 时必选：`X-Motor-Management-Key: <key>`
 
 **请求参数**
 
@@ -162,10 +258,13 @@ IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的
 
 >[!NOTE]说明
 >请求体必须为JSON格式，且大小不得超过10MB。
+>[!WARNING]版本升级
+> `Endpoint` 注册协议已删除不再使用的 `mgmt_port`，并严格拒绝未知字段。Controller、Coordinator 和 NodeManager 必须同步升级，不支持新旧组件混合运行。
 
 ```bash
 curl -X POST "http://{IP}:{Port}/instances/refresh" \
   -H "Content-Type: application/json" \
+  -H "X-Motor-Management-Key: <key>" \
   -d '{
     "event": "add",
     "instances": [
@@ -180,7 +279,6 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
               "id": 0,
               "ip": "192.168.1.1",
               "business_port": "8080",
-              "mgmt_port": "8081",
               "bootstrap_port": 21000
             }
           }
@@ -208,7 +306,7 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 **输出说明**
 
 `instances[].endpoints` 中的 `bootstrap_port` 为可选字段，仅用于 SGLang PD 原生 bootstrap
-对接；`mgmt_port` 仍是注册协议兼容字段，不代表原生引擎管理 HTTP 端口。
+对接。
 
 | 参数名 | 类型 | 说明 |
 |---|---|---|
@@ -239,6 +337,7 @@ IP 与端口参见[管理接口的IP/端口与配置](./README.md#管理接口�
 请求头：
 
 - 必选：`Content-Type: application/json`
+- 启用管理面 API Key 时必选：`X-Motor-Management-Key: <key>`
 
 **请求参数**
 
@@ -252,6 +351,7 @@ IP 与端口参见[管理接口的IP/端口与配置](./README.md#管理接口�
 ```bash
 curl -X POST "http://{IP}:{Port}/precision/alarm_cleared" \
   -H "Content-Type: application/json" \
+  -H "X-Motor-Management-Key: <key>" \
   -d '{"d_instance_id": 2, "p_instance_id": 1}'
 ```
 
@@ -296,11 +396,12 @@ curl -X GET "http://{IP}:{Port}/"
 {
   "service": "Motor Coordinator Management Server",
   "version": "1.0.0",
-  "description": "Management plane: liveness, startup, readiness, metrics, instance refresh",
+  "description": "Management plane: liveness, startup, readiness, metrics, instance list/refresh",
   "endpoints": {
     "GET /liveness": "liveness check",
     "GET /startup": "startup probe",
     "GET /readiness": "readiness check",
+    "GET /instances": "list registered instances",
     "POST /instances/refresh": "refresh instances",
     "POST /precision/alarm_cleared": "clear precision alarm scheduler state"
   }

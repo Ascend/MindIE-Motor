@@ -1,6 +1,6 @@
 # 部署
 
-MindIE Motor 支持以下两种部署方式，均为最佳实践，可根据自身环境选择：
+MindIE Motor 支持以下部署方式，可根据自身环境选择：
 
 ## K8s 部署
 
@@ -15,3 +15,9 @@ MindIE Motor 支持以下两种部署方式，均为最佳实践，可根据自�
 适用于单机或无 K8s 环境的场景，仅需 Docker 容器 + 宿主机挂载配置即可拉起推理服务，轻量快速。
 
 → 查看 [单容器部署](docker/single_container.md) 或 [多容器部署](docker/multi_container.md)
+
+## Coordinator 独立部署
+
+适用于已有原生 vLLM Prefill/Decode、只需单独拉起调度面的场景，不部署 Controller 与 Node Manager。
+
+→ 见 [Coordinator 独立部署](standalone.md)

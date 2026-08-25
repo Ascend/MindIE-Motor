@@ -60,8 +60,8 @@ def _register_manager_fixture(config_data):
 def _sample_endpoints_fixture():
     """Create sample endpoints"""
     return [
-        Endpoint(id=0, ip="192.168.1.100", business_port="8080", mgmt_port="9090"),
-        Endpoint(id=1, ip="192.168.1.100", business_port="8081", mgmt_port="9091"),
+        Endpoint(id=0, ip="192.168.1.100", business_port="8080"),
+        Endpoint(id=1, ip="192.168.1.100", business_port="8081"),
     ]
 
 
@@ -164,7 +164,6 @@ class TestRegisterManager:
         register_manager._config.basic_config.role = PDRole.ROLE_U
         register_manager._config.api_config.pod_ip = "192.168.1.100"
         register_manager._config.endpoint_config.service_ports = ["8080"]
-        register_manager._config.endpoint_config.mgmt_ports = ["8081"]
         register_manager._config.api_config.node_manager_port = 8080
         register_manager._config.basic_config.parallel_config = ParallelConfig(tp_size=2, pp_size=1)
         register_manager._config.basic_config.enable_multi_endpoints = True
@@ -174,6 +173,7 @@ class TestRegisterManager:
         msg = register_manager._gen_register_msg()
         assert msg is not None
         assert msg.is_master is True
+        assert "mgmt_port" not in msg.model_dump()
 
     def test_gen_register_msg_failure(self, register_manager):
         """Test _gen_register_msg with invalid config"""

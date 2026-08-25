@@ -16,6 +16,8 @@ Using FastAPI TestClient for testing
 # pylint: disable=attribute-defined-outside-init,reimported
 
 import json
+import os
+import tempfile
 import pytest
 from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
@@ -26,12 +28,14 @@ from fastapi import FastAPI
 
 from motor.common.standby.standby_manager import StandbyRole, StandbyManager
 from motor.coordinator.api_server.management_server import ManagementServer
+from motor.coordinator.domain.instance_manager import InstanceIdConflictError
 from motor.coordinator.domain.probe import RoleHeartbeatResult
 from motor.coordinator.api_server.inference_server import InferenceServer, _validate_anthropic_request
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.common.http.key_encryption import encrypt_api_key, set_default_key_encryption_by_name
+from motor.common.resources import Endpoint, Instance, InsStatus, PDRole
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.middleware.fastapi_middleware import (
     SimpleRateLimitMiddleware,
@@ -169,6 +173,8 @@ class TestCoordinatorServer:
         im_instance.has_required_instances.return_value = True
         im_instance.get_required_instances_status.return_value = InstanceReadiness.REQUIRED_MET
         im_instance.refresh_instances = AsyncMock(return_value=None)
+        im_instance.validate_refresh_instances = AsyncMock(return_value=None)
+        im_instance.snapshot_instances = AsyncMock(return_value=[])
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
@@ -418,6 +424,68 @@ class TestCoordinatorServer:
         data = response.json()
         assert data["service"] == "Motor Coordinator Management Server"
         assert data["version"] == "1.0.0"
+        assert "GET /instances" in data["endpoints"]
+
+    def test_list_instances_empty(self):
+        response = self.mgmt_client.get("/instances")
+        assert response.status_code == 200
+        data = response.json()
+        assert data == {"count": 0, "instances": []}
+
+    def test_management_api_key_protects_privileged_routes_but_not_probes(self):
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as key_file:
+            key_file.write("test-management-key\n")
+            api_key_file = key_file.name
+        try:
+            config = CoordinatorConfig()
+            config.mgmt_api_key_config.enable_api_key = True
+            config.mgmt_api_key_config.api_key_file = api_key_file
+            server = ManagementServer(config=config)
+            client = TestClient(server.management_app)
+
+            assert client.get("/startup").status_code == 200
+            assert client.get("/instances").status_code == 401
+            assert client.get("/instances", headers={"X-Motor-Management-Key": "wrong"}).status_code == 403
+            assert (
+                client.get("/instances", headers={"X-Motor-Management-Key": "test-management-key"}).status_code == 200
+            )
+            assert client.post("/instances/refresh", json={}).status_code == 401
+        finally:
+            os.remove(api_key_file)
+
+    def test_list_instances_summarizes_registered_instances(self):
+        endpoint = Endpoint(id=0, ip="10.0.0.1", business_port="8000", headless=False)
+        instance = Instance(
+            job_name="qwen-prefill-10.0.0.1-8000",
+            model_name="Qwen3-8B",
+            id=42,
+            role=PDRole.ROLE_P,
+            status=InsStatus.ACTIVE,
+            endpoints={"10.0.0.1": {0: endpoint}},
+        )
+        decode = Instance(
+            job_name="qwen-decode-10.0.0.2-8000",
+            model_name="Qwen3-8B",
+            id=7,
+            role=PDRole.ROLE_D,
+            status=InsStatus.ACTIVE,
+            endpoints={"10.0.0.2": {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000")}},
+        )
+        self.coordinator_server.instance_manager.snapshot_instances = AsyncMock(return_value=[instance, decode])
+
+        response = self.mgmt_client.get("/instances")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 2
+        assert [item["role"] for item in data["instances"]] == ["decode", "prefill"]
+        assert data["instances"][1] == {
+            "id": 42,
+            "role": "prefill",
+            "job_name": "qwen-prefill-10.0.0.1-8000",
+            "model_name": "Qwen3-8B",
+            "status": "active",
+            "endpoints": [{"id": 0, "ip": "10.0.0.1", "business_port": "8000", "headless": False}],
+        }
 
     def test_list_models_exception(self):
         """Test list_models endpoints"""
@@ -858,6 +926,8 @@ class TestCoordinatorServerAdvanced:
         im_instance.has_required_instances.return_value = True
         im_instance.get_required_instances_status.return_value = InstanceReadiness.REQUIRED_MET
         im_instance.refresh_instances = AsyncMock(return_value=None)
+        im_instance.validate_refresh_instances = AsyncMock(return_value=None)
+        im_instance.snapshot_instances = AsyncMock(return_value=[])
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate JSON response
@@ -998,7 +1068,11 @@ class TestCoordinatorServerAdvanced:
                     "role": "prefill",
                     "endpoints": {
                         "192.168.1.1": {
-                            "0": {"id": 0, "ip": "192.168.1.1", "business_port": "8080", "mgmt_port": "18080"}
+                            "0": {
+                                "id": 0,
+                                "ip": "192.168.1.1",
+                                "business_port": "8080",
+                            }
                         }
                     },
                 }
@@ -1012,6 +1086,73 @@ class TestCoordinatorServerAdvanced:
         assert data["status"] == "success", f"Refresh instances status abnormal: {data}"
         assert "request_id" in data, "Response missing request_id"
         assert "data" in data, "Response missing data field"
+
+    def test_refresh_instances_rejects_duplicate_ids(self):
+        """Duplicate IDs must be rejected before list-to-dict conversion can drop an instance."""
+        instance = {
+            "job_name": "test-job",
+            "model_name": "test-model",
+            "id": 1,
+            "role": "prefill",
+            "endpoints": {},
+        }
+
+        response = self.mgmt_client.post(
+            "/instances/refresh",
+            json={"event": "set", "instances": [instance, {**instance, "job_name": "other-job"}]},
+        )
+
+        assert response.status_code == 400
+        assert "duplicate instance IDs" in response.json()["detail"]
+
+    def test_refresh_instances_returns_409_before_scheduler_on_id_conflict(self):
+        """Existing-state ID collisions are reported as conflicts before Scheduler forwarding."""
+        self.coordinator_server._mgmt.instance_manager.validate_refresh_instances.side_effect = InstanceIdConflictError(
+            "instance ID 1 already belongs to another instance"
+        )
+        scheduler_client = MagicMock()
+        scheduler_client.refresh_instances = AsyncMock()
+        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
+        body = {
+            "event": "add",
+            "instances": [
+                {
+                    "job_name": "test-job",
+                    "model_name": "test-model",
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": {},
+                }
+            ],
+        }
+
+        response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 409
+        scheduler_client.refresh_instances.assert_not_awaited()
+
+    def test_refresh_instances_does_not_update_mgmt_when_scheduler_rejects(self):
+        """Mgmt mirror must remain unchanged when Scheduler rejects the authoritative update."""
+        scheduler_client = MagicMock()
+        scheduler_client.refresh_instances = AsyncMock(return_value=False)
+        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
+        body = {
+            "event": "add",
+            "instances": [
+                {
+                    "job_name": "test-job",
+                    "model_name": "test-model",
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": {},
+                }
+            ],
+        }
+
+        response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 503
+        self.coordinator_server._mgmt.instance_manager.refresh_instances.assert_not_awaited()
 
     def test_refresh_instances_empty_body(self):
         """Test refresh_instances with empty body"""
@@ -1545,11 +1686,23 @@ class TestCoordinatorServerAdvanced:
                     "role": "prefill",
                     "endpoints": {
                         "192.168.1.3": {
-                            "0": {"id": 0, "ip": "192.168.1.3", "business_port": "8080", "mgmt_port": "18080"},
-                            "1": {"id": 1, "ip": "192.168.1.3", "business_port": "8081", "mgmt_port": "18081"},
+                            "0": {
+                                "id": 0,
+                                "ip": "192.168.1.3",
+                                "business_port": "8080",
+                            },
+                            "1": {
+                                "id": 1,
+                                "ip": "192.168.1.3",
+                                "business_port": "8081",
+                            },
                         },
                         "192.168.1.4": {
-                            "2": {"id": 2, "ip": "192.168.1.4", "business_port": "9000", "mgmt_port": "19000"}
+                            "2": {
+                                "id": 2,
+                                "ip": "192.168.1.4",
+                                "business_port": "9000",
+                            }
                         },
                     },
                 }
@@ -2051,6 +2204,8 @@ class TestAnthropicEndpoints:
         im_instance.has_required_instances.return_value = True
         im_instance.get_required_instances_status.return_value = InstanceReadiness.REQUIRED_MET
         im_instance.refresh_instances = AsyncMock(return_value=None)
+        im_instance.validate_refresh_instances = AsyncMock(return_value=None)
+        im_instance.snapshot_instances = AsyncMock(return_value=[])
         im_mock_cls.return_value = im_instance
 
         # Mock handle_request to return appropriate response
