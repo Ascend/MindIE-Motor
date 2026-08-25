@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
 # You may obtain a copy of Mulan PSL v2 at:
@@ -10,6 +10,7 @@
 
 import json
 import os
+from typing import Any
 
 from ccae_reporter.common.logging import Log
 from ccae_reporter.common.util import safe_open
@@ -27,7 +28,7 @@ class ConfigUtil:
         cls.logger.warning(msg)
 
     @classmethod
-    def get_config(cls, key: str):
+    def get_config(cls, key: str, default: Any = None) -> Any:
         if not cls.config:
             config_dir = os.getenv('CONFIG_PATH')
             if config_dir is None:
@@ -38,17 +39,19 @@ class ConfigUtil:
             config_file_path = os.path.join(config_dir, "user_config.json")
             with safe_open(config_file_path) as f:
                 cls.config = json.loads(f.read())
-        
+
         # support jsonpath key, such as "motor_deploy_config.tls_config"
         keys = key.split('.')
         value = cls.config
-        
+
         try:
             for k in keys:
-                if value is None:
-                    return value
+                if not isinstance(value, dict):
+                    return default
                 value = value.get(k, None)
+            if value is None:
+                return default
             return value
         except (KeyError, TypeError):
-            cls.log_warning(f"{key} is not in config of ms controller")
-            return None
+            cls.log_warning("%s is not in config of ms controller" % key)
+            return default

@@ -25,6 +25,17 @@ from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.utils.env import Env
 from .base_backend import BaseBackend
 
+# Align with motor.config.controller.ApiConfig / coordinator.ApiConfig defaults.
+_DEFAULT_CONTROLLER_API_PORT = 1026
+_DEFAULT_OBSERVABILITY_API_PORT = 1027
+_DEFAULT_COORDINATOR_OBS_PORT = 1027
+
+
+def _format_http_address(host: str | None, port: int | None, config_key: str) -> str:
+    if not isinstance(port, int):
+        raise RuntimeError("Invalid or missing port config %s: %r (expected int)" % (config_key, port))
+    return "%s:%d" % (host, port)
+
 
 class MotorBackend(BaseBackend):
     def __init__(self, identity: str):
@@ -33,17 +44,20 @@ class MotorBackend(BaseBackend):
         pod_ip = os.getenv("POD_IP")
 
         # Controller observability APIs (alarms, inventory)
-        obs_port = ConfigUtil.get_config('motor_controller_config.api_config.observability_api_port')
-        self.obs_client = SafeHTTPSClient(address="%s:%d" % (pod_ip, obs_port))
+        obs_port_key = "motor_controller_config.api_config.observability_api_port"
+        obs_port = ConfigUtil.get_config(obs_port_key, _DEFAULT_OBSERVABILITY_API_PORT)
+        self.obs_client = SafeHTTPSClient(address=_format_http_address(pod_ip, obs_port, obs_port_key))
 
         # Controller probe API (readiness)
-        controller_probe_port = ConfigUtil.get_config('motor_controller_config.api_config.controller_api_port')
-        self.probe_client = SafeHTTPSClient(address="%s:%d" % (pod_ip, controller_probe_port))
+        probe_port_key = "motor_controller_config.api_config.controller_api_port"
+        controller_probe_port = ConfigUtil.get_config(probe_port_key, _DEFAULT_CONTROLLER_API_PORT)
+        self.probe_client = SafeHTTPSClient(address=_format_http_address(pod_ip, controller_probe_port, probe_port_key))
 
         # Coordinator observability API (metrics now served by Coordinator's obs server)
-        coord_obs_dns = Env.coordinator_obs_service or pod_ip or '127.0.0.1'
-        coord_obs_port = ConfigUtil.get_config('motor_coordinator_config.api_config.coordinator_obs_port')
-        self.coord_client = SafeHTTPSClient(address="%s:%d" % (coord_obs_dns, coord_obs_port))
+        coord_obs_dns = Env.coordinator_obs_service or pod_ip or "127.0.0.1"
+        coord_port_key = "motor_coordinator_config.api_config.coordinator_obs_port"
+        coord_obs_port = ConfigUtil.get_config(coord_port_key, _DEFAULT_COORDINATOR_OBS_PORT)
+        self.coord_client = SafeHTTPSClient(address=_format_http_address(coord_obs_dns, coord_obs_port, coord_port_key))
 
     def fetch_alarm_info(self) -> list:
         if not self.is_alive():

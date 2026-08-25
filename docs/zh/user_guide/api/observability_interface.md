@@ -326,15 +326,12 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
   "motor_controller_config": {
     "observability_config": {
       "observability_enable": true
-    },
-    "api_config": {
-      "observability_api_port": 1027
     }
   },
   "motor_deploy_config": {
     "tls_config": {
       "north_tls_config": {
-        "enable_tls": true,
+        "enable_tls": false,
         "ca_file": "",
         "cert_file": "",
         "key_file": "",
@@ -355,7 +352,9 @@ CCAE（Cluster Computing Autonomous Engine）是集群自智引擎系统。Motor
 | 参数 | 说明 |
 | --- | --- |
 | `motor_controller_config.observability_config.observability_enable` | 开启 Controller Observability 查询接口，CCAE Reporter 依赖该接口获取清单和告警；指标由 Reporter 直接从 Coordinator 的 `/metrics` 获取。 |
-| `motor_controller_config.api_config.observability_api_port` | Observability 查询接口端口，默认 `1027`。 |
+| `motor_controller_config.api_config.observability_api_port` | Controller Observability 查询接口端口，默认 `1027`。JSON 省略时 Reporter 回落该默认值。 |
+| `motor_controller_config.api_config.controller_api_port` | Controller 管理/probe 端口，默认 `1026`。JSON 省略时 Reporter 回落该默认值。 |
+| `motor_coordinator_config.api_config.coordinator_obs_port` | Coordinator `/metrics` 端口，默认 `1027`。JSON 省略时 Reporter 回落该默认值。 |
 | `motor_deploy_config.tls_config.north_tls_config` | Reporter 访问 CCAE 北向接口和 Kafka 时使用的 TLS 配置。 |
 | `north_config.name` | 北向 Reporter 名称，配置为 `ccae_reporter`。 |
 | `north_config.ip` | CCAE 平台 IP。 |

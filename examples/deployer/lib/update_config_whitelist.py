@@ -187,19 +187,76 @@ def _get_value_at_path(obj, path):
     return current
 
 
+def _ensure_dict_child(parent, key):
+    """Return parent[key] as a dict, creating it when the child is missing or None."""
+    if not isinstance(parent, dict):
+        raise TypeError(
+            "Cannot apply nested config path: expected a dict at parent of '%s', got %s" % (key, type(parent).__name__)
+        )
+    child = parent.get(key)
+    if child is None:
+        child = {}
+        parent[key] = child
+        return child
+    if not isinstance(child, dict):
+        raise TypeError("Cannot apply nested config path: '%s' is %s, expected a dict" % (key, type(child).__name__))
+    return child
+
+
+def _ensure_list_child(parent, key, index):
+    """Return parent[key] as a list long enough for index, creating/padding when missing or None."""
+    if not isinstance(parent, dict):
+        raise TypeError(
+            "Cannot apply nested config path: expected a dict at parent of '%s', got %s" % (key, type(parent).__name__)
+        )
+    child = parent.get(key)
+    if child is None:
+        child = [None] * (index + 1)
+        parent[key] = child
+        return child
+    if not isinstance(child, list):
+        raise TypeError("Cannot apply nested config path: '%s' is %s, expected a list" % (key, type(child).__name__))
+    while len(child) <= index:
+        child.append(None)
+    return child
+
+
 def _set_value_at_path(obj, path, value):
-    """Set the value at a dot-separated path (with optional list indices) in a nested dict/list."""
+    """Set the value at a dot-separated path (with optional list indices) in a nested dict/list.
+
+    Missing or None intermediate mappings/lists are created so new nested whitelist keys
+    can be applied onto a baseline that never had those sections (e.g. first-time
+    north_config / observability_config / north_tls_config).
+    """
     current = obj
     tokens = path.split(".")
     for i, token in enumerate(tokens):
         key, index = _parse_path_token(token)
-        if i == len(tokens) - 1:
-            if index is None:
+        is_last = i == len(tokens) - 1
+        if index is None:
+            if is_last:
+                if not isinstance(current, dict):
+                    raise TypeError(
+                        "Cannot apply nested config path '%s': expected a dict, got %s" % (path, type(current).__name__)
+                    )
                 current[key] = value
-            else:
-                current[key][index] = value
-        else:
-            current = _navigate(current, token)
+                return
+            current = _ensure_dict_child(current, key)
+            continue
+        lst = _ensure_list_child(current, key, index)
+        if is_last:
+            lst[index] = value
+            return
+        item = lst[index]
+        if item is None:
+            item = {}
+            lst[index] = item
+        elif not isinstance(item, dict):
+            raise TypeError(
+                "Cannot apply nested config path '%s': '%s[%d]' is %s, expected a dict"
+                % (path, key, index, type(item).__name__)
+            )
+        current = item
 
 
 def apply_whitelist_update(user_config, baseline_config):
@@ -229,12 +286,6 @@ def apply_whitelist_update(user_config, baseline_config):
     for path in whitelisted_paths:
         value = _get_value_at_path(user_config, path)
         if value is None:
-            logger.warning("Skipping whitelisted path '%s': not found in user_config", path)
-            continue
-    for path in whitelisted_paths:
-        try:
-            value = _get_value_at_path(user_config, path)
-        except (KeyError, IndexError, TypeError):
             logger.warning("Skipping whitelisted path '%s': not found in user_config", path)
             continue
         _set_value_at_path(result, path, value)
