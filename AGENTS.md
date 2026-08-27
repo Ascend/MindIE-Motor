@@ -1,7 +1,7 @@
 # MindIE-PyMotor — Agent Guide
 
 > 给 AI 代理的仓库级说明。本文件在会话启动时自动加载，只放「如何安装 / 构建 / 测试 / 提交」的操作事实；
-> 深度架构与开发流程见 `.agent/skills/motor-dev/`（按需加载，不在此重复）。
+> 深度架构与开发流程见 `.agents/skills/motor-dev/`（按需加载，不在此重复）。
 
 ## 项目简介
 
@@ -63,7 +63,7 @@ bash tests/run_tests.sh --cov tests/
 ```
 
 - 测试目录镜像源码结构：`motor/config/foo.py` → `tests/config/test_foo.py`
-- 写测试前先读 `.agent/skills/motor-dev/references/testing-guide.md` 的四条设计原则
+- 写测试前先读 `.agents/skills/motor-dev/references/testing-guide.md` 的四条设计原则
 
 ## 代码风格（pre-commit 强制）
 
@@ -83,9 +83,26 @@ bash tests/run_tests.sh --cov tests/
 - 每个 `motor/` 改动必须附带测试
 - PR 描述按 `.gitcode/PULL_REQUEST_TEMPLATE.md`
 
+## Agent Skills
+
+- 仓库 Skill 的唯一权威目录是 `.agents/skills/`。普通自然语言请求先进入对应父 Skill；
+  用户显式指定 `$motor-...` 原子 Skill 时可以直接使用。
+- 三个父 Skill（`motor-deploy`、`motor-validation`、`motor-diagnosis`）默认参与隐式
+  触发；10 个原子 Skill 通过各自 `agents/openai.yaml` 设置
+  `policy.allow_implicit_invocation: false`，仅可经父 Skill 路由或显式调用。
+- 修改 `motor/`、`tests/` 或开发文档：使用 `motor-dev`。
+- 拉起、部署、重启、停止、部署前检查、配置校验或替换 wheel：先使用
+  `motor-deploy`，由它路由到部署原子 Skill。
+- 部署后的 readiness、功能、benchmark 或性能分析：先使用 `motor-validation`，由它
+  路由到验证原子 Skill。
+- deploy/startup/runtime 异常、日志采证或根因定位：先使用 `motor-diagnosis`，由它
+  保存证据并路由到诊断原子 Skill。
+- 预检和 dry-run 不授权修改配置或集群；配置修改、apply、restart、stop 和远端
+  `boot.sh` 修改必须针对具体目标获得明确授权。
+
 ## 开发技能（AI 辅助开发必读）
 
-深度开发规范在 `.agent/skills/motor-dev/`（Claude Code 中 `/motor-dev` 调用，其他 agent 直接读目录）：
+深度开发规范在 `.agents/skills/motor-dev/`（支持的 agent 可显式调用 `$motor-dev`，或按需读取目录）：
 
 - `SKILL.md` — 硬性约束（测试伴随改动、run_tests.sh、license、类型语法）、渐进式测试工作流、Skill Sync 铁律（**发现文档与代码不符必须同步更新并同 PR 合入**）
 - `references/<module>.md` — 各模块架构（Coordinator/Controller/NodeManager/Metrics/KV Conductor）

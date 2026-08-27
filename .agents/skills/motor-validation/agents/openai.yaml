@@ -1,0 +1,6 @@
+interface:
+  display_name: "Motor Validation"
+  short_description: "Route post-deploy readiness, functional, benchmark, and performance validation"
+  default_prompt: "Use $motor-validation to route this Motor post-deploy validation request."
+policy:
+  allow_implicit_invocation: true

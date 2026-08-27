@@ -1,0 +1,6 @@
+interface:
+  display_name: "Motor Diagnosis"
+  short_description: "Preserve failure evidence and route Motor deploy/startup diagnosis"
+  default_prompt: "Use $motor-diagnosis to preserve evidence and route this Motor failure diagnosis request."
+policy:
+  allow_implicit_invocation: true

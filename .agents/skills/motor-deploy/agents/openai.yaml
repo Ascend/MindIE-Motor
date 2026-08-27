@@ -1,0 +1,6 @@
+interface:
+  display_name: "Motor Deploy"
+  short_description: "Route Motor deployment, wheel replacement, and preflight requests"
+  default_prompt: "Use $motor-deploy to route this Motor deployment request through the parent dispatcher."
+policy:
+  allow_implicit_invocation: true
