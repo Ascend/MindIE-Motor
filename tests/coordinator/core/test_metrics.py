@@ -193,7 +193,7 @@ vllm:num_requests_running{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruc
         metric_gauge.label = ['vllm:num_requests_running{model_name="/job/model/Qwen2.5-0.5B-Instruct"}']
         metric_gauge.value = [1.0]
 
-        return metric_str_gauge.strip(), copy.deepcopy(metric_gauge)
+        return metric_str_gauge.strip() + "\n", copy.deepcopy(metric_gauge)
 
     def load_test_counter_metric(self):
         # metric text
@@ -216,7 +216,7 @@ vllm:request_success_total{engine="0",finished_reason="abort",model_name="/job/m
         ]
         metric_counter.value = [1.0, 2.0, 0.0]
 
-        return metric_str_counter.strip(), copy.deepcopy(metric_counter)
+        return metric_str_counter.strip() + "\n", copy.deepcopy(metric_counter)
 
     def load_test_histogram_metric(self):
         # metric text
@@ -249,7 +249,7 @@ vllm:request_params_n_sum{engine="0",model_name="/job/model/Qwen2.5-0.5B-Instruc
         ]
         metric_histogram.value = [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
 
-        return metric_str_histogram.strip(), copy.deepcopy(metric_histogram)
+        return metric_str_histogram.strip() + "\n", copy.deepcopy(metric_histogram)
 
     def load_test_summary_metric(self):
         metric_str_summary = """
@@ -272,7 +272,7 @@ http_request_size_bytes_sum{handler="/v1/chat/completions"} 268.0"""
         ]
         metric_summary.value = [2.0, 312.0, 1.0, 268.0]
 
-        return metric_str_summary.strip(), copy.deepcopy(metric_summary)
+        return metric_str_summary.strip() + "\n", copy.deepcopy(metric_summary)
 
     def check_metric_value_equel(self, a: list[float], b: list[float]) -> bool:
         if not isinstance(a, list) or not isinstance(b, list):
@@ -827,7 +827,7 @@ http_request_duration_seconds_created{handler="/v1/chat/completions",method="POS
         metric_str_counter, metric_counter = self.load_test_counter_metric()
         metric_str_histogram, metric_histogram = self.load_test_histogram_metric()
         metric_str_summary, metric_summary = self.load_test_summary_metric()
-        metric_str_mix = "\n".join([metric_str_gauge, metric_str_counter, metric_str_histogram, metric_str_summary])
+        metric_str_mix = "".join([metric_str_gauge, metric_str_counter, metric_str_histogram, metric_str_summary])
         metric_mix = [metric_gauge, metric_counter, metric_histogram, metric_summary]
 
         # check function
@@ -1269,12 +1269,16 @@ def test_get_metrics_role_all():
 
     collector._last_collects = {
         0: {"role": "prefill", "endpoints": {0: {"metrics": [metric], "pod_ip": "10.0.0.1"}}},
+        1: {"role": "decode", "endpoints": {0: {"metrics": [metric], "pod_ip": "10.0.0.2"}}},
     }
     collector._collects_version = 1
 
     result = collector.get_metrics(metrics_type="role")
     assert isinstance(result, str)
     assert "prefill" in result
+    assert "decode" in result
+    assert result.endswith("\n")
+    assert "\n#" in result
     _cleanup_singletons()
 
 

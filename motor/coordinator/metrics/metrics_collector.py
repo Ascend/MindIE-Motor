@@ -345,7 +345,8 @@ class MetricsCollector(ThreadSafeSingleton):
                     self._caches["role"] = self._generate_role_metrics(collects)
                 if role:
                     return self._caches["role"].get(role, "")
-                return "\n".join(self._caches["role"].values())
+                parts = [text.rstrip("\n") for text in self._caches["role"].values() if text]
+                return ("\n".join(parts) + "\n") if parts else ""
             if metrics_type == "dp":
                 if "dp" not in self._caches:
                     self._caches["dp"] = self._generate_dp_metrics(collects)
@@ -1027,7 +1028,9 @@ class MetricsCollector(ThreadSafeSingleton):
                 else:
                     vs = str(v)
                 lines.append("{} {}".format(label, vs))
-        return "\n".join(lines)
+        if not lines:
+            return ""
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _prepend_dim_labels(
@@ -1083,7 +1086,9 @@ class MetricsCollector(ThreadSafeSingleton):
             else:
                 meta["lines"].sort(key=lambda kv: (kv[0], kv[1]))
                 out_lines.extend(line for _, line in meta["lines"])
-        return "\n".join(out_lines)
+        if not out_lines:
+            return ""
+        return "\n".join(out_lines) + "\n"
 
     def _generate_dp_metrics(self, collects: dict[int, dict[str, Any]]) -> str:
         name_to_meta: dict[str, dict[str, Any]] = {}
