@@ -192,6 +192,7 @@ class PDHybridRouter(BaseRouter):
                 self._generate_stream(req_data, manage_request_context=manage_request_context),
                 self._stream_commit_controller,
                 on_first_body_sent=self._mark_stream_body_sent,
+                timeout=self._stream_overall_timeout(),
             )
         return await self._generate_post(req_data, manage_request_context=manage_request_context)
 

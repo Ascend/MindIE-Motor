@@ -298,6 +298,7 @@ class UnifiedPDRouter(BaseRouter):
                 self._generate_stream_response(),
                 self._stream_commit_controller,
                 on_first_body_sent=self._mark_stream_body_sent,
+                timeout=self._stream_overall_timeout(),
             )
         return await self._generate_response()
 
@@ -640,6 +641,8 @@ class UnifiedPDRouter(BaseRouter):
             return AttemptStopReason.PEER_FAILED
         if reason == cancel_error.CLIENT_DISCONNECT:
             return AttemptStopReason.CLIENT_DISCONNECT
+        if reason == cancel_error.INFER_TIMEOUT:
+            return AttemptStopReason.TIMEOUT
         return AttemptStopReason.OTHER
 
     @staticmethod

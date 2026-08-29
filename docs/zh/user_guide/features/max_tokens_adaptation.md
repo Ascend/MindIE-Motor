@@ -164,6 +164,10 @@ Context budget clamped req_id=<request-id> parameter=max_tokens requested=20000 
 
 - 该功能只调整有效的正整数 `max_tokens` 或 `max_completion_tokens`。请求未携带这些参数，
   或参数不是正整数时，Coordinator 不做调整。
+- 请求中携带非正整数（如 0、负数、布尔、非 int 类型）的 `max_tokens` 或 `max_completion_tokens`
+  时，Coordinator 不会返回 400，而是移除该参数并记录 WARNING 日志，请求按未携带该参数处理
+  （即按模型默认输出上限继续执行）。如需感知此类配置错误，请检查 Coordinator 日志中的
+  `Invalid max_tokens=` / `Invalid max_completion_tokens=` 告警。
 - 当输入 token 数已经达到或超过模型上下文上限时，Coordinator 不修改输出上限，
   请求仍由后端推理引擎完成上下文校验并返回对应错误。
 - `TokenizerManager` 无法得到有效 token ID 时，Coordinator 不根据估算值裁剪请求，

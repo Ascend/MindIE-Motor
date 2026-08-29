@@ -88,7 +88,7 @@ def check_cancel_error(error: asyncio.CancelledError) -> (str, bool):
     reason = "Exception"
     if error.args:
         reason = error.args[0]
-        if reason in {cancel_error.CLIENT_DISCONNECT, cancel_error.DISPATCH_ABORT}:
+        if reason in {cancel_error.CLIENT_DISCONNECT, cancel_error.DISPATCH_ABORT, cancel_error.INFER_TIMEOUT}:
             return reason, False
         elif reason.startswith(cancel_error.SCOPE_ABORT):
             return cancel_error.SCOPE_ABORT, False
@@ -139,6 +139,17 @@ class BaseRouter(ABC):
             else WorkloadActionHandler(self._request_manager)
         )
         self._sampling_manager = sampling_manager
+
+    def _stream_overall_timeout(self) -> float:
+        """Remaining infer_timeout budget for the streaming response, counted from request arrival.
+
+        Streaming responses are served by uvicorn after the handler returns, so the
+        ``timeout_handler`` decorator cannot bound them; the budget is passed to
+        CommitAwareStreamingResponse and enforced as an overall wall-clock deadline.
+        """
+        infer_timeout = self.config.exception_config.infer_timeout
+        elapsed = time.time() - self.req_info.status.get(ReqState.ARRIVE, time.time())
+        return max(infer_timeout - elapsed, 0.0)
 
     @staticmethod
     def build_error_response(e: Exception) -> ErrorResponse:

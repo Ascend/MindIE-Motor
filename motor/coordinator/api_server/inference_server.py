@@ -51,6 +51,24 @@ def get_request_manager(request: Request) -> RequestManager:
     return request.app.state.request_manager
 
 
+def _validate_positive_int_field(body_json: dict[str, Any], field_name: str) -> None:
+    """Validate an optional positive integer field.
+
+    If the field is present but not a positive integer, remove it from the
+    request body and log a warning with the body content before removal.
+    """
+    value = body_json.get(field_name)
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        logger.warning(
+            "Invalid %s=%r in request body, removing it.",
+            field_name,
+            value,
+        )
+        body_json.pop(field_name, None)
+
+
 def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens: bool = True) -> None:
     """Validate Anthropic-style request body. Raises HTTPException on invalid."""
     if not body_json.get("model"):
@@ -114,6 +132,8 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Missing required field: {OpenAIField.MODEL}",
         )
+    _validate_positive_int_field(body_json, OpenAIField.MAX_TOKENS)
+    _validate_positive_int_field(body_json, OpenAIField.MAX_COMPLETION_TOKENS)
     if request_type != RequestType.OPENAI:
         return
     if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json and "input" not in body_json:

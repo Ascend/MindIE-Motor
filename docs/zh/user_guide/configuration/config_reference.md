@@ -391,7 +391,7 @@ motor_coordinator_config字段配置样例如下所示：
 | transport_max_retry | int/null | Coordinator 传输失败的最大尝试次数；`null` 时使用 `max_retry`。默认值：`null` |
 | retry_delay | float | 每次重试前的等待时间（秒）。默认值：`0.2` |
 | first_token_timeout | int | 等待首 token 返回的超时时间（秒）。默认值：`600` |
-| infer_timeout | int | 单次推理请求的总超时时间（秒）。默认值：`3600` |
+| infer_timeout | int | 单次推理请求的总超时时间（秒）。非流式场景作用于单次转发；流式场景作为整个流式请求的整体墙钟超时（从请求到达算起，超时后中断并返回 504）。默认：`3600` |
 | upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认值：`65536` |
 | **reschedule_config字段** |-|-|
 | enable | bool | 故障场景重调度功能开关。默认：`false`。<br>模型重计算由引擎侧负责，该配置不控制引擎侧重计算；`recompute_enabled`仅作为`reschedule_enabled`的旧配置兼容别名；`recompute_max_retry`已移除并会被忽略。 |

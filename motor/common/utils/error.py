@@ -13,6 +13,7 @@ NODE_FAULT = "Node fault"
 CLIENT_DISCONNECT = "Client disconnected"
 DISPATCH_ABORT = "Cancelled by dispatch"
 SCOPE_ABORT = "Cancelled via cancel scope"
+INFER_TIMEOUT = "Infer timeout"
 
 
 class RequestCancelledError(Exception):

@@ -1,3 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 import asyncio
 import contextvars
 import json
@@ -256,3 +266,103 @@ def test_controller_ignores_stale_attempt_readiness():
 
     controller.mark_ready("prefill", 2)
     assert controller.ready_to_commit is True
+
+
+@pytest.mark.asyncio
+async def test_response_timeout_cancels_upstream_with_infer_timeout_reason():
+    messages = []
+    source_started = asyncio.Event()
+    cancellation_reasons = []
+    controller = StreamCommitController.requiring({"engine"})
+    controller.begin_attempt(1)
+
+    async def source():
+        source_started.set()
+        try:
+            await asyncio.Event().wait()
+            yield b"never"
+        except asyncio.CancelledError as error:
+            cancellation_reasons.extend(error.args)
+            raise
+
+    async def send(message):
+        messages.append(message)
+
+    response = CommitAwareStreamingResponse(source(), controller, timeout=0.05)
+    await response(_scope(), _never_disconnect, send)
+
+    assert messages[0]["status"] == 504
+    body = json.loads(messages[1]["body"])
+    assert body["error"]["code"] == 504
+    assert controller.committed is False
+    assert cancellation_reasons == [cancel_error.INFER_TIMEOUT]
+
+
+@pytest.mark.asyncio
+async def test_response_timeout_after_commit_sends_504_sse():
+    messages = []
+    controller = StreamCommitController.requiring({"engine"})
+    controller.begin_attempt(1)
+
+    async def source():
+        controller.mark_ready("engine", 1)
+        yield b'data: {"choices":[{"delta":{"content":"A"}}]}\n\n'
+        await asyncio.Event().wait()
+        yield b"never"
+
+    async def send(message):
+        messages.append(message)
+
+    response = CommitAwareStreamingResponse(source(), controller, timeout=0.05)
+    await response(_scope(), _never_disconnect, send)
+
+    assert messages[0]["status"] == 200
+    bodies = [m["body"] for m in messages if m["type"] == "http.response.body"]
+    last_data = [b for b in bodies if b.startswith(b"data:")][-1]
+    payload = json.loads(last_data.decode().removeprefix("data: ").strip())
+    assert payload["error"]["code"] == 504
+    assert messages[-1]["more_body"] is False
+
+
+@pytest.mark.asyncio
+async def test_response_precommit_request_cancelled_infer_timeout_returns_504():
+    messages = []
+    controller = StreamCommitController.requiring({"engine"})
+    controller.begin_attempt(1)
+
+    async def source():
+        raise cancel_error.RequestCancelledError(cancel_error.INFER_TIMEOUT)
+        yield b""  # pylint: disable=unreachable
+
+    async def send(message):
+        messages.append(message)
+
+    response = CommitAwareStreamingResponse(source(), controller)
+    await response(_scope(), _never_disconnect, send)
+
+    assert messages[0]["status"] == 504
+    body = json.loads(messages[1]["body"])
+    assert body["error"]["code"] == 504
+
+
+@pytest.mark.asyncio
+async def test_response_committed_request_cancelled_infer_timeout_returns_504_sse():
+    messages = []
+    controller = StreamCommitController.requiring({"engine"})
+    controller.begin_attempt(1)
+
+    async def source():
+        controller.mark_ready("engine", 1)
+        yield b'data: {"choices":[{"delta":{"content":"A"}}]}\n\n'
+        raise cancel_error.RequestCancelledError(cancel_error.INFER_TIMEOUT)
+
+    async def send(message):
+        messages.append(message)
+
+    response = CommitAwareStreamingResponse(source(), controller)
+    await response(_scope(), _never_disconnect, send)
+
+    bodies = [m["body"] for m in messages if m["type"] == "http.response.body"]
+    last_data = [b for b in bodies if b.startswith(b"data:")][-1]
+    payload = json.loads(last_data.decode().removeprefix("data: ").strip())
+    assert payload["error"]["code"] == 504

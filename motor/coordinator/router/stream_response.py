@@ -109,6 +109,7 @@ class CommitAwareStreamingResponse(Response):
         media_type: str | None = None,
         background: BackgroundTask | None = None,
         on_first_body_sent: Callable[[], None] | None = None,
+        timeout: float | None = None,
     ) -> None:
         super().__init__(
             content=None,
@@ -121,6 +122,7 @@ class CommitAwareStreamingResponse(Response):
         self._raw_iterator = content
         self.controller = controller
         self._on_first_body_sent = on_first_body_sent
+        self._timeout = timeout
         self._first_body_sent = False
         self._finished = False
         self._consumer_mode: str | None = None
@@ -155,6 +157,16 @@ class CommitAwareStreamingResponse(Response):
         pump_task = asyncio.create_task(self._pump_stream(send, terminal))
         ready_task = asyncio.create_task(self.controller.wait_ready())
         cancel_reason = None
+        timeout_handle = None
+        if self._timeout is not None:
+            # Overall wall-clock deadline for the whole streaming request (infer_timeout).
+            # Same mechanism as client disconnect (stream_task.cancel(msg=...)): cancel the
+            # current task with an explicit reason so Task.cancel() cascades that message
+            # into pump_task and the upstream generator reports "Infer timeout" instead of
+            # a bare "Exception" (asyncio.timeout() cancels without a message).
+            timeout_handle = asyncio.get_running_loop().call_later(
+                self._timeout, asyncio.current_task().cancel, cancel_error.INFER_TIMEOUT
+            )
         try:
             done, _ = await asyncio.wait(
                 (terminal, ready_task),
@@ -188,13 +200,25 @@ class CommitAwareStreamingResponse(Response):
             raise
         except asyncio.CancelledError as error:
             cancel_reason = error.args[0] if error.args else None
-            raise
+            if cancel_reason == cancel_error.INFER_TIMEOUT:
+                # Overall streaming timeout (infer_timeout) exceeded: stop the upstream
+                # legs first, then surface 504 (JSON pre-commit / SSE post-commit).
+                await self._cancel_and_wait(pump_task, ready_task, reason=cancel_reason)
+                timeout_error = TimeoutError(f"Streaming request timed out after {self._timeout} seconds")
+                if self.controller.committed:
+                    await self._send_committed_error(send, timeout_error)
+                else:
+                    await self._send_precommit_error(scope, receive, send, timeout_error)
+            else:
+                raise
         except Exception as error:
             if self.controller.committed:
                 await self._send_committed_error(send, error)
             else:
                 await self._send_precommit_error(scope, receive, send, error)
         finally:
+            if timeout_handle is not None:
+                timeout_handle.cancel()
             await self._cancel_and_wait(pump_task, ready_task, reason=cancel_reason)
 
     async def _pump_stream(
@@ -248,6 +272,19 @@ class CommitAwareStreamingResponse(Response):
                 content={"detail": error.detail},
                 headers=error.headers,
             )
+        elif isinstance(error, TimeoutError) or (
+            isinstance(error, cancel_error.RequestCancelledError) and error.reason == cancel_error.INFER_TIMEOUT
+        ):
+            response = JSONResponse(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                content={
+                    "error": {
+                        "message": sanitize_error_message(str(error)),
+                        "type": "TimeoutError",
+                        "code": status.HTTP_504_GATEWAY_TIMEOUT,
+                    }
+                },
+            )
         else:
             response = JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -288,6 +325,10 @@ class CommitAwareStreamingResponse(Response):
         if isinstance(error, UpstreamHTTPError):
             code = error.status_code
         elif isinstance(error, httpx.TimeoutException):
+            code = status.HTTP_504_GATEWAY_TIMEOUT
+        elif isinstance(error, TimeoutError) or (
+            isinstance(error, cancel_error.RequestCancelledError) and error.reason == cancel_error.INFER_TIMEOUT
+        ):
             code = status.HTTP_504_GATEWAY_TIMEOUT
         elif isinstance(error, httpx.RequestError):
             code = status.HTTP_502_BAD_GATEWAY

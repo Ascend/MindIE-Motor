@@ -384,7 +384,7 @@ class _SchedulerRequestDispatcher:
         previously_open_ids: list[int] = []
         async with self._workload_commit_lock:
             changed = await self._instance_manager.refresh_instances(event_type, instances)
-            if event_type == EventType.SET:
+            if event_type == EventType.SET and changed:
                 # Snapshot open instances before clearing so workers can be notified.
                 previously_open_ids = self._cb_manager.get_open_instance_ids()
                 self._cb_manager.clear_all()

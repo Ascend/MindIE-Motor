@@ -429,6 +429,7 @@ async def _invoke_asgi_response(response) -> list[dict]:
             AttemptStopReason.PEER_FAILED,
         ),
         (cancel_error.CLIENT_DISCONNECT, AttemptStopReason.CLIENT_DISCONNECT),
+        (cancel_error.INFER_TIMEOUT, AttemptStopReason.TIMEOUT),
         (cancel_error.DISPATCH_ABORT, AttemptStopReason.OTHER),
         (cancel_error.SCOPE_ABORT, AttemptStopReason.OTHER),
     ],

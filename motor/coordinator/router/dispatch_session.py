@@ -35,6 +35,7 @@ class AttemptState(str, Enum):
 class AttemptStopReason(str, Enum):
     CLIENT_DISCONNECT = "client_disconnect"
     PEER_FAILED = "peer_failed"
+    TIMEOUT = "timeout"
     OTHER = "other"
 
 

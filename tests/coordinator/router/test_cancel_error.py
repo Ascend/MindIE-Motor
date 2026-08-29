@@ -28,6 +28,7 @@ def _cancelled(*args: str) -> asyncio.CancelledError:
         (_cancelled(), "Exception", True),
         (_cancelled(cancel_error.CLIENT_DISCONNECT), cancel_error.CLIENT_DISCONNECT, False),
         (_cancelled(cancel_error.DISPATCH_ABORT), cancel_error.DISPATCH_ABORT, False),
+        (_cancelled(cancel_error.INFER_TIMEOUT), cancel_error.INFER_TIMEOUT, False),
         (_cancelled(cancel_error.SCOPE_ABORT), cancel_error.SCOPE_ABORT, False),
         (
             _cancelled(
@@ -59,3 +60,9 @@ def test_request_cancelled_error_carries_reason() -> None:
     error = RequestCancelledError(cancel_error.CLIENT_DISCONNECT)
     assert error.reason == cancel_error.CLIENT_DISCONNECT
     assert str(error) == f"Request cancelled because of {cancel_error.CLIENT_DISCONNECT}"
+
+
+def test_request_cancelled_error_with_infer_timeout_reason() -> None:
+    error = RequestCancelledError(cancel_error.INFER_TIMEOUT)
+    assert error.reason == cancel_error.INFER_TIMEOUT
+    assert str(error) == f"Request cancelled because of {cancel_error.INFER_TIMEOUT}"

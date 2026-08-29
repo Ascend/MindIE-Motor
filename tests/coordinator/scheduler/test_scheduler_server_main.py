@@ -667,6 +667,44 @@ class TestHandleRefreshInstances:
         response = await dispatcher.dispatch(request)
         assert response.response_type == SchedulerResponseType.SUCCESS
 
+    @pytest.mark.asyncio
+    async def test_set_event_without_change_does_not_clear_cb(self):
+        """Repeated SET events with no instance change must not clear circuit breakers."""
+        dispatcher, instance_manager, *_ = _make_dispatcher()
+        dispatcher._cb_manager = MagicMock()
+        dispatcher._cb_manager.get_open_instance_ids.return_value = []
+        instance_manager.refresh_instances = AsyncMock(return_value=False)
+
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.REFRESH_INSTANCES,
+            request_id="req-set-1",
+            data={"event_type": EventType.SET.value, "instances": []},
+        )
+        response = await dispatcher.dispatch(request)
+
+        assert response.response_type == SchedulerResponseType.SUCCESS
+        dispatcher._cb_manager.clear_all.assert_not_called()
+        dispatcher._cb_manager.get_open_instance_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_set_event_with_change_clears_cb(self):
+        """A real SET change still snapshots and clears circuit breakers."""
+        dispatcher, instance_manager, *_ = _make_dispatcher()
+        dispatcher._cb_manager = MagicMock()
+        dispatcher._cb_manager.get_open_instance_ids.return_value = [1]
+        instance_manager.refresh_instances = AsyncMock(return_value=True)
+
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.REFRESH_INSTANCES,
+            request_id="req-set-2",
+            data={"event_type": EventType.SET.value, "instances": []},
+        )
+        response = await dispatcher.dispatch(request)
+
+        assert response.response_type == SchedulerResponseType.SUCCESS
+        dispatcher._cb_manager.get_open_instance_ids.assert_called_once()
+        dispatcher._cb_manager.clear_all.assert_called_once()
+
 
 class TestHandleAllocateOnlyEdgeCases:
     @pytest.mark.asyncio

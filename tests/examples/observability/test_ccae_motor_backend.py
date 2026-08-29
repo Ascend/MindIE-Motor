@@ -83,6 +83,7 @@ def test_motor_backend_falls_back_to_default_controller_port(ccae_mods, monkeypa
 
     monkeypatch.setattr(base_mod, "Collector", MagicMock)
     monkeypatch.setattr(backend_mod, "SafeHTTPSClient", FakeClient)
+    monkeypatch.setattr(base_mod, "Log", MagicMock())
     monkeypatch.setattr(backend_mod, "Log", MagicMock())
     monkeypatch.setenv("POD_IP", "10.0.0.1")
 
@@ -110,6 +111,7 @@ def test_motor_backend_uses_explicit_controller_port(ccae_mods, monkeypatch: pyt
 
     monkeypatch.setattr(base_mod, "Collector", MagicMock)
     monkeypatch.setattr(backend_mod, "SafeHTTPSClient", FakeClient)
+    monkeypatch.setattr(base_mod, "Log", MagicMock())
     monkeypatch.setattr(backend_mod, "Log", MagicMock())
     monkeypatch.setenv("POD_IP", "10.0.0.1")
 

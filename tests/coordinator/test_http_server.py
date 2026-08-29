@@ -30,13 +30,19 @@ from motor.common.standby.standby_manager import StandbyRole, StandbyManager
 from motor.coordinator.api_server.management_server import ManagementServer
 from motor.coordinator.domain.instance_manager import InstanceIdConflictError
 from motor.coordinator.domain.probe import RoleHeartbeatResult
-from motor.coordinator.api_server.inference_server import InferenceServer, _validate_anthropic_request
+from motor.coordinator.api_server.inference_server import (
+    InferenceServer,
+    _validate_anthropic_request,
+    _validate_openai_request,
+    _validate_positive_int_field,
+)
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.config.coordinator import CoordinatorConfig, RateLimitConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.common.http.key_encryption import encrypt_api_key, set_default_key_encryption_by_name
 from motor.common.resources import Endpoint, Instance, InsStatus, PDRole
 from motor.coordinator.models.constants import OpenAIField
+from motor.coordinator.models.request import RequestType
 from motor.coordinator.middleware.fastapi_middleware import (
     SimpleRateLimitMiddleware,
     RateLimitConfigHolder,
@@ -2190,6 +2196,53 @@ class TestValidateAnthropicRequest:
             },
             require_max_tokens=True,
         )
+
+
+class TestValidateOpenaiPositiveIntField:
+    """Unit tests for _validate_positive_int_field (max_tokens / max_completion_tokens)."""
+
+    def test_missing_field_is_untouched(self):
+        body = {"model": "m"}
+        _validate_positive_int_field(body, OpenAIField.MAX_TOKENS)
+        assert body == {"model": "m"}
+
+    def test_valid_positive_int_is_kept(self):
+        body = {"model": "m", "max_tokens": 128}
+        _validate_positive_int_field(body, OpenAIField.MAX_TOKENS)
+        assert body == {"model": "m", "max_tokens": 128}
+
+    @pytest.mark.parametrize("value", [0, -1, 1.5, "128", True, False])
+    def test_invalid_values_are_removed(self, value):
+        body = {"model": "m", "max_tokens": value}
+        _validate_positive_int_field(body, OpenAIField.MAX_TOKENS)
+        assert "max_tokens" not in body
+
+    def test_invalid_value_logs_warning(self, caplog):
+        body = {"model": "m", "max_tokens": 0}
+        _validate_positive_int_field(body, OpenAIField.MAX_TOKENS)
+        assert "Invalid max_tokens=0" in caplog.text
+
+    def test_openai_request_removes_invalid_max_tokens(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 0,
+            "max_completion_tokens": -1,
+        }
+        _validate_openai_request(body, RequestType.OPENAI)
+        assert "max_tokens" not in body
+        assert "max_completion_tokens" not in body
+
+    def test_openai_request_keeps_valid_max_tokens(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
+            "max_completion_tokens": 64,
+        }
+        _validate_openai_request(body, RequestType.OPENAI)
+        assert body["max_tokens"] == 128
+        assert body["max_completion_tokens"] == 64
 
 
 class TestAnthropicEndpoints:

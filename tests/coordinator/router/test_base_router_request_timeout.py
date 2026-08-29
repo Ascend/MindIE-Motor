@@ -3,13 +3,16 @@
 
 """Tests for BaseRouter._build_request_timeout (bounded TCP connect phase)."""
 
+import time
 from unittest.mock import MagicMock
+
+import pytest
 
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import (
     ScheduledResource,  # noqa: F401 -- domain must import first (models.request <-> domain cycle)
 )
-from motor.coordinator.models.request import RequestInfo
+from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.router.strategies.base import BaseRouter
 
 
@@ -54,3 +57,40 @@ class TestBuildRequestTimeout:
 
         assert timeout.connect == 30.0
         assert timeout.read == 30.0
+
+
+class TestStreamOverallTimeout:
+    """_stream_overall_timeout: remaining infer_timeout budget for streaming responses."""
+
+    def test_full_budget_when_just_arrived(self):
+        config = CoordinatorConfig()
+        config.exception_config.infer_timeout = 3600
+        router = _make_router(config)
+
+        budget = router._stream_overall_timeout()
+
+        assert 3599 < budget <= 3600
+
+    def test_elapsed_time_deducted_from_budget(self):
+        config = CoordinatorConfig()
+        config.exception_config.infer_timeout = 100
+        router = _make_router(config)
+        router.req_info.status[ReqState.ARRIVE] = time.time() - 40
+
+        assert router._stream_overall_timeout() == pytest.approx(60, abs=1)
+
+    def test_budget_floors_at_zero_after_deadline(self):
+        config = CoordinatorConfig()
+        config.exception_config.infer_timeout = 100
+        router = _make_router(config)
+        router.req_info.status[ReqState.ARRIVE] = time.time() - 200
+
+        assert router._stream_overall_timeout() == 0.0
+
+    def test_missing_arrive_time_uses_now(self):
+        config = CoordinatorConfig()
+        config.exception_config.infer_timeout = 100
+        router = _make_router(config)
+        router.req_info.status.pop(ReqState.ARRIVE, None)
+
+        assert router._stream_overall_timeout() == pytest.approx(100, abs=1)
