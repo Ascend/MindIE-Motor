@@ -9,6 +9,7 @@
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 from motor.common.resources.instance import Instance, PDRole
@@ -45,6 +46,7 @@ logger = get_logger(__name__)
 
 # Endpoints kept by the load-gated mode when kv_affinity.load_gate_topn is left unset (0).
 _DEFAULT_LOAD_GATE_TOPN = 2
+_TOKENIZER_LOAD_RETRY_SECONDS = 30.0
 
 
 def adapt_context_budget(
@@ -594,39 +596,73 @@ class TokenizerManager(ThreadSafeSingleton):
         self.endpoint = config.tracer_config.endpoint
         self.tokenizer = None
         self._is_dsv4 = False
+        self._next_load_attempt_at = 0.0
         scheduler_config = getattr(config, "scheduler_config", None)
         kv_config = getattr(scheduler_config, "kv_conductor_config", None) if scheduler_config else None
         if kv_config is None:
             kv_config = getattr(config, "prefill_kv_event_config", None)
         scheduler_type = getattr(scheduler_config, "scheduler_type", None) if scheduler_config else None
         scheduler_value = getattr(scheduler_type, "value", scheduler_type)
-        needs_tokenizer = bool(
+        render_enabled = bool(getattr(getattr(config, "render_config", None), "enabled", False))
+        eager_load = bool(
             (kv_config and getattr(kv_config, "conductor_service", ""))
             or scheduler_value == "kv_cache_affinity"
-            or config.context_budget_mode == CONTEXT_BUDGET_ON
+            or (config.context_budget_mode == CONTEXT_BUDGET_ON and not render_enabled)
         )
+        needs_tokenizer = eager_load or render_enabled
         if not needs_tokenizer:
-            logger.info("KV affinity and context budget are disabled. disable TokenizerManager!")
+            logger.info("KV affinity, context budget, and Render are disabled. disable TokenizerManager!")
             return
 
-        model_path = getattr(kv_config, "model_path", "") if kv_config else ""
-        if model_path:
-            os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-            engine_type = str(getattr(kv_config, "engine_type", "vllm") or "vllm").strip().lower()
-            if engine_type == "vllm" and self._is_deepseek_v4_model(model_path):
-                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
-
-                self.tokenizer = DeepseekV4Tokenizer.from_pretrained(model_path, trust_remote_code=True)
-                self._is_dsv4 = True
-            else:
-                from transformers import AutoTokenizer
-
-                self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+        self.model_path = getattr(kv_config, "model_path", "") if kv_config else ""
+        self.engine_type = str(getattr(kv_config, "engine_type", "vllm") or "vllm").strip().lower()
         self.openai_standard = os.environ.get("OPENAI_STANDARD", "STANDARD")
-        logger.info("TokenizerManager init.(model_path:%s, is_dsv4:%s)", model_path, self._is_dsv4)
+        if eager_load:
+            self.get_tokenizer()
+        logger.info(
+            "TokenizerManager init.(model_path:%s, is_dsv4:%s, lazy_load:%s)",
+            self.model_path,
+            self._is_dsv4,
+            not eager_load,
+        )
+
+    def get_tokenizer(self):
+        """Load the local tokenizer lazily and retry transient failures after a cooldown."""
+        if self.tokenizer is not None:
+            return self.tokenizer
+        if time.monotonic() < self._next_load_attempt_at:
+            return None
+        with self.config_lock:
+            if self.tokenizer is not None:
+                return self.tokenizer
+            if time.monotonic() < self._next_load_attempt_at:
+                return None
+            if not getattr(self, "model_path", ""):
+                return None
+            try:
+                if self.engine_type == "vllm" and self._is_deepseek_v4_model(self.model_path):
+                    from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
+
+                    self.tokenizer = DeepseekV4Tokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                    self._is_dsv4 = True
+                else:
+                    from transformers import AutoTokenizer
+
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+            except Exception as exc:
+                self._next_load_attempt_at = time.monotonic() + _TOKENIZER_LOAD_RETRY_SECONDS
+                logger.warning(
+                    "Tokenizer load failed; retrying in %.0fs: %s",
+                    _TOKENIZER_LOAD_RETRY_SECONDS,
+                    exc,
+                )
+                return None
+            self._next_load_attempt_at = 0.0
+            return self.tokenizer
 
     def apply_chat_template(self, messages: list, tools: list | None = None, req_data: dict | None = None) -> list[int]:
-        if self.tokenizer is None:
+        if self.get_tokenizer() is None:
             return []
         try:
             if self._is_dsv4:
@@ -642,7 +678,8 @@ class TokenizerManager(ThreadSafeSingleton):
             return self._safe_fallback_encode(messages, tools, req_data)
 
     def encode(self, prompt: str) -> list[int]:
-        return [] if self.tokenizer is None else self.tokenizer.encode(prompt)
+        tokenizer = self.get_tokenizer()
+        return [] if tokenizer is None else tokenizer.encode(prompt)
 
     @staticmethod
     def _read_model_config_dict(model_path: str) -> dict | None:

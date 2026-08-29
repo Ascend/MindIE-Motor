@@ -23,6 +23,23 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.common.http.security_utils import sanitize_error_message
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import ReqState
+from motor.coordinator.render.vllm_render_client import VLLMRenderClient
+from motor.coordinator.router.token_only import (
+    build_token_only_batch,
+    finish_token_only_response,
+    gather_generate_responses,
+    is_token_only_unsupported,
+    select_token_only_requests,
+    token_only_request_id,
+)
+from motor.coordinator.router.adapters.pd_protocol import (
+    EngineEndpointMetadata,
+    EngineLegSpec,
+    EnginePhase,
+    EngineRequest,
+    LegContext,
+    VllmProtocolAdapter,
+)
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 import motor.coordinator.router.adapters as adapters
@@ -51,11 +68,16 @@ class PDHybridRouter(BaseRouter):
         self._stream_body_sent = False
         self._scheduled_resource: ScheduledResource | None = None
         self._cb_iid: int | None = None
+        self._render_client: VLLMRenderClient | None = None
         self.rescheduler = Rescheduler(
             self.config.exception_config.reschedule_enabled,
             self.req_info,
             self.logger,
         )
+
+    def set_render_client(self, render_client: VLLMRenderClient | None) -> None:
+        """Attach the request worker's shared Render/Derender client."""
+        self._render_client = render_client
 
     @contextlib.asynccontextmanager
     async def _optional_request_context(self, manage_request_context: bool):
@@ -404,6 +426,37 @@ class PDHybridRouter(BaseRouter):
                 self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
 
+    def _tokenized_hybrid_requests(self, attempt: int) -> list[EngineRequest]:
+        resource = self._scheduled_resource
+        if resource is None or str(getattr(resource.instance, "engine_type", "")).strip().lower() != "vllm":
+            return []
+        tokenized_requests = select_token_only_requests(self.req_info, self._render_client)
+        if not tokenized_requests:
+            return []
+
+        adapter = VllmProtocolAdapter()
+
+        def leg_factory(index: int) -> EngineLegSpec:
+            return EngineLegSpec(
+                context=LegContext(
+                    engine_request_id=token_only_request_id(
+                        self.req_info.req_id,
+                        attempt_seq=attempt + 1,
+                        prompt_index=index,
+                    ),
+                    pair_id=self.req_info.req_id,
+                    attempt_seq=attempt + 1,
+                    api=self.req_info.entry_api,
+                    endpoint=EngineEndpointMetadata(
+                        host=resource.endpoint.ip,
+                        bootstrap_port=resource.endpoint.bootstrap_port,
+                    ),
+                ),
+                phase=EnginePhase.DECODE,
+            )
+
+        return build_token_only_batch(adapter, tokenized_requests, leg_factory)
+
     async def _generate_post(self, req_data: dict[str, Any], *, manage_request_context: bool = True) -> JSONResponse:
         """
         Handling hybrid non-streaming requests
@@ -423,15 +476,54 @@ class PDHybridRouter(BaseRouter):
                     async with self._inference_lifecycle(
                         attempt, max_retries, manage_request_context=manage_request_context
                     ) as client:
-                        response = await self.forward_request(
-                            self.req_info.api,
-                            attempt_req,
-                            client,
-                            self.config.exception_config.infer_timeout,
-                        )
+                        tokenized_requests = self._tokenized_hybrid_requests(attempt)
+                        body = None
+                        if tokenized_requests:
+                            try:
+
+                                async def send_generate(
+                                    request: EngineRequest,
+                                    request_client: Any = client,
+                                ) -> dict[str, Any]:
+                                    response = await self.forward_request(
+                                        request.api,
+                                        request.body,
+                                        request_client,
+                                        self.config.exception_config.infer_timeout,
+                                    )
+                                    return response.json()
+
+                                generate_responses = await gather_generate_responses(
+                                    tokenized_requests,
+                                    send_generate,
+                                )
+                                if self._render_client is None:
+                                    raise RuntimeError("Derender client is not configured")
+                                body = await finish_token_only_response(
+                                    self._render_client,
+                                    self.req_info,
+                                    generate_responses,
+                                )
+                            except UpstreamHTTPError as error:
+                                if not is_token_only_unsupported(error):
+                                    raise
+                                self.logger.warning(
+                                    "vLLM token-only Union is unsupported; fallback to native OpenAI request "
+                                    "req_id=%s status_code=%s",
+                                    self.req_info.req_id,
+                                    error.status_code,
+                                )
+                        if body is None:
+                            response = await self.forward_request(
+                                self.req_info.api,
+                                attempt_req,
+                                client,
+                                self.config.exception_config.infer_timeout,
+                            )
+                            body = response.json()
 
                         self.req_info.update_state(ReqState.DECODE_END)
-                        body = response.json()
+
                         if "chat" in self.req_info.effective_entry_api() and body.get("object") == "text_completion":
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
                         body = self._collect_logprobs_from_nonstream_body(body, sampling_state)

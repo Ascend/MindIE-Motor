@@ -11,7 +11,7 @@
 import asyncio
 import json
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from pytest import MonkeyPatch
@@ -41,6 +41,9 @@ from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
 import motor.coordinator.router.dispatch as router
 from motor.common.logger import get_logger
+from tests.coordinator.router.token_only_support import (
+    make_render_request_info,
+)
 
 TracerManager()
 
@@ -91,6 +94,7 @@ class TestRouterPDHybrid:
         mock_instance = Instance(
             job_name=f"test-job-{instance_id}",
             model_name=f"test-model-{instance_id}",
+            engine_type="vllm",
             id=instance_id,
             role=role,
             status=InsStatus.ACTIVE,
@@ -98,6 +102,18 @@ class TestRouterPDHybrid:
             endpoints={},
         )
         return mock_instance
+
+    @staticmethod
+    def _render_router(req_info, render_client):
+        config = CoordinatorConfig()
+        result = PDHybridRouter(
+            req_info,
+            config,
+            scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
+            request_manager=RequestManager(config),
+        )
+        result.set_render_client(render_client)
+        return result
 
     @pytest.fixture
     def setup_pd_hybrid(self, monkeypatch: MonkeyPatch):
@@ -351,6 +367,48 @@ class TestRouterPDHybrid:
         payload = json.loads(response.body.decode())
         assert payload["object"] == "chat.completion"
         assert payload["choices"][0]["message"]["content"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_pd_hybrid_render_uses_token_only_round_trip(
+        self,
+        monkeypatch: MonkeyPatch,
+        setup_pd_hybrid,
+    ):
+        generate_response = {
+            "request_id": "engine-id",
+            "choices": [{"index": 0, "token_ids": [30, 31], "finish_reason": "stop"}],
+        }
+        paths = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            del self, req_data, client, timeout
+            paths.append(api)
+            response = MagicMock()
+            response.json.return_value = generate_response
+            return response
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        req_data = {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": False,
+            "max_tokens": 8,
+        }
+        req_info = make_render_request_info(
+            "rid-token-only-hybrid", req_data, "v1/chat/completions", [10, 20], req_len=99
+        )
+        render_client = AsyncMock()
+        render_client.derender.return_value = {
+            "id": "engine-id",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "token-only"}}],
+        }
+        response = await self._render_router(req_info, render_client).handle_request()
+        payload = json.loads(response.body.decode())
+
+        assert paths == ["inference/v1/generate"]
+        derender = render_client.derender.await_args.args[1]
+        assert (derender["generate_response"], derender["prompt_tokens"]) == (generate_response, 2)
+        assert payload["choices"][0]["message"]["content"] == "token-only"
 
     @pytest.mark.asyncio
     async def test_pd_hybrid_fallback_to_prefill_when_hybrid_pool_empty(self, monkeypatch: MonkeyPatch, caplog):

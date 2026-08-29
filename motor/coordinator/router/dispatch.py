@@ -286,7 +286,22 @@ async def handle_request(
             detail="Scheduler (SchedulingFacade) is required and must be injected by the server",
         )
 
+    tokenization_service = getattr(raw_request.app.state, "tokenization_service", None)
+    tokenized_requests = None
+    if tokenization_service is not None:
+        tokenized_requests = await tokenization_service.tokenize(
+            req_info.req_id,
+            req_info.api,
+            req_info.req_data,
+        )
+        if tokenized_requests is not None:
+            req_info.tokenized_requests = list(tokenized_requests)
+            longest_prompt = max(tokenized_requests, key=lambda item: len(item.prompt_token_ids))
+            req_info.token_ids = list(longest_prompt.prompt_token_ids)
+
     adapt_context_budget(req_info, config)
+    if tokenized_requests is not None:
+        tokenization_service.sync_sampling_params(req_info.req_data, tokenized_requests)
 
     router_impl_class = await select_router_class(scheduler, req_info=req_info, config=config)
 
@@ -298,6 +313,9 @@ async def handle_request(
         request_manager=request_manager,
         sampling_manager=sampling_manager,
     )
+    set_render_client = getattr(router_impl, "set_render_client", None)
+    if callable(set_render_client):
+        set_render_client(tokenization_service.render_client if tokenization_service is not None else None)
 
     try:
         return await router_impl.handle_request()
@@ -370,6 +388,11 @@ async def handle_metaserver_request(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty request json")
 
     request_id = trim_vllm_engine_request_id(str(body.get("request_id") or ""))
+    batch_index = None
+    batch_marker = request_id.rpartition("#p")
+    if batch_marker[0] and batch_marker[2].isdigit():
+        request_id = batch_marker[0]
+        batch_index = int(batch_marker[2])
     if not request_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing request_id")
     req_info = await request_manager.get_req_info(request_id)
@@ -385,6 +408,8 @@ async def handle_metaserver_request(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trigger attempt not found")
     if attempt.attempt_seq != attempt_seq:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger attempt callback")
+    if batch_index != req_info._trigger_batch_index:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale trigger batch callback")
 
     if scheduler is None:
         raise HTTPException(

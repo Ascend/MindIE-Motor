@@ -185,6 +185,15 @@
         "w_disk": 0.0
       }
     },
+    "render_config": {
+      "enabled": false,
+      "endpoint": {
+        "host": "127.0.0.1",
+        "port": 8100
+      },
+      "timeout_ms": 5000,
+      "image_name": ""
+    },
     "inference_workers_config": {
       "num_workers": 4,
       "worker_metaserver_base_port": 12000

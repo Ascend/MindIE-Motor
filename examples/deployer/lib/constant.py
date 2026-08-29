@@ -111,6 +111,7 @@ DEFAULT_MF_STORE_PORT = 50089
 STANDBY_CONFIG = "standby_config"
 MOTOR_CONTROLLER_CONFIG = "motor_controller_config"
 MOTOR_COORDINATOR_CONFIG = "motor_coordinator_config"
+RENDER_CONFIG = "render_config"
 MOTOR_NODEMANAGER_CONFIG = "motor_nodemanger_config"
 ENABLE_MASTER_STANDBY = "enable_master_standby"
 INSTANCE_NUM_ZERO = 0

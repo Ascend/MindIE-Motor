@@ -27,6 +27,13 @@ from motor.coordinator.router.dispatch_session import AttemptState, AttemptStopR
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.scheduler.scheduler import Scheduler
 from tests.coordinator.router.mock_openai_request import create_mock_request_info
+from tests.coordinator.router.token_only_support import (
+    TokenOnlyEngineClient,
+    assert_completion_derender,
+    assert_generate_requests,
+    make_render_client,
+    make_render_request_info,
+)
 from tests.coordinator.router.test_router_native_handoff import (
     _UnifiedPDDecodeClient,
     _UnifiedPDPrefillClient,
@@ -34,12 +41,12 @@ from tests.coordinator.router.test_router_native_handoff import (
 )
 
 
-def _trigger_instance(instance_id: int, role: PDRole) -> Instance:
+def _instance(instance_id: int, role: PDRole, dispatch_plan: DispatchPlan) -> Instance:
     return Instance(
         job_name=f"test-job-{instance_id}",
         model_name=f"test-model-{instance_id}",
         engine_type="vllm",
-        dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+        dispatch_capabilities=[dispatch_plan.value],
         id=instance_id,
         role=role,
         status=InsStatus.ACTIVE,
@@ -48,10 +55,12 @@ def _trigger_instance(instance_id: int, role: PDRole) -> Instance:
     )
 
 
+def _trigger_instance(instance_id: int, role: PDRole) -> Instance:
+    return _instance(instance_id, role, DispatchPlan.CONCURRENT_ENGINE_SYNC)
+
+
 def _handoff_instance(instance_id: int, role: PDRole) -> Instance:
-    inst = _trigger_instance(instance_id, role)
-    inst.dispatch_capabilities = [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
-    return inst
+    return _instance(instance_id, role, DispatchPlan.PREFILL_HANDOFF_DECODE)
 
 
 async def _hanging_receive():
@@ -167,6 +176,109 @@ class TestRouterNativeTrigger:
         assert req_info.state == ReqState.DECODE_END
         assert ReqState.D_ALLOCATED in req_info.status
         assert ReqState.P_ALLOCATED not in req_info.status
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("api", "req_data", "response_data", "request_field"),
+        [
+            (
+                "v1/chat/completions",
+                {
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "first"}],
+                    "stream": False,
+                    "max_tokens": 8,
+                },
+                {"choices": [{"message": {"role": "assistant", "content": "token response"}}]},
+                "chat_request",
+            ),
+            (
+                "/v1/completions",
+                {"model": "test-model", "prompt": "first", "stream": False, "max_tokens": 8},
+                {"choices": [{"index": 0, "text": "token response"}]},
+                "completion_request",
+            ),
+        ],
+    )
+    async def test_nonstream_trigger_single_request_uses_token_only_decode_and_derender(
+        self, monkeypatch, trigger_pair, api, req_data, response_data, request_field
+    ):
+        del trigger_pair
+        p_client = _UnifiedPDPrefillClient()
+        d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+        req_info = make_render_request_info("test-id", req_data, api, [10, 20])
+        render_client = AsyncMock()
+        render_client.derender.return_value = response_data
+        router = self._make_router(req_info, monkeypatch, p_client, d_client)
+        router.set_render_client(render_client)
+
+        response = await router.handle_request()
+
+        assert response.status_code == 200
+        assert d_client.paths == ["/inference/v1/generate"]
+        assert (d_client.requests[0]["request_id"], p_client.requests) == (req_info.req_id, [])
+        derender_request = render_client.derender.await_args.args[1]
+        assert derender_request[request_field] == req_data
+
+    @pytest.mark.asyncio
+    async def test_nonstream_trigger_completion_batch_uses_unique_generate_ids(self, monkeypatch, trigger_pair):
+        del trigger_pair
+        p_client = _UnifiedPDPrefillClient()
+        d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+        req_data = {"model": "test-model", "prompt": ["first", "second"], "stream": False, "max_tokens": 8}
+        req_info = make_render_request_info("test-id", req_data, "/v1/completions", [[10], [20, 21]])
+        render_client = make_render_client(completion_count=2)
+        router = self._make_router(req_info, monkeypatch, p_client, d_client)
+        router.set_render_client(render_client)
+        response = await router.handle_request()
+
+        assert response.status_code == 200
+        assert_generate_requests(
+            d_client.requests,
+            request_ids=[f"{req_info.req_id}#p{i}" for i in range(2)],
+            prompt_token_ids=[[10], [20, 21]],
+        )
+        assert_completion_derender(render_client, prompt_lengths=[1, 2], response_count=2, original_request=req_data)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("api", "request_field", "request_value"),
+        [
+            ("v1/chat/completions", "messages", [{"role": "user", "content": "Hello"}]),
+            ("v1/completions", "prompt", "Hello"),
+        ],
+    )
+    async def test_stream_metaserver_uses_token_only_prefill(
+        self, monkeypatch, trigger_pair, api, request_field, request_value
+    ):
+        del trigger_pair
+        p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+        config = self._make_config()
+        request_data = {"model": "test-model", request_field: request_value, "stream": True, "max_tokens": 8}
+        req_info = make_render_request_info("test-id", request_data, api, [10, 20, 30])
+        request_manager = RequestManager(config)
+        await request_manager.add_req_info(req_info)
+        router = UnifiedPDRouter(
+            req_info,
+            config,
+            scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
+            request_manager=request_manager,
+        )
+        router.set_render_client(AsyncMock())
+        _patch_unified_pd_clients(monkeypatch, router, p_client, _UnifiedPDDecodeClient())
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        router._bind_trigger_attempt(attempt)
+        kv_params = {
+            "request_id": req_info.req_id,
+            "do_remote_decode": True,
+            "remote_block_ids": [9, 8],
+            "remote_host": "10.0.0.8",
+            "remote_port": 15555,
+        }
+
+        await router.handle_metaserver_request(kv_params)
+
+        assert p_client.paths == ["/inference/v1/generate"]
 
     @pytest.mark.asyncio
     async def test_select_coordination_mode_uses_cluster_trigger_when_allocate_caps_missing(

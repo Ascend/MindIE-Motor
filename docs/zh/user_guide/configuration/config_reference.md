@@ -230,6 +230,15 @@ motor_coordinator_config字段配置样例如下所示：
     "upstream_error_body_max_bytes": 65536
   },
   "context_budget_mode": "off",
+  "render_config": {
+    "enabled": false,
+    "endpoint": {
+      "host": "127.0.0.1",
+      "port": 8100
+    },
+    "timeout_ms": 5000,
+    "image_name": ""
+  },
   "scheduler_config": {
     "scheduler_type": "load_balance",
     "enable_pd_separation_fallback_to_hybrid": true,
@@ -370,6 +379,11 @@ motor_coordinator_config字段配置样例如下所示：
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | context_budget_mode | string | 请求路由前使用模型 tokenizer 计算 prompt token 数，并将实际生效的 `max_tokens` / `max_completion_tokens` 裁剪到模型剩余上下文。适用于 `load_balance`、`round_robin`、`kv_cache_affinity`。可选值：`off`（默认）或 `on`；开启 `on` 时，P/D 引擎配置必须提供 `model` 与 `max_model_len`。 |
+| **render_config字段** |-|-|
+| enabled | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；不支持的请求或调用失败会自动回退本地 tokenizer。 |
+| endpoint | object | Render Sidecar 地址。`host` 默认值为 `127.0.0.1`，Sidecar 部署仅支持本机地址；`port` 默认值为 `8100`。 |
+| timeout_ms | int | Render、Derender 与健康检查的 HTTP 超时时间，单位：毫秒。默认值：`5000`。 |
+| image_name | string | Render Sidecar 镜像。配置后使用该独立镜像；为空时复用 `motor_deploy_config.image_name`。默认值为空。 |
 | log_level | string | 日志级别。默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul> |
 | log_max_line_length | int | 单行日志最大长度，超过则截断。默认值：8192 |
 | log_format | string | 日志格式模板，支持 Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s" |

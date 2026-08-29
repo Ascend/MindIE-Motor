@@ -13,12 +13,14 @@
 import hashlib
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Protocol
 
 from motor.common.constants import CHAT_COMPLETION_PREFIX, COMPLETION_PREFIX, COMPLETION_SUFFIX
+
+NATIVE_GENERATE_API = "inference/v1/generate"
 
 
 class CoordinationMode(str, Enum):
@@ -57,6 +59,30 @@ class LegContext:
 class EngineRequest:
     api: str
     body: dict[str, Any]
+
+
+class EnginePhase(str, Enum):
+    PREFILL = "prefill"
+    DECODE = "decode"
+
+
+@dataclass(frozen=True)
+class GenerationConstraint:
+    max_tokens: int | None = None
+    min_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class KVTransferDescriptor:
+    params: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class EngineLegSpec:
+    context: LegContext
+    phase: EnginePhase
+    generation: GenerationConstraint = field(default_factory=GenerationConstraint)
+    kv_transfer: KVTransferDescriptor | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +156,112 @@ class VllmProtocolAdapter:
             "remote_port": None,
         }
         return EngineRequest(api=context.api, body=body)
+
+    def build_tokenized_request(
+        self,
+        prompt_token_ids: list[int],
+        metadata: Mapping[str, Any],
+        leg: EngineLegSpec,
+    ) -> EngineRequest:
+        """Build one native token-only request from a topology-neutral engine leg."""
+        return self._build_tokenized_generate_request(
+            prompt_token_ids,
+            metadata,
+            leg.context,
+            phase=leg.phase.value,
+            kv_transfer_params=leg.kv_transfer.params if leg.kv_transfer is not None else None,
+            max_tokens=leg.generation.max_tokens,
+            min_tokens=leg.generation.min_tokens,
+        )
+
+    def _build_tokenized_generate_request(
+        self,
+        prompt_token_ids: list[int],
+        metadata: Mapping[str, Any],
+        context: LegContext,
+        *,
+        phase: str,
+        kv_transfer_params: Mapping[str, Any] | None = None,
+        max_tokens: int | None = None,
+        min_tokens: int | None = None,
+    ) -> EngineRequest:
+        body = deepcopy(dict(metadata))
+        sampling_params = body.get("sampling_params")
+        if kv_transfer_params is None:
+            if not isinstance(sampling_params, dict):
+                raise EngineProtocolError(
+                    engine_type=self.engine_type,
+                    phase=phase,
+                    message="Render metadata is missing sampling_params",
+                )
+            sampling_params = deepcopy(sampling_params)
+            body.pop("kv_transfer_params", None)
+        else:
+            sampling_params = self._with_kv_transfer_params(
+                sampling_params,
+                kv_transfer_params,
+                phase=phase,
+            )
+            body["kv_transfer_params"] = deepcopy(dict(kv_transfer_params))
+        if max_tokens is not None:
+            sampling_params["max_tokens"] = max_tokens
+        if min_tokens is not None:
+            sampling_params["min_tokens"] = min_tokens
+        body["sampling_params"] = sampling_params
+        body["request_id"] = context.engine_request_id
+        body["token_ids"] = list(prompt_token_ids)
+        body["stream"] = False
+        return EngineRequest(api=NATIVE_GENERATE_API, body=body)
+
+    def _with_kv_transfer_params(
+        self,
+        sampling_params: Any,
+        kv_transfer_params: Mapping[str, Any],
+        *,
+        phase: str,
+    ) -> dict[str, Any]:
+        if not isinstance(sampling_params, dict):
+            raise EngineProtocolError(
+                engine_type=self.engine_type,
+                phase=phase,
+                message="Render metadata is missing sampling_params",
+            )
+        updated = deepcopy(sampling_params)
+        extra_args = updated.get("extra_args")
+        if extra_args is None:
+            extra_args = {}
+        elif not isinstance(extra_args, dict):
+            raise EngineProtocolError(
+                engine_type=self.engine_type,
+                phase=phase,
+                message="Render metadata has invalid sampling_params.extra_args",
+            )
+        else:
+            extra_args = deepcopy(extra_args)
+        extra_args["kv_transfer_params"] = deepcopy(dict(kv_transfer_params))
+        updated["extra_args"] = extra_args
+        return updated
+
+    def validate_tokenized_decode_response(self, response: dict[str, Any]) -> dict[str, Any]:
+        """Validate the GenerateResponse fields consumed by Derender."""
+        choices = response.get("choices")
+        if not isinstance(choices, list):
+            raise EngineProtocolError(
+                engine_type=self.engine_type,
+                phase="decode",
+                message="Token-only response has invalid choices",
+            )
+        for choice in choices:
+            token_ids = choice.get("token_ids") if isinstance(choice, dict) else None
+            if not isinstance(token_ids, list) or any(
+                not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0 for token_id in token_ids
+            ):
+                raise EngineProtocolError(
+                    engine_type=self.engine_type,
+                    phase="decode",
+                    message="Token-only response has invalid token_ids",
+                )
+        return deepcopy(response)
 
     def parse_prefill_response(
         self,

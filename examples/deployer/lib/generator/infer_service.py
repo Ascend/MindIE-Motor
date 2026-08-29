@@ -54,6 +54,7 @@ from lib.generator.kv_cache_store import (
 )
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 from lib.generator.kv_conductor import normalize_kv_conductor_config
+from lib.generator.render import configure_render_sidecar
 
 
 def get_infer_role(infer_service_set, role_name):
@@ -171,6 +172,9 @@ def _configure_coordinator_role(infer_doc, user_config):
 
     if coordinator_env:
         set_container_env(container, coordinator_env)
+
+    pod_spec = role[C.SPEC][C.TEMPLATE][C.SPEC]
+    configure_render_sidecar(pod_spec, user_config)
 
 
 def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name=None):

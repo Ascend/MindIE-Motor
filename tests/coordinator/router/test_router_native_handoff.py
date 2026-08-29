@@ -401,6 +401,7 @@ class TestRouterNativeHandoff:
         mock_req.json = AsyncMock(return_value={"model": "test"})
         mock_req.headers = {}
         mock_req.url.path = "/v1/chat/completions"
+        mock_req.app.state.tokenization_service = None
 
         # Must be awaitable so listen_for_disconnect() does not raise; never completes so handler wins.
         async def _never_receive():

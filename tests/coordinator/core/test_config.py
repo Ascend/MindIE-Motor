@@ -1107,3 +1107,39 @@ def test_context_budget_reuses_engine_model_config_without_kv_events(_temp_json_
     assert config.scheduler_config.kv_conductor_config.conductor_service == "manual-conductor"
     assert config.aigw_model["p_max_seqlen"] == 8192
     assert config.aigw_model["d_max_seqlen"] == 4096
+
+
+def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json_file):
+    user_config = {
+        "motor_coordinator_config": {
+            "render_config": {
+                "enabled": True,
+                "endpoint": {"host": "127.0.0.1", "port": 8200},
+                "timeout_ms": 1500,
+                "image_name": "vllm-render-cpu:test",
+            },
+        },
+        "motor_engine_union_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "served_model_name": "qwen",
+                "model": "/mnt/weight/qwen",
+                "max_model_len": 4096,
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.render_config.enabled is True
+    assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/qwen"
+
+
+def test_invalid_render_timeout_is_rejected():
+    config = CoordinatorConfig()
+    config.render_config.timeout_ms = 0
+
+    with pytest.raises(ValueError, match="render_config.timeout_ms"):
+        config.validate_config()

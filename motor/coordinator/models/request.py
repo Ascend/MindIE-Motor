@@ -17,6 +17,7 @@ import anyio
 
 from motor.common.resources.instance import PDRole
 from motor.coordinator.domain.scheduling_constraint import SchedulingConstraint
+from motor.coordinator.render.models import TokenizedRequest
 from motor.coordinator.tracer.tracing import TraceObj
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.domain.agent_hint import AgentHintInfo
@@ -57,6 +58,11 @@ class RequestInfo(BaseModel):
         description="Prompt token ids tokenized once before routing; reused for context budgeting, "
         "prefill load accounting, and KV affinity",
     )
+    tokenized_requests: list[TokenizedRequest] = Field(
+        default_factory=list,
+        exclude=True,
+        description="Per-prompt Render results; one item for Chat and scalar Completion requests",
+    )
     kv_affinity_debug: dict | None = Field(
         default=None,
         exclude=True,
@@ -91,6 +97,8 @@ class RequestInfo(BaseModel):
     _e_cancel_scope: anyio.CancelScope | None = PrivateAttr(default=None)
     # Bound UnifiedPD trigger attempt; looked up by the Worker metaserver callback.
     _trigger_attempt: object | None = PrivateAttr(default=None)
+    _trigger_batch_active: bool = PrivateAttr(default=False)
+    _trigger_batch_index: int | None = PrivateAttr(default=None)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")

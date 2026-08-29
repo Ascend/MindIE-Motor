@@ -40,6 +40,9 @@ from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
+from motor.coordinator.render.tokenization_service import TokenizationService
+from motor.coordinator.render.vllm_render_client import VLLMRenderClient
+from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.agent_hint import agent_hint_implies_manage_request
 
@@ -252,7 +255,22 @@ class InferenceServer(BaseCoordinatorServer):
                 app.state.sampling_manager = sampling_manager
         else:
             app.state.sampling_manager = None
+        render_client = None
+        app.state.tokenization_service = None
         try:
+            render_config = self.coordinator_config.render_config
+            if render_config.enabled:
+                render_client = VLLMRenderClient(render_config)
+                if await render_client.health():
+                    logger.info("vLLM Render sidecar is available")
+                else:
+                    logger.warning("vLLM Render sidecar is unavailable; Coordinator will use tokenizer fallback")
+                app.state.tokenization_service = TokenizationService(
+                    render_config,
+                    render_client=render_client,
+                    local_tokenizer=TokenizerManager(self.coordinator_config),
+                    context_budget_mode=self.coordinator_config.context_budget_mode,
+                )
             yield
         except asyncio.CancelledError:
             logger.info("Inference server startup was cancelled")
@@ -261,6 +279,8 @@ class InferenceServer(BaseCoordinatorServer):
             raise
         finally:
             logger.info("Inference server is shutting down...")
+            if render_client is not None:
+                await render_client.aclose()
             try:
                 TracerManager().shutdown()
             except Exception as e:

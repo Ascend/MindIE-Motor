@@ -34,6 +34,7 @@ from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, Schedul
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.render.vllm_render_client import RenderTimeoutError
 from motor.coordinator.router.adapters.pd_protocol import EngineProtocolError
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
@@ -45,6 +46,13 @@ from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
+from tests.coordinator.router.token_only_support import (
+    TokenOnlyEngineClient,
+    assert_completion_derender,
+    assert_generate_requests,
+    make_render_client,
+    make_render_request_info,
+)
 
 _ROUTER_LOGGER = _resolve_logger_name("motor.coordinator.router.strategies.base")
 
@@ -194,6 +202,35 @@ class _NativeHandoffPrefillClient(_Client):
             },
             request=request,
         )
+
+
+async def _run_vllm_handoff(monkeypatch, req_info: RequestInfo, p_client, *, d_client=None, render_client=None):
+    config = _config()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm"),
+        request_manager=RequestManager(config),
+    )
+    router.set_render_client(render_client)
+    d_client = d_client or _Client("decode")
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        yield p_client if resource.instance.role == PDRole.ROLE_P else d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    return await router.handle_request(), d_client
+
+
+def _render_info(request_id, *, api="v1/chat/completions", stream=False, prompts=None):
+    is_chat = api == "v1/chat/completions"
+    data = {"model": "m", "stream": stream, "max_tokens": 8}
+    if is_chat:
+        data["messages"] = [{"role": "user", "content": "hello"}]
+    else:
+        data["prompt"] = ["first", "second"] if prompts and isinstance(prompts[0], list) else "hello"
+    return make_render_request_info(request_id, data, api, prompts or [10, 20])
 
 
 class _NativeSglangPrefillClient(_Client):
@@ -563,6 +600,165 @@ async def test_unified_pd_vllm_uses_native_handoff_before_selecting_decode(monke
     assert ReqState.PREFILL_END in req_info.status
     assert req_info.status[ReqState.P_ALLOCATED] <= req_info.status[ReqState.PREFILL_END]
     assert req_info.status[ReqState.PREFILL_END] <= req_info.status[ReqState.DECODE_END]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api", "request_field"),
+    [("v1/chat/completions", "messages"), ("v1/completions", "prompt")],
+)
+async def test_unified_pd_stream_render_uses_token_only_handoff_prefill(monkeypatch, api, request_field):
+    req_info = _render_info("root-token-only-prefill", api=api, stream=True, prompts=[10, 20, 30])
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    response, d_client = await _run_vllm_handoff(monkeypatch, req_info, p_client, d_client=_StreamClient("decode"))
+    _ = [chunk async for chunk in response.body_iterator]
+
+    assert response.status_code == 200
+    assert p_client.paths == ["/inference/v1/generate"]
+    assert p_client.requests[0]["token_ids"] == [10, 20, 30]
+    assert d_client.requests[0][request_field] == req_info.req_data[request_field]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_stream_completion_batch_keeps_native_handoff(monkeypatch):
+    req_info = _render_info(
+        "root-stream-completion-batch",
+        api="v1/completions",
+        stream=True,
+        prompts=[[10], [20]],
+    )
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    response, _ = await _run_vllm_handoff(monkeypatch, req_info, p_client, d_client=_StreamClient("decode"))
+    _ = [chunk async for chunk in response.body_iterator]
+
+    assert p_client.paths == ["/v1/completions"]
+    assert p_client.requests[0]["prompt"] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_decode_falls_back_when_token_only_is_unsupported(monkeypatch):
+    req_info = _render_info("root-token-only-fallback")
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    d_client = TokenOnlyEngineClient(PDRole.ROLE_D, unsupported_status=404)
+    render_client = AsyncMock()
+    response, _ = await _run_vllm_handoff(
+        monkeypatch, req_info, p_client, d_client=d_client, render_client=render_client
+    )
+
+    assert response.status_code == 200
+    assert d_client.paths == ["/inference/v1/generate", "/v1/chat/completions"]
+    render_client.derender.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_vllm_render_completes_token_only_round_trip(monkeypatch):
+    req_info = _render_info("root-token-round-trip", prompts=[10, 20, 30])
+    render_client = AsyncMock()
+    render_client.derender.return_value = {
+        "id": "engine-id",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    }
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+
+    response, _ = await _run_vllm_handoff(
+        monkeypatch,
+        req_info,
+        p_client,
+        d_client=d_client,
+        render_client=render_client,
+    )
+    body = json.loads(response.body)
+
+    assert d_client.paths == ["/inference/v1/generate"]
+    derender_request = render_client.derender.await_args.args[1]
+    assert derender_request["prompt_tokens"] == 3
+    assert body["id"] == req_info.req_id
+    assert body["choices"][0]["message"]["content"] == "ok"
+    assert "prompt_token_ids" not in body
+    assert "token_ids" not in body["choices"][0]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_single_completion_uses_single_request_lifecycle(monkeypatch):
+    req_info = _render_info(
+        "root-single-completion",
+        api="v1/completions",
+        prompts=[10, 20],
+    )
+    render_client = make_render_client(completion_count=1)
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+
+    response, _ = await _run_vllm_handoff(
+        monkeypatch,
+        req_info,
+        p_client,
+        d_client=d_client,
+        render_client=render_client,
+    )
+
+    assert response.status_code == 200
+    assert [request["request_id"] for request in p_client.requests] == ["root-single-completion#a1"]
+    assert [request["request_id"] for request in d_client.requests] == ["root-single-completion#a1"]
+    assert_completion_derender(
+        render_client,
+        prompt_lengths=[2],
+        response_count=1,
+        original_request=req_info.req_data,
+    )
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_completion_batch_fans_out_and_derenders_once(monkeypatch):
+    req_info = _render_info("root-completion-batch", api="v1/completions", prompts=[[10], [20, 21]])
+    render_client = make_render_client(completion_count=2)
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+
+    response, _ = await _run_vllm_handoff(
+        monkeypatch,
+        req_info,
+        p_client,
+        d_client=d_client,
+        render_client=render_client,
+    )
+    body = json.loads(response.body)
+
+    assert_generate_requests(
+        p_client.requests,
+        request_ids=["root-completion-batch#a1#p0", "root-completion-batch#a1#p1"],
+        prompt_token_ids=[[10], [20, 21]],
+    )
+    assert [request["request_id"] for request in d_client.requests] == [
+        "root-completion-batch#a1#p0",
+        "root-completion-batch#a1#p1",
+    ]
+    assert_completion_derender(
+        render_client,
+        prompt_lengths=[1, 2],
+        response_count=2,
+        original_request=req_info.req_data,
+    )
+    assert [choice["text"] for choice in body["choices"]] == ["result-0", "result-1"]
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_derender_timeout_does_not_repeat_decode(monkeypatch):
+    req_info = _render_info("root-derender-timeout")
+    render_client = AsyncMock()
+    render_client.derender.side_effect = RenderTimeoutError("Derender request timed out")
+    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _run_vllm_handoff(
+            monkeypatch, req_info, TokenOnlyEngineClient(PDRole.ROLE_P), d_client=d_client, render_client=render_client
+        )
+
+    assert exc_info.value.status_code == 504
+    assert d_client.paths == ["/inference/v1/generate"]
+    render_client.derender.assert_awaited_once()
 
 
 @pytest.mark.asyncio

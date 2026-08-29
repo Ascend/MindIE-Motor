@@ -33,6 +33,21 @@ from motor.coordinator.domain import (
 )
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.render.models import TokenizedRequest
+from motor.coordinator.render.vllm_render_client import VLLMRenderClient
+from motor.coordinator.router.token_only import (
+    active_token_only_request,
+    build_token_only_batch,
+    build_trigger_token_only_decode_request,
+    build_trigger_token_only_prefill_request,
+    finish_token_only_response,
+    gather_generate_responses,
+    is_token_only_unsupported,
+    require_kv_transfer,
+    run_token_only_or_fallback,
+    select_token_only_requests,
+    token_only_request_id,
+)
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
     AttemptState,
@@ -55,8 +70,12 @@ from motor.coordinator.router.adapters.pd_protocol import (
     ADAPTERS,
     CoordinationMode,
     EngineEndpointMetadata,
+    EngineLegSpec,
+    EnginePhase,
     EngineProtocolError,
     EngineRequest,
+    GenerationConstraint,
+    KVTransferDescriptor,
     LegContext,
     PDProtocolAdapter,
     PrefillMetadata,
@@ -159,10 +178,15 @@ class UnifiedPDRouter(BaseRouter):
         self._active_retry_plan: RetryRequestPlan | None = None
         self._hybrid_stream_fallback_attempted = False  # A request is only allowed to fallback once.
         self._pd_uses_trigger: bool | None = None
+        self._render_client: VLLMRenderClient | None = None
         # Task -> its bookkeeping record (dedup key, logging context, computed work item).
         self._release_records: dict[asyncio.Task[bool], _ReleaseTaskRecord] = {}
         # Dedup reverse index: release key -> the single in-flight task for that key.
         self._release_inflight: dict[ReleaseKey, asyncio.Task[bool]] = {}
+
+    def set_render_client(self, render_client: VLLMRenderClient | None) -> None:
+        """Attach the request worker's shared Render/Derender client."""
+        self._render_client = render_client
 
     def _capture_prompt_tokens_details(self, body: dict[str, Any]) -> None:
         candidates = [body]
@@ -775,6 +799,72 @@ class UnifiedPDRouter(BaseRouter):
         engine_request = adapter.build_trigger_decode_request(req, context, self._trigger_metaserver_url(attempt))
         return engine_request.body, engine_request.api
 
+    def _select_active_token_only_request(
+        self,
+        *,
+        allow_streaming: bool = False,
+        require_render_client: bool = True,
+    ) -> TokenizedRequest | None:
+        requests = select_token_only_requests(
+            self.req_info,
+            self._render_client,
+            allow_streaming=allow_streaming,
+            require_render_client=require_render_client,
+        )
+        return active_token_only_request(requests, self.req_info._trigger_batch_index) if requests else None
+
+    def _tokenized_trigger_decode_request_for_attempt(
+        self,
+        attempt: AttemptContext,
+    ) -> EngineRequest | None:
+        tokenized = self._select_active_token_only_request()
+        if tokenized is None:
+            return None
+        adapter = self._require_adapter_for_attempt(attempt)
+        if not isinstance(adapter, VllmProtocolAdapter):
+            return None
+        context = replace(
+            self._native_leg_context(attempt, PDRole.ROLE_D, self.req_info.entry_api),
+            engine_request_id=token_only_request_id(
+                self.req_info.req_id,
+                prompt_index=self.req_info._trigger_batch_index,
+            ),
+        )
+        return build_trigger_token_only_decode_request(
+            adapter,
+            tokenized,
+            context,
+            self._trigger_metaserver_url(attempt),
+        )
+
+    def _tokenized_trigger_prefill_request(
+        self,
+        attempt: AttemptContext,
+        kv_transfer_params: dict[str, Any],
+    ) -> EngineRequest | None:
+        tokenized = self._select_active_token_only_request(
+            allow_streaming=True,
+            require_render_client=False,
+        )
+        if tokenized is None:
+            return None
+        adapter = self._require_adapter_for_attempt(attempt)
+        if not isinstance(adapter, VllmProtocolAdapter):
+            return None
+        context = replace(
+            self._native_leg_context(attempt, PDRole.ROLE_P, self.req_info.entry_api),
+            engine_request_id=token_only_request_id(
+                self.req_info.req_id,
+                prompt_index=self.req_info._trigger_batch_index,
+            ),
+        )
+        return build_trigger_token_only_prefill_request(
+            adapter,
+            tokenized,
+            context,
+            kv_transfer_params,
+        )
+
     async def _run_stream_attempt(
         self, attempt: AttemptContext, coordination_mode: CoordinationMode
     ) -> AsyncGenerator[str, None]:
@@ -1056,10 +1146,85 @@ class UnifiedPDRouter(BaseRouter):
                 async for chunk in decode_stream:
                     yield chunk
 
+    @staticmethod
+    def _reset_trigger_batch_item(attempt: AttemptContext) -> None:
+        attempt.prefill_task = None
+        attempt.decode_task = None
+        attempt.prefill_dispatched = False
+        attempt.prefill_completed = False
+        attempt.decode_dispatched = False
+        attempt.decode_completed = False
+
+    async def _run_trigger_completion_batch(
+        self,
+        attempt: AttemptContext,
+        tokenized_requests: list[TokenizedRequest],
+        sampling_state: dict,
+    ) -> dict[str, Any]:
+        generate_responses = []
+        d_instance_id = attempt.decode_resource.instance.id
+        self.req_info._trigger_batch_active = True
+        async with self._client_for(attempt.decode_resource) as d_client:
+            try:
+                for index, tokenized in enumerate(tokenized_requests):
+                    self._reset_trigger_batch_item(attempt)
+                    self.req_info._trigger_batch_index = index
+                    self.req_info.token_ids = list(tokenized.prompt_token_ids)
+                    tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
+                    if tokenized_decode is None:
+                        raise RuntimeError("Trigger Completion batch requires a tokenized vLLM request")
+                    attempt.mark_dispatched(PDRole.ROLE_D.value)
+                    response = await self.forward_request(
+                        tokenized_decode.api,
+                        tokenized_decode.body,
+                        d_client,
+                        self.config.exception_config.infer_timeout,
+                    )
+                    attempt.mark_completed(PDRole.ROLE_D.value)
+                    await self._scheduler.report_cb_event(d_instance_id, "success")
+                    generate_responses.append(response.json())
+            finally:
+                self.req_info._trigger_batch_active = False
+                self.req_info._trigger_batch_index = None
+
+        if self._render_client is None:
+            raise RuntimeError("Derender client is not configured")
+        body = await finish_token_only_response(self._render_client, self.req_info, generate_responses)
+        self.req_info.update_state(ReqState.DECODE_END)
+        body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
+        await self._maybe_submit_sample(attempt, sampling_state)
+        self._strip_logprobs_for_client(body, sampling_state)
+        await self._release_attempt(attempt, wait=False)
+        await self._drain_release_tasks()
+        return body
+
     async def _run_trigger_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         self._bind_trigger_attempt(attempt)
         attempt.transition(AttemptState.ACTIVE)
+        tokenized_requests = self._tokenized_completion_batch()
+        if tokenized_requests:
+            try:
+                return await self._run_trigger_completion_batch(
+                    attempt,
+                    tokenized_requests,
+                    self._init_sampling_state(),
+                )
+            except UpstreamHTTPError as error:
+                if not is_token_only_unsupported(error):
+                    raise
+                self.logger.warning(
+                    "vLLM token-only Trigger Completion batch is unsupported; fallback to native OpenAI request "
+                    "req_id=%s status_code=%s",
+                    self.req_info.req_id,
+                    error.status_code,
+                )
+                self.req_info.tokenized_requests = []
+                self.req_info._trigger_batch_active = False
+                self.req_info._trigger_batch_index = None
+                self._reset_trigger_batch_item(attempt)
+
         d_req, d_api = self._trigger_decode_request_for_attempt(attempt)
+        tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
         sampling_state = self._init_sampling_state()
         async with self._client_for(attempt.decode_resource) as d_client:
             return await self._await_nonstream_decode(
@@ -1068,6 +1233,7 @@ class UnifiedPDRouter(BaseRouter):
                 d_req,
                 d_client,
                 sampling_state=sampling_state,
+                tokenized_decode=tokenized_decode,
             )
 
     async def handle_metaserver_request(self, kv_transfer_params: dict[str, Any]) -> dict[str, Any]:
@@ -1116,22 +1282,47 @@ class UnifiedPDRouter(BaseRouter):
                     self._native_leg_context(attempt, PDRole.ROLE_P, api),
                     engine_request_id=self.req_info.req_id,
                 )
-                engine_request = adapter.build_trigger_prefill_request(req, context, kv_transfer_params)
+                fallback_request = adapter.build_trigger_prefill_request(req, context, kv_transfer_params)
+                tokenized_request = self._tokenized_trigger_prefill_request(attempt, kv_transfer_params)
                 p_instance_id = attempt.prefill_resource.instance.id
                 async with self._client_for(attempt.prefill_resource) as p_client:
+
+                    async def send(request: EngineRequest):
+                        return await self.forward_request(
+                            request.api,
+                            request.body,
+                            p_client,
+                            self.config.exception_config.first_token_timeout,
+                        )
+
+                    def log_fallback(error: UpstreamHTTPError) -> None:
+                        self.logger.warning(
+                            "vLLM token-only Trigger Prefill is unsupported; fallback to native OpenAI Prefill "
+                            "req_id=%s status_code=%s",
+                            self.req_info.req_id,
+                            error.status_code,
+                        )
+
                     attempt.register_canceller()
                     attempt.mark_dispatched(PDRole.ROLE_P.value)
-                    response = await self.forward_request(
-                        engine_request.api,
-                        engine_request.body,
-                        p_client,
-                        self.config.exception_config.first_token_timeout,
+                    response, used_token_only = await run_token_only_or_fallback(
+                        tokenized_request,
+                        fallback_request,
+                        send,
+                        on_unsupported=log_fallback,
                     )
                     attempt.mark_completed(PDRole.ROLE_P.value)
                     body = response.json()
                     self._record_prefill_complete(body)
+                    if used_token_only:
+                        self.logger.info(
+                            "token-only prefill success request_id=%s prompt_length=%d coordination_mode=trigger",
+                            self.req_info.req_id,
+                            len(self.req_info.token_ids or []),
+                        )
                     await self._scheduler.report_cb_event(p_instance_id, "success")
-                    self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
+                    if not self.req_info._trigger_batch_active:
+                        self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
                     elapsed_ms = (time.perf_counter() - t0_metaserver) * 1000
                     self.logger.info(
                         "Scheduling latency stage=metaserver_request_total elapsed_ms=%.2f role=ROLE_P req_id=%s",
@@ -1210,18 +1401,48 @@ class UnifiedPDRouter(BaseRouter):
         *,
         sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
+        tokenized_decode: EngineRequest | None = None,
     ) -> dict[str, Any]:
         d_instance_id = attempt.decode_resource.instance.id
 
-        async def decode_task() -> tuple[Any, Any]:
+        async def decode_task() -> tuple[Any, Any, bool]:
+            fallback_request = EngineRequest(api=d_api, body=d_req)
+
+            async def send(request: EngineRequest):
+                return await self.forward_request(
+                    request.api,
+                    request.body,
+                    d_client,
+                    self.config.exception_config.infer_timeout,
+                )
+
+            def log_fallback(error: UpstreamHTTPError) -> None:
+                self.logger.warning(
+                    "vLLM token-only Decode is unsupported; fallback to native OpenAI Decode req_id=%s status_code=%s",
+                    self.req_info.req_id,
+                    error.status_code,
+                )
+
             try:
                 attempt.mark_dispatched(PDRole.ROLE_D.value)
-                response = await self.forward_request(
-                    d_api, d_req, d_client, self.config.exception_config.infer_timeout
+                response, used_token_only = await run_token_only_or_fallback(
+                    tokenized_decode,
+                    fallback_request,
+                    send,
+                    on_unsupported=log_fallback,
                 )
+                response_body = response.json()
+                if used_token_only:
+                    if self._render_client is None:
+                        raise RuntimeError("Derender client is not configured")
+                    response_body = await finish_token_only_response(
+                        self._render_client,
+                        self.req_info,
+                        [response_body],
+                    )
                 attempt.mark_completed(PDRole.ROLE_D.value)
                 await self._scheduler.report_cb_event(d_instance_id, "success")
-                return response.json(), None
+                return response_body, None, used_token_only
             except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
             except Exception as e:
@@ -1229,7 +1450,7 @@ class UnifiedPDRouter(BaseRouter):
                     attempt.mark_completed(PDRole.ROLE_D.value)
                 if is_cb_reportable_failure(e):
                     await self._scheduler.report_cb_event(d_instance_id, "failure")
-                return None, e
+                return None, e, False
 
         d_task = attempt.register_decode_task(asyncio.create_task(decode_task()))
         try:
@@ -1245,7 +1466,7 @@ class UnifiedPDRouter(BaseRouter):
                 if d_task in done:
                     break
 
-            response, error = await d_task
+            response, error, used_token_only = await d_task
             if error:
                 await attempt.cancel(repr(error))
                 await self._release_attempt(attempt, wait=False)
@@ -1261,6 +1482,11 @@ class UnifiedPDRouter(BaseRouter):
                 response = self._collect_logprobs_from_nonstream_body(response, sampling_state)
                 await self._maybe_submit_sample(attempt, sampling_state)
                 self._strip_logprobs_for_client(response, sampling_state)
+            if used_token_only:
+                strip_nonstream_response_body_for_client(
+                    response,
+                    client_return_token_ids=self.req_info.client_expects_token_ids,
+                )
             await self._release_attempt(attempt, wait=False)
             await self._drain_release_tasks()
             return response
@@ -1275,6 +1501,28 @@ class UnifiedPDRouter(BaseRouter):
             await self._release_attempt(attempt, wait=False)
             await self._drain_release_tasks()
             raise
+
+    def _tokenized_handoff_decode_request(
+        self,
+        attempt: AttemptContext,
+        prefill_result: PrefillMetadata,
+    ) -> EngineRequest | None:
+        tokenized = self._select_active_token_only_request()
+        if tokenized is None:
+            return None
+        adapter = self._require_adapter_for_attempt(attempt)
+        if not isinstance(adapter, VllmProtocolAdapter):
+            return None
+        context = self._native_leg_context(attempt, PDRole.ROLE_D, self.req_info.entry_api)
+        return adapter.build_tokenized_request(
+            tokenized.prompt_token_ids,
+            tokenized.metadata,
+            EngineLegSpec(
+                context=context,
+                phase=EnginePhase.DECODE,
+                kv_transfer=require_kv_transfer(prefill_result.handoff_ticket, phase=EnginePhase.DECODE),
+            ),
+        )
 
     async def _run_handoff_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
@@ -1308,8 +1556,141 @@ class UnifiedPDRouter(BaseRouter):
                 async for chunk in decode_stream:
                     yield chunk
 
+    def _tokenized_completion_batch(self) -> list[TokenizedRequest]:
+        requests = select_token_only_requests(self.req_info, self._render_client)
+        return requests if len(requests) > 1 else []
+
+    def _build_handoff_batch_requests(
+        self,
+        attempt: AttemptContext,
+        tokenized_requests: list[TokenizedRequest],
+        *,
+        prefill_results: list[PrefillMetadata] | None = None,
+    ) -> list[EngineRequest]:
+        adapter = self._require_adapter_for_attempt(attempt)
+        if not isinstance(adapter, VllmProtocolAdapter):
+            return []
+        role = PDRole.ROLE_P if prefill_results is None else PDRole.ROLE_D
+
+        def leg_factory(index: int) -> EngineLegSpec:
+            context = replace(
+                self._native_leg_context(attempt, role, self.req_info.entry_api),
+                engine_request_id=token_only_request_id(
+                    self.req_info.req_id,
+                    attempt_seq=attempt.attempt_seq,
+                    prompt_index=index,
+                ),
+            )
+            if prefill_results is None:
+                return EngineLegSpec(
+                    context=context,
+                    phase=EnginePhase.PREFILL,
+                    generation=GenerationConstraint(max_tokens=1, min_tokens=1),
+                    kv_transfer=KVTransferDescriptor(
+                        {
+                            "do_remote_decode": True,
+                            "do_remote_prefill": False,
+                        }
+                    ),
+                )
+            ticket = prefill_results[index].handoff_ticket
+            return EngineLegSpec(
+                context=context,
+                phase=EnginePhase.DECODE,
+                kv_transfer=require_kv_transfer(ticket, phase=EnginePhase.DECODE),
+            )
+
+        return build_token_only_batch(adapter, tokenized_requests, leg_factory)
+
+    async def _run_handoff_completion_batch(
+        self,
+        attempt: AttemptContext,
+        tokenized_requests: list[TokenizedRequest],
+        sampling_state: dict,
+    ) -> dict[str, Any]:
+        adapter = self._require_adapter_for_attempt(attempt)
+        prefill_requests = self._build_handoff_batch_requests(attempt, tokenized_requests)
+        p_instance_id = attempt.prefill_resource.instance.id
+        async with self._client_for(attempt.prefill_resource) as p_client:
+
+            async def send_prefill(request: EngineRequest) -> dict[str, Any]:
+                response = await self.forward_request(
+                    request.api,
+                    request.body,
+                    p_client,
+                    self.config.exception_config.first_token_timeout,
+                )
+                return response.json()
+
+            attempt.mark_dispatched(PDRole.ROLE_P.value)
+            prefill_bodies = await gather_generate_responses(prefill_requests, send_prefill)
+            prefill_results = [adapter.parse_prefill_response(body) for body in prefill_bodies]
+            attempt.mark_completed(PDRole.ROLE_P.value)
+            await self._scheduler.report_cb_event(p_instance_id, "success")
+
+        self._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        late_decode = await self._ensure_handoff_decode_resource(attempt)
+        decode_requests = self._build_handoff_batch_requests(
+            attempt,
+            tokenized_requests,
+            prefill_results=prefill_results,
+        )
+        d_instance_id = attempt.decode_resource.instance.id
+        async with self._client_for(attempt.decode_resource) as d_client:
+            if late_decode:
+                attempt.register_decode_canceller()
+
+            async def send_decode(request: EngineRequest) -> dict[str, Any]:
+                response = await self.forward_request(
+                    request.api,
+                    request.body,
+                    d_client,
+                    self.config.exception_config.infer_timeout,
+                )
+                return response.json()
+
+            attempt.mark_dispatched(PDRole.ROLE_D.value)
+            generate_responses = await gather_generate_responses(decode_requests, send_decode)
+            attempt.mark_completed(PDRole.ROLE_D.value)
+            await self._scheduler.report_cb_event(d_instance_id, "success")
+
+        if self._render_client is None:
+            raise RuntimeError("Derender client is not configured")
+        body = await finish_token_only_response(self._render_client, self.req_info, generate_responses)
+        self.req_info.update_state(ReqState.DECODE_END)
+        body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
+        await self._maybe_submit_sample(attempt, sampling_state)
+        self._strip_logprobs_for_client(body, sampling_state)
+        await self._release_attempt(attempt, wait=False)
+        await self._drain_release_tasks()
+        return body
+
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
+        tokenized_requests = self._tokenized_completion_batch()
+        if tokenized_requests:
+            try:
+                return await self._run_handoff_completion_batch(
+                    attempt,
+                    tokenized_requests,
+                    self._init_sampling_state(),
+                )
+            except UpstreamHTTPError as error:
+                if not is_token_only_unsupported(error):
+                    raise
+                self.logger.warning(
+                    "vLLM token-only Completion batch is unsupported; fallback to native OpenAI request "
+                    "req_id=%s status_code=%s",
+                    self.req_info.req_id,
+                    error.status_code,
+                )
+                self.req_info.tokenized_requests = []
+
         sampling_state = self._init_sampling_state()
         async with self._client_for(attempt.prefill_resource) as p_client:
             prefill_result = await self._await_handoff_prefill(attempt, p_client)
@@ -1322,11 +1703,19 @@ class UnifiedPDRouter(BaseRouter):
         )
         late_decode = await self._ensure_handoff_decode_resource(attempt)
         d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+        tokenized_decode = self._tokenized_handoff_decode_request(attempt, prefill_result)
         async with self._client_for(attempt.decode_resource) as d_client:
             if late_decode:
                 # Client is now in the pool; the canceller can bind to it.
                 attempt.register_decode_canceller()
-            return await self._await_nonstream_decode(attempt, d_api, d_req, d_client, sampling_state=sampling_state)
+            return await self._await_nonstream_decode(
+                attempt,
+                d_api,
+                d_req,
+                d_client,
+                sampling_state=sampling_state,
+                tokenized_decode=tokenized_decode,
+            )
 
     async def _ensure_handoff_decode_resource(self, attempt: AttemptContext) -> bool:
         """Lazily allocate the decode leg for a handoff attempt.
@@ -1410,6 +1799,33 @@ class UnifiedPDRouter(BaseRouter):
             prefill_metadata=prefill_result,
         )
 
+    def _tokenized_handoff_prefill_request(self, attempt: AttemptContext) -> EngineRequest | None:
+        tokenized_request = self._select_active_token_only_request(
+            allow_streaming=True,
+            require_render_client=False,
+        )
+        if tokenized_request is None:
+            return None
+        adapter = self._require_adapter_for_attempt(attempt)
+        if not isinstance(adapter, VllmProtocolAdapter):
+            return None
+        context = self._native_leg_context(attempt, PDRole.ROLE_P, self.req_info.entry_api)
+        return adapter.build_tokenized_request(
+            tokenized_request.prompt_token_ids,
+            tokenized_request.metadata,
+            EngineLegSpec(
+                context=context,
+                phase=EnginePhase.PREFILL,
+                generation=GenerationConstraint(max_tokens=1, min_tokens=1),
+                kv_transfer=KVTransferDescriptor(
+                    {
+                        "do_remote_decode": True,
+                        "do_remote_prefill": False,
+                    }
+                ),
+            ),
+        )
+
     def _base_request_for_attempt(self, role: PDRole) -> tuple[dict[str, Any], str]:
         api = self.req_info.entry_api
         req = self.req_info.req_data.copy()
@@ -1477,14 +1893,32 @@ class UnifiedPDRouter(BaseRouter):
         attempt: AttemptContext,
         p_client,
     ) -> PrefillMetadata:
+        tokenized_request = self._tokenized_handoff_prefill_request(attempt)
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
-        attempt.mark_dispatched(PDRole.ROLE_P.value)
-        try:
-            response = await self.forward_request(
-                p_api,
-                p_req,
+        fallback_request = EngineRequest(api=p_api, body=p_req)
+
+        async def send(request: EngineRequest):
+            return await self.forward_request(
+                request.api,
+                request.body,
                 p_client,
                 self.config.exception_config.first_token_timeout,
+            )
+
+        def log_fallback(error: UpstreamHTTPError) -> None:
+            self.logger.warning(
+                "vLLM token-only Prefill is unsupported; fallback to native OpenAI Prefill req_id=%s status_code=%s",
+                self.req_info.req_id,
+                error.status_code,
+            )
+
+        attempt.mark_dispatched(PDRole.ROLE_P.value)
+        try:
+            response, used_token_only = await run_token_only_or_fallback(
+                tokenized_request,
+                fallback_request,
+                send,
+                on_unsupported=log_fallback,
             )
         except UpstreamHTTPError:
             attempt.mark_completed(PDRole.ROLE_P.value)
@@ -1503,6 +1937,12 @@ class UnifiedPDRouter(BaseRouter):
             ) from error
         if prefill_metadata.usage is not None:
             self._capture_prompt_tokens_details({"usage": prefill_metadata.usage})
+        if used_token_only:
+            self.logger.info(
+                "token-only prefill success request_id=%s prompt_length=%d",
+                self.req_info.req_id,
+                len(self.req_info.token_ids or []),
+            )
         self.req_info.update_state(ReqState.PREFILL_END)
         if self._stream_commit_controller is not None:
             self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)

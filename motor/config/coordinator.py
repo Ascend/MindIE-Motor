@@ -614,6 +614,24 @@ class PrefillKvEventConfig:
 
 
 @dataclass
+class RenderEndpointConfig:
+    """vLLM Render sidecar endpoint."""
+
+    host: str = "127.0.0.1"
+    port: int = 8100
+
+
+@dataclass
+class RenderConfig:
+    """Coordinator frontend tokenization through a vLLM Render sidecar."""
+
+    enabled: bool = False
+    endpoint: RenderEndpointConfig = field(default_factory=RenderEndpointConfig)
+    timeout_ms: int = 5000
+    image_name: str = ""
+
+
+@dataclass
 class CoordinatorConfig:
     """Coordinator configuration class with validation, reload and error handling support"""
 
@@ -640,6 +658,7 @@ class CoordinatorConfig:
     api_config: ApiConfig = field(default_factory=ApiConfig)
     deploy_config: DeployConfig = field(default_factory=DeployConfig)
     tracer_config: TracerConfig = field(default_factory=TracerConfig)
+    render_config: RenderConfig = field(default_factory=RenderConfig)
     prefill_kv_event_config: PrefillKvEventConfig = field(default_factory=PrefillKvEventConfig)
     precision_detection_config: PrecisionDetectionConfig = field(default_factory=PrecisionDetectionConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
@@ -768,6 +787,7 @@ class CoordinatorConfig:
                 ("api_config", config.api_config, None),
                 ("deploy_config", config.deploy_config, None),
                 ("tracer_config", config.tracer_config, None),
+                ("render_config", config.render_config, None),
                 ("prefill_kv_event_config", config.prefill_kv_event_config, None),
                 ("precision_detection_config", config.precision_detection_config, None),
                 ("port_allocator_config", config.port_allocator_config, None),
@@ -862,6 +882,14 @@ class CoordinatorConfig:
             "num_workers",
         )
         self._validate_worker_metaserver_ports()
+
+        self._validate_ip_or_hostname(self.render_config.endpoint.host, "render_config.endpoint.host")
+        self._validate_port_range(self.render_config.endpoint.port, "render_config.endpoint.port")
+        self._validate_positive_number(self.render_config.timeout_ms, "render_config.timeout_ms")
+        if not isinstance(self.render_config.image_name, str):
+            self._errors.append("render_config.image_name must be a string")
+        elif self.render_config.image_name and not self.render_config.image_name.strip():
+            self._errors.append("render_config.image_name cannot contain only whitespace")
 
         # Validate scheduler score configuration
         self._validate_positive_number(
