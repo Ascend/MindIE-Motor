@@ -17,6 +17,10 @@ nav:
           - Docker 部署:
               - 单容器部署: user_guide/deployment/docker/single_container.md
               - 多容器部署: user_guide/deployment/docker/multi_container.md
+          - Slurm 部署:
+              - 概述: user_guide/slurm/README.md
+              - 环境准备: user_guide/slurm/environment_preparation.md
+              - 服务部署: user_guide/slurm/service_deployment.md
           - Coordinator 独立部署: user_guide/deployment/standalone.md
           - 部署案例:
               - ModelArts 与元戎:

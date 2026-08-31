@@ -14,7 +14,11 @@ if [ "$ROLE" != "mf_store" ]; then
     exit 1
 fi
 
-export ASCEND_MF_STORE_URL="tcp://$POD_IP:$ASCEND_MF_STORE_PORT"
+MF_STORE_HOST="$POD_IP"
+if [[ "$MF_STORE_HOST" == *:* && "$MF_STORE_HOST" != \[*\] ]]; then
+    MF_STORE_HOST="[$MF_STORE_HOST]"
+fi
+export ASCEND_MF_STORE_URL="tcp://$MF_STORE_HOST:$ASCEND_MF_STORE_PORT"
 export ASCEND_MF_LOG_LEVEL=0
 
 python3 -m memfabric_hybrid.launch_ascend_mf_store
