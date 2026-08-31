@@ -324,9 +324,9 @@ scrape_configs:
 
 ## 已弃用接口
 
-### 实例指标查询接口（已弃用）
+### 实例指标查询接口
 
-> [!WARNING] 已弃用
+> [!NOTE] 说明
 > `GET /instance/metrics` 接口已弃用，请使用 `GET /metrics?type=instance` 代替。调用本接口将返回 HTTP 410 Gone。
 
 **接口格式**

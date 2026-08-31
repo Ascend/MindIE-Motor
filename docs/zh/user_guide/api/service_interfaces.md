@@ -95,7 +95,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 - 非流式响应示例：
 
-  ```JSON
+  ```json
   {
     "id": "chatcmpl-xxx",
     "object": "chat.completion",
@@ -313,7 +313,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 - 非流式响应样例（非流式）：
 
-  ```JSON
+  ```json
   {
     "id": "cmpl-xxx-0",
     "object": "text_completion",
@@ -354,8 +354,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | choices[].index | integer | 序号。 |
   | choices[].text | string | 生成文本。 |
   | choices[].finish_reason | string/null | 结束原因，如`stop`、`length`等。 |
-
----
 
 ## Anthropic Messages 接口
 
@@ -458,7 +456,7 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 - 非流式响应样例：
 
-  ```JSON
+  ```json
   {
     "id": "msg_xxx",
     "type": "message",
@@ -529,8 +527,6 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   | `message_delta` | 消息增量，包含 `stop_reason` 和最终 usage。 |
   | `message_stop` | 消息结束。 |
 
----
-
 ## Anthropic Count Tokens 接口
 
 **接口功能**
@@ -570,7 +566,7 @@ curl -X POST "http://{IP}:{Port}/v1/messages/count_tokens" \
 
 **响应样例**
 
-```JSON
+```json
 {
   "input_tokens": 10,
   "context_management": {

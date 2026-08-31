@@ -1,9 +1,9 @@
 ---
 name: motor-dev
-description: MindIE-PyMotor development guidelines. Use when modifying motor/ or tests/ code, especially config or Controller module changes.
+description: MindIE Motor development guidelines. Use when modifying motor/ or tests/ code, especially config or Controller module changes.
 ---
 
-# MindIE-PyMotor Development
+# MindIE Motor Development
 
 ## Continuous Learning (可持续学习)
 

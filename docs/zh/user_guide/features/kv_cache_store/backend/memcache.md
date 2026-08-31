@@ -20,7 +20,9 @@ MemCache 为默认池化后端，基于 [memcache_hybrid](https://gitcode.com/As
 }
 ```
 
-- `local_service_mode`（可选）：LocalService 部署模式，见下方说明。默认值：Atlas 800I A2 推理服务器/Atlas 850 超节点服务器 硬件默认 `inprocess`，Atlas 800I A3 超节点服务器 硬件默认 `standalone`。
+- `local_service_mode`（可选）：LocalService 部署模式，见下方说明。默认值如下：
+  - Atlas 800I A2 推理服务器/Atlas 850 超节点服务器： `inprocess`；
+  - Atlas 800I A3 超节点服务器： `standalone`。
 - `target_job_id`（可选）：复用其他推理服务的 kv_store，值为目标服务的 `motor_deploy_config.job_id`。未配置、与自身 `job_id` 相同、或目标 kv_store 不可用时，在本 namespace 新建 kv_store。详见 [KV 池化 README — 多套服务共享 kv_store](../README.md#多套服务共享-kv_store)。
 
 > **所有 memcache 内部配置项**（DRAM 池大小、通信协议、SSD 缓存、UBSIO 参数等）均由用户直接在 `mmc-local-inprocess.conf` 中管理。模板文件位于 `examples/deployer/startup/roles/kv_store_backends/memcache/`，部署时 `common.sh` 自动同步到 `$CONFIG_PATH/`。

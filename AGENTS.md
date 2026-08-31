@@ -1,11 +1,11 @@
-# MindIE-PyMotor — Agent Guide
+# MindIE Motor — Agent Guide
 
 > 给 AI 代理的仓库级说明。本文件在会话启动时自动加载，只放「如何安装 / 构建 / 测试 / 提交」的操作事实；
 > 深度架构与开发流程见 `.agents/skills/motor-dev/`（按需加载，不在此重复）。
 
 ## 项目简介
 
-MindIE-PyMotor 是面向大模型（LLM）分布式推理的控制器系统：Controller 管理实例生命周期，Coordinator 负责请求调度（PD 分离），NodeManager 直接管理 vLLM/SGLang 原生引擎进程，KV Conductor（Rust）提供 KV 缓存感知路由。
+MindIE Motor 是面向大模型（LLM）分布式推理的控制器系统：Controller 管理实例生命周期，Coordinator 负责请求调度（PD 分离），NodeManager 直接管理 vLLM/SGLang 原生引擎进程，KV Conductor（Rust）提供 KV 缓存感知路由。
 
 ## 仓库结构
 

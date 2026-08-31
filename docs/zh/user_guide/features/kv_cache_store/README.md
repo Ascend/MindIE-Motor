@@ -15,7 +15,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 >
 > MemCache 和 Mooncake 是 `AscendStoreConnector` 的 backend；UCM 是另一个 Store Connector，但仍属于 KV池化能力。不要配置 `"backend": "ucm"`。此外，`MooncakeConnectorV1`、`MooncakeHybridConnector` 等负责 P/D 实时传输，与 `AscendStoreConnector` 的 Mooncake Backend 不是同一层配置。
 
-MindIE Motor KV池化基于 vllm-ascend 的 KV 传输层实现，通用约束和环境依赖可参考 [vllm-ascend 池化文档](https://docs.vllm.ai/projects/ascend/zh-cn/main/user_guide/feature_guide/kv_pool.html)。UCM 的额外依赖和部署方式见 [在 PyMotor 中部署 UCM](backend/ucm.md)。
+MindIE Motor KV池化基于 vllm-ascend 的 KV 传输层实现，通用约束和环境依赖可参考 [vllm-ascend 池化文档](https://docs.vllm.ai/projects/ascend/zh-cn/main/user_guide/feature_guide/kv_pool.html)。UCM 的额外依赖和部署方式见 [在 MindIE Motor 中部署 UCM](backend/ucm.md)。
 
 KV池化主要通过 `user_config.json` 配置；使用 UCM 功能时还需要准备 UCM wheel，并为 Prefill 挂载缓存存储。完成对应配置后，通过 `deploy.py` 部署。
 
@@ -23,12 +23,12 @@ KV池化主要通过 `user_config.json` 配置；使用 UCM 功能时还需要�
 
 - 必须已使用 MindIE Motor 部署 PD 分离推理服务；KV池化在该服务基础上开启，不会改变 Controller 和 Coordinator 的部署方式。
 - KV池化的通用约束见 [vllm-ascend kv_pool](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html)；启用 UCM 功能时还需满足 [UCM 部署文档](backend/ucm.md)中的要求。
-- 开启前请先参考 [MindIE Motor 快速开始](../../quick_start_motor.md)，确保基础 PD 分离服务可以正常部署。
+- 开启前请先参考 [MindIE Motor 快速开始](../../quick_start.md)，确保基础 PD 分离服务可以正常部署。
 - 后续所有操作只在 k8s 集群的管理节点（master 节点）执行。
 
-## 配置 `user_config.json`
+## 配置 user_config.json
 
-### 使用 `AscendStoreConnector`
+### 使用 AscendStoreConnector
 
 使用 `AscendStoreConnector` 时，需要同时配置 P/D 实例的 `kv_transfer_config` 和全局 `kv_cache_store_config`。
 
@@ -213,9 +213,7 @@ UCM  属于 KV池化功能，但不复用 `AscendStoreConnector` 的 backend 机
 - Decode 只配置与 Prefill 匹配的 Mooncake P/D 传输 Connector，不加载 `UCMConnector`。
 - UCM 的 `store_pipeline`、`storage_backends` 和容量参数决定前缀缓存如何保存，不使用 `AscendStoreConnector.backend`。
 
-当前 PyMotor UCM 样例仍配置了 `kv_cache_store_config.backend: "mooncake"`，用于当前 deployer 生成 Mooncake kv_store/master 资源；这是部署适配配置，不表示 UCM 变成了 Mooncake Backend。UCM 的实际 Store 由 `UCMConnector` 中的 `store_pipeline` 决定。完整配置、存储挂载、部署及验证步骤见 [在 PyMotor 中部署 UCM](backend/ucm.md)。
-
----
+当前 MindIE Motor UCM 样例仍配置了 `kv_cache_store_config.backend: "mooncake"`，用于当前 deployer 生成 Mooncake kv_store/master 资源；这是部署适配配置，不表示 UCM 变成了 Mooncake Backend。UCM 的实际 Store 由 `UCMConnector` 中的 `store_pipeline` 决定。完整配置、存储挂载、部署及验证步骤见 [在 MindIE Motor 中部署 UCM](backend/ucm.md)。
 
 ## 部署服务
 
@@ -244,23 +242,21 @@ python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env
 |------------|-----------------|----------|------|
 | 共享 KV Pool | `AscendStoreConnector` | `backend: "mooncake"` | [Mooncake Backend](backend/mooncake.md) |
 | 共享 KV Pool | `AscendStoreConnector` | `backend: "memcache"` | [MemCache Backend](backend/memcache.md) |
-| UCM        | `UCMConnector` | UCM Store Pipeline | [在 PyMotor 中部署 UCM](backend/ucm.md) |
+| UCM        | `UCMConnector` | UCM Store Pipeline | [在 MindIE Motor 中部署 UCM](backend/ucm.md) |
 | 共享 KV Pool | `AscendStoreConnector` | `backend: "yuanrong"` | TODO：后续版本支持 |
-
----
 
 ## 原理说明
 
 KV池化通过 `MultiConnector` 组合传输 Connector 和 Store Connector。不同 Store Connector 都接入 vLLM 的 KV Cache 查询、加载和保存流程，但内部存储实现不同。
 
-### `AscendStoreConnector`
+### AscendStoreConnector
 
 1. P/D 实例都加载 `AscendStoreConnector`，P 侧以 `kv_producer` 写入 KV Pool，D 侧以 `kv_consumer` 查询并加载 KV Cache。
 2. `AscendStoreConnector` 负责统一的匹配、加载和保存流程，其 `backend` 决定底层使用 MemCache 还是 Mooncake Store。
 3. `kv_cache_store_config` 配置所选后端的服务地址、端口和运行参数；其中 MemCache 使用 MetaService，Mooncake 使用 `mooncake_master`。
 4. `connectors[0]` 的 Mooncake 传输 Connector 负责 P/D 实时 KV 传输，与 `connectors[1]` 的共享 KV Pool 是不同职责。
 
-### `UCMConnector`
+### UCMConnector
 
 1. 首次请求由 Prefill 计算 KV Cache，`UCMConnector` 按 `store_pipeline` 将可复用前缀写入 Cache、Posix 等存储层。
 2. 后续请求出现相同前缀时，Prefill 通过 UCM 查询并加载已保存的 KV Cache，减少重复 Prefill 计算。
@@ -290,4 +286,4 @@ KV池化通过 `MultiConnector` 组合传输 Connector 和 Store Connector。不
 
 6. **为什么 UCM 样例中仍然有 `backend: "mooncake"`**
 
-   这是当前 PyMotor deployer 用来生成 Mooncake kv_store/master 资源的配置，不是 UCM 的存储后端。UCM Store 应查看 `UCMConnector` 中的 `store_pipeline` 和 `storage_backends`。
+   这是当前 MindIE Motor deployer 用来生成 Mooncake kv_store/master 资源的配置，不是 UCM 的存储后端。UCM Store 应查看 `UCMConnector` 中的 `store_pipeline` 和 `storage_backends`。

@@ -124,7 +124,7 @@ Metrics endpoint:
 
 **All vLLM Counter metrics are cumulative since engine process start.** They never reset between `/metrics` scrapes. This follows standard Prometheus Counter semantics.
 
-**PyMotor does NOT compute deltas or rates for vLLM's own counters.** Raw cumulative values are aggregated via label-wise sum across engines. Rate computation (`rate()`, `irate()`) is the downstream Prometheus server's responsibility via PromQL. The one exception: `MotorMetricComputer` derives `motor:prompt_tokens_per_second` / `motor:generation_tokens_per_second` from counter deltas.
+**MindIE Motor does NOT compute deltas or rates for vLLM's own counters.** Raw cumulative values are aggregated via label-wise sum across engines. Rate computation (`rate()`, `irate()`) is the downstream Prometheus server's responsibility via PromQL. The one exception: `MotorMetricComputer` derives `motor:prompt_tokens_per_second` / `motor:generation_tokens_per_second` from counter deltas.
 
 ### Implications for Development
 

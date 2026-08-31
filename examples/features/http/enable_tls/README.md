@@ -4,11 +4,11 @@
 
 按照以下步骤启用TLS加密通信：
 
-> **重要提示**：
+> [!NOTE] 注意
 >
-> - 以下操作需要在**宿主机**上执行，因为`/mnt`目录通过hostPath方式挂载到容器中
-> - **在多节点集群环境中**，`/mnt`目录必须是**共享存储**（如NFS、CephFS等），确保所有节点都能访问相同的证书文件
-> - 如果使用本地存储，需要确保每个节点都执行以下步骤，或者使用共享存储方案
+> - 以下操作需要在**宿主机**上执行，因为`/mnt`目录通过hostPath方式挂载到容器中。
+> - **在多节点集群环境中**，`/mnt`目录必须是**共享存储**（如NFS、CephFS等），确保所有节点都能访问相同的证书文件。
+> - 如果使用本地存储，需要确保每个节点都执行以下步骤，或者使用共享存储方案。
 
 1. 在宿主机上创建证书脚本目录。
 
@@ -91,7 +91,7 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 
 证书生成逻辑已集成到`common.sh`中，会自动根据环境变量`ENABLE_GEN_CERT`判断是否生成证书。
 
-#### 配置ENABLE_GEN_CERT环境变量
+**配置ENABLE_GEN_CERT环境变量**
 
 在部署配置文件（如`env.json`）中添加`ENABLE_GEN_CERT`环境变量：
 
@@ -106,14 +106,14 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 }
 ```
 
-**说明：**
+>[!NOTE] 说明
+>
+>- 在`motor_common_env`中添加`"ENABLE_GEN_CERT": "true"`即可启用TLS证书自动生成。
+>- 当`ENABLE_GEN_CERT`设置为`true`时，`common.sh`会在服务启动时自动调用证书生成函数。
+>- 证书会生成到`/usr/local/Ascend/pyMotor/conf/security/`目录下。
+>- 生成的证书包括：infer、mgmt、etcd、grpc四种类型。
 
-- 在`motor_common_env`中添加`"ENABLE_GEN_CERT": "true"`即可启用TLS证书自动生成。
-- 当`ENABLE_GEN_CERT`设置为`true`时，`common.sh`会在服务启动时自动调用证书生成函数。
-- 证书会生成到`/usr/local/Ascend/pyMotor/conf/security/`目录下。
-- 生成的证书包括：infer、mgmt、etcd、grpc四种类型。
-
-#### 自定义证书路径配置（可选）
+**自定义证书路径配置（可选）**
 
 如果需要自定义证书路径，可通过以下环境变量配置：
 
@@ -141,7 +141,8 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 | `CERT_NAMES` | 需要生成的证书名称列表，空格分隔 | `infer mgmt` |
 | `GEN_CERT_SCRIPT` | 证书生成脚本路径 | `/mnt/cert_scripts/openssl_gen_cert.sh` |
 
-**注意**：`CERT_NAMES`默认只包含`infer`和`mgmt`证书。`etcd`和`grpc`证书为可选，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要添加。
+>[!NOTE] 注意
+>`CERT_NAMES`默认只包含`infer`和`mgmt`证书。`etcd`和`grpc`证书为可选，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要添加。
 
 **使用场景：**
 
@@ -162,7 +163,8 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 
 在`user_config.json`中增加如下配置项，`enable`设置成`true`，同时证书路径要配置正确。
 
-> 限制：当前只支持解密的`key_file`, `passwd_file`和`tls_crl`为预留字段。
+> [!NOTE] 说明
+> 当前只支持解密的`key_file`, `passwd_file`和`tls_crl`为预留字段。
 
 ```json
 {
@@ -205,7 +207,7 @@ bash /mnt/cert_scripts/openssl_gen_ca.sh /mnt/cert_scripts/ca/
 }
 ```
 
-**说明**：
+**参数解释**：
 
 - `infer_tls_config`和`mgmt_tls_config`：默认启用TLS加密通信。
 - `etcd_tls_config`和`grpc_tls_config`：默认禁用，仅在启用ETCD相关功能（持久化或主备）且对ETCD有安全性要求时才需要启用。

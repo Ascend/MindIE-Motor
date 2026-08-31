@@ -1,23 +1,17 @@
 # 快速入门
 
-本文档通过**简单快速**的部署案例（以 Atlas 800I A2 服务器、Qwen3-8B 模型、P/D 实例各一个的场景为例）指导开发者体验基于 MindIE-Motor 的 PD 分离服务部署流程。
+本文档通过**简单快速**的部署案例（以Atlas 800I A2 推理服务器、Qwen3-8B模型、P/D 实例各一个的场景为例）指导开发者体验基于MindIE Motor的PD分离服务部署流程。
 
-如需详细的 PD 分离部署指导，请参考 [PD 分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
-
----
+如需详细的PD分离部署指导，请参考 [PD 分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
 
 ## 什么是 PD 分离？
 
-模型推理的 Prefill 阶段和 Decode 阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参见 [PD 分离部署](./features/pd_disaggregation.md)。
-
----
+模型推理的 Prefill 阶段和 Decode 阶段分别实例化部署在不同的硬件资源上进行推理，提升推理性能，其特性介绍详情请参见 [PD分离说明](./features/pd_disaggregation.md)。
 
 ## 环境要求
 
-- 支持 Atlas 800I A2 或者 Atlas 800 A3 超节点服务器。
+- 支持 Atlas 800I A2 推理服务器、Atlas 800I A3 超节点服务器和Atlas 850 超节点服务器。
 - 至少需要 1 台已完成 [环境准备](./environment_preparation.md) 的服务器。
-
----
 
 ## 模型下载
 
@@ -27,19 +21,16 @@
 chmod -R 755 /mnt/weight
 ```
 
----
-
 ## 镜像准备
 
-进入 [昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的 MindIE-Motor 镜像。
-
----
+- 方式一：进入[昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，在搜索框查询 `motor`，进入搜索结果后根据设备型号下载对应的MindIE-Motor镜像。
+- 方式二：参考[准备MindIE Motor镜像](./maintenance/build_motor_image_from_vllm_ascend.md)章节自制MindIE Motor镜像。
 
 ## 服务部署
 
 1. **准备服务启动脚本**
 
-   MindIE-Motor 官方完整镜像内已保存服务启动脚本（`/tmp/motor/examples`），可通过以下命令将镜像内的文件拷贝至宿主机。
+   MindIE Motor官方完整镜像内已保存服务启动脚本（`/tmp/motor/examples`），可通过以下命令将镜像内的文件拷贝至宿主机。
 
    ```bash
    IMAGE="<镜像名或镜像ID>"
@@ -49,7 +40,7 @@ chmod -R 755 /mnt/weight
    docker rm "$cid"
    ```
 
-   请将上述脚本目录（examples 目录）上传至 **k8s 集群的管理节点（master 节点），后续部署操作均在管理节点执行**。
+   请将上述脚本目录（examples 目录）上传至k8s集群的管理节点（master 节点），后续部署操作均在管理节点执行。
 
 2. **配置服务化参数**
 
@@ -61,9 +52,9 @@ chmod -R 755 /mnt/weight
      examples/infer_engines/vllm/models/<模型名>/<硬件型号>/
      ```
 
-     例如 DeepSeek-V4-Flash 在 Atlas 800I A2 上的典配目录为 `examples/infer_engines/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
+     例如 DeepSeek-V4-Flash 在 Atlas 800I A2 推理服务器 上的典配目录为 `examples/infer_engines/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
 
-   - **自动生成**：可将 vllm-ascend 社区部署脚本一键转换为 Motor 配置。将社区脚本粘贴到 `examples/deployer/config_tool/` 下对应模板后，在 `examples/deployer/` 执行（以 PD 分离、A2 为例）：
+   - **自动生成**：可将 vllm-ascend 社区部署脚本一键转换为 Motor 配置。将社区脚本粘贴到 `examples/deployer/config_tool/` 下对应模板后，在 `examples/deployer/` 执行（以 PD 分离、Atlas 800I A2 推理服务器 为例）：
 
      ```bash
      python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A2
@@ -99,7 +90,7 @@ chmod -R 755 /mnt/weight
            "d_pod_npu_num": 4,
            "image_name": "xxxxxxx 镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
            "job_id": "mindie-motor",
-           "hardware_type": "xxxxxx 硬件类型。A2：800I_A2 A3：800I_A3",
+           "hardware_type": "xxxxxx 硬件类型。Atlas 800I A2 推理服务器：800I_A2， Atlas 800I A3 超节点服务器：800I_A3",
            "weight_mount_path": "xxxxxx 权重文件路径。例如：/mnt/weight/qwen3_8B"
          },
          "motor_controller_config": {},
@@ -227,8 +218,6 @@ chmod -R 755 /mnt/weight
 
    所有业务日志（controller、coordinator、P/D 实例）均会保存于 `examples/deployer/log_collect/log` 目录下，并持续刷新，直到服务被终止。
 
----
-
 ## 推理验证
 
 新建一个命令行窗口，在 k8s 集群的管理节点（master 节点）执行以下命令：
@@ -253,13 +242,13 @@ curl -X POST http://127.0.0.1:31015/v1/chat/completions \
     }'
 ```
 
-如果返回结果如下，则说明尚未启动就绪：
+如果返回如下结果，则说明尚未启动就绪：
 
 ```json
 {"detail":"Service is not available"}
 ```
 
-等待一段时间后再次尝试。回显类似如下内容说明推理服务已就绪：
+等待一段时间后再次尝试，回显类似如下内容说明推理服务已就绪：
 
 ```text
 data: {"id":"17658563046856100000c836403d","object":"chat.completion.chunk","created":1765856304,"model":"qwen3","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"prompt_token_ids":null}

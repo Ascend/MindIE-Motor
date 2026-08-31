@@ -51,6 +51,6 @@ docker run --name ${NAME} -it -d --net=host --shm-size=500g \
 一键化部署脚本(注：需要容器内联通网络，否则需要将第11、12步编译好的依赖传入容器中安装，流程详见setup.sh)
 
 ```bash
-#执行/MindIE-PyMotor/examples/features/security/secure_h2d/setup.sh
+#执行/MindIE-Motor/examples/features/security/secure_h2d/setup.sh
 bash ./setup.sh {已拉起的容器名称}
 ```

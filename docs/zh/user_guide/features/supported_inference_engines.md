@@ -2,7 +2,7 @@
 
 ## 引擎一览
 
-MindIE PyMotor（以下简称 PyMotor）采用控制面（Controller/Coordinator）与数据面（推理引擎）解耦的架构，可对接多种大模型推理引擎。当前支持的引擎如下：
+MindIE Motor采用控制面（Controller/Coordinator）与数据面（推理引擎）解耦的架构，可对接多种大模型推理引擎。当前支持的引擎如下：
 
 | 推理引擎 | 支持状态 | 说明 |
 | --- | --- | --- |
@@ -11,11 +11,9 @@ MindIE PyMotor（以下简称 PyMotor）采用控制面（Controller/Coordinator
 
 在 `user_config.json` 的 `motor_engine_prefill_config` / `motor_engine_decode_config`（或混部场景的 `motor_engine_union_config`）中设置 `engine_type`，即可选择底层引擎。`engine_config` 与引擎启动命令参数对应，转换方法见 [user_config 全量参数说明](../configuration/config_reference.md)。
 
----
-
 ## vLLM
 
-vLLM 是当前 PyMotor 推荐的底层推理引擎，已与控制面深度对接。
+vLLM 是当前 MindIE Motor 推荐的底层推理引擎，已与控制面深度对接。
 
 ### 配置 vLLM
 
@@ -32,8 +30,6 @@ vLLM 是当前 PyMotor 推荐的底层推理引擎，已与控制面深度对接
   }
 }
 ```
-
----
 
 ## SGLang
 

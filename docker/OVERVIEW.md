@@ -9,17 +9,13 @@
 - Where to get help
 
     - [AscendHub Image Registry](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4)
-    - [MindIE-Motor Documentation](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/index.md)
+    - [MindIE-Motor Documentation](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/index.md)
     - [Atlas Developer Community](https://www.hiascend.com/developer)
-    - [Report an Issue](https://gitcode.com/Ascend/MindIE-PyMotor/issues)
-
----
+    - [Report an Issue](https://gitcode.com/Ascend/MindIE-Motor/issues)
 
 ## MindIE-Motor
 
 Provides one-click PD-separated deployment, flexibly adapts to multiple inference engines (vLLM, SGLang) through a cloud-native plug-in architecture, and combines high-performance scheduling with load balancing capabilities to build highly available, scalable large-scale inference services.
-
----
 
 ## Supported Tags and Dockerfile Links
 
@@ -56,8 +52,6 @@ The following table lists all images for the latest MindIE-Motor 3.1.0 release o
 | `3.1.0-vllm_ascend0.23.0-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
 | `3.1.0-vllm_ascend0.23.0-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
 
----
-
 ## Quick Start
 
 ### Prerequisites (Optional)
@@ -67,7 +61,7 @@ The following table lists all images for the latest MindIE-Motor 3.1.0 release o
 
 ### Using Motor
 
-See the [quick start guide](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/user_guide/quick_start_motor.md).
+See the [quick start guide](../docs/zh/user_guide/quick_start.md).
 
 ### Build Locally
 

@@ -43,8 +43,6 @@ curl -X GET "http://{IP}:{Port}/startup"
 { "status": "ok", "message": "Coordinator is starting up" }
 ```
 
----
-
 ## 存活探针接口
 
 **接口功能**
@@ -75,8 +73,6 @@ curl -X GET "http://{IP}:{Port}/liveness"
 { "status": "ok", "message": "Coordinator is alive" }
 ```
 
----
-
 ## 就绪探针接口
 
 **接口功能**
@@ -101,14 +97,12 @@ curl -X GET "http://{IP}:{Port}/readiness"
 
 **响应示例**
 
-```JSON
+```json
 { "status": "ok", "message": "Coordinator is ok", "ready": true }
 ```
 
 >[!NOTE]说明
 >若启用主备模式且当前节点非主节点，返回 `503`，并提示 `Coordinator is not master`。
-
----
 
 ## 健康状态查询接口
 
@@ -135,7 +129,7 @@ curl -X GET "http://{IP}:{Port}/health"
 
 **响应示例**
 
-```JSON
+```json
 { "status": "ok", "timestamp": "2026-07-02T10:00:00+00:00" }
 ```
 
@@ -290,7 +284,7 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 
 **响应示例**
 
-```JSON
+```json
 {
   "request_id": "refresh_request",
   "status": "success",
@@ -317,8 +311,6 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 | data.timestamp | string | 事件时间。 |
 | data.event_type | string | 事件类型，与请求`event`对应。 |
 | data.instance_count | integer | 实例数量。 |
-
----
 
 ## 精度告警状态清理接口
 
@@ -366,8 +358,6 @@ curl -X POST "http://{IP}:{Port}/precision/alarm_cleared" \
 }
 ```
 
----
-
 ## 根路径服务信息接口
 
 **接口功能**
@@ -392,7 +382,7 @@ curl -X GET "http://{IP}:{Port}/"
 
 **响应示例**
 
-```JSON
+```json
 {
   "service": "Motor Coordinator Management Server",
   "version": "1.0.0",

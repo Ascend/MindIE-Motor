@@ -1,10 +1,10 @@
-# 在 PyMotor 中部署 UCM
+# 在 MindIE Motor 中部署 UCM
 
-[Unified Cache Manager（UCM）](https://github.com/ModelEngine-Group/unified-cache-management) 通过持久化和复用 KVCache，减少相同前缀的重复 Prefill 计算。PyMotor 当前接入的是 **UCM Prefix Cache**。
+[Unified Cache Manager（UCM）](https://github.com/ModelEngine-Group/unified-cache-management) 通过持久化和复用 KVCache，减少相同前缀的重复 Prefill 计算。MindIE Motor 当前接入的是 **UCM Prefix Cache**。
 
 在分布式 PD 部署中，Prefill 使用 `MultiConnector[Mooncake 传输 Connector, UCMConnector]`：Mooncake 负责 P/D 实时 KV 传输，UCM 负责跨请求前缀复用；Decode 使用与 Prefill 匹配的 Mooncake Connector。
 
-![PyMotor 接入 UCM Prefix Cache 的部署架构](../../../../imgs/ucm-pymotor-architecture.svg)
+![MindIE Motor 接入 UCM Prefix Cache 的部署架构](../../../../imgs/ucm-motor-architecture.svg)
 
 > [!IMPORTANT]UCM 不是 `AscendStoreConnector` 的 backend
 >
@@ -38,7 +38,7 @@ fi
 
 ```json
 "motor_deploy_config": {
-  "image_name": "<PyMotor vLLM 推理镜像>",
+  "image_name": "<MindIE Motor vLLM 推理镜像>",
   "weight_mount_path": "/mnt/weight/",
   "storage": [
     {
@@ -164,7 +164,7 @@ Prefill 的 `kv_transfer_config` 使用 `MultiConnector`，并将 UCM 配置内�
 
 其中 `storage_backends: "/mnt/ucm"` 对应前面的 `storage[].mount_path`，`posix_capacity_gb` 应小于存储卷的实际可用容量。
 
-`connectors[0]` 也可以按 PD 方案使用 PyMotor 当前已识别的其他 Mooncake 传输 Connector，例如 `MooncakeHybridConnector` 或 `MooncakeLayerwiseConnector`。不同 Connector 的执行模式和参数并不相同，应按 [PD 分离特性说明](../../../../design/pd_disaggregation.md#connector-驱动执行计划) 配置，并保证 Prefill 与 Decode 使用相互匹配的传输配置；`UCMConnector` 仍保持在 `connectors[1]`。
+`connectors[0]` 也可以按 PD 方案使用 MindIE Motor 当前已识别的其他 Mooncake 传输 Connector，例如 `MooncakeHybridConnector` 或 `MooncakeLayerwiseConnector`。不同 Connector 的执行模式和参数并不相同，应按 [PD 分离特性说明](../../../../design/pd_disaggregation.md#connector-驱动执行计划) 配置，并保证 Prefill 与 Decode 使用相互匹配的传输配置；`UCMConnector` 仍保持在 `connectors[1]`。
 
 ### 配置 Decode
 

@@ -87,7 +87,7 @@ ETCD服务端仅需部署一套，请参考[ETCD部署](#部署etcd服务端)。
     --node-monitor-grace-period=20s
     ```
 
-#### 配置Motor
+#### 配置MindIE Motor
 
 1. 配置Controller侧证书挂载。（**如果不开启CA证书，请跳过此步骤**）
     如果需要开启证书CA认证，根据[生成ETCD安全证书](#生成etcd安全证书-etcd集群部署可选)生成的相关证书文件，将证书文件的生成路径挂载至Controller容器内。在deployment/controller_init.yaml文件中的volumeMounts和volumes中添加如下内容（controller-ca为挂载的证书目录）：
@@ -293,7 +293,7 @@ ETCD服务端部署请参考[ETCD部署](#部署etcd服务端)。
     --node-monitor-grace-period=20s
     ```
 
-#### 配置Motor
+#### 配置MindIE Motor
 
 1. （可选）配置Coordinator侧证书挂载。（**如果不开启CA证书，请跳过此步骤**）
     如果需要开启证书CA认证，根据[生成ETCD安全证书](#生成etcd安全证书-etcd集群部署可选)生成的证书文件，将证书文件的生成路径挂载至Coordinator容器内。在 `examples/deployer/yaml_template/coordinator_template.yaml` 文件中的 volumeMounts 和 volumes 中添加如下内容（coordinator-ca 为挂载的证书目录）：

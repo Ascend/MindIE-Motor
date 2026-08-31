@@ -22,7 +22,7 @@
    - **方式一**：下载官方完整的 MindIE Motor 镜像
      进入 [昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，搜索 `motor`，按设备型号选择对应 MindIE Motor 镜像。
    - **方式二**：在已有镜像中安装 MindIE Motor
-     基础镜像已安装 CANN、vLLM、vllm-ascend 等组件，可参考 [从 vllm-ascend 构建 MindIE Motor 镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装 MindIE Motor。
+     基础镜像已安装 CANN、vLLM、vllm Ascend 等组件，可参考 [从 vllm Ascend 构建 MindIE Motor 镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装 MindIE Motor。
 
    获取镜像后，请使用以下命令将镜像加载至服务器：
 
@@ -53,13 +53,9 @@
 
    更多 `examples` 目录内容，详见章末附录。
 
----
-
 ## 生成配置文件
 
 参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
-
----
 
 ## 服务部署与验证
 
@@ -131,8 +127,6 @@
    # 卸载服务：<namespace> 与上文 job_id 一致
    bash delete.sh <namespace>
    ```
-
----
 
 ## 特性配置指导
 
@@ -256,8 +250,6 @@ NodeManager 负责原生引擎的就绪探测、进程监管和虚推健康探�
 - **开启**：参数较多，篇幅有限，详见 [KV 池化部署指南](../../features/kv_cache_store/README.md)。
 - **关闭**：改用非 `MultiConnector` 的单一 connector，并删除根节点 `kv_cache_pool_config`。
 - **注意**：详见 [KV 池化部署指南](../../features/kv_cache_store/README.md)。
-
----
 
 ## 附录
 

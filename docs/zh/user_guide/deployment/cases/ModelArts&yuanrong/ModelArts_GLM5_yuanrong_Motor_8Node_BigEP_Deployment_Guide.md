@@ -1,4 +1,4 @@
-# ModelArts环境部署8机A2大EP+GLM5.1模型+元戎多级缓存+MindIE Motor综合调度指导手册
+# ModelArts环境部署Atlas 800I A2推理服务器8机大EP+GLM5.1模型+元戎多级缓存+MindIE Motor综合调度指导手册
 
 ## 整体方案介绍
 
@@ -10,7 +10,7 @@ Host）数据传输接口，支持HBM与DRAM之间的快速数据交换，进一
 
 系统架构如下图所示：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image1.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image1.png)
 
 详细信息请参考开源链接：https://pages.openeuler.openatom.cn/openyuanrong-datasystem/docs/zh-cn/latest/index.html
 
@@ -26,7 +26,7 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 系统架构如下图所示：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image2.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image2.png)
 
 详细信息请参考开源链接：https://gitcode.com/Ascend/MindIE-Motor
 
@@ -34,9 +34,9 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 基于HCS ModelArts 8.5.1（后续简称MA）平台进行GLM5.1模型大EP部署，支持推理服务级KV cache池化缓存、EP实例内亲和调度（DP域粒度）、EP实例级故障恢复，主要特性如下：
 
-- 部署形态：8机A2大EP；
+- 部署形态：Atlas 800I A2推理服务器8机大EP；
 
-- 实例网关：MindIE-Motor，支持节点亲和性调度、负载均衡调度；
+- 实例网关：MindIE Motor，支持节点亲和性调度、负载均衡调度；
 
 - KV cache多级缓存：每服务器分配DDR内存0.5-1.6TB，通过全局ETCD实现跨大EP缓存池化；
 
@@ -46,7 +46,7 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 整体架构图如下所示：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image3.JPG)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image3.JPG)
 
 ## MA配置启动指导
 
@@ -70,7 +70,7 @@ MindIE Motor基于云原生插件化架构灵活适配多种推理引擎，结�
 
 MA典型配置如下图所示（MA控制台-开发生产-模型部署-在线服务-部署）：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image33.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image33.png)
 
 ### 模型管理配置
 
@@ -80,13 +80,13 @@ MA典型配置如下图所示（MA控制台-开发生产-模型部署-在线服�
 
 2. 模型服务自动启动版本；
 
-3. 模型测试版本（用于ais_bench部署）；
+3. 模型测试版本（用于AIS_Bench部署）；
 
 其中1用于安装部署调试，3用于精度/性能测试，2用于可靠性测试及正式投产。以下分别展示上述版本典型配置：
 
 手动启动版本配置如下：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image5.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image5.png)
 
 手工启动版本典型配置
 
@@ -94,12 +94,12 @@ MA典型配置如下图所示（MA控制台-开发生产-模型部署-在线服�
 
 自动启动版本配置如下：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image6.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image6.png)
 
 自动启动版本典型配置
 
 模型测试版本(用于ais_bench部署)：
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image7.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image7.png)
 
 模型测试版本典型配置
 
@@ -118,93 +118,93 @@ python -m http.server 1025
 
 1. 登录资源租户，资源租户作用如下：
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image8.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image8.png)
 
 2. 进入HCS界面，选择"服务列表 \> 应用服务 \> 容器镜像服务SWR"
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image9.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image9.png)
 
 3. 点击"组织管理 \> 创建组织"，组织名称"etcd-yuanrong"，并确定创建
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image10.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image10.png)
 
 4. 点击"我的镜像 \> 页面上传"
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image11.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image11.png)
 
 5. 组织选择"etcd-yuanrong"，并上传ETCD镜像
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image12.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image12.png)
     >
     > ETCD使用v3.5.10版本，建议从quay.io下载镜像(下载指令：docker pull
     > quay.io/coreos/etcd:v3.5.10)
 
 6. 等待镜像上传完毕后，记录镜像地址(框中docker pull后边部分)
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image14.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image14.png)
 
 7. 本地创建"etcd-all-latest.yaml"文件，打开并复制[ETCD池化部署方案](#etcd池化部署方案)
     \> 部署脚本实现"中的脚本内容，镜像地址修改为步骤6中的地址；
 
 8. 进入HCS界面，选择"服务列表 \> 计算 \> 云容器引擎CCE"
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image15.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image15.png)
 
 9. 进入CCE界面"集群管理 \> 资源池"，选择并进入要部署服务的资源池
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image16.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image16.png)
 
 10. 选择"工作负载 \> 有状态负载 \> YAML创建"
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image17.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image17.png)
 
 11. 使用YAML方式创建ETCD容器负载，导入etcd-all-latest.yaml
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image18.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image18.png)
 
 12. 点击进入创建的ETCD容器负载，确认负载列表中三个实例均正常运行，并记录所在节点IP
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image19.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image19.png)
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image20.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image20.png)
 
 13. 选择"服务"标签，确认已生成"etcd-client-service"、"etcd-headless"等两个服务
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image21.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image21.png)
 
 14. 登录步骤12中实例etcd-0对应IP的linux后台，输入指令"ps -ef \| grep
     etcd-0"查看进程，确认进程存在如下：
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image22.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image22.png)
 
 15. 登录步骤12中实例etcd-1对应IP的linux后台，输入指令"ps -ef \| grep
     etcd-1"查看进程，确认进程存在如下
 
-    > ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image23.png)
+    > ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image23.png)
 
 #### ModelArts模型服务启动
 
 1. 进入ModelArts界面，选定工作空间后点击"模型管理 \> 创建模型"；
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image24.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image24.png)
 
 2. 按照[模型配置管理](#模型管理配置)进行配置创建；
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image6.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image6.png)
 
     注意配置中"健康检查命令"、"启动命令"填写不要有多余空格
 
 3. 点击"资源管理 \> AI专属资源池 \> 弹性集群 Cluster"，选择目标资源池
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image25.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image25.png)
 
 4. 按照2.1章节要求，检查资源池内是否具备足量空闲资源；
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image26.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image26.png)
 
 5. 进入"模型部署 \> 在线服务"，点击部署；
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image27.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image27.png)
 
 6. 部分项建议按照以下方式配置，其他项根据实际情况自行配置；
 
@@ -222,11 +222,11 @@ python -m http.server 1025
 
     > 配置完成后点击"立即创建"；
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image4.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image4.png)
 
 7. 点击进入创建的在线服务页面，观察事件和日志，等待服务状态变为"运行中"即为启动成功；
 
-    ![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image28.png)
+    ![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image28.png)
 
 ## 自动化部署脚本资料
 
@@ -234,7 +234,7 @@ python -m http.server 1025
 
 自动化部署包含内容及目录架构如下所示：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image29.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image29.png)
 
 ### ModelArts统一启动脚本
 
@@ -384,15 +384,15 @@ sleep 36000000
 
 - 脚本结尾sleep字段为MA推理1.0场景下必需保留；
 
-### yuanrong多级缓存自动化部署脚本
+### 元戎多级缓存自动化部署脚本
 
 #### 目录架构总览
 
-Yuanrong多级缓存自动化部署包含两种方式，分别为ETCD单实例模式、ETCD池化模式。其中ETCD单实例模式需要脚本自行拉起一个ETCD实例，ETCD池化模式直接使用已经部署好的ETCD集群。部署方案脚本如下图所示：
+元戎多级缓存自动化部署包含两种方式，分别为ETCD单实例模式、ETCD池化模式。其中ETCD单实例模式需要脚本自行拉起一个ETCD实例，ETCD池化模式直接使用已经部署好的ETCD集群。部署方案脚本如下图所示：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image30.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image30.png)
 
-脚本结构说明：部署脚本包含一个父脚本start_base_yr.sh脚本和子脚本start_etcd.sh、start_yr_worker.sh。其中父脚本中依赖子脚本，在父脚本start_base_yr.sh的执行流程中会按需调用两个子脚本start_etcd.sh、start_yr_worker.sh完成ETCD安装和元戎worker启动。父脚本start_base_yr.sh为yuanrong部署的完整流程，包括：
+脚本结构说明：部署脚本包含一个父脚本start_base_yr.sh脚本和子脚本start_etcd.sh、start_yr_worker.sh。其中父脚本中依赖子脚本，在父脚本start_base_yr.sh的执行流程中会按需调用两个子脚本start_etcd.sh、start_yr_worker.sh完成ETCD安装和元戎worker启动。父脚本start_base_yr.sh为元戎部署的完整流程，包括：
 
 1. 获取集群节点信息
 
@@ -721,10 +721,10 @@ echo "yr worker start finished"
 
 本教程基于ModelArts对大EP实例级调度进行部署，MindIE-Motor基于大EP实例内DP域进行亲和调度。集群部署及可靠性概览如下图：
 
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image31.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image31.png)
 
 在上述ModelArts集群部署形态下，单EP实例内部的MindIE-Motor部署如下图：
-![](./imgs/MA_GLM5_yuanrong_PyMotor_8Node_BigEP_image32.png)
+![](./imgs/MA_GLM5_yuanrong_Motor_8Node_BigEP_image32.png)
 
 #### 基于vllm镜像安装包准备
 
@@ -800,7 +800,7 @@ python $EXAMPLES_PATH/deployer/startup/set_env_docker.py --configmap_path $CONFI
 
 模型：GLM5.1
 
-硬件信息：A2 8机
+硬件信息：Atlas 800I A2 推理服务器 8机
 
 user_config.json内容如下
 
@@ -1917,9 +1917,9 @@ echo "  📁 结果汇总报表已保存至: ${CSV_FILE}"
 echo "=========================================================="
 ```
 
-### 基于ais_bench精度测试
+### 基于AIS_Bench精度测试
 
-本指导使用ais_bench对模型服务进行精度测试，主要使用gpqa、aime等测试数据集，基于ais_bench在github或gitee开源仓的使用指导构建即可。工具使用指导请参考：https://github.com/AISBench/benchmark/blob/master/README.md
+本指导使用AIS_Bench对模型服务进行精度测试，主要使用gpqa、aime等测试数据集，基于AIS_Bench在github或gitee开源仓的使用指导构建即可。工具使用指导请参考：https://github.com/AISBench/benchmark/blob/master/README.md
 
 ## FAQ-关键问题
 

@@ -11,8 +11,6 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 | 缩P保D（Scale P2D） | Decode 实例故障时，释放 Prefill 节点以恢复 Decode | `ScaleP2DStrategy` |
 | token级重推 | L2 级别网络故障检测与token级重推恢复 | `TokenReinferenceStrategy` |
 
----
-
 ## 实例故障隔离
 
 ### 故障感知
@@ -58,8 +56,6 @@ FaultManager._refresh_instance_fault_level()
         │
         └── HEALTHY     →  重置为健康状态 + recover
 ```
-
----
 
 ## 自动重拉起注册
 
@@ -125,8 +121,6 @@ InstanceManager 收到心跳 → 状态机: INITIAL → ACTIVE
 
 自动重拉起注册是故障恢复链路的关键闭环：`FaultManager` 负责故障检测与隔离决策，而 Pod 重启后实例的重新组装和引擎拉起则由 `InstanceAssembler` + `InstanceManager` 完成。两者通过 `forced_separated_instances` 集合衔接——只有 `FaultManager` 调用 `recover_instance()` 解除隔离后，实例状态机才允许从 `INACTIVE` 恢复为 `ACTIVE`。
 
----
-
 ## 缩P保D（Scale P2D）
 
 ### 背景
@@ -184,8 +178,6 @@ scale_p2d()：选择一个 P 实例，释放其占用的节点资源
 # L6 → 委托 L4
 ```
 
----
-
 ## token级重推
 
 ### 背景
@@ -239,8 +231,6 @@ FaultManager 感知故障清除 → 实例恢复 HEALTHY
 - **故障检测来源**：同时支持 `DeviceInfoCfg`（卡间网络故障 `CardNetworkUnhealthy`）和 `SwitchInfoCfg`（交换机故障）两条检测路径。
 - **策略代码**：[token_reinference.py](https://gitcode.com/Ascend/MindIE-Motor/blob/master/motor/controller/fault_tolerance/strategy/token_reinference.py)
 
----
-
 ## 组件交互全景
 
 ```text
@@ -255,8 +245,8 @@ FaultManager 感知故障清除 → 实例恢复 HEALTHY
 │  ┌──────────────┐    ┌──────────────────┐    ┌──────────────────┐  │
 │  │ FaultManager │    │ InstanceAssembler│    │ InstanceManager  │  │
 │  │              │    │                  │    │                  │  │
-│  │ 故障检测      │    │ 实例组装          │    │ 生命周期管理       │  │
-│  │ 隔离/恢复     │    │ 下发StartCmd      │    │ 心跳/状态机       │  │
+│  │ 故障检测      │    │ 实例组装          │    │ 生命周期管理      │  │
+│  │ 隔离/恢复     │    │ 下发StartCmd      │    │ 心跳/状态机      │  │
 │  │ 策略调度      │    │                  │    │ forced_separated │  │
 │  └──────┬───────┘    └────────┬─────────┘    └────────┬─────────┘  │
 │         │                     │                       │            │
@@ -265,7 +255,7 @@ FaultManager 感知故障清除 → 实例恢复 HEALTHY
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │ 策略中心                                                      │  │
-│  │  L2 + 白名单故障码  →  TokenReinferenceStrategy                 │  │
+│  │  L2 + 白名单故障码  →  TokenReinferenceStrategy               │  │
 │  │  L4/L5/L6 + decode  →  ScaleP2DStrategy                      │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
@@ -274,15 +264,13 @@ FaultManager 感知故障清除 → 实例恢复 HEALTHY
          ▼                                       ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ NodeManager                                                        │
-│  ┌──────────────┐    ┌──────────────────┐    ┌──────────────────┐  │
-│  │ RegisterManager│    │ HeartbeatManager │    │     Daemon       │  │
-│  │ 注册/重注册    │    │ 心跳上报          │    │ 拉起引擎进程       │  │
-│  │ 解析StartCmd  │    │ 检测Controller重启│    │                  │  │
-│  └──────────────┘    └──────────────────┘    └──────────────────┘  │
+│  ┌────────────────┐    ┌──────────────────┐    ┌─────────────────┐ │
+│  │ RegisterManager│    │ HeartbeatManager │    │     Daemon      │ │
+│  │ 注册/重注册     │    │ 心跳上报          │    │ 拉起引擎进程     │ │
+│  │ 解析StartCmd    │   │ 检测Controller重启│    │                 │ │
+│  └────────────────┘    └──────────────────┘    └─────────────────┘ │
 └────────────────────────────────────────────────────────────────────┘
 ```
-
----
 
 ## 相关文档
 

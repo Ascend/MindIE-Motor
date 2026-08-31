@@ -40,8 +40,6 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内model_path需与此挂载路径一致，例如 `"/mnt/weight/"` |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类 |
 
----
-
 ## motor_controller_config
 
 motor_controller_config字段配置样例如下所示：
@@ -187,8 +185,6 @@ motor_controller_config字段配置样例如下所示：
 | probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
 | remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
-
----
 
 ## motor_coordinator_config
 
@@ -408,11 +404,11 @@ motor_coordinator_config字段配置样例如下所示：
 | infer_timeout | int | 单次推理请求的总超时时间（秒）。非流式场景作用于单次转发；流式场景作为整个流式请求的整体墙钟超时（从请求到达算起，超时后中断并返回 504）。默认：`3600` |
 | upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认值：`65536` |
 | **reschedule_config字段** |-|-|
-| enable | bool | 故障场景重调度功能开关。默认：`false`。<br>模型重计算由引擎侧负责，该配置不控制引擎侧重计算；`recompute_enabled`仅作为`reschedule_enabled`的旧配置兼容别名；`recompute_max_retry`已移除并会被忽略。 |
+| enable | bool | 故障场景重调度功能开关。默认值：`false`。<br>模型重计算由引擎侧负责，该配置不控制引擎侧重计算；`recompute_enabled`仅作为`reschedule_enabled`的旧配置兼容别名；`recompute_max_retry`已移除并会被忽略。 |
 | **scheduler_config字段** |-|-|
 | scheduler_type | string | 调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
 | enable_pd_separation_fallback_to_hybrid | bool | PD分离场景下，当D实例不可用或P/D实例不满足调度条件时，是否允许降级使用混部路由，默认值为 `true` |
-| endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认：`0.05` |
+| endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认值：`0.05` |
 | kv_affinity | object | KV Cache 亲和性调度参数（见下表） |
 | **kv_affinity 字段** |-|-|
 | mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
@@ -451,7 +447,7 @@ motor_coordinator_config字段配置样例如下所示：
 | skip_paths | array | 不参与限流统计的路径列表（如 `/liveness`、`/readiness`、`/metrics`），可自定义 |
 | error_message | string | 触发限流时返回给客户端的提示文案。默认值：`too many requests, please try again later` |
 | error_status_code | int | 触发限流时返回的 HTTP 状态码，通常为 4xx（如 429）。默认值：`429` |
-| max_request_body_size | float | 请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`= 0` 表示不限制。支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 字节）。默认：`0`（不限制） |
+| max_request_body_size | float | 请求体最大大小（MB），超过则直接拒绝并返回 413，不消耗限流令牌。`= 0` 表示不限制。支持小数（如 `0.5` 表示 0.5MB，1MB = 1024\*1024 字节）。默认值：`0`（不限制） |
 | olc_config_path |string|OLC规则配置目录的绝对路径或相对于服务启动目录的相对路径。目录下需包含overload-config.properties和olc.json。|
 | **standby_config字段** |-|-|
 | enable_master_standby | bool | 是否开启 Coordinator 主备。可选：`true` / `false`。默认值：`false` |
@@ -515,8 +511,6 @@ motor_coordinator_config字段配置样例如下所示：
 | **request_limit字段** |-|config_sample.json中未包含此字段，但PD部署时常用，合并到运行时配置后生效。|
 | single_node_max_requests | int | 单节点允许的最大并发请求数，由 user_config 配置 |
 | max_requests | int | 集群全局最大并发请求数，由 user_config 配置 |
-
----
 
 ## motor_engine_union_config
 
@@ -635,8 +629,6 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
 | kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md#kv_cache_store_config全局配置)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
-
----
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
@@ -862,8 +854,6 @@ PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用
 | health_collector_timeout | int | 推理面 `GET /health` 探测超时（秒），默认值：5。vLLM 与 SGLang 心跳均使用。 |
 | health_collector_timeout_retry_attempts | int | 单次 `GET /health` 超时后的最大尝试次数（包含首次请求），默认值：3；仅超时重试。 |
 | startup_timeout | int | 原生引擎模型加载启动窗口（秒），默认值：1800。窗口内连接失败保持 STARTING，不判定实例异常。 |
-
----
 
 ## 其他参数说明
 

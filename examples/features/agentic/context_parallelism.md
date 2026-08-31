@@ -85,7 +85,8 @@
 | `MooncakeConnectorV1` | `cpcd_separate` | ✅ 推荐 | 非 layerwise connector 配合 CPCD 调度模式，block 切分与 CP 场景兼容 |
 | `MooncakeLayerwiseConnector` | `pd_separate` | ❌ 不推荐 | Layerwise 按层拆分 KV 传输，与 CP 场景存在兼容性问题 |
 
-> **注意**：若使用 `MooncakeConnectorV1` 时配为 `pd_separate`，会走 `SeparateCDPRouter` 路由，其 KV transfer 的 block 切分逻辑与 CP 场景不兼容，导致两类断言失败：
+> [!NOTE] 说明
+> 若使用 `MooncakeConnectorV1` 时配为 `pd_separate`，会走 `SeparateCDPRouter` 路由，其 KV transfer 的 block 切分逻辑与 CP 场景不兼容，导致两类断言失败：
 >
 > - Prefill 侧：`assert len(selected_p_cp_groups) == len(selected_d_cp_groups)` — CP group 数量不匹配
 > - Decode 侧：`assert num_external_tokens == 0` — `remote_block_ids` 为空但 `num_external_tokens > 0`，非 layerwise connector 的 block 分配与 CDP 调度不一致

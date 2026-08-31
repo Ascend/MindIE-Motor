@@ -50,7 +50,7 @@ MindIE Motor/
    - 同级条目顺序即为侧边栏顺序；多级目录使用 YAML 嵌套（见下一节）。
 
 3. **自查链接与锚点**
-   - 站内页面链接建议使用 **相对于 `docs/zh` 的路径**，例如 **`/user_guide/quick_start_motor.md`**（与 MkDocs/Material 的文档根解析一致），或与当前文件相对的 **`deployment/k8s/config_reference.md`**。门禁 **`link-validity-check`** 常以 **`docs/zh`** 为基准校验本地 Markdown 链接，避免出现仓库根路径、`../../../examples/...` 等无法在站点内解析的目标。
+   - 站内页面链接建议使用 **相对于 `docs/zh` 的路径**，例如 **`/user_guide/quick_start.md`**（与 MkDocs/Material 的文档根解析一致），或与当前文件相对的 **`deployment/k8s/config_reference.md`**。门禁 **`link-validity-check`** 常以 **`docs/zh`** 为基准校验本地 Markdown 链接，避免出现仓库根路径、`../../../examples/...` 等无法在站点内解析的目标。
    - 可使用 **`mkdocs serve --strict`** 或 **`mkdocs build --strict`**，将链接失效、缺失锚点等告警暴露出来。
 
 4. **可选：配图与其它静态文件**

@@ -1,4 +1,4 @@
-# MindIE PyMotor Cloud-Native Helm Chart
+# MindIE Motor Cloud-Native Helm Chart
 
 This chart packages `examples/cloud_native_deploy` as direct Helm operations. It creates the deployer ConfigMap, ServiceAccount, cluster-scoped RBAC, and one deploy/scale/cleanup Job selected by `operation`.
 

@@ -17,8 +17,6 @@ Observability 查询接口使用独立端口：
 > - 主备模式下，仅主 Controller 对外提供 Observability 查询能力；备 Controller 收到查询请求时返回内部错误。
 > - 当 `observability_config.observability_enable=false` 时，查询类接口返回内部错误，错误信息为 `Observability is not enabled.`。
 
----
-
 ## 模型服务清单查询接口
 
 **接口功能**
@@ -207,21 +205,17 @@ curl -X GET "http://{IP}:{Port}/observability/inventory"
 
 | 场景 | modelState | 说明 |
 | --- | --- | --- |
-| active 实例中同时存在 Prefill 和 Decode，且 initial/inactive 中没有新的实例名 | 1 | 健康。 |
-| active 实例中同时存在 Prefill 和 Decode，但 initial/inactive 中存在 active 未覆盖的实例名 | 2 | 亚健康。 |
-| active 实例中缺少 Prefill 或 Decode | 3 | 异常。 |
+| active 实例中同时存在 Prefill 和 Decode，且 initial/inactive 中没有新的实例名 | 1 | 健康 |
+| active 实例中同时存在 Prefill 和 Decode，但 initial/inactive 中存在 active 未覆盖的实例名 | 2 | 亚健康 |
+| active 实例中缺少 Prefill 或 Decode | 3 | 异常 |
 
 >[!NOTE]说明
 >响应示例仅展示部分 Pod、NPU 与 DPGroup 内容。实际返回数量以运行时实例数、Pod 数、Endpoint 数和设备数为准。
 
----
-
 ## 监控指标查询接口（已弃用）
 
-> [!WARNING] 已弃用
+> [!NOTE] 说明
 > `GET /observability/metrics` 接口已弃用，该接口是转发到 Coordinator `/metrics` 的代理，仅作兼容保留（支持 `type` / `role` 参数，直接返回 Prometheus 文本）。**获取指标请直接使用 Coordinator Observability 端口的 [`GET /metrics`](./metrics_interfaces.md#接口格式) 接口**，支持更丰富的聚合视图（`full` / `instance` / `role` / `dp` / `node`）与返回格式（Prometheus / OpenTelemetry）。
-
----
 
 ## 告警查询接口
 
@@ -250,7 +244,7 @@ curl -X GET "http://{IP}:{Port}/observability/alarms?source_id={source_id}"
 
 **响应示例**
 
-```JSON
+```json
 {
   "code": 200,
   "message": "Success",
@@ -310,8 +304,6 @@ curl -X GET "http://{IP}:{Port}/observability/alarms?source_id={source_id}"
 | reasonId | integer | 原因 ID。 |
 | serviceAffectedType | integer | 服务影响状态：`0` 不影响，`1` 影响。 |
 | additionalInformation | string | 附加信息，输出时会追加 `pod id={nativeMeDn}`。 |
-
----
 
 ## 对接 CCAE 前端平台
 

@@ -4,7 +4,7 @@
 
 ## 主要特性
 
-- **部署形态**：8机A2大EP集群
+- **部署形态**：Atlas 800I A2 推理服务器8机大EP集群
 - **实例网关**：MindIE-Motor
   - 支持节点KV cache亲和性调度
   - 负载均衡调度
@@ -19,10 +19,10 @@
 
 ```txt
 .
-├── ModelArts_GLM5_yuanrong_PyMotor_8Node_BigEP_Deployment_Guide.md #方案部署测试指导文档
+├── ModelArts_GLM5_yuanrong_Motor_8Node_BigEP_Deployment_Guide.md #方案部署测试指导文档
 ├── auto_deployment_scripts/ #MA自动化部署脚本代码
 │   ├── start.sh #MA统一启动脚本
-│   ├── PyMotor/ #PyMotor启动部署脚本
+│   ├── Motor/ #Motor启动部署脚本
 │   │   ├── prepare.sh
 │   │   └── start_motor.sh
 │   ├── yuanrong/ #元戎启动部署脚本

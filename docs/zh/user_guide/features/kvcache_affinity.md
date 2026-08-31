@@ -1,7 +1,5 @@
 # KV Cache 亲和性调度
 
----
-
 ## 功能介绍
 
 KV Cache 亲和性调度通过自研 **kv-conductor** 组件（Rust 实现），维护全局 KV Cache 前缀树索引，
@@ -26,26 +24,22 @@ kv-conductor 已集成在 motor Python 包内，随 `build.sh` 条件编译进 w
 | `unified`（默认） | 单一评分（越低越好）= `prefill_load_scale × max(0, isl − overlap_credit × matched_tokens) + load_weight × workload_score` |
 | `load_gated` | 先保留负载最低的 N 个 endpoint，再从中选择缓存前缀最长的（`matched_tokens` 最大；并列取负载更低） |
 
----
-
 ## 前置说明
 
 - 已使用 MindIE Motor 部署 PD 分离推理服务，KV Cache 亲和性调度在该服务基础上开启。
-- 开启前请参考 [MindIE Motor 快速开始](../quick_start_motor.md)，确保基础服务部署正常。
+- 开启前请参考 [MindIE Motor 快速开始](../quick_start.md)，确保基础服务部署正常。
 - 镜像需包含 kv-conductor 二进制。若使用官方发布镜像，二进制已随 motor wheel 打包；若自行构建，可通过预编译二进制（`KV_CONDUCTOR_PREBUILT`）或 Rust 工具链（cargo）打包进 whl，详见 [构建说明](#构建)。
 - 后续操作均在 K8s 集群管理节点（master 节点）执行。
 
----
-
 ## 快速实践
 
-### 1. 确认基础服务
+### 确认基础服务
 
 已使用 motor 部署 PD 分离推理服务且正常运行。
 
 <a id="构建"></a>
 
-### 2. 构建
+### 构建
 
 kv-conductor 已集成在 motor wheel 包内，随 `build.sh` 打包，按以下优先级获取二进制：
 
@@ -60,7 +54,7 @@ kv-conductor 已集成在 motor wheel 包内，随 `build.sh` 打包，按以下
 
 使用官方发布镜像时，二进制已随 wheel 打包，以上均无需关心。
 
-### 3. 修改 `user_config.json`
+### 修改 `user_config.json`
 
 在 `examples/infer_engines/vllm/user_config.json` 中修改以下配置项（详见[典型配置](#典型配置)）：
 
@@ -68,7 +62,7 @@ kv-conductor 已集成在 motor wheel 包内，随 `build.sh` 打包，按以下
 - `motor_engine_prefill_config.engine_config` → 增加 `kv-events-config`
 - 新增顶层 `kv_conductor_config`
 
-### 4. 部署服务
+### 部署服务
 
 ```bash
 cd examples/deployer
@@ -79,15 +73,13 @@ python deploy.py --config_dir ../infer_engines/vllm
 python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
 ```
 
-### 5. 验证结果
+### 验证结果
 
 ```bash
-kubectl get pod -A -owide
+kubectl get pod -A -o wide
 ```
 
 预期 P/D 实例和 kv-conductor 均启动成功，Coordinator 日志中可看到"KV Conductor registered"字样。
-
----
 
 ## 典型配置
 
@@ -103,7 +95,7 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
 
 ### PD 分离配置
 
-以 [快速开始](../quick_start_motor.md) 的 PD 分离配置为基线，仅展示增量部分（`...` 为已有不变配置）：
+以 [快速开始](../quick_start.md) 的 PD 分离配置为基线，仅展示增量部分（`...` 为已有不变配置）：
 
 ```json
 {
@@ -185,8 +177,6 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
 
 PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)。
 
----
-
 ## 参数说明
 
 ### `kv_conductor_config`（kv-conductor 全局配置）
@@ -255,8 +245,6 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 > 两者的端口信息由 Coordinator 自动打通——`kv_conductor_config.endpoint` / `replay_endpoint`
 > 自动从引擎的 `kv-events-config` 推导，**无需重复配置**。
 
----
-
 <a id="deepseek-v4"></a>
 
 ## DeepSeek V4 / 混合 KV Cache 模型
@@ -289,8 +277,6 @@ hash_block_size = 512
 > **DCP 特例**：vLLM 开启 DCP（Decode Context Parallel，解码上下文并行）后，引擎侧前缀哈希粒度按 DCP 大小放大，`kv_conductor_config.block_size` 需相应配置为 **引擎 `block_size` × DCP 大小**，否则 hash 粒度不匹配，conductor 查询命中率同样为 0。DeepSeek V4 开启 DCP（通常 DCP 大小为 2）后，引擎 block size 一般变为 1024，此时 `kv_conductor_config.block_size` 应配置为 1024。
 >
 > **警告**：若 `kv_conductor_config.block_size` 与引擎实际 `hash_block_size` 不一致（例如仍用默认 128），conductor 查询时 hash 粒度不匹配，命中率始终为 0。
-
----
 
 ## 原理说明
 
@@ -373,8 +359,6 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 - kv-conductor 独立部署，通过 `python -m motor.kv_conductor --host … --port …` 启动
 - Coordinator 调度器按 `kv_cache_affinity` 策略进行亲和性路由
 
----
-
 ## 调优建议
 
 | 场景 | 建议 |
@@ -384,8 +368,6 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 | 延迟敏感（保守） | `kv_affinity.mode: load_gated`，`kv_affinity.load_gate_topn: 3`（只在低负载中选最优前缀） |
 | DeepSeek V4 | `block_size: 512`（引擎 `--block-size` 同步设为 512） |
 | `http_server_port` | 确保不与集群其他服务端口冲突，默认 `13333` |
-
----
 
 ## 常见问题
 

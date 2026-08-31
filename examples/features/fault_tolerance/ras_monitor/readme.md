@@ -6,12 +6,12 @@
 
 适用范围说明：
 
-- 适用机器：Atlas 800I A2/A3，Atlas 900I A3 机器
+- 适用机器：Atlas 800I A2 推理服务器、Atlas 800I A3 超节点服务器、Atlas 900I A3 机器
 - 适用场景：大EP出现挂死等服务不可用且不可自恢复的场景
 
-## 1. 准备软件或数据
+## 准备软件或数据
 
-### 1.1 前提条件
+### 前提条件
 
 - **硬件**：Atlas 800I A3 推理服务器
 - **软件**:
@@ -19,11 +19,11 @@
   - Kubernetes 集群就绪 (`kubectl get Node -A`)
   - Docker 已安装并运行 (`docker ps`)
 
-### 1.2 获取ras_monitor脚本及其依赖文件
+### 获取ras_monitor脚本及其依赖文件
 
-从[链接](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/features/fault_tolerance/ras_monitor/ras_monitor.py)获取最新的ras_monitor脚本
+从[链接](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/features/fault_tolerance/ras_monitor/ras_monitor.py)获取最新的ras_monitor脚本
 
-## 2. 部署步骤
+## 部署步骤
 
 2.1 登陆master节点，将 **准备软件或数据** 下载的 "ras_monitor.py" 脚本上传到 “examples/deployer” 路径下。
 
@@ -33,12 +33,12 @@ nohup python3 ras_monitor.py --config_dir ../infer_engines/vllm
 若预期记录ras_monitor日志，可通过linux的重定向文件记录，例如：
 nohup python3 ras_monitor.py --config_dir ../infer_engines/vllm > ras_monitor_result.txt 2>&1 &
 
-## 3.说明
+## 说明
 
 ### 参数说明
 
 由于故障发生一段时间后，ras_monitor 执行服务重拉时将调用 deploy.py，上述2.2中 ras_monitor 的输入参数建议与服务拉起时执行 deploy.py 脚本的输入参数保持一致，否则可能导致重拉失败。
-具体 deploy.py 的参数介绍见[链接](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/examples/deployer/README.md) 。
+具体 deploy.py 的参数介绍见[链接](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/deployer/README.md) 。
 
 ### 其他
 

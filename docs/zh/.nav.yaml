@@ -5,7 +5,7 @@ nav:
   - 用户指南:
       - 简介: user_guide/README.md
       - 用户手册目录: user_guide/menu_user_manual.md
-      - 快速开始: user_guide/quick_start_motor.md
+      - 快速开始: user_guide/quick_start.md
       - 环境准备: user_guide/environment_preparation.md
       - 通信矩阵: user_guide/communication_matrix_motor.md
       - 服务部署:

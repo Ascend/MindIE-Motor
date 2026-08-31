@@ -52,16 +52,16 @@
 make build-pymotor-image
 ```
 
-默认生成 `mindie-motor-vllm:master`，基础镜像为 Ubuntu A2 版本。构建其他硬件或操作系统时通过 `BASE_IMAGE` 指定基础镜像，不需要修改 Dockerfile：
+默认生成 `mindie-motor-vllm:master`，基础镜像为Atlas 800I A2 推理服务器 Ubuntu 版本。构建其他硬件或操作系统时通过 `BASE_IMAGE` 指定基础镜像，不需要修改 Dockerfile：
 
 ```bash
-# Ubuntu A3
+# Atlas 800I A3 超节点服务器 Ubuntu
 make build-pymotor-image \
   BASE_IMAGE=quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3 \
   PLATFORMS=linux/arm64 \
   TAG=master-a3
 
-# openEuler A3
+# Atlas 800I A3 超节点服务器 openEuler
 make build-pymotor-image \
   BASE_IMAGE=quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler \
   PLATFORMS=linux/arm64 \
@@ -72,10 +72,10 @@ make build-pymotor-image \
 
 | 硬件 | 操作系统 | `BASE_IMAGE` |
 |---|---|---|
-| A2 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` |
-| A3 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3` |
-| A2 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-openeuler` |
-| A3 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler` |
+| Atlas 800I A2 推理服务器 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` |
+| Atlas 800I A3 超节点服务器 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3` |
+| Atlas 800I A2 推理服务器 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-openeuler` |
+| Atlas 800I A3 超节点服务器 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler` |
 
 需要构建多架构镜像并推送到镜像仓库时，先登录仓库，再执行：
 

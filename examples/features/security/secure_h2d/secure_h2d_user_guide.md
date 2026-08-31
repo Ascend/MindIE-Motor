@@ -31,7 +31,7 @@ source env_aes_ctr_a2.sh
 
 | 环境变量                      | 示例值 | 含义                                                         |
 | ----------------------------- | ------ | ------------------------------------------------------------ |
-| `SECURE_PATCH_DEVICE_ID_MODE` | `A3`   | 指定 device_id 映射模式。用于适配不同硬件/部署形态下 PyTorch 侧 device_id 与 KMS/算子侧 device_id 的映射关系。`A3` 表示按 A3 场景的设备编号规则处理。（默认是A2） |
+| `SECURE_PATCH_DEVICE_ID_MODE` | `A3`   | 指定 device_id 映射模式。用于适配不同硬件/部署形态下 PyTorch 侧 device_id 与 KMS/算子侧 device_id 的映射关系。`A3` 表示按 Atlas 800I A3 超节点服务器 设备编号规则处理。（默认是A2） |
 | `SECURE_PATCH_ENABLE`         | `1`    | 是否启用 secure_patch。`1` 表示启用，`0` 表示关闭。关闭后不安装 H2D/D2H/权重加载相关 patch。 |
 | `SECURE_PATCH_DEBUG`          | `0`    | 是否开启调试日志。`1` 输出更详细日志，便于联调；`0` 关闭调试日志，适合性能测试或生产运行。 |
 

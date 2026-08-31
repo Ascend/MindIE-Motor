@@ -1,4 +1,4 @@
-# 常用维护技巧
+# 使用YAML文件配置MindIE Motor服务
 
 ## 同一套集群部署多个Motor服务
 
@@ -6,14 +6,14 @@
 
 Coordinator实例的默认端口为31015，如现场部署了两套PD实例，那对应两套Coordinator实例的端口分别以31015和31016为例，修改端口的步骤如下：
 
-  1. 进入yaml指定文件夹并打开对应文件：
+  1. 进入yaml指定文件夹并打开对应文件。
 
       ```bash
       cd examples/deployer/yaml_template/
       vim infer_service_template.yaml
       ```
 
-  2. 搜索name: coordinator关键字，能够检索到以下配置块，修改nodePort字段并保存：
+  2. 搜索`name: coordinator`关键字，能够检索到以下配置块，修改nodePort字段并保存。
 
       ```yaml
       ...
@@ -45,7 +45,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
             type: NodePort
       ```
 
-  3. 搜索name: controller关键字，能够检索到以下配置块，修改nodePort字段并保存：
+  3. 搜索`name: controller`关键字，能够检索到以下配置块，修改nodePort字段并保存。
 
       ```yaml
       ...
@@ -90,7 +90,7 @@ Coordinator实例的默认端口为31015，如现场部署了两套PD实例，�
       > vim controller_template.yaml
       > ```
 
-## 如何将coordinator/controller/推理Pod部署在固定的服务器？
+## 将coordinator/controller/推理Pod部署在固定的服务器
 
 默认情况下，Coordinator、Controller和推理Pod将在k8s集群中的服务器之间随机分配，如果希望这些Pod部署在固定服务器，可参考以下操作。
 

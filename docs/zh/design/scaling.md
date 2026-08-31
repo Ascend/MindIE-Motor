@@ -15,7 +15,7 @@ MindIE Motor 提供两种实例扩缩容方式，满足不同运维场景的需�
 
 核心机制：Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，HPA 通过 External Metrics Adaptor 获取 MindIE Motor 汇聚的引擎级负载指标（如排队请求数、TPS、KV Cache 使用率等），按用户配置的扩缩容阈值自动调整实例副本数。
 
-支持 Atlas 800I A2 / A3 系列推理服务器，前置依赖 Infer Operator 部署与 External Metrics Adaptor（用于将 Motor 指标转换为 Kubernetes External Metrics）。
+支持 Atlas 800I A2 推理服务器 / Atlas 800I A3 超节点服务器，前置依赖 Infer Operator 部署与 External Metrics Adaptor（用于将 Motor 指标转换为 Kubernetes External Metrics）。
 
 ### 1.2 工作原理
 

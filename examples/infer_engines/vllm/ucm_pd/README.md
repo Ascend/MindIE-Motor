@@ -11,7 +11,7 @@
 
 ## 关键点
 
-- UCM 连接器恒 `kv_role: "kv_both"`（双向 store）；PyMotor 不会向其 `kv_connector_extra_config` 注入任何端口键。
+- UCM 连接器恒 `kv_role: "kv_both"`（双向 store）；MindIE Motor 不会向其 `kv_connector_extra_config` 注入任何端口键。
 - `kv_connector_module_path` 必填，vLLM 据此动态加载 UCMConnector。
 - 镜像用 UCM 叠加镜像 `mindie-motor-vllm-ucm:3.0.0b2`（基于 vllm-ascend v0.20.2rc1，见 `docker/mindie-motor-vllm-ucm/`）。
 

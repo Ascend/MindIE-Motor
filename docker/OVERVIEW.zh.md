@@ -9,17 +9,13 @@
 - 从哪里获取帮助
 
     - [AscendHub 镜像仓库](https://www.hiascend.com/developer/ascendhub/detail/f1690465f39847a8b0a1f9e5b36a03c4)
-    - [MindIE-Motor 文档](https://gitcode.com/Ascend/MindIE-PyMotor/blob/master/docs/zh/index.md)
+    - [MindIE-Motor 文档](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/index.md)
     - [昇腾开发者社区](https://www.hiascend.com/developer)
-    - [问题反馈](https://gitcode.com/Ascend/MindIE-PyMotor/issues)
-
----
+    - [问题反馈](https://gitcode.com/Ascend/MindIE-Motor/issues)
 
 ## MindIE-Motor
 
 提供一键式 PD 分离部署，基于云原生插件化架构灵活适配多种推理引擎（vLLM、SGLang），结合高性能调度与负载均衡能力，构建高可用、可扩展的大规模推理服务。
-
----
 
 ## 支持的 Tags 及 Dockerfile 链接
 
@@ -56,8 +52,6 @@
 | `3.1.0-vllm_ascend0.23.0-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
 | `3.1.0-vllm_ascend0.23.0-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
 
----
-
 ## 快速开始
 
 ### 前置要求（可选）
@@ -67,7 +61,7 @@
 
 ### 使用 Motor
 
-参考[快速入门](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/user_guide/quick_start_motor.md)
+参考[快速入门](../docs/zh/user_guide/quick_start.md)
 
 ### 如何本地构建
 

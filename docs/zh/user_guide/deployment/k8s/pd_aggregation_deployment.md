@@ -398,7 +398,6 @@ bash delete.sh mindie-motor
 ```
 
 >[!NOTE]说明
->
 >命名空间请根据实际创建的名称替换。卸载脚本必须在 `examples/deployer` 目录下执行，否则无法正确找到 `output_yamls` 路径而报错。
 
 ## 故障排查与注意事项

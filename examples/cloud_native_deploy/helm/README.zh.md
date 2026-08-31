@@ -1,4 +1,4 @@
-# MindIE PyMotor 云原生部署 Helm Chart
+# MindIE Motor 云原生部署 Helm Chart
 
 该 Chart 将 `examples/cloud_native_deploy` 中的部署入口封装为 Helm 操作，支持部署、扩缩容和清理。
 

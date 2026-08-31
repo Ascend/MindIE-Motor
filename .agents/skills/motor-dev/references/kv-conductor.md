@@ -4,7 +4,7 @@
 
 KV Conductor is a standalone Rust HTTP service (axum + tokio) that maintains **radix prefix trees** of cached KV blocks, indexed per `(model_name, tenant_id)` pair. It answers KV cache overlap queries from routers/schedulers, enabling **cache-aware request routing** — steering requests toward the worker that already has the longest matching token prefix cached.
 
-Replaces Mooncake conductor for MindIE-PyMotor. Design priorities:
+Replaces Mooncake conductor for MindIE Motor. Design priorities:
 
 - **Low-latency queries**: O(path_length) radix tree traversal with `parking_lot::RwLock` read locks — multiple concurrent queries don't block each other.
 - **Per-tenant isolation**: Each `(model, tenant)` pair gets its own indexer entry.
