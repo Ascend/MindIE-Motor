@@ -198,6 +198,7 @@ CONTROLLER_NODE_SELECTOR = "controller_node_selector"
 COORDINATOR_NODE_SELECTOR = "coordinator_node_selector"
 KV_POOL_NODE_SELECTOR = "kv_pool_node_selector"
 KV_CONDUCTOR_NODE_SELECTOR = "kv_conductor_node_selector"
+MF_STORE_NODE_SELECTOR = "mf_store_node_selector"
 
 ENV_ROLE = "ROLE"
 ENV_JOB_NAME = "JOB_NAME"

@@ -14,11 +14,16 @@ if [ "$ROLE" != "mf_store" ]; then
     exit 1
 fi
 
+# memfabric_hybrid.launch_ascend_mf_store requires MF_CONFIG_STORE_URL;
+# keep ASCEND_* for older clients / deprecation transition.
+# IPv6: wrap POD_IP in [] so tcp://host:port stays RFC 3986 compliant.
 MF_STORE_HOST="$POD_IP"
 if [[ "$MF_STORE_HOST" == *:* && "$MF_STORE_HOST" != \[*\] ]]; then
     MF_STORE_HOST="[$MF_STORE_HOST]"
 fi
 export ASCEND_MF_STORE_URL="tcp://$MF_STORE_HOST:$ASCEND_MF_STORE_PORT"
+export MF_CONFIG_STORE_URL="$ASCEND_MF_STORE_URL"
 export ASCEND_MF_LOG_LEVEL=0
+export MF_LOG_LEVEL=0
 
 python3 -m memfabric_hybrid.launch_ascend_mf_store

@@ -395,6 +395,9 @@ set_mf_store_env() {
             exit 1
         fi
 
+        # New memfabric reads MF_CONFIG_STORE_URL; keep ASCEND_* for compatibility.
+        export MF_CONFIG_STORE_URL="$ASCEND_MF_STORE_URL"
         echo "ASCEND_MF_STORE_URL: $ASCEND_MF_STORE_URL"
+        echo "MF_CONFIG_STORE_URL: $MF_CONFIG_STORE_URL"
     fi
 }

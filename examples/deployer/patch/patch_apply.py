@@ -31,8 +31,21 @@ APPLIERS = [
 ]
 
 
+def _vllm_installed() -> bool:
+    """Return True only when the vLLM package is importable in this image."""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("vllm") is not None
+    except Exception:
+        return False
+
+
 def main() -> int:
     """Run every applier in order; return 0 when all pass or are skipped."""
+    if not _vllm_installed():
+        logger.info("Skip all patches: vLLM is not installed (SGLang / non-vLLM image)")
+        return 0
     script_dir = os.path.dirname(os.path.abspath(__file__))
     failed = 0
     for script, description in APPLIERS:

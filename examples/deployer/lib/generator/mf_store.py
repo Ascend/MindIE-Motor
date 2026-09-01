@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 import lib.constant as C
-from lib.utils import load_yaml, write_yaml, logger
+from lib.utils import apply_node_selector_override, load_yaml, write_yaml, logger
 from lib.generator import k8s_utils
 
 
@@ -20,14 +20,15 @@ def generate_yaml_mf_store(input_yaml, output_file, user_config):
     deployment_data = data[0]
     deployment_data[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]
 
-    container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
+    pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
+    apply_node_selector_override(pod_spec, deploy_config, C.MF_STORE_NODE_SELECTOR)
+
+    container = pod_spec[C.CONTAINERS][0]
     container[C.IMAGE] = deploy_config[C.IMAGE_NAME]
 
     if C.ENV not in container:
         container[C.ENV] = []
-    container[C.ENV].append(
-        {C.NAME: C.ENV_ASCEND_MF_STORE_PORT, C.VALUE: str(C.DEFAULT_MF_STORE_PORT)}
-    )
+    container[C.ENV].append({C.NAME: C.ENV_ASCEND_MF_STORE_PORT, C.VALUE: str(C.DEFAULT_MF_STORE_PORT)})
 
     service_data = data[1]
     service_data[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]

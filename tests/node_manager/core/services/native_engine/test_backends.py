@@ -17,7 +17,11 @@ from motor.common.resources.instance import PDRole
 from motor.config.endpoint import EndpointConfig
 from motor.config.tls_config import TLSConfig
 from motor.node_manager.core.services.native_engine.backends.base import build_endpoint_config
-from motor.node_manager.core.services.native_engine.backends.sglang.backend import SGLangBackend
+from motor.node_manager.core.services.native_engine.backends.sglang.backend import (
+    SGLANG_ZBAL_BOOTSTRAP_PORT,
+    SGLANG_ZBAL_BOOTSTRAP_URL_ENV,
+    SGLangBackend,
+)
 from motor.node_manager.core.services.native_engine.backends.vllm.backend import VllmBackend
 from motor.node_manager.core.services.native_engine.factory import get_backend
 from motor.node_manager.core.services.native_engine.models import LaunchContext
@@ -30,6 +34,7 @@ def _context(
     dp_rank: int = 2,
     environment: dict | None = None,
     snapshot_metadata: str | None = None,
+    master_dp_ip: str | None = "10.0.0.1",
 ) -> LaunchContext:
     return LaunchContext(
         role=role,
@@ -39,7 +44,7 @@ def _context(
         host="10.0.0.2",
         business_port=8002,
         config_path="/config/user_config.json",
-        master_dp_ip="10.0.0.1",
+        master_dp_ip=master_dp_ip,
         kv_port=5002,
         lookup_rpc_port=6002,
         dp_rpc_port=7002,
@@ -252,8 +257,14 @@ def test_sglang_backend_rejects_encode_before_loading_config():
 # ------------------------------------------------------------------
 
 
-def _sglang_prepare(*, dp_rank: int = 0, headless: bool = False, env=None):
-    context = _context(role=PDRole.ROLE_D, dp_rank=dp_rank, headless=headless, environment=env)
+def _sglang_prepare(*, dp_rank: int = 0, headless: bool = False, env=None, master_dp_ip: str | None = "10.0.0.1"):
+    context = _context(
+        role=PDRole.ROLE_D,
+        dp_rank=dp_rank,
+        headless=headless,
+        environment=env,
+        master_dp_ip=master_dp_ip,
+    )
     endpoint = _endpoint(engine_type="sglang", role="decode")
     return _prepare_with_config(SGLangBackend(), context, endpoint)
 
@@ -323,6 +334,48 @@ def test_sglang_backend_pins_generation_env_when_deploy_config_missing():
     assert spec.command.env["SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"] == "true"
     assert spec.command.env["KEEP"] == "1"
     assert spec.probe.path == "/health"
+
+
+# ------------------------------------------------------------------
+# SGLang ZBAL bootstrap URL (PP rendezvous)
+# ------------------------------------------------------------------
+
+
+def test_sglang_backend_injects_zbal_bootstrap_url_from_master_dp_ip():
+    """PP ranks must rendezvous on Controller master_dp_ip, not each pod POD_IP."""
+    spec = _sglang_prepare(master_dp_ip="192.168.1.100")
+
+    assert spec.command.env[SGLANG_ZBAL_BOOTSTRAP_URL_ENV] == f"tcp://192.168.1.100:{SGLANG_ZBAL_BOOTSTRAP_PORT}"
+
+
+def test_sglang_backend_overrides_static_zbal_bootstrap_url():
+    """Static env.json POD_IP value must not win over Controller master_dp_ip."""
+    external_env = {
+        "VLLM_HOST_IP": "10.0.0.2",
+        SGLANG_ZBAL_BOOTSTRAP_URL_ENV: "tcp://10.0.0.2:24691",
+    }
+    spec = _sglang_prepare(env=external_env, master_dp_ip="192.168.1.100")
+
+    assert spec.command.env[SGLANG_ZBAL_BOOTSTRAP_URL_ENV] == "tcp://192.168.1.100:24691"
+
+
+def test_sglang_backend_skips_zbal_bootstrap_url_without_master_dp_ip():
+    external_env = {SGLANG_ZBAL_BOOTSTRAP_URL_ENV: "tcp://10.0.0.2:24691"}
+    spec = _sglang_prepare(env=external_env, master_dp_ip=None)
+
+    assert spec.command.env[SGLANG_ZBAL_BOOTSTRAP_URL_ENV] == "tcp://10.0.0.2:24691"
+
+
+def test_vllm_backend_does_not_inject_sglang_zbal_bootstrap_url():
+    """ZBAL bootstrap is SGLang-only; vLLM must not inherit this env."""
+    context = _context(role=PDRole.ROLE_P, master_dp_ip="192.168.1.100")
+    spec = _prepare_with_config(
+        VllmBackend(),
+        context,
+        _endpoint(engine_type="vllm", role="prefill", connector="MooncakeConnectorV1"),
+    )
+
+    assert SGLANG_ZBAL_BOOTSTRAP_URL_ENV not in spec.command.env
 
 
 def test_get_backend_rejects_unknown_engine():
