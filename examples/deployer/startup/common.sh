@@ -298,7 +298,7 @@ set_a5_engine_env() {
     if [ -z "$if_name" ]; then
         # Skip auto-detection only; never unset — the user may have exported these explicitly.
         echo "Warning: failed to detect default route interface from /proc/net/route, skip GLOO/TP/HCCL socket ifname env" >&2
-    else
+    elif [ -z "${GLOO_SOCKET_IFNAME:-}" ]; then
         export GLOO_SOCKET_IFNAME="$if_name"
         export TP_SOCKET_IFNAME="$if_name"
         export HCCL_SOCKET_IFNAME="$if_name"
@@ -400,4 +400,90 @@ set_mf_store_env() {
         echo "ASCEND_MF_STORE_URL: $ASCEND_MF_STORE_URL"
         echo "MF_CONFIG_STORE_URL: $MF_CONFIG_STORE_URL"
     fi
+}
+
+# Supervise Motor processes started by one boot.sh role script. Optional
+# helpers such as ccae_reporter are tracked separately: their early exit
+# must not tear down Coordinator / Controller / NodeManager, but EXIT/INT
+# still kills them. Never use a bare ``wait`` here — that waits for every
+# background job, including reporters that ignore SIGINT.
+motor_child_pids=()
+motor_helper_pids=()
+
+motor_track_child() {
+    motor_child_pids+=("$1")
+}
+
+motor_track_helper() {
+    motor_helper_pids+=("$1")
+}
+
+motor_signal_pid() {
+    # Signal the process, not its process group. vLLM EngineCore often
+    # setpgrp(); kill -- -PID would miss those workers, and blasting the
+    # group bypasses the API server's own process manager.
+    local sig=$1
+    local pid=$2
+    kill "-$sig" "$pid" 2>/dev/null || true
+}
+
+motor_reap_pid() {
+    local pid=$1
+    local i=0
+    local max=50
+    local grace="${MOTOR_INPLACE_STOP_GRACE_SEC:-5}"
+    case "$grace" in
+        ''|*[!0-9.]*) max=50 ;;
+        *)
+            max=$((${grace%%.*} * 10))
+            [ "$max" -lt 1 ] && max=1
+            ;;
+    esac
+    while [ "$i" -lt "$max" ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null || true
+            return
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    motor_signal_pid KILL "$pid"
+    wait "$pid" 2>/dev/null || true
+}
+
+motor_kill_children() {
+    local pid
+    for pid in "${motor_child_pids[@]:-}" "${motor_helper_pids[@]:-}"; do
+        motor_signal_pid TERM "$pid"
+    done
+    for pid in "${motor_child_pids[@]:-}" "${motor_helper_pids[@]:-}"; do
+        motor_reap_pid "$pid"
+    done
+}
+
+motor_supervise_children() {
+    local pid dead_status alive
+    trap 'motor_kill_children; trap - EXIT INT TERM; exit 143' INT TERM
+    trap 'motor_kill_children' EXIT
+    while true; do
+        alive=0
+        dead_status=""
+        for pid in "${motor_child_pids[@]:-}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                alive=$((alive + 1))
+            else
+                wait "$pid" 2>/dev/null
+                dead_status=$?
+                echo "Supervised process pid=$pid exited (status=$dead_status); stopping siblings."
+                trap - EXIT
+                motor_kill_children
+                return "$dead_status"
+            fi
+        done
+        if [ "$alive" -eq 0 ]; then
+            trap - EXIT INT TERM
+            return 0
+        fi
+        sleep 1
+    done
 }

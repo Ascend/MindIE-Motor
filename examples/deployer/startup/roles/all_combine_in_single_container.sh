@@ -31,25 +31,25 @@ if is_a5_hardware; then
     set_a5_engine_env
 fi
 
-apply_patches
-
-pids=()
+apply_patches || exit 1
 
 set_coordinator_env
 
 # not necessary if no ccae
 python3 -m ccae_reporter.run Coordinator &
+motor_track_helper $!
 
 ROLE=coordinator python3 -m motor.coordinator.main &
-pids+=($!)
+motor_track_child $!
 
 set_controller_env
 
 # not necessary if no ccae
 python3 -m ccae_reporter.run Controller &
+motor_track_helper $!
 
 ROLE=controller python3 -m motor.controller.main --config "$USER_CONFIG_PATH" &
-pids+=($!)
+motor_track_child $!
 
 case "${KV_STORE_BACKEND:-}" in
     mooncake)
@@ -58,13 +58,13 @@ case "${KV_STORE_BACKEND:-}" in
         ROLE=kv_store mooncake_master --port "$KV_CACHE_STORE_PORT" \
             --eviction_high_watermark_ratio "$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO" \
             --eviction_ratio "$KV_STORE_EVICTION_RATIO" --default_kv_lease_ttl "$DEFAULT_KV_LEASE_TTL" &
-        pids+=($!)
+        motor_track_child $!
         ;;
     memcache)
         sync_mmc_local_config
         set_kv_store_env
         ROLE=kv_store python3 "$CONFIGMAP_PATH/kv_store_backends.memcache.memcache_meta_service.py" &
-        pids+=($!)
+        motor_track_child $!
         ;;
 esac
 
@@ -78,7 +78,7 @@ if grep -q '"motor_engine_union_config"' "$USER_CONFIG_PATH"; then
     set_union_env
     for i in $(seq 0 $((hybrid_instances_num - 1))); do
         ROLE=union INDEX=$i JOB_NAME=u$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_u${i}.json python3 -m motor.node_manager.main &
-        pids+=($!)
+        motor_track_child $!
         echo "pull up instance: ROLE=union INDEX=$i JOB_NAME=u$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_u${i}.json python3 -m motor.node_manager.main &"
     done
 else
@@ -88,20 +88,17 @@ else
     set_prefill_env
     for i in $(seq 0 $((p_instances_num - 1))); do
         ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &
-        pids+=($!)
+        motor_track_child $!
         echo "pull up instance: ROLE=prefill INDEX=$i JOB_NAME=p$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_p${i}.json python3 -m motor.node_manager.main &"
     done
 
     set_decode_env
     for i in $(seq 0 $((d_instances_num - 1))); do
         ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &
-        pids+=($!)
+        motor_track_child $!
         echo "pull up instance: ROLE=decode INDEX=$i JOB_NAME=d$i RANKTABLE_PATH=$CONFIG_PATH/ranktable_d${i}.json python3 -m motor.node_manager.main &"
     done
 fi
 
-for pid in "${pids[@]}"; do
-    wait $pid
-done
-echo "All processes finished successfully."
-exit 0
+motor_supervise_children
+exit $?

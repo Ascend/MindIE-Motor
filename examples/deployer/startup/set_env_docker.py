@@ -15,7 +15,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib.utils import read_json, get_json_by_path, resolve_model_name, update_shell_safely
+from lib.docker_utils import get_json_by_path, read_json, resolve_model_name, update_shell_safely
 
 
 MOTOR_COMMON_ENV = "motor_common_env"
@@ -93,6 +93,9 @@ def set_env_docker(configmap_path):
         update_shell_safely(engine_shell_path, env_config, union_env_key, "set_union_env")
         update_shell_safely(kv_cache_store_shell_path, env_config, "motor_kv_cache_store_env", "set_kv_store_env")
         update_shell_safely(kv_conductor_shell_path, env_config, "motor_kv_conductor_env", "set_kv_conductor_env")
+        combined_shell_path = os.path.join(configmap_path, "coordinator_controller.sh")
+        update_shell_safely(combined_shell_path, env_config, "motor_controller_env", "set_controller_env")
+        update_shell_safely(combined_shell_path, env_config, "motor_coordinator_env", "set_coordinator_env")
 
 
 def parse_arguments():

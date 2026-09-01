@@ -379,3 +379,135 @@ CONTROLLER_OBSERVABILITY_NODE_PORT = "controller_observability_node_port"
 NODEPORT_CONFLICT_COORDINATOR_FILE = "nodeport_conflict_coordinator.txt"
 NODEPORT_CONFLICT_CONTROLLER_FILE = "nodeport_conflict_controller.txt"
 VOLCANO_QUEUE_ANNOTATION = "scheduling.volcano.sh/queue-name"
+
+# Docker-only create templates (examples/deployer/docker_deploy.py --create / one-click).
+# Edit these literals to change host devices and binds. Do not add --rm.
+# Engine / single-container templates use --shm-size=4g to match K8s dshm emptyDir sizeLimit 4Gi.
+# CTRL / KVS YAML has no dshm volume, so those templates omit --shm-size.
+# motor_deploy_config.dshm_size overrides an existing --shm-size line only (does not insert one).
+ENTER_DOCKER_RUN_A2 = """docker run -it --name "$NAME" -u root \\
+  --net=host \\
+  --shm-size=4g \\
+  -e ASCEND_RUNTIME_OPTIONS=NODRV \\
+  -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
+  -e NAME="$NAME" \\
+  -e WEIGHT="$WEIGHT" \\
+  --device /dev/davinci0 \\
+  --device /dev/davinci1 \\
+  --device /dev/davinci2 \\
+  --device /dev/davinci3 \\
+  --device /dev/davinci4 \\
+  --device /dev/davinci5 \\
+  --device /dev/davinci6 \\
+  --device /dev/davinci7 \\
+  --device /dev/davinci_manager \\
+  --device /dev/devmm_svm \\
+  --device /dev/hisi_hdc \\
+  -v /usr/local/dcmi:/usr/local/dcmi \\
+  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
+  -v /usr/local/sbin:/usr/local/sbin \\
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
+  -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \\
+  -v /etc/ascend_install.info:/etc/ascend_install.info \\
+  -v /etc/hccn.conf:/etc/hccn.conf \\
+  -v "$EXAMPLES:$EXAMPLES" \\
+  -v "$WEIGHT:$WEIGHT:ro" \\
+  "$IMAGE" bash
+"""
+
+ENTER_DOCKER_RUN_A3 = """docker run -it --name "$NAME" -u root \\
+  --net=host \\
+  --shm-size=4g \\
+  -e ASCEND_RUNTIME_OPTIONS=NODRV \\
+  -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
+  -e NAME="$NAME" \\
+  -e WEIGHT="$WEIGHT" \\
+  --device /dev/davinci0 \\
+  --device /dev/davinci1 \\
+  --device /dev/davinci2 \\
+  --device /dev/davinci3 \\
+  --device /dev/davinci4 \\
+  --device /dev/davinci5 \\
+  --device /dev/davinci6 \\
+  --device /dev/davinci7 \\
+  --device /dev/davinci8 \\
+  --device /dev/davinci9 \\
+  --device /dev/davinci10 \\
+  --device /dev/davinci11 \\
+  --device /dev/davinci12 \\
+  --device /dev/davinci13 \\
+  --device /dev/davinci14 \\
+  --device /dev/davinci15 \\
+  --device /dev/davinci_manager \\
+  --device /dev/devmm_svm \\
+  --device /dev/hisi_hdc \\
+  -v /usr/local/dcmi:/usr/local/dcmi \\
+  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
+  -v /usr/local/sbin:/usr/local/sbin \\
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
+  -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \\
+  -v /etc/ascend_install.info:/etc/ascend_install.info \\
+  -v /etc/hccn.conf:/etc/hccn.conf \\
+  -v "$EXAMPLES:$EXAMPLES" \\
+  -v "$WEIGHT:$WEIGHT:ro" \\
+  "$IMAGE" bash
+"""
+
+ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
+  --net=host \\
+  --shm-size=4g \\
+  -e ASCEND_RUNTIME_OPTIONS=NODRV \\
+  -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
+  -e NAME="$NAME" \\
+  -e WEIGHT="$WEIGHT" \\
+  --device /dev/davinci0 \\
+  --device /dev/davinci1 \\
+  --device /dev/davinci2 \\
+  --device /dev/davinci3 \\
+  --device /dev/davinci4 \\
+  --device /dev/davinci5 \\
+  --device /dev/davinci6 \\
+  --device /dev/davinci7 \\
+  --device /dev/davinci_manager \\
+  --device /dev/hisi_hdc \\
+  --device /dev/ummu \\
+  --device /dev/uburma \\
+  -v /usr/local/dcmi:/usr/local/dcmi \\
+  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
+  -v /usr/local/sbin:/usr/local/sbin \\
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
+  -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool \\
+  -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \\
+  -v /etc/hccn.conf:/etc/hccn.conf \\
+  -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \\
+  -v /usr/lib64:/usr/lib64 \\
+  -v /etc/hixlep:/etc/hixlep \\
+  -v /lib/route.conf:/lib/route.conf \\
+  -v /usr/bin/urma_admin:/usr/bin/urma_admin \\
+  -v "$EXAMPLES:$EXAMPLES" \\
+  -v "$WEIGHT:$WEIGHT:ro" \\
+  "$IMAGE" bash
+"""
+
+ENTER_DOCKER_RUN_CTRL = """docker run -it --name "$NAME" -u root \\
+  --net=host \\
+  -e NAME="$NAME" \\
+  -e WEIGHT="$WEIGHT" \\
+  -v "$EXAMPLES:$EXAMPLES" \\
+  -v "$WEIGHT:$WEIGHT:ro" \\
+  "$IMAGE" bash
+"""
+
+ENTER_DOCKER_RUN_KVS = """docker run -it --name "$NAME" -u root \\
+  --net=host \\
+  -e NAME="$NAME" \\
+  -e WEIGHT="$WEIGHT" \\
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
+  -v /driver:/driver \\
+  -v /var/log:/var/log \\
+  -v "$EXAMPLES:$EXAMPLES" \\
+  -v "$WEIGHT:$WEIGHT:ro" \\
+  "$IMAGE" bash
+"""
+
+ENTER_DOCKER_RUN_IMAGE_BASH = '"$IMAGE" bash'
