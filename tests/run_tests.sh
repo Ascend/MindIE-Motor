@@ -120,7 +120,6 @@ check_dependencies() {
 
     # Check project core dependencies
     echo "Checking project core dependencies..."
-    python3 -c "import psutil" 2>/dev/null || { echo "Installing psutil..."; pip install psutil>=5.9.8; }
     python3 -c "import fastapi; assert tuple(map(int, fastapi.__version__.split('.')[:2])) >= (0, 100)" 2>/dev/null || { echo "Installing fastapi..."; pip install 'fastapi>=0.100.0'; }
     python3 -c "import uvicorn" 2>/dev/null || { echo "Installing uvicorn..."; pip install "uvicorn[standard]>=0.15.0"; }
     python3 -c "import grpc" 2>/dev/null || { echo "Installing grpcio..."; pip install 'grpcio>=1.82.1'; }

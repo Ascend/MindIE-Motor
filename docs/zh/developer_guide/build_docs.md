@@ -82,7 +82,7 @@ nav:
 ### 环境要求
 
 - **Python**：建议 **3.11**（与 **`.readthedocs.yaml`** 在线构建一致）。
-- **依赖清单**：**`requirements/mkdocs.txt`**，主要包括 **`mkdocs`**、**`mkdocs-material`**、**`mkdocs-awesome-nav`**、**`mkdocs-glightbox`**、**`mkdocs-git-revision-date-localized-plugin`**、**`mkdocs-minify-plugin`**、**`mkdocs-redirects`**、**`pymdown-extensions`**。
+- **依赖清单**：**`requirements/mkdocs.txt`**，主要包括 **`mkdocs`**、**`mkdocs-material`**、**`mkdocs-awesome-nav`**、**`mkdocs-glightbox`**、**`mkdocs-git-revision-date-localized-plugin`**、**`mkdocs-minify-plugin`**、**`pymdown-extensions`**。
 - **钩子**：根目录 **`docs/mkdocs/hooks/`**（在 **`mkdocs.yml`** 的 **`hooks:`** 中启用）：
     - **`github_admonition.py`**：把 GitHub/Obsidian 风格的 **`>[!NOTE]`** / **`> [!NOTE]`** 引用块转成 pymdown 的 **`!!! note`**，便于 Material 渲染提示框；引用块内若嵌套 **` ``` `** 代码围栏，请避免 **`>` 与围栏之间多空格**，以免闭合围栏错位导致 **`#` 注释行被当成 Markdown 标题**。
     - **`img_width.py`**：把 **`<img src="..." width="...">`** 转为 **`![](){ width="..." }`** 以便控制宽度。
