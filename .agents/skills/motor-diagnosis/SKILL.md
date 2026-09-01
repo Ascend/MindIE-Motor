@@ -14,7 +14,9 @@ description: Motor diagnosis entry point for deploy、startup or runtime failure
 |---|---|
 | `deploy.py` 失败、workload 未 Ready、Service/Endpoint 缺失、readiness 超时 | [`motor-diagnosis-startup`](../motor-diagnosis-startup/SKILL.md) |
 | 已启动服务的未知异常或通用日志采证 | 本 Skill 的通用采证流程 |
-| environment、deployer、config、runtime-code 专项归因 | 当前先由 `motor-diagnosis-startup` 分类；领域 Skill 尚未发布 |
+| Pod 创建、调度、拉镜像、挂载、容器或 K8s probe 异常 | [`motor-diagnosis-k8s`](../motor-diagnosis-k8s/SKILL.md) |
+| Controller/Coordinator 已启动但 readiness、注册、心跳或拓扑未收敛 | [`motor-diagnosis-control-plane`](../motor-diagnosis-control-plane/SKILL.md) |
+| `curl` 无法建立 HTTP 连接、DNS/TCP/TLS 或 port-forward 异常 | [`motor-diagnosis-connectivity`](../motor-diagnosis-connectivity/SKILL.md) |
 
 路由到原子 Skill 前先执行下面的最小采证，并读取、完整遵循对应 `SKILL.md`。当前没有
 匹配原子 Skill 时，基于源码和只读事实继续分析并明确 capability gap。

@@ -88,7 +88,7 @@ bash tests/run_tests.sh --cov tests/
 - 仓库 Skill 的唯一权威目录是 `.agents/skills/`。普通自然语言请求先进入对应父 Skill；
   用户显式指定 `$motor-...` 原子 Skill 时可以直接使用。
 - 三个父 Skill（`motor-deploy`、`motor-validation`、`motor-diagnosis`）默认参与隐式
-  触发；10 个原子 Skill 通过各自 `agents/openai.yaml` 设置
+  触发；13 个原子 Skill 通过各自 `agents/openai.yaml` 设置
   `policy.allow_implicit_invocation: false`，仅可经父 Skill 路由或显式调用。
 - 修改 `motor/`、`tests/` 或开发文档：使用 `motor-dev`。
 - 拉起、部署、重启、停止、部署前检查、配置校验或替换 wheel：先使用
