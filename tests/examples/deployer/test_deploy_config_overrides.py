@@ -148,6 +148,7 @@ def test_infer_service_roles_apply_component_selectors_and_node_port(monkeypatch
             C.CONFIG_JOB_ID: "selector-test",
             C.IMAGE_NAME: "mindie:latest",
             C.COORDINATOR_INFER_NODE_PORT: "-",
+            C.WEIGHT_MOUNT_PATH: "/data/weights",
             **selectors,
         },
         C.MOTOR_CONTROLLER_CONFIG: {},
@@ -173,3 +174,23 @@ def test_infer_service_roles_apply_component_selectors_and_node_port(monkeypatch
 
     coordinator = get_infer_role(infer_doc, C.COORDINATOR)
     assert C.NODE_PORT not in coordinator[C.SERVICES][0][C.SPEC][C.PORTS][0]
+    coordinator_pod_spec = coordinator[C.SPEC][C.TEMPLATE][C.SPEC]
+    coordinator_container = coordinator_pod_spec[C.CONTAINERS][0]
+    weight_volume = next(volume for volume in coordinator_pod_spec[C.VOLUMES] if volume[C.NAME] == C.WEIGHT_MOUNT)
+    weight_mount = next(mount for mount in coordinator_container[C.VOLUME_MOUNTS] if mount[C.NAME] == C.WEIGHT_MOUNT)
+    assert weight_volume[C.HOST_PATH][C.PATH] == "/data/weights"
+    assert weight_mount[C.MOUNT_PATH] == "/data/weights"
+    assert weight_mount[C.K8S_READ_ONLY] is True
+
+
+def test_configure_coordinator_role_skips_when_role_missing():
+    user_config = {
+        C.MOTOR_DEPLOY_CONFIG: {
+            C.CONFIG_JOB_ID: "selector-test",
+            C.IMAGE_NAME: "mindie:latest",
+            C.WEIGHT_MOUNT_PATH: "/data/weights",
+        },
+        C.MOTOR_COORDINATOR_CONFIG: {},
+    }
+
+    _configure_coordinator_role({}, user_config)

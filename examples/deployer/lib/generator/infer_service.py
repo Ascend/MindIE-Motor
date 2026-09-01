@@ -144,22 +144,28 @@ def _configure_controller_role(infer_doc, user_config):
 def _configure_coordinator_role(infer_doc, user_config):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     role = get_infer_role(infer_doc, C.COORDINATOR)
-    if role:
-        services = role.get(C.SERVICES, [])
-        for index, service in enumerate(services or []):
-            if not isinstance(service, dict):
-                continue
-            name = (service.get(C.NAME) or "").lower()
-            container_port = _service_container_port(service)
-            if index == 0 or "infer" in name or container_port == 1025:
-                service[C.NAME] = get_coordinator_service_name(deploy_config)
-                apply_coordinator_infer_node_port(service, deploy_config)
-            elif is_observability_service_name(name) or container_port == 1027:
-                apply_coordinator_obs_node_port(service, deploy_config)
+    if not role:
+        return
+
+    services = role.get(C.SERVICES, [])
+    for index, service in enumerate(services or []):
+        if not isinstance(service, dict):
+            continue
+        name = (service.get(C.NAME) or "").lower()
+        container_port = _service_container_port(service)
+        if index == 0 or "infer" in name or container_port == 1025:
+            service[C.NAME] = get_coordinator_service_name(deploy_config)
+            apply_coordinator_infer_node_port(service, deploy_config)
+        elif is_observability_service_name(name) or container_port == 1027:
+            apply_coordinator_obs_node_port(service, deploy_config)
 
     container = _configure_control_role(infer_doc, user_config, C.COORDINATOR, C.MOTOR_COORDINATOR_CONFIG)
     if not container:
         return
+
+    coordinator_pod_spec = role[C.SPEC][C.TEMPLATE][C.SPEC]
+    weight_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
+    set_weight_mount(coordinator_pod_spec, container, weight_path, read_only=True)
 
     coordinator_env = list(k8s_utils.build_kv_store_env_items())
     if k8s_utils.g_kv_conductor_enabled:

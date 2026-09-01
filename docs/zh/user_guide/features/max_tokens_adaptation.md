@@ -59,6 +59,18 @@ Coordinator 会将该请求的 `max_tokens` 修改为 `14688` 后再进行调度
 
 - Prefill（PD 分离）或 Union（PD 混部）引擎配置中的 `model` 必须指向 Coordinator
   可访问的模型目录，用于加载与推理引擎一致的 tokenizer。
+- 使用 `examples/deployer/deploy.py` 部署时，`motor_deploy_config.weight_mount_path` 会以相同
+  容器路径挂载到 P/D（或 Union）引擎和 Coordinator。将它配置为包含
+  `engine_config.model` 的宿主机目录，例如模型路径为 `/data/weights/model-a` 时可配置
+  `weight_mount_path: "/data/weights"`。Coordinator 至少必须能读取该模型目录中的 tokenizer
+  文件；建议将完整模型目录以只读方式挂载，保证与推理引擎使用相同版本的 tokenizer。
+- `weight_mount_path` 使用 Kubernetes `hostPath`。因此 Coordinator 可能被调度到的每一台节点上，
+  都必须存在该宿主机路径及对应模型文件；若权重只存在于部分节点，应通过
+  `coordinator_node_selector` 将 Coordinator 调度到可访问权重的节点。P/D（或 Union）引擎节点
+  也需要满足同一条件。
+- 使用自定义 YAML、旧版部署产物或其他部署工具时，需要在 Coordinator Pod 中显式添加与
+  `engine_config.model` 一致的模型目录挂载；仅将权重挂载到 P/D（或 Union）引擎 Pod 不足以
+  启用该功能。
 - 必须提供有效的上下文上限。PD 分离配置会自动将 Prefill、Decode 引擎的 `max_model_len`
   分别填充为 `aigw.p_max_seqlen`、`aigw.d_max_seqlen`；无法自动填充时需要显式配置 `aigw`。
 - 启用该功能时，每个 Coordinator Inference worker 会在启动阶段初始化进程内的
@@ -179,8 +191,9 @@ Context budget clamped req_id=<request-id> parameter=max_tokens requested=20000 
 ### 开启后 Coordinator 启动失败
 
 检查 Prefill 引擎配置是否包含有效的 `model` 和 `max_model_len`，Decode 引擎配置是否包含
-有效的 `max_model_len`，并确认 Coordinator 容器能够访问模型目录。启动配置校验要求能够获得
-tokenizer 路径，以及至少一个有效的 `p_max_seqlen` 或 `d_max_seqlen`。
+有效的 `max_model_len`，并确认 Coordinator 容器能够访问模型目录。对于 `hostPath` 挂载，还应
+检查 Coordinator 实际所在节点是否存在 `weight_mount_path`。启动配置校验要求能够获得 tokenizer
+路径，以及至少一个有效的 `p_max_seqlen` 或 `d_max_seqlen`。
 
 ### 请求没有发生裁剪
 

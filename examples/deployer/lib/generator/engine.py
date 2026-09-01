@@ -281,7 +281,7 @@ def set_engine_node_selector(deployment_data, deploy_config, node_type):
     apply_engine_node_selector_overrides(pod_spec, deploy_config, node_type)
 
 
-def set_weight_mount(pod_spec, container, weight_mount_path):
+def set_weight_mount(pod_spec, container, weight_mount_path, read_only=False):
     volume_found = False
     for volume in pod_spec.get(C.VOLUMES, []):
         if volume[C.NAME] == C.WEIGHT_MOUNT:
@@ -294,10 +294,15 @@ def set_weight_mount(pod_spec, container, weight_mount_path):
     for volume_mount in container.get(C.VOLUME_MOUNTS, []):
         if volume_mount[C.NAME] == C.WEIGHT_MOUNT:
             volume_mount[C.MOUNT_PATH] = weight_mount_path
+            if read_only:
+                volume_mount[C.K8S_READ_ONLY] = True
             volume_mount_found = True
             break
     if not volume_mount_found:
-        container.setdefault(C.VOLUME_MOUNTS, []).append({C.NAME: C.WEIGHT_MOUNT, C.MOUNT_PATH: weight_mount_path})
+        mount = {C.NAME: C.WEIGHT_MOUNT, C.MOUNT_PATH: weight_mount_path}
+        if read_only:
+            mount[C.K8S_READ_ONLY] = True
+        container.setdefault(C.VOLUME_MOUNTS, []).append(mount)
 
 
 def set_engine_weight_mount(deployment_data, container, deploy_config):
