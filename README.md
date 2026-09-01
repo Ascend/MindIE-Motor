@@ -19,6 +19,8 @@
     </a>
 </p>
 
+简体中文 | [English](README_en.md)
+
 # 简介
 
 提供一键式 PD 分离与 PD 混部部署，基于云原生插件化架构灵活适配多种推理引擎（[vLLM](https://github.com/vllm-project/vllm-ascend)、[SGLang](https://github.com/sgl-project/sglang)），结合高性能调度与负载均衡能力，构建高可用、可扩展的大规模推理服务。

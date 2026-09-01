@@ -1,4 +1,6 @@
-# 木兰宽松许可证， 第2版
+# LICENSE
+
+## 木兰宽松许可证， 第2版
 
 2020年1月  [http://license.coscl.org.cn/MulanPSL2](http://license.coscl.org.cn/MulanPSL2)
 
@@ -68,15 +70,15 @@ See the Mulan PSL v2 for more details.
 
 ## Mulan Permissive Software License，Version 2<a name="section18273540143715"></a>
 
-**Mulan Permissive Software License，Version 2 \(Mulan PSL v2\)**
+**Mulan Permissive Software License，Version 2 (Mulan PSL v2)**
 
 January 2020  [http://license.coscl.org.cn/MulanPSL2](http://license.coscl.org.cn/MulanPSL2)
 
-Your reproduction, use, modification and distribution of the Software shall be subject to Mulan PSL v2 \(this License\) with the following terms and conditions:
+Your reproduction, use, modification and distribution of the Software shall be subject to Mulan PSL v2 (this License) with the following terms and conditions:
 
 **0. Definition**
 
-**Software**  means the program and related documents which are licensed under this License and comprise all Contribution\(s\).
+**Software**  means the program and related documents which are licensed under this License and comprise all Contribution(s).
 
 **Contribution**  means the copyrightable work licensed by a particular Contributor under this License.
 
@@ -92,7 +94,7 @@ Subject to the terms and conditions of this License, each Contributor hereby gra
 
 **2. Grant of Patent License**
 
-Subject to the terms and conditions of this License, each Contributor hereby grants to you a perpetual, worldwide, royalty-free, non-exclusive, irrevocable \(except for revocation under this Section\) patent license to make, have made, use, offer for sale, sell, import or otherwise transfer its Contribution, where such patent license is only limited to the patent claims owned or controlled by such Contributor now or in future which will be necessarily infringed by its Contribution alone, or by combination of the Contribution with the Software to which the Contribution was contributed. The patent license shall not apply to any modification of the Contribution, and any other combination which includes the Contribution. If you or your Affiliates directly or indirectly institute patent litigation \(including a cross claim or counterclaim in a litigation\) or other patent enforcement activities against any individual or entity by alleging that the Software or any Contribution in it infringes patents, then any patent license granted to you under this License for the Software shall terminate as of the date such litigation or activity is filed or taken.
+Subject to the terms and conditions of this License, each Contributor hereby grants to you a perpetual, worldwide, royalty-free, non-exclusive, irrevocable (except for revocation under this Section) patent license to make, have made, use, offer for sale, sell, import or otherwise transfer its Contribution, where such patent license is only limited to the patent claims owned or controlled by such Contributor now or in future which will be necessarily infringed by its Contribution alone, or by combination of the Contribution with the Software to which the Contribution was contributed. The patent license shall not apply to any modification of the Contribution, and any other combination which includes the Contribution. If you or your Affiliates directly or indirectly institute patent litigation (including a cross claim or counterclaim in a litigation) or other patent enforcement activities against any individual or entity by alleging that the Software or any Contribution in it infringes patents, then any patent license granted to you under this License for the Software shall terminate as of the date such litigation or activity is filed or taken.
 
 **3. No Trademark License**
 
@@ -114,7 +116,7 @@ THIS LICENSE IS WRITTEN IN BOTH CHINESE AND ENGLISH, AND THE CHINESE VERSION AND
 
 <br>
 
-**How to Apply the Mulan Permissive Software License，Version 2 \(Mulan PSL v2\) to Your Software**
+**How to Apply the Mulan Permissive Software License，Version 2 (Mulan PSL v2) to Your Software**
 
 To apply the Mulan PSL v2 to your work, for easy identification by recipients, you are suggested to complete following three steps:
 
