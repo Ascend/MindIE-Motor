@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from motor.common.resources.instance import PDRole
-from motor.config.endpoint import EndpointConfig
+from motor.config.endpoint import EndpointConfig, EngineConfig
 from motor.config.tls_config import TLSConfig
 from motor.node_manager.core.services.native_engine.backends.base import build_endpoint_config
 from motor.node_manager.core.services.native_engine.backends.sglang.backend import (
@@ -35,6 +35,7 @@ def _context(
     environment: dict | None = None,
     snapshot_metadata: str | None = None,
     master_dp_ip: str | None = "10.0.0.1",
+    engine_config_overrides: dict | None = None,
 ) -> LaunchContext:
     return LaunchContext(
         role=role,
@@ -52,6 +53,7 @@ def _context(
         environment=environment or {"VLLM_HOST_IP": "10.0.0.2"},
         headless=headless,
         snapshot_metadata=snapshot_metadata,
+        engine_config_overrides=engine_config_overrides or {},
     )
 
 
@@ -420,6 +422,53 @@ def test_build_endpoint_config_enables_auto_checkpoint_from_snapshot_metadata(
 
     assert endpoint_config.snapshot_metadata == snapshot_metadata
     assert endpoint_config.enable_auto_checkpoint is expected_enable_auto_checkpoint
+
+
+def _build_config_with_overrides(native_config, overrides):
+    engine_config = EngineConfig.from_dict(native_config)
+
+    def load_deploy_config(endpoint_config):
+        endpoint_config.deploy_config = SimpleNamespace(engine_config=engine_config)
+
+    with (
+        patch.object(EndpointConfig, "validate"),
+        patch.object(EndpointConfig, "load_deploy_config", autospec=True, side_effect=load_deploy_config),
+    ):
+        return build_endpoint_config(_context(engine_config_overrides=overrides), "vllm")
+
+
+def test_build_endpoint_config_merges_graph_reuse_overrides_without_losing_user_settings():
+    endpoint_config = _build_config_with_overrides(
+        {
+            "enforce-eager": True,
+            "compilation-config": {"cudagraph_mode": "FULL_AND_PIECEWISE", "level": 2},
+            "additional-config": {
+                "custom_option": "keep",
+                "ascend_compilation_config": {"enable_npugraph_ex": False, "enable_static_kernel": False},
+            },
+        },
+        {
+            "enforce_eager": False,
+            "compilation_config": {"cudagraph_mode": "FULL"},
+            "additional_config": {"ascend_compilation_config": {"enable_npugraph_ex": True}},
+        },
+    )
+    merged = endpoint_config.deploy_config.engine_config.configs
+    assert merged["enforce_eager"] is False
+    assert merged["compilation_config"] == {"cudagraph_mode": "FULL", "level": 2}
+    assert merged["additional_config"]["custom_option"] == "keep"
+    assert merged["additional_config"]["ascend_compilation_config"] == {
+        "enable_npugraph_ex": True,
+        "enable_static_kernel": False,
+    }
+
+
+def test_build_endpoint_config_rejects_non_object_native_config_required_for_graph_reuse():
+    with pytest.raises(ValueError, match="engine_config.compilation_config must be an object"):
+        _build_config_with_overrides(
+            {"compilation_config": "invalid"},
+            {"compilation_config": {"cudagraph_mode": "FULL"}},
+        )
 
 
 def test_backend_builds_native_health_probe_from_engine_config():

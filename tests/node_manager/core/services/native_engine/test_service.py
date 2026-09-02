@@ -18,6 +18,7 @@ import pytest
 from motor.common.resources.dispatch import DispatchProfile
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import PDRole
+from motor.config.node_manager import VLLMStartupAccelerationConfig
 from motor.node_manager.core.services.native_engine import service as service_module
 from motor.node_manager.core.services.native_engine.models import CommandSpec, LaunchSpec, ProbeSpec, RuntimeState
 from motor.node_manager.core.services.native_engine.service import NativeEngineService
@@ -58,7 +59,11 @@ def _make_launch_spec(deploy_config=None, env=None) -> LaunchSpec:
     )
 
 
-def _native_engine_service(snapshot_metadata: str | None = None, engine_type: str = "sglang") -> NativeEngineService:
+def _native_engine_service(
+    snapshot_metadata: str | None = None,
+    engine_type: str = "sglang",
+    startup_acceleration_config: VLLMStartupAccelerationConfig | None = None,
+) -> NativeEngineService:
     with (
         patch("motor.node_manager.core.services.native_engine.service.get_backend") as get_backend,
         patch("motor.node_manager.core.services.native_engine.service.ProcessSupervisor") as supervisor_class,
@@ -70,6 +75,7 @@ def _native_engine_service(snapshot_metadata: str | None = None, engine_type: st
             parallel_config=SimpleNamespace(local_world_size=1),
             enable_multi_endpoints=False,
             snapshot_metadata=snapshot_metadata,
+            startup_acceleration_config=startup_acceleration_config,
         )
     service.backend = get_backend.return_value
     service.supervisor = supervisor_class.return_value
@@ -129,6 +135,40 @@ def test_pull_forwards_snapshot_metadata_to_launch_context():
 
     context = service.backend.prepare.call_args.args[0]
     assert context.snapshot_metadata == "/snapshot/metadata.json"
+
+
+def test_pull_applies_vllm_startup_acceleration_and_runs_preflights_once():
+    startup_config = VLLMStartupAccelerationConfig(
+        enable_startup_plan=True,
+        enable_graph_reuse=True,
+        cache_root="/mnt/vllm-cache",
+    )
+    service = _native_engine_service(engine_type="vllm", startup_acceleration_config=startup_config)
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+
+    with (
+        patch.object(service_module, "inspect_startup_plan_profiles") as inspect_profiles,
+        patch.object(service_module, "inspect_graph_reuse_cache_root") as inspect_graph_cache,
+    ):
+        service.pull(
+            PDRole.ROLE_U,
+            [_make_endpoint(0)],
+            instance_id=1,
+            master_dp_ip="127.0.0.1",
+        )
+
+    context = service.backend.prepare.call_args.args[0]
+    assert context.environment["VLLM_CACHE_ROOT"] == "/mnt/vllm-cache"
+    assert context.environment["VLLM_ENABLE_STARTUP_PLAN"] == "1"
+    assert context.environment["VLLM_DISABLE_COMPILE_CACHE"] == "0"
+    assert context.engine_config_overrides["enforce_eager"] is False
+    assert context.engine_config_overrides["compilation_config"]["cudagraph_mode"] == "FULL"
+    assert context.engine_config_overrides["additional_config"]["ascend_compilation_config"] == {
+        "enable_npugraph_ex": True
+    }
+    inspect_profiles.assert_called_once_with("/mnt/vllm-cache")
+    inspect_graph_cache.assert_called_once_with("/mnt/vllm-cache")
 
 
 def test_health_check_returns_dead_pids():

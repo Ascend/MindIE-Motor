@@ -9,9 +9,11 @@
 # See the Mulan PSL v2 for more details.
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
+from typing import Any
 
 from motor.common.resources.instance import PDRole
 from motor.config.endpoint import DeployConfig
@@ -37,10 +39,16 @@ class LaunchContext:
     environment: Mapping[str, str]
     headless: bool = False
     snapshot_metadata: str | None = None
+    engine_config_overrides: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "d2d_peer_ips", tuple(self.d2d_peer_ips))
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
+        object.__setattr__(
+            self,
+            "engine_config_overrides",
+            MappingProxyType(deepcopy(dict(self.engine_config_overrides))),
+        )
 
 
 @dataclass(frozen=True)

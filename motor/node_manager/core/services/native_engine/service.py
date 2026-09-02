@@ -18,8 +18,16 @@ from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
 from motor.common.utils.net import format_address
 from motor.common.utils.snapshot_utils import MOTOR_SNAPSHOT_METADATA_PATH
+from motor.config.node_manager import VLLMStartupAccelerationConfig
 from motor.node_manager.core.services.native_engine.factory import get_backend
 from motor.node_manager.core.services.native_engine.models import LaunchContext, LaunchSpec, RuntimeState
+from motor.node_manager.core.services.native_engine.startup_acceleration import (
+    VLLM_CACHE_ROOT_ENV,
+    build_vllm_graph_reuse_engine_overrides,
+    build_vllm_startup_environment,
+    inspect_graph_reuse_cache_root,
+    inspect_startup_plan_profiles,
+)
 from motor.node_manager.core.services.native_engine.supervisor import ProcessSupervisor
 from motor.node_manager.core.services.native_engine.virtual_inference import (
     ASCEND_GLOBAL_LOG_LEVEL_ENV,
@@ -53,6 +61,7 @@ def _create_native_engine(hardware_type: str, config):
             if config.snapshot_config.enable_snapshot
             else None
         ),
+        startup_acceleration_config=config.vllm_startup_acceleration_config,
     )
 
 
@@ -73,6 +82,7 @@ class NativeEngineService:
         lookup_rpc_port: int | None = None,
         dp_rpc_port: int | None = None,
         snapshot_metadata: str | None = None,
+        startup_acceleration_config: VLLMStartupAccelerationConfig | None = None,
     ):
         self.engine_type = str(engine_type).strip().lower()
         self.config_path = config_path
@@ -85,6 +95,7 @@ class NativeEngineService:
         self.lookup_rpc_port = lookup_rpc_port
         self.dp_rpc_port = dp_rpc_port
         self.snapshot_metadata = snapshot_metadata
+        self.startup_acceleration_config = startup_acceleration_config or VLLMStartupAccelerationConfig()
         self.backend = get_backend(self.engine_type)
         self.supervisor = ProcessSupervisor()
         # Serializes pull/stop so a completed stop() cannot be followed by a late monitor install.
@@ -123,6 +134,28 @@ class NativeEngineService:
         desired_spec: VirtualInferenceSpec | None = None
         try:
             base_env = os.environ.copy()
+            engine_config_overrides = {}
+            if self.engine_type == "vllm":
+                startup_environment = build_vllm_startup_environment(
+                    self.startup_acceleration_config,
+                    base_env,
+                )
+                engine_config_overrides = build_vllm_graph_reuse_engine_overrides(
+                    self.startup_acceleration_config,
+                    pd_role_info,
+                )
+                base_env.update(startup_environment)
+                cache_root = startup_environment[VLLM_CACHE_ROOT_ENV]
+                logger.info(
+                    "vLLM startup acceleration configured: startup_plan=%s, graph_reuse=%s, cache_root=%s",
+                    self.startup_acceleration_config.enable_startup_plan,
+                    self.startup_acceleration_config.enable_graph_reuse,
+                    cache_root,
+                )
+                if self.startup_acceleration_config.enable_startup_plan:
+                    inspect_startup_plan_profiles(cache_root)
+                if self.startup_acceleration_config.enable_graph_reuse:
+                    inspect_graph_reuse_cache_root(cache_root)
             pod_ip = base_env.get("POD_IP")
             if pod_ip and not base_env.get("VLLM_HOST_IP"):
                 base_env["VLLM_HOST_IP"] = pod_ip
@@ -156,6 +189,7 @@ class NativeEngineService:
                     environment=env,
                     headless=endpoint.headless,
                     snapshot_metadata=self.snapshot_metadata,
+                    engine_config_overrides=engine_config_overrides,
                 )
                 launch_spec = self.backend.prepare(context)
                 cmd = list(launch_spec.command.argv)

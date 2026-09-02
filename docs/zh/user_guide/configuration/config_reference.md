@@ -588,7 +588,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
     "pipeline_parallel_size": 1,
     "data_parallel_rpc_port": 9000,
     "enable_expert_parallel": false,
-    "enforce-eager": true,
+    "enforce-eager": false,
     "max_model_len": 2048,
     "kv_transfer_config": {
       "kv_connector": "MooncakeConnectorV1",
@@ -613,6 +613,11 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
     "snapshot_config": {
       "enable_snapshot": false,
       "snapshot_metadata_path": ""
+    },
+    "vllm_startup_acceleration_config": {
+      "enable_startup_plan": true,
+      "enable_graph_reuse": true,
+      "cache_root": "/mnt/vllm-cache/union"
     },
     "logging_config": {
       "log_level": "INFO",
@@ -677,6 +682,9 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | fault_tolerance_config.max_poll_failures |int|连续轮询失败阈值，达到后按 dead 上报，默认值：3。|
 | snapshot_config.enable_snapshot |bool|是否使能容器快照功能总开关，默认值：false。<br>开启后，用户可对实例容器制作快照镜像，并支持由快照恢复的实例向控制面注册。|
 | snapshot_config.snapshot_metadata_path |string|容器快照元数据文件路径，包含容器快照制作与恢复过程中依赖的元数据，默认值为空。|
+| vllm_startup_acceleration_config.enable_startup_plan |bool|是否启用 vLLM StartPlan，默认值：false。命中已有 StartPlan 时由 vLLM 跳过 memory profiling。|
+| vllm_startup_acceleration_config.enable_graph_reuse |bool|是否启用 vLLM-Ascend 后端完整图复用，默认值：false。|
+| vllm_startup_acceleration_config.cache_root |string|可选的 vLLM StartPlan 与编译缓存绝对路径。缺省时继承 `VLLM_CACHE_ROOT`，再缺省时使用 vLLM 默认目录；生产环境建议显式配置持久化路径。|
 | logging_config.log_level | string | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | logging_config.log_max_line_length | int | 单条日志最大长度，超过则截断。默认值：8192 |
 | logging_config.log_format | string | 日志格式模板，支持Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s" |
@@ -714,7 +722,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "pipeline_parallel_size": 1,
     "data_parallel_rpc_port": 9000,
     "enable_expert_parallel": false,
-    "enforce-eager": true,
+    "enforce-eager": false,
     "max_model_len": 2048,
     "kv_transfer_config": {
       "kv_connector": "MooncakeConnectorV1",
@@ -742,6 +750,11 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "snapshot_config": {
       "enable_snapshot": false,
       "snapshot_metadata_path": ""
+    },
+    "vllm_startup_acceleration_config": {
+      "enable_startup_plan": true,
+      "enable_graph_reuse": true,
+      "cache_root": "/mnt/vllm-cache/prefill"
     },
     "logging_config": {
       "log_level": "INFO",
@@ -794,7 +807,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "pipeline_parallel_size": 1,
     "data_parallel_rpc_port": 9000,
     "enable_expert_parallel": false,
-    "enforce-eager": true,
+    "enforce-eager": false,
     "max_model_len": 2048,
     "kv_transfer_config": {
       "kv_connector": "MooncakeConnectorV1",
@@ -822,6 +835,11 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     "snapshot_config": {
       "enable_snapshot": false,
       "snapshot_metadata_path": ""
+    },
+    "vllm_startup_acceleration_config": {
+      "enable_startup_plan": true,
+      "enable_graph_reuse": true,
+      "cache_root": "/mnt/vllm-cache/decode"
     },
     "logging_config": {
       "log_level": "INFO",
@@ -887,6 +905,9 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | fault_tolerance_config.max_poll_failures |int|连续轮询失败阈值，达到后按 dead 上报，默认值：3。|
 | snapshot_config.enable_snapshot |bool|是否使能容器快照功能总开关，默认值：false。<br>开启后，用户可对实例容器制作快照镜像，并支持由快照恢复的实例向控制面注册。|
 | snapshot_config.snapshot_metadata_path |string|容器快照元数据文件路径，包含容器快照制作与恢复过程中依赖的元数据，默认值为空。|
+| vllm_startup_acceleration_config.enable_startup_plan |bool|是否启用 vLLM StartPlan，默认值：false。命中已有 StartPlan 时由 vLLM 跳过 memory profiling。|
+| vllm_startup_acceleration_config.enable_graph_reuse |bool|是否启用 vLLM-Ascend 后端完整图复用，默认值：false。|
+| vllm_startup_acceleration_config.cache_root |string|可选的 vLLM StartPlan 与编译缓存绝对路径。缺省时继承 `VLLM_CACHE_ROOT`，再缺省时使用 vLLM 默认目录；生产环境建议显式配置持久化路径。|
 | logging_config.log_level | string | 日志级别，默认值：INFO<ul><li>DEBUG</li><li>INFO</li><li>WARNING</li><li>ERROR</li></ul>|
 | logging_config.log_max_line_length | int | 单条日志最大长度，超过则截断。默认值：8192 |
 | logging_config.log_format | string | 日志格式模板，支持Python logging 占位符。默认值："(%(processName)s pid=%(process)d) %(levelname)s %(asctime)s \[%(name)s][%(fileinfo)s:%(lineno)d] %(message)s" |
@@ -909,6 +930,19 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md#kv_cache_store_config全局配置)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
 
 PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用代码默认值。
+
+### vLLM 启动加速
+
+`vllm_startup_acceleration_config` 仅适用于 `engine_type` 为 `vllm` 的引擎配置。
+
+- `enable_startup_plan=true`：启用 vLLM StartPlan。Profile 命中并通过安全检查后跳过 memory profiling。
+- `enable_startup_plan=false`：不生成或加载 StartPlan。
+- `enable_startup_plan=true` 需要配套的 vLLM/vLLM-Ascend 版本已经接入 StartPlan；Motor 不修改运行时源码。
+- `enable_graph_reuse=true`：启用 vLLM-Ascend 后端完整图复用，并以该配置为准设置
+  `enable_npugraph_ex=true`、`enforce_eager=false` 和角色对应的 `cudagraph_mode`。
+- `enable_graph_reuse=false`：关闭 vLLM-Ascend 后端完整图复用，不强制关闭普通图捕获或 AOT 缓存。
+- `cache_root`：vLLM 缓存根目录，用于保存 StartPlan、AOT 和后端编译图缓存。PD 分离场景建议为 Prefill、
+  Decode 配置各自可持久化且对 vLLM 进程可读写的目录。
 
 ### dispatch_profile
 

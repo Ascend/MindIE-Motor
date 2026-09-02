@@ -346,6 +346,11 @@
       "enable_snapshot": false,
       "snapshot_metadata_path": ""
     },
+    "vllm_startup_acceleration_config": {
+      "enable_startup_plan": false,
+      "enable_graph_reuse": false,
+      "cache_root": ""
+    },
     "logging_config": {
       "log_level": "INFO",
       "log_max_line_length": 8192,

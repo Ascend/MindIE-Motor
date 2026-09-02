@@ -8,7 +8,9 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from typing import Protocol
+from collections.abc import Mapping
+from copy import deepcopy
+from typing import Any, Protocol
 
 from motor.common.logger import get_logger
 from motor.config.endpoint import EndpointConfig
@@ -97,4 +99,36 @@ def build_endpoint_config(context: LaunchContext, engine_type: str) -> EndpointC
     )
     endpoint_config.validate()
     endpoint_config.load_deploy_config()
+    if context.engine_config_overrides:
+        _merge_engine_config_overrides(
+            endpoint_config.deploy_config.engine_config.configs,
+            context.engine_config_overrides,
+        )
     return endpoint_config
+
+
+def _merge_engine_config_overrides(
+    target: dict[str, Any],
+    overrides: Mapping[str, Any],
+    path: str = "engine_config",
+) -> None:
+    """Merge Motor-owned launch overrides without discarding unrelated native settings."""
+    for key, value in overrides.items():
+        key_path = "%s.%s" % (path, key)
+        if isinstance(value, Mapping):
+            current = target.get(key)
+            if current is None:
+                current = {}
+                target[key] = current
+            if not isinstance(current, dict):
+                raise ValueError("%s must be an object when a Motor-managed override is applied" % key_path)
+            _merge_engine_config_overrides(current, value, key_path)
+            continue
+        if key in target and target[key] != value:
+            logger.warning(
+                "Motor-managed engine configuration overrides %s=%r with %r",
+                key_path,
+                target[key],
+                value,
+            )
+        target[key] = deepcopy(value)

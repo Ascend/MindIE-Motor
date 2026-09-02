@@ -14,6 +14,13 @@
   "motor_coordinator_config": {},
   "motor_engine_union_config": {
     "engine_type": "vllm",
+    "motor_nodemanger_config": {
+      "vllm_startup_acceleration_config": {
+        "enable_startup_plan": true,
+        "enable_graph_reuse": false,
+        "cache_root": "/mnt/vllm-cache/union"
+      }
+    },
     "engine_config": {
       "served_model_name": "qwen3-8B",
       "model": "/mnt/weight/qwen3_8B",

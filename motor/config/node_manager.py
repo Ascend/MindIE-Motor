@@ -55,6 +55,7 @@ MOTOR_ENGINE_PREFILL_CONFIG_KEY = "motor_engine_prefill_config"
 MOTOR_ENGINE_DECODE_CONFIG_KEY = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG_KEY = "motor_engine_union_config"
 MOTOR_CONTAINER_SNAPSHOT_CONFIG_KEY = "motor_container_snapshot_config"
+VLLM_STARTUP_ACCELERATION_CONFIG_KEY = "vllm_startup_acceleration_config"
 ENGINE_CONFIG_KEY = "engine_config"
 KV_TRANSFER_CONFIG_KEY = "kv_transfer_config"
 KV_CONNECTOR_KEY = "kv_connector"
@@ -357,6 +358,15 @@ class KVCacheStoreConfig:
 
 
 @dataclass
+class VLLMStartupAccelerationConfig:
+    """vLLM startup acceleration settings owned by NodeManager."""
+
+    enable_startup_plan: bool = False
+    enable_graph_reuse: bool = False
+    cache_root: str = ""
+
+
+@dataclass
 class NodeManagerConfig:
     """Global configuration singleton for node manager"""
 
@@ -371,6 +381,9 @@ class NodeManagerConfig:
     fault_tolerance_config: NodeManagerFaultToleranceConfig = field(default_factory=NodeManagerFaultToleranceConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
     kv_cache_store_config: KVCacheStoreConfig = field(default_factory=KVCacheStoreConfig)
+    vllm_startup_acceleration_config: VLLMStartupAccelerationConfig = field(
+        default_factory=VLLMStartupAccelerationConfig
+    )
 
     # Internal fields
     config_path: str | None = field(default=None, init=False)
@@ -637,6 +650,12 @@ class NodeManagerConfig:
         if "port_allocator_config" in cfg:
             update_config_from_dict(config.port_allocator_config, cfg["port_allocator_config"])
 
+        if VLLM_STARTUP_ACCELERATION_CONFIG_KEY in cfg:
+            startup_config = cfg[VLLM_STARTUP_ACCELERATION_CONFIG_KEY]
+            if not isinstance(startup_config, dict):
+                raise ValueError(f"{VLLM_STARTUP_ACCELERATION_CONFIG_KEY} must be an object")
+            update_config_from_dict(config.vllm_startup_acceleration_config, startup_config)
+
         if "endpoint_config" in cfg:
             update_config_from_dict(config.endpoint_config, cfg["endpoint_config"])
 
@@ -843,6 +862,22 @@ class NodeManagerConfig:
 
         if self.snapshot_config.enable_snapshot and self.basic_config.engine_type != ENGINE_TYPE_VLLM:
             errors.append("Native Snapshot currently supports only the vllm engine type")
+
+        startup_config = self.vllm_startup_acceleration_config
+        if not isinstance(startup_config.enable_startup_plan, bool):
+            errors.append("enable_startup_plan must be a boolean")
+
+        if not isinstance(startup_config.enable_graph_reuse, bool):
+            errors.append("enable_graph_reuse must be a boolean")
+
+        if startup_config.enable_startup_plan or startup_config.enable_graph_reuse:
+            if self.basic_config.engine_type != ENGINE_TYPE_VLLM:
+                errors.append("vLLM startup acceleration supports only the vllm engine type")
+
+        if not isinstance(startup_config.cache_root, str):
+            errors.append("cache_root must be a string")
+        elif startup_config.cache_root and not Path(startup_config.cache_root).is_absolute():
+            errors.append("cache_root must be an absolute path when specified")
 
         # Validate logging configuration
         valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]

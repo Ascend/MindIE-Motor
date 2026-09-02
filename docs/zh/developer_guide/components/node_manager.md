@@ -20,6 +20,7 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
 | `NodeManagerAPI` | `motor/node_manager/api_server/node_manager_api.py` | 在后台线程中运行 FastAPI/uvicorn，提供启动、停止和探针接口 |
 | `Daemon` | `motor/node_manager/core/daemon.py` | 服务编排器：根据配置发现并实例化原生 Engine 与 KV-store 服务，维护进程监控器与自杀仲裁线程，持有 FaultReporter |
 | `NativeEngineService` | `motor/node_manager/core/services/native_engine/service.py` | 原生引擎子进程生命周期管理：构造 `LaunchContext`、拉起/追踪/停止 vLLM/SGLang 进程组、重拉编排（`restart`）、`/health` 就绪等待（`wait_ready`） |
+| 启动加速适配 | `motor/node_manager/core/services/native_engine/startup_acceleration.py` | 将 Motor 配置映射为 vLLM StartPlan/图复用环境变量与引擎覆盖项，并在拉起前完成 StartPlan 候选文件的 DFX 预检查 |
 | `LocalService` | `motor/node_manager/core/services/memcache/lifecycle.py` | memcache 后端生命周期管理：配置准备、子进程拉起（通过 `memcache/worker.py`）、健康检查与重启 |
 | `RegisterManager` | `motor/node_manager/core/register_manager.py` | 注册/重注册、校验启动命令、处理 ranktable、快照元数据、持久化引擎重拉参数 |
 | `HeartbeatManager` | `motor/node_manager/core/heartbeat_manager.py` | 轮询 endpoint 状态、上报心跳、维护暂停/恢复状态；仅报告状态事实，自杀裁决在 Daemon |
@@ -156,6 +157,26 @@ python3 -m sglang.launch_server <native SGLang args...>
 
 endpoint 的业务端口必须处于 `[1024, 65535]`，IP 必须是合法的 IPv4 或 IPv6 地址，否则拉起失败。
 
+### vLLM StartPlan 与图复用启动加速
+
+角色对应的 `motor_nodemanger_config.vllm_startup_acceleration_config` 由 `NodeManagerConfig` 解析，并在
+`NativeEngineService.pull()` 拉起 endpoint 前转换为子进程环境变量和引擎配置覆盖项：
+
+| Motor 配置 | vLLM 子进程环境变量/引擎覆盖项 | 行为 |
+|------------|---------------------------------|------|
+| `enable_startup_plan=true` | `VLLM_ENABLE_STARTUP_PLAN=1` | 允许 vLLM 命中 Profile 后跳过 memory profiling |
+| `enable_startup_plan=false` | `VLLM_ENABLE_STARTUP_PLAN=0` | 显式关闭 StartPlan 的生成与加载 |
+| `enable_graph_reuse=true` | `VLLM_DISABLE_COMPILE_CACHE=0`、`enforce_eager=false`、`enable_npugraph_ex=true`；P/U 使用 `cudagraph_mode=FULL`，D 使用 `FULL_DECODE_ONLY` | 启用 vLLM-Ascend 后端编译图缓存的生成与复用 |
+| `enable_graph_reuse=false` | `enable_npugraph_ex=false`、`enable_static_kernel=false` | 显式关闭后端完整图复用，不修改普通图捕获、`enforce_eager`、`cudagraph_mode` 或 AOT 行为 |
+| 所有 vLLM 启动 | `VLLM_CACHE_ROOT=<resolved-cache-root>` | StartPlan、AOT 和后端编译缓存共享同一个 vLLM 缓存根目录，如果为空则使用已有 `VLLM_CACHE_ROOT`、vLLM 默认目录（`${XDG_CACHE_HOME}/vllm` 或 `${HOME}/.cache/vllm`） |
+
+StartPlan 开启时，NodeManager 在每次 `pull()` 中只检查一次
+`<cache_root>/startup_plan/startup_plan_*.json`。目录应可读写，候选文件不能是符号链接，并且应是非空、
+大小不超过 1 MiB（1048576 字节）、根节点为对象的合法 JSON。
+
+StartPlan 的最终生成、指纹匹配、可用内存校验、加载和回退由配套 vLLM/vLLM-Ascend 实现；Motor 仅负责
+配置注入与启动前 DFX 检查。
+
 ### 跨节点 PCP
 
 Node Manager 始终将 Controller 分配的 `node_rank` 和 `master_dp_ip` 交给 Native Engine Backend。
@@ -193,6 +214,9 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 | `fault_tolerance_config.max_poll_failures` | `3` | 连续轮询失败阈值，达到后按 `dead` 上报 |
 | `snapshot_config.enable_snapshot` | `false` | 是否启用容器快照；当前仅 vLLM 原生引擎支持，SGLang 配置为 `true` 会校验失败 |
 | `snapshot_config.snapshot_metadata_path` | 空 | 容器快照元数据路径；为空时使用默认路径 `/snapshot/snapshot_metadata.json` |
+| `vllm_startup_acceleration_config.enable_startup_plan` | `false` | 是否为vLLM子进程开启StartPlan |
+| `vllm_startup_acceleration_config.enable_graph_reuse` | `false` | 是否开启 vLLM-Ascend 后端完整图复用 |
+| `vllm_startup_acceleration_config.cache_root` | 空 | 可选的绝对缓存根目录；缺省时继承环境或使用 vLLM 默认目录，生产环境建议显式配置持久化路径 |
 | `port_allocator_config.enable` | `true` | 是否在启动时自动检查并调整端口 |
 
 `endpoint_num`、`service_ports`、`device_num`、`parallel_config`、`model_name`、`engine_type` 和 `dispatch_capabilities` 主要由部署配置与引擎配置派生。`dispatch_capabilities` 不接受用户直接覆盖。
@@ -225,6 +249,7 @@ services/
   native_engine/
     __init__.py
     service.py        ← NativeEngineService（原生引擎服务编排）
+    startup_acceleration.py ← vLLM启动加速环境变量、引擎覆盖项和StartPlan DFX预检查
     models.py         ← LaunchContext、LaunchSpec、ProbeSpec 和 RuntimeState
     supervisor.py     ← 公共进程组、健康探测和状态管理
     factory.py        ← 按 engine_type 选择 Backend

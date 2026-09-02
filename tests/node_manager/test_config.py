@@ -11,14 +11,19 @@
 import json
 import os
 import sys
-import pytest
 import tempfile
 from dataclasses import MISSING, fields
-from unittest.mock import patch, mock_open, MagicMock
+from unittest.mock import MagicMock, mock_open, patch
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from motor.config.node_manager import NodeManagerConfig, SingleContainerNodemanagerConfig
+from motor.config.node_manager import (
+    NodeManagerConfig,
+    SingleContainerNodemanagerConfig,
+    VLLMStartupAccelerationConfig,
+)
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import ParallelConfig, PDRole
 
@@ -545,6 +550,13 @@ def test_from_json_loads_union_config_for_hybrid():
                 "parallel_config": {"dp_size": 2, "tp_size": 2, "pp_size": 1},
             },
             "engine_config": {"max_model_len": 2048},
+            "motor_nodemanger_config": {
+                "vllm_startup_acceleration_config": {
+                    "enable_startup_plan": True,
+                    "enable_graph_reuse": True,
+                    "cache_root": "/mnt/vllm-cache/union",
+                }
+            },
         },
     }
 
@@ -566,6 +578,7 @@ def test_from_json_loads_union_config_for_hybrid():
     assert config.basic_config.parallel_config.pp_size == 1
     assert config.basic_config.device_num == 4
     assert config.endpoint_config.endpoint_num == 2
+    assert config.vllm_startup_acceleration_config == VLLMStartupAccelerationConfig(True, True, "/mnt/vllm-cache/union")
 
 
 def test_native_vllm_runtime_accepts_snapshot_configuration():
@@ -582,6 +595,76 @@ def test_native_non_vllm_runtime_rejects_snapshot_configuration():
     config.snapshot_config.enable_snapshot = True
 
     with pytest.raises(ValueError, match="Native Snapshot currently supports only the vllm engine type"):
+        config.validate_config()
+
+
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_from_json_loads_vllm_startup_acceleration_on_a2(tmp_path):
+    """Startup acceleration is configured by role and is not gated by NodeManager hardware checks."""
+    user_config = {
+        "motor_deploy_config": {
+            "hardware_type": "800I-A2",
+            "p_instances_num": 1,
+            "single_p_instance_pod_num": 1,
+            "p_pod_npu_num": 1,
+        },
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "model": "/mnt/weight/test",
+                "data_parallel_size": 1,
+                "tensor_parallel_size": 1,
+            },
+            "motor_nodemanger_config": {
+                "vllm_startup_acceleration_config": {
+                    "enable_startup_plan": True,
+                    "enable_graph_reuse": True,
+                    "cache_root": "/mnt/vllm-cache",
+                }
+            },
+        },
+    }
+
+    config_path = tmp_path / "user_config.json"
+    config_path.write_text(json.dumps(user_config), encoding="utf-8")
+
+    config = NodeManagerConfig.from_json(str(config_path))
+    startup_config = config.vllm_startup_acceleration_config
+    assert startup_config.enable_startup_plan is True
+    assert startup_config.enable_graph_reuse is True
+    assert startup_config.cache_root == "/mnt/vllm-cache"
+
+
+def test_vllm_startup_acceleration_defaults_allow_enabling_without_cache_root():
+    startup_config = VLLMStartupAccelerationConfig()
+    assert (startup_config.enable_startup_plan, startup_config.enable_graph_reuse, startup_config.cache_root) == (
+        False,
+        False,
+        "",
+    )
+    startup_config.enable_startup_plan = startup_config.enable_graph_reuse = True
+    config = NodeManagerConfig()
+    config.basic_config.engine_type = "vllm"
+    config.vllm_startup_acceleration_config = startup_config
+    config.validate_config()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "engine_type", "expected_error"),
+    [
+        ("enable_startup_plan", "true", "vllm", "enable_startup_plan must be a boolean"),
+        ("enable_graph_reuse", "true", "vllm", "enable_graph_reuse must be a boolean"),
+        ("cache_root", "relative/cache", "vllm", "cache_root must be an absolute path"),
+        ("enable_startup_plan", True, "sglang", "supports only the vllm engine type"),
+        ("cache_root", 123, "vllm", "cache_root must be a string"),
+    ],
+)
+def test_vllm_startup_acceleration_validation(field, value, engine_type, expected_error):
+    config = NodeManagerConfig()
+    config.basic_config.engine_type = engine_type
+    setattr(config.vllm_startup_acceleration_config, field, value)
+
+    with pytest.raises(ValueError, match=expected_error):
         config.validate_config()
 
 
