@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from pytest import MonkeyPatch
-from fastapi import FastAPI, status, Request
+from fastapi import FastAPI, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 import pytest
 
@@ -32,6 +33,7 @@ from motor.config.tls_config import TLSConfig
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.router.strategies.pd_hybrid import PDHybridRouter
 from motor.common.resources.instance import Endpoint, PDRole, Instance, InsStatus, ParallelConfig
+from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.endpoint import Workload
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.scheduler.scheduler import Scheduler
@@ -53,6 +55,146 @@ app = FastAPI()
 _config = CoordinatorConfig()
 _scheduler = Scheduler(instance_provider=InstanceManager(_config), config=_config)
 _request_manager = RequestManager(_config)
+
+
+@pytest.mark.asyncio
+async def test_decode_colocation_is_last_hybrid_candidate_and_keeps_request_bare(monkeypatch):
+    decode = Instance(
+        job_name="decode",
+        model_name="model",
+        id=7,
+        role=PDRole.ROLE_D.value,
+        engine_type="vllm",
+        dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value, DispatchPlan.DECODE_COLOCATION.value],
+    )
+
+    class _DecodeOnlyScheduler:
+        async def get_unblocked_instances(self, role):
+            return [decode.id] if role == PDRole.ROLE_D else []
+
+        async def get_local_instances(self, role=None):
+            return {decode.id: decode} if role in (None, PDRole.ROLE_D) else {}
+
+    req_info = RequestInfo(
+        req_id="decode-fallback",
+        req_data={"model": "model", "prompt": "hello"},
+        req_len=5,
+        api="test",
+    )
+    config = CoordinatorConfig()
+    hybrid = PDHybridRouter(
+        req_info,
+        config,
+        scheduler=_DecodeOnlyScheduler(),
+        request_manager=RequestManager(config),
+    )
+    req_info.trace_obj.span = MagicMock()
+
+    forwarded = []
+
+    async def capture_generate_post(self, req_data, *, manage_request_context=True):
+        forwarded.append(req_data)
+        return JSONResponse({"ok": True})
+
+    monkeypatch.setattr(PDHybridRouter, "_generate_post", capture_generate_post)
+
+    assert await hybrid._resolve_candidate_roles() == (PDRole.ROLE_D,)
+    response = await hybrid.handle_request()
+    assert response.status_code == status.HTTP_200_OK
+    assert forwarded == [{"model": "model", "prompt": "hello"}]
+    assert "kv_transfer_params" not in forwarded[0]
+    assert "metaserver" not in forwarded[0]
+    assert "do_remote_prefill" not in forwarded[0]
+    assert req_info.trace_obj.meta_error_message == (
+        "No union or prefill instances available, degraded to decode co-location"
+    )
+    assert req_info.trace_obj.route_degradation == "decode_co_location"
+    req_info.trace_obj.span.set_attribute.assert_any_call("routing.degradation", "decode_co_location")
+
+
+@pytest.mark.asyncio
+async def test_decode_colocation_filters_allocation_without_pinning_first_candidate():
+    """A mixed Decode pool must keep scheduling among all eligible instances."""
+    eligible = Instance(
+        job_name="vllm-decode",
+        model_name="model",
+        id=7,
+        role=PDRole.ROLE_D.value,
+        engine_type="vllm",
+        dispatch_capabilities=[DispatchPlan.DECODE_COLOCATION.value],
+    )
+    ineligible = Instance(
+        job_name="sglang-decode",
+        model_name="model",
+        id=3,
+        role=PDRole.ROLE_D.value,
+        engine_type="sglang",
+        dispatch_capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value],
+    )
+
+    class _MixedDecodeScheduler:
+        def __init__(self):
+            self.selection = None
+
+        async def get_unblocked_instances(self, role):
+            return [ineligible.id, eligible.id] if role == PDRole.ROLE_D else []
+
+        async def get_local_instances(self, role=None):
+            return {ineligible.id: ineligible, eligible.id: eligible} if role == PDRole.ROLE_D else {}
+
+        async def select_and_allocate(self, role, req_info, **kwargs):
+            self.selection = (role, kwargs)
+            return None
+
+    scheduler = _MixedDecodeScheduler()
+    req_info = RequestInfo(req_id="mixed-decode", req_data={"prompt": "hi"}, req_len=2, api="test")
+    config = CoordinatorConfig()
+    config.exception_config.max_retry = 1
+    hybrid = PDHybridRouter(req_info, config, scheduler=scheduler, request_manager=RequestManager(config))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await hybrid.prepare_resource(PDRole.ROLE_D)
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert scheduler.selection == (
+        PDRole.ROLE_D,
+        {
+            "target_instance_id": None,
+            "required_engine_type": "vllm",
+            "required_dispatch_capability": DispatchPlan.DECODE_COLOCATION.value,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_decode_colocation_does_not_bypass_disabled_fallback_in_hybrid_deploy():
+    decode = Instance(
+        job_name="decode",
+        model_name="model",
+        id=7,
+        role=PDRole.ROLE_D.value,
+        engine_type="vllm",
+        dispatch_capabilities=[DispatchPlan.DECODE_COLOCATION.value],
+    )
+
+    class _DecodeOnlyScheduler:
+        async def get_unblocked_instances(self, role):
+            return [decode.id] if role == PDRole.ROLE_D else []
+
+        async def get_local_instances(self, role=None):
+            return {decode.id: decode} if role == PDRole.ROLE_D else {}
+
+    config = CoordinatorConfig()
+    config.deploy_config.hybrid_instances_num = 1
+    config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
+    hybrid = PDHybridRouter(
+        RequestInfo(req_id="fallback-off", req_data={"prompt": "hi"}, req_len=2, api="test"),
+        config,
+        scheduler=_DecodeOnlyScheduler(),
+        request_manager=RequestManager(config),
+    )
+
+    assert await hybrid._resolve_candidate_roles() == ()
 
 
 @app.post("/v1/chat/completions")

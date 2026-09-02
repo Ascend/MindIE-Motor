@@ -22,6 +22,8 @@ from multiprocessing import shared_memory as shm_mod
 from typing import Protocol
 
 from motor.common.logger import get_logger
+from motor.common.resources.dispatch import is_decode_colocation_instance
+from motor.common.resources.instance import PDRole
 from motor.config.coordinator import (
     ROLE_HEARTBEAT_STALE_SEC,
     ROLE_SHM_MASTER,
@@ -197,10 +199,12 @@ class ReadinessProbe:
         daemon_liveness: DaemonLivenessProvider,
         instance_manager: InstanceManager,
         enable_master_standby: bool,
+        allow_decode_only: bool = False,
     ):
         self._daemon = daemon_liveness
         self._instance_manager = instance_manager
         self._enable_master_standby = enable_master_standby
+        self._allow_decode_only = allow_decode_only
 
     @property
     def instance_manager(self) -> InstanceManager:
@@ -212,11 +216,25 @@ class ReadinessProbe:
         """Allow callers (e.g. ManagementServer tests) to inject a custom instance manager."""
         self._instance_manager = value
 
+    @property
+    def allow_decode_only(self) -> bool:
+        """Whether decode-only topology can serve through hybrid fallback."""
+        return self._allow_decode_only
+
+    @allow_decode_only.setter
+    def allow_decode_only(self, value: bool) -> None:
+        """Apply a hot-reloaded decode co-location policy."""
+        self._allow_decode_only = value
+
     async def check(self) -> ReadinessProbeOutput:
         readiness = await asyncio.to_thread(
             self._instance_manager.get_required_instances_status,
         )
-        is_run = readiness.is_run()
+        if readiness == InstanceReadiness.ONLY_DECODE:
+            decode_instances = self._instance_manager.get_available_instances(PDRole.ROLE_D).values()
+            is_run = self._allow_decode_only and any(is_decode_colocation_instance(item) for item in decode_instances)
+        else:
+            is_run = readiness.is_run()
 
         r = self._daemon.read_role_and_heartbeat()
         if r.orphaned:

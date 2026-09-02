@@ -17,6 +17,7 @@ class DispatchPlan(str, Enum):
 
     CONCURRENT_ENGINE_SYNC = "concurrent_engine_sync"
     PREFILL_HANDOFF_DECODE = "prefill_handoff_decode"
+    DECODE_COLOCATION = "decode_colocation"
 
 
 DISPATCH_PROFILE_KEY = "dispatch_profile"
@@ -64,6 +65,25 @@ def dispatch_capabilities_for_profile(profile: DispatchProfile) -> list[str]:
     if profile in (DispatchProfile.TRIGGER, DispatchProfile.BOOTSTRAP):
         return [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
     return []
+
+
+def supports_vllm_decode_colocation(engine_config: Any) -> bool:
+    """Return whether a recognized connector can safely ignore absent transfer metadata.
+
+    An explicit dispatch profile alone is insufficient: it describes P/D coordination,
+    not whether a Decode engine can execute a bare request locally.
+    """
+    kv_transfer_config = _config_get(engine_config, KV_TRANSFER_CONFIG_KEY, {})
+    return _classify_vllm_kv_transfer_config(kv_transfer_config) != DispatchProfile.UNKNOWN
+
+
+def is_decode_colocation_instance(instance: Any) -> bool:
+    """Return whether an instance may execute a bare Decode co-location request."""
+    return str(
+        getattr(instance, "engine_type", "")
+    ).strip().lower() == "vllm" and DispatchPlan.DECODE_COLOCATION.value in (
+        getattr(instance, "dispatch_capabilities", None) or []
+    )
 
 
 def _classify_vllm_kv_transfer_config(kv_transfer_config: Any) -> DispatchProfile:

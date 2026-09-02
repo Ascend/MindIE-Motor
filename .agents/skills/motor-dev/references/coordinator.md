@@ -175,13 +175,15 @@ There is **no DeployMode → router class map**. `select_router_class()` (`route
 P and D roles both online AND a compatible dispatch pair exists
   (both roles have non-blocked instances)          → UnifiedPDRouter
 otherwise, degrade (fallback to hybrid enabled or
-  hybrid deployment) with any unblocked P/U instance → PDHybridRouter
+  hybrid deployment) with an unblocked U/P instance, or a supported
+  vLLM D instance with decode_colocation capability     → PDHybridRouter
 no routable topology at all                         → HTTP 503
 ```
 
 - `UnifiedPDRouter` (strategies/unified_pd.py): routes to P/D pairs sharing a dispatch capability (e.g., common kv_connector or explicit `dispatch_profile`).
-- `PDHybridRouter` (strategies/pd_hybrid.py): single instance runs prefill+decode together; also the degradation target when PD separation is unavailable (e.g., P/D instances circuit-broken or advertising no shared dispatch).
+- `PDHybridRouter` (strategies/pd_hybrid.py): single instance runs prefill+decode together; also the degradation target when PD separation is unavailable (e.g., P/D instances circuit-broken or advertising no shared dispatch). Candidate priority is U → P → D. Decode is fail-closed to unblocked vLLM instances advertising the connector-derived `decode_colocation` capability; Scheduler filters by engine type and capability before applying the configured load-balancing policy, so mixed D pools stay safe without pinning all traffic to one instance. Its request remains bare (no `kv_transfer_params`/metaserver injection).
 - Both subclass `BaseRouter` (strategies/base.py); `_is_pd_hybrid_deploy` / `_is_pd_separation_fallback_to_hybrid_enabled` gates fallback (config `scheduler_config.enable_pd_separation_fallback_to_hybrid`, default true).
+- The inference-plane availability gate and management-plane readiness probe apply the same fallback policy before routing. `InstanceReadiness.ONLY_DECODE` is runnable only when `enable_pd_separation_fallback_to_hybrid` is enabled and an unblocked vLLM Decode instance advertises `decode_colocation`; the default `InstanceReadiness.is_run()` call remains fail-closed for decode-only topology.
 
 **vLLM P/D coordination modes** (`UnifiedPDRouter`):
 

@@ -39,6 +39,7 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
+from motor.coordinator.domain.scheduling import InstanceReadiness, has_decode_colocation_candidate
 from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
 from motor.coordinator.render.tokenization_service import TokenizationService
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
@@ -429,12 +430,15 @@ class InferenceServer(BaseCoordinatorServer):
 
     async def _is_available(self) -> bool:
         """Whether instances are available (Worker reads SchedulerClient cache).
-        PD mode: available if has P or P+D.
+        PD mode: decode-only is available when hybrid fallback is enabled.
         """
         client = self._scheduler_connection.get_client()
         if client is None:
             return False
         readiness = await client.has_required_instances()
+        if readiness == InstanceReadiness.ONLY_DECODE:
+            fallback_enabled = self.coordinator_config.scheduler_config.enable_pd_separation_fallback_to_hybrid
+            return fallback_enabled and await has_decode_colocation_candidate(client)
         return readiness.is_run()
 
     def _register_routes(self) -> None:

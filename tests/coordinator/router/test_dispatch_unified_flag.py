@@ -20,6 +20,7 @@ import motor.common.utils.error as cancel_error
 from motor.common.logger.logger import _resolve_logger_name
 from motor.config.coordinator import CoordinatorConfig
 from motor.common.resources.instance import Instance, PDRole
+from motor.common.resources.dispatch import DispatchPlan
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router import dispatch
@@ -43,6 +44,18 @@ class _Scheduler:
             if has_p and not has_d:
                 return InstanceReadiness.ONLY_PREFILL
         return InstanceReadiness.REQUIRED_MET
+
+
+class _DecodeFallbackScheduler(_Scheduler):
+    async def get_unblocked_instances(self, role):
+        return [instance.id for instance in self._instances.values() if instance.role == role.value]
+
+    async def get_local_instances(self, role=None):
+        return {
+            instance_id: instance
+            for instance_id, instance in self._instances.items()
+            if role is None or instance.role == role.value
+        }
 
 
 def _app(config: CoordinatorConfig, scheduler: _Scheduler) -> FastAPI:
@@ -154,6 +167,175 @@ def test_dispatch_rejects_only_prefill_when_hybrid_fallback_disabled(monkeypatch
 
     assert response.status_code == 503
     assert response.json()["detail"] == "PD separate service is unavailable and fallback to hybrid is disabled"
+
+
+def _decode_instance(*, engine_type="vllm", capabilities=None):
+    return Instance(
+        job_name="d",
+        model_name="m",
+        id=2,
+        role=PDRole.ROLE_D.value,
+        engine_type=engine_type,
+        dispatch_capabilities=(
+            capabilities
+            if capabilities is not None
+            else [DispatchPlan.PREFILL_HANDOFF_DECODE.value, DispatchPlan.DECODE_COLOCATION.value]
+        ),
+    )
+
+
+def test_dispatch_uses_decode_colocation_fallback_for_supported_vllm(monkeypatch):
+    calls = []
+
+    class _FakeHybridRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            calls.append((req_info.trace_obj.error_message, req_info.trace_obj.route_degradation))
+
+        async def handle_request(self):
+            return JSONResponse({"router": "hybrid"})
+
+    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
+    scheduler = _DecodeFallbackScheduler({2: _decode_instance()})
+
+    response = TestClient(_app(_config(), scheduler)).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"router": "hybrid"}
+    assert calls == [("PD separate service degraded to decode co-location", "decode_co_location")]
+
+
+@pytest.mark.parametrize(
+    ("engine_type", "capabilities"),
+    [
+        ("sglang", [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]),
+        ("vllm", []),
+    ],
+)
+def test_dispatch_rejects_decode_colocation_for_unsupported_engine(engine_type, capabilities):
+    scheduler = _DecodeFallbackScheduler({2: _decode_instance(engine_type=engine_type, capabilities=capabilities)})
+
+    response = TestClient(_app(_config(), scheduler)).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "No routable inference topology is currently available"
+
+
+def test_dispatch_rejects_decode_colocation_when_fallback_disabled():
+    config = _config()
+    config.scheduler_config.enable_pd_separation_fallback_to_hybrid = False
+    scheduler = _DecodeFallbackScheduler({2: _decode_instance()})
+
+    response = TestClient(_app(config, scheduler)).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "PD separate service is unavailable and fallback to hybrid is disabled"
+
+
+def test_dispatch_degrades_when_pd_capabilities_are_incompatible(monkeypatch):
+    selected = []
+
+    class _FakeHybridRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            selected.append("hybrid")
+
+        async def handle_request(self):
+            return JSONResponse({"router": "hybrid"})
+
+    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            engine_type="vllm",
+            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+        ),
+        2: _decode_instance(capabilities=[DispatchPlan.CONCURRENT_ENGINE_SYNC.value]),
+    }
+
+    response = TestClient(_app(_config(), _DecodeFallbackScheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"router": "hybrid"}
+    assert selected == ["hybrid"]
+
+
+def test_dispatch_keeps_legacy_pd_route_when_compatibility_metadata_is_missing(monkeypatch):
+    """Missing registration metadata is unknown, not proof that P/D conflict."""
+    selected = []
+
+    class _FakeUnifiedRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            selected.append("unified")
+
+        async def handle_request(self):
+            return JSONResponse({"router": "unified"})
+
+    monkeypatch.setattr(dispatch, "UnifiedPDRouter", _FakeUnifiedRouter)
+    instances = {
+        1: Instance(job_name="p", model_name="m", id=1, role=PDRole.ROLE_P.value),
+        2: Instance(job_name="d", model_name="m", id=2, role=PDRole.ROLE_D.value),
+    }
+
+    response = TestClient(_app(_config(), _DecodeFallbackScheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"router": "unified"}
+    assert selected == ["unified"]
+
+
+def test_dispatch_marks_decode_colocation_when_prefill_is_circuit_broken(monkeypatch):
+    degradation = []
+
+    class _BlockedPrefillScheduler(_DecodeFallbackScheduler):
+        async def get_unblocked_instances(self, role):
+            if role == PDRole.ROLE_P:
+                return []
+            return await super().get_unblocked_instances(role)
+
+    class _FakeHybridRouter:
+        def __init__(self, req_info, config, scheduler=None, request_manager=None, sampling_manager=None):
+            degradation.append(req_info.trace_obj.route_degradation)
+
+        async def handle_request(self):
+            return JSONResponse({"router": "hybrid"})
+
+    monkeypatch.setattr(dispatch, "PDHybridRouter", _FakeHybridRouter)
+    instances = {
+        1: Instance(
+            job_name="p",
+            model_name="m",
+            id=1,
+            role=PDRole.ROLE_P.value,
+            engine_type="vllm",
+            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
+        ),
+        2: _decode_instance(),
+    }
+
+    response = TestClient(_app(_config(), _BlockedPrefillScheduler(instances))).post(
+        "/v1/completions",
+        json={"model": "m", "prompt": "hi"},
+    )
+
+    assert response.status_code == 200
+    assert degradation == ["decode_co_location"]
 
 
 def test_dispatch_reuses_request_json_parsed_at_ingress(monkeypatch):

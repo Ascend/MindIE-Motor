@@ -114,6 +114,7 @@ class Scheduler:
         *,
         target_instance_id: int | None = None,
         required_engine_type: str | None = None,
+        required_dispatch_capability: str | None = None,
     ):
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
@@ -130,6 +131,12 @@ class Scheduler:
                 instance_id: instance
                 for instance_id, instance in pool.items()
                 if str(getattr(instance, "engine_type", "")).strip().lower() == normalized_engine_type
+            }
+        if required_dispatch_capability is not None:
+            pool = {
+                instance_id: instance
+                for instance_id, instance in pool.items()
+                if required_dispatch_capability in (getattr(instance, "dispatch_capabilities", None) or [])
             }
         if target_instance_id is not None:
             instance = resolve_pinned_instance(pool, target_instance_id)

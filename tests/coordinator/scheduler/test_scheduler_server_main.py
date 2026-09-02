@@ -96,6 +96,7 @@ def _make_instance(
     endpoint_ids: tuple[int, ...],
     role: PDRole = PDRole.ROLE_P,
     engine_type: str | None = None,
+    dispatch_capabilities: list[str] | None = None,
 ) -> Instance:
     inst = Instance(
         job_name=f"{role.value}-{instance_id}",
@@ -103,6 +104,7 @@ def _make_instance(
         id=instance_id,
         role=role,
         engine_type=engine_type,
+        dispatch_capabilities=dispatch_capabilities or [],
         status=InsStatus.ACTIVE,
         parallel_config=ParallelConfig(dp_size=len(endpoint_ids)),
     )
@@ -841,6 +843,30 @@ class TestHandleAllocateOnlyEdgeCases:
                 "endpoint_id": 10,
                 "role": PDRole.ROLE_D.value,
                 "required_engine_type": "sglang",
+                "workload_active_tokens": 1,
+            },
+        )
+
+        response = await dispatcher.dispatch(request)
+
+        assert response.response_type == SchedulerResponseType.SUCCESS
+        assert response.data["instance"] is None
+        assert response.data["endpoint"] is None
+
+    @pytest.mark.asyncio
+    async def test_required_dispatch_capability_rejects_mismatched_candidate(self):
+        dispatcher, instance_manager, *_ = _make_dispatcher(scheduler_type=SchedulerType.ROUND_ROBIN)
+        instance = _make_instance(1, (10,), PDRole.ROLE_D, engine_type="vllm")
+        await instance_manager.refresh_instances(EventType.ADD, [instance])
+
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.ALLOCATE_ONLY,
+            request_id="req-capability-filter",
+            data={
+                "instance_id": 1,
+                "endpoint_id": 10,
+                "role": PDRole.ROLE_D.value,
+                "required_dispatch_capability": "decode_colocation",
                 "workload_active_tokens": 1,
             },
         )

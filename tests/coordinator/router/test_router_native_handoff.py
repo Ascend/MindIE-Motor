@@ -25,6 +25,7 @@ from motor.common.resources.endpoint import (
     WorkloadAction,
 )
 from motor.common.resources.instance import PDRole, Instance, InsStatus, ParallelConfig
+from motor.common.resources.dispatch import DispatchPlan
 from motor.config.coordinator import CoordinatorConfig, ExceptionConfig, SchedulerType
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain import InstanceReadiness, ScheduledResource
@@ -266,6 +267,7 @@ class TestRouterNativeHandoff:
             job_name=f"test-job-{instance_id}",
             model_name=f"test-model-{instance_id}",
             engine_type="vllm",
+            dispatch_capabilities=[DispatchPlan.PREFILL_HANDOFF_DECODE.value],
             id=instance_id,
             role=role,
             status=InsStatus.ACTIVE,

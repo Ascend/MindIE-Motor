@@ -8,12 +8,19 @@ Coordinator 不再读取 `motor_coordinator_config.scheduler_config.deploy_mode`
 
 | 可用角色 | Router |
 |----------|--------|
-| 同时存在 `prefill` 和 `decode` | `UnifiedPDRouter` |
+| 存在兼容且未熔断的 `prefill` / `decode` pair | `UnifiedPDRouter` |
 | 存在 `union` | `PDHybridRouter` |
 | 仅存在 `prefill` | `PDHybridRouter`，用于 PD 降级 |
+| 仅存在受支持的 vLLM `decode` | `PDHybridRouter`，以裸请求在 Decode 本地完成 prefill+decode |
 | 其他组合 | 返回 503 |
 
 `motor_deploy_config.deploy_mode` 仍然保留，只用于选择 `infer_service_set`、`multi_deployment` 或 `single_container` 等部署形态，不参与推理行为选择。
+
+上述降级由 `scheduler_config.enable_pd_separation_fallback_to_hybrid` 统一控制，候选优先级固定为
+`union → prefill → decode`。Decode 兜底只接受 `engine_type=vllm` 且上报 `decode_colocation` capability 的
+未熔断实例；SGLang bootstrap、未知 Connector 和独立 store/pool Connector 均 fail-closed。转发 Decode
+兜底请求时沿用 `PDHybridRouter` 的普通请求体，不注入 `kv_transfer_params`、`do_remote_prefill` 或
+`metaserver`，因此 Layerwise Connector 会在本地完成完整推理，不等待远端 Prefill。
 
 ## Connector 驱动执行计划
 
@@ -23,6 +30,7 @@ P/D 实例的协同行为由引擎 Connector 推导出的 `dispatch_capabilities
 |----------------|---------------|
 | `concurrent_engine_sync` | P/D 并发执行，由引擎同步 KV |
 | `prefill_handoff_decode` | Prefill 完成后将结果交给 Decode |
+| `decode_colocation` | Decode 可在请求不带 KV 传输元数据时本地完成 Prefill；仅由已识别 connector 推导 |
 
 NodeManager 会从 vLLM 的 `kv_transfer_config.kv_connector` 或显式 `dispatch_profile` 推导 capability；SGLang 自动上报 `concurrent_engine_sync`。Coordinator 根据实例 `engine_type` 选择原生协议 Adapter，并使用 P/D 两端的兼容元数据进行保护性校验。
 
@@ -40,6 +48,7 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 
 - **`MultiConnector` 只看 `connectors[0]`（传输层）**。KV 池/存储类连接器（如 `AscendStoreConnector`、`MooncakeConnectorStoreV1`、`UCMConnector`、`LMCacheAscendConnector`）一般作为 `connectors[1]` 的后端使用，不参与 capability 判定，因此**无需**出现在白名单中。
 - 不在上表内、且 `connectors[0]` 也无法识别的连接器会被判为 `unknown`，**不产生任何 capability**。
+- 上表中已识别的 vLLM connector 还会生成 `decode_colocation`。仅显式填写 `dispatch_profile` 只能声明 P/D 协调方式，不会授予 Decode 共部署能力。
 
 > ⚠️ **fail-closed**：原生 vLLM P/D 启动只接受 `handoff` 或 `trigger` 语义；未知或不兼容 Connector 会在 NodeManager 构造启动命令时失败，避免把错误推迟到 KV 传输阶段。
 
@@ -96,12 +105,12 @@ SGLang 使用原生 bootstrap 协议，不复用 vLLM 的 `kv_transfer_params`�
 flowchart LR
     Client[Client] --> Coord[Coordinator]
     Coord --> Roles[Inspect instance roles]
-    Roles -->|P + D| Unified[UnifiedPDRouter]
-    Roles -->|Union or P only| Hybrid[PDHybridRouter]
+    Roles -->|Compatible unblocked P + D pair| Unified[UnifiedPDRouter]
+    Roles -->|Fallback enabled: Union, P, or supported vLLM D| Hybrid[PDHybridRouter]
     Unified --> Adapter[Select adapter by engine_type]
     Adapter --> EngineP[Prefill instance]
     Adapter --> EngineD[Decode instance]
-    Hybrid --> EngineU[Union or fallback Prefill instance]
+    Hybrid --> EngineU[Union, fallback Prefill, or fallback Decode instance]
 ```
 
 vLLM **handoff**：Coordinator 先调度 Prefill，完成后再调度 Decode。

@@ -46,6 +46,11 @@ import motor.coordinator.router.adapters as adapters
 from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
 from motor.coordinator.router.precision_sample.request import inject_logprobs
 from motor.common.resources.instance import PDRole
+from motor.common.resources.dispatch import DispatchPlan
+from motor.coordinator.domain.scheduling import (
+    get_decode_colocation_candidate_ids,
+    has_decode_colocation_candidate,
+)
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.router.upstream_error import (
     UpstreamHTTPError,
@@ -75,6 +80,17 @@ class PDHybridRouter(BaseRouter):
             self.logger,
         )
 
+    def _decode_colocation_enabled(self) -> bool:
+        scheduler_config = getattr(self.config, "scheduler_config", None)
+        return bool(getattr(scheduler_config, "enable_pd_separation_fallback_to_hybrid", True))
+
+    def _mark_decode_colocation(self) -> None:
+        error_message = "No union or prefill instances available, degraded to decode co-location"
+        self.logger.warning("%s", error_message)
+        self.req_info.trace_obj.route_degradation = "decode_co_location"
+        self.req_info.trace_obj.set_trace_attribute("routing.degradation", "decode_co_location")
+        self.req_info.trace_obj.set_trace_error_message(error_message, is_meta=True)
+
     def set_render_client(self, render_client: VLLMRenderClient | None) -> None:
         """Attach the request worker's shared Render/Derender client."""
         self._render_client = render_client
@@ -98,6 +114,10 @@ class PDHybridRouter(BaseRouter):
                 if await get_unblocked(role):
                     self._resolved_roles = (role,)
                     return self._resolved_roles
+            if self._decode_colocation_enabled() and await has_decode_colocation_candidate(self._scheduler):
+                self._mark_decode_colocation()
+                self._resolved_roles = (PDRole.ROLE_D,)
+                return self._resolved_roles
             self._resolved_roles = ()
             return self._resolved_roles
 
@@ -111,6 +131,15 @@ class PDHybridRouter(BaseRouter):
             self.logger.info(error_message)
             self.req_info.trace_obj.set_trace_error_message(error_message, is_meta=True)
             self._resolved_roles = (PDRole.ROLE_P,)
+            return self._resolved_roles
+
+        if (
+            PDRole.ROLE_D in roles
+            and self._decode_colocation_enabled()
+            and await has_decode_colocation_candidate(self._scheduler)
+        ):
+            self._mark_decode_colocation()
+            self._resolved_roles = (PDRole.ROLE_D,)
             return self._resolved_roles
 
         self._resolved_roles = ()
@@ -145,6 +174,39 @@ class PDHybridRouter(BaseRouter):
             if resource.instance and resource.endpoint:
                 self._cb_iid = resource.instance.id
             yield resource
+
+    async def prepare_resource(
+        self,
+        role: PDRole,
+        *,
+        target_instance_id: int | None = None,
+        required_engine_type: str | None = None,
+        required_dispatch_capability: str | None = None,
+    ) -> ScheduledResource:
+        """Pin Decode co-location to an instance that passed the capability gate."""
+        if role != PDRole.ROLE_D:
+            return await super().prepare_resource(
+                role,
+                target_instance_id=target_instance_id,
+                required_engine_type=required_engine_type,
+                required_dispatch_capability=required_dispatch_capability,
+            )
+
+        candidate_ids = await get_decode_colocation_candidate_ids(self._scheduler)
+        if not candidate_ids:
+            raise HTTPException(status_code=503, detail="No eligible Decode instance for co-location")
+        selected_target = target_instance_id
+        constraint = self.req_info.scheduling_constraint
+        if selected_target is None and constraint is not None:
+            selected_target = constraint.target_for_role(role)
+        if selected_target is not None and selected_target not in candidate_ids:
+            raise HTTPException(status_code=503, detail="Target Decode instance is not eligible for co-location")
+        return await super().prepare_resource(
+            role,
+            target_instance_id=selected_target,
+            required_engine_type="vllm",
+            required_dispatch_capability=DispatchPlan.DECODE_COLOCATION.value,
+        )
 
     async def _report_cb(self, event: str) -> None:
         iid = getattr(self, '_cb_iid', None)

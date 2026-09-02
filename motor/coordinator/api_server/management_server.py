@@ -129,6 +129,7 @@ class ManagementServer(BaseCoordinatorServer):
             self._daemon_liveness,
             self._instance_manager,
             enable_master_standby=self.coordinator_config.standby_config.enable_master_standby,
+            allow_decode_only=(self.coordinator_config.scheduler_config.enable_pd_separation_fallback_to_hybrid),
         )
         self._app_builder = AppBuilder(self.coordinator_config)
         self.management_app = self._app_builder.create_management_app(lifespan=self._lifespan)
@@ -250,6 +251,7 @@ class ManagementServer(BaseCoordinatorServer):
         self._mgmt_ssl_config = new_config.mgmt_tls_config
         self._mgmt_api_key_config = new_mgmt_api_key_config
         self._mgmt_api_key = new_mgmt_api_key
+        self._readiness_probe.allow_decode_only = new_config.scheduler_config.enable_pd_separation_fallback_to_hybrid
 
     def _load_mgmt_api_key(self) -> str:
         if not self._mgmt_api_key_config.enable_api_key:

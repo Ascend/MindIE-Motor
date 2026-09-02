@@ -22,6 +22,7 @@ from motor.common.resources.dispatch import (
     DispatchProfile,
     classify_vllm_dispatch_profile,
     dispatch_capabilities_for_profile,
+    supports_vllm_decode_colocation,
 )
 from motor.config.resolver import ConfigResolver
 from motor.config.tls_config import TLSConfig
@@ -615,6 +616,8 @@ class NodeManagerConfig:
                 explicit_profile=engine_config.get(DISPATCH_PROFILE_KEY),
             )
             capabilities = dispatch_capabilities_for_profile(profile)
+            if supports_vllm_decode_colocation(native_engine_config):
+                capabilities.append(DispatchPlan.DECODE_COLOCATION.value)
             if not capabilities and profile == DispatchProfile.UNKNOWN:
                 logger.warning(
                     "Unable to infer vLLM dispatch capability from kv_transfer_config. "

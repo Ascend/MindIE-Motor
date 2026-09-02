@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Protocol
+from typing import Any, Iterable, Protocol
 
 from pydantic import BaseModel
 
+from motor.common.resources.dispatch import is_decode_colocation_instance
 from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction
 from motor.common.resources.instance import Instance, PDRole
 from motor.coordinator.models.request import RequestInfo
@@ -46,9 +47,17 @@ class InstanceReadiness(str, Enum):
         """True if required instances are present for the deploy mode."""
         return self in {InstanceReadiness.REQUIRED_MET, InstanceReadiness.REQUIRED_MET_EPD}
 
-    def is_run(self) -> bool:
-        """True indicates that it can run normally."""
-        return self.is_ready() or self in {InstanceReadiness.ONLY_PREFILL, InstanceReadiness.ENCODE_PREFILL}
+    def is_run(self, *, allow_decode_only: bool = False) -> bool:
+        """Return whether this topology can accept inference traffic.
+
+        A decode-only topology is routable only when PD-separation fallback can
+        co-locate prefill on a decode instance.  Keep that policy explicit at
+        the caller so deployments with fallback disabled do not become ready.
+        """
+        runnable = {InstanceReadiness.ONLY_PREFILL, InstanceReadiness.ENCODE_PREFILL}
+        if allow_decode_only:
+            runnable.add(InstanceReadiness.ONLY_DECODE)
+        return self.is_ready() or self in runnable
 
 
 def readiness_from_instances(instances: Iterable[Instance]) -> InstanceReadiness:
@@ -82,6 +91,32 @@ def readiness_from_instances(instances: Iterable[Instance]) -> InstanceReadiness
     if encode_instances:
         return InstanceReadiness.ONLY_ENCODE
     return InstanceReadiness.NONE
+
+
+async def get_decode_colocation_candidate_ids(scheduler: Any) -> tuple[int, ...]:
+    """Return eligible unblocked Decode IDs in deterministic order."""
+    get_unblocked = getattr(scheduler, "get_unblocked_instances", None)
+    get_local = getattr(scheduler, "get_local_instances", None)
+    if get_unblocked is None or get_local is None:
+        return ()
+
+    unblocked_ids = set(await get_unblocked(PDRole.ROLE_D))
+    if not unblocked_ids:
+        return ()
+
+    instances = await get_local(PDRole.ROLE_D)
+    return tuple(
+        sorted(
+            instance_id
+            for instance_id, instance in instances.items()
+            if instance_id in unblocked_ids and is_decode_colocation_instance(instance)
+        )
+    )
+
+
+async def has_decode_colocation_candidate(scheduler: Any) -> bool:
+    """Return whether an unblocked Decode instance can execute a bare local request."""
+    return bool(await get_decode_colocation_candidate_ids(scheduler))
 
 
 class ScheduledResource(BaseModel):
@@ -123,11 +158,12 @@ class SchedulingFacade(Protocol):
         *,
         target_instance_id: int | None = None,
         required_engine_type: str | None = None,
+        required_dispatch_capability: str | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
         """
         Atomic: select instance + one workload allocation (ALLOCATION).
         When target_instance_id is set, pin to that instance (skip policy selection).
-        When required_engine_type is set, only matching engine instances are eligible.
+        Engine type and dispatch capability constraints filter eligible instances before selection.
         Returns (instance, endpoint, allocation_workload). Caller records allocation_workload for release.
         """
         ...

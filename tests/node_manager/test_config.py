@@ -724,7 +724,7 @@ def test_vllm_handoff_connector_infers_handoff_capability():
         }
     )
 
-    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value, DispatchPlan.DECODE_COLOCATION.value]
 
 
 def test_vllm_hybrid_connector_infers_handoff_capability():
@@ -739,7 +739,7 @@ def test_vllm_hybrid_connector_infers_handoff_capability():
         }
     )
 
-    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value, DispatchPlan.DECODE_COLOCATION.value]
 
 
 def test_vllm_nixl_connector_infers_handoff_capability():
@@ -754,7 +754,7 @@ def test_vllm_nixl_connector_infers_handoff_capability():
         }
     )
 
-    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    assert capabilities == [DispatchPlan.PREFILL_HANDOFF_DECODE.value, DispatchPlan.DECODE_COLOCATION.value]
 
 
 def test_vllm_multi_connector_infers_transport_connector_capability():
@@ -775,13 +775,16 @@ def test_vllm_multi_connector_infers_transport_connector_capability():
         }
 
     assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeHybridConnector")) == [
-        DispatchPlan.PREFILL_HANDOFF_DECODE.value
+        DispatchPlan.PREFILL_HANDOFF_DECODE.value,
+        DispatchPlan.DECODE_COLOCATION.value,
     ]
     assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("NixlConnector")) == [
-        DispatchPlan.PREFILL_HANDOFF_DECODE.value
+        DispatchPlan.PREFILL_HANDOFF_DECODE.value,
+        DispatchPlan.DECODE_COLOCATION.value,
     ]
     assert NodeManagerConfig._infer_dispatch_capabilities(_multi_connector("MooncakeLayerwiseConnector")) == [
-        DispatchPlan.CONCURRENT_ENGINE_SYNC.value
+        DispatchPlan.CONCURRENT_ENGINE_SYNC.value,
+        DispatchPlan.DECODE_COLOCATION.value,
     ]
 
 
@@ -802,7 +805,10 @@ def test_vllm_multi_connector_ignores_non_transport_connector_profiles():
         },
     }
 
-    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+    assert NodeManagerConfig._infer_dispatch_capabilities(engine_config) == [
+        DispatchPlan.CONCURRENT_ENGINE_SYNC.value,
+        DispatchPlan.DECODE_COLOCATION.value,
+    ]
 
 
 def test_vllm_multi_connector_requires_transport_and_store_connectors():
@@ -842,7 +848,10 @@ def test_user_dispatch_capabilities_cannot_override_connector_semantics():
     NodeManagerConfig._discard_user_dispatch_capabilities(user_config)
     config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
 
-    assert config_data["basic_config"]["dispatch_capabilities"] == [DispatchPlan.PREFILL_HANDOFF_DECODE.value]
+    assert config_data["basic_config"]["dispatch_capabilities"] == [
+        DispatchPlan.PREFILL_HANDOFF_DECODE.value,
+        DispatchPlan.DECODE_COLOCATION.value,
+    ]
     assert "dispatch_capabilities" not in user_config["motor_engine_prefill_config"]
 
 
@@ -880,7 +889,7 @@ def test_vllm_layerwise_connector_advertises_concurrent_capability():
         }
     )
 
-    assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+    assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value, DispatchPlan.DECODE_COLOCATION.value]
 
 
 def test_sglang_infers_concurrent_capability():

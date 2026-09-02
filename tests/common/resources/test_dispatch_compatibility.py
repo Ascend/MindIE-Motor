@@ -10,7 +10,11 @@
 
 """Unit tests for vLLM dispatch-profile classification."""
 
-from motor.common.resources.dispatch import DispatchProfile, classify_vllm_dispatch_profile
+from motor.common.resources.dispatch import (
+    DispatchProfile,
+    classify_vllm_dispatch_profile,
+    supports_vllm_decode_colocation,
+)
 
 
 def test_classify_vllm_dispatch_profile_layerwise():
@@ -26,3 +30,15 @@ def test_classify_vllm_dispatch_profile_handoff():
 def test_classify_vllm_dispatch_profile_unknown_connector():
     config = {"kv_transfer_config": {"kv_connector": "UnknownConnector"}}
     assert classify_vllm_dispatch_profile(config) == DispatchProfile.UNKNOWN
+
+
+def test_decode_colocation_requires_recognized_connector_not_explicit_profile():
+    """A coordination profile alone must not claim bare-request support."""
+    recognized = {"kv_transfer_config": {"kv_connector": "MooncakeConnectorV1"}}
+    unknown = {
+        "dispatch_profile": "handoff",
+        "kv_transfer_config": {"kv_connector": "CustomConnector"},
+    }
+
+    assert supports_vllm_decode_colocation(recognized) is True
+    assert supports_vllm_decode_colocation(unknown) is False

@@ -738,11 +738,12 @@ class AsyncSchedulerClient:
         role: PDRole | None = None,
         top_k: int = 1,
         required_engine_type: str | None = None,
+        required_dispatch_capability: str | None = None,
     ) -> tuple[list[tuple[Instance, Endpoint, float]], str]:
         """Select endpoint candidates from cache or fresh instances."""
         cache_role = role if role is not None else PDRole.ROLE_U
-        cached_instances = self._filter_instances_by_engine_type(
-            self._cache.get_instances(cache_role), required_engine_type
+        cached_instances = self._filter_instances(
+            self._cache.get_instances(cache_role), required_engine_type, required_dispatch_capability
         )
         if cached_instances:
             # Cache stores instances sorted by id (see replace_all call sites); use as-is for RR
@@ -762,8 +763,8 @@ class AsyncSchedulerClient:
             return [], self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
 
         # get_available_instances already wrote sorted list to cache; build sorted list once for this path
-        instance_list = self._filter_instances_by_engine_type(
-            sorted(instances.values(), key=lambda i: i.id), required_engine_type
+        instance_list = self._filter_instances(
+            sorted(instances.values(), key=lambda i: i.id), required_engine_type, required_dispatch_capability
         )
         candidates, candidate_policy = self._select_endpoint_candidates_from_list_with_policy(
             instance_list, cache_role, req_info, top_k=top_k
@@ -778,14 +779,20 @@ class AsyncSchedulerClient:
         return candidates, candidate_policy
 
     @staticmethod
-    def _filter_instances_by_engine_type(instances: list[Instance], required_engine_type: str | None) -> list[Instance]:
+    def _filter_instances(
+        instances: list[Instance],
+        required_engine_type: str | None,
+        required_dispatch_capability: str | None = None,
+    ) -> list[Instance]:
         normalized = str(required_engine_type or "").strip().lower()
-        if not normalized:
-            return instances
         return [
             instance
             for instance in instances
-            if str(getattr(instance, "engine_type", "")).strip().lower() == normalized
+            if (not normalized or str(getattr(instance, "engine_type", "")).strip().lower() == normalized)
+            and (
+                not required_dispatch_capability
+                or required_dispatch_capability in (getattr(instance, "dispatch_capabilities", None) or [])
+            )
         ]
 
     async def _refresh_cache_from_workload_reader(self, role: PDRole | None = None) -> None:
@@ -838,6 +845,7 @@ class AsyncSchedulerClient:
         *,
         target_instance_id: int | None = None,
         required_engine_type: str | None = None,
+        required_dispatch_capability: str | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
         """Select instance locally + ALLOCATE_ONLY RPC. Allocation workload is decided here (RR=zero, LB=demand)."""
         role_str = role.value if role is not None else (getattr(PDRole.ROLE_U, "value", "union"))
@@ -849,15 +857,18 @@ class AsyncSchedulerClient:
         global_affinity = False
 
         normalized_engine_type = str(required_engine_type or "").strip().lower()
+        normalized_dispatch_capability = str(required_dispatch_capability or "").strip()
 
         if target_instance_id is not None:
             instances = await self.get_available_instances(role)
-            if normalized_engine_type:
-                instances = {
-                    instance_id: candidate
-                    for instance_id, candidate in instances.items()
-                    if str(getattr(candidate, "engine_type", "")).strip().lower() == normalized_engine_type
-                }
+            instances = {
+                candidate.id: candidate
+                for candidate in self._filter_instances(
+                    list(instances.values()),
+                    normalized_engine_type or None,
+                    normalized_dispatch_capability or None,
+                )
+            }
             instance = resolve_pinned_instance(instances, target_instance_id)
             if instance is None:
                 logger.warning(
@@ -904,6 +915,7 @@ class AsyncSchedulerClient:
                 role,
                 top_k=request_top_k,
                 required_engine_type=normalized_engine_type or None,
+                required_dispatch_capability=normalized_dispatch_capability or None,
             )
             if not candidates:
                 return None
@@ -922,9 +934,10 @@ class AsyncSchedulerClient:
             if global_affinity:
                 allowed_instance_ids = {
                     candidate.id
-                    for candidate in self._filter_instances_by_engine_type(
+                    for candidate in self._filter_instances(
                         self._cache.get_instances(role),
                         normalized_engine_type or None,
+                        normalized_dispatch_capability or None,
                     )
                 }
                 candidate_endpoints = [
@@ -984,6 +997,7 @@ class AsyncSchedulerClient:
             "workload_active_tokens": workload.active_tokens,
             "candidate_policy": candidate_policy,
             "required_engine_type": normalized_engine_type or None,
+            "required_dispatch_capability": normalized_dispatch_capability or None,
         }
         if isl > 0:
             req_data["isl"] = isl
