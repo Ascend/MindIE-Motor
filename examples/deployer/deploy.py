@@ -56,6 +56,7 @@ from lib.config_validator import (
     validate_pd_hybrid_config,
     validate_pd_hybrid_infer_service_template,
     validate_node_selectors,
+    validate_reserved_labels,
 )
 
 
@@ -130,7 +131,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
         infer_input = paths["infer_service_input_yaml"]
         infer_output = paths["infer_service_output_yaml"]
         if os.path.exists(infer_output):
-            update_infer_service_replicas_only(infer_output, deploy_config)
+            update_infer_service_replicas_only(infer_output, deploy_config, user_config)
         else:
             init_service_domain_name(paths, deploy_config, user_config, skip_kv_store=True)
             if not os.path.exists(infer_input):
@@ -453,6 +454,7 @@ def main():
     set_user_config_path(user_config_path)
     os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
     user_config = read_json(user_config_path)
+    validate_reserved_labels(user_config)
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
         validate_pd_hybrid_config(user_config)
         paths = get_deploy_paths()

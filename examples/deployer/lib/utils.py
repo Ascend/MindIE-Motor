@@ -404,3 +404,19 @@ def get_deploy_paths():
         "storage_pvc_input_yaml": os.path.join(C.DEPLOY_YAML_ROOT_PATH, 'storage_pvc_template.yaml'),
         "storage_pvc_output_yaml": os.path.join(C.OUTPUT_ROOT_PATH, 'mindie_motor_storage_pvc.yaml'),
     }
+
+
+def get_config_key(role_or_type):
+    dic = {
+        C.NODE_TYPE_P: C.MOTOR_ENGINE_PREFILL_CONFIG,
+        C.NODE_TYPE_D: C.MOTOR_ENGINE_DECODE_CONFIG,
+        C.NODE_TYPE_E: C.MOTOR_ENGINE_ENCODE_CONFIG,
+        C.NODE_TYPE_U: C.MOTOR_ENGINE_UNION_CONFIG,
+        C.ROLE_PREFILL: C.MOTOR_ENGINE_PREFILL_CONFIG,
+        C.ROLE_DECODE: C.MOTOR_ENGINE_DECODE_CONFIG,
+        C.ROLE_ENCODE: C.MOTOR_ENGINE_ENCODE_CONFIG,
+        C.ROLE_UNION: C.MOTOR_ENGINE_UNION_CONFIG,
+        C.ROLE_KV_STORE: C.KV_CACHE_STORE_CONFIG,
+        C.ROLE_KV_CONDUCTOR: C.KV_CONDUCTOR_CONFIG,
+    }
+    return dic[role_or_type]

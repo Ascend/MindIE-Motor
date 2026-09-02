@@ -24,6 +24,7 @@ from lib.utils import (
     obtain_engine_instance_total,
     obtain_engine_e_instance_total,
     apply_volcano_queue_annotations,
+    get_config_key,
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
@@ -114,6 +115,7 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     job_name = f"{job_id}-{role_name}-{uuid_spec}"
     set_container_env(container, build_engine_env_items(role_name, deploy_config, job_name))
     apply_a5_dns_config(pod_spec, deploy_config)
+    k8s_utils.apply_additional_labels_annotations(role, cfg)
     return container
 
 
@@ -200,10 +202,12 @@ def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, p
         apply_a5_workload(template, deploy_config)
 
 
-def _zero_engine_role_replicas(infer_doc, role_name):
+def _zero_engine_role_replicas(infer_doc, user_config, role_name):
     role = get_infer_role(infer_doc, role_name)
     if role:
         role[C.REPLICAS] = 0
+    if user_config:
+        k8s_utils.apply_additional_labels_annotations(role, user_config.get(get_config_key(role_name), {}))
 
 
 def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
@@ -259,6 +263,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
     _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name)
     apply_engine_node_selector_overrides(pod_spec, deploy_config, prefix)
+    k8s_utils.apply_additional_labels_annotations(role, user_config.get(get_config_key(role_name), {}))
 
 
 def _set_role_primary_service_port(role, service_port):
@@ -316,6 +321,9 @@ def _configure_kv_store_role(infer_doc, user_config):
         return
     container = containers[0]
     set_container_env(container, gen_kv_store_env(kv_store_config))
+    logger.info(role)
+    k8s_utils.apply_additional_labels_annotations(role, kv_store_config)
+    logger.info(role)
 
 
 def _configure_kv_conductor_role(infer_doc, user_config):
@@ -346,6 +354,7 @@ def _configure_kv_conductor_role(infer_doc, user_config):
         container,
         [{C.NAME: C.ENV_KVS_MASTER_SERVICE, C.VALUE: k8s_utils.g_kv_store_service}],
     )
+    k8s_utils.apply_additional_labels_annotations(role, kv_conductor_config)
 
 
 def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
@@ -369,15 +378,15 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     if C.E_INSTANCES_NUM in deploy_config:
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_ENCODE)
     else:
-        _zero_engine_role_replicas(infer_doc, C.ROLE_ENCODE)
+        _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_ENCODE)
     if is_hybrid_deploy(deploy_config):
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_UNION)
-        _zero_engine_role_replicas(infer_doc, C.ROLE_PREFILL)
-        _zero_engine_role_replicas(infer_doc, C.ROLE_DECODE)
+        _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_PREFILL)
+        _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_DECODE)
     else:
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_PREFILL)
         _configure_engine_role(infer_doc, user_config, infer_name, C.ROLE_DECODE)
-        _zero_engine_role_replicas(infer_doc, C.ROLE_UNION)
+        _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_UNION)
     _configure_kv_store_role(infer_doc, user_config)
     _configure_kv_conductor_role(infer_doc, user_config)
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -459,7 +468,7 @@ def init_infer_service_domain_name(infer_service_template_yaml, deploy_config, u
         set_kv_conductor_service(kv_conductor_service)
 
 
-def update_infer_service_replicas_only(infer_service_yaml_path, deploy_config):
+def update_infer_service_replicas_only(infer_service_yaml_path, deploy_config, user_config=None):
     """Update engine role.replicas in infer_service.yaml for scaling (union or prefill/decode)."""
     logger.info("Updating InferServiceSet instance replicas in %s", infer_service_yaml_path)
     all_docs = load_yaml(infer_service_yaml_path, False)
@@ -488,7 +497,7 @@ def update_infer_service_replicas_only(infer_service_yaml_path, deploy_config):
         decode_role = get_infer_role(infer_doc, C.ROLE_DECODE)
         if decode_role:
             decode_role[C.REPLICAS] = d_total
-        _zero_engine_role_replicas(infer_doc, C.ROLE_UNION)
+        _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_UNION)
 
     os.makedirs(os.path.dirname(infer_service_yaml_path), exist_ok=True)
     write_yaml(all_docs, infer_service_yaml_path, False)

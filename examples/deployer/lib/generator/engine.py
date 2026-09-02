@@ -19,9 +19,10 @@ from lib.utils import (
     obtain_engine_instance_total,
     obtain_engine_e_instance_total,
     apply_volcano_queue_annotations,
+    get_config_key,
 )
 from lib.generator import k8s_utils
-from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num
+from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num, apply_additional_labels_annotations
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 
 
@@ -336,6 +337,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     apply_a5_engine_pod_config(engine_pod_spec, container, deploy_config)
     apply_a5_workload(deployment_data, deploy_config)
     modify_log_mount(deployment_data, user_config, deployment_data[C.METADATA][C.NAME])
+    apply_additional_labels_annotations(deployment_data, user_config.get(get_config_key(node_type), {}))
 
 
 def validate_instance_nums(user_config):

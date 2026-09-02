@@ -818,3 +818,40 @@ def scale_engine(deploy_config, baseline_deploy_config):
     out_deploy_yaml_path = C.OUTPUT_ROOT_PATH
     create_motor_config_configmap(job_id)
     elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out_deploy_yaml_path)
+
+
+def _merge_kv_into_metadata(metadata, kv_dict, metadata_key):
+    if not isinstance(kv_dict, dict) or not kv_dict or not isinstance(metadata, dict):
+        return
+    target = metadata.setdefault(metadata_key, {})
+    if not isinstance(target, dict):
+        target = {}
+        metadata[metadata_key] = target
+    for key, value in kv_dict.items():
+        if isinstance(key, str) and key.strip():
+            target[key] = value
+
+
+def _merge_annotations_into_metadata(metadata, annotations_dict):
+    _merge_kv_into_metadata(metadata, annotations_dict, C.ANNOTATIONS)
+
+
+def _merge_labels_into_metadata(metadata, labels_dict):
+    _merge_kv_into_metadata(metadata, labels_dict, C.LABELS)
+
+
+def apply_additional_labels_annotations_to_metadata(metadata, role_config):
+    if not isinstance(role_config, dict):
+        return
+    additional_annotations = role_config.get(C.ADDITIONAL_ANNOTATIONS)
+    _merge_annotations_into_metadata(metadata, additional_annotations)
+    additional_labels = role_config.get(C.ADDITIONAL_LABELS)
+    _merge_labels_into_metadata(metadata, additional_labels)
+
+
+def apply_additional_labels_annotations(workload, role_config):
+    if not isinstance(workload, dict):
+        return
+    apply_additional_labels_annotations_to_metadata(workload.get(C.METADATA), role_config)
+    pod_template = workload.get(C.SPEC, {}).get(C.TEMPLATE, {})
+    apply_additional_labels_annotations_to_metadata(pod_template.get(C.METADATA), role_config)

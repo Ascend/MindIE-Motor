@@ -40,6 +40,50 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 路径需与此挂载路径一致，例如 `"/mnt/weight/"`。使用标准 deployer 时，该路径会同时挂载到 P/D（或 Union）引擎和 Coordinator；开启 `context_budget_mode: "on"` 后，Coordinator 也必须能够读取 `engine_config.model` 中的 tokenizer 文件。该字段使用 `hostPath`，因此 Coordinator 可能调度到的节点均需存在该路径，或通过 `coordinator_node_selector` 限制其调度范围。 |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类 |
 
+---
+
+## <a id="additional-labels-annotations"></a>组件级Kubernetes Labels和Annotations
+
+以下组件配置支持在顶层通过 `additional_labels` 和 `additional_annotations` 为生成的Kubernetes资源添加自定义元数据：
+
+| 组件配置 | 生效组件 |
+|----------|----------|
+| motor_controller_config | Controller |
+| motor_coordinator_config | Coordinator |
+| motor_engine_prefill_config | Prefill Engine |
+| motor_engine_decode_config | Decode Engine |
+| motor_engine_encode_config | Encode Engine |
+| motor_engine_union_config | Union Engine |
+| kv_cache_store_config | KV Cache Store |
+| kv_conductor_config | KV Conductor |
+| mf_store_config | MF Store |
+
+配置示例如下所示：
+
+```json
+"motor_controller_config": {
+  "additional_annotations": {
+    "motor-component": "controller"
+  },
+  "additional_labels": {
+    "motor-component": "controller"
+  }
+}
+```
+
+| 配置项 | 类型 | 说明 |
+|--------|------|------|
+| additional_annotations | object | 可选；需要添加到组件工作负载及其Pod模板 `metadata.annotations` 的键值对，默认不添加。自定义键与模板中已有键同名时，以此处配置的值为准。键和值需符合Kubernetes Annotation规范。 |
+| additional_labels | object | 可选；需要添加到组件工作负载及其Pod模板 `metadata.labels` 的键值对，默认不添加。除部署器保留标签外，自定义键与模板中已有键同名时，以此处配置的值为准。键和值需符合Kubernetes Label规范。 |
+
+上述字段仅修改工作负载及其Pod模板的元数据，不修改对应Service等其他资源。`single_container` 部署模式下，各组件共享同一个工作负载，自定义元数据通过 `motor_coordinator_config` 配置。
+
+>[!NOTE]说明
+>
+>`app` 是部署器保留标签，不能通过 `additional_labels` 配置，部署主流程会在生成资源前拒绝此类配置。请勿覆盖其他由部署器生成的组件标识、工作负载选择器等系统Labels；本功能不会同步修改 `spec.selector`，覆盖此类Labels可能导致工作负载无法创建或无法匹配Pod。
+
+---
+
 ## motor_controller_config
 
 motor_controller_config字段配置样例如下所示：
@@ -117,7 +161,13 @@ motor_controller_config字段配置样例如下所示：
     "remote_check_timeout_seconds": 1.0,
     "bind_host": "0.0.0.0"
   },
-  "precision_auto_recovery_enable": false
+  "precision_auto_recovery_enable": false,
+  "additional_annotations": {
+    "motor-component": "controller"
+  },
+  "additional_labels": {
+    "motor-component": "controller"
+  }
 }
 ```
 
@@ -185,6 +235,8 @@ motor_controller_config字段配置样例如下所示：
 | probe_timeout_seconds |float|探测超时时间，默认值：0.5。|
 | remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
+| additional_annotations | object | 可选；Controller工作负载及其Pod模板的自定义Annotations |
+| additional_labels | object | 可选；Controller工作负载及其Pod模板的自定义Labels。 |
 
 ## motor_coordinator_config
 
@@ -366,7 +418,13 @@ motor_coordinator_config字段配置样例如下所示：
     "bind_host": "0.0.0.0"
   },
   "_errors": [],
-  "worker_index": null
+  "worker_index": null,
+  "additional_annotations": {
+    "motor-component": "coordinator"
+  },
+  "additional_labels": {
+    "motor-component": "coordinator"
+  }
 }
 ```
 
@@ -511,6 +569,8 @@ motor_coordinator_config字段配置样例如下所示：
 | **request_limit字段** |-|config_sample.json中未包含此字段，但PD部署时常用，合并到运行时配置后生效。|
 | single_node_max_requests | int | 单节点允许的最大并发请求数，由 user_config 配置 |
 | max_requests | int | 集群全局最大并发请求数，由 user_config 配置 |
+| additional_annotations | object | 可选；Coordinator工作负载及其Pod模板的自定义Annotations。 |
+| additional_labels | object | 可选；Coordinator工作负载及其Pod模板的自定义Labels。 |
 
 ## motor_engine_union_config
 
@@ -586,6 +646,12 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
       "remote_check_timeout_seconds": 1.0,
       "bind_host": "0.0.0.0"
     }
+  },
+  "additional_annotations": {
+    "motor-component": "union-engine"
+  },
+  "additional_labels": {
+    "motor-component": "union-engine"
   }
 }
 ```
@@ -595,6 +661,8 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | engine_type | string | 引擎类型，如 `vllm` |
+| additional_annotations | object | 可选；Union Engine工作负载及其Pod模板的自定义Annotations。 |
+| additional_labels | object | 可选；Union Engine工作负载及其Pod模板的自定义Labels。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip） |
@@ -707,6 +775,12 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
       "remote_check_timeout_seconds": 1.0,
       "bind_host": "0.0.0.0"
     }
+  },
+  "additional_annotations": {
+    "motor-component": "prefill-engine"
+  },
+  "additional_labels": {
+    "motor-component": "prefill-engine"
   }
 },
 "motor_engine_decode_config": {
@@ -781,6 +855,12 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
       "remote_check_timeout_seconds": 1.0,
       "bind_host": "0.0.0.0"
     }
+  },
+  "additional_annotations": {
+    "motor-component": "decode-engine"
+  },
+  "additional_labels": {
+    "motor-component": "decode-engine"
   }
 }
 
@@ -791,6 +871,8 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | 配置项 | 类型 | 说明 |
 |--------|------|------------------|
 | engine_type | string | 引擎类型，如 `vllm` |
+| additional_annotations | object | 可选；Prefill/Decode Engine工作负载及其Pod模板的自定义Annotations。 |
+| additional_labels | object | 可选；Prefill/Decode Engine工作负载及其Pod模板的自定义Labels。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip） |

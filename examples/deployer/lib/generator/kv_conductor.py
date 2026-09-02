@@ -43,6 +43,7 @@ def generate_yaml_kv_conductor(input_yaml, output_file, user_config, kv_conducto
 
     pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
     apply_node_selector_override(pod_spec, deploy_config, C.KV_CONDUCTOR_NODE_SELECTOR)
+    k8s_utils.apply_additional_labels_annotations(deployment_data, user_config.get(C.KV_CONDUCTOR_CONFIG, {}))
 
     for svc in service_list:
         svc[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]

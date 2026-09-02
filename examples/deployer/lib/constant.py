@@ -107,6 +107,7 @@ DEFAULT_MMC_METRICS_PORT = 50090
 KV_CONDUCTOR_CONFIG = "kv_conductor_config"
 KV_CONDUCTOR_PORT = "http_server_port"
 KV_CONDUCTOR_SHELL_PATH = os.path.join(STARTUP_ROOT_PATH, "roles/kv_conductor.sh")
+MF_STORE_CONFIG = "mf_store_config"
 DEFAULT_MF_STORE_PORT = 50089
 STANDBY_CONFIG = "standby_config"
 MOTOR_CONTROLLER_CONFIG = "motor_controller_config"
@@ -298,6 +299,8 @@ DEFAULT_STORAGE_ACCESS_MODE = "ReadWriteMany"
 ROLES = "roles"
 SERVICES = "services"
 KIND_KEY = "kind"
+ADDITIONAL_ANNOTATIONS = "additional_annotations"
+ADDITIONAL_LABELS = "additional_labels"
 
 # ---------------------------------------------------------------------------
 # TUI ANSI style constants

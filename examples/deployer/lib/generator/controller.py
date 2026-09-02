@@ -21,7 +21,12 @@ from lib.utils import (
 )
 from lib.generator import k8s_utils
 from lib.generator.engine import apply_a5_dns_config
-from lib.generator.k8s_utils import extract_resources, set_rbac_namespace, set_services_namespace
+from lib.generator.k8s_utils import (
+    extract_resources,
+    set_rbac_namespace,
+    set_services_namespace,
+    apply_additional_labels_annotations,
+)
 
 
 def modify_controller_replicas(data, user_config):
@@ -68,6 +73,7 @@ def modify_controller_deployment(deployment_data, user_config):
     apply_node_selector_override(pod_spec, deploy_config, C.CONTROLLER_NODE_SELECTOR)
     apply_a5_dns_config(deployment_data[C.SPEC][C.TEMPLATE][C.SPEC], deploy_config)
     modify_log_mount(deployment_data, user_config, "mindie-motor-controller")
+    apply_additional_labels_annotations(deployment_data, user_config.get(C.MOTOR_CONTROLLER_CONFIG, {}))
 
 
 def modify_controller_yaml(data, user_config):

@@ -35,6 +35,29 @@ PD_HYBRID_REQUIRED_DEPLOY_KEYS = {
 }
 
 
+reserved_labels: dict[str, bool] = {"app": True}  # True 表示禁止用户通过 additional_labels 覆盖该标签
+
+
+def validate_reserved_labels(user_config: dict) -> None:
+    """Reject user-defined labels that override deployer-managed labels."""
+    if not isinstance(user_config, dict):
+        return
+
+    conflicts = []
+    for config_name, component_config in user_config.items():
+        if not isinstance(component_config, dict):
+            continue
+        additional_labels = component_config.get(C.ADDITIONAL_LABELS)
+        if not isinstance(additional_labels, dict):
+            continue
+        conflicting_labels = sorted(label for label in additional_labels if reserved_labels.get(label, False))
+        if conflicting_labels:
+            conflicts.append(f"{config_name}.{C.ADDITIONAL_LABELS}: {', '.join(conflicting_labels)}")
+
+    if conflicts:
+        raise ValueError(f"User-defined labels contain reserved labels: {'; '.join(conflicts)}")
+
+
 def resolve_config_paths(config_dir, user_config_path, env_config_path):
     if not config_dir and not user_config_path and not env_config_path:
         logger.error("No configuration provided. Please use one of the following options:")

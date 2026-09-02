@@ -180,6 +180,8 @@ def generate_yaml_kv_store(input_yaml, output_file, user_config, kv_store_config
     if C.ENV not in container:
         container[C.ENV] = []
 
+    k8s_utils.apply_additional_labels_annotations(deployment_data, user_config.get(C.KV_CACHE_STORE_CONFIG, {}))
+
     pod_spec = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC]
     apply_node_selector_override(pod_spec, deploy_config, C.KV_POOL_NODE_SELECTOR)
 

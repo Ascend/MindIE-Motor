@@ -509,7 +509,7 @@ def test_update_infer_service_replicas_only_updates_union_for_hybrid(tmp_path):
 
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     deploy_config[C.HYBRID_INSTANCES_NUM] = 3
-    update_infer_service_replicas_only(paths["infer_service_output_yaml"], deploy_config)
+    update_infer_service_replicas_only(paths["infer_service_output_yaml"], deploy_config, user_config)
 
     all_docs = load_yaml(paths["infer_service_output_yaml"], False)
     infer_doc = _find_infer_service_set_doc(all_docs)

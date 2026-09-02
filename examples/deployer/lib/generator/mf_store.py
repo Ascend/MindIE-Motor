@@ -30,6 +30,8 @@ def generate_yaml_mf_store(input_yaml, output_file, user_config):
         container[C.ENV] = []
     container[C.ENV].append({C.NAME: C.ENV_ASCEND_MF_STORE_PORT, C.VALUE: str(C.DEFAULT_MF_STORE_PORT)})
 
+    k8s_utils.apply_additional_labels_annotations(deployment_data, user_config.get(C.MF_STORE_CONFIG, {}))
+
     service_data = data[1]
     service_data[C.METADATA][C.NAMESPACE] = deploy_config[C.CONFIG_JOB_ID]
     ports = service_data.get(C.SPEC, {}).get(C.PORTS, [])
