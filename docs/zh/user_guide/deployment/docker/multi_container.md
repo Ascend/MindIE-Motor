@@ -1,353 +1,359 @@
-# docker-only部署多容器PD服务
+# 基于Docker的多容器服务部署指导
 
-## 特性介绍
+本文档指导用户**基于Docker完成多机推理服务的部署**，不依赖 K8s。如果使用小模型部署单机推理服务，可参考 [单容器部署指导](single_container.md)。
 
-本文档描述在**不使用 Kubernetes deployer**、仅用 **Docker 容器 + 宿主机挂载配置** 的方式部署多容器 MindIE Motor PD 推理服务的**端到端流程**，同时适用于 PD 混部和 PD 分离。
+## 部署流程示意图
 
-| 部署模式 | Engine 容器 | 跨角色 KV 传输 | 启动方式 |
-| :--- | :--- | :--- | :--- |
-| PD 分离 | Prefill 和 Decode 容器 | 需要 | 分别拉起 P/D 实例，按需拉起 KV Cache Store |
-| PD 混部 | union 容器 | 不需要 | 每个 union 实例按其占用节点分别拉起 |
+![部署流程示意图](../../../imgs/docker_deploy_flow.png)
 
-## 部署流程
+## 镜像准备
 
-### 准备 examples
+通过以下方式获取镜像，并**将镜像加载至集群的所有节点**：
 
-`examples` 获取方式见[快速入门](../../quick_start.md)的“服务部署”章节。从镜像拷贝至宿主机后，将后续 `prepare.sh` 中的 `EXAMPLES_PATH` 设置为该目录的绝对路径。
+ - **方式一**：下载官方完整的 MindIE Motor 镜像
+     进入 [昇腾官方镜像仓库](https://www.hiascend.com/developer/ascendhub)，搜索 `motor`，按设备型号选择对应 MindIE Motor 镜像。
+ - **方式二**：在已有镜像中安装 MindIE Motor
+     基础镜像已安装 CANN、vLLM、vLLM Ascend 等组件，可参考 [从 vLLM Ascend 构建 MindIE Motor 镜像](../../maintenance/build_motor_image_from_vllm_ascend.md#基于vllm-ascendsglang镜像安装mindie-motor) 额外安装 MindIE Motor。
 
-### 准备user_config.json和env.json配置文件
+获取镜像后，请使用以下命令将镜像加载至服务器：
 
-根据部署模式准备 `user_config.json` 和 `env.json`。配置字段的完整说明请参考 [user_config 全量参数说明](../../configuration/config_reference.md)。
+   ```bash
+   docker load -i xxxx.tar
+   ```
 
-Coordinator、Controller 和 Engine 容器部署在不同节点时可使用默认端口；同一节点部署多个角色时，推荐显式配置以下端口：
+待镜像导入后，请使用以下命令查看Docker镜像是否存在：
 
-- Coordinator 推理、管理和可观测端口分别使用 `1025`、`1026`、`1027`。
-- Controller 管理和可观测端口使用 `2026`、`2027`。
-- union / Prefill NodeManager 从 `3026` 起规划；Decode NodeManager 从 `4026` 起规划。
+   ```bash
+   docker images
+   ```
 
-**PD 分离配置**
+## 准备服务启动脚本
 
-```json
-{
-  "motor_deploy_config": {
- ...
- "p_instances_num": 1,
- "d_instances_num": 1,
- "single_p_instance_pod_num": 2,
- "single_d_instance_pod_num": 4
-  },
-  "motor_controller_config": {
- ...
- "api_config": {
- "controller_api_port": 2026,
- "observability_api_port": 2027
- }
-  },
-  "motor_coordinator_config": {
- ...
- "api_config": {
- "coordinator_api_infer_port": 1025,
- "coordinator_api_mgmt_port": 1026,
- "coordinator_obs_port": 1027
- }
-  },
-  "motor_engine_prefill_config": {
- ...
- "motor_nodemanger_config": {
- "api_config": {
-   "node_manager_port": 3026
- }
- }
-  },
-  "motor_engine_decode_config": {
- ...
- "motor_nodemanger_config": {
- "api_config": {
-   "node_manager_port": 4026
- }
- }
-  },
-  ...
-}
-```
+   获取服务部署脚本`examples` 目录：
 
-`env.json` 分别使用 `motor_engine_prefill_env` 和 `motor_engine_decode_env`。同时须在 P/D engine 配置中正确设置 `kv_transfer_config`；启用 KV Cache Store 时，还需准备对应环境变量。
+   - 方式一（使用**官方完整 MindIE Motor 镜像**）：镜像内路径为 `/tmp/motor/examples`，可执行以下命令：
 
-**PD 混部配置**
+     ```bash
+     IMAGE="<镜像名或镜像ID>"
+     cid=$(docker create "$IMAGE")
+     docker cp "$cid:/tmp/motor/examples" ./examples
+     docker rm "$cid"
+     ```
 
-```json
-{
-  "motor_deploy_config": {
- ...
- "hybrid_instances_num": 1,
- "single_hybrid_instance_pod_num": 2,
- "hybrid_pod_npu_num": 2
-  },
-  "motor_controller_config": {
- ...
- "api_config": {
- "controller_api_port": 2026,
- "observability_api_port": 2027
- }
-  },
-  "motor_coordinator_config": {
- ...
- "api_config": {
- "coordinator_api_infer_port": 1025,
- "coordinator_api_mgmt_port": 1026,
- "coordinator_obs_port": 1027
- },
-  },
-  "motor_engine_union_config": {
- "engine_type": "vllm",
- ...
- "motor_nodemanger_config": {
- "api_config": {
-   "node_manager_port": 3026
- }
- }
-  },
-  ...
-}
-```
+   - 方式二：（使用**手动安装 MindIE-Motor 的镜像**）：`git clone` 代码仓后，启动脚本位于 `MindIE-Motor/examples` 目录。
 
-`env.json` 使用 `motor_engine_union_env`。PD 混部不需要 `kv_transfer_config`。
+## 配置服务化参数
 
-### 端口规划
+1. **准备配置文件**
 
-| 组件 | 推荐端口 | 说明 |
-| :--- | :--- | :--- |
-| Coordinator 推理 | 1025 | 使用 host 网络，通过 Coordinator 节点 IP 访问 |
-| Coordinator 管理 | 1026 | 同节点内须避免被其他角色占用 |
-| Coordinator 可观测 | 1027 | `/metrics` |
-| Controller 管理 | 2026 | 同节点部署时避开 1026 |
-| Controller 可观测 | 2027 | 同节点部署时避开 1027 |
-| union / Prefill NodeManager | 3026 起 | 按实例和节点规划 |
-| Decode NodeManager | 4026 起 | 与 Prefill 区分 |
+   - PD分离场景
 
-### 准备CONFIGMAP_PATH
+     MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
 
-准备阶段需将配置文件、启动脚本拷贝到环境变量**CONFIGMAP_PATH**对应目录下，并通过set_env_docker.py加载环境变量。准备阶段脚本**prepare.sh**示例(**EXAMPLES_PATH**、**CONFIGMAP_PATH**、**USER_CONFIG_PATH**、**ENV_PATH**需修改为实际路径)：
+     对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
-```shell
-EXAMPLES_PATH="xxx" # 主机examples部署脚本路径
-CONFIGMAP_PATH="xxx" # 服务启动脚本路径，需挂载到容器内
-USER_CONFIG_PATH="xxx" # user_config.json路径
-ENV_PATH="xxx" # env.json路径
+   - PD混部场景
 
-mkdir -p $CONFIGMAP_PATH
-# 容器启动脚本boot.sh，其运行时会调用startup目录下其他脚本，需要将其统一拷贝到$CONFIGMAP_PATH目录下。
-cp -f $EXAMPLES_PATH/deployer/startup/boot.sh $CONFIGMAP_PATH/boot.sh
-cp -f $EXAMPLES_PATH/deployer/startup/common.sh $CONFIGMAP_PATH/common.sh
-cp -f $EXAMPLES_PATH/deployer/startup/hccl_tools.py $CONFIGMAP_PATH/hccl_tools.py
-cp -f $EXAMPLES_PATH/deployer/startup/roles/*.sh $CONFIGMAP_PATH/
-cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/mooncake/mooncake.sh $CONFIGMAP_PATH/kv_store_backends.mooncake.mooncake.sh
-cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/mooncake/mooncake_config.py $CONFIGMAP_PATH/kv_store_backends.mooncake.mooncake_config.py
-cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/memcache.sh $CONFIGMAP_PATH/kv_store_backends.memcache.memcache.sh
-cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/memcache_meta_service.py $CONFIGMAP_PATH/kv_store_backends.memcache.memcache_meta_service.py
-cp -f $EXAMPLES_PATH/deployer/startup/roles/kv_store_backends/memcache/mmc-local-inprocess.conf $CONFIGMAP_PATH/kv_store_backends.memcache.mmc-local-inprocess.conf
+     可参考 [**MindIE Motor 配置自动生成指导**](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，**自动生成**PD混部场景下的配置文件 `user_config.json` 与 `env.json`。
 
-# 将准备好的user_config.json和env.json配置文件拷贝到$CONFIGMAP_PATH目录下
-cp -f $USER_CONFIG_PATH $CONFIGMAP_PATH/user_config.json
-cp -f $ENV_PATH $CONFIGMAP_PATH/env.json
+2. **配置端口**
 
-# 若环境变量已加载，但发生改动，需先清理旧的环境变量。
-sed -i '/^function set_controller_env()/,/^}/d' $CONFIGMAP_PATH/controller.sh
-sed -i '/^function set_coordinator_env()/,/^}/d' $CONFIGMAP_PATH/coordinator.sh
-sed -i '/^function set_prefill_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
-sed -i '/^function set_decode_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
-sed -i '/^function set_union_env()/,/^}/d' $CONFIGMAP_PATH/engine.sh
-sed -i '/^function set_common_env()/,/^}/d' $CONFIGMAP_PATH/common.sh
-sed -i '/^function set_kv_store_env()/,/^}/d' $CONFIGMAP_PATH/kv_cache_store.sh
-sed -i '/^function set_kv_conductor_env()/,/^}/d' $CONFIGMAP_PATH/kv_conductor.sh
-sed -i '/^function set_controller_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_coordinator_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_prefill_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_decode_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_kv_store_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/^function set_kv_conductor_env()/,/^}/d' $CONFIGMAP_PATH/all_combine_in_single_container.sh
-sed -i '/./,$!d' $CONFIGMAP_PATH/common.sh
+   修改以下配置，避免端口冲突：
 
-# 加载user_config.json和env.json中的环境变量，并作用于容器启动脚本。
-python $EXAMPLES_PATH/deployer/startup/set_env_docker.py --configmap_path $CONFIGMAP_PATH
-```
+   ```json
+   {
+     ...
+     "motor_controller_config": {
+       "api_config": {
+         "controller_api_port": 2026,
+         "observability_api_port": 2027
+       }
+     },
+     ...
+     "motor_engine_prefill_config": {
+       "motor_nodemanger_config": {
+         "api_config": { "node_manager_port": 3026 }
+       },
+       ...
+     },
+     "motor_engine_decode_config": {
+       "motor_nodemanger_config": {
+         "api_config": { "node_manager_port": 4026 }
+       },
+       ...
+     }
+   }
+   ```
 
-执行方式：
+3. **同步启动脚本配置**
 
-```bash
-sh prepare.sh
-```
+    将准备好的配置文件（user_config.json、env.json）存放于启动脚本的examples/infer_engines/vllm目录下，之后将整个配置脚本目录拷贝至集群中的每一台服务器，一台服务器对应一份相同的脚本。
 
-### Docker启动服务
+## 开启 KV 池化（可选）
 
-准备启动脚本start_docker.sh，脚本示例（**CONFIGMAP_PATH**、**WEIGHT_MOUNT_PATH**需修改为实际绝对路径，**IMAGE_NAME**需修改为实际镜像名）。**WEIGHT_MOUNT_PATH**需与`user_config.json`中`weight_mount_path`及模型路径保持一致：
+不开启池化可跳过本节。开启后，P/D 通过 `MultiConnector` 同时做 Prefill→Decode 直传和 KV 入池；还需要单独部署一个 **kv_store** 容器（见下文「部署 KV Cache Store」）。请参考 [KV池化能力部署](../../features/kv_cache_store/README.md)文档来修改user_config.json配置文件。
 
-```shell
-# 默认不开启特权容器，如需开启，将--privileged=false改为--privileged=true
-CONFIGMAP_PATH="xxx" # CONFIGMAP_PATH需与prepare.sh保持一致，且必须使用绝对路径
-IMAGE_NAME="xxx" # 镜像名
-WEIGHT_MOUNT_PATH="xxx" # 宿主机权重目录，必须使用绝对路径
+## 容器数量规划
 
-if [ "$ENABLE_IPC_HOST" = "enable" ]; then
- SET_IPC_HOST_STR="--ipc=host"
-fi
+完成 `user_config.json` 配置后，需根据 `motor_deploy_config` 确定推理实例名称及各实例对应的容器数量。同一 `--instance-name` 下的多个容器可部署在不同服务器，每个容器单独执行一次启动命令。管控容器与 kv_store 不计入推理容器数量。
 
-# 从环境变量读取可见卡，默认自动检测主机昇腾卡，用逗号拼接，如"0,1,2,3"
-if [ -z "$ASCEND_VISIBLE_DEVICES" ]; then
- ASCEND_VISIBLE_DEVICES=$(ls /dev/davinci[0-9]* 2>/dev/null | sed 's/[^0-9]//g' | paste -sd "," -)
-fi
-ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/devmm_svm --device=/dev/hisi_hdc"
-# 循环挂载ASCEND_VISIBLE_DEVICES指定卡
-IFS=',' read -ra ADDR <<< "$ASCEND_VISIBLE_DEVICES"
-for i in "${ADDR[@]}"; do
- ASCEND_DEVICES="$ASCEND_DEVICES --device=/dev/davinci$i"
-done
+![容器数量规划示意图](../../../imgs/docker_container_qty_plan.png)
 
-docker run -u root --rm --name $CONTAINER_NAME --net=host $SET_IPC_HOST_STR \
--e ASCEND_RUNTIME_OPTIONS=NODRV --privileged=false \
--e CONFIGMAP_PATH=$CONFIGMAP_PATH \
--e CONFIG_PATH=/usr/local/Ascend/pyMotor/conf \
--e ROLE=$ROLE \
--e JOB_NAME=$JOB_NAME \
--e COORDINATOR_SERVICE=$COORDINATOR_SERVICE \
--e CONTROLLER_SERVICE=$CONTROLLER_SERVICE \
--e POD_IP=$POD_IP \
--e KV_STORE_BACKEND=$KV_STORE_BACKEND \
--e KVS_MASTER_SERVICE=$KVS_MASTER_SERVICE \
--e KV_CACHE_STORE_PORT=$KV_CACHE_STORE_PORT \
--e KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=$KV_STORE_EVICTION_HIGH_WATERMARK_RATIO \
--e KV_STORE_EVICTION_RATIO=$KV_STORE_EVICTION_RATIO \
--e DEFAULT_KV_LEASE_TTL=$DEFAULT_KV_LEASE_TTL \
-$ASCEND_DEVICES \
--v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
--v /usr/local/Ascend/add-ons/:/usr/local/Ascend/add-ons/ \
--v /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi \
--v /usr/local/sbin:/usr/local/sbin \
--v /var/log/npu/:/usr/slog \
--v /mnt:/mnt \
--v /root/.cache:/root/.cache \
--v $CONFIGMAP_PATH:$CONFIGMAP_PATH \
--v $WEIGHT_MOUNT_PATH:$WEIGHT_MOUNT_PATH:ro \
-$IMAGE_NAME \
-bash -c "source \$CONFIGMAP_PATH/boot.sh"
-```
+1. **确定实例名称**
 
-环境变量说明：
+   `user_config.json` 中 `motor_deploy_config` 的实例数量字段决定推理实例个数，并据此确定 `--instance-name`。实例名称按角色从 0 起依次编号。
 
-| 变量名   | 含义  | 取值   |
-| :------------------------------------- | :-------------------------- | :-------------------------------------------------------------------------------------------------- |
-| CONFIGMAP_PATH   | 启动脚本路径  | 与2.2小节保持一致，需挂载到容器中 |
-| IMAGE_NAME  | 镜像名   | 版本镜像，确保docker images能查询到  |
-| WEIGHT_MOUNT_PATH   | 模型权重宿主机路径  | 与`user_config.json`中`weight_mount_path`及模型路径保持一致，必须使用绝对路径 |
-| CONTAINER_NAME   | 容器名   | 不限   |
-| ASCEND_VISIBLE_DEVICES   | 可见卡   | 指定挂载卡，如"0,1,2,3"，默认自动检测主机昇腾卡 |
-| ENABLE_IPC_HOST  | 是否使能--ipc=host  | enable或其他  |
-| ROLE  | 部署角色 | coordinator / controller / union / prefill / decode / kv_store   |
-| JOB_NAME | Engine 实例任务名   | union / prefill / decode 需设置，每个实例具有唯一性  |
-| COORDINATOR_SERVICE | Coordinator 地址  | 设置为 Coordinator 部署节点 IP   |
-| CONTROLLER_SERVICE  | Controller 地址   | 设置为 Controller 部署节点 IP |
-| POD_IP   | 容器 IP  | 使用 host 网络，取值为宿主机 IP  |
-| KV_STORE_BACKEND | KV Cache Store 后端 | PD 分离启用 Mooncake 时设置为`mooncake`；不启用或使用 PD 混部时设置为空   |
-| KVS_MASTER_SERVICE  | KV Cache Store 地址 | PD 分离启用时设置为 KV Cache Store 所在节点 IP；不启用或使用 PD 混部时设置为空   |
-| KV_CACHE_STORE_PORT | KV Cache Store 端口 | 启用时设置有效端口，如 50088  |
-| KV_STORE_EVICTION_HIGH_WATERMARK_RATIO | KV Cache Store 高水位比例   | 启用时取值 0～1  |
-| KV_STORE_EVICTION_RATIO  | KV Cache Store 逐出比例  | 启用时取值 0～1  |
-| DEFAULT_KV_LEASE_TTL  | KV 对象默认租约 TTL（毫秒） | 配置值须大于`env.json` 中的 `ASCEND_CONNECT_TIMEOUT` 和 `ASCEND_TRANSFER_TIMEOUT`，默认 11000 |
+   | 配置项 | 含义 | `--role` | `--instance-name` |
+   | :--- | :--- | :--- | :--- |
+   | `p_instances_num` | Prefill 实例个数 | `prefill` | `p0`、`p1`、…、`p{N-1}` |
+   | `d_instances_num` | Decode 实例个数 | `decode` | `d0`、`d1`、…、`d{N-1}` |
+   | `hybrid_instances_num` | 混部实例个数 | `union` | `u0`、`u1`、…、`u{N-1}` |
 
-两种模式均先启动 Coordinator 和 Controller：
+   其中 `N` 为对应配置项的取值。例如 `p_instances_num` 为 `2` 时，Prefill 实例名称为 `p0`、`p1`。
 
-```shell
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="" ROLE="coordinator" POD_IP="<IP0>" CONTAINER_NAME="docker_coordinator" sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="" ROLE="controller" POD_IP="<IP1>" CONTAINER_NAME="docker_controller" sh start_docker.sh
-```
+   部署管理服务（`--role coordinator,controller`）及 kv_store 时，无需指定 `--instance-name`。
 
-**启动 PD 分离实例**
+2. **确定单个实例对应的容器数量**
 
-以下示例部署 1P1D：P 占用 `<IP0>`、`<IP1>`，D 占用 `<IP2>`～`<IP5>`。相同实例的多个容器需一起拉起。
+   `single_p_instance_pod_num`、`single_d_instance_pod_num`（混部场景为 `single_hybrid_instance_pod_num`）表示单个实例对应的容器数量。Docker 多容器部署中，一个 Pod 对应一个容器，每个容器需单独执行一次 `docker_deploy.py`。
 
-```shell
-# 若启用 KV Cache Store，先在对应节点启动；不启用时跳过。
-ROLE=kv_store POD_IP="<IP2>" KV_STORE_BACKEND=mooncake KVS_MASTER_SERVICE="<IP2>" KV_CACHE_STORE_PORT=50088 KV_STORE_EVICTION_HIGH_WATERMARK_RATIO=0.9 KV_STORE_EVICTION_RATIO=0.1 DEFAULT_KV_LEASE_TTL=11000 CONTAINER_NAME="docker_kv_store" sh start_docker.sh
+   | 配置项 | 说明 |
+   | :--- | :--- |
+   | `single_p_instance_pod_num` | 单个 Prefill 实例对应的容器数量 |
+   | `single_d_instance_pod_num` | 单个 Decode 实例对应的容器数量 |
+   | `single_hybrid_instance_pod_num` | 单个混部实例对应的容器数量 |
 
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="p0" ROLE="prefill" POD_IP="<IP0>" CONTAINER_NAME="docker_p0_node0" sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="p0" ROLE="prefill" POD_IP="<IP1>" CONTAINER_NAME="docker_p0_node1" sh start_docker.sh
+   同一实例下的多个容器使用相同的 `--instance-name`，`--container-name` 不可重复，且可部署在不同服务器。
 
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP2>" CONTAINER_NAME="docker_d0_node0" sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP3>" CONTAINER_NAME="docker_d0_node1" sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP4>" CONTAINER_NAME="docker_d0_node2" sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" KVS_MASTER_SERVICE="" ENABLE_IPC_HOST="" JOB_NAME="d0" ROLE="decode" POD_IP="<IP5>" CONTAINER_NAME="docker_d0_node3" sh start_docker.sh
-```
+   Prefill 推理容器总数 = `p_instances_num` × `single_p_instance_pod_num`。Decode、混部同理。
 
-启用 KV Cache Store 时，Prefill/Decode 启动命令中的 `KV_STORE_BACKEND` 也须设置为 `mooncake`，`KVS_MASTER_SERVICE` 设置为 KV Cache Store 节点 IP，并按需要设置 `ENABLE_IPC_HOST=enable`。
+3. **综合示例**
 
-**启动 PD 混部实例**
+   以上图配置为例：
 
-以下示例部署 1 个 union 实例，占用 `<IP0>`、`<IP1>` 两个节点：
+   ```json
+   {
+     "motor_deploy_config": {
+       "p_instances_num": 2,
+       "d_instances_num": 1,
+       "single_p_instance_pod_num": 1,
+       "single_d_instance_pod_num": 2
+     }
+   }
+   ```
 
-```shell
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="u0" ROLE="union" POD_IP="<IP0>" CONTAINER_NAME="docker_u0_node0" sh start_docker.sh
-COORDINATOR_SERVICE="<IP0>" CONTROLLER_SERVICE="<IP1>" JOB_NAME="u0" ROLE="union" POD_IP="<IP1>" CONTAINER_NAME="docker_u0_node1" sh start_docker.sh
-```
+   - Prefill 为两个实例、两个容器，`--instance-name` 分别为 `p0`、`p1`。
+   - Decode 为一个实例、两个容器，`--instance-name` 均为 `d0`，可分别部署在不同服务器。
 
-### 服务验证
+   | `--container-name` | `--role` | `--instance-name` |
+   | :--- | :--- | :--- |
+   | `motor-p0` | `prefill` | `p0` |
+   | `motor-p1` | `prefill` | `p1` |
+   | `motor-d0-0` | `decode` | `d0` |
+   | `motor-d0-1` | `decode` | `d0` |
 
-服务就绪后，在任意可访问 Coordinator 的机器执行以下命令。将 `<IP0>` 替换为 Coordinator 部署节点 IP，将 `model` 替换为 `user_config.json` 中配置的模型名称。
+   每个容器在对应服务器上执行一次下文「部署推理服务」中的命令。以 Prefill 实例 `p0` 为例：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-p0 --devices 0 \
+     --role prefill --instance-name p0 \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+## 启动服务
+
+一个完整的推理服务需要至少一个管理面容器以及多个推理容器。开启 KV 池化时，还需要一个 **kv_store** 容器。推理容器的数量、名称及所在服务器见上文「容器数量规划」，请按规划在对应服务器上分别执行。服务部署流程如下：
+
+1. **部署管理服务**
+
+   在 `examples/deployer` 目录下，执行如下命令将管理面服务（coordinator、controller）部署在同一容器：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-ctrl --role coordinator,controller \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
+   ```
+
+   若需将 Coordinator 与 Controller 分容器部署，可执行以下命令。
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-ctrl --role controller \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址>
+   ```
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-coord --role coordinator \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+   上述命令执行后，窗口将自动**创建容器**、**进入容器**以及**启动管理服务**，用户在**屏幕上可观察到日志打印**。
+
+2. **部署 KV Cache Store（仅开启池化时）**
+
+   未开启池化请跳过本步。选择任意一台服务器，在 `examples/deployer` 目录下执行：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-kvs --role kv_store \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+   上述命令执行后，窗口将自动创建容器、进入容器以及启动 kv_store（Mooncake 后端会拉起 `mooncake_master`，默认监听 **50088**）。由于该容器不需要挂载 NPU，所以不需要传 `--devices`。
+
+3. **部署推理服务**
+
+   执行以下命令可完成 1 个 Prefill 容器的部署：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-p0 --devices 0 \
+     --role prefill --instance-name p0 \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+   执行以下命令可完成 1 个 Decode 容器的部署：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-d0-0 --devices 0 \
+     --role decode --instance-name d0 \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+   `--devices` 为创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，将按硬件类型挂载模板中的全部卡（A2/A5 为 0–7，A3 为 0–15）。
+
+   开启池化时，以上 Prefill / Decode 两条命令需要加上 `--kv-store-ip` 参数：
+
+   ```text
+   --kv-store-ip <kv_store 所在服务器的 IP地址>
+   ```
+
+   上述命令执行后，窗口将自动创建容器、进入容器以及启动推理服务，用户在屏幕上可观察到日志打印。
+
+4. **启动参数说明**
+
+   | 参数 | 说明 |
+   | :--- | :--- |
+   | `--config_dir` | `user_config.json` 和 `env.json` 所在目录。 |
+   | `--container-name` | 容器名，可自定义。 |
+   | `--role` | 容器中运行服务的角色。管理服务填 `coordinator,controller`，推理服务填 `prefill` 或 `decode`，池化填 `kv_store`。 |
+   | `--instance-name` | 推理实例名，如 `p0`、`d0`。用于标识当前容器启动的服务归属于哪一个实例。同一实例的多个容器使用相同名称，详见上文「容器数量规划」。 |
+   | `--devices` | 创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，按硬件类型挂载模板中的全部卡（A2/A5 为 0–7，A3 为 0–15）。管理面和 kv_store 不要传。 |
+   | `--pod-ip` | **当前服务器**的 IP。 |
+   | `--nic-name` | **当前服务器**对应 `--pod-ip` 的网卡名。 |
+   | `--coordinator-ip` / `--controller-ip` | Coordinator / Controller 所在服务器的 IP。部署推理服务、kv_store 时填写。分容器部署管理服务时，Controller 填写 `--coordinator-ip`，Coordinator 填写 `--controller-ip`。 |
+   | `--kv-store-ip` | kv_store 所在服务器的 IP。开启池化后，部署 Prefill / Decode 时必填。 |
+
+   执行以下命令可以查看网卡名和本机 IP。`dev` 后面是 `--nic-name`，`src` 后面是 `--pod-ip`。
+
+   ```bash
+   ip -4 route get 1.1.1.1
+   ```
+
+## 推理验证
+
+在**部署管理服务的机器上**发送如下推理请求，即可进行推理验证：
 
 ```bash
-curl -X POST http://<IP0>:1025/v1/chat/completions \
+curl -X POST http://<coordinator管理服务所在服务器的 IP地址>:1025/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
- "model": "qwen3-8B",
- "messages": [
- {
-   "role": "user",
-   "content": "who are you?"
- }
- ],
- "max_tokens": 36,
- "stream": true
+    "model": "<模型名称，必须和user_config.json文件中的配置一致>",
+    "messages": [{"role": "user", "content": "who are you?"}],
+    "max_tokens": 36,
+    "stream": true
   }'
 ```
 
-若返回 `{"detail":"Service is not available"}`，表示服务尚未就绪，可稍后重试并查看 `docker logs docker_coordinator`。若返回流式 JSON，则说明推理正常。
+若返回以下内容，表示服务尚未就绪，可稍后重试。
 
->[!NOTE]说明
->
->HTTP 协议存在安全风险，生产环境建议开启 HTTPS。接口和 TLS 配置请参考[业务接口](../../api/service_interfaces.md)。
-
-### Atlas 850 超节点服务器 环境额外修改内容
-
-Atlas 850 超节点服务器创建容器时，需做如下调整：
-
-**网络**：正文 `docker run` 已使用 `--net=host`，Atlas 850 超节点服务器 场景继续使用 host 网络。
-
-**额外挂载路径**：
-
-| 宿主机路径 | 容器路径 | 说明 |
-| :--- | :--- | :--- |
-| `/dev/ummu` | `/dev/ummu` | Atlas 850 超节点服务器 卡间 UB 互联内存设备，UB 内存池访问依赖此通路 |
-| `/dev/uburma` | `/dev/uburma` | 服务器间 UB RDMA 通信设备节点 |
-| `/usr/lib64` | `/usr/lib64` | 提供 `liburma` 等 UB 用户态通信库 |
-| `/etc/hixlep` | `/etc/hixlep` | UB 链路拓扑结构 |
-| `/etc/hccl_rootinfo.json` | `/etc/hccl_rootinfo.json` | HCCL 集群建链配置文件 |
-| `/usr/local/bin/npu-smi` | `/usr/local/bin/npu-smi` | NPU 管理工具 |
-| `/usr/local/dcmi` | `/usr/local/dcmi` | DCMI 库目录，npu-smi 查卡/管卡的前端接口 |
-
-Atlas 850 超节点服务器 启动示例片段（基于上述实例基础修改）：
-
-```shell
-ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
-# 按 ASCEND_VISIBLE_DEVICES 循环追加 --device=/dev/davinci$i
-
-docker run -u root --rm --name $CONTAINER_NAME \
-  --network host \
-  ... \
-  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-  -v /usr/lib64:/usr/lib64 \
-  -v /etc/hixlep:/etc/hixlep \
-  -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \
-  -v /usr/local/dcmi:/usr/local/dcmi \
-  -v /dev/ummu:/dev/ummu \
-  -v /dev/uburma:/dev/uburma \
-  ... \
+```json
+{"detail":"Service is not available"}
 ```
+
+开启池化后，请再用**长 prompt**（不少于 **128 token**，建议 500+）发一次请求。`AscendStoreConnector` 按 128 token 一块入池，短句不会 put，不能用来判断池化是否生效。
+
+请求成功后，在 kv_store 容器对应的 workspace 日志中查看 `Keys`：由 `0` 变为大于 0 即表示 block 已入池。日志路径示例：
+
+```text
+examples/motor_workspace/motor-kvs/kvs/log/docker-kv_store-<时间戳>.log
+```
+
+## 终止服务与重复部署
+
+在终端执行 **Ctrl+C** 可终止服务，但不会退出容器。服务终止后会出现如下提示，便于用户重新部署。
+
+```text
+容器内服务已终止，可执行以下命令重新部署服务。
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/examples/infer_engines/vllm --start --container-name motor-ctrl --role coordinator,controller --pod-ip <本机 IP地址> --nic-name <本机主网卡名称>
+运行日志：examples/motor_workspace/motor-ctrl/ctrl/log/docker-coordinator-controller-<时间戳>.log
+```
+
+用户可直接复制上述指令重新部署服务。开启池化时，kv_store 容器同样用 Ctrl+C 停止，重启命令中的 `--role` 为 `kv_store`。
+
+## 调优指导
+
+### 如何调整容器挂载
+
+部署脚本会为用户自动创建容器，容器将自动挂载用户的服务启动脚本以及权重文件的路径。如需自定义容器的创建指令，可以手动调整 `examples/deployer/lib/constant.py` 文件中的 docker-run 模板。
+
+### 同一服务器部署多个推理容器时错开端口
+
+同一服务器上部署多个推理容器时，须先通过 `--devices` 为本容器分配 NPU，再规划并错开本容器端口。
+
+`--devices` 填写本容器使用的卡号。同一服务器上的多个推理容器须使用不同卡号，卡数须与该容器所需 NPU 数量一致。
+
+错开端口时，在启动命令中增加下列参数：
+
+| 参数 | 说明 |
+| :--- | :--- |
+| `--node-manager-port` | 实际运行时的 NodeManager 端口，用于引擎节点管理 |
+| `--data-parallel-rpc-port` | 实际运行时的数据并行 RPC 端口 |
+| `--kv-port` | 实际运行时的 KV 传输端口 |
+| `--base-port` | 实际运行时的引擎端点起始端口 |
+
+以上文综合示例中 Decode 实例 `d0` 的两个容器部署在同一服务器为例。两个容器分别使用卡 `0` 与卡 `1`，端口规划如下：
+
+| `--container-name` | `--devices` | `--node-manager-port` | `--data-parallel-rpc-port` | `--base-port` |
+| :--- | :--- | :--- | :--- | :--- |
+| `motor-d0-0` | `0` | `4026` | `9000` | `10000` |
+| `motor-d0-1` | `1` | `4126` | `9100` | `11000` |
+
+执行以下命令部署容器 `motor-d0-0`：
+
+```bash
+python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+  ... \
+  --devices 0 \
+  ... \
+  --node-manager-port 4026 \
+  --data-parallel-rpc-port 9000 \
+  --base-port 10000
+```
+
+执行以下命令部署容器 `motor-d0-1`：
+
+```bash
+python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+  ... \
+  --devices 1 \
+  ... \
+  --node-manager-port 4126 \
+  --data-parallel-rpc-port 9100 \
+  --base-port 11000
+```
+
+开启池化时，两条命令分别增加不同的 `--kv-port`，例如 `21000` 与 `22000`。未开启池化不要传 `--kv-port`。
