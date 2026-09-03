@@ -17,6 +17,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
 from motor.coordinator.domain.block_offset_translator import attach_block_offsets
+from motor.coordinator.domain.responses_input import responses_scheduling_messages
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy, WorkloadLedgerMixin
 from motor.config.coordinator import (
     AIGW_D_MAX_SEQLEN,
@@ -276,11 +277,15 @@ class KvCacheAffinityPolicy(WorkloadLedgerMixin, BaseSchedulingPolicy):
         encoded_ids: list[int] = []
         messages = req_info.req_data.get(OpenAIField.MESSAGES, None)
         tools = req_info.req_data.get(OpenAIField.TOOLS, None)
+        is_responses_request = req_info.effective_entry_api() == "v1/responses"
+        if messages is None and is_responses_request:
+            messages = responses_scheduling_messages(req_info.req_data)
         try:
             if messages is not None:
                 tokenizer_manager = TokenizerManager()
                 encoded_ids = tokenizer_manager.apply_chat_template(messages, tools, req_data=req_info.req_data)
-                attach_block_offsets(req_info, messages, tools, tokenizer=tokenizer_manager.tokenizer)
+                if not is_responses_request:
+                    attach_block_offsets(req_info, messages, tools, tokenizer=tokenizer_manager.tokenizer)
             else:
                 prompt = req_info.req_data.get(OpenAIField.PROMPT, None)
                 if isinstance(prompt, str):

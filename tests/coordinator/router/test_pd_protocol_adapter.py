@@ -41,12 +41,13 @@ def _context(
     endpoint: EngineEndpointMetadata | None = None,
     peer_endpoint: EngineEndpointMetadata | None = None,
     attempt_seq: int = 2,
+    api: str = "/v1/chat/completions",
 ) -> LegContext:
     return LegContext(
         engine_request_id="engine-1",
         pair_id="pair-1",
         attempt_seq=attempt_seq,
-        api="/v1/chat/completions",
+        api=api,
         endpoint=endpoint or _endpoint("prefill.local", 8998),
         peer_endpoint=peer_endpoint,
     )
@@ -104,6 +105,57 @@ def test_vllm_prefill_does_not_add_max_completion_tokens():
     body = VllmProtocolAdapter().build_prefill_request(request, _context()).body
 
     assert "max_completion_tokens" not in body
+
+
+def test_vllm_responses_prefill_uses_native_output_budget_field():
+    request = {
+        "max_output_tokens": 32,
+        "max_tokens": 16,
+        "min_tokens": 2,
+        "max_completion_tokens": 8,
+        "stream": True,
+        "background": True,
+    }
+    original = deepcopy(request)
+
+    body = (
+        VllmProtocolAdapter()
+        .build_prefill_request(
+            request,
+            _context(api="/v1/responses"),
+        )
+        .body
+    )
+
+    assert request == original
+    assert body["max_output_tokens"] == 1
+    assert body["background"] is False
+    assert body["stream"] is False
+    assert "max_tokens" not in body
+    assert "min_tokens" not in body
+    assert "max_completion_tokens" not in body
+
+
+def test_vllm_responses_decode_preserves_client_lifecycle_fields():
+    request = {"max_output_tokens": 32, "background": True, "stream": True}
+    original = deepcopy(request)
+    ticket = {"do_remote_prefill": True, "remote_host": "10.0.0.1"}
+
+    body = (
+        VllmProtocolAdapter()
+        .build_decode_request(
+            request,
+            _context(api="/v1/responses"),
+            PrefillMetadata(handoff_ticket=ticket),
+        )
+        .body
+    )
+
+    assert request == original
+    assert body["background"] is True
+    assert body["stream"] is True
+    assert body["max_output_tokens"] == 32
+    assert body["kv_transfer_params"] == ticket
 
 
 def _token_metadata():

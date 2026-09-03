@@ -165,13 +165,17 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 | 参数名 | 类型 | 说明 |
 |---|---|---|
 | model | string | 必选；模型名称。 |
-| input | string/array/object | 必选；输入内容。 |
+| input | string/array | 必选；文本或 Responses input-item 数组，数组项类型以部署的后端引擎为准。 |
 | stream | boolean | 可选；是否流式输出，默认为false。<ul><li>true：流式;</li><li>false：非流式。</li></ul> |
+| instructions | string | 可选；模型需要遵循的系统指令。 |
+| max_output_tokens | integer | 可选；最多生成的输出 token 数。 |
 
-其余兼容字段（如`max_tokens`、`temperature`等）将透传给后端推理引擎。常用参数说明与 Chat Completion 接口保持一致。
+请求由 Coordinator 原样转发给原生支持 Responses API 的后端引擎。当前 Coordinator 额外支持从纯文本`input`、文本消息数组和`instructions`中提取调度信息，用于现有的 PD、负载及 KV 亲和性调度，不会把原始请求改写成 Chat Completions。非 message 类型的 input item 由后端引擎按其原生 Responses schema 校验。
 
 > **响应格式说明**：Coordinator 作为透明代理，响应内容由后端推理引擎直接返回，不做二次包装。
-> 实际返回格式取决于引擎侧对 OpenAI Responses API 的实现（如 vLLM 0.22+ 原生支持）。
+> 实际返回格式和可选字段取决于部署环境中的推理引擎版本；上线前必须确认该引擎原生提供`POST /v1/responses`。
+> 本接口当前只新增“创建并推理”能力，不包含`GET /v1/responses/{id}`、`POST /v1/responses/{id}/cancel`和后台任务状态存储。
+> 纯文本请求可参与 KV 亲和性调度；图片、工具调用等非文本输入仍会原样转发，但不会使用本接口新增的 KV 前缀提取逻辑。
 > 下方响应样例为 OpenAI 标准格式，供参考。
 
 **使用样例**
@@ -205,9 +209,10 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
 
 ```JSON
 {
-  "id": "resp-xxx",
+  "id": "resp_xxx",
   "object": "response",
-  "created": 1765856304,
+  "created_at": 1765856304,
+  "status": "completed",
   "model": "qwen3",
   "output": [
     {
@@ -232,7 +237,8 @@ IP与端口参见[业务接口的IP/端口与配置](./README.md#业务接口的
   |---|---|---|
   | id | string | 本次请求ID。 |
   | object | string | 返回对象类型：`response`。 |
-  | created | integer | 创建时间戳（秒）。 |
+  | created_at | integer | 创建时间戳（秒）。 |
+  | status | string | Response状态，如`completed`。 |
   | model | string | 模型名称。 |
   | output | array | 输出内容列表。 |
   | output[].type | string | 输出类型，如`message`。 |

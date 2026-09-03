@@ -1,4 +1,13 @@
-# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#         http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """Unit tests for motor.coordinator.router.recompute."""
 
 import json
@@ -58,6 +67,12 @@ def test_parse_stream_chunk_json_sse_prefix():
     raw = b'data: {"choices": [{"delta": {"content": "a"}}]}'
     obj = parse_stream_chunk_json(raw, logger=None)
     assert obj["choices"][0]["delta"]["content"] == "a"
+
+
+def test_parse_stream_chunk_json_responses_named_sse_event():
+    raw = b'event: response.output_text.delta\ndata: {"delta": "a", "type": "response.output_text.delta"}\n\n'
+    obj = parse_stream_chunk_json(raw, logger=None)
+    assert obj == {"delta": "a", "type": "response.output_text.delta"}
 
 
 def test_process_stream_chunk_recompute_disabled_sets_policy_no_kv_transfer():
@@ -165,6 +180,20 @@ def test_strip_stream_chunk_bytes_for_client_sse_prefix():
     parsed = json.loads(line[len("data: ") :])
     assert "prompt_token_ids" not in parsed
     assert "token_ids" not in parsed["choices"][0]
+
+
+def test_strip_stream_chunk_bytes_preserves_responses_named_sse_event():
+    raw = (
+        b"event: response.output_text.delta\r\ndata: {\"delta\":\"a\",\"type\":\"response.output_text.delta\"}\r\n\r\n"
+    )
+    out = strip_stream_chunk_bytes_for_client(raw)
+    assert out.startswith(b"event: response.output_text.delta\r\ndata: ")
+    assert out.endswith(b"\r\n\r\n")
+    data_line = out.split(b"\r\n")[1]
+    assert json.loads(data_line[len(b"data: ") :]) == {
+        "delta": "a",
+        "type": "response.output_text.delta",
+    }
 
 
 def test_strip_nonstream_response_body_for_client():

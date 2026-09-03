@@ -1038,6 +1038,35 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         self.assertEqual(ids2, [7, 8, 9])
         mock_tokenizer.encode.assert_called_once()
 
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_responses_input_is_tokenized_without_changing_native_body(self, mock_tokenizer_manager):
+        """Responses uses a scheduling-only message view while preserving engine input."""
+        tokenizer_manager = Mock()
+        tokenizer_manager.apply_chat_template.return_value = [11, 12, 13]
+        mock_tokenizer_manager.return_value = tokenizer_manager
+        native_body = {
+            "model": "qwen3",
+            "instructions": "Answer briefly.",
+            "input": "Hello",
+        }
+        req = Mock()
+        req.req_data = native_body.copy()
+        req.token_ids = None
+        req.effective_entry_api.return_value = "v1/responses"
+
+        ids = KvCacheAffinityPolicy._ensure_token_ids(req)
+
+        self.assertEqual(ids, [11, 12, 13])
+        tokenizer_manager.apply_chat_template.assert_called_once_with(
+            [
+                {"role": "system", "content": "Answer briefly."},
+                {"role": "user", "content": "Hello"},
+            ],
+            None,
+            req_data=native_body,
+        )
+        self.assertEqual(req.req_data, native_body)
+
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.attach_block_offsets')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_ensure_token_ids_attaches_chat_block_offsets(self, mock_tokenizer_manager, mock_attach_block_offsets):

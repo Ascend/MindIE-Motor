@@ -142,10 +142,21 @@ class VllmProtocolAdapter:
         body = deepcopy(dict(request))
         self.inject_request_id(body, context.engine_request_id)
         body["stream"] = False
-        body["max_tokens"] = 1
-        body["min_tokens"] = 1
         body.pop("stream_options", None)
-        if "max_completion_tokens" in body:
+        is_responses = context.api.strip("/") == "v1/responses"
+        if is_responses:
+            # The prefill leg must finish synchronously so the Coordinator can
+            # receive the KV handoff ticket before dispatching decode. Responses
+            # uses max_output_tokens rather than the Completions budget fields.
+            body["background"] = False
+            body["max_output_tokens"] = 1
+            body.pop("max_tokens", None)
+            body.pop("min_tokens", None)
+            body.pop("max_completion_tokens", None)
+        else:
+            body["max_tokens"] = 1
+            body["min_tokens"] = 1
+        if "max_completion_tokens" in body and not is_responses:
             body["max_completion_tokens"] = 1
         body["kv_transfer_params"] = {
             "do_remote_decode": True,

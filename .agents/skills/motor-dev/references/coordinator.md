@@ -217,6 +217,17 @@ SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is un
 2. `forward_request(plan)` — HTTP POST to engine's infer endpoint (streaming or non-streaming)
 3. `release_all(plan)` — sends `UPDATE_WORKLOAD` via ZMQ DEALER to Scheduler
 
+### Native Responses Create Route
+
+`POST /v1/responses` forwards the native Responses request body and path to the
+engine. Its array input is a Responses input-item union, not a Chat Completions
+message array. The HTTP boundary validates message-shaped items, including the
+`developer` role, but defers schema validation for other explicitly typed items
+to the native engine. For scheduling tokenization, `responses_input.py` maps
+`developer` to `system` without changing the request body sent to the engine.
+Non-message and other unsupported scheduling shapes fall back instead of
+claiming an incorrect KV prefix match.
+
 ### Hot-Reload
 
 Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemon's loop): when the config file changes, it calls `CoordinatorConfig.reload()` (re-parse from JSON) and pushes the updated config into the running `ManagementServer`. The reload skip-set is exactly `frozenset({"worker_index"})` — the runtime-only field that must not change mid-flight; everything else re-applies. If no valid config path exists, hot-reload is disabled.
@@ -250,7 +261,8 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `NativeEngineApiClient` (HTTP clients to kv-conductor, controller, engine) |
 | `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `GET /instances`, `/instances/refresh`, `/precision/alarm_cleared` |
 | `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
-| `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
+| `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
+| `motor/coordinator/domain/responses_input.py` | | Text-only scheduling view for native Responses input; maps `developer` to `system` without rewriting the engine request |
 | `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared Scheduler ZMQ connection (used by Mgmt/Obs/Infer) |
 | `motor/coordinator/domain/circuit_breaker.py` | | Per-instance circuit breaker state (closed/open) |
 | `motor/coordinator/domain/scheduling_pin.py` | | Pinned-instance resolution, endpoint selection for an instance |

@@ -101,7 +101,7 @@ def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens
 
 
 def _validate_message_array(messages: list[Any], field_name: str) -> None:
-    """Validate a message array (messages or input). Raises HTTPException on invalid."""
+    """Validate a Chat Completions message array. Raises HTTPException on invalid."""
     if len(messages) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -118,13 +118,56 @@ def _validate_message_array(messages: list[Any], field_name: str) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(f"Invalid message at index {i}: missing {OpenAIField.ROLE} or {OpenAIField.CONTENT}"),
             )
-        if message[OpenAIField.ROLE] not in ["system", "user", "assistant", "tool"]:
+        if message[OpenAIField.ROLE] not in ["system", "developer", "user", "assistant", "tool"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"Invalid {OpenAIField.ROLE} "
                     f"'{message[OpenAIField.ROLE]}' at index {i}: must be system, "
-                    "user, or assistant"
+                    "developer, user, assistant, or tool"
+                ),
+            )
+
+
+def _validate_responses_input_items(input_items: list[Any]) -> None:
+    """Validate Responses message items while deferring other typed items to the engine."""
+    if not input_items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid input field: must be a non-empty array",
+        )
+    for i, item in enumerate(input_items):
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid input item at index {i}: must be an object",
+            )
+
+        item_type = item.get("type")
+        if item_type is None and OpenAIField.ROLE not in item and OpenAIField.CONTENT not in item:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid input item at index {i}: missing type or message fields",
+            )
+        if item_type is not None and (not isinstance(item_type, str) or not item_type):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid input item type at index {i}: must be a non-empty string",
+            )
+        if item_type not in (None, "message"):
+            continue
+
+        if OpenAIField.ROLE not in item or OpenAIField.CONTENT not in item:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(f"Invalid Responses message at index {i}: missing {OpenAIField.ROLE} or {OpenAIField.CONTENT}"),
+            )
+        if item[OpenAIField.ROLE] not in ["system", "developer", "user", "assistant"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid {OpenAIField.ROLE} '{item[OpenAIField.ROLE]}' at index {i}: "
+                    "must be system, developer, user, or assistant"
                 ),
             )
 
@@ -140,10 +183,10 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
     _validate_positive_int_field(body_json, OpenAIField.MAX_COMPLETION_TOKENS)
     if request_type != RequestType.OPENAI:
         return
-    if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json and "input" not in body_json:
+    if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing required field: {OpenAIField.PROMPT} or {OpenAIField.MESSAGES} or input",
+            detail=f"Missing required field: {OpenAIField.PROMPT} or {OpenAIField.MESSAGES}",
         )
     if OpenAIField.MESSAGES in body_json:
         if not isinstance(body_json[OpenAIField.MESSAGES], list):
@@ -156,8 +199,35 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
             pass
         else:
             _validate_message_array(body_json[OpenAIField.MESSAGES], OpenAIField.MESSAGES)
-    if "input" in body_json and isinstance(body_json["input"], list):
-        _validate_message_array(body_json["input"], "input")
+
+
+def _validate_responses_request(body_json: dict[str, Any]) -> None:
+    """Validate the required fields of a Responses create request."""
+    model = body_json.get(OpenAIField.MODEL)
+    if not isinstance(model, str) or not model:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Missing or invalid required field: {OpenAIField.MODEL}",
+        )
+    if "input" not in body_json:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required field: input",
+        )
+    input_value = body_json["input"]
+    if isinstance(input_value, str):
+        if not input_value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid input field: must not be empty",
+            )
+        return
+    if not isinstance(input_value, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid input field: must be a string or array",
+        )
+    _validate_responses_input_items(input_value)
 
 
 class InferenceServer(BaseCoordinatorServer):
@@ -467,7 +537,7 @@ class InferenceServer(BaseCoordinatorServer):
             request_manager: RequestManager = Depends(get_request_manager),
         ):
             self.verify_api_key(request)
-            return await self._handle_openai_request(request, RequestType.OPENAI, request_manager)
+            return await self._handle_responses_request(request, request_manager)
 
         @self._inference_app.post("/v1/messages")
         @self.timeout_handler()
@@ -586,6 +656,41 @@ class InferenceServer(BaseCoordinatorServer):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(e),
             ) from e
+
+    async def _handle_responses_request(
+        self,
+        request: Request,
+        request_manager: RequestManager,
+    ):
+        """Validate and transparently route a native Responses create request."""
+        try:
+            body_json = json.loads((await request.body()).decode("utf-8"))
+            _validate_responses_request(body_json)
+            if not await self._is_available():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Service is not available",
+                )
+            return await handle_request(
+                request,
+                self.coordinator_config,
+                scheduler=self._get_scheduler_client(),
+                request_manager=request_manager,
+                request_json=body_json,
+            )
+        except HTTPException:
+            raise
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON format",
+            ) from error
+        except Exception as error:
+            logger.error("Failed to process Responses request: %s", error, exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(error),
+            ) from error
 
     def _initialize_config(self, coordinator_config: CoordinatorConfig | None) -> None:
         if coordinator_config is None:

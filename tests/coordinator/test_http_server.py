@@ -235,7 +235,8 @@ class TestCoordinatorServer:
                 response_data = {
                     "id": request_id,
                     "object": "response",
-                    "created": int(time.time()),
+                    "created_at": int(time.time()),
+                    "status": "completed",
                     "model": body_json.get("model", ""),
                     "output": [
                         {
@@ -628,7 +629,7 @@ class TestCoordinatorServer:
             json={
                 "model": "gpt-4o-mini",
                 "input": "Hello there!",
-                "max_tokens": 64,
+                "max_output_tokens": 64,
             },
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
         )
@@ -636,11 +637,11 @@ class TestCoordinatorServer:
         assert response.status_code == 200, f"Responses API failed: {response.status_code}"
 
         data = response.json()
-        # OpenAI-native response format: id, object, created, model, output
+        # OpenAI-native response format: id, object, created_at, model, output
         assert "id" in data, "Response missing id"
         assert "object" in data, "Response missing object"
         assert data["object"] == "response", f"Expected object='response', got '{data['object']}'"
-        assert "created" in data, "Response missing created"
+        assert "created_at" in data, "Response missing created_at"
         assert "model" in data, "Response missing model"
         assert "output" in data, "Response missing output"
         assert isinstance(data["output"], list), "output must be an array"
@@ -988,7 +989,8 @@ class TestCoordinatorServerAdvanced:
                 response_data = {
                     "id": request_id,
                     "object": "response",
-                    "created": int(time.time()),
+                    "created_at": int(time.time()),
+                    "status": "completed",
                     "model": body_json.get("model", ""),
                     "output": [
                         {
@@ -1577,7 +1579,7 @@ class TestCoordinatorServerAdvanced:
         assert response.status_code == 400, f"Expected 400 for invalid role, got: {response.status_code}"
 
     def test_validate_responses_input_empty_array(self):
-        """Test _validate_openai_request rejects empty input array on /v1/responses."""
+        """Test Responses validation rejects an empty input array."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/responses",
@@ -1587,7 +1589,7 @@ class TestCoordinatorServerAdvanced:
         assert response.status_code == 400, f"Expected 400 for empty input array, got: {response.status_code}"
 
     def test_validate_responses_input_elements_not_dict(self):
-        """Test _validate_openai_request rejects input array with non-dict elements."""
+        """Test Responses validation rejects non-dict input array elements."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/responses",
@@ -1597,7 +1599,7 @@ class TestCoordinatorServerAdvanced:
         assert response.status_code == 400, f"Expected 400 for non-dict input elements, got: {response.status_code}"
 
     def test_validate_responses_input_missing_role_or_content(self):
-        """Test _validate_openai_request rejects input element missing role or content."""
+        """Test Responses validation rejects an input item missing role or content."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/responses",
@@ -1607,7 +1609,7 @@ class TestCoordinatorServerAdvanced:
         assert response.status_code == 400, f"Expected 400 for missing content, got: {response.status_code}"
 
     def test_validate_responses_input_invalid_role(self):
-        """Test _validate_openai_request rejects input element with invalid role."""
+        """Test Responses validation rejects an invalid message role."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/responses",
@@ -1616,8 +1618,21 @@ class TestCoordinatorServerAdvanced:
         )
         assert response.status_code == 400, f"Expected 400 for invalid role, got: {response.status_code}"
 
+    def test_validate_responses_typed_non_message_item_reaches_backend(self):
+        """Test Responses validation does not apply Chat fields to typed native items."""
+        inference_client = TestClient(self.coordinator_server.inference_app)
+        response = inference_client.post(
+            "/v1/responses",
+            json={
+                "model": "gpt-4o-mini",
+                "input": [{"type": "function_call_output", "call_id": "call-1", "output": "42"}],
+            },
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.valid_api_key}"},
+        )
+        assert response.status_code == 200, f"Expected backend passthrough, got: {response.status_code}"
+
     def test_validate_responses_input_string_is_valid(self):
-        """Test _validate_openai_request accepts string input (non-array) on /v1/responses."""
+        """Test Responses validation accepts string input."""
         inference_client = TestClient(self.coordinator_server.inference_app)
         response = inference_client.post(
             "/v1/responses",

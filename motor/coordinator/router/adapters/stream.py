@@ -75,8 +75,17 @@ def parse_stream_chunk_json(chunk: bytes, logger: Any | None = None) -> dict | N
     if not chunk_str:
         return None
 
-    if chunk_str.startswith("data: "):
-        chunk_str = chunk_str[len("data: ") :]
+    # Chat/Completions commonly emits a single ``data:`` line per frame.
+    # Responses emits named SSE events instead::
+    #
+    #     event: response.output_text.delta
+    #     data: {...}
+    #
+    # The router receives the complete frame, so locate its data line instead
+    # of requiring the frame itself to start with ``data:``.
+    data_line = next((line for line in chunk_str.splitlines() if line.startswith("data:")), None)
+    if data_line is not None:
+        chunk_str = data_line[len("data:") :].lstrip(" ")
 
     try:
         return json.loads(chunk_str)
@@ -110,8 +119,21 @@ def strip_openai_token_id_fields_for_client(
 
 def encode_stream_chunk_bytes(original_chunk: bytes, chunk_json: dict) -> bytes:
     """Re-serialize one SSE ``data:`` line or a raw JSON line after in-place edits to ``chunk_json``."""
-    raw = original_chunk.decode("utf-8", errors="replace").strip()
+    original_text = original_chunk.decode("utf-8", errors="replace")
+    raw = original_text.strip()
     payload = _compact_json_bytes(chunk_json)
+    if any(line.startswith("data:") for line in raw.splitlines()):
+        # Preserve named ``event:`` lines and original line endings while
+        # replacing only the JSON-bearing data line.
+        encoded_lines: list[bytes] = []
+        for line in original_text.splitlines(keepends=True):
+            line_body = line.rstrip("\r\n")
+            line_ending = line[len(line_body) :]
+            if line_body.startswith("data:"):
+                encoded_lines.append(b"data: " + payload + line_ending.encode())
+            else:
+                encoded_lines.append(line.encode())
+        return b"".join(encoded_lines)
     if raw.startswith("data: "):
         line_b = b"data: " + payload
     else:
