@@ -2087,12 +2087,10 @@ def test_manually_separate_l6_not_excluded_by_affects_instance():
     """
 
     # Reconstruct the filter logic from _refresh_instance_fault_level
-    def _affects_instance(fi: FaultInfo, node: NodeMetadata) -> bool:
-        if fi.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
-            return True
-        if fi.fault_level != FaultLevel.L6:
-            return True
-        return len(node.instance_ids) > 0
+    from motor.controller.fault_tolerance.fault_types import pre_separate_fault_affects_instance
+
+    inst = _mk_active_instance(1, "decode-1")
+    inst.get_all_endpoints.return_value = ()
 
     # Node with instances still on it
     node_with_instances = NodeMetadata(
@@ -2108,18 +2106,19 @@ def test_manually_separate_l6_not_excluded_by_affects_instance():
     )
 
     # ManuallySeparateNPU is NOT PreSeparateNPU → filter returns True
-    assert _affects_instance(FAULT_MANUALLY_SEPARATE_L6.model_copy(), node_with_instances) is True, (
-        "ManuallySeparateNPU L6 should always be included"
-    )
+    assert (
+        pre_separate_fault_affects_instance(FAULT_MANUALLY_SEPARATE_L6.model_copy(), node_with_instances, inst, "")
+        is True
+    ), "ManuallySeparateNPU L6 should always be included"
 
     # PreSeparateNPU L6: included when instance still on node
-    assert _affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_with_instances) is True, (
-        "PreSeparateNPU L6 should be included when instances remain on node"
-    )
+    assert (
+        pre_separate_fault_affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_with_instances, inst, "") is True
+    ), "PreSeparateNPU L6 should be included when instances remain on node"
     # PreSeparateNPU L6: excluded when no instances on node (already moved)
-    assert _affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_no_instances) is False, (
-        "PreSeparateNPU L6 should be excluded when instance has left the node"
-    )
+    assert (
+        pre_separate_fault_affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_no_instances, inst, "") is False
+    ), "PreSeparateNPU L6 should be excluded when instance has left the node"
 
 
 # -- Multi-instance: one active, one inactive --------------------------------
@@ -2215,3 +2214,198 @@ def test_strategy_completion_clears_failure_flag(fault_manager_with_instances):
         manager._process_instance_strategy(1)
 
     assert manager.instances[1].prev_strategy_failed is False
+
+
+def _endpoint_with_chip_ids(pod_ip: str, chip_ids: list[int]):
+    from motor.common.resources.endpoint import DeviceInfo, Endpoint
+
+    return Endpoint(
+        id=0,
+        ip=pod_ip,
+        business_port="10000",
+        device_infos=[DeviceInfo(device_id=str(chip), rank_id=str(idx)) for idx, chip in enumerate(chip_ids)],
+    )
+
+
+FAULT_A2_LINKDOWN_CHIP6 = FaultInfo(
+    fault_category=FaultCategory.HARDWARE,
+    fault_type=HardwareFaultType.CARD_NETWORK_UNHEALTHY,
+    npu_name="Ascend910-6",
+    fault_code=int(SpecialFaultCode.CARD_NETWORK_LINKDOWN),
+    fault_level=FaultLevel.L6,
+    origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
+)
+
+
+def test_a2_linkdown_isolates_only_instance_owning_the_npu(fault_manager):
+    """Colocated P/D: linkdown on chip 6 isolates Prefill only, not Decode."""
+    fault_manager.config.hardware_type = "800I_A2"
+    node_name = "node-37-210"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.instances[2] = InstanceMetadata(instance_id=2)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1, 2},
+        instance_pod_ips={1: "10.244.246.54", 2: "10.244.246.27"},
+        instance_job_names={1: "vllm-0-p0", 2: "vllm-0-d0"},
+        hardware_fault_infos={int(SpecialFaultCode.CARD_NETWORK_LINKDOWN): FAULT_A2_LINKDOWN_CHIP6.model_copy()},
+    )
+
+    prefill = _mk_active_instance(1, "vllm-0-p0", role="prefill")
+    prefill.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.54", [6, 7]),)
+    decode = _mk_active_instance(2, "vllm-0-d0", role="decode")
+    decode.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.27", [4, 5]),)
+
+    def _get_instance(iid):
+        return {1: prefill, 2: decode}.get(iid)
+
+    mock_im = MagicMock()
+    mock_im.get_instance.side_effect = _get_instance
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+    ):
+        fault_manager._refresh_instance_fault_level(1)
+        fault_manager._refresh_instance_fault_level(2)
+
+    assert fault_manager.instances[1].fault_level == FaultLevel.L6
+    assert fault_manager.instances[1].fault_code == int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)
+    mock_im.separate_instance.assert_any_call(1)
+    assert fault_manager.instances[2].fault_level == FaultLevel.HEALTHY
+    mock_im.separate_instance.assert_called_with(1)
+    assert mock_im.separate_instance.call_args_list == [((1,),)]
+
+
+def test_a2_linkdown_isolates_decode_owning_the_npu(fault_manager):
+    """Colocated P/D: linkdown on a Decode chip isolates Decode only."""
+    fault_manager.config.hardware_type = "800I_A2"
+    node_name = "node-37-210"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.instances[2] = InstanceMetadata(instance_id=2)
+    fault = FAULT_A2_LINKDOWN_CHIP6.model_copy(update={"npu_name": "Ascend910-4"})
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1, 2},
+        instance_pod_ips={1: "10.244.246.54", 2: "10.244.246.27"},
+        instance_job_names={1: "vllm-0-p0", 2: "vllm-0-d0"},
+        hardware_fault_infos={int(SpecialFaultCode.CARD_NETWORK_LINKDOWN): fault},
+    )
+
+    prefill = _mk_active_instance(1, "vllm-0-p0", role="prefill")
+    prefill.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.54", [6, 7]),)
+    decode = _mk_active_instance(2, "vllm-0-d0", role="decode")
+    decode.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.27", [4, 5]),)
+
+    def _get_instance(iid):
+        return {1: prefill, 2: decode}.get(iid)
+
+    mock_im = MagicMock()
+    mock_im.get_instance.side_effect = _get_instance
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+    ):
+        fault_manager._refresh_instance_fault_level(1)
+        fault_manager._refresh_instance_fault_level(2)
+
+    assert fault_manager.instances[2].fault_level == FaultLevel.L6
+    assert fault_manager.instances[1].fault_level == FaultLevel.HEALTHY
+    assert mock_im.separate_instance.call_args_list == [((2,),)]
+
+
+def test_handle_fault_info_a2_linkdown_stays_l6_for_prefill_and_decode(fault_manager):
+    """P or D linkdown on A2 must stay L6 so that instance's NMs can be stopped."""
+    fault_manager.config.hardware_type = "800I_A2"
+    for role, iid, job in (("prefill", 1, "vllm-0-p0"), ("decode", 2, "vllm-0-d0")):
+        node_name = f"node-{role}"
+        fault_manager.instances[iid] = InstanceMetadata(instance_id=iid)
+        fault_manager.nodes[node_name] = NodeMetadata(
+            node_name=node_name,
+            instance_ids={iid},
+            instance_pod_ips={iid: "10.0.0.1"},
+            instance_job_names={iid: job},
+        )
+        with patch(_CORE_IM) as mock_im_class:
+            mock_im_class.return_value = _mk_core_im(_mk_active_instance(iid, job, role=role))
+            fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+        stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
+        assert stored.fault_level == FaultLevel.L6, f"{role} A2 linkdown must stay L6"
+
+
+def test_handle_fault_info_a2_non_isolation_pre_separate_still_downgrades(fault_manager):
+    """A2 must not keep every PreSeparateNPU at L6; only isolation-set codes."""
+    fault_manager.config.hardware_type = "800I_A2"
+    node_name = "node_decode"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "vllm-0-d0"},
+    )
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "vllm-0-d0", role="decode"))
+        fault_manager._handle_fault_info_update([FAULT_PRE_SEPARATE_L6], node_name)
+    stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L2
+
+
+def test_handle_fault_info_a2_linkdown_union_single_pod_downgrades_to_l2(fault_manager):
+    """Single-pod union keeps PreSeparateNPU L2 while business is active."""
+    fault_manager.config.hardware_type = "800I_A2"
+    node_name = "node-union-1"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "vllm-0-u0"},
+    )
+    union = _mk_active_instance(1, "vllm-0-u0", role="union")
+    union.get_node_managers_num.return_value = 1
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(union)
+        fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+    stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L2
+
+
+def test_handle_fault_info_a2_linkdown_union_multi_pod_stays_l6(fault_manager):
+    """Multi-pod union linkdown stays L6 so every Pod of the instance is stopped."""
+    fault_manager.config.hardware_type = "800I_A2"
+    node_name = "node-union-2"
+    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+    fault_manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={1},
+        instance_pod_ips={1: "10.0.0.1"},
+        instance_job_names={1: "vllm-0-u0"},
+    )
+    union = _mk_active_instance(1, "vllm-0-u0", role="union")
+    union.get_node_managers_num.return_value = 2
+    with patch(_CORE_IM) as mock_im_class:
+        mock_im_class.return_value = _mk_core_im(union)
+        fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+    stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
+    assert stored.fault_level == FaultLevel.L6
+
+
+def test_process_instance_strategy_skips_superseded_instance(fault_manager_with_instances):
+    """Stale instance id must not launch a new strategy after assembler creates a replacement."""
+    manager = fault_manager_with_instances
+    manager.instances[1].fault_level = FaultLevel.L6
+    manager.instances[1].fault_code = int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)
+
+    stale = _mk_active_instance(1, "vllm-0-p0", role="prefill")
+    current = _mk_active_instance(4, "vllm-0-p0", role="prefill")
+    mock_im = MagicMock()
+    mock_im.get_instance.return_value = stale
+    mock_im.get_instance_by_job_name.return_value = current
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=mock_im):
+        manager._process_instance_strategy(1)
+
+    assert manager.instances[1].strategy is None
+    manager.executor.shutdown(wait=False)

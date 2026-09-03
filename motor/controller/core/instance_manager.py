@@ -544,7 +544,9 @@ class InstanceManager(ThreadSafeSingleton):
         current: Instance | None = None
         with self.ins_lock:
             for instance in self.instances.values():
-                if instance.job_name == job_name:
+                if instance.job_name != job_name:
+                    continue
+                if current is None or instance.id > current.id:
                     current = instance
         return current
 

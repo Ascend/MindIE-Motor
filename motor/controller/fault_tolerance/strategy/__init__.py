@@ -18,6 +18,7 @@ __all__ = [
     "ScaleP2DStrategy",
     "TokenReinferenceStrategy",
     "EngineRelaunchStrategy",
+    "NmSuicideStrategy",
 ]
 
 from .base import StrategyBase
@@ -25,3 +26,4 @@ from .strategy import generate_strategy_map
 from .scale_p2d import ScaleP2DStrategy
 from .token_reinference import TokenReinferenceStrategy
 from .engine_relaunch import EngineRelaunchStrategy
+from .nm_suicide import NmSuicideStrategy

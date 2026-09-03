@@ -12,8 +12,9 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from motor.common.resources.instance import NodeManagerInfo
-from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient
+from motor.controller.api_client.node_manager_api_client import NodeManagerApiClient, NodeManagerStopStatus
 
 # pylint: disable=redefined-outer-name
 
@@ -56,3 +57,18 @@ def test_restart_engine_client_construction_failure_returns_false(node_mgr):
         side_effect=RuntimeError("tls config invalid"),
     ):
         assert NodeManagerApiClient.restart_engine(node_mgr, action="restart") is False
+
+
+def test_stop_timeout_returns_false(node_mgr, mock_http_client):
+    """Stop timeout is unreachable, not a dispatch exception to retry as ERROR."""
+    mock_http_client.post.side_effect = requests.exceptions.ReadTimeout("read timeout=5")
+    assert NodeManagerApiClient.stop(node_mgr) is False
+    mock_http_client.post.side_effect = requests.exceptions.ReadTimeout("read timeout=5")
+    assert NodeManagerApiClient.stop_status(node_mgr) == NodeManagerStopStatus.UNREACHABLE
+
+
+def test_stop_http_error_is_failed_not_unreachable(node_mgr, mock_http_client):
+    """NM still reachable but rejecting stop must not look like already-exiting."""
+    mock_http_client.post.side_effect = RuntimeError("http response error 500, boom")
+    assert NodeManagerApiClient.stop_status(node_mgr) == NodeManagerStopStatus.FAILED
+    assert NodeManagerApiClient.stop(node_mgr) is False

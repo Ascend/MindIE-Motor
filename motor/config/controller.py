@@ -165,6 +165,9 @@ class ControllerConfig:
     daemon_loop_interval: float = 5.0
     # Token sampling precision alarm: when True, controller terminates decode instance on precision alarm
     precision_auto_recovery_enabled: bool = field(default=False)
+    # Copied from motor_deploy_config.hardware_type when loading user_config.json.
+    # Empty means unknown → keep PreSeparateNPU L6→L2 downgrade (non-A2 behavior).
+    hardware_type: str = ""
 
     # internal fields
     config_path: str | None = field(default=None, init=False)
@@ -180,6 +183,7 @@ class ControllerConfig:
         json_path, config_path = resolve_config_json_path(json_path)
 
         cfg = {}
+        hardware_type = ""
         try:
             if config_path and config_path.exists():
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -188,8 +192,15 @@ class ControllerConfig:
                         raw = json.loads(content)
                         if isinstance(raw, dict) and "motor_controller_config" in raw:
                             cfg = raw.get("motor_controller_config", {})
+                            deploy_cfg = raw.get("motor_deploy_config") or {}
+                            if isinstance(deploy_cfg, dict):
+                                hardware_type = str(deploy_cfg.get("hardware_type") or "")
+                            if isinstance(cfg, dict) and cfg.get("hardware_type"):
+                                hardware_type = str(cfg.get("hardware_type") or "")
                         else:
                             cfg = raw
+                            if isinstance(cfg, dict) and cfg.get("hardware_type"):
+                                hardware_type = str(cfg.get("hardware_type") or "")
                         tls_configs = [MGMT_TLS_CONFIG, ETCD_TLS_CONFIG, GRPC_TLS_CONFIG, OBSERVABILITY_TLS_CONFIG]
                         _update_tls_config(tls_configs, cfg, raw)
         except (json.JSONDecodeError, Exception) as e:
@@ -250,6 +261,11 @@ class ControllerConfig:
 
             if 'daemon_loop_interval' in cfg:
                 config.daemon_loop_interval = float(cfg['daemon_loop_interval'])
+
+            if hardware_type:
+                config.hardware_type = hardware_type
+            elif isinstance(cfg, dict) and cfg.get("hardware_type"):
+                config.hardware_type = str(cfg.get("hardware_type") or "")
 
             apply_config_path_metadata(config, config_path)
             if not config_path:
@@ -420,7 +436,8 @@ class ControllerConfig:
             "  High Availability:\n"
             f"    ├─ Advanced RAS:         {'Enabled' if enable_fault_tolerance else 'Disabled'}\n"
             f"    │   ├─ Scale P2D:        {'Enabled' if enable_scale_p2d else 'Disabled'}\n"
-            f"    │   └─ Token Reinference:   {'Enabled' if enable_token_reinference else 'Disabled'}\n"
+            f"    │   ├─ Token Reinference:   {'Enabled' if enable_token_reinference else 'Disabled'}\n"
+            f"    │   └─ Hardware Type:    {self.hardware_type or 'unset'}\n"
             f"    ├─ ETCD:\n"
             f"    │   ├─ Persistence:      {'Enabled' if self.etcd_config.enable_etcd_persistence else 'Disabled'}\n"
             f"    │   ├─ Host:             {self.etcd_config.etcd_host}\n"

@@ -435,6 +435,17 @@ def test_update_remove_instance(event_pusher):
     assert event.instance.job_name == readonly_instance.job_name
 
 
+def test_update_remove_skips_del_for_superseded_instance(event_pusher):
+    """Heartbeat timeout of an old id must not DEL after a newer READY instance exists."""
+    live = ReadOnlyInstance(Instance(job_name="test_job", model_name="test_model", id=5, role="decode"))
+    stale = ReadOnlyInstance(Instance(job_name="test_job", model_name="test_model", id=2, role="decode"))
+    event_pusher.instances[live.job_name] = live
+
+    event_pusher.update(stale, ObserverEvent.INSTANCE_REMOVED)
+
+    assert event_pusher.event_queue.empty()
+
+
 def test_update_seperated_instance(event_pusher):
     """test update seperated instance"""
     test_instance = Instance(job_name="test_job_seperated", model_name="test_model", id=1, role="prefill")

@@ -378,9 +378,11 @@ L2 策略按 fault_code 分发:
 - PreSeparateNPU 动态降级到 L2（有活跃业务）→ 走 L2 正常分发
 - 其它 → None
 
-L4/L5/L6 → 根据实例角色 (decode) → ScaleP2DStrategy
+L4/L5 → decode → ScaleP2DStrategy
 
-> **注意**: PreSeparateNPU 在无活跃业务时，故障在 Step 2（故障评估流程）被排除，不会到达 L6 的策略分发 —— 因此不会触发 ScaleP2D。
+L6 → A2 隔离码集合的 Prefill / Decode / 多 Pod union → NmSuicideStrategy；其它 Decode L6 → ScaleP2DStrategy
+
+> **注意**: 非 A2 的 PreSeparateNPU 在仍有活跃业务时会被动态降到 L2。A2 隔离码集合（`A2_PD_ISOLATION_FAULT_CODES`，当前仅 `0x81078603`）保持 L6，按实例占用的 NPU 归属隔离（无 `device_id` 的实例 fail-closed，不隔离），再走 NmSuicide。单 Pod union 仍降 L2。非隔离码 / 非 A2 的 Prefill L6 策略层仍为空操作。
 
 ### 策略与故障解耦
 

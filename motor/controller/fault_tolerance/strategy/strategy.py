@@ -9,7 +9,12 @@
 # See the Mulan PSL v2 for more details.
 from collections.abc import Callable
 from motor.config.controller import ControllerConfig
-from motor.controller.fault_tolerance.fault_types import FaultLevel, SpecialFaultCode
+from motor.controller.fault_tolerance.fault_types import (
+    A2_PD_ISOLATION_FAULT_CODES,
+    FaultLevel,
+    SpecialFaultCode,
+    is_800i_a2,
+)
 from motor.controller.fault_tolerance.strategy.base import StrategyBase
 
 
@@ -70,8 +75,26 @@ def level5_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
 
 
 def level6_strategy(fault_code: int, instance_id: int, config: ControllerConfig) -> type[StrategyBase] | None:
-    # Note: Currently L6 faults call L4 strategy logic
-    return level4_strategy(fault_code, instance_id, config)
+    from motor.controller.core.instance_manager import InstanceManager
+    from motor.controller.fault_tolerance.fault_types import instance_requires_a2_linkdown_l6
+    from motor.controller.fault_tolerance.strategy.nm_suicide import NmSuicideStrategy
+
+    instance = InstanceManager().get_instance(instance_id)
+    if instance is None:
+        return None
+
+    role_val = getattr(instance.role, "value", instance.role)
+    uses_nm_suicide = (
+        is_800i_a2(getattr(config, "hardware_type", "") or "") and fault_code in A2_PD_ISOLATION_FAULT_CODES
+    )
+    # A2 isolation codes leave Decode running; ScaleP2D only stops Prefill.
+    if role_val in ("prefill", "decode") and uses_nm_suicide:
+        return NmSuicideStrategy
+    if role_val == "decode":
+        return level4_strategy(fault_code, instance_id, config)
+    if role_val == "union" and uses_nm_suicide and instance_requires_a2_linkdown_l6(instance):
+        return NmSuicideStrategy
+    return None
 
 
 def generate_strategy_map() -> dict[int, Callable[[int, int, ControllerConfig], type[StrategyBase] | None] | None]:

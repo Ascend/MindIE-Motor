@@ -124,6 +124,13 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 3. `OriginFaultLevel` is first mapped to `FaultLevel` via `map_fault_level` (`fault_types.py`); the strategy is then selected from `generate_strategy_map()`, keyed by `FaultLevel` (HEALTHY + L1–L6) (`strategy/strategy.py`)
 4. Strategy is executed: isolate instance → notify observers → track recovery
 
+**A2 PD-disagg isolation** (`A2_PD_ISOLATION_FAULT_CODES` in `fault_types.py`; currently `0x81078603` / `CardNetworkUnhealthy` → `PreSeparateNPU`):
+
+- On Atlas `800I_A2`, these codes stay L6 (not downgraded to L2 while business is active). Add a code only when it needs all three: keep L6, NPU attribution, Decode NmSuicide.
+- Node ConfigMap faults are still stored per **node**, but instance isolation uses `pre_separate_fault_affects_instance()` (`fault_types.py`): the named NPU (`Ascend910-N` / `npu-N`) must intersect the instance endpoint `device_id` list. Prefill and Decode sharing a node therefore do not both take L6 when only one role's cards are down. Unknown `npu_name` fails open (still isolate). An instance with an empty `device_id` list fails closed (not treated as owner) so a colocated INITIAL instance is not isolated.
+- L6 Prefill / Decode isolation-set codes / multi-pod union on Atlas `800I_A2` → `NmSuicideStrategy` (`strategy/nm_suicide.py`): POST `/node-manager/stop` on every NodeManager of **that** instance. Timeout / connection refused is treated as already exiting. HTTP 5xx and other dispatch errors `mark_failed` so the strategy center can retry or escalate to EngineRelaunch. A superseded instance id (newer id for the same `job_name`) is skipped so stop is not sent to a replacement Pod IP. Other Prefill L6 (non-isolation codes / non-A2) stays a no-op at the strategy layer.
+- Single-pod union keeps the PreSeparateNPU L6→L2 downgrade. Other Decode L6 (not in the isolation set, or not A2) still uses ScaleP2D.
+
 **Fault levels** (`fault_types.py`):
 
 - `OriginFaultLevel` (9 members, `fault_types.py`): `NotHandleFault`, `SubHealthFault`, `RestartRequest`, `RestartBusiness`, `FreeRestartNPU`, `RestartNPU`, `SeparateNPU`, `PreSeparateNPU`, `ManuallySeparateNPU` — parsed from the Device Plugin ConfigMap, normalized by `_normalize_fault_level_string` (`fault_tolerance/k8s/configmap_parser.py`)
@@ -144,15 +151,16 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 | `motor/controller/core/instance_manager.py` | Instance lifecycle, state machine, heartbeat management, ETCD persistence |
 | `motor/controller/core/instance_assembler.py` | Instance / deployment spec assembly |
 | `motor/controller/core/observer.py` | `Observer` ABC + `ObserverEvent` enum |
-| `motor/controller/core/event_pusher.py` | Pushes instance events to Coordinator via HTTP; Coordinator heartbeat detection + periodic SET sync |
+| `motor/controller/core/event_pusher.py` | Pushes instance events to Coordinator via HTTP; Coordinator heartbeat detection + periodic SET sync. `INSTANCE_REMOVED` of a superseded (smaller) instance id does not send DEL when a newer READY instance already occupies the same `job_name`. |
 | `motor/controller/core/recovery_service.py` | Instance recovery orchestration |
 | `motor/controller/fault_tolerance/fault_manager.py` | Hardware fault detection, recovery strategy generation |
-| `motor/controller/fault_tolerance/fault_types.py` | Fault enums (`FaultCategory`, `OriginFaultLevel`, `FaultLevel`, `FaultInfo`) + `map_fault_level` |
-| `motor/controller/fault_tolerance/strategy/strategy.py` | Strategy map generation from fault levels |
+| `motor/controller/fault_tolerance/fault_types.py` | Fault enums (`FaultCategory`, `OriginFaultLevel`, `FaultLevel`, `FaultInfo`) + `map_fault_level` + A2 linkdown NPU attribution (`parse_npu_chip_ids`, `pre_separate_fault_affects_instance`) |
+| `motor/controller/fault_tolerance/strategy/strategy.py` | Strategy map generation from fault levels (L6: A2 isolation Prefill/Decode/multi-pod union→NmSuicide; other Decode L6→ScaleP2D) |
+| `motor/controller/fault_tolerance/strategy/nm_suicide.py` | Stop all NodeManagers of A2 isolation Prefill/Decode/multi-pod union L6 (`/node-manager/stop`) |
 | `motor/controller/fault_tolerance/k8s/resource_monitor.py` | Per-node hardware monitoring via k8s Node/ConfigMap watch (NPU faults, network, etc.) |
 | `motor/controller/fault_tolerance/k8s/configmap_parser.py` | Parses Ascend Device Plugin ConfigMap |
 | `motor/controller/api_client/coordinator_api_client.py` | HTTP client for Coordinator APIs |
-| `motor/controller/api_client/node_manager_api_client.py` | HTTP client for NodeManager APIs |
+| `motor/controller/api_client/node_manager_api_client.py` | HTTP client for NodeManager APIs. `/node-manager/stop` returns `NodeManagerStopStatus`: timeout/connection refused is UNREACHABLE (already exiting); other errors are FAILED. |
 | `motor/controller/api_server/controller_api.py` | Main Controller HTTP API + observability API (both TLS-capable via `mgmt_tls_config` / `observability_tls_config`) |
 | `motor/controller/controller.py` | `Controller(Application)`: module orchestration, standalone / master-standby modes, fault-tolerance dynamic toggle, daemon loop |
 | `motor/controller/main.py` | Thin wrapper: config load → port setup → `Controller(config).run()` |

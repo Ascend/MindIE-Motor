@@ -25,6 +25,7 @@ from motor.controller.fault_tolerance.fault_types import (
     InstanceMetadata,
     NodeMetadata,
     OriginFaultLevel,
+    pre_separate_fault_affects_instance,
 )
 from motor.controller.fault_tolerance.mixin.persistence import _PersistenceMixin
 from motor.controller.fault_tolerance.mixin.resource_manager import _ResourceManagerMixin
@@ -368,6 +369,15 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             for code, fault_info in list(node_metadata.hardware_fault_infos.items()):
                 if fault_info.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
                     continue
+                if self._keep_a2_linkdown_at_l6(fault_info, node_metadata):
+                    if fault_info.fault_level != FaultLevel.L6:
+                        logger.info(
+                            "Re-evaluated PreSeparateNPU 0x%x → L6 on node %s (A2 linkdown, keep L6)",
+                            code,
+                            node_metadata.node_name,
+                        )
+                        fault_info.fault_level = FaultLevel.L6
+                    continue
                 if self._node_has_active_instances(node_metadata):
                     if fault_info.fault_level != FaultLevel.L2:
                         logger.info(
@@ -398,6 +408,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                         fi.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU
                         and fi.fault_level == FaultLevel.L6
                         and self._node_has_active_instances(node)
+                        and not self._keep_a2_linkdown_at_l6(fi, node)
                     ):
                         fi.fault_level = FaultLevel.L2
                         logger.info(
@@ -407,26 +418,16 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                             node.node_name,
                         )
 
-            # PreSeparateNPU L6 faults on nodes with no remaining instances
-            # are purely node-level concerns (the NPU is already isolated,
-            # instance has left this node) and should not trigger instance
-            # separation or ScaleP2D.
-            #
-            # When instances remain on the node (even if INACTIVE), the
-            # fault killed them — PreSeparateNPU L6 must be included to
-            # trigger ScaleP2D so the instance can be rescheduled.
-            def _affects_instance(fi: FaultInfo, node: NodeMetadata) -> bool:
-                if fi.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
-                    return True
-                if fi.fault_level != FaultLevel.L6:
-                    return True  # L2 downgrade → business is running, include it
-                return len(node.instance_ids) > 0  # include when instance still on node
+            # PreSeparateNPU L6 on a vacated node is node-only (do not ScaleP2D).
+            # A2 linkdown is further filtered to instances that own the named NPU.
+            instance = InstanceManager().get_instance(instance_id)
+            hardware_type = self._hardware_type()
 
             all_hw_faults = [
                 fi
                 for node in instance_nodes
                 for fi in node.hardware_fault_infos.values()
-                if _affects_instance(fi, node)
+                if pre_separate_fault_affects_instance(fi, node, instance, hardware_type)
             ]
             all_sw_faults = [fi for node in instance_nodes for fi in node.software_fault_infos.values()]
 
@@ -505,6 +506,15 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
         logger.info("Fault tolerance strategy center stopped")
 
+    def _is_superseded_instance(self, ins_id: int) -> bool:
+        """True when assembler already created a newer instance id for the same job."""
+        inst = InstanceManager().get_instance(ins_id)
+        if inst is None:
+            return False
+        current = InstanceManager().get_instance_by_job_name(inst.job_name)
+        current_id = getattr(current, "id", None) if current is not None else None
+        return isinstance(current_id, int) and current_id != ins_id
+
     def _process_instance_strategy(self, ins_id: int) -> None:
         """
         Generate and manage the recovery strategy for an instance based on fault level.
@@ -527,6 +537,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 logger.warning("Instance %d not found in instances dict", ins_id)
                 return
 
+        superseded = self._is_superseded_instance(ins_id)
+
         with ins_metadata.lock:
             fault_level = ins_metadata.fault_level
             fault_code = ins_metadata.fault_code
@@ -540,7 +552,16 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             # same strategy in a loop. Honours the enable_engine_relaunch
             # switch like the level2_strategy hook: disabling it restores the
             # legacy behavior (heartbeat suicide -> k8s pod restart only).
-            if (
+            if superseded:
+                # Assembler already created a newer id for this job_name; do not
+                # stop the replacement's NodeManagers via the stale instance.
+                if current_strategy is None:
+                    logger.debug(
+                        "Skip strategy for superseded instance %d (job already has a newer instance)",
+                        ins_id,
+                    )
+                new_strategy_cls = None
+            elif (
                 fault_level != FaultLevel.HEALTHY
                 and ins_metadata.prev_strategy_failed
                 and self.config.fault_tolerance_config.enable_engine_relaunch

@@ -10,6 +10,7 @@ MindIE Motor 提供多层级的可靠性保障机制，覆盖硬件故障感知�
 | 自动重拉起注册 | Pod 重启后 NodeManager 自动重新注册，Controller 组装实例并拉起引擎 | `InstanceAssembler` + `InstanceManager` |
 | 缩P保D（Scale P2D） | Decode 实例故障时，释放 Prefill 节点以恢复 Decode | `ScaleP2DStrategy` |
 | token级重推 | L2 级别网络故障检测与token级重推恢复 | `TokenReinferenceStrategy` |
+| A2 linkdown 整实例自杀 | Atlas 800I_A2 上 `0x81078603` 保持 L6，对 Prefill / Decode / 多 Pod union 下发 `/node-manager/stop` | `NmSuicideStrategy` |
 
 ## 实例故障隔离
 
@@ -256,7 +257,8 @@ FaultManager 感知故障清除 → 实例恢复 HEALTHY
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │ 策略中心                                                      │  │
 │  │  L2 + 白名单故障码  →  TokenReinferenceStrategy               │  │
-│  │  L4/L5/L6 + decode  →  ScaleP2DStrategy                      │  │
+│  │  L6 A2 Prefill/Decode/多Pod union 隔离码 → NmSuicideStrategy │  │
+│  │  L4/L5/L6 + decode（非 linkdown）→  ScaleP2DStrategy          │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
          │                                       │

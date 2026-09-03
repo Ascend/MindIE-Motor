@@ -159,6 +159,21 @@ class EventPusher(Observer):
             event = Event(EventType.RESUME, instance.to_instance())
             logger.info("Instance resumed: %s", instance.job_name)
         elif event == ObserverEvent.INSTANCE_REMOVED:
+            with self.lock:
+                live = self.instances.get(instance.job_name)
+            live_id = getattr(live, "id", None) if live is not None else None
+            removed_id = getattr(instance, "id", None)
+            # A newer READY instance already occupies this job_name. Coordinator
+            # keys by instance id, so DEL of the zombie is a no-op; skip it so a
+            # future job-name-based unregister cannot drop the live instance.
+            if isinstance(live_id, int) and isinstance(removed_id, int) and live_id > removed_id:
+                logger.info(
+                    "Skip Coordinator DEL for superseded instance. job_name=%s, removed_id=%d, current_id=%d",
+                    instance.job_name,
+                    removed_id,
+                    live_id,
+                )
+                return
             event = Event(EventType.DEL, instance.to_instance())
             logger.info("Instance removed: %s", instance.job_name)
         else:

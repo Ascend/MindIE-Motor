@@ -34,6 +34,14 @@ class SpecialFaultCode(int, Enum):
     NODE_REBOOT = 0x0000001
     ENGINE_DEAD = 0x1000001
     ENGINE_UNHEALTHY = 0x1000002
+    # Device-plugin CardNetworkUnhealthy / linkdown (ConfigMap).
+    CARD_NETWORK_LINKDOWN = 0x81078603
+
+
+# A2 PD-disagg isolation codes. Membership means ALL of: keep PreSeparateNPU at L6,
+# attribute by occupied NPU, and Decode uses NmSuicide (not ScaleP2D).
+# Do not add a code that only needs "keep L6".
+A2_PD_ISOLATION_FAULT_CODES: frozenset[int] = frozenset({int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)})
 
 
 class NodeStatus(str, Enum):
@@ -212,6 +220,98 @@ def map_fault_level(fault_level_str: str) -> FaultLevel:
     return fault_level_mapping.get(fault_level_str, FaultLevel.HEALTHY)
 
 
+def is_800i_a2(hardware_type: str) -> bool:
+    """True for Atlas 800I A2, accepting both 800I_A2 and 800I-A2 spellings."""
+    normalized = (hardware_type or "").strip().replace("_", "-").upper()
+    return normalized == "800I-A2"
+
+
+def is_a2_linkdown_pre_separate(fault_info: FaultInfo, hardware_type: str) -> bool:
+    """A2 CardNetworkUnhealthy that maps to PreSeparateNPU (must stay L6 for PD)."""
+    if not is_800i_a2(hardware_type):
+        return False
+    if fault_info.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
+        return False
+    return int(fault_info.fault_code) in A2_PD_ISOLATION_FAULT_CODES
+
+
+def instance_requires_a2_linkdown_l6(instance: Any) -> bool:
+    """Whether this instance should keep A2 linkdown at L6 (P, D, or multi-pod union)."""
+    if instance is None:
+        return False
+    role = getattr(instance, "role", None)
+    role_val = getattr(role, "value", role)
+    if role_val in ("prefill", "decode"):
+        return True
+    if role_val == "union":
+        if hasattr(instance, "get_node_managers_num"):
+            return instance.get_node_managers_num() > 1
+        node_managers = instance.get_node_managers() if hasattr(instance, "get_node_managers") else []
+        return len(node_managers) > 1
+    return False
+
+
+def parse_npu_chip_ids(npu_name: str) -> set[int]:
+    """Parse chip ids from ConfigMap npu_name values.
+
+    Accepts ``Ascend910-6``, ``npu-4``, ``npu0``, and comma-joined lists such as
+    ``Ascend910-0, Ascend910-1``. Tokens that cannot be parsed are skipped.
+    """
+    if not npu_name:
+        return set()
+    chip_ids: set[int] = set()
+    for token in npu_name.replace(";", ",").split(","):
+        token = token.strip()
+        if not token or token.startswith("..."):
+            continue
+        tail = token.rsplit("-", 1)[-1]
+        digits = "".join(ch for ch in tail if ch.isdigit())
+        if not digits:
+            continue
+        chip_ids.add(int(digits))
+    return chip_ids
+
+
+def collect_instance_chip_ids(instance: Any) -> set[int]:
+    """Physical device ids this instance registered on its endpoints."""
+    if instance is None or not hasattr(instance, "get_all_endpoints"):
+        return set()
+    raw_eps = instance.get_all_endpoints()
+    if not isinstance(raw_eps, (list, tuple)):
+        return set()
+    chip_ids: set[int] = set()
+    for endpoint in raw_eps:
+        for device in getattr(endpoint, "device_infos", None) or []:
+            raw_id = getattr(device, "device_id", None)
+            if raw_id is None:
+                continue
+            try:
+                chip_ids.add(int(str(raw_id).strip()))
+            except (TypeError, ValueError):
+                continue
+    return chip_ids
+
+
+def a2_linkdown_targets_instance(fault_info: FaultInfo, instance: Any, hardware_type: str) -> bool:
+    """Whether an A2 linkdown fault should isolate this instance.
+
+    Ownership is the intersection of ConfigMap ``npu_name`` chip ids and the
+    instance endpoint ``device_id`` list. Unknown ``npu_name`` still fails open
+    so isolation is not skipped. An instance with no ``device_id`` list fails
+    closed so a colocated INITIAL instance is not isolated as the owner.
+    Non-A2-linkdown faults always return True (caller decides separately).
+    """
+    if not is_a2_linkdown_pre_separate(fault_info, hardware_type):
+        return True
+    chip_ids = parse_npu_chip_ids(fault_info.npu_name)
+    if not chip_ids:
+        return True
+    owned = collect_instance_chip_ids(instance)
+    if not owned:
+        return False
+    return bool(chip_ids & owned)
+
+
 class NodeMetadata(BaseModel):
     """
     Each node metadata represents a physical node in the cluster.
@@ -239,6 +339,32 @@ class NodeMetadata(BaseModel):
     software_fault_infos: dict[int, FaultInfo] = Field(
         default_factory=dict, description="Software fault information dictionary keyed by fault_code"
     )
+
+
+def pre_separate_fault_affects_instance(
+    fault_info: FaultInfo,
+    node: "NodeMetadata",
+    instance: Any,
+    hardware_type: str,
+) -> bool:
+    """Whether a node-level hardware fault should raise this instance's fault level.
+
+    A2 CardNetworkUnhealthy is attributed per occupied NPU so a Prefill linkdown
+    on a shared node does not isolate a colocated Decode instance.
+    """
+    if fault_info.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
+        return True
+    if (
+        fault_info.fault_level == FaultLevel.L6
+        and is_a2_linkdown_pre_separate(fault_info, hardware_type)
+        and not instance_requires_a2_linkdown_l6(instance)
+    ):
+        return False
+    if not a2_linkdown_targets_instance(fault_info, instance, hardware_type):
+        return False
+    if fault_info.fault_level != FaultLevel.L6:
+        return True
+    return len(node.instance_ids) > 0
 
 
 class InstanceMetadata(BaseModel):

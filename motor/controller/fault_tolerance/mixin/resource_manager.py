@@ -25,6 +25,8 @@ from motor.controller.fault_tolerance.fault_types import (
     NodeStatus,
     OriginFaultLevel,
     SpecialFaultCode,
+    instance_requires_a2_linkdown_l6,
+    is_a2_linkdown_pre_separate,
 )
 from motor.controller.fault_tolerance.k8s.resource_monitor import ResourceMonitor
 
@@ -392,6 +394,24 @@ class _ResourceManagerMixin:
                 return True
         return False
 
+    def _hardware_type(self) -> str:
+        return getattr(self.config, "hardware_type", "") or ""
+
+    def _node_requires_a2_linkdown_l6(self, node_metadata: NodeMetadata) -> bool:
+        """True when any instance on this node is P, D, or a multi-pod union."""
+        from motor.controller.core.instance_manager import InstanceManager
+
+        for iid in list(node_metadata.instance_ids):
+            inst = InstanceManager().get_instance(iid)
+            if instance_requires_a2_linkdown_l6(inst):
+                return True
+        return False
+
+    def _keep_a2_linkdown_at_l6(self, fault_info: FaultInfo, node_metadata: NodeMetadata) -> bool:
+        return is_a2_linkdown_pre_separate(fault_info, self._hardware_type()) and self._node_requires_a2_linkdown_l6(
+            node_metadata
+        )
+
     def _handle_fault_info_update(self, fault_infos: list[FaultInfo], node_name: str) -> None:
         """Handle a hardware fault information update pushed by a ResourceMonitor.
 
@@ -470,8 +490,18 @@ class _ResourceManagerMixin:
 
                 # Dynamically adjust PreSeparateNPU fault level based on
                 # whether any INITIAL/ACTIVE instance still runs on this node.
+                # A2 CardNetworkUnhealthy (linkdown) must stay L6 for P/D and
+                # multi-pod union — in-place L2 would never recover PD-disagg.
                 if info.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU:
-                    if node_has_active:
+                    if self._keep_a2_linkdown_at_l6(info, node_metadata):
+                        info.fault_level = FaultLevel.L6
+                        logger.info(
+                            "PreSeparateNPU fault 0x%x kept at L6: A2 linkdown on node %s "
+                            "(P/D or multi-pod union requires isolation)",
+                            code,
+                            node_name,
+                        )
+                    elif node_has_active:
                         info.fault_level = FaultLevel.L2
                         logger.info(
                             "PreSeparateNPU fault 0x%x downgraded to L2: node %s still has active instances",

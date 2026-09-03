@@ -41,6 +41,7 @@ from motor.controller.fault_tolerance.strategy.strategy import (
     generate_strategy_map,
 )
 from motor.controller.fault_tolerance.strategy.token_reinference import TokenReinferenceStrategy
+from motor.controller.fault_tolerance.strategy.nm_suicide import NmSuicideStrategy
 from motor.controller.fault_tolerance.strategy.scale_p2d import ScaleP2DStrategy
 from motor.config.controller import ControllerConfig
 
@@ -52,6 +53,7 @@ def mock_config():
     config = ControllerConfig()
     config.fault_tolerance_config.enable_scale_p2d = True
     config.fault_tolerance_config.enable_token_reinference = True
+    config.hardware_type = "800I_A2"
     return config
 
 
@@ -93,6 +95,13 @@ def encode_instance():
     """Fixture for creating an encode role instance"""
     instance = Mock()
     instance.role = "encode"
+    return instance
+
+
+@pytest.fixture
+def prefill_instance():
+    instance = Mock()
+    instance.role = "prefill"
     return instance
 
 
@@ -297,12 +306,83 @@ def test_level5_strategy_respects_config_switch(mock_instance_manager, decode_in
 
 # Level6 Strategy Tests
 def test_level6_strategy_returns_scale_p2d_for_decode_role(mock_instance_manager, decode_instance, mock_config):
-    """L6 strategy should return ScaleP2DStrategy when instance role is decode (calls L4 logic)"""
+    """Non-linkdown Decode L6 still uses ScaleP2D."""
     mock_instance_manager.return_value.get_instance.return_value = decode_instance
 
     result = level6_strategy(0x0000, 1, mock_config)
 
     assert result is ScaleP2DStrategy
+
+
+def test_level6_strategy_returns_nm_suicide_for_decode_linkdown(mock_instance_manager, decode_instance, mock_config):
+    """A2 CardNetworkUnhealthy on Decode must stop D itself, not ScaleP2D."""
+    mock_instance_manager.return_value.get_instance.return_value = decode_instance
+
+    result = level6_strategy(int(SpecialFaultCode.CARD_NETWORK_LINKDOWN), 1, mock_config)
+
+    assert result is NmSuicideStrategy
+
+
+def test_level6_strategy_decode_linkdown_on_a3_uses_scale_p2d(mock_instance_manager, decode_instance, mock_config):
+    """A3 Decode linkdown is not in the A2 isolation path and still uses ScaleP2D."""
+    mock_config.hardware_type = "800I_A3"
+    mock_instance_manager.return_value.get_instance.return_value = decode_instance
+
+    result = level6_strategy(int(SpecialFaultCode.CARD_NETWORK_LINKDOWN), 1, mock_config)
+
+    assert result is ScaleP2DStrategy
+
+
+def test_level6_strategy_returns_nm_suicide_for_prefill(mock_instance_manager, prefill_instance, mock_config):
+    """A2 Prefill isolation-code L6 uses NmSuicide (whole instance, including multi-pod)."""
+    mock_instance_manager.return_value.get_instance.return_value = prefill_instance
+
+    result = level6_strategy(int(SpecialFaultCode.CARD_NETWORK_LINKDOWN), 1, mock_config)
+
+    assert result is NmSuicideStrategy
+
+
+def test_level6_strategy_prefill_non_isolation_code_returns_none(mock_instance_manager, prefill_instance, mock_config):
+    """Non-A2-isolation Prefill L6 must not stop NodeManagers."""
+    mock_instance_manager.return_value.get_instance.return_value = prefill_instance
+
+    result = level6_strategy(0x0000, 1, mock_config)
+
+    assert result is None
+
+
+def test_level6_strategy_prefill_linkdown_on_a3_returns_none(mock_instance_manager, prefill_instance, mock_config):
+    """A3 Prefill linkdown keeps the pre-existing no-op L6 path."""
+    mock_config.hardware_type = "800I_A3"
+    mock_instance_manager.return_value.get_instance.return_value = prefill_instance
+
+    result = level6_strategy(int(SpecialFaultCode.CARD_NETWORK_LINKDOWN), 1, mock_config)
+
+    assert result is None
+
+
+def test_level6_strategy_returns_nm_suicide_for_multi_pod_union(mock_instance_manager, mock_config):
+    """Multi-pod union L6 uses NmSuicide so every Pod of the instance is stopped."""
+    union = Mock()
+    union.role = "union"
+    union.get_node_managers_num.return_value = 2
+    mock_instance_manager.return_value.get_instance.return_value = union
+
+    result = level6_strategy(int(SpecialFaultCode.CARD_NETWORK_LINKDOWN), 1, mock_config)
+
+    assert result is NmSuicideStrategy
+
+
+def test_level6_strategy_returns_none_for_single_pod_union(mock_instance_manager, mock_config):
+    """Single-pod union must not take NmSuicide; keep-L6 gate leaves it at L2."""
+    union = Mock()
+    union.role = "union"
+    union.get_node_managers_num.return_value = 1
+    mock_instance_manager.return_value.get_instance.return_value = union
+
+    result = level6_strategy(int(SpecialFaultCode.CARD_NETWORK_LINKDOWN), 1, mock_config)
+
+    assert result is None
 
 
 def test_level6_strategy_returns_none_for_non_decode_role(mock_instance_manager, encode_instance, mock_config):

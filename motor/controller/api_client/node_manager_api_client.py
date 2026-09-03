@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from enum import Enum
 from typing import Any
 
 import requests
@@ -19,6 +20,22 @@ from motor.common.utils.net import format_address
 from motor.config.controller import ControllerConfig
 
 logger = get_logger(__name__)
+
+
+class NodeManagerStopStatus(str, Enum):
+    """Outcome of POST ``/node-manager/stop``."""
+
+    OK = "ok"
+    UNREACHABLE = "unreachable"
+    FAILED = "failed"
+
+
+def _is_node_manager_unreachable(exc: BaseException) -> bool:
+    """True when stop/start failed because the NodeManager is already gone."""
+    if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return True
+    text = str(exc).lower()
+    return any(token in text for token in ("timed out", "connection refused", "failed to establish a new connection"))
 
 
 class NodeManagerApiClient:
@@ -58,7 +75,11 @@ class NodeManagerApiClient:
 
     @staticmethod
     def stop(node_mgr: NodeManagerInfo) -> bool:
-        is_succeed = True
+        return NodeManagerApiClient.stop_status(node_mgr) == NodeManagerStopStatus.OK
+
+    @staticmethod
+    def stop_status(node_mgr: NodeManagerInfo) -> NodeManagerStopStatus:
+        """POST ``/node-manager/stop`` and distinguish unreachable from other errors."""
         addr = format_address(node_mgr.pod_ip, node_mgr.port)
         client = None
         try:
@@ -66,14 +87,20 @@ class NodeManagerApiClient:
             client = SafeHTTPSClient(**client_args)
             client.post("/node-manager/stop", data={})
             logger.info("Stop command sent to node manager %s", addr)
+            return NodeManagerStopStatus.OK
         except Exception as e:
-            is_succeed = False
+            if _is_node_manager_unreachable(e):
+                logger.warning(
+                    "NodeManager already unreachable for stop, treating as exiting. address=%s, error=%s",
+                    addr,
+                    e,
+                )
+                return NodeManagerStopStatus.UNREACHABLE
             logger.error("Error sending stop command to node manager %s: %s", addr, e)
+            return NodeManagerStopStatus.FAILED
         finally:
             if client is not None:
                 client.close()
-
-        return is_succeed
 
     @staticmethod
     def restart_engine(node_mgr: NodeManagerInfo, action: str = "restart", instance_id: int | None = None) -> bool:
