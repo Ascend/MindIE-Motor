@@ -541,7 +541,7 @@ class MetricsCollector(ThreadSafeSingleton):
             if master:
                 port = str(cfg.kv_store_metrics_port)
                 if not port or port == "0":
-                    port = "50088" if cfg.kv_store_backend == "mooncake" else "50090"
+                    port = "50090"
                 endpoint = f"http://{format_address(master, port)}/metrics"
 
         # --- determine enabled ---

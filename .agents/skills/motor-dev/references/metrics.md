@@ -94,6 +94,8 @@ Metrics endpoint:
 
 **Mooncake KV store metrics** — Filtered through `_KVSTORE_METRIC_ALLOWLIST` (the `master_*` families). Converted to GB-sized gauges with `layer=cpu|ssd|all` and `stat=usage|total|usage_rate` labels, plus `kv_store_keys` and `kv_store_eviction` families.
 
+**KV store metrics fetch endpoint** — `_fetch_kv_store_metrics()` builds `http://<kv_store_service>:<port>/metrics`; when `kv_store_metrics_port` is unset/0 the auto default is **50090 for both mooncake and memcache** (mooncake must be launched with `--metrics_port` — see `mooncake.sh` / `all_combine_in_single_container.sh`, env override `MOONCAKE_METRICS_PORT`, default 50090). Explicit override order: `kv_cache_store_config.metrics_port` → env `KV_STORE_METRICS_PORT` → auto default.
+
 **Memcache KV store metrics** — `_filter_memcache_metrics()` passes through `motor:memcache_`-prefixed metrics (renamed from `memcache_`) and emits the same `kv_store_*` summary families from capacity / keys / eviction data.
 
 **Inactive instance handling** (`_clear_inactive_metrics()`):

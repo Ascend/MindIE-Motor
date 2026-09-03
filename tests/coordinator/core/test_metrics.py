@@ -1183,6 +1183,28 @@ def test_fetch_memcache_metrics_brackets_ipv6_service():
 
 
 @patch("threading.Thread.start", MagicMock())
+def test_fetch_mooncake_metrics_auto_port_default_50090():
+    """Mooncake backend without explicit metrics_port must fall back to 50090.
+
+    Regression guard: previously the auto-fallback pointed mooncake at the store
+    business port (50088), where no /metrics endpoint exists.
+    """
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.enable_kv_store_metrics = True
+    config.prometheus_metrics_config.kv_store_backend = "mooncake"
+    config.prometheus_metrics_config.kv_store_service = "kv-store-svc"
+    collector = MetricsCollector(config)
+
+    response = MagicMock()
+    response.status_code = 200
+    response.text = ""
+    with patch("motor.coordinator.metrics.metrics_collector.requests.get", return_value=response) as mock_get:
+        collector._fetch_kv_store_metrics()
+
+    mock_get.assert_called_once_with("http://kv-store-svc:50090/metrics", timeout=15)
+
+
+@patch("threading.Thread.start", MagicMock())
 def test_get_metrics_full_with_kv_store_append():
     _cleanup_singletons()
     config = CoordinatorConfig()
