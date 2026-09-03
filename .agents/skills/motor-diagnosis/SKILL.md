@@ -1,6 +1,6 @@
 ---
 name: motor-diagnosis
-description: Motor diagnosis entry point for deploy、startup or runtime failures, log collection, evidence preservation, and root-cause routing. Use this parent Skill before selecting an atomic Motor diagnosis workflow.
+description: Motor diagnosis entry point for deploy、startup or runtime failures, unexplained performance target misses, log collection, evidence preservation, and root-cause routing. Use this parent Skill before selecting an atomic Motor diagnosis workflow.
 ---
 
 # Motor diagnosis dispatcher and evidence collection
@@ -13,13 +13,20 @@ description: Motor diagnosis entry point for deploy、startup or runtime failure
 | 现象 | Skill / 处理 |
 |---|---|
 | `deploy.py` 失败、workload 未 Ready、Service/Endpoint 缺失、readiness 超时 | [`motor-diagnosis-startup`](../motor-diagnosis-startup/SKILL.md) |
+| `motor-diagnosis-startup` 已基于当前 evidence episode 明确分类为 deployer | [`motor-diagnosis-deployer`](../motor-diagnosis-deployer/SKILL.md) |
+| `motor-diagnosis-startup` 已确认 K8s 对象或容器启动边界 | [`motor-diagnosis-k8s`](../motor-diagnosis-k8s/SKILL.md) |
+| `motor-diagnosis-startup` 已确认 HTTP 可达但控制面未收敛 | [`motor-diagnosis-control-plane`](../motor-diagnosis-control-plane/SKILL.md) |
+| `motor-diagnosis-startup` 已确认 HTTP 建连前的连通性边界 | [`motor-diagnosis-connectivity`](../motor-diagnosis-connectivity/SKILL.md) |
+| 已有 benchmark 原生产物明确未达到兼容目标/基线，且 workload、配置、容量或运行状态原因未知 | [`motor-diagnosis-performance-anomaly`](../motor-diagnosis-performance-anomaly/SKILL.md) |
 | 已启动服务的未知异常或通用日志采证 | 本 Skill 的通用采证流程 |
-| Pod 创建、调度、拉镜像、挂载、容器或 K8s probe 异常 | [`motor-diagnosis-k8s`](../motor-diagnosis-k8s/SKILL.md) |
-| Controller/Coordinator 已启动但 readiness、注册、心跳或拓扑未收敛 | [`motor-diagnosis-control-plane`](../motor-diagnosis-control-plane/SKILL.md) |
-| `curl` 无法建立 HTTP 连接、DNS/TCP/TLS 或 port-forward 异常 | [`motor-diagnosis-connectivity`](../motor-diagnosis-connectivity/SKILL.md) |
 
 路由到原子 Skill 前先执行下面的最小采证，并读取、完整遵循对应 `SKILL.md`。当前没有
 匹配原子 Skill 时，基于源码和只读事实继续分析并明确 capability gap。
+
+deploy/startup 请求先进入 `motor-diagnosis-startup`，由它基于当前 episode 选择且只选择
+一个原子 Skill。不得根据 `deploy.py` 非零退出、traceback、Pod phase、readiness 或网络
+关键词同时调用多个子 Skill；证据不足以确定边界时留在 startup 流程并返回缺失证据。
+`motor-diagnosis-deployer` 只能由 startup 的明确 deployer 分类进入。
 
 使用用户指定或从当前原生配置中确认的 kube context 与 namespace。没有明确目标时
 停止补充信息，不猜 namespace，不要求 workspace run ID。

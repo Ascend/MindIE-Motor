@@ -86,17 +86,19 @@ bash tests/run_tests.sh --cov tests/
 ## Agent Skills
 
 - 仓库 Skill 的唯一权威目录是 `.agents/skills/`。普通自然语言请求先进入对应父 Skill；
-  用户显式指定 `$motor-...` 原子 Skill 时可以直接使用。
+  用户显式指定 `$motor-...` 原子 Skill 时可以直接使用，但原子 Skill 定义了父路由入口
+  约束时仍须先满足该约束。
 - 三个父 Skill（`motor-deploy`、`motor-validation`、`motor-diagnosis`）默认参与隐式
-  触发；13 个原子 Skill 通过各自 `agents/openai.yaml` 设置
-  `policy.allow_implicit_invocation: false`，仅可经父 Skill 路由或显式调用。
+  触发；已提供 `agents/openai.yaml` 的原子 Skill 设置
+  `policy.allow_implicit_invocation: false`。暂未提供该元数据的原子 Skill 由父 Skill
+  通过仓库相对路径加载。
 - 修改 `motor/`、`tests/` 或开发文档：使用 `motor-dev`。
 - 拉起、部署、重启、停止、部署前检查、配置校验或替换 wheel：先使用
   `motor-deploy`，由它路由到部署原子 Skill。
-- 部署后的 readiness、功能、benchmark 或性能分析：先使用 `motor-validation`，由它
-  路由到验证原子 Skill。
-- deploy/startup/runtime 异常、日志采证或根因定位：先使用 `motor-diagnosis`，由它
-  保存证据并路由到诊断原子 Skill。
+- 部署后的 readiness、功能、accuracy、benchmark 或性能分析：先使用
+  `motor-validation`，由它路由到验证原子 Skill。
+- deploy/startup/runtime 异常、性能目标未达标且原因未知、日志采证或根因定位：先使用
+  `motor-diagnosis`，由它保存证据并路由到诊断原子 Skill。
 - 预检和 dry-run 不授权修改配置或集群；配置修改、apply、restart、stop 和远端
   `boot.sh` 修改必须针对具体目标获得明确授权。
 

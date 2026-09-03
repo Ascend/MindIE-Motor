@@ -1,6 +1,6 @@
 ---
 name: motor-diagnosis-startup
-description: Motor deploy/startup diagnosis dispatcher after evidence preservation. Use for deploy.py failures, unready workloads, missing Services/endpoints, Coordinator readiness timeout, or curl connection failure, then route to the matching atomic diagnosis Skill.
+description: Motor deploy/startup diagnosis dispatcher after evidence preservation. Use for deploy.py failures, unready workloads, missing Services/endpoints, Coordinator readiness timeout, or curl connection failure, then route the current evidence episode to exactly one matching atomic diagnosis Skill.
 ---
 
 # Motor startup diagnosis dispatcher
@@ -25,7 +25,7 @@ stdout/stderr、预期结果、观察结果和已生成文件。某类对象尚�
 | Category | 典型证据 |
 |---|---|
 | environment | API/RBAC/admission/operator/scheduler/NPU/image/storage/network |
-| deployer | 参数、traceback、模板/YAML 生成、apply 编排 |
+| deployer | 有效输入在参数处理、config→manifest 翻译、模板/YAML 生成或 apply 编排中被错误处理 |
 | config | 原生 config 无效或 config→YAML→ConfigMap→Pod 漂移 |
 | runtime-code | 进程已启动后 crash、hang、注册失败或运行时集成错误 |
 
@@ -36,12 +36,18 @@ stdout/stderr、预期结果、观察结果和已生成文件。某类对象尚�
 
 | 判别证据 | 原子 Skill |
 |---|---|
+| 已证明有效输入在参数、config→manifest、模板/YAML、部署计划或 apply 构造中被错误处理 | [`motor-diagnosis-deployer`](../motor-diagnosis-deployer/SKILL.md) |
 | K8s API/RBAC/admission、对象未创建、Pending、镜像、挂载、容器、probe 或 Service Endpoint 异常 | [`motor-diagnosis-k8s`](../motor-diagnosis-k8s/SKILL.md) |
 | Controller/Coordinator 进程可访问，但 readiness 返回未就绪，或注册、心跳、实例刷新、P/D 拓扑未收敛 | [`motor-diagnosis-control-plane`](../motor-diagnosis-control-plane/SKILL.md) |
 | 目标服务尚未返回 HTTP，表现为 DNS 失败、connection refused/reset、timeout、TLS handshake 或 port-forward 失败 | [`motor-diagnosis-connectivity`](../motor-diagnosis-connectivity/SKILL.md) |
 
-先选最早能被证据证明的失败边界。`Readiness probe failed` 只是 K8s 观察到的结果：探针
-连接失败路由连通性；探针收到 Controller/Coordinator 未就绪响应路由控制面；容器本身
+只有上述判别证据足以证明有效输入被 deployer 错误处理时，才记录 `category: deployer`、
+分类证据和当前 episode，并进入 `motor-diagnosis-deployer`。`deploy.py` 非零退出、
+traceback、YAML/apply 关键词或 API 拒绝本身不足以完成该分类。
+
+每个 episode 只选择最早能被证据证明的一条原子路由；不能区分时留在本流程并返回
+`unknown` 和最小判别检查，不并行加载多个子 Skill。`Readiness probe failed` 只是 K8s
+观察到的结果：探针连接失败路由连通性；探针收到 Controller/Coordinator 未就绪响应路由控制面；容器本身
 未启动或反复退出路由 K8s。已收到推理接口 HTTP 4xx/5xx 时不使用连通性 Skill，转到
 `motor-validation-functional` 或运行时代码分析。
 
