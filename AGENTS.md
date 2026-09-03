@@ -110,3 +110,8 @@ bash tests/run_tests.sh --cov tests/
 - `references/<module>.md` — 各模块架构（Coordinator/Controller/NodeManager/Metrics/KV Conductor）
 - `bug-fix-history/INDEX.md` — 持续学习案例索引（调试前先查）
 - `references/issue-reporting.md` — 定位问题后按模板提交 ISSUE（仅用户同意后加载）
+
+集群级 Pymotor 验收套组（扩缩容 / RAS / GPQA / 性能，非 `tests/e2e/` 进程内测试）见
+`.agents/skills/motor-smoke-suite/`。用例执行分别路由到
+`motor-scale`、`motor-reliability`、`motor-validation-benchmark`（GPQA 精度合同在套组内）。
+无人值守 profile 放在本机 ignored 目录 `.motor-local/suite-profiles/`。

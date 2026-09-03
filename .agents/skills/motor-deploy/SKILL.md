@@ -16,16 +16,19 @@ description: "Motor deployment entry point for 拉起服务、启动/部署/重�
 | 部署前只读环境检查 | [`motor-deploy-preflight`](../motor-deploy-preflight/SKILL.md) |
 | `deploy.py --dry-run` 和 YAML 检查 | [`motor-deploy-configure`](../motor-deploy-configure/SKILL.md) |
 | deploy、status、restart、stop | [`motor-deploy-k8s`](../motor-deploy-k8s/SKILL.md) |
+| 在线 P/D 扩缩容 | [`motor-scale`](../motor-scale/SKILL.md) |
+| RAS / 故障注入 / 恢复验证 | [`motor-reliability`](../motor-reliability/SKILL.md) |
 | 构建并替换 Motor wheel | [`motor-deploy-build-wheel`](../motor-deploy-build-wheel/SKILL.md) |
 | 部署后 readiness、功能或性能验证 | [`motor-validation`](../motor-validation/SKILL.md) |
+| 集群级全量验收套组 | [`motor-smoke-suite`](../motor-smoke-suite/SKILL.md) |
 | 失败现场采证 | [`motor-diagnosis`](../motor-diagnosis/SKILL.md) |
 | deploy/startup 失败归因 | [`motor-diagnosis`](../motor-diagnosis/SKILL.md) → [`motor-diagnosis-startup`](../motor-diagnosis-startup/SKILL.md) |
 
 路由命中原子 Skill 后，读取并完整遵循对应目录的 `SKILL.md`。不要在本入口中重新实现
 原子流程。用户显式调用原子 Skill 时可直接进入该流程。
 
-RAS 故障注入和恢复尚未形成可发布的稳定 Skill。收到这类请求时报告 capability
-gap，不得临时拼接 `kill`、删 Pod 或 `hccn_tool` 命令。
+RAS / 扩缩容 / 全量验收请求分别路由到 `motor-reliability`、`motor-scale`、
+`motor-smoke-suite`。不得在本入口临时拼接 `kill`、删 Pod 或 `hccn_tool` 命令。
 
 ## 标准链路
 

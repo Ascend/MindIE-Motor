@@ -131,4 +131,6 @@ motor/kv_conductor/mock/
 # gitleaks
 gitleaks
 .claude/
+.motor-local/
+.motor-workspace-local/
 docs/skill_pr_description.md

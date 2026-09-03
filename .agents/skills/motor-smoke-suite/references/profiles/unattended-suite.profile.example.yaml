@@ -1,0 +1,61 @@
+# Example only — copy to .motor-local/suite-profiles/ and approve locally.
+# Never commit a filled profile (real endpoints / credentials).
+# workload_intent records model/parallel/topology intent; REPLACE_* host paths
+# are filled from the live endpoint.
+
+mode: unattended
+profile_id: pymotor-nightly-example
+approved_by: REPLACE_WITH_HUMAN
+approved_at: REPLACE_APPROVED_AT_UTC
+valid_until: REPLACE_VALID_UNTIL_UTC_OR_OMIT
+
+endpoint: REPLACE_ENDPOINT_ID
+kube_context: REPLACE_KUBE_CONTEXT
+namespace: pymotor-nightly
+
+# Logical suite intent (see references/suite-profiles.md). Not host paths.
+workload_intent:
+  engine: vllm-ascend
+  hardware_class: 800I_A2
+  served_model_name: dsv3
+  model_family: DeepSeek-V3.1-Terminus-w8a8-mtp-QuaRot
+  quantization: ascend
+  speculative: {method: deepseek_mtp, num_speculative_tokens: 1}
+  kv_connector: MooncakeConnectorV1
+  starting_topology: {p_instances_num: 1, d_instances_num: 1, single_p_instance_pod_num: 2, single_d_instance_pod_num: 4, p_pod_npu_num: 8, d_pod_npu_num: 8}
+  prefill_parallel: {tensor_parallel_size: 8, data_parallel_size: 2, enable_expert_parallel: true}
+  decode_parallel: {tensor_parallel_size: 1, data_parallel_size: 32, enable_expert_parallel: true}
+  max_model_len: 16384
+  enable_master_standby: true
+
+cases:
+  - prefill-scale-up-1-to-2
+  - coordinator-failover
+  - decode-engine-restart
+  - prefill-link-isolation
+  - gpqa-accuracy
+  - gsm8k-performance
+
+allowed_actions:
+  - deploy
+  - delete_owned
+  - update_instance_num
+  - reliability:coordinator-failover
+  - reliability:decode-engine-restart
+  - reliability:prefill-link-isolation
+  - accuracy:gpqa
+  - benchmark:gsm8k
+
+config:
+  user_config_path: REPLACE_REMOTE_USER_CONFIG
+  env_config_path: REPLACE_REMOTE_ENV_CONFIG
+  weight_mount_path: REPLACE_WEIGHT_MOUNT
+
+baselines:
+  # Canonical rule: pass iff decimal accuracy >= 0.797 (see suite-profiles.md).
+  # 0.807 is the historical reference mean only; there is no upper bound.
+  gpqa_min_accuracy: 0.797
+  # Comparable formal workload only; leave null until supplied.
+  gsm8k_performance: {metric: REPLACE_METRIC_NAME, threshold: null, workload_notes: REPLACE_OR_REMOVE}
+
+software_revisions: {motor: REPLACE_OR_OMIT, vllm: REPLACE_OR_OMIT, vllm_ascend: REPLACE_OR_OMIT, image: REPLACE_OR_OMIT, aisbench: REPLACE_OR_OMIT}

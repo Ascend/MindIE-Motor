@@ -1,0 +1,6 @@
+interface:
+  display_name: "Motor Smoke Suite"
+  short_description: "Run the Pymotor cluster acceptance suite (scale/RAS/GPQA/GSM8K)"
+  default_prompt: "Use $motor-smoke-suite to run the Pymotor acceptance suite for cluster-level e2e validation."
+policy:
+  allow_implicit_invocation: true

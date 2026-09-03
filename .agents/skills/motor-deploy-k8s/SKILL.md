@@ -13,6 +13,11 @@ description: Explicit atomic workflow under motor-deploy to deploy, inspect, res
 成功完成 config dry-run 后，展示 endpoint/host、context、config directory、namespace
 和精确命令，取得明确授权后执行。
 
+**Suite unattended 例外：** 当调用方来自 `motor-smoke-suite` 且传入 suite
+pre-authorization（`mode=unattended`、`profile_id`、精确 target、匹配的
+`deploy` 或 `delete_owned` token）时，不再重复询问授权；超出 profile 范围则
+`BLOCKED`。
+
 `deploy.py` 的 `kubectl apply` 使用 ambient current-context，不接受 context 参数。
 若 current-context 与确认的 `CTX` 不一致，资源会写入错误集群，而后续
 `kubectl --context "$CTX"` 查询又去目标集群，造成误判。执行前 fail closed：

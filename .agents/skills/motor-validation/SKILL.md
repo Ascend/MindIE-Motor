@@ -17,6 +17,7 @@ description: Motor validation entry point for deployed-service readiness, functi
 | AISBench 性能压测、打流、QPS、TTFT、TPOT、prefix-cache workload，且不以参考答案/evaluator 为目标 | [`motor-validation-benchmark`](../motor-validation-benchmark/SKILL.md) |
 | 带参考答案的数据集、AISBench 原生 evaluator、答案精度或跨服务精度对比 | [`motor-validation-accuracy`](../motor-validation-accuracy/SKILL.md) |
 | 已有有效 benchmark 的常规性能分析/归因，且不是“明确未达目标但原因未知”的异常诊断 | [`motor-validation-performance`](../motor-validation-performance/SKILL.md) |
+| 集群级扩缩容/RAS/GPQA/性能验收套组 | [`motor-smoke-suite`](../motor-smoke-suite/SKILL.md) |
 | 性能明确未达兼容目标/基线且原因未知，或请求失败、Pod 异常、Service 不可达、readiness 超时 | [`motor-diagnosis`](../motor-diagnosis/SKILL.md) |
 
 路由命中后读取并完整遵循对应原子 Skill 的 `SKILL.md`。用户显式点名带父路由入口约束
