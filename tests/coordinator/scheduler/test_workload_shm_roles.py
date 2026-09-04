@@ -40,7 +40,7 @@ def _make_encode_instance() -> Instance:
                 ip="10.0.0.1",
                 business_port="8000",
                 status=EndpointStatus.NORMAL,
-                workload=Workload(active_tokens=7),
+                workload=Workload(),
             )
         },
     )
@@ -51,6 +51,7 @@ def _make_encode_instance() -> Instance:
 async def test_workload_shm_snapshot_includes_encode_role():
     instance_manager = InstanceManager()
     await instance_manager.refresh_instances(EventType.ADD, [_make_encode_instance()])
+    # ADD resets endpoint.workload; collect reads IM, so re-apply the tokens under test.
     await instance_manager.update_instance_workload(1, 10, Workload(active_tokens=7))
 
     entries, slot_map = _collect_entries_and_slot_map(instance_manager, max_entries=10)

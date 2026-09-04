@@ -1,0 +1,17 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+# MindIE is licensed under Mulan PSL v2.
+[package]
+name = "mindie-workload-shm"
+description = "POSIX shared-memory workload ledger for MindIE-PyMotor coordinator (schema 4, multi-writer CAS)"
+version = "0.1.0"
+edition = "2021"
+authors = ["MindIE Team"]
+license = "MulanPSL-2.0"
+
+[lib]
+name = "mindie_workload_shm"
+# cdylib -> libmindie_workload_shm.so loaded in-process via ctypes; rlib -> cargo test / reuse.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"

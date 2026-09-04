@@ -8,46 +8,42 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 license for more details.
 
-"""Tests for WorkloadSharedMemoryWriter."""
+"""Tests for WorkloadSharedMemoryOwner public API and membership helpers."""
 
-import asyncio
-import struct
+import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
+import pytest
 
+from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload
+from motor.common.resources.http_msg_spec import EventType
+from motor.common.resources.instance import Instance, InsStatus, PDRole, ParallelConfig
+from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.scheduler.runtime.workload_shm.writer import (
-    WorkloadSharedMemoryWriter,
+    WorkloadSharedMemoryOwner,
     _pdrole_to_shm_role,
     _collect_entries_and_slot_map,
+    _lowest_free_slot,
 )
 from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     ROLE_PREFILL,
     ROLE_DECODE,
     ROLE_HYBRID,
-    HEADER_SIZE,
-    ENTRY_SIZE,
-    HEARTBEAT_OFFSET,
-    WorkloadShmEntry,
-    pack_entry,
-    unpack_header,
+    SCHEMA_VERSION,
 )
-from motor.common.resources.instance import PDRole
+from motor.coordinator.scheduler.runtime.workload_shm.native import (
+    STATUS_OK,
+    NativeWorkloadShmUnavailable,
+    load_native_library,
+)
+from motor.coordinator.scheduler.runtime.workload_shm.reader import WorkloadSharedMemoryReader
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_mock_shm(buf_size=None):
-    """Create a mock SharedMemory whose .buf is a real bytearray (memoryview-compatible)."""
-    if buf_size is None:
-        buf_size = HEADER_SIZE + 10 * ENTRY_SIZE
-    shm = MagicMock()
-    shm.name = "test_workload_shm"
-    shm.buf = bytearray(buf_size)
-    return shm
 
 
 # ===================================================================
@@ -161,263 +157,127 @@ class TestCollectEntriesAndSlotMap(unittest.TestCase):
         self.assertEqual(len(slot_map), 2)
         self.assertEqual(slot_map, {(1, 0): 0, (1, 1): 1})
 
+    def test_lowest_free_slot(self):
+        """Stable-slot allocator picks the lowest hole and refuses a full table."""
+        self.assertEqual(_lowest_free_slot(set(), 8), 0)
+        self.assertEqual(_lowest_free_slot({0, 1, 3}, 8), 2)
+        self.assertIsNone(_lowest_free_slot({0, 1, 2}, 3))
 
-# ===================================================================
-# TestWorkloadSharedMemoryWriter
-# ===================================================================
+
+def _unique(tag: str) -> str:
+    return f"mw{os.getpid()}{tag}"[:24]
 
 
-class TestWorkloadSharedMemoryWriter(unittest.TestCase):
-    """Test WorkloadSharedMemoryWriter."""
+def _make_real_instance(instance_id: int, endpoint_id: int, tokens: float) -> Instance:
+    inst = Instance(
+        job_name=f"p-{instance_id}",
+        model_name="test_model",
+        id=instance_id,
+        role=PDRole.ROLE_P,
+        status=InsStatus.ACTIVE,
+        parallel_config=ParallelConfig(dp_size=1),
+    )
+    inst.add_endpoints(
+        f"pod-{instance_id}",
+        {
+            0: Endpoint(
+                id=endpoint_id,
+                ip="10.0.0.1",
+                business_port="8080",
+                status=EndpointStatus.NORMAL,
+                workload=Workload(active_tokens=tokens),
+            )
+        },
+    )
+    return inst
 
-    # ---------------------------------------------------------------
-    def test_shm_name(self):
-        """shm_name property returns the underlying SharedMemory name."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-        self.assertEqual(writer.shm_name, "test_workload_shm")
 
-    # ---------------------------------------------------------------
-    def test_instance_version(self):
-        """instance_version bumps on every snapshot; an empty snapshot changes no role membership."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-        self.assertEqual(writer.instance_version, 0)
+@pytest.fixture
+def native_lib():
+    try:
+        return load_native_library()
+    except NativeWorkloadShmUnavailable as e:
+        pytest.skip(f"native workload-shm library not built: {e}")
+        return None
 
-        with patch(
-            "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map",
-            return_value=([], {}),
-        ):
-            writer.write_snapshot()
 
-        self.assertEqual(writer.instance_version, 1)
-        # Empty snapshot: no role gained or lost members, so no role sequence is bumped.
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 0)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
+@pytest.mark.asyncio
+async def test_writer_snapshot_and_heartbeat(native_lib):
+    """Public writer API: first ADD snapshot seeds 0, heartbeat bumps, reader patches cache."""
+    del native_lib
+    config = CoordinatorConfig()
+    im = InstanceManager(config)
+    await im.refresh_instances(EventType.ADD, [_make_real_instance(1, 10, 0.0)])
+    name = _unique("ws")
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, shm_name=name)
+    reader = WorkloadSharedMemoryReader(name)
+    try:
+        writer.write_snapshot()
+        writer.write_heartbeat()
+        header = writer.native.read_header()
+        assert header["schema_version"] == SCHEMA_VERSION == 4
+        assert header["sequence"] % 2 == 0
+        assert header["heartbeat"] == 1
+        reader.attach()
+        patched: dict[tuple[int, int], tuple[PDRole, float]] = {}
 
-        header = unpack_header(writer._buf)
-        self.assertEqual(header.prefill_sequence, 0)
-        self.assertEqual(header.decode_sequence, 0)
-        self.assertEqual(header.hybrid_sequence, 0)
+        class _Cache:
+            def patch_workload_from_shm(self, instance_id, endpoint_id, role, active_tokens) -> None:
+                patched[(instance_id, endpoint_id)] = (role, active_tokens)
 
-    # ---------------------------------------------------------------
-    def test_snapshot_bumps_only_changed_role_membership(self):
-        """A topology change in one role bumps only that role's sequence, not the others'."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-        collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
-
-        # First snapshot: a single prefill endpoint appears.
-        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0)], {(1, 10): 0})):
-            writer.write_snapshot()
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
-        self.assertEqual(writer.instance_version, 1)
-
-        # Second snapshot: prefill membership unchanged, a NEW decode endpoint appears.
-        with patch(
-            collect,
-            return_value=(
-                [(1, 10, ROLE_PREFILL, 5.0), (2, 20, ROLE_DECODE, 7.0)],
-                {(1, 10): 0, (2, 20): 1},
-            ),
-        ):
-            writer.write_snapshot()
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)  # unchanged -> not bumped
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 1)  # new member -> bumped
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
-        self.assertEqual(writer.instance_version, 2)
-
-    # ---------------------------------------------------------------
-    def test_snapshot_same_membership_does_not_bump_role(self):
-        """Re-taking a snapshot with identical membership bumps no role sequence."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-        collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
-        entries = ([(1, 10, ROLE_PREFILL, 5.0)], {(1, 10): 0})
-        with patch(collect, return_value=entries):
-            writer.write_snapshot()
-            self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
-            writer.write_snapshot()  # identical membership
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
-
-    # ---------------------------------------------------------------
-    def test_snapshot_removed_member_bumps_role(self):
-        """Losing a role's last endpoint bumps that role (membership changed to empty)."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-        collect = "motor.coordinator.scheduler.runtime.workload_shm.writer._collect_entries_and_slot_map"
-        with patch(collect, return_value=([(1, 10, ROLE_PREFILL, 5.0)], {(1, 10): 0})):
-            writer.write_snapshot()
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
-        with patch(collect, return_value=([], {})):
-            writer.write_snapshot()
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 2)
-
-    # ---------------------------------------------------------------
-    def test_release(self):
-        """release() clears buf and shm references."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-        self.assertIsNotNone(writer._buf)
-        self.assertIsNotNone(writer._shm)
-
+        version, stale = reader.read_and_patch_cache(_Cache(), role=None)
+        assert version == 1
+        assert stale is False
+        assert patched == {(1, 10): (PDRole.ROLE_P, 0.0)}
+    finally:
+        reader.detach()
         writer.release()
 
-        self.assertIsNone(writer._buf)
-        self.assertIsNone(writer._shm)
 
-    # ---------------------------------------------------------------
-    def test_write_heartbeat(self):
-        """write_heartbeat increments heartbeat_sequence in the buffer."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
+@pytest.mark.asyncio
+async def test_writer_set_blocked(native_lib):
+    """set_blocked marks the instance so allocate CAS returns BLOCKED."""
+    from motor.coordinator.scheduler.runtime.workload_shm.native import STATUS_BLOCKED
 
-        self.assertEqual(writer._heartbeat_sequence, 0)
+    del native_lib
+    config = CoordinatorConfig()
+    im = InstanceManager(config)
+    await im.refresh_instances(EventType.ADD, [_make_real_instance(3, 30, 0.0)])
+    name = _unique("wb")
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, shm_name=name)
+    try:
+        writer.write_snapshot()
+        assert writer.set_blocked(3, True) >= 1
+        meta = writer.native.load_entry(0)
+        status, actual = writer.native.cas_add(3, 30, int(meta["generation"]), 0.0, 1.0)
+        assert status == STATUS_BLOCKED
+        assert actual == 0.0
+    finally:
+        writer.release()
 
-        writer.write_heartbeat()
 
-        self.assertEqual(writer._heartbeat_sequence, 1)
-
-        written = struct.unpack(
-            "<Q",
-            bytes(writer._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8]),
-        )[0]
-        self.assertEqual(written, 1)
-
-    # ---------------------------------------------------------------
-    def test_write_single_entry_existing_slot(self):
-        """write_single_entry updates an existing slot without full snapshot."""
-        shm = _make_mock_shm()
-        im = MagicMock()
-        writer = WorkloadSharedMemoryWriter(shm, im)
-
-        # Pre-populate slot_map
-        writer._slot_map = {(1, 1): 0}
-        writer._entry_count = 1
-        writer._sequence = 5
-        writer._instance_version = 2
-
-        # Mock get_endpoint_workload
-        mock_workload = MagicMock()
-        mock_workload.active_tokens = 999.0
-        im.get_endpoint_workload = AsyncMock(
-            return_value=(PDRole.ROLE_P, mock_workload),
-        )
-
-        # Patch _write_entry_at_slot and _write_header so we can inspect calls
-        with patch.object(WorkloadSharedMemoryWriter, "_write_entry_at_slot") as mock_wes:
-            with patch.object(WorkloadSharedMemoryWriter, "_write_header") as mock_wh:
-                asyncio.run(writer.write_single_entry(1, 1))
-
-        # Verify slot 0 was updated
-        mock_wes.assert_called()
-        call_args = mock_wes.call_args_list[-1]  # Last call is our write
-        _args, _kwargs = call_args
-        slot_arg, entry_arg = _args
-        self.assertEqual(slot_arg, 0)
-        self.assertIsInstance(entry_arg, WorkloadShmEntry)
-        self.assertEqual(entry_arg.instance_id, 1)
-        self.assertEqual(entry_arg.endpoint_id, 1)
-        self.assertEqual(entry_arg.role, ROLE_PREFILL)
-        self.assertEqual(entry_arg.active_tokens, 999.0)
-
-        # Header should be rewritten
-        mock_wh.assert_called()
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 1)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 0)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
-
-    # ---------------------------------------------------------------
-    def test_write_single_entry_bumps_only_matching_role_sequence(self):
-        """A decode workload update should not invalidate prefill fast-path sequence."""
-        shm = _make_mock_shm()
-        im = MagicMock()
-        writer = WorkloadSharedMemoryWriter(shm, im)
-        writer._slot_map = {(2, 2): 0}
-        writer._entry_count = 1
-        mock_workload = MagicMock()
-        mock_workload.active_tokens = 10.0
-        im.get_endpoint_workload = AsyncMock(return_value=(PDRole.ROLE_D, mock_workload))
-
-        asyncio.run(writer.write_single_entry(2, 2))
-
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_P), 0)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_D), 1)
-        self.assertEqual(writer.role_sequence(PDRole.ROLE_U), 0)
-        header = unpack_header(writer._buf)
-        self.assertEqual(header.prefill_sequence, 0)
-        self.assertEqual(header.decode_sequence, 1)
-        self.assertEqual(header.hybrid_sequence, 0)
-
-    # ---------------------------------------------------------------
-    def test_write_single_entry_missing_slot(self):
-        """When slot_map misses (instance_id, endpoint_id), falls back to write_snapshot."""
-        shm = _make_mock_shm()
-        im = MagicMock()
-        writer = WorkloadSharedMemoryWriter(shm, im)
-        writer._slot_map = {}  # nothing cached
-
-        with patch.object(WorkloadSharedMemoryWriter, "write_snapshot") as mock_snapshot:
-            asyncio.run(writer.write_single_entry(1, 1))
-
-        mock_snapshot.assert_called_once()
-
-    # ---------------------------------------------------------------
-    def test_write_header_preserves_heartbeat(self):
-        """_write_header reads the larger heartbeat from buf and keeps it."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-
-        # Writer starts with heartbeat_sequence = 0
-        self.assertEqual(writer._heartbeat_sequence, 0)
-
-        # Pre-populate buffer with a heartbeat value larger than internal
-        larger_heartbeat = 42
-        writer._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8] = struct.pack(
-            "<Q",
-            larger_heartbeat,
-        )
-
-        writer._write_header()
-
-        # Internal value should have been bumped
-        self.assertEqual(writer._heartbeat_sequence, larger_heartbeat)
-
-        # The written header should also contain the larger value
-        current = struct.unpack(
-            "<Q",
-            bytes(writer._buf[HEARTBEAT_OFFSET : HEARTBEAT_OFFSET + 8]),
-        )[0]
-        self.assertEqual(current, larger_heartbeat)
-
-    # ---------------------------------------------------------------
-    def test_write_entry_at_slot(self):
-        """_write_entry_at_slot writes entry bytes at the correct offset."""
-        shm = _make_mock_shm()
-        writer = WorkloadSharedMemoryWriter(shm, MagicMock())
-
-        entry = WorkloadShmEntry(
-            instance_id=100,
-            endpoint_id=200,
-            role=ROLE_PREFILL,
-            active_tokens=12.5,
-        )
-        expected_data = pack_entry(entry)
-
-        writer._write_entry_at_slot(3, entry)
-
-        offset = HEADER_SIZE + 3 * ENTRY_SIZE
-        actual = bytes(writer._buf[offset : offset + ENTRY_SIZE])
-        self.assertEqual(actual, expected_data)
-
-        # Other slots remain zeroed
-        for slot in (0, 1, 2, 4):
-            off = HEADER_SIZE + slot * ENTRY_SIZE
-            self.assertEqual(
-                bytes(writer._buf[off : off + ENTRY_SIZE]),
-                b"\x00" * ENTRY_SIZE,
-                msg=f"Slot {slot} should be untouched",
-            )
+@pytest.mark.asyncio
+async def test_writer_snapshot_preserves_cas_tokens(native_lib):
+    """Refresh snapshot must not reset tokens a Worker already CAS-added (IM seed stays 0)."""
+    del native_lib
+    config = CoordinatorConfig()
+    im = InstanceManager(config)
+    await im.refresh_instances(EventType.ADD, [_make_real_instance(1, 10, 0.0)])
+    name = _unique("wt")
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, shm_name=name)
+    try:
+        writer.write_snapshot()
+        meta = writer.native.load_entry(0)
+        status, actual = writer.native.cas_add(1, 10, int(meta["generation"]), 0.0, 10.0)
+        assert status == STATUS_OK
+        assert actual == 10.0
+        await im.refresh_instances(EventType.ADD, [_make_real_instance(2, 20, 0.0)])
+        writer.write_snapshot()
+        first = writer.native.load_entry(0)
+        assert first["instance_id"] == 1
+        assert first["active_tokens"] == 10.0
+        second = writer.native.load_entry(1)
+        assert second["instance_id"] == 2
+        assert second["active_tokens"] == 0.0
+    finally:
+        writer.release()

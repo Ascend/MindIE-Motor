@@ -96,6 +96,56 @@ fi
 
 echo ""
 
+# --- Conditional workload-shm (coordinator) build ---
+# Same priority chain as kv-conductor:
+#   1. WORKLOAD_SHM_PREBUILT env var — path to a pre-built .so
+#   2. build from source via cargo (unless SKIP_WORKLOAD_SHM_BUILD=1)
+#   3. motor/coordinator/workload_shm_rs/lib/libmindie_workload_shm.so already present
+#   4. skip — wheel without the .so; the Python runtime raises a clear error (scheduling unavailable),
+#      it never silently falls back to a wrong ledger.
+
+WORKLOAD_SHM_DIR="./motor/coordinator/workload_shm_rs"
+WORKLOAD_SHM_LIB_DIR="$WORKLOAD_SHM_DIR/lib"
+WORKLOAD_SHM_LIB="$WORKLOAD_SHM_LIB_DIR/libmindie_workload_shm.so"
+
+echo "=== workload-shm ==="
+
+if [[ -n "${WORKLOAD_SHM_PREBUILT:-}" ]]; then
+    if [[ ! -f "$WORKLOAD_SHM_PREBUILT" ]]; then
+        echo "[ERROR] WORKLOAD_SHM_PREBUILT='$WORKLOAD_SHM_PREBUILT' does not exist."
+        exit 1
+    fi
+    mkdir -p "$WORKLOAD_SHM_LIB_DIR"
+    cp "$WORKLOAD_SHM_PREBUILT" "$WORKLOAD_SHM_LIB"
+    chmod +x "$WORKLOAD_SHM_LIB"
+    echo "workload-shm library ready (pre-built): $WORKLOAD_SHM_LIB"
+
+elif command -v cargo >/dev/null 2>&1 && [[ "${SKIP_WORKLOAD_SHM_BUILD:-0}" != "1" ]]; then
+    echo "Building workload-shm from source (cargo build --release)..."
+    (
+        cd "$WORKLOAD_SHM_DIR" || exit 1
+        cargo build --release
+    )
+    mkdir -p "$WORKLOAD_SHM_LIB_DIR"
+    cp "$WORKLOAD_SHM_DIR/target/release/libmindie_workload_shm.so" "$WORKLOAD_SHM_LIB"
+    chmod +x "$WORKLOAD_SHM_LIB"
+    echo "workload-shm library ready (cargo-built): $WORKLOAD_SHM_LIB"
+
+elif [[ -f "$WORKLOAD_SHM_LIB" ]]; then
+    echo "workload-shm library ready (existing, no rebuild): $WORKLOAD_SHM_LIB"
+
+else
+    rm -rf "$WORKLOAD_SHM_LIB_DIR"
+    echo "[WARNING] workload-shm .so not found and cargo unavailable."
+    echo "  The coordinator scheduler will raise a clear error at runtime (no silent fallback)."
+    echo "  Options:"
+    echo "    1. WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so bash build.sh"
+    echo "    2. cp /path/to/libmindie_workload_shm.so $WORKLOAD_SHM_LIB_DIR/ && bash build.sh"
+    echo "    3. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+fi
+
+echo ""
+
 echo "Building wheel package with pip wheel (PEP517)... (VERBOSE=${VERBOSE})"
 
 # Use pep517 build interface to avoid legacy setup.py warning. if no network, need add "--no-build-isolation"

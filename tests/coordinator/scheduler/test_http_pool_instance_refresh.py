@@ -24,7 +24,6 @@ from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
 )
-from motor.coordinator.scheduler.runtime.zmq_protocol import SchedulerResponseType
 
 
 def _make_instance(instance_id: int, role: PDRole, endpoints: list[tuple[str, str, EndpointStatus]]) -> Instance:
@@ -233,23 +232,9 @@ async def test_on_instance_refreshed_callback_invoked_on_version_change():
         await client._cache.replace_all(PDRole.ROLE_P, [inst])
         return {1: inst}
 
-    alloc_response = MagicMock()
-    alloc_response.response_type = SchedulerResponseType.SUCCESS
-    alloc_response.data = {
-        "instance": {"id": 1, "job_name": "j", "model_name": "m", "role": "prefill"},
-        "endpoint": {"id": 11, "ip": "10.0.0.1", "business_port": "8001", "status": "normal"},
-    }
-
     with patch.object(client, "get_available_instances", side_effect=mock_get_available_instances):
-        with patch.object(client, "_transport") as mock_transport:
-            mock_transport.connected = True
-            mock_transport.send_request = AsyncMock(return_value=alloc_response)
-            req_info = RequestInfo(req_id="", req_data={"test": "data"}, req_len=100, api="/test/api")
-            result = await client.select_and_allocate(PDRole.ROLE_P, req_info)
+        await client._refresh_cache_from_workload_reader(PDRole.ROLE_P)
 
-    assert result is not None
-    ins, ep, workload = result
-    assert ins is not None and ep is not None
     assert len(callback_called) == 1
     assert callback_endpoints[0] == [("10.0.0.1", "8001")]
 
@@ -269,11 +254,7 @@ async def test_on_instance_refreshed_not_called_when_no_callback():
     client._last_instance_version = 1
 
     with patch.object(client, "get_available_instances", side_effect=AsyncMock(return_value={})):
-        with patch.object(client, "_transport") as mock_transport:
-            mock_transport.connected = True
-            mock_transport.send_request = AsyncMock(return_value=None)
-            req_info = RequestInfo(req_id="", req_data={"test": "data"}, req_len=100, api="/test/api")
-            await client.select_and_allocate(PDRole.ROLE_P, req_info)
+        await client._refresh_cache_from_workload_reader(PDRole.ROLE_P)
 
     assert client._on_instance_refreshed is None
 

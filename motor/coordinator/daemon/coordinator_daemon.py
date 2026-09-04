@@ -9,7 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 """
-CoordinatorDaemon: unified process management for Mgmt, Scheduler, Infer.
+CoordinatorDaemon: unified process management for Mgmt, Obs, Infer.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import time
 
 from motor.config.coordinator import (
     CoordinatorConfig,
@@ -33,7 +32,6 @@ from motor.coordinator.process.constants import (
     PROCESS_KEY_INFERENCE,
     PROCESS_KEY_MGMT,
     PROCESS_KEY_OBS,
-    PROCESS_KEY_SCHEDULER,
     STOP_ORDER,
 )
 from motor.coordinator.process.inference_manager import (
@@ -42,7 +40,6 @@ from motor.coordinator.process.inference_manager import (
 )
 from motor.coordinator.process.mgmt_manager import MgmtProcessManager
 from motor.coordinator.process.obs_manager import ObsProcessManager
-from motor.coordinator.process.scheduler_manager import SchedulerProcessManager
 from motor.coordinator.daemon.role_shm_holder import RoleShmHolder
 from motor.common.standby.standby_manager import COORDINATOR_REPORT_EVENT_KEY, StandbyManager
 from motor.common.logger import get_logger
@@ -51,9 +48,9 @@ logger = get_logger(__name__)
 
 
 class CoordinatorDaemon:
-    """Coordinator daemon: starts and monitors Mgmt / Scheduler / Infer processes.
+    """Coordinator daemon: starts and monitors Mgmt / Obs / Infer processes.
 
-    Scheduler and Mgmt run on both master and standby (Scheduler first so Mgmt can connect).
+    Mgmt and Obs run on both master and standby (Mgmt binds ROUTER/PUB and creates SHM).
     With master/standby enabled: only Infer is started on master and stopped on standby
     (on_become_master / on_become_standby). Role shm is created by Daemon; role byte is written
     in on_role_changed callback so StandbyManager stays shm-agnostic (controller does not use shm).
@@ -96,8 +93,8 @@ class CoordinatorDaemon:
                 # Initial role standby so Mgmt does not report master until etcd lock is acquired.
                 self._write_role_shm_byte(ROLE_SHM_STANDBY)
 
-        # Scheduler first (both master and standby), then Mgmt, then Obs, so Mgmt connect() succeeds.
-        self._start_processes([PROCESS_KEY_SCHEDULER, PROCESS_KEY_MGMT, PROCESS_KEY_OBS])
+        # Mgmt first (both master and standby) so ROUTER/PUB/SHM exist before Obs/Infer connect.
+        self._start_processes([PROCESS_KEY_MGMT, PROCESS_KEY_OBS])
 
         if self.config.standby_config.enable_master_standby:
             self._standby_manager = StandbyManager(self.config)
@@ -150,7 +147,7 @@ class CoordinatorDaemon:
         """Called when this node becomes standby: write role shm (if any), then stop Inference only."""
         if self._role_shm_holder is not None:
             self._write_role_shm_byte(ROLE_SHM_STANDBY)
-        self._stop_all_processes(exclude_processes={PROCESS_KEY_MGMT, PROCESS_KEY_OBS, PROCESS_KEY_SCHEDULER})
+        self._stop_all_processes(exclude_processes={PROCESS_KEY_MGMT, PROCESS_KEY_OBS})
 
     def _report_coordinator_to_slave_event(self) -> None:
         """Report coordinator master-to-slave event to controller observability."""
@@ -168,9 +165,7 @@ class CoordinatorDaemon:
         ControllerApiClient.report_alarms(event.model_dump(mode="json"))
 
     def _initialize_process_managers(self) -> None:
-        """Initialize Mgmt / Scheduler / Infer process managers."""
-        self._process_managers[PROCESS_KEY_SCHEDULER] = SchedulerProcessManager(self.config)
-
+        """Initialize Mgmt / Obs / Infer process managers."""
         self._process_managers[PROCESS_KEY_MGMT] = MgmtProcessManager(self.config)
 
         self._process_managers[PROCESS_KEY_OBS] = ObsProcessManager(self.config)
@@ -187,7 +182,7 @@ class CoordinatorDaemon:
             logger.warning("Shared socket not available, inference workers disabled")
 
     def _start_processes(self, names: list[str]) -> None:
-        """Start given process managers in order; sleep(2) after Scheduler."""
+        """Start given process managers in order."""
         for name in names:
             mgr = self._process_managers.get(name)
             if mgr is None:
@@ -202,11 +197,9 @@ class CoordinatorDaemon:
             except Exception as e:
                 logger.error("Error starting %s: %s", name, e, exc_info=True)
                 continue
-            if name == PROCESS_KEY_SCHEDULER:
-                time.sleep(2)
 
     def _stop_all_processes(self, exclude_processes: set[str] | None = None) -> None:
-        """Stop in order: Infer -> Mgmt -> Scheduler. Skip specified processes when exclude is set."""
+        """Stop in order: Infer -> Obs -> Mgmt. Skip specified processes when exclude is set."""
         exclude = exclude_processes or set()
         for name in STOP_ORDER:
             if name in exclude:
@@ -245,4 +238,4 @@ class CoordinatorDaemon:
             return set(self._process_managers)
         if self._standby_manager is not None and self._standby_manager.is_master():
             return set(self._process_managers)
-        return {PROCESS_KEY_SCHEDULER, PROCESS_KEY_MGMT, PROCESS_KEY_OBS}
+        return {PROCESS_KEY_MGMT, PROCESS_KEY_OBS}

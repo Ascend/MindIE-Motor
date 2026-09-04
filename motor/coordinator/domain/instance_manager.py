@@ -293,7 +293,6 @@ class InstanceManager:
     def get_endpoint_workload_sync(self, instance_id: int, endpoint_id: int) -> tuple[PDRole | None, Workload | None]:
         """
         Get role and workload for endpoint by instance_id and endpoint_id.
-        Used by WorkloadSharedMemoryWriter.write_single_entry for incremental write.
 
         Returns:
             (role, workload): (instance.role, endpoint.workload) if found;
@@ -318,7 +317,6 @@ class InstanceManager:
     async def get_endpoint_workload(self, instance_id: int, endpoint_id: int) -> tuple[PDRole | None, Workload | None]:
         """
         Get role and workload for endpoint by instance_id and endpoint_id.
-        Used by WorkloadSharedMemoryWriter.write_single_entry for incremental write.
 
         Returns:
             (role, workload): (instance.role, endpoint.workload) if found;

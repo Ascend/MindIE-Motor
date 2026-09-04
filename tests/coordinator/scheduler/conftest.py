@@ -64,7 +64,6 @@ class MockInstanceProvider:
 
     def __init__(self, instances: dict[PDRole, dict[int, Instance]] | None = None):
         self._instances = instances or {}
-        self._workload_updates = []
 
     def get_available_instances(self, role: PDRole = None):
         if role is None:
@@ -73,9 +72,3 @@ class MockInstanceProvider:
                 result.update(insts)
             return result
         return self._instances.get(role, {})
-
-    async def update_instance_workload(self, instance_id, endpoint_id, workload_change):
-        self._workload_updates.append((instance_id, endpoint_id, workload_change))
-
-    def get_workload_updates(self):
-        return self._workload_updates

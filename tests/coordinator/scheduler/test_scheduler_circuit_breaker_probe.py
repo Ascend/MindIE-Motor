@@ -116,11 +116,14 @@ class TestProbeInstance:
         """Instance outside the available pool is not probed; its circuit record is dropped."""
         cb = _tripped_cb(CircuitBreakerManager())
         dispatcher, instance_manager = _make_dispatcher(cb)
+        writer = MagicMock()
+        dispatcher._workload_writer = writer
         instance_manager.get_available_instances.return_value = {}
         with patch("asyncio.open_connection", AsyncMock()) as mock_conn:
             assert await dispatcher._probe_instance(1) is False
             mock_conn.assert_not_called()  # no probe attempt on a paused instance
         assert cb.get(1) is None  # circuit record dropped
+        writer.set_blocked.assert_called_with(1, False)
 
     async def test_probe_instance_without_endpoint_returns_false(self):
         dispatcher, instance_manager = _make_dispatcher()

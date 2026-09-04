@@ -696,14 +696,22 @@ class UnifiedPDRouter(BaseRouter):
                 attempt_seq,
                 required_engine_type=str(p_resource.instance.engine_type),
             )
-        except Exception as e:
+        except BaseException as e:
             error_message = (
                 f"Unified PD D allocation failed after P allocated "
-                f"req_id={self.req_info.req_id} attempt={attempt_seq}: {e}"
+                f"req_id={self.req_info.req_id} attempt={attempt_seq}: {e!r}"
             )
             self.req_info.trace_obj.set_trace_error_message(error_message)
             self.logger.warning(error_message)
-            await self._release_attempt_resource(p_resource, attempt_seq, WorkloadAction.RELEASE_TOKENS)
+            self._submit_release_attempt_resource_background(p_resource, attempt_seq, WorkloadAction.RELEASE_TOKENS)
+            try:
+                await self._drain_release_tasks()
+            except asyncio.CancelledError:
+                self.logger.warning(
+                    "Unified PD cancelled while draining P release after D allocation failure req_id=%s attempt=%s",
+                    self.req_info.req_id,
+                    attempt_seq,
+                )
             raise
         return session.new_attempt(p_resource, d_resource, self.config)
 
@@ -2017,12 +2025,29 @@ class UnifiedPDRouter(BaseRouter):
                 raise HTTPException(status_code=503, detail=error_message)
             raise RuntimeError(error_message)
         ins, endpoint, workload = result
-        if not await self._request_manager.add_req_attempt_workload(
-            self.req_info.req_id,
-            attempt_seq,
-            role,
-            workload,
-        ):
+        try:
+            recorded = await self._request_manager.add_req_attempt_workload(
+                self.req_info.req_id,
+                attempt_seq,
+                role,
+                workload,
+                instance_id=ins.id,
+                endpoint_id=endpoint.id,
+            )
+        except BaseException as e:
+            self.logger.error(
+                "Workload bookkeeping interrupted after allocation; rolling back "
+                "req_id=%s attempt_seq=%s role=%s instance_id=%s endpoint_id=%s error=%r",
+                self.req_info.req_id,
+                attempt_seq,
+                role,
+                ins.id,
+                endpoint.id,
+                e,
+            )
+            await self._rollback_allocated_workload(ins, endpoint, role, workload)
+            raise
+        if not recorded:
             await self._rollback_allocated_workload(ins, endpoint, role, workload)
             raise RuntimeError(
                 f"Request {self.req_info.req_id} already allocated for attempt {attempt_seq} role {role}"
@@ -2047,6 +2072,10 @@ class UnifiedPDRouter(BaseRouter):
                 attempt,
                 wait=wait,
             )
+
+    async def _drain_pending_releases(self) -> None:
+        """Unified PD runs releases as background tasks; settle them before residual reclaim."""
+        await self._drain_release_tasks()
 
     def _submit_prefill_release_background(self, attempt: AttemptContext, action: WorkloadAction) -> None:
         if attempt.prefill_resource is None:
@@ -2163,14 +2192,15 @@ class UnifiedPDRouter(BaseRouter):
                 record.item = item
             ok = await self._send_release_work_item(item)
             if ok:
-                # Scheduler ACKed the release: drop the worker-side ledger record that
-                # compute_and_update intentionally retained for failure recomputation.
+                # Mark released BEFORE finalize: this is the atomic commit point, so a
+                # finalize_release failure below can't reopen the window for a later re-enqueue
+                # to resend (and double-subtract) the same delta.
+                if item.attempt is not None:
+                    self._mark_released(item.attempt, item.role, item.action)
                 try:
                     await self._workload_action_handler.finalize_release(self.req_info.req_id, item.role, attempt_seq)
                 except Exception as exc:
-                    # The scheduler already applied the release; a finalize failure only leaves
-                    # a stale local record (a later re-release is deduped by operation_id).
-                    # Log it but do not turn the ACKed release into a failure/retry.
+                    # Scheduler already applied the release; keep the ACK as success regardless.
                     self.logger.warning(
                         "finalize_release failed after scheduler ACK req_id=%s attempt_seq=%s action=%s: %s",
                         self.req_info.req_id,
@@ -2178,12 +2208,6 @@ class UnifiedPDRouter(BaseRouter):
                         action.value,
                         exc,
                     )
-                else:
-                    # Mark released only after the local record is gone: a finalize failure
-                    # leaves the release unmarked, so a later re-enqueue can recompute the
-                    # delta and finalize again instead of skipping as already-released.
-                    if item.attempt is not None:
-                        self._mark_released(item.attempt, item.role, item.action)
             return ok
         except Exception as exc:
             self._log_release_task_result_error(None, "raised", exc, context=task_context)
@@ -2213,9 +2237,8 @@ class UnifiedPDRouter(BaseRouter):
             req_id=self.req_info.req_id,
             workload_action=action,
             workload_change=workload_change,
-            # Deterministic id keyed on (request, attempt, endpoint, action): stable across the
-            # retries in _send_release_work_item, so a release whose ACK was lost is de-duplicated by
-            # the scheduler instead of applied twice (which would drive the load ledger negative).
+            # Deterministic id for log/trace correlation across retries only -- the CAS release
+            # path does not dedup on it (see _mark_released in _release_attempt_resource_task).
             operation_id=(
                 f"{self.req_info.req_id}:a{attempt_seq}:{resource.instance.id}:{resource.endpoint.id}:{action.value}"
             ),

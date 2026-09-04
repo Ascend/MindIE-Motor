@@ -26,14 +26,11 @@ logger = get_logger(__name__)
 
 class SchedulerRequestType(str, Enum):
     """
-    Scheduler request types. Scheduler process uses local InstanceManager for
-    read-only queries; no IS_AVAILABLE/GET_ALL_INSTANCES.
+    Control-plane request types served by Mgmt (ROUTER). Data-plane allocate/release
+    is CAS on schema-4 SHM; there is no ALLOCATE / UPDATE / REFRESH RPC.
     """
 
-    ALLOCATE_ONLY = "allocate_only"  # Worker selects locally; Scheduler only allocates workload
-    UPDATE_WORKLOAD = "update_workload"
-    GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker fetches instance list and workload shm name
-    REFRESH_INSTANCES = "refresh_instances"
+    GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker/Obs fetch instance list and workload shm name
     CONFIRM_SAMPLE = "confirm_sample"  # cross-worker precision sampling exit gate
     RECORD_PRECISION_RESULT = "record_precision_result"  # global consecutive + probing
     FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm
@@ -71,7 +68,7 @@ class SchedulerResponse(msgspec.Struct):
     error: str | None = None
 
 
-# Candidate policy values for ALLOCATE_ONLY request data["candidate_policy"].
+# Candidate policy values for Worker-local select_and_allocate (R4 arbitration).
 CANDIDATE_POLICY_LOAD_BALANCE = "load_balance"
 CANDIDATE_POLICY_ROUND_ROBIN = "round_robin"
 CANDIDATE_POLICY_KV_CACHE_AFFINITY = "kv_cache_affinity"

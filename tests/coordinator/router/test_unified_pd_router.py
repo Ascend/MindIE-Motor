@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -1571,6 +1571,63 @@ async def test_unified_pd_release_inflight_deduplicates_same_action():
 
 
 @pytest.mark.asyncio
+async def test_unified_pd_release_finalize_failure_still_marks_released_and_is_not_resent():
+    """A finalize_release failure after a successful scheduler ACK must not leave the release
+    re-sendable, or a later re-enqueue would resend (double-subtract) the same delta.
+    """
+    req_info = RequestInfo(
+        req_id="root-release-finalize-failure",
+        req_data={"model": "m", "prompt": "hello", "stream": True, "max_tokens": 8},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=10,
+    )
+    config = _config()
+    request_manager = RequestManager(config)
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=request_manager,
+    )
+
+    await request_manager.add_req_info(req_info)
+    try:
+        attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+        with patch.object(
+            router._workload_action_handler,
+            "finalize_release",
+            AsyncMock(side_effect=RuntimeError("finalize boom")),
+        ):
+            submitted = await router._release_attempt_resource(
+                attempt.prefill_resource,
+                attempt.attempt_seq,
+                WorkloadAction.RELEASE_TOKENS,
+                attempt,
+                wait=False,
+            )
+            assert submitted is True
+            await router._drain_release_tasks()
+
+        assert scheduler.update_workload.await_count == 1
+        assert attempt.release_flags.prefill_tokens  # marked despite finalize failing
+
+        # A later re-enqueue must short-circuit as already-marked and not call the scheduler again.
+        second = await router._release_attempt_resource(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+            wait=False,
+        )
+        assert second is False
+        assert scheduler.update_workload.await_count == 1
+    finally:
+        await request_manager.del_req_info(req_info.req_id)
+
+
+@pytest.mark.asyncio
 async def test_unified_pd_release_carries_stable_operation_id():
     """Release RPCs carry a deterministic operation_id keyed on (request, attempt, endpoint, action)
     so a retried release is de-duplicated scheduler-side instead of double-applied (which would drive
@@ -3080,3 +3137,68 @@ def test_retry_plan_preserves_max_completion_tokens_precedence_for_completion_re
     assert "messages" not in decode_request
     assert "max_completion_tokens" not in decode_request
     assert decode_request["max_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_create_attempt_releases_p_when_d_allocation_cancelled():
+    req_info = RequestInfo(
+        req_id="req-w1-cancel",
+        req_data={"model": "m", "prompt": "hi"},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=3,
+    )
+    config = _config()
+    scheduler = _Scheduler()
+    p_instance = scheduler.p
+    p_endpoint = next(iter(next(iter(p_instance.endpoints.values())).values()))
+
+    async def _select_and_allocate(role, req_info, **_kwargs):
+        if role == PDRole.ROLE_P:
+            return p_instance, p_endpoint, Workload(active_tokens=3)
+        raise asyncio.CancelledError()
+
+    scheduler.select_and_allocate = _select_and_allocate
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    router._pd_uses_trigger = False
+
+    with pytest.raises(asyncio.CancelledError):
+        await router._create_attempt(PDDispatchSession(req_info.req_id))
+
+    await asyncio.sleep(0)
+    scheduler.update_workload.assert_called()
+    params = scheduler.update_workload.call_args.args[0]
+    assert params.workload_change.active_tokens == -3
+    assert params.workload_action == WorkloadAction.RELEASE_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_prepare_attempt_resource_rolls_back_when_bookkeeping_cancelled():
+    req_info = RequestInfo(
+        req_id="req-w2-cancel",
+        req_data={"model": "m", "prompt": "hi"},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=3,
+    )
+    config = _config()
+    scheduler = _Scheduler()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=scheduler,
+        request_manager=RequestManager(config),
+    )
+    router._request_manager.add_req_attempt_workload = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await router._prepare_attempt_resource(PDRole.ROLE_P, 1)
+
+    scheduler.update_workload.assert_called_once()
+    params = scheduler.update_workload.call_args.args[0]
+    assert params.workload_change.active_tokens < 0

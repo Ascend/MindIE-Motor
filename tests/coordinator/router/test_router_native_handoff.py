@@ -372,9 +372,9 @@ class TestRouterNativeHandoff:
         )
         monkeypatch.setattr(InstanceManager, "has_required_instances", mock_has_required_instances)
         monkeypatch.setattr(InstanceManager, "get_available_instances", mock_get_available_instances)
-        monkeypatch.setattr(Scheduler, "select_instance_and_endpoint", mock_select_instance_and_endpoint)
-        monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
-        monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
+        monkeypatch.setattr(Scheduler, "select_instance_and_endpoint", mock_select_instance_and_endpoint, raising=False)
+        monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate, raising=False)
+        monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload, raising=False)
 
         mock_scheduler_config = MagicMock()
         mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
@@ -769,7 +769,7 @@ class TestRouterNativeHandoff:
                 return None, None
             return None, None
 
-        monkeypatch.setattr(Scheduler, "select_instance_and_endpoint", mock_select_instance_and_endpoint)
+        monkeypatch.setattr(Scheduler, "select_instance_and_endpoint", mock_select_instance_and_endpoint, raising=False)
 
         # Mock PDHybridRouter response
         mock_response = "mock_message"

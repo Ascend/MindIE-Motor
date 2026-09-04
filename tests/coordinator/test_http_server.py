@@ -1034,11 +1034,13 @@ class TestCoordinatorServerAdvanced:
 
         # Create test server shell (ManagementServer + InferenceServer)
         self.coordinator_server = _TestServerShell(config=coordinator_config)
-        # Replace scheduler connection with mock to avoid ZMQ connection timeout (~15s per call)
-        self.coordinator_server._mgmt._scheduler_connection = MagicMock()
-        self.coordinator_server._mgmt._scheduler_connection.ensure_connected = AsyncMock()
-        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = None
-        self.coordinator_server._mgmt._scheduler_connection.disconnect = AsyncMock()
+        # Skip real ROUTER/PUB/SHM bind in TestClient lifespan
+        mgmt = self.coordinator_server._mgmt
+        mgmt._start_control_plane = AsyncMock()
+        mgmt._stop_control_plane = AsyncMock()
+        mgmt._control_plane.apply_refresh = AsyncMock(return_value=True)
+        mgmt._control_plane.scheduler = MagicMock()
+        mgmt._control_plane.scheduler.dismiss_precision_alarm_state = AsyncMock(return_value=True)
         self.coordinator_server.setup_rate_limiting()
         # Do not mock _handle_openai_request: let real handler run so validation (400), JSON/decode (500), and
         # _is_available (503) are exercised; handle_request is already patched above for 200 responses.
@@ -1097,6 +1099,9 @@ class TestCoordinatorServerAdvanced:
 
     def test_refresh_instances_rejects_duplicate_ids(self):
         """Duplicate IDs must be rejected before list-to-dict conversion can drop an instance."""
+        self.coordinator_server._mgmt._control_plane.apply_refresh.side_effect = ValueError(
+            "duplicate instance IDs in one request"
+        )
         instance = {
             "job_name": "test-job",
             "model_name": "test-model",
@@ -1113,14 +1118,11 @@ class TestCoordinatorServerAdvanced:
         assert response.status_code == 400
         assert "duplicate instance IDs" in response.json()["detail"]
 
-    def test_refresh_instances_returns_409_before_scheduler_on_id_conflict(self):
-        """Existing-state ID collisions are reported as conflicts before Scheduler forwarding."""
-        self.coordinator_server._mgmt.instance_manager.validate_refresh_instances.side_effect = InstanceIdConflictError(
+    def test_refresh_instances_returns_409_on_id_conflict(self):
+        """Existing-state ID collisions are reported as 409 from in-process apply_refresh."""
+        self.coordinator_server._mgmt._control_plane.apply_refresh.side_effect = InstanceIdConflictError(
             "instance ID 1 already belongs to another instance"
         )
-        scheduler_client = MagicMock()
-        scheduler_client.refresh_instances = AsyncMock()
-        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
         body = {
             "event": "add",
             "instances": [
@@ -1137,30 +1139,6 @@ class TestCoordinatorServerAdvanced:
         response = self.mgmt_client.post("/instances/refresh", json=body)
 
         assert response.status_code == 409
-        scheduler_client.refresh_instances.assert_not_awaited()
-
-    def test_refresh_instances_does_not_update_mgmt_when_scheduler_rejects(self):
-        """Mgmt mirror must remain unchanged when Scheduler rejects the authoritative update."""
-        scheduler_client = MagicMock()
-        scheduler_client.refresh_instances = AsyncMock(return_value=False)
-        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
-        body = {
-            "event": "add",
-            "instances": [
-                {
-                    "job_name": "test-job",
-                    "model_name": "test-model",
-                    "id": 1,
-                    "role": "prefill",
-                    "endpoints": {},
-                }
-            ],
-        }
-
-        response = self.mgmt_client.post("/instances/refresh", json=body)
-
-        assert response.status_code == 503
-        self.coordinator_server._mgmt.instance_manager.refresh_instances.assert_not_awaited()
 
     def test_refresh_instances_empty_body(self):
         """Test refresh_instances with empty body"""
@@ -1201,9 +1179,9 @@ class TestCoordinatorServerAdvanced:
 
     def test_precision_alarm_cleared_success(self):
         """Test precision alarm clear returns dismissed when scheduler state is cleared."""
-        scheduler_client = MagicMock()
-        scheduler_client.dismiss_precision_alarm_state = AsyncMock(return_value=True)
-        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
+        scheduler = MagicMock()
+        scheduler.dismiss_precision_alarm_state = AsyncMock(return_value=True)
+        self.coordinator_server._mgmt._control_plane.scheduler = scheduler
 
         response = self.mgmt_client.post(
             "/precision/alarm_cleared",
@@ -1214,14 +1192,14 @@ class TestCoordinatorServerAdvanced:
         data = response.json()
         assert data["status"] == "success"
         assert data["data"]["dismissed"] is True
-        scheduler_client.dismiss_precision_alarm_state.assert_awaited_once_with(
+        scheduler.dismiss_precision_alarm_state.assert_awaited_once_with(
             p_instance_id=1,
             d_instance_id=2,
         )
 
     def test_precision_alarm_cleared_fails_without_scheduler_client(self):
         """Test precision alarm clear does not report success when scheduler client is unavailable."""
-        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = None
+        self.coordinator_server._mgmt._control_plane.scheduler = None
 
         response = self.mgmt_client.post(
             "/precision/alarm_cleared",
@@ -1232,9 +1210,9 @@ class TestCoordinatorServerAdvanced:
 
     def test_precision_alarm_cleared_fails_when_scheduler_rejects(self):
         """Test precision alarm clear does not report success when scheduler rejects the request."""
-        scheduler_client = MagicMock()
-        scheduler_client.dismiss_precision_alarm_state = AsyncMock(return_value=False)
-        self.coordinator_server._mgmt._scheduler_connection.get_client.return_value = scheduler_client
+        scheduler = MagicMock()
+        scheduler.dismiss_precision_alarm_state = AsyncMock(return_value=False)
+        self.coordinator_server._mgmt._control_plane.scheduler = scheduler
 
         response = self.mgmt_client.post(
             "/precision/alarm_cleared",

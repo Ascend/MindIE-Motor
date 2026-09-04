@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -43,6 +42,8 @@ class RequestManager:
         # (root_request_id, attempt_seq, role) so late cleanup from an older
         # attempt cannot release a newer attempt's allocation.
         self._req_workload_dict: dict[tuple, Workload] = {}
+        # Same keys as _req_workload_dict; value is (instance_id, endpoint_id) for residual reclaim.
+        self._req_workload_owner: dict[tuple, tuple[int, int]] = {}
         logger.info("RequestManager initialized")
 
     async def generate_request_id(self) -> str:
@@ -94,7 +95,16 @@ class RequestManager:
                 del self._req_info_dict[req_id]
                 keys_to_delete = [k for k in self._req_workload_dict if k[0] == req_id]
                 for k in keys_to_delete:
-                    del self._req_workload_dict[k]
+                    residual = self._req_workload_dict.pop(k)
+                    owner = self._req_workload_owner.pop(k, None)
+                    logger.error(
+                        "Orphan workload record dropped at request deletion; ledger tokens are leaked: "
+                        "req_id=%s key=%s active_tokens=%s owner=%s",
+                        req_id,
+                        k,
+                        residual.active_tokens,
+                        owner,
+                    )
             logger.debug("Deleted request info and workloads for ID: %s", req_id)
             return True
         except Exception as e:
@@ -109,9 +119,24 @@ class RequestManager:
             return (req_id, role)
         return (req_id, attempt_seq, role)
 
-    async def add_req_workload(self, req_id: str, role: PDRole, workload: Workload) -> bool:
+    async def add_req_workload(
+        self,
+        req_id: str,
+        role: PDRole,
+        workload: Workload,
+        *,
+        instance_id: int | None = None,
+        endpoint_id: int | None = None,
+    ) -> bool:
         """Add workload record for a request and role (async, does not block event loop)."""
-        return await self.add_req_attempt_workload(req_id, None, role, workload)
+        return await self.add_req_attempt_workload(
+            req_id,
+            None,
+            role,
+            workload,
+            instance_id=instance_id,
+            endpoint_id=endpoint_id,
+        )
 
     async def add_req_attempt_workload(
         self,
@@ -119,6 +144,9 @@ class RequestManager:
         attempt_seq: int | None,
         role: PDRole,
         workload: Workload,
+        *,
+        instance_id: int | None = None,
+        endpoint_id: int | None = None,
     ) -> bool:
         """Add workload record for a request/attempt/role."""
         try:
@@ -128,6 +156,8 @@ class RequestManager:
                     logger.debug("Workload for key %s already exists", key)
                     return False
                 self._req_workload_dict[key] = workload
+                if instance_id is not None and endpoint_id is not None:
+                    self._req_workload_owner[key] = (instance_id, endpoint_id)
             logger.debug("Added workload for key %s", key)
             return True
         except Exception as e:
@@ -175,11 +205,22 @@ class RequestManager:
                     logger.debug("Workload for key %s not found", key)
                     return False
                 del self._req_workload_dict[key]
+                self._req_workload_owner.pop(key, None)
             logger.debug("Deleted workload for key %s", key)
             return True
         except Exception as e:
             logger.error("Failed to delete workload for request %s, role %s: %s", req_id, role, e)
             return False
+
+    async def pop_residual_workloads(self, req_id: str) -> list[tuple[tuple, Workload, tuple[int, int] | None]]:
+        """Atomically pop workload records that survived the request lifecycle.
+
+        A residual record means a scheduler ledger commit (CAS add) was never
+        released; the caller is responsible for releasing it back to the ledger.
+        """
+        async with self._lock:
+            keys = [k for k in self._req_workload_dict if k[0] == req_id]
+            return [(k, self._req_workload_dict.pop(k), self._req_workload_owner.pop(k, None)) for k in keys]
 
     def update_config(self, config: CoordinatorConfig) -> None:
         """Update configuration for the request manager"""

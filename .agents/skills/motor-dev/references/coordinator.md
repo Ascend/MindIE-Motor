@@ -7,20 +7,18 @@ The Coordinator is the **inference scheduling gateway** — it exposes an OpenAI
 ``` text
 CoordinatorDaemon (parent process, async main loop)
 │
-├── SchedulerServer (1 process)           — ZMQ ROUTER, single source of truth
-│     owns: InstanceManager (master copy), WorkloadSharedMemoryWriter
+├── MgmtServer (1 process)               — Management HTTP + control plane
+│     owns: InstanceManager master (TYPE_MGMT, KV register), CircuitBreakerManager,
+│           precision tables, schema-4 WorkloadSharedMemoryOwner, ZMQ ROUTER + PUB
 │     start order: 1st | stop order: last
 │
-├── MgmtServer (1 process)               — Management API
-│     owns: InstanceManager (mirror), orphan detection (ppid check + role shm)
-│     start order: 2nd (2s sleep after Scheduler for ZMQ socket binding)
-│
 ├── ObsServer (1 process)                — Observability API
-│     owns: MetricsCollector, _SchedulerInstanceProvider (via SchedulerConnectionManager)
-│     start order: 3rd
+│     owns: MetricsCollector, instance provider via SchedulerConnectionManager (DEALER to Mgmt)
+│     start order: 2nd
 │
 └── InferenceWorkers (N processes)        — OpenAI- & Anthropic-compatible API
-      owns: RequestManager, SchedulerClient (ZMQ DEALER), WorkloadSharedMemoryReader
+      owns: RequestManager, SchedulerClient (ZMQ DEALER for control-plane RPC only),
+            WorkloadSharedMemoryReader (Rust CAS allocate/release)
       start order: last | shared socket via SO_REUSEPORT
 ```
 
@@ -28,8 +26,8 @@ CoordinatorDaemon (parent process, async main loop)
 
 **Process lifecycle:**
 
-- Start order: Scheduler (bind ZMQ first) → Mgmt (connect ZMQ) → Obs → Inference
-- Stop order: Inference → Obs → Mgmt → Scheduler (reverse, via `STOP_ORDER` constant)
+- Start order: Mgmt (bind ROUTER/PUB + create SHM) → Obs → Inference
+- Stop order: Inference → Obs → Mgmt (reverse, via `STOP_ORDER` constant)
 - Termination: `terminate()` → `join(timeout=10s)` → `kill()` (three-stage, graceful first)
 - Health supervision: `SubprocessSupervisor` monitors child PIDs, auto-restarts dead processes
 
@@ -62,68 +60,82 @@ NPU resources.
 - `StandbyManager` controls which node is master via external coordination (e.g., etcd lease)
 - `RoleShmHolder` creates `coordinator_standby_role` shared memory (9 bytes: 1B role + 8B heartbeat ns)
 - Daemon writes heartbeat every `ROLE_HEARTBEAT_INTERVAL_SEC` (2s); Mgmt process checks staleness (>5s = unhealthy)
-- **Only InferenceWorkers are started on master** — Scheduler, Mgmt, and Obs all run on both master and standby. The daemon unconditionally starts SCHEDULER/MGMT/OBS (`_start_processes([SCHEDULER, MGMT, OBS])`); only Inference is gated by role (standby keeps it stopped for instance sync readiness).
+- **Only InferenceWorkers are started on master** — Mgmt and Obs run on both master and standby. The daemon unconditionally starts MGMT/OBS (`_start_processes([MGMT, OBS])`); only Inference is gated by role (standby keeps it stopped for instance sync readiness).
 - On role change: `on_become_master` starts Inference workers; `on_become_standby` stops them
 
 ## IPC: ZMQ Protocol + Shared Memory
 
-### ZMQ (Scheduler ↔ Mgmt/Workers)
+### ZMQ (Mgmt control plane ↔ Workers/Obs)
 
-**Transport:** `zmq.asyncio` ROUTER/DEALER over Unix IPC sockets (`ipc:///tmp/scheduler_frontend`)
+**Transport:** `zmq.asyncio` ROUTER/DEALER over Unix IPC sockets (`ipc://<tmpdir>/scheduler_frontend`). Mgmt binds; Infer/Obs connect. Path names are historical (P3 did not rename IPC).
 
 **Serialization:** `msgspec.msgpack` (not pickle) with zero-copy optimization — payloads >1024 bytes go in separate ZMQ frames to avoid msgpack decoding overhead on the receiver side.
 
-**Request types** (defined in `zmq_protocol.py: SchedulerRequestType`):
+**Request types** (defined in `zmq_protocol.py: SchedulerRequestType`). Data-plane allocate/release is **not** an RPC — Workers CAS on schema-4 SHM.
 
 | Request | Direction | Purpose |
 |---------|-----------|---------|
-| `ALLOCATE_ONLY` | Worker → Scheduler | Worker selects locally; Scheduler only allocates the workload. Worker submits its candidate list + affinity candidates; server does the authoritative selection |
-| `UPDATE_WORKLOAD` | Worker → Scheduler | Worker reports current workload (active tokens, KV cache) |
-| `GET_AVAILABLE_INSTANCES` | Worker → Scheduler | Worker fetches current instance list and workload SHM name |
-| `REFRESH_INSTANCES` | Mgmt → Scheduler | Mgmt pushes batch instance changes from Controller |
-| `CONFIRM_SAMPLE` | Worker → Scheduler | Cross-worker precision-sampling exit gate |
-| `RECORD_PRECISION_RESULT` | Worker → Scheduler | Records global consecutive failures + probing state |
-| `FINISH_PRECISION_ACTION` | Worker → Scheduler | Clears probing after a probe/alarm cycle |
-| `DISMISS_PRECISION_ALARM_STATE` | Worker → Scheduler | External recovery cleared the alarm |
-| `CIRCUIT_BREAKER_REPORT` | Worker → Scheduler | Worker reports instance failure/success to the circuit breaker |
+| `GET_AVAILABLE_INSTANCES` | Worker/Obs → Mgmt | Cold start / PUB loss / stale heartbeat: instance list and workload SHM name |
+| `CONFIRM_SAMPLE` | Worker → Mgmt | Cross-worker precision-sampling exit gate |
+| `RECORD_PRECISION_RESULT` | Worker → Mgmt | Records global consecutive failures + probing state |
+| `FINISH_PRECISION_ACTION` | Worker → Mgmt | Clears probing after a probe/alarm cycle |
+| `DISMISS_PRECISION_ALARM_STATE` | Worker → Mgmt | External recovery cleared the alarm |
+| `CIRCUIT_BREAKER_REPORT` | Worker → Mgmt | Worker reports instance failure/success to the circuit breaker |
+
+There is no `ALLOCATE_ONLY`, `UPDATE_WORKLOAD`, or `REFRESH_INSTANCES` RPC.
 
 **Instance change broadcast:**
 
-- Scheduler publishes multipart `[INSTANCE_CHANGE_TOPIC, version_bytes]` via ZMQ PUB socket
+- Mgmt publishes multipart `[INSTANCE_CHANGE_TOPIC, version_bytes]` via ZMQ PUB (`ipc://<tmpdir>/scheduler_instance_pub`)
 - For ADD/DEL events an extra msgpack frame carries an incremental **delta** of the instance list change; workers patch their cache with it. SET (full-replace) events skip the delta.
 - Each worker subscribes to the PUB socket; on notification, invalidates or patches its cached instance list
 - Workers also detect `instance_version` bumps in the workload SHM header as a backup signal
 - Circuit-breaker state changes are published on `CIRCUIT_BREAKER_TOPIC` (multipart `[topic, msgpack_payload]`)
+- Trip writes SHM `flags.BLOCKED` first; `CIRCUIT_BREAKER_TOPIC` PUB follows only after that write succeeds (heartbeat retries both)
 
 ### Workload Shared Memory
 
-**Purpose:** Workers need per-endpoint workload data (active tokens, KV cache usage) on every scheduling decision. A ZMQ round-trip per request would add unacceptable latency.
+**Purpose:** Workers need per-endpoint `active_tokens` on every scheduling decision. Allocate/release is per-slot CAS in the Rust `.so`; there is no ZMQ round-trip per request.
 
-**Design:** Scheduler writes to SHM; all workers read directly via `multiprocessing.shared_memory.SharedMemory`.
+**Design:** Mgmt is the only membership writer (seqlock snapshot + heartbeat + `BLOCKED` flags). Infer Workers attach via Rust `shm_open` (not CPython `SharedMemory`) and CAS tokens.
 
-**Layout** (`workload_shm/layout.py`):
+**Layout** (`workload_shm/layout.py`, **SCHEMA_VERSION=4**):
 
 ``` text
 Offset  Size   Field
 0       4B     magic              = 0x574B4C44 ("WKLD")
-4       2B     schema_version     — fixed SCHEMA_VERSION=3 (layout compatibility)
+4       2B     schema_version     — SCHEMA_VERSION=4
 6       2B     (padding)
-8       8B     sequence           — seqlock write counter, bumped on every write
+8       8B     sequence           — membership seqlock only (token CAS does not bump)
 16      4B     entry_count        — number of valid entries
 20      4B     max_entries        — slot capacity (default 10240)
-24      8B     instance_version   — bumped on REFRESH_INSTANCES (instance set change)
-32      8B     heartbeat_sequence — Scheduler bumps ~1/s
-40      8B     prefill_sequence   — per-role workload change counter
-48      8B     decode_sequence    — per-role workload change counter
-56      8B     hybrid_sequence    — per-role workload change counter
-64      N×24B  entries            — per-endpoint workload slots (max 10240)
+24      8B     instance_version   — bumped on membership snapshot (ADD/DEL/SET)
+32      8B     heartbeat_sequence — Mgmt bumps ~1/s (AtomicU64 Relaxed)
+40      8B     prefill_sequence   — P membership change counter
+48      8B     decode_sequence    — D membership change counter
+56      8B     hybrid_sequence    — U membership change counter
+64      N×24B  entries            — per-endpoint slots (max 10240)
 ```
 
-Header is 64B, each entry is 24B (`instance_id 4B, endpoint_id 4B, role 1B, padding 3B, active_tokens 8B, padding 4B`), and entries start at offset 64. Instance and endpoint IDs are signed 32-bit integers. `sequence` follows seqlock semantics: odd = writer in progress, even = readers may accept the snapshot after a matching second header read. Readers additionally verify the three per-role sequences are unchanged across the read for consistency.
+Header is 64B, each entry 24B:
 
-**SHM name:** `mindie_workload_<scheduler_pid>` — includes PID for uniqueness and orphan detection.
+``` text
+0   4B  instance_id
+4   4B  endpoint_id
+8   1B  role
+9   1B  flags (bit0=BLOCKED, bit1=VALID)
+10  2B  generation (ABA on slot reuse)
+12  4B  reserved
+16  8B  active_tokens (f64 bits as AtomicU64; 8-aligned for aarch64)
+```
 
-**Recovery:** On startup, if SHM name exists (`FileExistsError`), the old segment is unlinked (stale from prior crash/kill) and recreated. Workers detect stale SHM (heartbeat >5s old) → trigger full refresh.
+`active_tokens` is at **offset 16**, not 12: a 24B stride from a 64B header would leave offset 12 only 4-byte aligned, which faults an 8-byte atomic on aarch64. Scoring must atomic-load tokens every pass (seqlock no longer covers token updates). Schema 3 readers are hard-rejected.
+
+**SHM name:** `mindie_workload_<mgmt_pid>` — includes PID for uniqueness and orphan detection. Created via Rust `create_v4`. `shm_open(O_CREAT|O_EXCL)` failure unlinks and retries **only on `EEXIST`** (orphan); other errno values return SYSCALL without touching a live segment.
+
+**Membership snapshot:** Mgmt keeps **stable slots** for still-live `(iid, eid)` pairs (new pairs take the lowest free slot; removed pairs become INVALID holes). `write_entry_v4` never `store`s caller tokens over a live pair: same slot leaves Worker CAS bits in place; a moved pair atomic-loads the old slot. `_generation` is not pruned when a pair leaves (ABA). `_add_instances` resets `endpoint.workload` to empty, so a new pair's IM seed is 0; non-zero tokens come only from Worker `cas_add`.
+
+**Recovery:** Workers detect stale SHM (heartbeat >5s old) → trigger full `GET_AVAILABLE_INSTANCES` refresh. Attach failure is loud (`NativeWorkloadShmUnavailable`); there is no Python writer fallback. Native **ABI_VERSION=2** (`mindie_wl_abi_version`; Python `MIN_ABI_VERSION=2` refuses older `.so`). Scoring refresh uses one FFI `load_entries` (atomic-load flags/tokens in Rust); `cas_add` / `cas_sub_floor0` take a slot hint from that snapshot (`SLOT_HINT_NONE` scans; a stale hint is `SLOT_INVALID`, no rescan). Both reject non-finite or negative `delta` with `BAD_ARG`. `update_workload` is release-only (`RELEASE_TOKENS`).
 
 ### Role Shared Memory (HA)
 
@@ -193,7 +205,7 @@ no routable topology at all                         → HTTP 503
 | homogeneous `concurrent_engine_sync` (vLLM layerwise / `dispatch_profile=trigger`) | TRIGGER | allocate D first → decode with `do_remote_prefill` + `metaserver` → D POSTs Worker `/v1/metaserver` → same Worker allocates P and forwards prefill |
 | mixed handoff + trigger in one cluster | — | HTTP 503 |
 
-Mode selection uses allocated-instance `dispatch_capabilities` **and** cluster detection from the Worker-local instance cache (`get_local_instances`). That cache already holds `dispatch_capabilities`; SHM only has workload numbers. `GET_AVAILABLE_INSTANCES` remains a force-refresh RPC and must not run on every request. `ALLOCATE_ONLY` responses go through `_serialize_instance_minimal`, which must keep `dispatch_capabilities` (not only `id/role/job_name/model_name/engine_type`); otherwise Worker rebuilds empty caps and falls back to adapter HANDOFF while still allocating Decode first. If the selected mode is TRIGGER but the attempt has no decode resource (handoff-style P-first / D-deferred), fail closed with HTTP 503 — do not return TRIGGER and then `RuntimeError` into retry→500.
+Mode selection uses allocated-instance `dispatch_capabilities` **and** cluster detection from the Worker-local instance cache (`get_local_instances`). That cache already holds `dispatch_capabilities`; SHM only has workload numbers. `GET_AVAILABLE_INSTANCES` remains a force-refresh RPC and must not run on every request. Instance payloads (GET / PUB) use `_instance_to_dict` (`Instance.model_dump`), which includes `dispatch_capabilities`. There is no ALLOCATE-era `_serialize_instance_minimal` path. If caps were dropped, Worker rebuilds empty caps and falls back to adapter HANDOFF while still allocating Decode first. If the selected mode is TRIGGER but the attempt has no decode resource (handoff-style P-first / D-deferred), fail closed with HTTP 503 — do not return TRIGGER and then `RuntimeError` into retry→500.
 
 SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is unchanged.
 
@@ -208,14 +220,23 @@ SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is un
 - The callback URL advertises `POD_IP` when available, otherwise `api_config.coordinator_api_host`; IPv6 literals are RFC 3986 bracketed. `0.0.0.0`/`::` remain valid listen hosts at startup (including default `worker_metaserver_base_port=12000`). Trigger rejects them as advertised callback addresses when `POD_IP` is absent (HTTP 503 + error log), because wildcard listen addresses are not routable Decode callback destinations.
 - Callback `request_id` is trimmed (`chatcmpl-` / `cmpl-…-0`) then looked up in that Worker's `RequestManager`. Query `?attempt=` must match the bound attempt (404 unknown request, 409 stale attempt).
 - Each trigger attempt serializes callbacks with `AttemptContext.trigger_lock`. The active callback is registered as the attempt's Prefill task so disconnect/Decode failure during TTFT cancels it; a retry after Prefill completion returns idempotent success without allocating P again.
-- If Scheduler allocation succeeds but Worker-local attempt workload registration fails, the allocation is rolled back directly with the returned workload delta.
+- If SHM CAS allocation succeeds but Worker-local attempt workload registration fails (including `CancelledError`), the allocation is rolled back with `cas_sub_floor0` using the same demand delta. `add_req_workload` / `add_req_attempt_workload` store `(instance_id, endpoint_id)` so teardown can reclaim.
+- Request teardown (`BaseRouter._manage_request_context`) drains in-flight releases, then `RequestManager.pop_residual_workloads` and `cas_sub_floor0` any leftover ledger commits. `del_req_info` must not be the only owner of residual records (that path only logs a leak).
 - Runtime field `CoordinatorConfig.worker_metaserver_port` is per-process (`base+worker_index`) and is in the hot-reload skip-set.
 
 **Request lifecycle:**
 
-1. `prepare_resource(plan)` — scheduling policy selects best instance → allocates workload slot
+1. `prepare_resource(plan)` — scheduling policy scores locally → Worker `cas_add` on schema-4 SHM (stale expected → reload + same Python scorer, not blind retry)
 2. `forward_request(plan)` — HTTP POST to engine's infer endpoint (streaming or non-streaming)
-3. `release_all(plan)` — sends `UPDATE_WORKLOAD` via ZMQ DEALER to Scheduler
+3. `release_all(plan)` — Worker `cas_sub_floor0` on the same SHM slot (no UPDATE ZMQ)
+4. Teardown — drain pending releases, reclaim residual SHM tokens, then `del_req_info`
+
+**T_sched→P logs** (full INFO, never `_should_log_scheduling_sample`):
+
+- Start: `Scheduling metric stage=request_arrive req_id=… unix_ts=…` in `__create_request_info` immediately after `RequestInfo` construction. `unix_ts` is `ReqState.ARRIVE` (`time.time()`).
+- End: `Scheduling metric stage=dispatch_to_p … elapsed_ms=…` in `BaseRouter.forward_request` / `forward_stream_request`, immediately before the first httpx POST to a **P or U** instance. Decode/Encode and later retries of the same request are skipped. `elapsed_ms` is \(T_{\mathrm{sched}\rightarrow P}\). Use `time.time()` (not `perf_counter`) so the line pairs with `kubectl logs --timestamps`.
+
+P99 acceptance greps `stage=dispatch_to_p` and takes `elapsed_ms` on successful-to-P requests; do not use `stage=select_and_allocate`.
 
 ### Native Responses Create Route
 
@@ -241,19 +262,20 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/daemon/subprocess_supervisor.py` | | Health-check loop: monitors child PIDs, auto-restarts dead processes |
 | `motor/coordinator/daemon/role_shm_holder.py` | | Creates/owns role shared memory + heartbeat thread for HA |
 | `motor/coordinator/process/base.py` | | `BaseProcessManager` ABC: start/stop/health check/termination |
-| `motor/coordinator/process/scheduler_manager.py` | | `SchedulerProcessManager` + `run_scheduler_server_proc` |
 | `motor/coordinator/process/mgmt_manager.py` | | `MgmtProcessManager` + `run_mgmt_server_proc` |
 | `motor/coordinator/process/obs_manager.py` | | `ObsProcessManager` + `run_obs_server_proc` |
 | `motor/coordinator/process/inference_manager.py` | | `InferenceProcessManager` + shared socket + `run_inference_worker_proc` |
 | `motor/coordinator/process/constants.py` | | Process keys, start/stop order |
-| `motor/coordinator/scheduler/scheduler.py` | | `Scheduler` facade over scheduling policies |
+| `motor/coordinator/scheduler/scheduler.py` | | `Scheduler`: Mgmt precision sampling/alarm state (not SchedulingFacade) |
 | `motor/coordinator/scheduler/policy/factory.py` | | `SchedulingPolicyFactory` registry |
-| `motor/coordinator/scheduler/runtime/scheduler_server.py` | | `AsyncSchedulerServer`: ZMQ ROUTER, instance pool, workload SHM writer |
-| `motor/coordinator/scheduler/runtime/scheduler_client.py` | | `AsyncSchedulerClient`: ZMQ DEALER + instance cache + SHM reader |
+| `motor/coordinator/scheduler/runtime/scheduler_server.py` | | `AsyncSchedulerServer`: Mgmt control plane (ROUTER+PUB, CB, precision, SHM owner) |
+| `motor/coordinator/scheduler/runtime/scheduler_client.py` | | `AsyncSchedulerClient`: control-plane DEALER + instance cache + SHM CAS |
 | `motor/coordinator/scheduler/runtime/zmq_protocol.py` | | Request/response types, msgpack framing, topic constants |
-| `motor/coordinator/scheduler/runtime/workload_shm/` | | SHM layout (`layout.py`) + reader/writer |
+| `motor/coordinator/scheduler/allocate_arbitration.py` | | Shared LB/KVA/RR reselect (R4; no ZMQ) |
+| `motor/coordinator/scheduler/runtime/workload_shm/` | | schema-4 layout + Reader/Owner + `native.py` ctypes |
+| `motor/coordinator/workload_shm_rs/` | | Rust cdylib: POSIX SHM create/attach, seqlock snapshot, per-slot CAS |
 | `motor/coordinator/domain/instance_manager.py` | | Central instance pool (available/unavailable/paused); `snapshot_instances()` for mgmt list |
-| `motor/coordinator/domain/request_manager.py` | | Request ID generation, workload tracking per request |
+| `motor/coordinator/domain/request_manager.py` | | Request ID generation, per-request workload records + residual reclaim owners |
 | `motor/coordinator/router/dispatch.py` | | `select_router_class` (dynamic router selection from live topology) + `handle_request` + `handle_metaserver_request` |
 | `motor/coordinator/router/strategies/` | | `BaseRouter` + `PDHybridRouter` + `UnifiedPDRouter` implementations |
 | `motor/coordinator/router/dispatch_session.py` | | Dispatch attempt session/state tracking |
@@ -263,7 +285,7 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
 | `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
 | `motor/coordinator/domain/responses_input.py` | | Text-only scheduling view for native Responses input; maps `developer` to `system` without rewriting the engine request |
-| `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared Scheduler ZMQ connection (used by Mgmt/Obs/Infer) |
+| `motor/coordinator/scheduler/runtime/scheduler_connection_manager.py` | | Shared ZMQ DEALER to Mgmt control plane (used by Obs/Infer) |
 | `motor/coordinator/domain/circuit_breaker.py` | | Per-instance circuit breaker state (closed/open) |
 | `motor/coordinator/domain/scheduling_pin.py` | | Pinned-instance resolution, endpoint selection for an instance |
 | `motor/coordinator/domain/workload_calculator.py` | | Workload demand calculation per role |
@@ -273,22 +295,20 @@ Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemo
 | `motor/coordinator/tracer/` | | `TracerManager` (OpenTelemetry-style tracing of requests) |
 | `motor/config/coordinator.py` | | `CoordinatorConfig` dataclass with all coordinator ports |
 
-## Event Flow: Controller → Mgmt → Scheduler → Workers
+## Event Flow: Controller → Mgmt → Workers
 
 ``` text
 Controller detects instance change
   → POST /instances/refresh (InsEventMsg: ADD/DEL/SET + instance list)
-    → Mgmt rejects duplicate request IDs and pre-validates global ID ownership under its refresh lock
-      → ZMQ REFRESH_INSTANCES to Scheduler
-        → Scheduler updates master InstanceManager, bumps version
-          → Mgmt updates its local InstanceManager mirror
-            → PUB socket: INSTANCE_CHANGE_TOPIC notification (+ delta frame for ADD/DEL)
-              → Workload SHM: instance_version bump in header
-                → Workers: patch/invalidate caches, re-fetch on next scheduling call
+    → Mgmt refresh lock: duplicate IDs / identity conflicts fail closed (400 / 409)
+      → apply_refresh: InstanceManager + schema-4 SHM membership snapshot
+        (stable slots; do not store over in-flight tokens)
+      → PUB socket: INSTANCE_CHANGE_TOPIC (+ delta frame for ADD/DEL)
+        → Workers: patch/invalidate caches; CAS uses the new generation/slots
 
 Controller clears a handled precision alarm
-  → POST /precision/alarm_cleared (clear scheduler precision-alarm state for a P/D group)
-    → Mgmt sends DISMISS_PRECISION_ALARM_STATE to Scheduler
+  → POST /precision/alarm_cleared
+    → Mgmt in-process dismiss_precision_alarm_state (no extra ZMQ hop)
 ```
 
 `InstanceManager` treats instance IDs as globally unique across all roles and the available, unavailable, and paused
@@ -305,8 +325,8 @@ IDs but does not make CRC32 collision-free. The CLI checks `GET /instances`, and
 authoritative collision boundary. Endpoint-based deletion resolves the registered ID from `GET /instances` by role
 plus an order-independent network endpoint signature instead of deleting a recomputed ID. ID-only deletion also
 looks up the registered instance first and submits its actual role, job name, model name, and engine type.
-Scheduler refresh acknowledgement is required before the Mgmt mirror is updated; a Scheduler rejection returns 503 and
-leaves the mirror unchanged.
+Duplicate IDs in one request return 400; identity conflicts return 409. Membership write is in-process
+(`apply_refresh`); there is no separate Scheduler ACK.
 
 `motor.coordinator.domain` keeps its package-level compatibility exports (for example `InstanceReadiness` and
 `RequestManager`) behind module `__getattr__` lazy loading. Domain submodules are imported directly by Coordinator models,
@@ -324,9 +344,9 @@ and from `mgmt_tls_config`; use TLS as well when management traffic crosses an u
 
 ## Fault Tolerance: Circuit Breaker & Precision Detection
 
-**Circuit breaker** (`domain/circuit_breaker.py`): per-instance state machine tracking consecutive failures. Each instance is `"closed"` (normal, schedulable) or `"open"` (tripped, blocked from scheduling). Workers report instance outcomes via `CIRCUIT_BREAKER_REPORT`; the Scheduler's `CircuitBreakerManager` trips the circuit after three consecutive failures (30s first trip timeout, with backoff) and resets the failure count on success or auto-recovery. State changes are broadcast to workers on `CIRCUIT_BREAKER_TOPIC` (msgpack payload). `select_router_class()` consults the breaker: a P/D pair is only "compatible" if both roles have non-blocked instances, and 503 is returned when all instances are circuit-broken.
+**Circuit breaker** (`domain/circuit_breaker.py`): per-instance state machine tracking consecutive failures. Each instance is `"closed"` (normal, schedulable) or `"open"` (tripped, blocked from scheduling). Workers report instance outcomes via `CIRCUIT_BREAKER_REPORT`; Mgmt's `CircuitBreakerManager` (inside `AsyncSchedulerServer`) is constructed from `circuit_config` (default: trip after 3 consecutive failures, 30s first timeout, 300s cap; `enable=false` disarms counting). Config is snapshotted at Coordinator startup. Success or auto-recovery resets the failure count. State changes are mirrored onto SHM `flags.BLOCKED` first; `CIRCUIT_BREAKER_TOPIC` PUB is sent only after that write succeeds (heartbeat retries both). Allocate CAS is the final gate for workers that miss the PUB. `select_router_class()` consults the Worker-local breaker cache: a P/D pair is only "compatible" if both roles have non-blocked instances, and 503 is returned when all instances are circuit-broken.
 
-**Precision detection** (`fault_tolerance/precision/` + `fault_tolerance/probe/`): cross-worker sampling (`sample_controller.py`, `streak_result.py`) coordinated with the Scheduler via the four precision request types — `CONFIRM_SAMPLE` (cross-worker exit gate), `RECORD_PRECISION_RESULT` (global consecutive failures + probing state), `FINISH_PRECISION_ACTION` (clear probing after probe/alarm), `DISMISS_PRECISION_ALARM_STATE` (external recovery cleared the alarm). Alarm publishing lives in `fault_tolerance/alarm/` (`precision_alarm.py`); probes (`chat_probe.py`, `router_probe.py`) route identically to user traffic through `select_router_class()`.
+**Precision detection** (`fault_tolerance/precision/` + `fault_tolerance/probe/`): cross-worker sampling (`sample_controller.py`, `streak_result.py`) coordinated with Mgmt via the four precision request types — `CONFIRM_SAMPLE` (cross-worker exit gate), `RECORD_PRECISION_RESULT` (global consecutive failures + probing state), `FINISH_PRECISION_ACTION` (clear probing after probe/alarm), `DISMISS_PRECISION_ALARM_STATE` (external recovery cleared the alarm). Alarm publishing lives in `fault_tolerance/alarm/` (`precision_alarm.py`); probes (`chat_probe.py`, `router_probe.py`) route identically to user traffic through `select_router_class()`.
 
 ## Development Rules
 

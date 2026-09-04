@@ -1,17 +1,13 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 
 """Unit tests for BaseProcessManager (via concrete subclasses)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from motor.coordinator.process.mgmt_manager import MgmtProcessManager
-from motor.coordinator.process.base import BaseProcessManager
-from motor.coordinator.process.scheduler_manager import SchedulerProcessManager
 from motor.config.coordinator import CoordinatorConfig
 
 
@@ -40,10 +36,10 @@ def test_mgmt_process_manager_create_process():
     assert proc._target.__name__ == "run_mgmt_server_proc"
 
 
-def test_scheduler_process_manager_start_idempotent():
-    """SchedulerProcessManager.start is idempotent when already running."""
+def test_mgmt_process_manager_start_idempotent():
+    """MgmtProcessManager.start is idempotent when already running."""
     config = MagicMock()
-    mgr = SchedulerProcessManager(config)
+    mgr = MgmtProcessManager(config)
     mock_proc = MagicMock()
     mock_proc.is_alive.return_value = True
     mock_proc.pid = 12345

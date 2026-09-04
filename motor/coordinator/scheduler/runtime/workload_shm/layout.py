@@ -8,11 +8,9 @@
 
 """
 Shared memory layout for workload data.
-Header 64B + Entry 24B × N. Little-endian.
-Sequence in header follows seqlock semantics: odd means writer in progress,
-even means readers may accept the snapshot after a matching second header read.
-Instance_version in header: bumped on instance list change (REFRESH_INSTANCES);
-Infer uses it to refresh local instance cache when version changes.
+Header 64B + Entry 24B × N. Little-endian. SCHEMA_VERSION=4.
+Control-plane membership uses header seqlock; per-slot active_tokens is AtomicU64 CAS
+at offset 16 (8-aligned). Sequence odd means writer in progress (membership snapshot).
 """
 
 import struct
@@ -23,8 +21,8 @@ from dataclasses import dataclass
 # Readers check this to ensure the buffer is our workload shm layout, not other data or corruption.
 MAGIC = 0x574B4C44
 
-# Schema version for layout compatibility
-SCHEMA_VERSION = 3
+# Schema version for layout compatibility (schema 4: per-slot CAS, tokens 8-aligned at offset 16)
+SCHEMA_VERSION = 4
 
 # Role mapping: prefill=0, decode=1, hybrid=2, encode=3
 ROLE_PREFILL = 0
@@ -42,10 +40,15 @@ HEADER_FMT = "<I H H q I I Q Q Q Q Q"  # little-endian
 HEARTBEAT_OFFSET = 32  # bytes 32-40: heartbeat_sequence (Q)
 HEARTBEAT_STALE_SEC = 5.0  # If heartbeat unchanged for this long, Infer treats shm as stale
 
-# Entry: 24 bytes
-# instance_id 4B, endpoint_id 4B, role 1B, padding 3B, active_tokens 8B, padding 4B
+# Entry: 24 bytes (schema 4)
+# instance_id 4B, endpoint_id 4B, role 1B, flags 1B, generation 2B, reserved 4B,
+# active_tokens 8B at offset 16 (8-byte aligned for AtomicU64 CAS on aarch64).
 ENTRY_SIZE = 24
-ENTRY_FMT = "<i i B 3x d 4x"
+ENTRY_FMT = "<i i B B H I d"
+
+# Entry flag bits (must match workload_shm_rs/src/layout.rs).
+FLAG_BLOCKED = 0b0000_0001
+FLAG_VALID = 0b0000_0010
 
 # Max number of (instance, endpoint) workload entries in shared memory. Not user-configurable.
 DEFAULT_WORKLOAD_SHM_MAX_ENTRIES = 10240
@@ -59,6 +62,8 @@ class WorkloadShmEntry:
     endpoint_id: int
     role: int
     active_tokens: float
+    flags: int = 0
+    generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,9 @@ def pack_entry(entry: WorkloadShmEntry) -> bytes:
         entry.instance_id,
         entry.endpoint_id,
         entry.role,
+        entry.flags,
+        entry.generation,
+        0,  # reserved
         entry.active_tokens,
     )
 
@@ -150,7 +158,9 @@ def unpack_entry(buf: memoryview, slot: int) -> WorkloadShmEntry:
         instance_id=t[0],
         endpoint_id=t[1],
         role=t[2],
-        active_tokens=t[3],
+        flags=t[3],
+        generation=t[4],
+        active_tokens=t[6],
     )
 
 

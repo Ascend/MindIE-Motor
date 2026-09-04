@@ -28,14 +28,16 @@ MindIE-Motor 的 Coordinator 承担请求路由职责，将推理请求转发到
 
 ![熔断需求整体架构](../imgs/circuit_breaker_arch.png)
 
+> 进程归属：熔断中枢在 **Mgmt 进程**内的 `AsyncSchedulerServer`（无独立 Scheduler 子进程）。状态机与 ZMQ PUB 语义见 [调度热路径 Rust 重构](coordinator_scheduler_rust.md)。热路径最终闸是 schema-4 SHM 槽位的 `flags.BLOCKED`：Worker allocate CAS 在 OPEN 时拒绝。
+
 熔断功能涉及 Coordinator 内的两类角色：
 
 | 角色 | 组件 | 职责 |
 |---|---|---|
-| 熔断中枢 | `SchedulerServer` | 维护各实例的熔断状态机，接收上报，广播熔断变更 |
-| 熔断执行者 | `InferenceWorker`（`SchedulerClient`） | 上报请求成败，本地缓存熔断状态，路由时跳过被熔断实例 |
+| 熔断中枢 | Mgmt 进程中的 `AsyncSchedulerServer` | 维护各实例的熔断状态机，接收上报，PUB 广播，并 `set_blocked` 写 SHM |
+| 熔断执行者 | `InferenceWorker`（`SchedulerClient`） | 上报请求成败，本地缓存熔断状态，路由时跳过被熔断实例；CAS 再校验 BLOCKED |
 
-**Controller** 负责推送实例变更事件（SET/ADD/DEL）到 `SchedulerServer`，SET 事件会触发熔断状态全量清除。
+**Controller** 负责推送实例变更事件（SET/ADD/DEL）到 Mgmt（`POST /instances/refresh`），SET 事件会触发熔断状态全量清除。
 
 **Inference Instances** 是最终接收请求的推理实例（P 实例负责 Prefill，D 实例负责 Decode，P 或 U 实例在降级时承担完整推理）。
 
@@ -55,16 +57,16 @@ MindIE-Motor 的 Coordinator 承担请求路由职责，将推理请求转发到
 ```
 
 - **触发熔断**：连续 failure 上报达到阈值，立即进入 OPEN 状态。
-- **熔断时长**：采用指数退避，`min(2^(熔断次数-1) × 30s, 300s)`，随着反复故障逐步延长，上限 300s。（默认 3 次、基值 30s、上限 300s 均可通过 `motor_coordinator_config.circuit_config` 调整；该配置变更需重启 Scheduler 进程生效，见 config_reference。）
+- **熔断时长**：采用指数退避，`min(2^(熔断次数-1) × 30s, 300s)`，随着反复故障逐步延长，上限 300s。（默认 3 次、基值 30s、上限 300s 均可通过 `motor_coordinator_config.circuit_config` 调整；该配置变更需重启 Coordinator 生效，见 config_reference。）
 - **提前恢复**：熔断期间若收到 success 上报（如探针请求成功），立即解除熔断。
 - **强制清除**：Controller 推送 SET 事件时，所有熔断状态强制清除。
 
 ### 2.3 状态同步机制
 
-`SchedulerServer` 是熔断状态的**权威来源**，`InferenceWorker` 侧维护**最终一致的本地缓存**：
+Mgmt 控制面是熔断状态的**权威来源**，`InferenceWorker` 侧维护**最终一致的本地缓存**，SHM `BLOCKED` 是 allocate 的最终闸：
 
 - `InferenceWorker` 通过 `SchedulerClient` 以 fire-and-forget 方式异步上报 success/failure，不阻塞请求路径。
-- `SchedulerServer` 状态变更后，通过 **ZMQ PUB/SUB** 广播 `{instance_id, open/closed}` 给所有 Worker。
+- Mgmt 状态变更后，通过 **ZMQ PUB/SUB** 广播 `{instance_id, open/closed}` 给所有 Worker，并镜像到 schema-4 SHM 对应槽的 `BLOCKED` 标志。
 - Worker 收到广播后更新本地 `_cb_blocked_instances` 集合，后续路由直接读取本地集合，无需远程查询。
 
 ### 2.4 PD 分离降级设计
@@ -90,16 +92,16 @@ MindIE-Motor 的 Coordinator 承担请求路由职责，将推理请求转发到
 **流程说明：**
 
 1. 外部 client 发送推理请求，Worker 选取推理实例后，实例返回故障。
-2. Worker 向 `SchedulerServer` 上报故障（第 1 次），SchedulerServer 故障计数 +1，Worker 重试。
-3. 连续上报故障达到阈值（第 3 次）后，SchedulerServer 触发熔断：
+2. Worker 向 Mgmt 控制面上报故障（第 1 次），故障计数 +1，Worker 重试。
+3. 连续上报故障达到阈值（第 3 次）后，Mgmt 触发熔断：
    - 将该实例标记为 OPEN。
    - 启动熔断计时器（时长 = `min(2^(熔断次数-1) × 30s, 300s)`）。
    - 通过 ZMQ PUB 广播**熔断开启**事件。
 4. Worker 收到广播，更新本地熔断状态，后续请求路由时跳过该实例。
-5. 当 Controller 感知到实例恢复并推送 SET 事件后，SchedulerServer 清除熔断，广播**熔断关闭**事件。
+5. 当 Controller 感知到实例恢复并推送 SET 事件后，Mgmt 清除熔断，广播**熔断关闭**事件并清除 SHM `BLOCKED`。
 6. Worker 更新本地状态，恢复正常路由。
 
-> 若实例在熔断计时器超时前自然恢复，SchedulerServer 会在超时后自动广播熔断关闭，无需等待 Controller。
+> 若实例在熔断计时器超时前自然恢复，Mgmt 会在探针成功后自动广播熔断关闭，无需等待 Controller。
 
 ### 3.2 PD 分离降级混部时序
 
@@ -108,7 +110,7 @@ MindIE-Motor 的 Coordinator 承担请求路由职责，将推理请求转发到
 **流程说明：**
 
 1. 外部 client 发送推理请求，Worker 选择 PD 分离路由，选取 D 实例，D 实例返回故障。
-2. Worker 连续上报 D 实例故障 ×3，SchedulerServer 熔断该 D 实例，广播**熔断开启**事件。
+2. Worker 连续上报 D 实例故障 ×3，Mgmt 熔断该 D 实例，广播**熔断开启**事件并设置 SHM `BLOCKED`。
 3. Worker 更新本地熔断状态，重试时发现 D 池中已无可用实例。
 4. Worker 触发降级逻辑，根据当前请求状态选择降级方式：
    - **非流式**：将完整 prompt 重新发送到 P 实例，等待完整响应后返回。
@@ -122,7 +124,7 @@ MindIE-Motor 的 Coordinator 承担请求路由职责，将推理请求转发到
 
 ### 4.1 熔断状态集中管理，本地缓存消费
 
-熔断状态由 `SchedulerServer` 集中维护，保证多 Worker 视图一致。Worker 本地仅维护影子缓存，路由决策不产生额外 RPC 开销，不影响请求延迟。
+熔断状态由 Mgmt 集中维护，保证多 Worker 视图一致。Worker 本地仅维护影子缓存；路由决策不产生额外 RPC。allocate 最终闸是 SHM CAS 看到 `BLOCKED`。
 
 ### 4.2 上报异步 fire-and-forget
 

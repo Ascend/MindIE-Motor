@@ -20,11 +20,18 @@
 # See the respective licenses for more details.
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 # Keep the same package initialization order as existing router tests.
 from motor.coordinator.domain import InstanceReadiness  # noqa: F401
-from motor.coordinator.router.dispatch import _resolve_request_id
+from motor.common.logger.logger import _resolve_logger_name
+from motor.coordinator.models.request import ReqState
+from motor.coordinator.router.dispatch import _resolve_request_id, __create_request_info
+
+_DISPATCH_LOGGER = _resolve_logger_name("motor.coordinator.router.dispatch")
 
 
 class _Headers:
@@ -33,6 +40,9 @@ class _Headers:
 
     def get(self, key: str, default: str | None = None) -> str | None:
         return self._headers.get(key.lower(), default)
+
+    def items(self):
+        return self._headers.items()
 
 
 class _FakeRequest:
@@ -74,3 +84,40 @@ def test_resolve_request_id_generates_local_id_without_upstream_id():
 
     assert request_id == "local789"
     request_manager.generate_request_id.assert_awaited_once()
+
+
+class _Url:
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+
+class _IngressRequest:
+    def __init__(self, body: bytes, payload: dict) -> None:
+        self.headers = {}
+        self.url = _Url("/v1/chat/completions")
+        self._body = body
+        self._payload = payload
+
+    async def body(self):
+        return self._body
+
+    async def json(self):
+        return self._payload
+
+
+@pytest.mark.asyncio
+async def test_create_request_info_logs_request_arrive(caplog):
+    caplog.set_level(logging.INFO, logger=_DISPATCH_LOGGER)
+    payload = {"messages": [{"role": "user", "content": "hi"}]}
+    raw = _IngressRequest(b'{"messages":[]}', payload)
+    request_manager = AsyncMock()
+    request_manager.generate_request_id.return_value = "req-arrive-1"
+
+    req_info = await __create_request_info(raw, request_manager)
+
+    assert req_info.req_id == "req-arrive-1"
+    arrive_ts = req_info.status[ReqState.ARRIVE]
+    records = [rec.getMessage() for rec in caplog.records if "stage=request_arrive" in rec.getMessage()]
+    assert len(records) == 1
+    assert "req_id=req-arrive-1" in records[0]
+    assert f"{arrive_ts:.6f}" in records[0]

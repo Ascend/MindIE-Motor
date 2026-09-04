@@ -104,6 +104,22 @@ repos:
         files: ^motor/kv_conductor/
         pass_filenames: false
 
+      - id: cargo-fmt-workload-shm
+        name: cargo fmt (workload-shm)
+        entry: cargo fmt --manifest-path motor/coordinator/workload_shm_rs/Cargo.toml --all
+        language: system
+        types: [rust]
+        files: ^motor/coordinator/workload_shm_rs/
+        pass_filenames: false
+
+      - id: cargo-clippy-workload-shm
+        name: cargo clippy (workload-shm)
+        entry: cargo clippy --manifest-path motor/coordinator/workload_shm_rs/Cargo.toml --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        files: ^motor/coordinator/workload_shm_rs/
+        pass_filenames: false
+
   # ======== Local custom hooks ========
   - repo: local
     hooks:

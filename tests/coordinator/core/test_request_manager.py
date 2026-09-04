@@ -9,15 +9,19 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import logging
 import pytest
 import time
 from unittest.mock import patch
 from unittest.mock import AsyncMock
+from motor.common.logger.logger import _resolve_logger_name
 from motor.common.resources.endpoint import Workload
 from motor.common.resources.instance import PDRole
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo
 from motor.config.coordinator import CoordinatorConfig
+
+_REQUEST_MANAGER_LOGGER = _resolve_logger_name("motor.coordinator.domain.request_manager")
 
 
 class TestRequestManager:
@@ -290,3 +294,79 @@ async def test_get_req_workload_missing_returns_none():
     manager = RequestManager(config)
     got = await manager.get_req_workload("nonexistent", PDRole.ROLE_P)
     assert got is None
+
+
+@pytest.mark.asyncio
+async def test_pop_residual_workloads_returns_owner_and_clears():
+    config = CoordinatorConfig()
+    manager = RequestManager(config)
+    req_id = "req-residual"
+    attempt_workload = Workload(active_tokens=3)
+    legacy_workload = Workload(active_tokens=5)
+
+    assert await manager.add_req_attempt_workload(
+        req_id, 1, PDRole.ROLE_P, attempt_workload, instance_id=1, endpoint_id=10
+    )
+    assert await manager.add_req_workload(req_id, PDRole.ROLE_D, legacy_workload, instance_id=2, endpoint_id=20)
+
+    residuals = await manager.pop_residual_workloads(req_id)
+    assert len(residuals) == 2
+    by_key = {key: (workload, owner) for key, workload, owner in residuals}
+    assert by_key[(req_id, 1, PDRole.ROLE_P)][0].active_tokens == 3
+    assert by_key[(req_id, 1, PDRole.ROLE_P)][1] == (1, 10)
+    assert by_key[(req_id, PDRole.ROLE_D)][0].active_tokens == 5
+    assert by_key[(req_id, PDRole.ROLE_D)][1] == (2, 20)
+
+    assert await manager.pop_residual_workloads(req_id) == []
+    assert await manager.get_req_attempt_workload(req_id, 1, PDRole.ROLE_P) is None
+    assert await manager.get_req_workload(req_id, PDRole.ROLE_D) is None
+
+
+@pytest.mark.asyncio
+async def test_pop_residual_workloads_owner_none_without_ids():
+    config = CoordinatorConfig()
+    manager = RequestManager(config)
+    req_id = "req-no-owner"
+    workload = Workload(active_tokens=4)
+
+    assert await manager.add_req_workload(req_id, PDRole.ROLE_P, workload) is True
+    residuals = await manager.pop_residual_workloads(req_id)
+    assert len(residuals) == 1
+    key, popped, owner = residuals[0]
+    assert key == (req_id, PDRole.ROLE_P)
+    assert popped.active_tokens == 4
+    assert owner is None
+
+
+@pytest.mark.asyncio
+async def test_del_req_info_logs_orphan_workload(caplog):
+    caplog.set_level(logging.ERROR, logger=_REQUEST_MANAGER_LOGGER)
+    config = CoordinatorConfig()
+    manager = RequestManager(config)
+    req_id = "req-orphan"
+    req_info = RequestInfo(req_id=req_id, req_data={"test": "data"}, req_len=100, api="/test/api")
+    assert await manager.add_req_info(req_info) is True
+    assert await manager.add_req_workload(req_id, PDRole.ROLE_P, Workload(active_tokens=5)) is True
+
+    result = await manager.del_req_info(req_id)
+    assert result is True
+    assert await manager.get_req_workload(req_id, PDRole.ROLE_P) is None
+    assert any(
+        rec.levelno >= logging.ERROR and "Orphan workload record dropped" in rec.getMessage() for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_del_req_attempt_workload_clears_owner():
+    config = CoordinatorConfig()
+    manager = RequestManager(config)
+    req_id = "req-clear-owner"
+    assert await manager.add_req_attempt_workload(
+        req_id, 1, PDRole.ROLE_P, Workload(active_tokens=2), instance_id=1, endpoint_id=10
+    )
+    key = manager._workload_key(req_id, PDRole.ROLE_P, 1)
+    async with manager._lock:
+        assert key in manager._req_workload_owner
+    assert await manager.del_req_attempt_workload(req_id, 1, PDRole.ROLE_P) is True
+    async with manager._lock:
+        assert key not in manager._req_workload_owner

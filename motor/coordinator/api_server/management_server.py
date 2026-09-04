@@ -30,11 +30,11 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
 from motor.common.http.security_utils import sanitize_error_message, log_audit_event
-from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
+from motor.config.coordinator import CoordinatorConfig, DEFAULT_SCHEDULER_PROCESS_CONFIG, MGMT_API_KEY_HEADER
 from motor.coordinator.models.response import RequestResponse
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
-from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.api_server.app_builder import AppBuilder
+from motor.coordinator.scheduler.runtime.scheduler_server import AsyncSchedulerServer
 from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
 from motor.coordinator.domain.instance_manager import InstanceIdConflictError, InstanceManager, TYPE_MGMT
 from motor.coordinator.domain.probe import (
@@ -121,9 +121,13 @@ class ManagementServer(BaseCoordinatorServer):
         )
         self._liveness_probe = LivenessProbe(self._daemon_liveness)
         # Create dependencies before app so lifespan and routes see them (lifespan runs on uvicorn start)
-        self._scheduler_connection = SchedulerConnectionManager.from_config(self.coordinator_config)
         self._instance_manager = (
             instance_manager if instance_manager is not None else InstanceManager(self.coordinator_config, TYPE_MGMT)
+        )
+        self._control_plane = AsyncSchedulerServer(
+            self.coordinator_config,
+            frontend_address=DEFAULT_SCHEDULER_PROCESS_CONFIG.frontend_address,
+            instance_manager=self._instance_manager,
         )
         self._readiness_probe = ReadinessProbe(
             self._daemon_liveness,
@@ -150,6 +154,9 @@ class ManagementServer(BaseCoordinatorServer):
         """Allow tests to inject a custom instance manager."""
         self._instance_manager = value
         self._readiness_probe.instance_manager = value
+        control = getattr(self, "_control_plane", None)
+        if control is not None:
+            control.instance_manager = value
 
     @property
     def lifespan(self):
@@ -159,7 +166,7 @@ class ManagementServer(BaseCoordinatorServer):
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
         logger.info("Management server is starting...")
-        await self._scheduler_connection.connect()
+        await self._start_control_plane()
         self._start_re_register_task()
         try:
             yield
@@ -171,7 +178,16 @@ class ManagementServer(BaseCoordinatorServer):
         finally:
             await self._stop_re_register_task()
             logger.info("Management server is shutting down...")
-            await self._scheduler_connection.disconnect()
+            await self._stop_control_plane()
+
+    async def _start_control_plane(self) -> None:
+        """Bind ROUTER/PUB and create schema-4 SHM, then serve control-plane RPCs in-process."""
+        await self._control_plane.start_control_plane()
+        self._control_plane._loop_task = asyncio.create_task(self._control_plane.run_request_loop())
+
+    async def _stop_control_plane(self) -> None:
+        """Tear down control-plane sockets and SHM."""
+        await self._control_plane.stop()
 
     async def run(self) -> None:
         """Run uvicorn on management port only; does not create or start inference Workers."""
@@ -493,25 +509,24 @@ class ManagementServer(BaseCoordinatorServer):
                     detail=f"Invalid p_instance_id: {e}",
                 ) from e
 
-        await self._scheduler_connection.ensure_connected()
-        client = self._scheduler_connection.get_client()
-        if client is None:
+        scheduler = getattr(self._control_plane, "scheduler", None)
+        if scheduler is None:
             logger.warning(
-                "Precision alarm state clear failed: scheduler client unavailable pd_group=(%s,%s)",
+                "Precision alarm state clear failed: control plane unavailable pd_group=(%s,%s)",
                 p_id,
                 d_id,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Scheduler client unavailable",
+                detail="Control plane unavailable",
             )
-        dismissed = await client.dismiss_precision_alarm_state(
+        dismissed = await scheduler.dismiss_precision_alarm_state(
             p_instance_id=p_id,
             d_instance_id=d_id,
         )
         if not dismissed:
             logger.warning(
-                "Precision alarm state clear failed: scheduler rejected pd_group=(%s,%s)",
+                "Precision alarm state clear failed: control plane rejected pd_group=(%s,%s)",
                 p_id,
                 d_id,
             )
@@ -578,23 +593,17 @@ class ManagementServer(BaseCoordinatorServer):
 
         async with self._refresh_lock:
             try:
-                await self._instance_manager.validate_refresh_instances(event_msg.event, event_msg.instances)
+                await self._control_plane.apply_refresh(event_msg.event, event_msg.instances)
             except InstanceIdConflictError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=str(exc),
                 ) from exc
-
-            await self._scheduler_connection.ensure_connected()
-            client = self._scheduler_connection.get_client()
-            if client is not None:
-                accepted = await client.refresh_instances(event_msg.event, event_msg.instances)
-                if accepted is False:
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail="Scheduler rejected the instance refresh",
-                    )
-            await self._instance_manager.refresh_instances(event_msg.event, event_msg.instances)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
 
         return RequestResponse(
             request_id="refresh_request",

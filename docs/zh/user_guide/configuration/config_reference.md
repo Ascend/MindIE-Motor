@@ -470,7 +470,7 @@ motor_coordinator_config字段配置样例如下所示：
 | **reschedule_config字段** |-|-|
 | enable | bool | 故障场景重调度功能开关。默认值：`false`。<br>模型重计算由引擎侧负责，该配置不控制引擎侧重计算；`recompute_enabled`仅作为`reschedule_enabled`的旧配置兼容别名；`recompute_max_retry`已移除并会被忽略。 |
 | **circuit_config字段** |-|-|
-| enable | bool | Coordinator 自熔断总开关。关闭后请求失败不再计数、实例永不熔断。默认值：`true`。配置变更需重启 Scheduler 进程生效。 |
+| enable | bool | Coordinator 自熔断总开关。关闭后请求失败不再计数、实例永不熔断。默认值：`true`。配置变更需重启 Coordinator 生效。 |
 | failure_threshold | int | 连续失败达到该次数后触发熔断（期间任意成功会清零重新计数）。默认值：`3`。 |
 | base_timeout_s | float | 首次熔断时长（秒），也是熔断时长指数退避的基数；每次重新熔断/探活失败按 `2^(熔断次数-1)` 倍增长。默认值：`30.0`。 |
 | max_timeout_s | float | 熔断时长上限（秒）。默认值：`300.0`。 |

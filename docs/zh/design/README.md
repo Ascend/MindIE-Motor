@@ -17,3 +17,5 @@
 | 侧重 "为什么这么设计" | 侧重 "代码怎么写出来的" |
 
 如果你需要查看组件类图、数据流、内部实现细节，请查看 [开发者指南](../developer_guide/README.md)。
+
+Coordinator 调度热路径（Rust POSIX SHM 多进程原子记账、无独立 Scheduler 进程）见 [Coordinator 调度热路径 Rust 重构](coordinator_scheduler_rust.md)。

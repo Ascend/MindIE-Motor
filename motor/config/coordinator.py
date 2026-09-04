@@ -454,8 +454,8 @@ class PrecisionDetectionConfig:
 class CircuitConfig:
     """Coordinator instance circuit-breaker (self-fusing) configuration.
 
-    Applied by the scheduler process when the circuit breaker manager is
-    constructed (process startup); changing these requires a scheduler restart.
+    Applied when the circuit breaker manager is constructed at Coordinator
+    startup; changing these requires a Coordinator restart.
     Defaults reproduce the historical built-in behavior exactly.
     """
 

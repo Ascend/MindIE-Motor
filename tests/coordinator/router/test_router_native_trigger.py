@@ -138,8 +138,8 @@ class TestRouterNativeTrigger:
             "get_required_instances_status",
             lambda self: InstanceReadiness.REQUIRED_MET,
         )
-        monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate)
-        monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload)
+        monkeypatch.setattr(Scheduler, "select_and_allocate", mock_select_and_allocate, raising=False)
+        monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload, raising=False)
 
     @pytest.fixture
     def trigger_pair(self, monkeypatch):
@@ -327,9 +327,10 @@ class TestRouterNativeTrigger:
         req_info = await create_mock_request_info()
         router = self._make_router(req_info, monkeypatch, _UnifiedPDPrefillClient(), _UnifiedPDDecodeClient())
         scheduler = router._scheduler
-        local_spy = AsyncMock(side_effect=scheduler.get_local_instances)
-        avail_spy = AsyncMock(side_effect=scheduler.get_available_instances)
-        monkeypatch.setattr(scheduler, "get_local_instances", local_spy)
+        orig_avail = scheduler.get_available_instances
+        local_spy = AsyncMock(side_effect=orig_avail)
+        avail_spy = AsyncMock(side_effect=orig_avail)
+        monkeypatch.setattr(scheduler, "get_local_instances", local_spy, raising=False)
         monkeypatch.setattr(scheduler, "get_available_instances", avail_spy)
 
         assert await router._pd_cluster_uses_trigger() is True

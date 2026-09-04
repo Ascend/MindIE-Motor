@@ -10,14 +10,14 @@
 | Coordinator 数据采集 | `motor/coordinator/router/precision_sample/` |
 | Coordinator 检测编排 | `motor/coordinator/fault_tolerance/precision/` |
 | Coordinator 拨测告警 | `motor/coordinator/fault_tolerance/probe/`、`motor/coordinator/fault_tolerance/alarm/` |
-| Scheduler 全局状态 | `motor/coordinator/scheduler/` |
+| 全局采样/连续异常状态 | Mgmt 进程内 `AsyncSchedulerServer`（[调度热路径 Rust 重构](../coordinator_scheduler_rust.md)；IPC 名仍为 `scheduler_*`） |
 | Controller 自动恢复 | `motor/controller/api_server/controller_api.py`、`motor/controller/core/recovery_service.py` |
 
 ---
 
 ## 架构总览
 
-精度检测链路跨 Coordinator Inference Worker、Coordinator Scheduler 和 Controller 三类进程。Worker 负责重逻辑，包括采集、检测、拨测和告警；Scheduler 只维护跨 Worker 一致的轻状态；Controller 负责收到告警后的实例终止。
+精度检测链路跨 Coordinator Inference Worker、Coordinator Mgmt 控制面和 Controller。Worker 负责重逻辑，包括采集、检测、拨测和告警；Mgmt 内的 `AsyncSchedulerServer` 维护跨 Worker 一致的轻状态（`CONFIRM_SAMPLE` 等 ZMQ RPC）；Controller 负责收到告警后的实例终止。无独立 Scheduler 子进程。
 
 ```text
 Client
@@ -351,7 +351,7 @@ classDiagram
 
 1. `precision_check_enabled=true` 后每条 Decode 请求都会注入 logprobs，性能主要受引擎返回 logprobs 的开销影响。
 2. 生僻字检测依赖 msprobe 的 token2category 映射文件；新模型缺少映射时检测能力会降级。
-3. Scheduler 进程重启后采样窗口、连续异常计数和 probing 状态会清零。
+3. Mgmt 进程重启后采样窗口、连续异常计数和 probing 状态会清零。
 4. CCAE 北向精度控制的 `switchControl`、`immediateDelivery` 当前在 reporter 中保存状态，运行时动态开关仍需后续接入；`Completed` 状态需连续成功上报 10 次后才会停止。
 
 ---

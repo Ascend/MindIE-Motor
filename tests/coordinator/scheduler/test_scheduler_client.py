@@ -11,13 +11,18 @@
 """Tests for AsyncSchedulerClient and _SchedulerInstanceCache."""
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
-from motor.common.resources.instance import Instance, PDRole
-from motor.common.resources.endpoint import Endpoint, Workload, WorkloadAction, EndpointStatus
-from motor.coordinator.domain import InstanceReadiness, UpdateWorkloadParams
+from motor.common.resources.http_msg_spec import EventType
+from motor.common.resources.instance import Instance, InsStatus, PDRole, ParallelConfig
+from motor.common.resources.endpoint import Endpoint, Workload, EndpointStatus, WorkloadAction
+from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.domain import InstanceReadiness
+from motor.coordinator.domain.instance_manager import InstanceManager
+from motor.coordinator.domain.scheduling import UpdateWorkloadParams
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
     SchedulerResponse,
@@ -26,11 +31,17 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 from motor.coordinator.scheduler.runtime.scheduler_client import (
     AsyncSchedulerClient,
     SchedulerClientConfig,
-    SchedulerRequestFailureReason,
-    SchedulerRequestResult,
     _SchedulerInstanceCache,
     _collect_active_endpoints_from_cache,
 )
+from motor.coordinator.scheduler.runtime.workload_shm.native import (
+    STATUS_BLOCKED,
+    STATUS_OK,
+    NativeWorkloadShmUnavailable,
+    load_native_library,
+)
+from motor.coordinator.scheduler.runtime.workload_shm.reader import WorkloadSharedMemoryReader
+from motor.coordinator.scheduler.runtime.workload_shm.writer import WorkloadSharedMemoryOwner
 
 
 # ========================================================================
@@ -484,163 +495,6 @@ class TestAsyncSchedulerClient:
 
         assert [(instance.id, endpoint.id) for instance, endpoint, _ in candidates] == [(3, 3)]
 
-    # -- test_select_and_allocate -------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_select_and_allocate(self):
-        """select_and_allocate returns (Instance, Endpoint, Workload) or None."""
-        mock_inst = Mock(spec=Instance)
-        mock_inst.id = 1
-        mock_ep = Mock(spec=Endpoint)
-        mock_ep.id = 10
-
-        # Setup transport to return success for ALLOCATE_ONLY
-        inst_dict = _build_instance_dict(instance_id=1)
-        ep_dict = _make_endpoint(endpoint_id=10).model_dump(mode="json")
-        self._mock_send_request(
-            SchedulerResponseType.SUCCESS,
-            {"instance": inst_dict, "endpoint": ep_dict},
-        )
-
-        mock_req_info = Mock(spec=RequestInfo)
-        mock_req_info.req_id = "req-alloc"
-        mock_req_info.req_len = 200
-
-        result = await self.client.select_and_allocate(
-            PDRole.ROLE_P,
-            mock_req_info,
-        )
-
-        # Without cached instances or a successful GET_AVAILABLE_INSTANCES, selection may be None.
-        assert result is None or (isinstance(result, tuple) and len(result) == 3)
-
-    @pytest.mark.asyncio
-    async def test_select_and_allocate_no_selection(self):
-        """select_and_allocate returns None when no instance/endpoint available."""
-        # Setup no instances in cache and transport returns empty
-        self.mock_cache.get_instances.return_value = []
-        self._mock_send_request(SchedulerResponseType.SUCCESS, {"instances": []})
-
-        mock_req_info = Mock(spec=RequestInfo)
-        mock_req_info.req_id = "req-none"
-        mock_req_info.req_len = 100
-
-        result = await self.client.select_and_allocate(
-            PDRole.ROLE_P,
-            mock_req_info,
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_select_and_allocate_transport_failure(self):
-        """select_and_allocate returns None when transport.send_request fails."""
-        mock_inst = Mock(spec=Instance)
-        mock_inst.id = 1
-        mock_ep = Mock(spec=Endpoint)
-        mock_ep.id = 10
-
-        with patch.object(
-            self.client,
-            "_select_endpoint_candidates_with_policy",
-            return_value=([(mock_inst, mock_ep, 0.0)], "round_robin"),
-        ):
-            self.mock_transport.send_request = AsyncMock(return_value=None)
-
-            mock_req_info = Mock(spec=RequestInfo)
-            mock_req_info.req_id = "req-fail"
-            mock_req_info.req_len = 100
-            mock_req_info.kv_affinity_debug = None
-
-            result = await self.client.select_and_allocate(
-                PDRole.ROLE_P,
-                mock_req_info,
-            )
-            assert result is None
-
-    # -- test_update_workload -----------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_update_workload(self):
-        """update_workload returns True on success."""
-        self._mock_send_request(
-            SchedulerResponseType.SUCCESS,
-            {"success": True},
-        )
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=10,
-            role=PDRole.ROLE_P,
-            req_id="req-upd",
-            workload_action=WorkloadAction.ALLOCATION,
-            workload_change=Workload(active_tokens=5.0),
-            operation_id="op-update-workload",
-        )
-
-        result = await self.client.update_workload(params)
-        assert result is True
-        sent_request = self.mock_transport.send_request.await_args.args[0]
-        assert sent_request.data["operation_id"] == "op-update-workload"
-
-    # -- test_update_workload_transport_failure -----------------------------
-
-    @pytest.mark.asyncio
-    async def test_update_workload_transport_failure(self):
-        """update_workload returns False when transport returns None."""
-        self.mock_transport.send_request = AsyncMock(return_value=None)
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=10,
-            role=PDRole.ROLE_P,
-            req_id="req-fail",
-            workload_action=WorkloadAction.ALLOCATION,
-            workload_change=Workload(),
-        )
-
-        result = await self.client.update_workload(params)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_update_workload_response_error(self):
-        """update_workload returns False when scheduler returns error response."""
-        self._mock_send_request(
-            SchedulerResponseType.ERROR,
-            error="Internal server error",
-        )
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=10,
-            role=PDRole.ROLE_P,
-            req_id="req-err",
-            workload_action=WorkloadAction.RELEASE_TOKENS,
-            workload_change=Workload(active_tokens=1.0),
-        )
-
-        result = await self.client.update_workload(params)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_update_workload_success_false(self):
-        """update_workload returns False when scheduler returns success=False."""
-        self._mock_send_request(
-            SchedulerResponseType.SUCCESS,
-            {"success": False},
-        )
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=10,
-            role=PDRole.ROLE_P,
-            req_id="req-bad",
-            workload_action=WorkloadAction.RELEASE_TOKENS,
-            workload_change=Workload(),
-        )
-
-        result = await self.client.update_workload(params)
-        assert result is False
-
     # -- test_get_available_instances ---------------------------------------
 
     @pytest.mark.asyncio
@@ -836,35 +690,6 @@ class TestAsyncSchedulerClient:
         assert decouple == {}
         assert encode == {}
 
-    # -- test_refresh_instances ---------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_refresh_instances(self):
-        """refresh_instances sends REFRESH_INSTANCES request without error."""
-        self._mock_send_request(
-            SchedulerResponseType.SUCCESS,
-            {"message": "Refreshed 1 instances"},
-        )
-
-        mock_inst = Mock(spec=Instance)
-        mock_inst.model_dump = Mock(return_value={"id": 1, "role": "prefill"})
-
-        result = await self.client.refresh_instances("ADDED", [mock_inst])
-        assert result is True
-        self.mock_transport.send_request.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_refresh_instances_error_response(self):
-        """refresh_instances reports a rejected Scheduler update."""
-        self._mock_send_request(
-            SchedulerResponseType.ERROR,
-            error="Refresh failed",
-        )
-
-        result = await self.client.refresh_instances("REMOVED", [])
-        assert result is False
-        self.mock_transport.send_request.assert_awaited_once()
-
     # -- test_on_instance_change_notify ------------------------------------
 
     @pytest.mark.asyncio
@@ -945,53 +770,6 @@ class TestAsyncSchedulerClient:
         result = await self.client.get_available_instances(PDRole.ROLE_P)
         assert result == {}
 
-    @pytest.mark.asyncio
-    async def test_transport_timeout_in_update_workload(self):
-        """When transport returns None (timeout), update_workload returns False."""
-        self.mock_transport.send_request = AsyncMock(return_value=None)
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=1,
-            role=PDRole.ROLE_P,
-            req_id="req-timeout",
-            workload_action=WorkloadAction.ALLOCATION,
-            workload_change=Workload(),
-        )
-
-        result = await self.client.update_workload(params)
-        assert result is False
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "reason",
-        [
-            SchedulerRequestFailureReason.TIMEOUT,
-            SchedulerRequestFailureReason.CANCELLED,
-            SchedulerRequestFailureReason.DISCONNECTED,
-        ],
-    )
-    async def test_update_workload_logs_classified_no_response_reason(self, reason, caplog):
-        """update_workload logs the specific scheduler transport failure reason."""
-        self.client._send_request_result = AsyncMock(
-            return_value=SchedulerRequestResult(failure_reason=reason, error="classified-error")
-        )
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=1,
-            role=PDRole.ROLE_P,
-            req_id=f"req-{reason.value}",
-            workload_action=WorkloadAction.RELEASE_TOKENS,
-            workload_change=Workload(),
-        )
-
-        result = await self.client.update_workload(params)
-
-        assert result is False
-        assert f"reason={reason.value}" in caplog.text
-        assert "classified-error" in caplog.text
-
     # -- test_client_not_connected_operations --------------------------------
 
     @pytest.mark.asyncio
@@ -1004,29 +782,348 @@ class TestAsyncSchedulerClient:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_client_not_connected_update_workload(self):
-        """When not connected, update_workload returns False gracefully."""
-        self.mock_transport.connected = False
-        self.mock_transport.send_request = AsyncMock(return_value=None)
-
-        params = UpdateWorkloadParams(
-            instance_id=1,
-            endpoint_id=1,
-            role=PDRole.ROLE_P,
-            req_id="req-nc",
-            workload_action=WorkloadAction.ALLOCATION,
-            workload_change=Workload(),
+    async def test_update_workload_rejects_allocation_without_cas(self):
+        """Release-only gate must fire before cas_sub_floor0, even with a stub native handle."""
+        native = Mock()
+        reader = Mock()
+        reader.native = native
+        reader.entry_meta.return_value = {"generation": 0, "active_tokens": 5.0}
+        self.client._workload_reader = reader
+        ok = await self.client.update_workload(
+            UpdateWorkloadParams(
+                instance_id=1,
+                endpoint_id=10,
+                role=PDRole.ROLE_P,
+                req_id="req-alloc",
+                workload_action=WorkloadAction.ALLOCATION,
+                workload_change=Workload(active_tokens=4.0),
+            )
         )
+        assert ok is False
+        native.cas_sub_floor0.assert_not_called()
 
-        result = await self.client.update_workload(params)
-        assert result is False
+
+def _cas_shm_name(tag: str) -> str:
+    return f"mw{os.getpid()}{tag}"[:24]
+
+
+def _make_cas_instance(instance_id: int, endpoint_id: int) -> Instance:
+    inst = Instance(
+        job_name=f"p-{instance_id}",
+        model_name="test_model",
+        id=instance_id,
+        role=PDRole.ROLE_P,
+        status=InsStatus.ACTIVE,
+        parallel_config=ParallelConfig(dp_size=1),
+    )
+    inst.add_endpoints(
+        f"pod-{instance_id}",
+        {
+            0: Endpoint(
+                id=endpoint_id,
+                ip=f"10.0.0.{instance_id}",
+                business_port="8080",
+                status=EndpointStatus.NORMAL,
+                workload=Workload(),
+            )
+        },
+    )
+    return inst
+
+
+def _seed_shm_tokens(writer: WorkloadSharedMemoryOwner, instance_id: int, endpoint_id: int, tokens: float) -> None:
+    """CAS-seed SHM after snapshot. ADD clears IM, so fixture tokens never reach a new pair."""
+    header = writer.native.read_header()
+    for slot in range(int(header.get("entry_count", 0) or 0)):
+        entry = writer.native.load_entry(slot)
+        if int(entry["instance_id"]) == instance_id and int(entry["endpoint_id"]) == endpoint_id:
+            status, actual = writer.native.cas_add(instance_id, endpoint_id, int(entry["generation"]), 0.0, tokens)
+            assert status == STATUS_OK
+            assert actual == tokens
+            return
+    raise AssertionError(f"missing slot for ({instance_id}, {endpoint_id})")
+
+
+@pytest.fixture
+def native_lib():
+    try:
+        return load_native_library()
+    except NativeWorkloadShmUnavailable as e:
+        pytest.skip(f"native workload-shm library not built: {e}")
+        return None
+
+
+async def _client_with_shm(im: InstanceManager, name: str) -> tuple[AsyncSchedulerClient, WorkloadSharedMemoryOwner]:
+    writer = WorkloadSharedMemoryOwner(im, max_entries=8, shm_name=name)
+    writer.write_snapshot()
+    client = AsyncSchedulerClient(
+        SchedulerClientConfig(scheduler_type="load_balance", endpoint_instance_score_weight=0.0)
+    )
+    cache = _SchedulerInstanceCache()
+    instances = list(im.get_available_instances(PDRole.ROLE_P).values())
+    await cache.replace_all(PDRole.ROLE_P, instances)
+    client._cache = cache
+    reader = WorkloadSharedMemoryReader(name)
+    reader.attach()
+    client._workload_reader = reader
+    return client, writer
+
+
+class TestSelectAndAllocateCas:
+    """Local scoring + schema-4 CAS. Does not mock send_request."""
 
     @pytest.mark.asyncio
-    async def test_client_not_connected_refresh_instances(self):
-        """When not connected, refresh_instances reports that no update was accepted."""
-        self.mock_transport.connected = False
-        self.mock_transport.send_request = AsyncMock(return_value=None)
+    async def test_select_and_allocate_cas_commits_lowest_load(self, native_lib):
+        """Read SHM, score with LoadBalance, CAS-add, return (Instance, Endpoint, Workload)."""
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(
+            EventType.ADD,
+            [_make_cas_instance(1, 10), _make_cas_instance(2, 20)],
+        )
+        name = _cas_shm_name("al")
+        client, writer = await _client_with_shm(im, name)
+        _seed_shm_tokens(writer, 1, 10, 1.0)
+        _seed_shm_tokens(writer, 2, 20, 50.0)
+        try:
+            req = RequestInfo(req_id="req-cas", req_data={}, req_len=8, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            instance, endpoint, committed = result
+            assert instance.id == 1
+            assert endpoint.id == 10
+            assert committed.active_tokens == pytest.approx(4.0)
+            meta = client._workload_reader.entry_meta(1, 10)
+            assert meta is not None
+            assert meta["active_tokens"] == pytest.approx(5.0)
+        finally:
+            client._workload_reader.detach()
+            writer.release()
 
-        result = await self.client.refresh_instances("ADDED", [])
-        assert result is False
-        self.mock_transport.send_request.assert_awaited_once()
+    @pytest.mark.asyncio
+    async def test_select_and_allocate_fast_path_refreshes_once(self, native_lib):
+        """First CAS attempt must not redo the refresh candidate selection already did."""
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(EventType.ADD, [_make_cas_instance(1, 10)])
+        name = _cas_shm_name("frf")
+        client, writer = await _client_with_shm(im, name)
+        _seed_shm_tokens(writer, 1, 10, 1.0)
+        orig_refresh = client._refresh_cache_from_workload_reader
+        calls = {"n": 0}
+
+        async def counting_refresh(*args, **kwargs):
+            calls["n"] += 1
+            return await orig_refresh(*args, **kwargs)
+
+        client._refresh_cache_from_workload_reader = counting_refresh
+        try:
+            req = RequestInfo(req_id="req-frf", req_data={}, req_len=4, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            assert calls["n"] == 1
+        finally:
+            client._workload_reader.detach()
+            writer.release()
+
+    @pytest.mark.asyncio
+    async def test_select_and_allocate_changed_reloads_and_rescores(self, native_lib):
+        """Stale expected (CHANGED) must re-score on the fresh vector, not blindly add on the old winner."""
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(
+            EventType.ADD,
+            [_make_cas_instance(1, 10), _make_cas_instance(2, 20)],
+        )
+        name = _cas_shm_name("ch")
+        client, writer = await _client_with_shm(im, name)
+        _seed_shm_tokens(writer, 1, 10, 1.0)
+        _seed_shm_tokens(writer, 2, 20, 8.0)
+        native = client._workload_reader.native
+        orig = native.cas_add
+        calls = {"n": 0}
+
+        def wrapped(iid, eid, gen, expected, delta, slot=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                orig(iid, eid, gen, expected, 80.0, slot=slot)
+            return orig(iid, eid, gen, expected, delta, slot=slot)
+
+        native.cas_add = wrapped
+        try:
+            req = RequestInfo(req_id="req-changed", req_data={}, req_len=4, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            instance, endpoint, _committed = result
+            assert instance.id == 2
+            assert endpoint.id == 20
+            assert calls["n"] >= 2
+        finally:
+            native.cas_add = orig
+            client._workload_reader.detach()
+            writer.release()
+
+    @pytest.mark.asyncio
+    async def test_select_and_allocate_blocked_excludes_pair_and_switches_candidate(self, native_lib):
+        """CAS BLOCKED on the proposed pair must exclude it from the LB re-scan and pick the other
+        healthy pair, instead of re-selecting it until the retry budget is exhausted.
+        """
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(
+            EventType.ADD,
+            [_make_cas_instance(1, 10), _make_cas_instance(2, 20)],
+        )
+        name = _cas_shm_name("blk")
+        client, writer = await _client_with_shm(im, name)
+        _seed_shm_tokens(writer, 1, 10, 1.0)  # globally lowest -> proposed
+        _seed_shm_tokens(writer, 2, 20, 8.0)
+        native = client._workload_reader.native
+        orig = native.cas_add
+        calls = {"n": 0}
+
+        def wrapped(iid, eid, gen, expected, delta, slot=None):
+            calls["n"] += 1
+            if (iid, eid) == (1, 10):
+                return (STATUS_BLOCKED, expected)
+            return orig(iid, eid, gen, expected, delta, slot=slot)
+
+        native.cas_add = wrapped
+        try:
+            req = RequestInfo(req_id="req-blocked", req_data={}, req_len=4, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            instance, endpoint, _committed = result
+            assert (instance.id, endpoint.id) == (2, 20)
+            # Must switch on the second attempt, not exhaust retries re-selecting the excluded pair.
+            assert calls["n"] == 2
+        finally:
+            native.cas_add = orig
+            client._workload_reader.detach()
+            writer.release()
+
+    @pytest.mark.asyncio
+    async def test_select_and_allocate_without_shm_returns_none(self):
+        """Missing native attach fails closed (A7): no silent Python ledger."""
+        client = AsyncSchedulerClient(SchedulerClientConfig(scheduler_type="load_balance"))
+        req = RequestInfo(req_id="req-none", req_data={}, req_len=4, api="completions", token_ids=[1])
+        assert await client.select_and_allocate(PDRole.ROLE_P, req) is None
+
+    @pytest.mark.asyncio
+    async def test_update_workload_cas_sub_floor0(self, native_lib):
+        """Release path CAS-sub on the same slot allocate just filled."""
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(EventType.ADD, [_make_cas_instance(1, 10)])
+        name = _cas_shm_name("rl")
+        client, writer = await _client_with_shm(im, name)
+        _seed_shm_tokens(writer, 1, 10, 1.0)
+        try:
+            req = RequestInfo(req_id="req-rel", req_data={}, req_len=4, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            instance, endpoint, committed = result
+            ok = await client.update_workload(
+                UpdateWorkloadParams(
+                    instance_id=instance.id,
+                    endpoint_id=endpoint.id,
+                    role=PDRole.ROLE_P,
+                    req_id="req-rel",
+                    workload_action=WorkloadAction.RELEASE_TOKENS,
+                    workload_change=Workload(active_tokens=-committed.active_tokens),
+                )
+            )
+            assert ok is True
+            meta = client._workload_reader.entry_meta(instance.id, endpoint.id)
+            assert meta is not None
+            assert meta["active_tokens"] == pytest.approx(1.0)
+        finally:
+            client._workload_reader.detach()
+            writer.release()
+
+    @pytest.mark.asyncio
+    async def test_update_workload_cas_success_survives_cache_patch_failure(self, native_lib):
+        """A cache-patch error after cas_sub_floor0 commits must not fail the release (would
+        cause the caller to retry and subtract the same delta twice).
+        """
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(EventType.ADD, [_make_cas_instance(1, 10)])
+        name = _cas_shm_name("rlp")
+        client, writer = await _client_with_shm(im, name)
+        _seed_shm_tokens(writer, 1, 10, 1.0)
+        try:
+            req = RequestInfo(req_id="req-relp", req_data={}, req_len=4, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            instance, endpoint, committed = result
+            native = client._workload_reader.native
+            orig_cas_sub = native.cas_sub_floor0
+            calls = {"n": 0}
+
+            def counting_cas_sub(*args, **kwargs):
+                calls["n"] += 1
+                return orig_cas_sub(*args, **kwargs)
+
+            native.cas_sub_floor0 = counting_cas_sub
+            client._cache.patch_workload_from_shm = Mock(side_effect=RuntimeError("cache patch boom"))
+            try:
+                ok = await client.update_workload(
+                    UpdateWorkloadParams(
+                        instance_id=instance.id,
+                        endpoint_id=endpoint.id,
+                        role=PDRole.ROLE_P,
+                        req_id="req-relp",
+                        workload_action=WorkloadAction.RELEASE_TOKENS,
+                        workload_change=Workload(active_tokens=-committed.active_tokens),
+                    )
+                )
+                assert ok is True
+                assert calls["n"] == 1
+                meta = client._workload_reader.entry_meta(instance.id, endpoint.id)
+                assert meta is not None
+                assert meta["active_tokens"] == pytest.approx(1.0)
+            finally:
+                native.cas_sub_floor0 = orig_cas_sub
+        finally:
+            client._workload_reader.detach()
+            writer.release()
+
+    @pytest.mark.asyncio
+    async def test_update_workload_rejects_non_release_action(self, native_lib):
+        """update_workload is release-only; ALLOCATION must not subtract."""
+        del native_lib
+        config = CoordinatorConfig()
+        im = InstanceManager(config)
+        await im.refresh_instances(EventType.ADD, [_make_cas_instance(1, 10)])
+        name = _cas_shm_name("aloc")
+        client, writer = await _client_with_shm(im, name)
+        try:
+            req = RequestInfo(req_id="req-aloc", req_data={}, req_len=4, api="completions", token_ids=[1, 2, 3, 4])
+            result = await client.select_and_allocate(PDRole.ROLE_P, req)
+            assert result is not None
+            instance, endpoint, committed = result
+            before = client._workload_reader.entry_meta(instance.id, endpoint.id)["active_tokens"]
+            ok = await client.update_workload(
+                UpdateWorkloadParams(
+                    instance_id=instance.id,
+                    endpoint_id=endpoint.id,
+                    role=PDRole.ROLE_P,
+                    req_id="req-aloc",
+                    workload_action=WorkloadAction.ALLOCATION,
+                    workload_change=Workload(active_tokens=committed.active_tokens),
+                )
+            )
+            assert ok is False
+            meta = client._workload_reader.entry_meta(instance.id, endpoint.id)
+            assert meta is not None
+            assert meta["active_tokens"] == pytest.approx(before)
+        finally:
+            client._workload_reader.detach()
+            writer.release()

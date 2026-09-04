@@ -32,7 +32,7 @@ from motor.config.coordinator import CoordinatorConfig
 from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import PDRole
 from motor.coordinator.models.constants import OpenAIField
-from motor.coordinator.models.request import RequestInfo
+from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.agent_hint import (
@@ -516,7 +516,7 @@ async def __create_request_info(
         request_json,
         headers=dict(raw_request.headers),
     )
-    return RequestInfo(
+    req_info = RequestInfo(
         req_id=req_id,
         req_data=req_data,
         api=api,
@@ -526,3 +526,9 @@ async def __create_request_info(
         client_expects_chat_shape=(OpenAIField.MESSAGES in request_json),
         agent_hint_info=agent_hint_info,
     )
+    logger.info(
+        "Scheduling metric stage=request_arrive req_id=%s unix_ts=%.6f",
+        req_info.req_id,
+        req_info.status[ReqState.ARRIVE],
+    )
+    return req_info

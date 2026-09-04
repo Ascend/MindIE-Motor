@@ -44,6 +44,7 @@ class SchedulerConnectionManager:
         self._client = client
         self._client_config = client_config
         self._connected = False  # True only after connect(); False after disconnect(); disconnect is idempotent
+        self._reconnect_task: asyncio.Task | None = None
 
     @classmethod
     def from_config(
@@ -110,7 +111,49 @@ class SchedulerConnectionManager:
                 )
             if i < _CONNECT_MAX_RETRIES - 1:
                 await asyncio.sleep(_CONNECT_RETRY_SLEEP)
-        logger.error("Failed to connect to scheduler process after retries")
+        logger.error(
+            "Failed to connect to scheduler process after %d retries; retrying in background every %.1fs",
+            _CONNECT_MAX_RETRIES,
+            self._reconnect_interval(),
+        )
+        self._start_background_reconnect()
+
+    def _reconnect_interval(self) -> float:
+        interval = getattr(self._client_config, "reconnect_interval", None)
+        try:
+            return float(interval) if interval else 5.0
+        except (TypeError, ValueError):
+            return 5.0
+
+    def _start_background_reconnect(self) -> None:
+        """Keep retrying connect() in the background once the initial retry budget is exhausted."""
+        if not self._client:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._background_reconnect_loop())
+
+    async def _background_reconnect_loop(self) -> None:
+        interval = self._reconnect_interval()
+        try:
+            while not self._connected:
+                await asyncio.sleep(interval)
+                if self._connected:
+                    return
+                try:
+                    connected = await self._client.connect()
+                except Exception as e:
+                    logger.debug("Background scheduler reconnect attempt failed: %s", e)
+                    continue
+                if connected:
+                    self._connected = True
+                    logger.info(
+                        "Scheduler client reconnected (background retry) to %s",
+                        getattr(self._client_config, "frontend_address", None),
+                    )
+                    return
+        except asyncio.CancelledError:
+            pass
 
     async def ensure_connected(self) -> None:
         if self._connected:
@@ -119,6 +162,9 @@ class SchedulerConnectionManager:
 
     async def disconnect(self) -> None:
         """Disconnect Scheduler client (idempotent: only first call does work)."""
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
         if not self._client or not self._connected:
             return
         try:

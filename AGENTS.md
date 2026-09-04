@@ -42,9 +42,10 @@ pip install dist/motor-*.whl
 bash build.sh        # 产物：dist/motor-0.1.0-py3-none-any.whl
 ```
 
-- 自动执行 `scripts/generate_proto.sh`（etcd protobuf）与 kv_conductor 的 cargo 构建
-- 无 cargo 时用 `SKIP_KV_CONDUCTOR_BUILD=1` 跳过（使用预编译 bin）
-- **源码开发**：改代码直接生效（import 走源码目录），无需重建
+- 自动执行 `scripts/generate_proto.sh`（etcd protobuf）与两个 Rust crate 的 cargo 构建：`motor/kv_conductor`（bin）与 `motor/coordinator/workload_shm_rs`（`libmindie_workload_shm.so`，coordinator 负载记账共享内存）
+- 无 cargo 时分别用 `SKIP_KV_CONDUCTOR_BUILD=1` / `SKIP_WORKLOAD_SHM_BUILD=1` 跳过（改用 `KV_CONDUCTOR_PREBUILT` / `WORKLOAD_SHM_PREBUILT` 预编译产物）
+- **源码开发（Python）**：改代码直接生效（import 走源码目录），无需重建
+- **源码开发（Rust）**：改 `.rs` 后必须重新 `cargo build --release`（不像纯 Python 改完即生效）；`native.py` 优先加载 `workload_shm_rs/lib/*.so`（whl）再回退 `target/release/*.so`（源码开发），缺失时抛 `NativeWorkloadShmUnavailable`（不静默回退错误账本）
 - **打包/部署**：whl 是快照，打包后才装的镜像/环境必须重新 `bash build.sh` 生成新 whl，否则旧 wheel 残留导致 NameError/ImportError
 
 ## 测试

@@ -123,6 +123,8 @@ examples/features/observability/stack/loki/.build/
 examples/features/observability/stack/generated/
 examples/features/observability/stack/.native-runtime/
 motor/kv_conductor/Cargo.lock
+motor/coordinator/workload_shm_rs/Cargo.lock
+motor/coordinator/workload_shm_rs/lib/
 motor/kv_conductor/curl.sh
 Dockerfile.motor-e2e-kv
 motor/kv_conductor/.cargo/

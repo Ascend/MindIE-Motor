@@ -135,7 +135,7 @@ exit_gate=scheduler_zmq streak=scheduler_zmq probe=internal_router
 | 现象 | 可能原因 | 建议 |
 |------|----------|------|
 | 启动后没有 `Precision check` 日志 | `precision_check_enabled=false` 或配置未加载 | 检查 `motor_coordinator_config.precision_detection_config` |
-| 日志提示 Scheduler client unavailable | Coordinator 未连接 Scheduler | 检查 Scheduler 进程和 ZMQ 连接 |
+| 日志提示 Scheduler client unavailable | Worker 未连上 Mgmt 控制面 IPC | 检查 Mgmt 进程是否已 bind `scheduler_frontend` 以及 ZMQ 路径 |
 | `sample incomplete` | 引擎返回 token_ids 但未返回 logprobs | 检查引擎是否支持 logprobs 参数 |
 | `MsprobeChecker: msprobe not installed` | 环境缺少 msprobe | 安装 msprobe 或在测试中显式注入 mock checker |
 | 一直检测不到生僻字 | `logprobs_count < 5` 或 token2category 映射缺失 | 调大 `logprobs_count`，检查 msprobe 映射文件 |

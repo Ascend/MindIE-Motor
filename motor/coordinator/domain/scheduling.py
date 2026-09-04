@@ -147,7 +147,7 @@ class UpdateWorkloadParams:
 class SchedulingFacade(Protocol):
     """
     Scheduling + workload update facade protocol.
-    Implemented by Scheduler (in-process) and AsyncSchedulerClient (standalone process); used by BaseRouter for DI.
+    Implemented by AsyncSchedulerClient (Infer Worker); used by BaseRouter for DI.
     Allocation workload is determined by the implementation (e.g. RR uses zero, LoadBalance uses demand).
     """
 
