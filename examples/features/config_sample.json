@@ -171,6 +171,12 @@
       "connect_timeout": 5.0,
       "upstream_error_body_max_bytes": 65536
     },
+    "circuit_config": {
+      "enable": true,
+      "failure_threshold": 3,
+      "base_timeout_s": 30.0,
+      "max_timeout_s": 300.0
+    },
     "scheduler_config": {
       "scheduler_type": "load_balance",
       "endpoint_instance_score_weight": 0.05,

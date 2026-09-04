@@ -277,6 +277,12 @@ motor_coordinator_config字段配置样例如下所示：
     "infer_timeout": 3600,
     "upstream_error_body_max_bytes": 65536
   },
+  "circuit_config": {
+    "enable": true,
+    "failure_threshold": 3,
+    "base_timeout_s": 30.0,
+    "max_timeout_s": 300.0
+  },
   "context_budget_mode": "off",
   "render_config": {
     "enabled": false,
@@ -463,6 +469,11 @@ motor_coordinator_config字段配置样例如下所示：
 | upstream_error_body_max_bytes | int | 向客户端透传引擎 HTTP 错误体的最大字节数，避免返回超大错误响应。默认值：`65536` |
 | **reschedule_config字段** |-|-|
 | enable | bool | 故障场景重调度功能开关。默认值：`false`。<br>模型重计算由引擎侧负责，该配置不控制引擎侧重计算；`recompute_enabled`仅作为`reschedule_enabled`的旧配置兼容别名；`recompute_max_retry`已移除并会被忽略。 |
+| **circuit_config字段** |-|-|
+| enable | bool | Coordinator 自熔断总开关。关闭后请求失败不再计数、实例永不熔断。默认值：`true`。配置变更需重启 Scheduler 进程生效。 |
+| failure_threshold | int | 连续失败达到该次数后触发熔断（期间任意成功会清零重新计数）。默认值：`3`。 |
+| base_timeout_s | float | 首次熔断时长（秒），也是熔断时长指数退避的基数；每次重新熔断/探活失败按 `2^(熔断次数-1)` 倍增长。默认值：`30.0`。 |
+| max_timeout_s | float | 熔断时长上限（秒）。默认值：`300.0`。 |
 | **scheduler_config字段** |-|-|
 | scheduler_type | string | 调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
 | enable_pd_separation_fallback_to_hybrid | bool | PD 分离场景下，当不存在兼容且未熔断的 P/D pair 时，是否允许降级使用混部路由，默认值为 `true`。候选优先级为 Union → Prefill → Decode；Decode 兜底仅适用于上报 `decode_colocation` capability 的 vLLM 实例，关闭后无兼容 pair 时返回 503。 |

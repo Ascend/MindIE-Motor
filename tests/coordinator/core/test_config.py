@@ -504,6 +504,106 @@ def test_precision_detection_config_validation_non_positive_probe_timeout():
         c.validate_config()
 
 
+def test_circuit_config_defaults():
+    """Absent ``circuit_config`` keeps the historical enable/3/30s/300s behavior."""
+    config = CoordinatorConfig()
+    assert config.circuit_config.enable is True
+    assert config.circuit_config.failure_threshold == 3
+    assert config.circuit_config.base_timeout_s == 30.0
+    assert config.circuit_config.max_timeout_s == 300.0
+
+
+def test_from_json_loads_circuit_config_top_level(_temp_json_file):
+    """``circuit_config`` merges from flat coordinator JSON."""
+    test_config = {
+        "circuit_config": {
+            "enable": False,
+            "failure_threshold": 5,
+            "base_timeout_s": 10.0,
+            "max_timeout_s": 120.0,
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.circuit_config.enable is False
+    assert config.circuit_config.failure_threshold == 5
+    assert config.circuit_config.base_timeout_s == 10.0
+    assert config.circuit_config.max_timeout_s == 120.0
+
+
+def test_from_json_loads_circuit_config_motor_coordinator_wrapper(_temp_json_file):
+    """``circuit_config`` loads from ``motor_coordinator_config`` user config shape."""
+    wrapped = {
+        "motor_coordinator_config": {
+            "circuit_config": {
+                "enable": False,
+                "failure_threshold": 5,
+                "base_timeout_s": 10.0,
+                "max_timeout_s": 120.0,
+            }
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(wrapped, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.circuit_config.enable is False
+    assert config.circuit_config.failure_threshold == 5
+    assert config.circuit_config.base_timeout_s == 10.0
+    assert config.circuit_config.max_timeout_s == 120.0
+
+
+def test_from_json_absent_circuit_config_keeps_defaults(_temp_json_file):
+    """A user config without ``circuit_config`` leaves defaults untouched."""
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump({"motor_coordinator_config": {"exception_config": {"max_retry": 2}}}, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.circuit_config.enable is True
+    assert config.circuit_config.failure_threshold == 3
+    assert config.circuit_config.base_timeout_s == 30.0
+    assert config.circuit_config.max_timeout_s == 300.0
+
+
+def test_circuit_config_validation_non_positive_failure_threshold():
+    with pytest.raises(ValueError, match="circuit_config.failure_threshold"):
+        c = CoordinatorConfig()
+        c.circuit_config.failure_threshold = 0
+        c.validate_config()
+
+
+def test_circuit_config_validation_non_positive_base_timeout():
+    with pytest.raises(ValueError, match="circuit_config.base_timeout_s"):
+        c = CoordinatorConfig()
+        c.circuit_config.base_timeout_s = 0
+        c.validate_config()
+
+
+def test_circuit_config_validation_non_positive_max_timeout():
+    with pytest.raises(ValueError, match="circuit_config.max_timeout_s"):
+        c = CoordinatorConfig()
+        c.circuit_config.max_timeout_s = 0
+        c.validate_config()
+
+
+def test_circuit_config_validation_base_exceeds_max():
+    with pytest.raises(ValueError, match="circuit_config.base_timeout_s must be <= "):
+        c = CoordinatorConfig()
+        c.circuit_config.base_timeout_s = 300.0
+        c.circuit_config.max_timeout_s = 30.0
+        c.validate_config()
+
+
+def test_circuit_config_validation_base_equals_max_ok():
+    """base == max is a valid configuration (no doubling possible)."""
+    c = CoordinatorConfig()
+    c.circuit_config.base_timeout_s = 60.0
+    c.circuit_config.max_timeout_s = 60.0
+    c.validate_config()
+
+
 def test_config_validation_success():
     """Test successful configuration validation"""
     config = CoordinatorConfig()

@@ -451,6 +451,21 @@ class PrecisionDetectionConfig:
 
 
 @dataclass
+class CircuitConfig:
+    """Coordinator instance circuit-breaker (self-fusing) configuration.
+
+    Applied by the scheduler process when the circuit breaker manager is
+    constructed (process startup); changing these requires a scheduler restart.
+    Defaults reproduce the historical built-in behavior exactly.
+    """
+
+    enable: bool = True  # Master switch; False disarms counting/tripping entirely
+    failure_threshold: int = 3  # Consecutive failures before the circuit trips
+    base_timeout_s: float = 30.0  # First trip duration (seconds); doubled per re-trip
+    max_timeout_s: float = 300.0  # Cap on trip duration (seconds) = 5 min
+
+
+@dataclass
 class TimeoutConfig:
     request_timeout: int = 30
     connection_timeout: int = 10
@@ -661,6 +676,7 @@ class CoordinatorConfig:
     render_config: RenderConfig = field(default_factory=RenderConfig)
     prefill_kv_event_config: PrefillKvEventConfig = field(default_factory=PrefillKvEventConfig)
     precision_detection_config: PrecisionDetectionConfig = field(default_factory=PrecisionDetectionConfig)
+    circuit_config: CircuitConfig = field(default_factory=CircuitConfig)
     port_allocator_config: PortAllocatorConfig = field(default_factory=PortAllocatorConfig)
 
     # internal fields
@@ -790,6 +806,7 @@ class CoordinatorConfig:
                 ("render_config", config.render_config, None),
                 ("prefill_kv_event_config", config.prefill_kv_event_config, None),
                 ("precision_detection_config", config.precision_detection_config, None),
+                ("circuit_config", config.circuit_config, None),
                 ("port_allocator_config", config.port_allocator_config, None),
             ]
 
@@ -1033,6 +1050,13 @@ class CoordinatorConfig:
         self._validate_positive_number(
             self.precision_detection_config.probe_timeout_seconds, "precision_detection_config.probe_timeout_seconds"
         )
+
+        # Validate circuit_config (self circuit breaker)
+        self._validate_positive_number(self.circuit_config.failure_threshold, "circuit_config.failure_threshold")
+        self._validate_positive_number(self.circuit_config.base_timeout_s, "circuit_config.base_timeout_s")
+        self._validate_positive_number(self.circuit_config.max_timeout_s, "circuit_config.max_timeout_s")
+        if self.circuit_config.base_timeout_s > self.circuit_config.max_timeout_s:
+            self._errors.append("circuit_config.base_timeout_s must be <= circuit_config.max_timeout_s")
 
         # Note: TLS certificate file validation is handled by the TLS configuration's check_files flag
         # and is performed during TLS handshake, not during configuration validation

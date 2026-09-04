@@ -13,6 +13,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from motor.common.logger import get_logger
+from motor.config.coordinator import CircuitConfig
 
 logger = get_logger(__name__)
 
@@ -40,15 +41,21 @@ class CircuitBreakerState:
         return self.state == _CB_STATE_CLOSED
 
 
-# Circuit breaker defaults (built-in, not configurable via config file)
-_CB_BASE_TIMEOUT: float = 30.0  # first trip timeout (seconds)
-_CB_MAX_TIMEOUT: float = 300.0  # cap timeout (seconds) = 5 min
-
-
 class CircuitBreakerManager:
-    """Global circuit breaker pool + state machine, owned by SchedulerServer."""
+    """Global circuit breaker pool + state machine, owned by SchedulerServer.
 
-    def __init__(self) -> None:
+    Tunables (trip threshold, first-trip timeout, timeout cap, master enable)
+    come from ``CircuitConfig`` — defaults reproduce the historical built-in
+    values. Values are snapshotted at construction (process startup), so a
+    config hot-reload does not mutate a live manager.
+    """
+
+    def __init__(self, circuit_config: CircuitConfig | None = None) -> None:
+        cfg = circuit_config if circuit_config is not None else CircuitConfig()
+        self._enabled = cfg.enable
+        self._failure_threshold = cfg.failure_threshold
+        self._base_timeout = cfg.base_timeout_s
+        self._max_timeout = cfg.max_timeout_s
         self._pool: dict[int, CircuitBreakerState] = {}
 
     def get(self, instance_id: int) -> CircuitBreakerState | None:
@@ -81,6 +88,9 @@ class CircuitBreakerManager:
             (should_trip, timeout) — caller should trip if ``should_trip`` is True,
             using ``timeout`` as the trip timeout.
         """
+        if not self._enabled:
+            return (False, 0)
+
         state = self._get_or_create(instance_id)
 
         if state.is_open():
@@ -89,7 +99,7 @@ class CircuitBreakerManager:
 
         state.failure_count += 1
 
-        if state.failure_count < 3:
+        if state.failure_count < self._failure_threshold:
             logger.warning(
                 "CircuitBreaker failure #%d: instance_id=%d",
                 state.failure_count,
@@ -97,11 +107,11 @@ class CircuitBreakerManager:
             )
             return (False, 0)
 
-        # Three consecutive failures → trip.
+        # Consecutive failures reached the threshold → trip.
         state.trip_count += 1
         timeout = min(
-            _CB_BASE_TIMEOUT * (2 ** (state.trip_count - 1)),
-            _CB_MAX_TIMEOUT,
+            self._base_timeout * (2 ** (state.trip_count - 1)),
+            self._max_timeout,
         )
         self._trip_state(state, timeout)
         logger.error(
@@ -120,6 +130,8 @@ class CircuitBreakerManager:
         (caller should cancel the recovery timer and publish the state change).
         Returns False otherwise (no state change, or key not found).
         """
+        if not self._enabled:
+            return False
 
         state = self._pool.get(instance_id)
         if state is None:
@@ -156,13 +168,15 @@ class CircuitBreakerManager:
         """Auto-recovery probe failed; keep the circuit open and extend the timeout.
         Returns the new recovery timeout, or None when the instance is not open.
         """
+        if not self._enabled:
+            return None
         state = self._pool.get(instance_id)
         if state is None or not state.is_open():
             return None
         state.trip_count += 1
         timeout = min(
-            _CB_BASE_TIMEOUT * (2 ** (state.trip_count - 1)),
-            _CB_MAX_TIMEOUT,
+            self._base_timeout * (2 ** (state.trip_count - 1)),
+            self._max_timeout,
         )
         state.current_timeout = timeout
         logger.warning(
@@ -179,6 +193,8 @@ class CircuitBreakerManager:
 
     def auto_recover(self, instance_id: int) -> bool:
         """Called by recovery timer. Returns True if state was actually recovered."""
+        if not self._enabled:
+            return False
         state = self._pool.get(instance_id)
         if state is None or not state.is_open():
             return False

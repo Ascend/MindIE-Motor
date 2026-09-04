@@ -217,7 +217,7 @@ class _SchedulerRequestDispatcher:
         self._config = config
         self._workload_writer = workload_writer
         self._on_instance_refresh_done = on_instance_refresh_done
-        self._cb_manager = circuit_breaker_manager or CircuitBreakerManager()
+        self._cb_manager = circuit_breaker_manager or CircuitBreakerManager(self._config.circuit_config)
         self._pub_socket = pub_socket
         self._recovery_timers: dict[int, asyncio.Task] = {}
         self._workload_commit_lock = asyncio.Lock()
@@ -1570,7 +1570,7 @@ class AsyncSchedulerServer:
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        self._cb_manager = CircuitBreakerManager()
+        self._cb_manager = CircuitBreakerManager(self.config.circuit_config)
 
         self._dispatcher = _SchedulerRequestDispatcher(
             self.instance_manager,

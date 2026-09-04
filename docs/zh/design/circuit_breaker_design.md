@@ -55,7 +55,7 @@ MindIE-Motor 的 Coordinator 承担请求路由职责，将推理请求转发到
 ```
 
 - **触发熔断**：连续 failure 上报达到阈值，立即进入 OPEN 状态。
-- **熔断时长**：采用指数退避，`min(2^(熔断次数-1) × 30s, 300s)`，随着反复故障逐步延长，上限 300s。
+- **熔断时长**：采用指数退避，`min(2^(熔断次数-1) × 30s, 300s)`，随着反复故障逐步延长，上限 300s。（默认 3 次、基值 30s、上限 300s 均可通过 `motor_coordinator_config.circuit_config` 调整；该配置变更需重启 Scheduler 进程生效，见 config_reference。）
 - **提前恢复**：熔断期间若收到 success 上报（如探针请求成功），立即解除熔断。
 - **强制清除**：Controller 推送 SET 事件时，所有熔断状态强制清除。
 
