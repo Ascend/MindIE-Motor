@@ -39,7 +39,7 @@ examples/slurm_deployer/
         └── start.sh
 ```
 
-每次部署前，将现场准备好的 `user_config.json`、`env.json` 拷贝到 `conf/` 下（可参考 `examples/features/config_sample.json` 或 `examples/infer_engines/` 下对应模型典配）。如需覆盖镜像内的脚本或后端配置，也将文件直接放入 `conf/`，启动时会一并复制到容器内的 `/configmap`。`script/prepare.sh` 是部署器自带的准备脚本，不需要复制到 `conf/`。
+每次部署前，将现场准备好的 `user_config.json`、`env.json` 拷贝到 `conf/` 下（可参考 `examples/features/config_sample.json` 或 `examples/infer_engines/` 下通用配置示例）。如需覆盖镜像内的脚本或后端配置，也将文件直接放入 `conf/`，启动时会一并复制到容器内的 `/configmap`。`script/prepare.sh` 是部署器自带的准备脚本，不需要复制到 `conf/`。
 
 Slurm 脚本会显式使用 Apptainer 的 `--no-mount tmp`，避免宿主机 `/tmp` 覆盖镜像内的 `/tmp/motor/examples` 和补丁目录。容器临时文件使用镜像内的 `/tmp` 及 `--writable-tmpfs`，宿主机仅挂载 `conf/`、`script/prepare.sh`、模型目录和日志目录；`/configmap` 只存在于容器临时文件系统中。
 

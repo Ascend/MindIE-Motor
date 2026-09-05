@@ -46,9 +46,7 @@
 
 1. **准备配置文件**
 
-   MindIE Motor已提供常用模型（deepseek_v4_flash、deepseek_v4_pro、GLM 5.1等）的[**PD分离配置示例**](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，**用户修改少量配置后可直接使用**。
-
-   对于未提供典型配置的模型，可参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+   可参考 [MindIE Motor 配置自动生成指导](../../../../../examples/deployer/config_tool/README.md)，将 vllm-ascend 社区部署脚本转换为 `user_config.json` 与 `env.json`；也可基于 `examples/infer_engines/vllm/` 下通用示例手工修改。
 
 2. **配置端口与部署模式**
 

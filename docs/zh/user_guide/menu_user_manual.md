@@ -31,7 +31,7 @@
   - [容器快照](./features/container_snapshot.md)
   - [虚推健康探测](./features/sim_inference.md)
   - [故障场景重调度](./features/fault_tolerance/rescheduler.md)
-  - [vLLM部署脚本转换工具](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)
+  - [vLLM部署脚本转换工具](../../../examples/deployer/config_tool/README.md)
 - [API参考]()
   - [接口说明](./api/README.md)
   - [用户侧接口](./api/service_interfaces.md)

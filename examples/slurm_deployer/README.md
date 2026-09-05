@@ -5,7 +5,7 @@
 
 ## 部署前必改
 
-1. 将现场准备好的 `user_config.json`、`env.json` **拷贝到** `conf/` 下（仓库不内置这两个文件；可参考 `examples/features/config_sample.json` 或 `examples/infer_engines/` 模型典配）。也可以在 `start` 命令后传入其他配置目录。
+1. 将现场准备好的 `user_config.json`、`env.json` **拷贝到** `conf/` 下（仓库不内置这两个文件；可参考 `examples/features/config_sample.json` 或 `examples/infer_engines/` 下通用配置示例）。也可以在 `start` 命令后传入其他配置目录。
 2. 在 `deploy.sh` 中设置以下变量，勿提交真实集群地址；`PARTITION` 须与 `slurm.conf` 中的 `PartitionName` 一致。临时测试时，也可以使用命令前缀传入变量，例如 `PARTITION=my-partition bash deploy.sh start`：
 
 | 变量 | 说明 |

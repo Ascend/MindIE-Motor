@@ -1,7 +1,7 @@
 EXAMPLES_PATH="/mnt/obs/scripts/PyMotor/examples" # 主机examples部署脚本路径
 CONFIGMAP_PATH="/mnt/obs/scripts/PyMotor/configmap" # 服务启动脚本路径，需挂载到容器内
-USER_CONFIG_PATH="/mnt/obs/scripts/PyMotor/examples/infer_engines/vllm/models/GLM/5/user_config.json" # user_config.json路径
-ENV_PATH="/mnt/obs/scripts/PyMotor/examples/infer_engines/vllm/models/GLM/5/env.json" # env.json路径
+USER_CONFIG_PATH="/mnt/obs/scripts/PyMotor/examples/infer_engines/vllm/user_config.json" # user_config.json路径（按现场实际配置修改）
+ENV_PATH="/mnt/obs/scripts/PyMotor/examples/infer_engines/vllm/env.json" # env.json路径（按现场实际配置修改）
 mkdir -p $CONFIGMAP_PATH
 # 容器启动脚本boot.sh，其运行时会调用startup目录下其他脚本，需要将其统一拷贝到$CONFIGMAP_PATH目录下。
 cp -f $EXAMPLES_PATH/deployer/startup/boot.sh $CONFIGMAP_PATH/boot.sh

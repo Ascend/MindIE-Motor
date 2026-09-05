@@ -75,15 +75,15 @@ Controller 判定 D2D 开启需同时满足：
 
 ## 已测试模型
 
-以下模型已在MindIE Motor示例配置中验证 D2D 启动加速：
+以下模型已验证 D2D 启动加速：
 
-| 模型 | 配置目录(参考) |
-|------|----------|
-| Qwen3-30B | `examples/infer_engines/vllm/models/qwen_235b/` |
-| DeepSeek-V3.1-w8a8-mtp | `examples/infer_engines/vllm/models/deepseek_v3.1/` |
-| Deepseekv4-flash-w8a8-mtp | `examples/infer_engines/vllm/models/deepseek_v4_flash/` |
-| DeepSeek-V4-Pro-w4a8 | `examples/infer_engines/vllm/models/deepseek_v4_pro/` |
-| GLM-5.1-w4a8 | `examples/infer_engines/vllm/models/glm_5.1/` |
-| GLM-5.1-w8a8 | `examples/infer_engines/vllm/models/glm_5.1/` |
+| 模型 |
+|------|
+| Qwen3-30B |
+| DeepSeek-V3.1-w8a8-mtp |
+| Deepseekv4-flash-w8a8-mtp |
+| DeepSeek-V4-Pro-w4a8 |
+| GLM-5.1-w4a8 |
+| GLM-5.1-w8a8 |
 
-非典配场景或其他未测试模型，如有问题，欢迎至官方提 [ISSUE](https://gitcode.com/Ascend/MindIE-Motor/issues)。
+其他未测试模型如有问题，欢迎至官方提 [ISSUE](https://gitcode.com/Ascend/MindIE-Motor/issues)。

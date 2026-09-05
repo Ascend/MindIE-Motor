@@ -88,7 +88,7 @@ python deploy.py --config_dir ../infer_engines/vllm --config /path/to/custom_use
 
 #### 方式四：基于vllm部署脚本生成Motor全量配置文件
 
-使用方式请参阅[Motor配置自动生成指导](../infer_engines/vllm/models/README.md)。
+使用方式请参阅[Motor配置自动生成指导](./config_tool/README.md)。
 
 ### 其他操作
 

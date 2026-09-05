@@ -55,7 +55,7 @@
 
 ## 生成配置文件
 
-参考 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
+参考 [MindIE Motor 配置自动生成指导](../../../../../examples/deployer/config_tool/README.md)，自动生成配置文件 `user_config.json` 与 `env.json`。
 
 ## 服务部署与验证
 
