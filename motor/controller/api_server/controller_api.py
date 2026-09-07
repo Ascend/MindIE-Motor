@@ -28,6 +28,7 @@ from motor.common.http.http_response import format_success_response, raise_inter
 from motor.common.utils.net import format_address
 from motor.common.alarm.alarm import Alarm
 from motor.common.alarm.deserialize import deserialize_incoming_record
+from motor.common.alarm.master_to_slave_event import MASTER_TO_SLAVE_EVENT_CONFIGS, MasterToSlaveComponent
 from motor.config.controller import ControllerConfig
 from motor.controller.observability.observability import Observability
 from motor.controller.core.instance_assembler import InstanceAssembler
@@ -42,6 +43,10 @@ from motor.controller.core.recovery_service import (
 from motor.controller.observability.inventory.inventory_collector import InventoryCollector
 
 logger = get_logger(__name__)
+
+# Reported by a Coordinator the moment it takes over as master. Its Scheduler pool is
+# empty at that point, so this is the earliest reliable trigger to push instances.
+_COORDINATOR_FAILOVER_ALARM_ID = MASTER_TO_SLAVE_EVENT_CONFIGS[MasterToSlaveComponent.COORDINATOR].alarm_id
 
 
 def observability_enabled_required(func: Callable):
@@ -443,6 +448,10 @@ class ControllerAPI:
         body = await request.json()
         try:
             record = deserialize_incoming_record(body)
+            if record.alarm_id == _COORDINATOR_FAILOVER_ALARM_ID:
+                client = getattr(request, "client", None)
+                peer = getattr(client, "host", None) if client is not None else None
+                self._push_instances_to_new_coordinator_master(peer)
             if isinstance(record, Alarm) and is_precision_raise_alarm(record):
                 with self.config_lock:
                     allow = self.precision_auto_recovery_enabled
@@ -486,6 +495,18 @@ class ControllerAPI:
         except Exception as e:
             logger.error("Failed to add alarms: %s", e)
             raise_internal_error(f"Internal server error: {str(e)}")
+
+    def _push_instances_to_new_coordinator_master(self, master_host: str | None = None) -> None:
+        """Reload the promoted Coordinator's instance pool as soon as it reports the switch."""
+        event_pusher = (self.modules or {}).get("EventPusher")
+        if event_pusher is None:
+            logger.warning("Coordinator master switch reported but EventPusher is unavailable.")
+            return
+        try:
+            event_pusher.notify_coordinator_failover(master_host)
+        except Exception as e:
+            # Never fail the alarm report: heartbeat detection still covers this case.
+            logger.error("Failed to push instances after Coordinator master switch: %s", e)
 
     async def _report_software_fault(self, request: Request) -> dict:
         """Receive software fault reports from NodeManagers at node granularity.

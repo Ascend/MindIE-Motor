@@ -65,6 +65,12 @@ class StandbyManager(ThreadSafeSingleton):
         # Callbacks (on_become_master receives should_report_event from etcd)
         self.on_become_master: Callable[[bool], None] | None = None
         self.on_become_standby: Callable[[], None] | None = None
+        # Fired on the first renew failure while still retrying, and again when
+        # renew recovers. Coordinator uses this to fail readiness immediately so
+        # kubelet can drop an isolated master from the inference Service.
+        self.on_lock_unhealthy: Callable[[], None] | None = None
+        self.on_lock_healthy: Callable[[], None] | None = None
+        self._lock_unhealthy = False
         self.report_event_key = CONTROLLER_REPORT_EVENT_KEY
 
         self.stanyby_loop_thread = threading.Thread(
@@ -92,6 +98,8 @@ class StandbyManager(ThreadSafeSingleton):
         on_become_master: Callable[[bool], None],
         on_become_standby: Callable[[], None],
         report_event_key: str = CONTROLLER_REPORT_EVENT_KEY,
+        on_lock_unhealthy: Callable[[], None] | None = None,
+        on_lock_healthy: Callable[[], None] | None = None,
     ) -> None:
         """Start the master/standby management thread."""
         if self.is_running:
@@ -101,6 +109,9 @@ class StandbyManager(ThreadSafeSingleton):
         # Set callbacks
         self.on_become_master = on_become_master
         self.on_become_standby = on_become_standby
+        self.on_lock_unhealthy = on_lock_unhealthy
+        self.on_lock_healthy = on_lock_healthy
+        self._lock_unhealthy = False
         self.report_event_key = report_event_key
 
         # Reset stop_event if it was previously set (for singleton reuse)
@@ -136,6 +147,9 @@ class StandbyManager(ThreadSafeSingleton):
         # Reset callbacks for singleton reuse (but keep stop_event set)
         self.on_become_master = None
         self.on_become_standby = None
+        self.on_lock_unhealthy = None
+        self.on_lock_healthy = None
+        self._lock_unhealthy = False
 
     def is_master(self) -> bool:
         """Check if current pod is master"""
@@ -200,12 +214,14 @@ class StandbyManager(ThreadSafeSingleton):
         if not self.is_master():
             return False
 
-        max_retries = 2  # 3 attempts total
+        # Keep the renew budget under lock_ttl. ttl=8 → one retry (3s+1s+3s=7s).
+        max_retries = 1 if self.lock_ttl <= 8 else 2
         retry_delay = 1  # seconds between retries
 
         for attempt in range(max_retries + 1):
             try:
                 if self.etcd_client.renew_lease(self.config.standby_config.master_lock_key):
+                    self._mark_lock_healthy()
                     return True
             except Exception as e:
                 logger.error(
@@ -215,6 +231,7 @@ class StandbyManager(ThreadSafeSingleton):
                     e,
                 )
 
+            self._mark_lock_unhealthy()
             if attempt < max_retries:
                 time.sleep(retry_delay)
 
@@ -223,6 +240,22 @@ class StandbyManager(ThreadSafeSingleton):
             max_retries + 1,
         )
         return False
+
+    def _mark_lock_unhealthy(self) -> None:
+        """Fail readiness as soon as renew misses, before giving up the lock."""
+        if self._lock_unhealthy:
+            return
+        self._lock_unhealthy = True
+        if self.on_lock_unhealthy:
+            self.on_lock_unhealthy()
+
+    def _mark_lock_healthy(self) -> None:
+        """Restore readiness after a later renew succeeds."""
+        if not self._lock_unhealthy:
+            return
+        self._lock_unhealthy = False
+        if self.on_lock_healthy:
+            self.on_lock_healthy()
 
     def _release_master_lock(self) -> None:
         """Release master lock"""
@@ -243,6 +276,7 @@ class StandbyManager(ThreadSafeSingleton):
                     lock_key=self.config.standby_config.master_lock_key, ttl=self.lock_ttl
                 )
                 if lease_id:
+                    self._lock_unhealthy = False
                     self.set_role(StandbyRole.MASTER)
                     logger.info("Successfully became master with TTL %ds", self.lock_ttl)
                     return True

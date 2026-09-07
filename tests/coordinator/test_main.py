@@ -75,9 +75,11 @@ def test_daemon_stop_all_processes_no_exclude(mock_create_socket):
     mock_mgmt.stop.assert_called_once()
 
 
+@patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "10.0.0.1"}, clear=False)
 @patch("motor.coordinator.daemon.coordinator_daemon.create_shared_socket")
-def test_stop_inference_only_stops_inference_only(mock_create_socket):
-    """_on_become_standby stops only Inference; Mgmt and Obs are not stopped."""
+@patch("motor.coordinator.daemon.coordinator_daemon.os._exit")
+def test_stop_inference_only_stops_inference_only(mock_exit, mock_create_socket):
+    """On Kubernetes, lock loss exits the daemon; workers are not stopped in-place."""
     mock_create_socket.return_value = None
 
     mock_config = MagicMock()
@@ -99,7 +101,40 @@ def test_stop_inference_only_stops_inference_only(mock_create_socket):
 
     daemon._on_become_standby()
 
-    mock_infer.stop.assert_called_once()
+    mock_exit.assert_called_once_with(1)
+    mock_infer.stop.assert_not_called()
+    mock_mgmt.stop.assert_not_called()
+    mock_obs.stop.assert_not_called()
+
+
+@patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "", "POD_NAMESPACE": ""}, clear=False)
+@patch("motor.coordinator.daemon.coordinator_daemon.create_shared_socket")
+@patch("motor.coordinator.daemon.coordinator_daemon.os._exit")
+def test_on_become_standby_keeps_process_off_kubernetes(mock_exit, mock_create_socket):
+    """Outside Kubernetes, lock loss stays up as standby."""
+    mock_create_socket.return_value = None
+
+    mock_config = MagicMock()
+    mock_config.standby_config.enable_master_standby = False
+    mock_config.api_config.coordinator_api_host = "0.0.0.0"
+    mock_config.api_config.coordinator_api_infer_port = 8000
+    mock_config.inference_workers_config.num_workers = 1
+
+    mock_mgmt = MagicMock()
+    mock_obs = MagicMock()
+    mock_infer = MagicMock()
+
+    daemon = CoordinatorDaemon(mock_config)
+    daemon._process_managers = {
+        PROCESS_KEY_MGMT: mock_mgmt,
+        PROCESS_KEY_OBS: mock_obs,
+        PROCESS_KEY_INFERENCE: mock_infer,
+    }
+
+    daemon._on_become_standby()
+
+    mock_exit.assert_not_called()
+    mock_infer.stop.assert_not_called()
     mock_mgmt.stop.assert_not_called()
     mock_obs.stop.assert_not_called()
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -8,6 +7,7 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
+
 from kubernetes import client, config
 
 from motor.common.logger import get_logger
@@ -51,6 +51,38 @@ class K8sClient:
         except Exception as e:
             logger.error("Error getting node hostname for Pod IP %s: %s", pod_ip, e)
             return None
+
+    def list_pod_ips(
+        self,
+        namespace: str,
+        label_selector: str | None = None,
+        name_prefix: str | None = None,
+    ) -> list[str]:
+        """Return Running pod IPs matching a label or name prefix."""
+        if self.v1 is None:
+            logger.warning("Kubernetes client not available, cannot list pod IPs")
+            return []
+        if not namespace:
+            logger.warning("Skip cluster-wide pod IP listing; namespace is empty")
+            return []
+        try:
+            pods = self.v1.list_namespaced_pod(namespace, label_selector=label_selector or None)
+            ips: list[str] = []
+            for pod in pods.items:
+                name = getattr(getattr(pod, "metadata", None), "name", "") or ""
+                if name_prefix and not name.startswith(name_prefix):
+                    continue
+                status = getattr(pod, "status", None)
+                phase = getattr(status, "phase", "")
+                if phase and phase != "Running":
+                    continue
+                ip = getattr(status, "pod_ip", None) or getattr(status, "podIP", None)
+                if ip:
+                    ips.append(ip)
+            return ips
+        except Exception as e:
+            logger.warning("Failed to list pod IPs namespace=%s: %s", namespace, e)
+            return []
 
     def is_available(self) -> bool:
         """Check if Kubernetes client is available and initialized"""

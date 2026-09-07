@@ -386,7 +386,7 @@ class TestCoordinatorServer:
         assert data["ready"] is False
 
     def test_readiness_endpoints_fail_when_enable_standby_is_standby(self):
-        """Test readiness endpoints"""
+        """Standby stays not Ready (0/1) even when instances are present."""
         self.coordinator_config.standby_config.enable_master_standby = True
         self.coordinator_server._mgmt._readiness_probe._enable_master_standby = True
         standby_manager = StandbyManager(self.coordinator_config)

@@ -131,6 +131,7 @@ ROLE_SHM_NAME = "coordinator_standby_role"
 ROLE_SHM_SIZE = 9  # 1 byte role (byte0) + 8 bytes heartbeat (bytes 1-8, little-endian uint64)
 ROLE_SHM_MASTER = 1  # byte0 value when this node is master
 ROLE_SHM_STANDBY = 0  # byte0 value when standby or unknown
+ROLE_SHM_ISOLATED = 2  # lock renew failed; must leave the inference Service now
 ROLE_HEARTBEAT_INTERVAL_SEC = 2.0
 ROLE_HEARTBEAT_STALE_SEC = 5.0
 

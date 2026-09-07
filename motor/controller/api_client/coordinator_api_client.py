@@ -8,6 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import ipaddress
+import os
 import threading
 import time
 from typing import Any
@@ -18,6 +20,7 @@ from motor.common.resources import InsEventMsg
 from motor.common.http.http_client import ConnectionMode, SafeHTTPSClient
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
+from motor.common.utils.net import format_address
 from motor.config.controller import ControllerConfig
 from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 
@@ -29,7 +32,18 @@ _REFRESH_CLIENT: SafeHTTPSClient | None = None
 _REFRESH_CLIENT_LOCK = threading.Lock()  # protects client creation / reset
 _REFRESH_REQUEST_LOCK = threading.Lock()  # serialises request+retry+reset on the shared client
 _REFRESH_TIMEOUT = 3  # per-request TCP timeout (seconds)
-_REFRESH_RETRY_DELAYS = (1, 2)  # back-off between retries (seconds)
+# After failover the Coordinator Service still points at the isolated old master
+# (or at no Ready endpoint). SET must go to the new master's pod IP until kubelet
+# updates endpoints. None means the configured Service DNS.
+_REFRESH_HOST_OVERRIDE: str | None = None
+_COORDINATOR_POD_LABEL = "app=mindie-motor-coordinator"
+_COORDINATOR_POD_PREFIX = "mindie-motor-coordinator"
+_POD_IP_CACHE_TTL_SEC = 5.0
+_POD_IP_CACHE_LOCK = threading.Lock()
+_POD_IP_CACHE_AT = 0.0
+_POD_IP_CACHE: tuple[str, ...] = ()
+_K8S_CLIENT = None
+_PUSH_TIMEOUT_SEC = 2.0
 
 
 def _get_refresh_client() -> SafeHTTPSClient:
@@ -67,74 +81,200 @@ def _reset_refresh_client() -> None:
             _REFRESH_CLIENT = None
 
 
+def _parse_refresh_host(host: str | None) -> str | None:
+    """Accept a pod IP (v4/v6). Service DNS and empty values are ignored."""
+    if not host:
+        return None
+    stripped = host.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = stripped[1:-1]
+    try:
+        ipaddress.ip_address(stripped)
+    except ValueError:
+        logger.warning("Ignoring non-IP Coordinator refresh host %r", host)
+        return None
+    return stripped
+
+
+def _k8s_client():
+    global _K8S_CLIENT
+    if _K8S_CLIENT is None:
+        from motor.controller.fault_tolerance.k8s.k8s_client import K8sClient
+
+        _K8S_CLIENT = K8sClient()
+    return _K8S_CLIENT
+
+
+def _list_coordinator_pod_ips() -> list[str]:
+    """Discover Coordinator pod IPs so SET/ADD can reach standby before it is Ready."""
+    global _POD_IP_CACHE_AT, _POD_IP_CACHE
+    now = time.monotonic()
+    with _POD_IP_CACHE_LOCK:
+        if _POD_IP_CACHE and now - _POD_IP_CACHE_AT < _POD_IP_CACHE_TTL_SEC:
+            return list(_POD_IP_CACHE)
+    namespace = os.getenv("POD_NAMESPACE", "").strip()
+    if not namespace:
+        return []
+    try:
+        k8s = _k8s_client()
+        ips = k8s.list_pod_ips(namespace, label_selector=_COORDINATOR_POD_LABEL)
+        if not ips:
+            ips = k8s.list_pod_ips(namespace, name_prefix=_COORDINATOR_POD_PREFIX)
+    except Exception as e:
+        logger.warning("Failed to list Coordinator pod IPs: %s", e)
+        return []
+    unique = tuple(dict.fromkeys(ips))
+    with _POD_IP_CACHE_LOCK:
+        _POD_IP_CACHE_AT = now
+        _POD_IP_CACHE = unique
+    return list(unique)
+
+
+def _instance_refresh_hosts() -> list[str | None]:
+    """Targets for instance refresh: new-master override first, then every pod IP."""
+    ordered: list[str] = []
+    override = _REFRESH_HOST_OVERRIDE
+    if override:
+        ordered.append(override)
+    for ip in _list_coordinator_pod_ips():
+        if ip not in ordered:
+            ordered.append(ip)
+    if ordered:
+        return ordered
+    return [None]
+
+
 class CoordinatorApiClient:
     controller_config = ControllerConfig.from_json()
     coordinator_config = CoordinatorConfig.from_json()
 
     @staticmethod
-    def send_instance_refresh(event_msg: InsEventMsg) -> bool:
-        """Push an instance event to the Coordinator with retry on failure.
+    def reset_refresh_client() -> None:
+        """Drop the shared instance-refresh Keep-Alive client.
 
-        Uses a persistent Keep-Alive connection.  On TCP-level failure the stale
-        client is discarded and up to two retries (1 s, 2 s back-off) are attempted.
-        Returns True on success, False after all attempts are exhausted.
-
-        The shared Keep-Alive client is guarded by a request lock so that
-        concurrent callers cannot interleave requests on the same connection
-        or reset the client while another thread is using it.
+        Coordinator Service endpoints change after master/standby failover.
+        Reusing a TCP connection pinned to an isolated pod delays SET until that
+        connection times out.
         """
-        total_attempts = 1 + len(_REFRESH_RETRY_DELAYS)
-        last_error: Exception | None = None
-        client_args = CoordinatorApiClient._generate_client_args()
+        _reset_refresh_client()
 
-        for attempt in range(total_attempts):
+    @staticmethod
+    def set_refresh_host(host: str | None) -> None:
+        """Send later instance-refresh POSTs to this Coordinator pod IP.
+
+        Pass None to go back to coordinator_api_dns. A non-IP string is ignored
+        and does not clear an already-set pod IP.
+        """
+        global _REFRESH_HOST_OVERRIDE
+        if host is None:
+            parsed: str | None = None
+        else:
+            parsed = _parse_refresh_host(host)
+            if parsed is None:
+                return
+        changed = False
+        with _REFRESH_CLIENT_LOCK:
+            if _REFRESH_HOST_OVERRIDE != parsed:
+                _REFRESH_HOST_OVERRIDE = parsed
+                changed = True
+        if changed:
+            _reset_refresh_client()
+            if parsed:
+                logger.warning("Instance refresh target switched to new Coordinator master %s", parsed)
+
+    @staticmethod
+    def get_refresh_host() -> str | None:
+        return _REFRESH_HOST_OVERRIDE
+
+    @staticmethod
+    def clear_refresh_host(expected: str) -> bool:
+        """Clear the pod-IP pin only if it still matches ``expected``."""
+        global _REFRESH_HOST_OVERRIDE
+        with _REFRESH_CLIENT_LOCK:
+            if not expected or _REFRESH_HOST_OVERRIDE != expected:
+                return False
+            _REFRESH_HOST_OVERRIDE = None
+        _reset_refresh_client()
+        logger.warning("Coordinator pod %s unreachable; instance refresh falls back to Service DNS", expected)
+        return True
+
+    @staticmethod
+    def send_instance_refresh(event_msg: InsEventMsg) -> bool:
+        """Push an instance event to every reachable Coordinator.
+
+        Standby must receive SET/ADD before it is Ready, otherwise it cannot
+        join the inference Service and the 30s check hits an empty window.
+        Isolated old-master IPs time out quickly and are skipped.
+        Returns True if at least one target accepted the event.
+        """
+        hosts = _instance_refresh_hosts()
+        last_error: Exception | None = None
+        last_address = "unknown"
+        any_ok = False
+
+        for host in hosts:
             with _REFRESH_REQUEST_LOCK:
                 try:
-                    client = _get_refresh_client()
-                    response = client.post("/instances/refresh", data=event_msg.model_dump())
-                    response_text = response.get("text")
-
+                    args = CoordinatorApiClient._generate_client_args(host=host)
+                    last_address = args.get("address", "unknown")
+                    with SafeHTTPSClient(
+                        mode=ConnectionMode.SHORT,
+                        timeout=_PUSH_TIMEOUT_SEC,
+                        **args,
+                    ) as client:
+                        response = client.post("/instances/refresh", data=event_msg.model_dump())
+                    response_text = response.get("text") if isinstance(response, dict) else response
                     if event_msg.instances and len(event_msg.instances) > 0:
                         job_names = [instance.job_name for instance in event_msg.instances]
                         job_names_str = ", ".join(job_names)
                         logger.info(
-                            "Event pushed type: %s, job names: [%s], response: %s (attempt %d/%d)",
+                            "Event pushed type: %s, job names: [%s], response: %s address=%s",
                             event_msg.event,
                             job_names_str,
                             response_text,
-                            attempt + 1,
-                            total_attempts,
+                            last_address,
                         )
                     else:
                         logger.info(
-                            "Event pushed type: %s, push all instances, response: %s (attempt %d/%d)",
+                            "Event pushed type: %s, push all instances, response: %s address=%s",
                             event_msg.event,
                             response_text,
-                            attempt + 1,
-                            total_attempts,
+                            last_address,
                         )
-                    return True
-
+                    any_ok = True
                 except Exception as e:
                     last_error = e
+                    logger.warning(
+                        "Instance refresh to %s failed: %s",
+                        last_address if last_address != "unknown" else host or "service-dns",
+                        e,
+                    )
                     _reset_refresh_client()
-            # Lock released — sleep outside the critical section so other
-            # threads can push events between retry attempts.
-            if attempt < len(_REFRESH_RETRY_DELAYS):
-                delay = _REFRESH_RETRY_DELAYS[attempt]
-                logger.debug(
-                    "Instance refresh attempt %d/%d failed (%s), retrying in %ds...",
-                    attempt + 1,
-                    total_attempts,
-                    last_error,
-                    delay,
-                )
-                time.sleep(delay)
 
-        address = client_args.get("address", "unknown")
+        if any_ok:
+            return True
+
+        if None not in hosts:
+            logger.warning("All Coordinator pod-IP refreshes failed; retrying via Service DNS")
+            with _REFRESH_REQUEST_LOCK:
+                try:
+                    args = CoordinatorApiClient._generate_client_args(host=None)
+                    last_address = args.get("address", "unknown")
+                    with SafeHTTPSClient(
+                        mode=ConnectionMode.SHORT,
+                        timeout=_PUSH_TIMEOUT_SEC,
+                        **args,
+                    ) as client:
+                        client.post("/instances/refresh", data=event_msg.model_dump())
+                    return True
+                except Exception as e:
+                    last_error = e
+                    logger.warning("Instance refresh via Service DNS failed: %s", e)
+                    _reset_refresh_client()
+
         _rl.error_window(
             "coordinator.send_instance_refresh",
-            "Exception occurred while pushing event to %s: %s" % (address, last_error),
+            "Exception occurred while pushing event to %s: %s" % (last_address, last_error),
             window_sec=60,
         )
         return False
@@ -198,8 +338,9 @@ class CoordinatorApiClient:
 
     @staticmethod
     def query_status(params: dict[str, str] | None = None) -> dict[str, str]:
+        client_ars = CoordinatorApiClient._generate_client_args(include_mgmt_api_key=False)
+        address = client_ars.get("address", "unknown")
         try:
-            client_ars = CoordinatorApiClient._generate_client_args(include_mgmt_api_key=False)
             client = SafeHTTPSClient(**client_ars, timeout=3)
             response = client.get("/readiness", params=params)
             _rl.record_success("controller.coordinator.query_status")
@@ -210,7 +351,6 @@ class CoordinatorApiClient:
             )
             return response
         except Exception as e:
-            address = CoordinatorApiClient._generate_client_args(include_mgmt_api_key=False).get("address", "unknown")
             # Rate-limit: the heartbeat detector runs frequently and repeated
             # connection failures flood the log.  Collapse into periodic summaries.
             _rl.error_window(
@@ -281,10 +421,18 @@ class CoordinatorApiClient:
                 client.close()
 
     @classmethod
-    def _generate_client_args(cls, include_mgmt_api_key: bool = True) -> dict[str, Any]:
+    def _generate_client_args(
+        cls,
+        include_mgmt_api_key: bool = True,
+        host: str | None = None,
+    ) -> dict[str, Any]:
         tls_config = cls.controller_config.mgmt_tls_config
         api_config = cls.coordinator_config.api_config
-        address = f"{api_config.coordinator_api_dns}:{api_config.coordinator_api_mgmt_port}"
+        target = host or _REFRESH_HOST_OVERRIDE
+        if target:
+            address = format_address(target, api_config.coordinator_api_mgmt_port)
+        else:
+            address = f"{api_config.coordinator_api_dns}:{api_config.coordinator_api_mgmt_port}"
         client_args: dict[str, Any] = {"address": address, "tls_config": tls_config}
         mgmt_api_key_config = cls.coordinator_config.mgmt_api_key_config
         if include_mgmt_api_key and mgmt_api_key_config.enable_api_key:

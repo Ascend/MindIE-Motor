@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from motor.controller.api_client import coordinator_api_client as cac
 from motor.controller.api_client.coordinator_api_client import CoordinatorApiClient
 from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 
@@ -91,3 +92,33 @@ def test_generate_client_args_loads_management_api_key_from_file() -> None:
         assert "headers" not in probe_client_args
     finally:
         os.remove(api_key_file)
+
+
+def test_list_coordinator_pod_ips_skips_without_namespace() -> None:
+    cac._POD_IP_CACHE = ()
+    cac._POD_IP_CACHE_AT = 0.0
+    with (
+        patch.dict(os.environ, {"POD_NAMESPACE": ""}, clear=False),
+        patch.object(cac, "_k8s_client") as mock_k8s,
+    ):
+        assert cac._list_coordinator_pod_ips() == []
+        mock_k8s.assert_not_called()
+
+
+def test_send_instance_refresh_falls_back_to_service_dns() -> None:
+    event_msg = MagicMock()
+    event_msg.instances = []
+    event_msg.event = "SET"
+    event_msg.model_dump.return_value = {}
+
+    client = MagicMock()
+    client.post.return_value = {"text": "ok"}
+
+    with (
+        patch.object(cac, "_instance_refresh_hosts", return_value=["10.0.0.1"]),
+        patch.object(CoordinatorApiClient, "_generate_client_args", return_value={"address": "dns:1025"}),
+        patch("motor.controller.api_client.coordinator_api_client.SafeHTTPSClient") as mock_client_cls,
+    ):
+        mock_client_cls.return_value.__enter__.side_effect = [OSError("ssl"), client]
+        assert CoordinatorApiClient.send_instance_refresh(event_msg) is True
+    assert client.post.call_count == 1
