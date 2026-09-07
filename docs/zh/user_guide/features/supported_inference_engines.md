@@ -35,6 +35,8 @@ vLLM 是当前 MindIE Motor 推荐的底层推理引擎，已与控制面深度�
 
 SGLang 在多轮对话、Agent 搜索、Few-shot 等依赖前缀复用的场景中，常能较好利用 RadixAttention 等机制。
 
+**部署步骤**：K8s PD 分离请直接参考 [SGLang PD 分离服务部署指导](../deployment/k8s/pd_disaggregation_sglang.md)。示例典配见 `examples/infer_engines/sglang/`（如 `models/glm5.1/A3/`、`models/qwen_8b/A2/`）。
+
 ### 配置 SGLang
 
 ```json

@@ -6,6 +6,7 @@
 - [服务化部署]()
   - [基于K8s单容器PD分离部署](./deployment/k8s/pd_aggregation_deployment.md)
   - [基于K8s多容器PD分离部署](./deployment/k8s/pd_disaggregation_deployment.md)
+  - [基于K8s的SGLang PD分离部署](./deployment/k8s/pd_disaggregation_sglang.md)
   - [Controller支持RAS能力]()
   - [单容器docker only PD分离部署](./deployment/docker/single_container.md)
   - [多容器docker only PD分离部署](./deployment/docker/multi_container.md)

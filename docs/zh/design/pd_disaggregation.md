@@ -46,6 +46,8 @@ vLLM 引擎按 `kv_connector` 名称（大小写不敏感）推导 capability，
 | `MooncakeLayerwiseConnector` | `concurrent_engine_sync` |
 | `MultiConnector` | 取 `kv_connector_extra_config.connectors[0]`（传输连接器，要求至少 2 个）递归判定 |
 
+> `MooncakeConnectorV1` 适用于标准 attention 模型；混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`。详见 [KV 池化 Connector 选型](../user_guide/features/kv_cache_store/README.md#pd-传输-connector-选型)。
+
 - **`MultiConnector` 只看 `connectors[0]`（传输层）**。KV 池/存储类连接器（如 `AscendStoreConnector`、`MooncakeConnectorStoreV1`、`UCMConnector`、`LMCacheAscendConnector`）一般作为 `connectors[1]` 的后端使用，不参与 capability 判定，因此**无需**出现在白名单中。
 - 不在上表内、且 `connectors[0]` 也无法识别的连接器会被判为 `unknown`，**不产生任何 capability**。
 - 上表中已识别的 vLLM connector 还会生成 `decode_colocation`。仅显式填写 `dispatch_profile` 只能声明 P/D 协调方式，不会授予 Decode 共部署能力。

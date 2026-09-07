@@ -6,7 +6,7 @@ MindIE Motor 支持以下部署方式，可根据自身环境选择：
 
 适用于已有 Kubernetes 集群的场景，通过 deployer 工具一键生成并 apply 资源文件，支持 PD 分离、PD 聚合等多种部署形态，具备完整的服务发现、负载均衡与自愈能力。
 
-→ 从 [部署模式说明](k8s/README.md) 开始
+→ 从 [部署模式说明](k8s/README.md) 开始；SGLang 引擎见 [SGLang PD 分离部署](k8s/pd_disaggregation_sglang.md)
 
 需要在集群内通过 Job 执行 deployer 时，可使用[云原生部署与 Helm Chart](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/cloud_native_deploy/README.zh.md)。社区 Chart 支持直接 `helm install/upgrade`。
 

@@ -15,7 +15,7 @@ MindIE Motor支持两种业务拓扑结构（**影响功能**）和 三种服务
 
 ### PD 分离
 
-Prefill 与 Decode 分属不同实例，适用于需要独立规划 P/D 资源、追求更高吞吐的场景。详细步骤见 [PD 分离服务部署](./pd_disaggregation_deployment.md)。
+Prefill 与 Decode 分属不同实例，适用于需要独立规划 P/D 资源、追求更高吞吐的场景。详细步骤见 [PD 分离服务部署](./pd_disaggregation_deployment.md)。若底层引擎为 SGLang，见 [SGLang PD 分离服务部署](./pd_disaggregation_sglang.md)。
 
 ### PD 混部
 

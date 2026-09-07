@@ -37,6 +37,8 @@ Mooncake 池化有两种部署方式（`store_mode` 取值），区别在池化�
 
 ### 配置
 
+> 下方示例 `connectors[0]` 为标准 attention 配置；混合 attention 须换为 `MooncakeHybridConnector`，见 [选型说明](../README.md#pd-传输-connector-选型)。
+
 以下为 P/D 分离 + standalone 部署在 `user_config.json` 中的关键配置：
 
 ```json

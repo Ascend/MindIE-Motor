@@ -166,6 +166,8 @@ Prefill 的 `kv_transfer_config` 使用 `MultiConnector`，并将 UCM 配置内�
 
 `connectors[0]` 也可以按 PD 方案使用 MindIE Motor 当前已识别的其他 Mooncake 传输 Connector，例如 `MooncakeHybridConnector` 或 `MooncakeLayerwiseConnector`。不同 Connector 的执行模式和参数并不相同，应按 [PD 分离特性说明](../../../../design/pd_disaggregation.md#connector-驱动执行计划) 配置，并保证 Prefill 与 Decode 使用相互匹配的传输配置；`UCMConnector` 仍保持在 `connectors[1]`。
 
+> 混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`，见 [选型说明](../README.md#pd-传输-connector-选型)。
+
 ### 配置 Decode
 
 Decode 使用与 Prefill 匹配的 Mooncake Connector，不配置 UCM。以下是 `MooncakeConnectorV1` 样例：

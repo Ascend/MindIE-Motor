@@ -2,6 +2,8 @@
 
 MemCache 为默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供 KV 池化能力，已预装在 Motor 镜像中，无需额外安装。
 
+> 混合 attention 模型的 `connectors[0]` 须用 `MooncakeHybridConnector`，见 [选型说明](../README.md#pd-传输-connector-选型)。
+
 ## 配置
 
 `AscendStoreConnector` 中配置 `"backend": "memcache"`：

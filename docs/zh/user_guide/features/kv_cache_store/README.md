@@ -36,6 +36,17 @@ KV池化主要通过 `user_config.json` 配置；使用 UCM 功能时还需要�
 
 池化通过 `MultiConnector` 组合传输连接器（`connectors[0]`）与池化后端连接器（`connectors[1]`）实现。以 `MooncakeConnectorV1`（P/D 协同）+ `AscendStoreConnector`（KV 池后端）为例：
 
+##### P/D 传输 Connector 选型
+
+> [!IMPORTANT]
+>
+> | 模型 attention 架构 | `connectors[0]` | 典型模型 |
+> |---------------------|-----------------|----------|
+> | 标准 attention | `MooncakeConnectorV1` | Qwen3、GLM-5、DeepSeek V3.1 |
+> | **混合 attention** | **`MooncakeHybridConnector`** | DeepSeek V4 / V4 Flash / V4 Pro |
+>
+> 混合 attention 模型误配 V1 时，Decode 节点可能在推理时崩溃重启。
+
 **P 实例（motor_engine_prefill_config）：**
 
 ```json
@@ -287,3 +298,7 @@ KV池化通过 `MultiConnector` 组合传输 Connector 和 Store Connector。不
 6. **为什么 UCM 样例中仍然有 `backend: "mooncake"`**
 
    这是当前 MindIE Motor deployer 用来生成 Mooncake kv_store/master 资源的配置，不是 UCM 的存储后端。UCM Store 应查看 `UCMConnector` 中的 `store_pipeline` 和 `storage_backends`。
+
+7. **推理时 Decode 节点反复崩溃重启**
+
+   混合 attention 模型须将 `connectors[0]` 配为 `MooncakeHybridConnector`，见 [选型说明](#pd-传输-connector-选型)。
