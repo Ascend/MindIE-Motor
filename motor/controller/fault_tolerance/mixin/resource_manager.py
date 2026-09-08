@@ -16,6 +16,7 @@ are provided by FaultManager.__init__, not redeclared here.
 from motor.common.logger import get_logger
 from motor.common.resources import InsStatus, ReadOnlyInstance
 from motor.controller.fault_tolerance.fault_types import (
+    LINKDOWN_FAULT_CODES,
     FaultCategory,
     FaultInfo,
     FaultLevel,
@@ -27,6 +28,7 @@ from motor.controller.fault_tolerance.fault_types import (
     SpecialFaultCode,
     instance_requires_a2_linkdown_l6,
     is_a2_linkdown_pre_separate,
+    is_non_a2_linkdown_noise,
 )
 from motor.controller.fault_tolerance.k8s.resource_monitor import ResourceMonitor
 
@@ -412,12 +414,34 @@ class _ResourceManagerMixin:
             node_metadata
         )
 
+    def _is_ignored_linkdown_fault(self, fault_info: FaultInfo) -> bool:
+        """Whether a linkdown fault must never be stored on the current hardware."""
+        return is_non_a2_linkdown_noise(fault_info, self._hardware_type())
+
+    def _warn_once(self, key: str) -> bool:
+        """Rate-limit an advisory warning to once per key per FaultManager lifetime.
+
+        The two linkdown advisories below would otherwise repeat on every
+        ConfigMap refresh while the fault persists.
+        """
+        store = getattr(self, "_ft_once_warns", None)
+        if store is None:
+            store = set()
+            self._ft_once_warns = store
+        if key in store:
+            return False
+        store.add(key)
+        return True
+
     def _handle_fault_info_update(self, fault_infos: list[FaultInfo], node_name: str) -> None:
         """Handle a hardware fault information update pushed by a ResourceMonitor.
 
         Replaces the node's hardware_fault_infos with the incoming fault list.
         Preserves any existing node_reboot fault (managed separately by the node
         status handler), since ConfigMap data does not include reboot faults.
+
+        Non-A2 linkdowns (0x81078603) are dropped: storing them at L2 would
+        suppress the ENGINE_DEAD fault code and block engine relaunch.
 
         For PreSeparateNPU faults, dynamically adjusts the fault level based on
         whether the node still hosts INITIAL/ACTIVE instances (L2 if yes, L6 if no).
@@ -432,6 +456,39 @@ class _ResourceManagerMixin:
         if node_metadata is None:
             logger.warning("Node with node_name %s not found, cannot process fault info update", node_name)
             return
+
+        # Non-A2 linkdowns are noise: drop before the L2/L6 level logic below.
+        # Advisory is warning-level (not info) so a REAL linkdown (cable/module
+        # failure) on non-A2 hardware stays visible to operators, and
+        # rate-limited to once per node since the fault persists across refreshes.
+        hw = self._hardware_type()
+        ignored = [info for info in fault_infos if self._is_ignored_linkdown_fault(info)]
+        if ignored:
+            if self._warn_once(f"linkdown-drop:{node_name}"):
+                logger.warning(
+                    "Ignored %d linkdown fault(s) code 0x%x on node %s (hardware %r is not A2) — "
+                    "not stored; linkdown no longer suppresses ENGINE_DEAD on this hardware",
+                    len(ignored),
+                    int(ignored[0].fault_code),
+                    node_name,
+                    hw,
+                )
+            fault_infos = [info for info in fault_infos if not self._is_ignored_linkdown_fault(info)]
+        elif not hw:
+            # hardware_type unset: the linkdown keeps the legacy store path, where
+            # the original ENGINE_DEAD suppression still applies. Warn once so an
+            # A3/A5 deployment missing hardware_type is discoverable from logs.
+            legacy = [info for info in fault_infos if int(info.fault_code) in LINKDOWN_FAULT_CODES]
+            if legacy and self._warn_once(f"linkdown-legacy:{node_name}"):
+                logger.warning(
+                    "Stored %d linkdown fault(s) code 0x%x on node %s: hardware_type is unset, kept "
+                    "legacy behavior (stored linkdown at L2 may suppress ENGINE_DEAD). Set "
+                    "motor_deploy_config.hardware_type (e.g. 800I_A3/800I_A5) to drop linkdown as "
+                    "non-A2 noise",
+                    len(legacy),
+                    int(legacy[0].fault_code),
+                    node_name,
+                )
 
         # Group faults by fault_code, collecting all affected NPU names
         grouped: dict[int, list[FaultInfo]] = {}

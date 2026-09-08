@@ -166,7 +166,7 @@ class ControllerConfig:
     # Token sampling precision alarm: when True, controller terminates decode instance on precision alarm
     precision_auto_recovery_enabled: bool = field(default=False)
     # Copied from motor_deploy_config.hardware_type when loading user_config.json.
-    # Empty means unknown → keep PreSeparateNPU L6→L2 downgrade (non-A2 behavior).
+    # Empty=legacy (linkdown stored); A2=PD isolation; non-A2=linkdown dropped at ingest.
     hardware_type: str = ""
 
     # internal fields

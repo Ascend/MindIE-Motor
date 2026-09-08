@@ -2409,3 +2409,137 @@ def test_process_instance_strategy_skips_superseded_instance(fault_manager_with_
 
     assert manager.instances[1].strategy is None
     manager.executor.shutdown(wait=False)
+
+
+# =============================================================================
+# 10. Non-A2 linkdown noise suppression (A3/A5 false positives)
+# =============================================================================
+
+
+def _seed_linkdown_node(manager, node_name, instance_id, pod_ip="10.0.0.1", job="vllm-0-d0"):
+    """Seed a node+instance and return a mock InstanceManager for active decode."""
+    manager.instances[instance_id] = InstanceMetadata(instance_id=instance_id)
+    manager.nodes[node_name] = NodeMetadata(
+        node_name=node_name,
+        instance_ids={instance_id},
+        instance_pod_ips={instance_id: pod_ip},
+        instance_job_names={instance_id: job},
+    )
+    inst = _mk_active_instance(instance_id, job, role="decode")
+
+    def _get_instance(iid):
+        return inst if iid == instance_id else None
+
+    mock_im = MagicMock()
+    mock_im.get_instance.side_effect = _get_instance
+    mock_im.get_instance_by_job_name.return_value = inst
+    return mock_im
+
+
+def test_handle_fault_info_non_a2_linkdown_drop_keeps_real_faults(fault_manager):
+    """Dropping the linkdown must not drop a real fault in the same ConfigMap."""
+    manager = fault_manager
+    manager.config.hardware_type = "800I_A3"
+    node_name = "node_a"
+    mock_im = _seed_linkdown_node(manager, node_name, 1)
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+    ):
+        manager._handle_fault_info_update(
+            [FAULT_A2_LINKDOWN_CHIP6.model_copy(), FAULT_PRE_SEPARATE_L6.model_copy()], node_name
+        )
+
+    stored = manager.nodes[node_name].hardware_fault_infos
+    assert int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) not in stored
+    assert 0x00F1FEF5 in stored
+    # Real PreSeparateNPU fault still downgrades to L2 with active business.
+    assert stored[0x00F1FEF5].fault_level == FaultLevel.L2
+
+
+def test_handle_fault_info_unknown_hardware_keeps_legacy_linkdown_store(fault_manager):
+    """Empty hardware_type keeps the legacy store+downgrade behavior."""
+    manager = fault_manager  # hardware_type == ""
+    node_name = "node_a"
+    mock_im = _seed_linkdown_node(manager, node_name, 1)
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+    ):
+        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+
+    stored = manager.nodes[node_name].hardware_fault_infos
+    assert int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) in stored
+    assert stored[int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)].fault_level == FaultLevel.L2
+
+
+def test_non_a2_linkdown_cannot_block_engine_dead_relaunch(fault_manager):
+    """Linkdown dropped at ingest must not steal the code from ENGINE_DEAD."""
+    manager = fault_manager
+    manager.config.hardware_type = "800I_A3"
+    node_name = "node_a"
+    mock_im = _seed_linkdown_node(manager, node_name, 1)
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+    ):
+        # Linkdown-only ConfigMap is dropped at ingest: nothing stored, HEALTHY.
+        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+        assert manager.nodes[node_name].hardware_fault_infos == {}
+        assert manager.instances[1].fault_level == FaultLevel.HEALTHY
+
+        # Engine death then owns the fault code and maps to relaunch.
+        engine_dead = FaultInfo.from_exception(RuntimeError("engine died"), engine_id=1, engine_status=1)
+        manager.report_software_fault(engine_dead, pod_ip="10.0.0.1")
+
+    from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+    from motor.controller.fault_tolerance.strategy.strategy import level2_strategy
+
+    assert manager.instances[1].fault_level == FaultLevel.L2
+    assert manager.instances[1].fault_code == int(SpecialFaultCode.ENGINE_DEAD)
+    assert level2_strategy(manager.instances[1].fault_code, 1, manager.config) is EngineRelaunchStrategy
+
+
+def test_non_a2_linkdown_drop_warns_once_per_node(caplog, fault_manager):
+    """Dropped non-A2 linkdown is visible to operators, rate-limited per node."""
+    manager = fault_manager
+    manager.config.hardware_type = "800I_A3"
+    node_name = "node_drop_warn"
+    mock_im = _seed_linkdown_node(manager, node_name, 1)
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+        caplog.at_level("WARNING"),
+    ):
+        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)  # refresh repeats
+
+    assert manager.nodes[node_name].hardware_fault_infos == {}
+    # Warning raised on first occurrence only (rate-limit), mentioning the hardware.
+    assert "linkdown" in caplog.text and "800I_A3" in caplog.text and "not stored" in caplog.text
+    assert caplog.text.count("Ignored 1 linkdown fault") == 1
+
+
+def test_unknown_hardware_linkdown_store_warns_legacy_path(caplog, fault_manager):
+    """Empty hardware_type keeps legacy store but warns that ENGINE_DEAD may be suppressed."""
+    manager = fault_manager  # hardware_type == ""
+    node_name = "node_legacy_warn"
+    mock_im = _seed_linkdown_node(manager, node_name, 1)
+
+    with (
+        patch(_CORE_IM, return_value=mock_im),
+        patch(_FAULT_MGR_IM, return_value=mock_im),
+        caplog.at_level("WARNING"),
+    ):
+        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
+        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)  # refresh repeats
+
+    stored = manager.nodes[node_name].hardware_fault_infos
+    assert int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) in stored
+    # Warning raised on first occurrence only (rate-limit), pointing to hardware_type config.
+    assert "hardware_type is unset" in caplog.text and "may suppress ENGINE_DEAD" in caplog.text
+    assert caplog.text.count("Stored 1 linkdown fault") == 1

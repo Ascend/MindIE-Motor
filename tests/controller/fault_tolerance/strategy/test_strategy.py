@@ -324,7 +324,7 @@ def test_level6_strategy_returns_nm_suicide_for_decode_linkdown(mock_instance_ma
 
 
 def test_level6_strategy_decode_linkdown_on_a3_uses_scale_p2d(mock_instance_manager, decode_instance, mock_config):
-    """A3 Decode linkdown is not in the A2 isolation path and still uses ScaleP2D."""
+    """A3 Decode linkdown: pure-level ScaleP2D fallback (dropped at ingest at runtime)."""
     mock_config.hardware_type = "800I_A3"
     mock_instance_manager.return_value.get_instance.return_value = decode_instance
 
@@ -352,7 +352,7 @@ def test_level6_strategy_prefill_non_isolation_code_returns_none(mock_instance_m
 
 
 def test_level6_strategy_prefill_linkdown_on_a3_returns_none(mock_instance_manager, prefill_instance, mock_config):
-    """A3 Prefill linkdown keeps the pre-existing no-op L6 path."""
+    """A3 Prefill linkdown: pre-existing no-op L6 path (dropped at ingest at runtime)."""
     mock_config.hardware_type = "800I_A3"
     mock_instance_manager.return_value.get_instance.return_value = prefill_instance
 

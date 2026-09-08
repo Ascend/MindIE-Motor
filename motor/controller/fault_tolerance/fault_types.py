@@ -35,13 +35,19 @@ class SpecialFaultCode(int, Enum):
     ENGINE_DEAD = 0x1000001
     ENGINE_UNHEALTHY = 0x1000002
     # Device-plugin CardNetworkUnhealthy / linkdown (ConfigMap).
+    # A2: PD-disagg isolation trigger; A3/A5: false-positive noise.
     CARD_NETWORK_LINKDOWN = 0x81078603
 
 
 # A2 PD-disagg isolation codes. Membership means ALL of: keep PreSeparateNPU at L6,
 # attribute by occupied NPU, and Decode uses NmSuicide (not ScaleP2D).
 # Do not add a code that only needs "keep L6".
+# Keep independent of LINKDOWN_FAULT_CODES below (it may grow with real codes).
 A2_PD_ISOLATION_FAULT_CODES: frozenset[int] = frozenset({int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)})
+
+# Linkdown codes dropped as noise on non-A2 hardware (A3/A5 false positives).
+# Independent of A2_PD_ISOLATION_FAULT_CODES above.
+LINKDOWN_FAULT_CODES: frozenset[int] = frozenset({int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)})
 
 
 class NodeStatus(str, Enum):
@@ -233,6 +239,17 @@ def is_a2_linkdown_pre_separate(fault_info: FaultInfo, hardware_type: str) -> bo
     if fault_info.origin_fault_level != OriginFaultLevel.PRE_SEPARATE_NPU:
         return False
     return int(fault_info.fault_code) in A2_PD_ISOLATION_FAULT_CODES
+
+
+def is_non_a2_linkdown_noise(fault_info: FaultInfo, hardware_type: str) -> bool:
+    """Whether a linkdown (0x81078603) is noise to ignore on this hardware.
+
+    Ignored on non-A2 hardware; A2 and empty/unknown keep legacy storage.
+    """
+    hw = (hardware_type or "").strip()
+    if not hw or is_800i_a2(hw):
+        return False
+    return int(fault_info.fault_code) in LINKDOWN_FAULT_CODES
 
 
 def instance_requires_a2_linkdown_l6(instance: Any) -> bool:

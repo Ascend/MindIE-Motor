@@ -22,6 +22,7 @@ from motor.controller.fault_tolerance.fault_types import (
     instance_requires_a2_linkdown_l6,
     is_800i_a2,
     is_a2_linkdown_pre_separate,
+    is_non_a2_linkdown_noise,
     parse_npu_chip_ids,
 )
 
@@ -111,3 +112,12 @@ def test_is_a2_linkdown_pre_separate_requires_a2_and_isolation_code():
     assert is_a2_linkdown_pre_separate(linkdown, "800I_A2") is True
     assert is_a2_linkdown_pre_separate(linkdown, "800I_A3") is False
     assert is_a2_linkdown_pre_separate(other, "800I_A2") is False
+
+
+def test_is_non_a2_linkdown_noise_matches_linkdown_off_a2_only():
+    linkdown = _linkdown("Ascend910-6")
+    assert all(is_non_a2_linkdown_noise(linkdown, hw) for hw in ("800I_A3", "800I-A3", "800I_A5", " 800i-a3 "))
+    assert not any(is_non_a2_linkdown_noise(linkdown, hw) for hw in ("800I_A2", "800I-A2", "", None))
+    for code in (0x00F1FEF5, int(SpecialFaultCode.NODE_REBOOT)):
+        other = linkdown.model_copy(update={"fault_code": code})
+        assert not is_non_a2_linkdown_noise(other, "800I_A3")
