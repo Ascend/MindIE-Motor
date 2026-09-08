@@ -79,6 +79,8 @@ docker build --network=host \
 
 Each Dockerfile header comment contains the exact `--platform` value, source repository info, and full `docker build` command.
 
+The `master` Dockerfile installs gcc / curl / libzmq so `build.sh` can locate or rustup-install cargo and pack both `libmindie_workload_shm.so` (required; missing library refuses the wheel) and `kv-conductor` (when libzmq is present). Default `SKIP_WORKLOAD_SHM_BUILD=0` and `SKIP_KV_CONDUCTOR_BUILD=0` force an in-image cargo rebuild even if the build context already contains a host-built `.so` or binary (glibc/ABI). Local `bash build.sh` reuses those files when they already exist. `build.sh` auto-skips kv-conductor if libzmq/pkg-config is missing; it does not apt-install libzmq. Override with `--build-arg SKIP_KV_CONDUCTOR_BUILD=1` to skip even when headers exist. Build the `.so` on the same OS/glibc as the runtime image.
+
 ---
 
 ## License

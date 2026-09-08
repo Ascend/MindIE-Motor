@@ -636,12 +636,12 @@ ABI 版本：在 `.so` 导出 `mindie_wl_abi_version() -> uint32_t`，与 `SCHEM
 
 ### 8.5 构建与打包
 
-`build.sh` 在 kv-conductor 段落后增加同样的优先级链：
+`build.sh` 在 kv-conductor 段落后增加同样的优先级链，并在此之前 `source scripts/ensure_rust.sh`（PATH / `$HOME/.cargo`；仅当缺产物或显式 `SKIP_*=0` 时 rustup）。默认 **已有产物跳过 cargo，缺了才编**。wheel 仍必须含 workload-shm；kv-conductor 仅在缺 `bin/` 且 cargo + libzmq 时编译，缺 zmq 自动跳过。强制重编：`SKIP_WORKLOAD_SHM_BUILD=0` / `SKIP_KV_CONDUCTOR_BUILD=0`。永不编 conductor：`SKIP_KV_CONDUCTOR_BUILD=1`。离线：`WORKLOAD_SHM_PREBUILT`。
 
 1. `WORKLOAD_SHM_PREBUILT` → copy `.so`
-2. 有 cargo 且未设 `SKIP_WORKLOAD_SHM_BUILD=1` → `cargo build --release --manifest-path motor/coordinator/workload_shm_rs/Cargo.toml`，copy `target/release/libmindie_workload_shm.so`（macOS 为 `dylib`）到 `motor/coordinator/workload_shm_rs/lib/`
-3. `lib/` 已有产物 → 跳过
-4. 否则 WARNING，wheel 不含 `.so`；运行时 Python 报明确错误（调度不可用），**不要**静默回退到错误账本
+2. `lib/libmindie_workload_shm.so` 已存在且未显式 `SKIP_WORKLOAD_SHM_BUILD=0` → 跳过 cargo
+3. 有 cargo → `cargo build --release`，copy `target/release/libmindie_workload_shm.so`（macOS 为 `dylib`）到 `motor/coordinator/workload_shm_rs/lib/`（`SKIP_WORKLOAD_SHM_BUILD=1` 但缺库时忽略 SKIP）
+4. 否则 **ERROR + exit 1**，禁止打出不含 `.so` 的 wheel（报错含 `refusing to emit dist/motor-*.whl`）。pip wheel 之后再断言 archive 含 `motor/coordinator/workload_shm_rs/lib/libmindie_workload_shm.so`；断言失败则 **删除刚打出的 wheel**。若本次编出了 kv-conductor，archive 也必须含 `motor/kv_conductor/bin/kv-conductor`。源码开发仍可走 `target/release`，运行时缺库响亮失败、**不要**静默回退到错误账本
 
 `setup.py`：
 
@@ -657,7 +657,7 @@ if os.path.isfile(_shm_so):
 
 `AGENTS.md` / `.agent/skills/motor-dev/references/coordinator.md`：与实现 **同一 PR** 更新进程图、SHM layout（schema 4）、RPC 表。这是仓库 Skill Sync 铁律。
 
-Docker：`docker/mindie-motor-vllm/*/Dockerfile` 已有 cargo（为 kv-conductor）。新 crate 无 libzmq 依赖，只要 rustc。`SKIP_*` 行为与 conductor 对齐。
+Docker：`docker/mindie-motor-vllm/master/Dockerfile` 安装 gcc/curl/libzmq（cargo 链接、rustup 与 kv-conductor 所需）；`build.sh` 通过 `scripts/ensure_rust.sh` 探测或 rustup 安装 cargo，pip install 后删除 rustup，运行镜像不保留工具链。该 Dockerfile 默认 `SKIP_WORKLOAD_SHM_BUILD=0` 与 `SKIP_KV_CONDUCTOR_BUILD=0`，避免把宿主机已有 `.so`/二进制打进镜像（glibc/ABI）。版本化 Dockerfile 在 bump 到含本逻辑的 commit 后同样走 `build.sh`。workload-shm crate 无 libzmq 依赖。本地 `bash build.sh` 默认复用已有 `lib/` 与 `bin/`。
 
 ### 8.6 Python 加载
 

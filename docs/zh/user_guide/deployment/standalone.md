@@ -20,8 +20,9 @@
 
 | 项 | 要求 |
 |----|------|
-| OS | Linux（aarch64 / x86_64） |
+| OS | Linux（aarch64 / x86_64），与运行环境相同 glibc |
 | Python | `>= 3.11` |
+| 自打包 | `curl`、C 编译器（`build-essential` / `gcc`）；无 cargo 时 `build.sh` 会 rustup 安装 |
 | 网络 | 可达各 P/D 引擎 HTTP 端口（常见 `8000` / `10000`） |
 | 端口 | 本机 `1025`（推理）/ `1026`（管理）/ `1027`（观测）空闲 |
 
@@ -42,14 +43,15 @@ pip install -r requirements.txt
 # 安装 motor（三选一）
 # A. 源码可编辑：
 pip install --no-deps -e .
-# B. 自打包 whl（无 cargo / 不需要 KV 亲和时可：SKIP_KV_CONDUCTOR_BUILD=1 bash build.sh）：
+# B. 自打包 whl（workload-shm 必需；有 cargo+libzmq 时再打 kv-conductor，缺 zmq 自动跳过）：
 bash build.sh
+# 显式跳过 kv-conductor：SKIP_KV_CONDUCTOR_BUILD=1 bash build.sh
 pip install --no-deps --force-reinstall dist/motor-*.whl
 # C. 现成 whl：
 # pip install --no-deps --force-reinstall /path/to/motor-*.whl
 ```
 
-`--no-deps`：whl 不声明依赖，须先装 `requirements.txt`。离线场景见 [附录 A](#附录-a离线安装)。
+`--no-deps`：whl 不声明依赖，须先装 `requirements.txt`。离线场景见 [附录 A](#附录-a离线安装)。已有 `lib/*.so` / `bin/kv-conductor` 时 `bash build.sh` 默认跳过 cargo；改 `.rs` 后用 `SKIP_WORKLOAD_SHM_BUILD=0` / `SKIP_KV_CONDUCTOR_BUILD=0`。不能装 rustup 时用 `WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so`。打出的 wheel **必须**含 `libmindie_workload_shm.so`，缺库时 `build.sh` 拒绝出包并打印 `refusing to emit`；缺 conductor 二进制且有 cargo + libzmq 时同时含 `kv-conductor`（`unzip -l dist/motor-*.whl | grep -E 'kv-conductor|libmindie_workload_shm.so'`）。开关细节见仓库根 `AGENTS.md`「构建」。
 
 ---
 

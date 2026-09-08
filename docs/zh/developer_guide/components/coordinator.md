@@ -43,7 +43,7 @@ Render 产生的非流式 Chat Completions 和 Completions 请求支持完整 To
 
 - 配置来源：`CoordinatorConfig.from_json()`，通常来自挂载的 `user_config.json` 中 **`motor_coordinator_config`** 等合并结果，字段定义见 `motor/config/coordinator.py`。独立部署时入口只读环境变量 `USER_CONFIG_PATH`。
 - 部署与端口约定见 [配置参考：motor_coordinator_config](../../user_guide/configuration/config_reference.md) 与 [接口说明](../../user_guide/api/README.md)。
-- 负载 SHM 需要 `libmindie_workload_shm.so`（`bash build.sh` 会 cargo 构建）。缺失时启动响亮失败，不会回退到 Python 账本。
+- 负载 SHM 需要 `libmindie_workload_shm.so`。`bash build.sh` 默认已有 `lib/*.so` 则跳过 cargo，缺了才编并**打进 wheel**（缺库禁止出包）。改 `.rs` 后设 `SKIP_WORKLOAD_SHM_BUILD=0`。有 cargo + libzmq 且缺 `bin/kv-conductor` 时同时打包 kv-conductor；缺 libzmq 时自动跳过（也可 `SKIP_KV_CONDUCTOR_BUILD=1 bash build.sh`）。缺失 `.so` 时启动响亮失败，不会回退到 Python 账本。
 - 不依赖 Controller / Node Manager 的拉起步骤见 [Coordinator 独立部署](../../user_guide/deployment/standalone.md)。
 
 ## 配置说明

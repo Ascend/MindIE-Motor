@@ -79,6 +79,8 @@ docker build --network=host \
 
 各 Dockerfile 头部注释中已写明对应的 `--platform`、源码仓库信息与完整 `docker build` 命令，可直接复制使用。
 
+`master` Dockerfile 会在构建阶段安装 gcc / curl / libzmq，由 `build.sh` 探测或 rustup 安装 cargo，把必需的 `libmindie_workload_shm.so` 与（有 libzmq 时的）`kv-conductor` 打进 wheel（缺 `.so` 拒绝出包）。默认 `SKIP_WORKLOAD_SHM_BUILD=0` 与 `SKIP_KV_CONDUCTOR_BUILD=0`，即使构建上下文里已有宿主机编好的 `.so`/二进制也会在镜像内重编（避免 glibc/ABI 不一致）。本地 `bash build.sh` 则是已有产物跳过 cargo。缺 libzmq/pkg-config 时 `build.sh` 会自动跳过 kv-conductor，不会在脚本里 apt 安装 libzmq。即使已有头文件也要跳过时用 `--build-arg SKIP_KV_CONDUCTOR_BUILD=1`。请勿在与运行镜像不同的 OS 上交叉拷贝 `.so`（glibc 可能对不上）。
+
 ---
 
 ## 许可证
