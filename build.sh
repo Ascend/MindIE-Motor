@@ -294,7 +294,7 @@ fi
 echo "wheel native lib verified: ${WHEEL_PATH}"
 
 # pep517 emits motor-*-py3-none-any.whl (filename + WHEEL Tag). Native
-# .so/binaries are arch-specific, so retag both to x86_64 / aarch64.
+# .so/binaries are arch-specific, so retag both to linux_x86_64 / linux_aarch64.
 WHEEL_PATH="$(PYTHONPATH="$(pwd)${PYTHONPATH:+:${PYTHONPATH}}" python -c \
     "from motor.coordinator.workload_shm_rs.wheel_gate import retag_motor_wheel_filename; print(retag_motor_wheel_filename(r'''${WHEEL_PATH}''', r'''${MOTOR_VERSION}'''))")"
 if [[ -z "${WHEEL_PATH}" || ! -f "${WHEEL_PATH}" ]]; then

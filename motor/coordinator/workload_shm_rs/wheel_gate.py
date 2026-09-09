@@ -16,7 +16,8 @@ workload-shm cdylib. kv-conductor is packed when ``build.sh`` produced the binar
 
 ``build.sh`` also retags the pep517 ``py3-none-any`` artifact with the host
 architecture so x86_64 and aarch64 wheels do not collide. Both the filename
-and ``*.dist-info/WHEEL`` ``Tag:`` are rewritten so they stay consistent.
+and ``*.dist-info/WHEEL`` ``Tag:`` become ``py3-none-linux_<arch>`` so pip on
+Linux accepts the wheel (bare ``aarch64`` is not a PEP 425 platform tag).
 """
 
 import base64
@@ -72,17 +73,18 @@ def assert_motor_wheel_has_kv_conductor(wheel_path: str) -> None:
 
 
 def resolve_motor_wheel_platform_tag(*, machine: str | None = None) -> str:
-    """Return the arch tag that replaces ``any`` on this host.
+    """Return the PEP 425 platform tag that replaces ``any`` on this host.
 
-    Official artifacts are ``x86_64`` / ``aarch64``. Machine aliases
-    (``amd64``, ``arm64``) are normalized so CI and ``uname -m`` agree.
+    Official Linux artifacts are ``linux_x86_64`` / ``linux_aarch64``. Machine
+    aliases (``amd64``, ``arm64``) are normalized so CI and ``uname -m`` agree.
     """
     mach = (machine if machine is not None else platform.machine()).strip().lower()
-    return _MACHINE_ALIASES.get(mach, mach.replace("-", "_") or "unknown")
+    arch = _MACHINE_ALIASES.get(mach, mach.replace("-", "_") or "unknown")
+    return f"linux_{arch}"
 
 
 def arch_tagged_motor_wheel_name(version: str, *, platform_tag: str | None = None) -> str:
-    """Keep the pep517 name and swap ``any`` for the host arch. No ``linux_`` prefix."""
+    """Keep the pep517 name and swap ``any`` for the Linux platform tag."""
     tag = platform_tag if platform_tag is not None else resolve_motor_wheel_platform_tag()
     return f"motor-{version}-py3-none-{tag}.whl"
 
@@ -95,10 +97,10 @@ def retag_motor_wheel_filename(
 ) -> str:
     """Rename the pep517 any-wheel and rewrite ``*.dist-info/WHEEL`` ``Tag:``.
 
-    Filename and metadata both become ``py3-none-<arch>`` (``x86_64`` /
-    ``aarch64``). ``RECORD`` is updated when that member exists. Returns the
-    destination path. Filename is unchanged when already tagged; metadata is
-    still rewritten so a stale ``py3-none-any`` Tag cannot linger.
+    Filename and metadata both become ``py3-none-linux_<arch>``. ``RECORD`` is
+    updated when that member exists. Returns the destination path. Filename is
+    unchanged when already tagged; metadata is still rewritten so a stale
+    ``py3-none-any`` Tag cannot linger.
     """
     src = Path(wheel_path)
     arch = platform_tag if platform_tag is not None else resolve_motor_wheel_platform_tag()
