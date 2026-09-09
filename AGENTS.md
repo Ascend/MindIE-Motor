@@ -47,7 +47,7 @@ SKIP_RUST_BUILD=1 bash build.sh                     # 两个 SKIP=1 快捷键（
 WORKLOAD_SHM_PREBUILT=/path/to/libmindie_workload_shm.so bash build.sh   # 离线预编译 .so
 ```
 
-产物：`dist/motor-0.1.0-py3-none-any.whl`。验收：
+产物：`dist/motor-3.1.0-py3-none-x86_64.whl`（ARM 为 `aarch64`）。验收：
 
 ```bash
 unzip -l dist/motor-*.whl | grep -E 'kv-conductor|libmindie_workload_shm.so'

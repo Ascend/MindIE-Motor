@@ -10,6 +10,8 @@
 
 """Guards the motor-wheel contract: deployable wheels must ship native members."""
 
+import base64
+import hashlib
 import zipfile
 from pathlib import Path
 
@@ -19,10 +21,45 @@ from motor.coordinator.scheduler.runtime.workload_shm import native
 from motor.coordinator.workload_shm_rs.wheel_gate import (
     KV_CONDUCTOR_WHEEL_MEMBER,
     WORKLOAD_SHM_WHEEL_MEMBER,
+    arch_tagged_motor_wheel_name,
     assert_motor_wheel_has_kv_conductor,
     assert_motor_wheel_has_workload_shm,
     list_missing_required_native_libs,
+    resolve_motor_wheel_platform_tag,
+    retag_motor_wheel_filename,
 )
+
+_WHEEL_MEMBER = "motor-3.1.0.dist-info/WHEEL"
+_RECORD_MEMBER = "motor-3.1.0.dist-info/RECORD"
+
+
+def _record_sha256(data: bytes) -> str:
+    digest = hashlib.sha256(data).digest()
+    return "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _write_pep517_wheel(path: Path, *, tag: str = "py3-none-any") -> None:
+    """Write a minimal pep517-shaped wheel so retag can rewrite WHEEL + RECORD."""
+    wheel_body = (f"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: {tag}\n").encode()
+    record = f"{_WHEEL_MEMBER},{_record_sha256(wheel_body)},{len(wheel_body)}\n"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(_WHEEL_MEMBER, wheel_body)
+        archive.writestr(_RECORD_MEMBER, record)
+        archive.writestr("motor/__init__.py", b"")
+
+
+def _wheel_tags(path: Path) -> list[str]:
+    with zipfile.ZipFile(path) as archive:
+        text = archive.read(_WHEEL_MEMBER).decode()
+    return [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("Tag:")]
+
+
+def _record_row(path: Path, member: str) -> str:
+    with zipfile.ZipFile(path) as archive:
+        for line in archive.read(_RECORD_MEMBER).decode().splitlines():
+            if line.split(",", 1)[0] == member:
+                return line
+    raise AssertionError(f"RECORD is missing {member}")
 
 
 def test_wheel_member_matches_runtime_loader_basename():
@@ -69,3 +106,51 @@ def test_assert_motor_wheel_has_kv_conductor_accepts_packaged_bin(tmp_path: Path
         archive.writestr(KV_CONDUCTOR_WHEEL_MEMBER, b"\x7fELF")
 
     assert_motor_wheel_has_kv_conductor(str(wheel))
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("x86_64", "x86_64"),
+        ("amd64", "x86_64"),
+        ("aarch64", "aarch64"),
+        ("arm64", "aarch64"),
+    ],
+)
+def test_resolve_motor_wheel_platform_tag_normalizes_host(machine: str, expected: str):
+    """x86 and ARM builds must get distinct tags so artifacts cannot collide."""
+    assert resolve_motor_wheel_platform_tag(machine=machine) == expected
+
+
+def test_arch_tagged_motor_wheel_name_keeps_pep517_prefix():
+    """Filename stays motor-<ver>-py3-none-<arch>.whl; only the any tag is replaced."""
+    assert arch_tagged_motor_wheel_name("3.1.0", platform_tag="x86_64") == "motor-3.1.0-py3-none-x86_64.whl"
+    assert arch_tagged_motor_wheel_name("3.1.0", platform_tag="aarch64") == "motor-3.1.0-py3-none-aarch64.whl"
+
+
+def test_retag_motor_wheel_filename_replaces_any_tag(tmp_path: Path):
+    """Filename and WHEEL Tag must both leave any; do not add a linux_ prefix."""
+    src = tmp_path / "motor-3.1.0-py3-none-any.whl"
+    _write_pep517_wheel(src)
+
+    dest = Path(retag_motor_wheel_filename(str(src), "3.1.0", platform_tag="x86_64"))
+
+    assert dest == tmp_path / "motor-3.1.0-py3-none-x86_64.whl"
+    assert dest.is_file()
+    assert not src.exists()
+    assert _wheel_tags(dest) == ["py3-none-x86_64"]
+    with zipfile.ZipFile(dest) as archive:
+        new_wheel = archive.read(_WHEEL_MEMBER)
+    assert _record_row(dest, _WHEEL_MEMBER) == (f"{_WHEEL_MEMBER},{_record_sha256(new_wheel)},{len(new_wheel)}")
+
+
+def test_retag_motor_wheel_filename_is_noop_when_already_tagged(tmp_path: Path):
+    """Re-running the gate on an already tagged wheel must not invent a second file."""
+    src = tmp_path / "motor-3.1.0-py3-none-aarch64.whl"
+    _write_pep517_wheel(src, tag="py3-none-any")
+
+    dest = Path(retag_motor_wheel_filename(str(src), "3.1.0", platform_tag="aarch64"))
+
+    assert dest == src
+    assert src.is_file()
+    assert _wheel_tags(dest) == ["py3-none-aarch64"]
