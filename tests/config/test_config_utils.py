@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -9,13 +8,16 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Tests for config_utils — re_register_interval_sec resolution."""
+"""Tests for config_utils — re_register_interval_sec resolution and controller detection."""
+
+import json
 
 from motor.config.config_utils import (
     _resolve_re_register_interval_sec,
     DEFAULT_RE_REGISTER_INTERVAL_SEC,
     RE_REGISTER_INTERVAL_SEC,
     PREFILL_KV_EVENT_CONFIG,
+    has_motor_controller_config,
 )
 
 # The top-level key for motor_coordinator config used by the resolver.
@@ -84,3 +86,24 @@ class TestResolveReRegisterIntervalSec:
             {_MOTOR_COORDINATOR_KEY: {PREFILL_KV_EVENT_CONFIG: {RE_REGISTER_INTERVAL_SEC: 0}}}
         )
         assert result == 0
+
+
+class TestHasMotorControllerConfig:
+    def test_returns_false_when_config_path_missing(self):
+        assert has_motor_controller_config(None) is False
+
+    def test_returns_true_when_motor_controller_config_present(self, tmp_path):
+        config_path = tmp_path / "full.json"
+        config_path.write_text(
+            json.dumps({"motor_controller_config": {}, "motor_coordinator_config": {}}),
+            encoding="utf-8",
+        )
+        assert has_motor_controller_config(str(config_path)) is True
+
+    def test_returns_false_for_standalone_coordinator_only_config(self, tmp_path):
+        config_path = tmp_path / "standalone.json"
+        config_path.write_text(
+            json.dumps({"motor_coordinator_config": {"aigw": {"id": "test-model"}}}),
+            encoding="utf-8",
+        )
+        assert has_motor_controller_config(str(config_path)) is False

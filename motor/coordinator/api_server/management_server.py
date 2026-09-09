@@ -15,8 +15,8 @@ Does not create or start inference Workers; those are started by CoordinatorDaem
 """
 
 import asyncio
-import secrets
 import json
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -25,7 +25,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 
-from motor.common.resources.http_msg_spec import InsEventMsg
+from motor.common.resources.http_msg_spec import ExternalInsEventMsg, InsEventMsg
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
@@ -36,6 +36,7 @@ from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.scheduler.runtime.scheduler_server import AsyncSchedulerServer
 from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
+from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
 from motor.coordinator.domain.instance_manager import InstanceIdConflictError, InstanceManager, TYPE_MGMT
 from motor.coordinator.domain.probe import (
     DaemonLivenessProvider,
@@ -60,6 +61,44 @@ _READINESS_503: dict[ReadinessResult, str] = {
 # Request body limits for /instances/refresh
 _MAX_REQUEST_BODY_SIZE = 10 * 1024 * 1024  # 10MB
 _REQUEST_BODY_PREVIEW_LENGTH = 200
+
+# Top-level fields that only appear in coordinator-standalone External Deployer events.
+_STANDALONE_TOP_LEVEL_MARKERS = frozenset({"model_name", "dispatch_capabilities", "engine_type"})
+
+
+def _is_standalone_instance_refresh(body: Any) -> bool:
+    """Return True when the payload follows the coordinator-standalone External protocol.
+
+    Controller deployments send full InsEventMsg instances (job_name plus dict endpoints).
+    Standalone External Deployer events may omit all top-level optional fields and only
+    provide id/role/endpoints[], where endpoints is a list of {"id": 0, "address": "host:port"}.
+    """
+    if not isinstance(body, dict):
+        return False
+    if any(marker in body for marker in _STANDALONE_TOP_LEVEL_MARKERS):
+        return True
+
+    instances = body.get("instances")
+    if not isinstance(instances, list) or not instances:
+        return False
+
+    saw_standalone_shape = False
+    saw_controller_shape = False
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        if "job_name" in instance:
+            saw_controller_shape = True
+            continue
+        endpoints = instance.get("endpoints")
+        if isinstance(endpoints, list):
+            saw_standalone_shape = True
+        elif isinstance(endpoints, dict):
+            saw_controller_shape = True
+
+    if saw_standalone_shape and saw_controller_shape:
+        raise ValueError("mixed controller and coordinator-standalone instance payloads in one request")
+    return saw_standalone_shape
 
 
 def _build_ok_response(message: str) -> dict[str, str]:
@@ -581,15 +620,7 @@ class ManagementServer(BaseCoordinatorServer):
                 detail=f"Failed to parse request body: {str(e)}",
             ) from e
 
-        try:
-            event_msg = InsEventMsg(**body)
-        except Exception as e:
-            body_keys = list(body.keys()) if isinstance(body, dict) else "not a dict"
-            logger.error("Failed to parse InsEventMsg: %s, body keys: %s", e, body_keys)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid request format: {str(e)}",
-            ) from e
+        event_msg = await self._parse_instance_event(body)
 
         async with self._refresh_lock:
             try:
@@ -615,3 +646,73 @@ class ManagementServer(BaseCoordinatorServer):
                 "instance_count": len(event_msg.instances),
             },
         )
+
+    async def _parse_instance_event(self, body: Any) -> InsEventMsg:
+        """Select InsEventMsg (Controller) vs ExternalInsEventMsg (coordinator-standalone).
+
+        Standalone model-name discovery uses blocking HTTP (requests, timeout=2s per endpoint).
+        That I/O is offloaded so /liveness, /readiness, and /instances stay responsive.
+        """
+        try:
+            is_standalone_request = _is_standalone_instance_refresh(body)
+        except ValueError as mixed_protocol_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(mixed_protocol_error),
+            ) from mixed_protocol_error
+
+        if not is_standalone_request:
+            try:
+                return InsEventMsg.model_validate(body)
+            except Exception as controller_error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid request format: {str(controller_error)}",
+                ) from controller_error
+
+        try:
+            # Segment 1: schema-only. No engine I/O, so this stays on the event loop.
+            external_msg = ExternalInsEventMsg.model_validate(body)
+            aigw_model = self.coordinator_config.get_aigw_models() or {}
+            # Segment 2: blocking /v1/models (requests, 2s/endpoint) runs in a worker thread.
+            resolved_model_name = await asyncio.to_thread(self._resolve_external_model_name, external_msg)
+            return external_msg.to_internal(str(aigw_model.get("id", "")), resolved_model_name)
+        except Exception as standalone_error:
+            body_keys = list(body.keys()) if isinstance(body, dict) else "not a dict"
+            logger.error(
+                "Failed to parse coordinator-standalone instance refresh request: error=%s body_keys=%s",
+                standalone_error,
+                body_keys,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid request format: {str(standalone_error)}",
+            ) from standalone_error
+
+    def _resolve_external_model_name(self, event_msg: ExternalInsEventMsg) -> str:
+        """Resolve an omitted model name from the first reachable native engine."""
+        if event_msg.model_name:
+            return ""
+
+        last_error = ""
+        for instance in event_msg.instances:
+            for endpoint in instance.endpoints:
+                address = endpoint.address.strip()
+                try:
+                    model_ids = NativeEngineApiClient.query_model_ids(
+                        address,
+                        self.coordinator_config.infer_tls_config,
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    last_error = f"{address} ({exc})"
+                    continue
+                if len(model_ids) == 1:
+                    return model_ids[0]
+                if not model_ids:
+                    raise ValueError(f"{address}/v1/models returned no models; provide model_name explicitly")
+                raise ValueError(
+                    f"{address}/v1/models serves multiple models {model_ids}; provide model_name explicitly"
+                )
+
+        hint = f"; last error: {last_error}" if last_error else ""
+        raise ValueError(f"no reachable native engine /v1/models{hint}; provide model_name explicitly")

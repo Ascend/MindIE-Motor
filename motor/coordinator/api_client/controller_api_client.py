@@ -11,6 +11,7 @@
 
 from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.logger import get_logger
+from motor.config.config_utils import has_motor_controller_config
 from motor.config.controller import ControllerConfig
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain.probe import is_master_from_role_shm
@@ -19,8 +20,20 @@ logger = get_logger(__name__)
 
 
 class ControllerApiClient:
-    controller_config = ControllerConfig.from_json()
-    coordinator_config = CoordinatorConfig.from_json()
+    controller_config: ControllerConfig | None = None
+    coordinator_config: CoordinatorConfig | None = None
+
+    @classmethod
+    def _get_coordinator_config(cls) -> CoordinatorConfig:
+        if cls.coordinator_config is None:
+            cls.coordinator_config = CoordinatorConfig.from_json()
+        return cls.coordinator_config
+
+    @classmethod
+    def _get_controller_config(cls) -> ControllerConfig:
+        if cls.controller_config is None:
+            cls.controller_config = ControllerConfig.from_json()
+        return cls.controller_config
 
     @classmethod
     def report_alarms(cls, params: dict) -> dict:
@@ -32,7 +45,16 @@ class ControllerApiClient:
             "precision_alarm_cleared_by_auto_recovery": False,
         }
         try:
-            if cls.coordinator_config.standby_config.enable_master_standby:
+            coordinator_config = cls._get_coordinator_config()
+            if not has_motor_controller_config(coordinator_config.config_path):
+                logger.debug("No motor_controller_config in user config; skip alarm reporting.")
+                return {
+                    "ok": True,
+                    "precision_alarm_cleared": False,
+                    "precision_alarm_cleared_by_auto_recovery": False,
+                }
+
+            if coordinator_config.standby_config.enable_master_standby:
                 if not is_master_from_role_shm():
                     logger.debug("The standby coordinator does not need to report alarms.")
                     return {
@@ -97,8 +119,8 @@ class ControllerApiClient:
 
     @classmethod
     def _generate_client_args(cls) -> dict[str, str]:
-        api_config = cls.controller_config.api_config
-        tls_config = cls.coordinator_config.mgmt_tls_config
+        api_config = cls._get_controller_config().api_config
+        tls_config = cls._get_coordinator_config().mgmt_tls_config
         address = f"{api_config.controller_api_dns}:{api_config.controller_api_port}"
         client_ars = {"address": f"{address}", "tls_config": tls_config}
         return client_ars

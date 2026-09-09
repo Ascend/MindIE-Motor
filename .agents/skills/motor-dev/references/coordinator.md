@@ -328,6 +328,22 @@ looks up the registered instance first and submits its actual role, job name, mo
 Duplicate IDs in one request return 400; identity conflicts return 409. Membership write is in-process
 (`apply_refresh`); there is no separate Scheduler ACK.
 
+Standalone External Deployer events are selected by `_is_standalone_instance_refresh()` in Mgmt: top-level
+`model_name` / `dispatch_capabilities` / `engine_type`, or `instances[].endpoints` as an address array without
+`job_name`. Each External endpoint carries an explicit `id` (DP rank, unique in the instance) plus `address`. Controller InsEventMsg uses per-instance `job_name` and dict-shaped endpoints. When all standalone
+top-level fields are omitted, the endpoint-array instance shape is the discriminator. Mixed shapes in one request
+are rejected. With `model_name` absent, Mgmt queries `/v1/models` through `NativeEngineApiClient` in instance/endpoint
+order until it finds exactly one model ID. That call uses the blocking `requests` client (`timeout=2` per endpoint) and
+is offloaded with `asyncio.to_thread` so `/liveness`, `/readiness`, and `GET /instances` stay responsive while engines
+are still starting. An empty or multi-model response requires an explicit `model_name`. The configured AIGW model, when
+present, remains the final case-insensitive consistency check. External `dispatch_capabilities` accepts only
+`prefill_handoff_decode` (default) and `concurrent_engine_sync`; `decode_colocation` is connector-derived Decode-only
+and is rejected at parse time so it cannot be stamped onto every P/D instance.
+
+`ControllerApiClient.report_alarms` skips Controller loading when `has_motor_controller_config()` is false: missing
+`USER_CONFIG_PATH`, missing file, empty/invalid JSON, or a dict without `motor_controller_config`. Do not treat a
+missing config as Controller-present; that would POST defaults to `127.0.0.1:1026` (same as Coordinator mgmt).
+
 `motor.coordinator.domain` keeps its package-level compatibility exports (for example `InstanceReadiness` and
 `RequestManager`) behind module `__getattr__` lazy loading. Domain submodules are imported directly by Coordinator models,
 so `domain/__init__.py` must not eagerly import modules that depend on `models.request`; doing so creates a

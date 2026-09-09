@@ -10,8 +10,33 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from motor.config.tls_config import TLSConfig
 from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
+
+
+@patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")
+def test_query_model_ids_returns_advertised_models(mock_client):
+    tls_config = TLSConfig(enable_tls=True)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"data": [{"id": "Qwen3-8B"}, {"id": ""}, {"object": "model"}]}
+    mock_client.return_value.__enter__.return_value.do_get.return_value = response
+
+    result = NativeEngineApiClient.query_model_ids("10.0.0.8:8000", tls_config)
+
+    assert result == ["Qwen3-8B"]
+    mock_client.assert_called_once_with(address="10.0.0.8:8000", tls_config=tls_config, timeout=2)
+    mock_client.return_value.__enter__.return_value.do_get.assert_called_once_with("/v1/models")
+
+
+@patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")
+def test_query_model_ids_rejects_non_success_status(mock_client):
+    response = MagicMock(status_code=503)
+    mock_client.return_value.__enter__.return_value.do_get.return_value = response
+
+    with pytest.raises(RuntimeError, match="status=503"):
+        NativeEngineApiClient.query_model_ids("10.0.0.8:8000", None)
 
 
 @patch("motor.coordinator.api_client.native_engine_api_client.SafeHTTPSClient")

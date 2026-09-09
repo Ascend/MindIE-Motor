@@ -692,6 +692,7 @@ def _setup_reg_config(
     from motor.config.coordinator import KvConductorConfig, SchedulerConfig
 
     reg = KvConductorConfig(
+        conductor_service="kv-conductor",
         store_backend=store_backend,
         pool_endpoint=pool_endpoint,
         npu_endpoint=npu_endpoint,

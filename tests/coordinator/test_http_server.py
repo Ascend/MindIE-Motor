@@ -936,6 +936,14 @@ class TestCoordinatorServerAdvanced:
         im_instance.validate_refresh_instances = AsyncMock(return_value=None)
         im_instance.snapshot_instances = AsyncMock(return_value=[])
         im_mock_cls.return_value = im_instance
+        self.im_mock = im_instance
+        self.refresh_calls: list[tuple] = []
+
+        async def _capture_refresh(event, instances):
+            self.refresh_calls.append((event, instances))
+            return True
+
+        self._capture_refresh = _capture_refresh
 
         # Mock handle_request to return appropriate JSON response
         async def mock_handle_request(request, config, scheduler=None, request_manager=None, request_json=None):
@@ -1031,14 +1039,16 @@ class TestCoordinatorServerAdvanced:
         coordinator_config = CoordinatorConfig()
         coordinator_config.api_key_config.enable_api_key = True
         coordinator_config.api_key_config.valid_keys = {"sk-test123456789", "sk-coordinator2024"}
+        self.coordinator_config = coordinator_config
 
         # Create test server shell (ManagementServer + InferenceServer)
         self.coordinator_server = _TestServerShell(config=coordinator_config)
+        self.coordinator_server.instance_manager = self.im_mock
         # Skip real ROUTER/PUB/SHM bind in TestClient lifespan
         mgmt = self.coordinator_server._mgmt
         mgmt._start_control_plane = AsyncMock()
         mgmt._stop_control_plane = AsyncMock()
-        mgmt._control_plane.apply_refresh = AsyncMock(return_value=True)
+        mgmt._control_plane.apply_refresh = AsyncMock(side_effect=self._capture_refresh)
         mgmt._control_plane.scheduler = MagicMock()
         mgmt._control_plane.scheduler.dismiss_precision_alarm_state = AsyncMock(return_value=True)
         self.coordinator_server.setup_rate_limiting()
@@ -1096,6 +1106,198 @@ class TestCoordinatorServerAdvanced:
         assert data["status"] == "success", f"Refresh instances status abnormal: {data}"
         assert "request_id" in data, "Response missing request_id"
         assert "data" in data, "Response missing data field"
+
+    def test_refresh_instances_external_set_converts_minimal_topology(self):
+        """External SET resolves the omitted model name from a native engine."""
+        self.coordinator_config.aigw_model = {"id": "test-model"}
+        body = {
+            "event": "set",
+            "dispatch_capabilities": "concurrent_engine_sync",
+            "engine_type": "vllm",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [{"id": 0, "address": "192.168.1.10:8100"}],
+                },
+                {
+                    "id": 2,
+                    "role": "decode",
+                    "endpoints": [{"id": 0, "address": "192.168.1.20:8200"}],
+                },
+            ],
+        }
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            return_value=["TEST-MODEL"],
+        ) as query_model_ids:
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 200
+        query_model_ids.assert_called_once_with("192.168.1.10:8100", self.coordinator_config.infer_tls_config)
+        assert self.refresh_calls
+        event, instances = self.refresh_calls[-1]
+        assert event.value == "set"
+        assert [instance.model_name for instance in instances] == ["test-model", "test-model"]
+        assert instances[0].dispatch_capabilities == ["concurrent_engine_sync"]
+        assert [instance.job_name for instance in instances] == ["external-prefill-1", "external-decode-2"]
+        assert instances[0].parallel_config.dp_size == 1
+        assert instances[0].endpoints["192.168.1.10"][0].business_port == "8100"
+
+    def test_refresh_instances_external_without_markers_resolves_model(self):
+        """Endpoint array shape keeps a fully minimal External request distinguishable."""
+        body = {
+            "event": "set",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [{"id": 0, "address": "127.0.0.1:8100"}],
+                }
+            ],
+        }
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            return_value=["test-model"],
+        ):
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 200
+        assert self.refresh_calls
+        _, instances = self.refresh_calls[-1]
+        assert instances[0].model_name == "test-model"
+        assert instances[0].engine_type == "vllm"
+        assert instances[0].dispatch_capabilities == ["prefill_handoff_decode"]
+
+    def test_refresh_instances_external_requires_model_name_for_multi_model_engine(self):
+        body = {
+            "event": "set",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [{"id": 0, "address": "127.0.0.1:8100"}],
+                }
+            ],
+        }
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            return_value=["model-a", "model-b"],
+        ):
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 400
+        assert "provide model_name explicitly" in response.json()["detail"]
+
+    def test_refresh_instances_external_model_resolution_skips_unreachable_endpoint(self):
+        body = {
+            "event": "set",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [
+                        {"id": 0, "address": "127.0.0.1:8100"},
+                        {"id": 1, "address": "127.0.0.2:8100"},
+                    ],
+                }
+            ],
+        }
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            side_effect=[OSError("connection refused"), ["test-model"]],
+        ) as query_model_ids:
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 200
+        assert query_model_ids.call_count == 2
+        assert self.refresh_calls
+        _, instances = self.refresh_calls[-1]
+        assert instances[0].model_name == "test-model"
+
+    def test_refresh_instances_rejects_mixed_controller_and_standalone_payload(self):
+        body = {
+            "event": "set",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [{"id": 0, "address": "127.0.0.1:8100"}],
+                },
+                {
+                    "job_name": "test-job",
+                    "model_name": "test-model",
+                    "id": 2,
+                    "role": "decode",
+                    "endpoints": {
+                        "192.168.1.2": {
+                            "0": {
+                                "id": 0,
+                                "ip": "192.168.1.2",
+                                "business_port": "8200",
+                            }
+                        }
+                    },
+                },
+            ],
+        }
+
+        response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 400
+        assert "mixed controller and coordinator-standalone" in response.json()["detail"]
+
+    @pytest.mark.parametrize("event_name", ["add", "del"])
+    def test_refresh_instances_external_incremental_event_is_forwarded(self, event_name):
+        """External ADD/DEL only forwards Coordinator membership changes."""
+        self.coordinator_config.aigw_model = {"id": "test-model"}
+        body = {
+            "event": event_name,
+            "model_name": "test-model",
+            "dispatch_capabilities": "prefill_handoff_decode",
+            "engine_type": "vllm",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [{"id": 0, "address": "127.0.0.1:8100"}],
+                }
+            ],
+        }
+
+        response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 200
+        assert self.refresh_calls
+        event, instances = self.refresh_calls[-1]
+        assert event.value == event_name
+        assert instances[0].id == 1
+
+    def test_refresh_instances_external_rejects_unsupported_event(self):
+        """External protocol rejects Controller-only lifecycle events."""
+        self.coordinator_config.aigw_model = {"id": "test-model"}
+        response = self.mgmt_client.post(
+            "/instances/refresh",
+            json={
+                "event": "pause",
+                "model_name": "test-model",
+                "dispatch_capabilities": "concurrent_engine_sync",
+                "engine_type": "vllm",
+                "instances": [
+                    {
+                        "id": 1,
+                        "role": "prefill",
+                        "endpoints": [{"id": 0, "address": "127.0.0.1:8100"}],
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 400
 
     def test_refresh_instances_rejects_duplicate_ids(self):
         """Duplicate IDs must be rejected before list-to-dict conversion can drop an instance."""

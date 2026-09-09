@@ -19,6 +19,22 @@ class NativeEngineApiClient:
     """Read native engine operational endpoints over the inference channel."""
 
     @staticmethod
+    def query_model_ids(address: str, tls_config: TLSConfig | None) -> list[str]:
+        """Return the model IDs advertised by a native engine."""
+        with SafeHTTPSClient(address=address, tls_config=tls_config, timeout=2) as client:
+            response = client.do_get("/v1/models")
+        if response.status_code != 200:
+            raise RuntimeError(f"native engine /v1/models returned status={response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("native engine /v1/models returned an invalid response")
+        return [
+            model["id"]
+            for model in payload["data"]
+            if isinstance(model, dict) and isinstance(model.get("id"), str) and model["id"]
+        ]
+
+    @staticmethod
     def query_metrics(address: str, tls_config: TLSConfig | None) -> str:
         try:
             with SafeHTTPSClient(address=address, tls_config=tls_config, timeout=2) as client:

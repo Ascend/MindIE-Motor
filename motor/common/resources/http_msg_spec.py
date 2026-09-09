@@ -9,13 +9,28 @@
 # See the Mulan PSL v2 for more details.
 
 from enum import Enum
-from pydantic import BaseModel, Field, model_validator
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from motor.common.logger import get_logger
-from motor.common.resources.instance import Instance, ParallelConfig
+from motor.common.resources.dispatch import DispatchPlan
+from motor.common.resources.instance import InsStatus, Instance, ParallelConfig, PDRole
 from motor.common.resources.endpoint import Endpoint, DeviceInfo, EndpointStatus
+from motor.common.utils.net import split_address
 
 logger = get_logger(__name__)
+
+_EXTERNAL_ALLOWED_DISPATCH_PLANS = (
+    DispatchPlan.PREFILL_HANDOFF_DECODE,
+    DispatchPlan.CONCURRENT_ENGINE_SYNC,
+)
+
+
+def _require_external_dispatch_plan(value: DispatchPlan) -> DispatchPlan:
+    if value not in _EXTERNAL_ALLOWED_DISPATCH_PLANS:
+        allowed = ", ".join(plan.value for plan in _EXTERNAL_ALLOWED_DISPATCH_PLANS)
+        raise ValueError(f"External Deployer dispatch_capabilities must be one of: {allowed}")
+    return value
 
 
 class ServerInfo(BaseModel):
@@ -166,3 +181,134 @@ class InsEventMsg(BaseModel):
         if len(instance_ids) != len(set(instance_ids)):
             raise ValueError("duplicate instance IDs in one request")
         return self
+
+
+class ExternalEndpoint(BaseModel):
+    """Minimal routable endpoint supplied by an External Deployer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(..., ge=0, description="Data-parallel endpoint ID")
+    address: str = Field(
+        ..., min_length=1, description="Engine host:port, e.g. 192.168.1.20:8200 or [2001:db8::1]:8200"
+    )
+
+    def parsed_host_port(self) -> tuple[str, str]:
+        host, port = split_address(self.address.strip())
+        if not host:
+            raise ValueError(f"address must contain a host, got {self.address!r}")
+        if not port:
+            raise ValueError(f"address must contain a port, got {self.address!r}")
+        try:
+            port_int = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"address port must be an integer, got {port!r}") from exc
+        if not 1 <= port_int <= 65535:
+            raise ValueError(f"address port must be in range 1-65535, got {port_int}")
+        return host, str(port_int)
+
+
+class ExternalInstance(BaseModel):
+    """Minimal P/D instance supplied by an External Deployer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(..., ge=1, description="Globally unique instance ID")
+    role: PDRole = Field(..., description="Only prefill or decode is supported")
+    endpoints: list[ExternalEndpoint] = Field(..., min_length=1, description="Routable engine endpoints")
+
+
+class ExternalInsEventMsg(BaseModel):
+    """Standalone Coordinator instance event containing only routing information."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: EventType
+    model_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The single served model. Optional in single-model deployments; "
+            "Coordinator resolves it from the first reachable engine /v1/models. "
+            "Required when any engine advertises multiple models."
+        ),
+    )
+    dispatch_capabilities: DispatchPlan = Field(
+        default=DispatchPlan.PREFILL_HANDOFF_DECODE,
+        description="P/D coordination plan; only prefill_handoff_decode or concurrent_engine_sync",
+    )
+    engine_type: str = Field(
+        default="vllm", min_length=1, description="Inference engine family shared by all instances"
+    )
+    instances: list[ExternalInstance]
+
+    @field_validator("dispatch_capabilities")
+    @classmethod
+    def reject_non_pd_dispatch_plans(cls, value: DispatchPlan) -> DispatchPlan:
+        return _require_external_dispatch_plan(value)
+
+    def to_internal(self, configured_model_name: str = "", resolved_model_name: str = "") -> InsEventMsg:
+        if self.event not in (EventType.SET, EventType.ADD, EventType.DEL):
+            raise ValueError("External Deployer only supports event='set', 'add', or 'del'")
+
+        model_name = (self.model_name or resolved_model_name).strip()
+        if not model_name:
+            raise ValueError("model_name is required when it cannot be resolved from native engine /v1/models")
+        if configured_model_name and model_name.casefold() != configured_model_name.casefold():
+            raise ValueError(
+                f"external model_name {model_name!r} does not match configured single model {configured_model_name!r}"
+            )
+        internal_model_name = configured_model_name or model_name
+
+        dispatch_capability = _require_external_dispatch_plan(self.dispatch_capabilities).value
+        engine_type = self.engine_type.strip().lower()
+        if engine_type != "vllm":
+            raise ValueError("External Deployer currently supports engine_type='vllm' only")
+
+        instance_ids: set[int] = set()
+        internal_instances: list[Instance] = []
+        for external_instance in self.instances:
+            if external_instance.id in instance_ids:
+                raise ValueError(f"duplicate instance id: {external_instance.id}")
+            instance_ids.add(external_instance.id)
+            if external_instance.role not in (PDRole.ROLE_P, PDRole.ROLE_D):
+                raise ValueError(f"unsupported external instance role: {external_instance.role.value}")
+
+            endpoint_ids: set[int] = set()
+            endpoint_addresses: set[tuple[str, str]] = set()
+            endpoints_by_ip: dict[str, dict[int, Endpoint]] = {}
+            for external_endpoint in external_instance.endpoints:
+                if external_endpoint.id in endpoint_ids:
+                    raise ValueError(f"duplicate endpoint id {external_endpoint.id} in instance {external_instance.id}")
+                endpoint_ids.add(external_endpoint.id)
+                host, business_port = external_endpoint.parsed_host_port()
+                address_key = (host, business_port)
+                if address_key in endpoint_addresses:
+                    raise ValueError(
+                        f"duplicate endpoint address {external_endpoint.address!r} in instance {external_instance.id}"
+                    )
+                endpoint_addresses.add(address_key)
+                endpoint = Endpoint(
+                    id=external_endpoint.id,
+                    ip=host,
+                    business_port=business_port,
+                    status=EndpointStatus.NORMAL,
+                )
+                endpoints_by_ip.setdefault(endpoint.ip, {})[endpoint.id] = endpoint
+
+            internal_instances.append(
+                Instance(
+                    job_name=f"external-{external_instance.role.value}-{external_instance.id}",
+                    model_name=internal_model_name,
+                    engine_type=engine_type,
+                    dispatch_capabilities=[dispatch_capability],
+                    id=external_instance.id,
+                    role=external_instance.role.value,
+                    status=InsStatus.ACTIVE,
+                    parallel_config=ParallelConfig(dp_size=len(endpoint_ids)),
+                    enable_multi_endpoints=True,
+                    endpoints=endpoints_by_ip,
+                )
+            )
+
+        return InsEventMsg(event=self.event, instances=internal_instances)

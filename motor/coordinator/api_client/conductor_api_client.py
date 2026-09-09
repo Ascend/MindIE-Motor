@@ -95,8 +95,11 @@ class ConductorApiClient:
     @classmethod
     def register_kv_instance(cls, instances: list[Instance]) -> None:
         """Register all KVA-eligible instance endpoints with the KV conductor."""
-        logger.info("register_kv_instance started.")
         reg = cls._kv_reg()
+        if not reg.conductor_service:
+            logger.debug("conductor_service is empty; skip KV conductor instance registration")
+            return
+        logger.info("register_kv_instance started.")
         mode = cls._resolve_backend_mode()
         sb = cls._resolve_store_backend()
 
@@ -117,6 +120,9 @@ class ConductorApiClient:
     @classmethod
     def unregister_kv_instance(cls, instances: list[Instance]) -> None:
         """Unregister all KVA-eligible instance endpoints from the KV conductor."""
+        if not cls._kv_reg().conductor_service:
+            logger.debug("conductor_service is empty; skip KV conductor instance unregistration")
+            return
         logger.info("unregister_kv_instance started.")
 
         for instance in instances:

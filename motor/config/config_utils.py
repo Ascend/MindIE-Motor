@@ -410,6 +410,25 @@ def resolve_config_json_path(json_path: str | None) -> tuple[str | None, Path | 
     return json_path, Path(json_path) if json_path else None
 
 
+def has_motor_controller_config(json_path: str | None = None) -> bool:
+    """Return whether the user config file includes motor_controller_config."""
+    _, config_path = resolve_config_json_path(json_path)
+    if not config_path or not config_path.exists():
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return False
+            raw = json.loads(content)
+            if not isinstance(raw, dict):
+                return False
+            return ConfigKey.MOTOR_CONTROLLER.value in raw
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to inspect motor_controller_config presence: %s", e)
+        return False
+
+
 def apply_config_path_metadata(config: Any, config_path: Path | None) -> None:
     if config_path:
         config.config_path = str(config_path)

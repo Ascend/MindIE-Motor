@@ -126,6 +126,14 @@ def test_register_post_formats_ipv6_endpoint_and_conductor_address() -> None:
     assert register_payload["replay_endpoint"] == "tcp://[2001:db8::1]:6669"
 
 
+def _mock_enabled_kv_reg():
+    """Return a KV conductor config with registration enabled for unit tests."""
+    mock_reg = Mock()
+    mock_reg.conductor_service = "kv-conductor"
+    mock_reg.store_backend = "YuanRong"
+    return mock_reg
+
+
 def test_register_kv_instance_supports_role_u() -> None:
     instances = [
         _build_instance(PDRole.ROLE_P),
@@ -133,6 +141,7 @@ def test_register_kv_instance_supports_role_u() -> None:
         _build_instance(PDRole.ROLE_D),
     ]
     with (
+        patch.object(ConductorApiClient, "_kv_reg", return_value=_mock_enabled_kv_reg()),
         patch.object(ConductorApiClient, "_register_hbm_dp") as mock_hbm_dp,
         patch.object(ConductorApiClient, "_register_yuanrong_dp") as mock_yuanrong_dp,
         patch.object(ConductorApiClient, "_register_pool"),
@@ -155,7 +164,10 @@ def test_unregister_kv_instance_supports_role_u() -> None:
         _build_instance(PDRole.ROLE_U),
         _build_instance(PDRole.ROLE_D),
     ]
-    with patch.object(ConductorApiClient, "unregister_post") as mock_unregister_post:
+    with (
+        patch.object(ConductorApiClient, "_kv_reg", return_value=_mock_enabled_kv_reg()),
+        patch.object(ConductorApiClient, "unregister_post") as mock_unregister_post,
+    ):
         ConductorApiClient.unregister_kv_instance(instances)
 
     assert mock_unregister_post.call_count == 2

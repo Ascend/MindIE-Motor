@@ -77,6 +77,8 @@ curl http://127.0.0.1:1026/liveness
 curl http://127.0.0.1:1026/readiness   # 此时 instance_count=0 属正常
 ```
 
+若第二节编写了 `coordinator.json`，启动前 `export USER_CONFIG_PATH=...`。
+
 ---
 
 ## 四、注册 P/D 实例
@@ -95,6 +97,106 @@ python3 -m motor.coordinator.register \
 curl http://127.0.0.1:1026/instances   # 列出已登记实例
 curl http://127.0.0.1:1026/readiness   # 调度是否就绪（需同时有可用 P 和 D）
 ```
+
+External Deployer 也可以直接向 `POST /instances/refresh` 发送精简事件。
+Coordinator standalone 当前只支持单模型。省略 `model_name` 时，Coordinator 会按
+`instances[]` 顺序访问第一个可达 vLLM endpoint 的 `/v1/models`；接口只返回一个模型
+ID 时自动采用该 ID。多模型场景必须在请求顶层显式携带 `model_name`。
+`dispatch_capabilities` 和 `engine_type` 也可以省略并使用默认值，因此 `instances[]`
+中的每个元素只需提供 `id`、`role` 和 `endpoints[]`。
+
+### 请求模板
+
+**`set` — 全量替换纳管拓扑**（首次部署或 Coordinator 重启后必须重放）：
+
+```json
+{
+  "event": "set",
+  "instances": [
+    {
+      "id": 1,
+      "role": "prefill",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.11:8000"}
+      ]
+    },
+    {
+      "id": 2,
+      "role": "prefill",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.12:8000"}
+      ]
+    },
+    {
+      "id": 3,
+      "role": "decode",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.21:8000"}
+      ]
+    }
+  ]
+}
+```
+
+**`add` — 增量加入纳管**：
+
+```json
+{
+  "event": "add",
+  "instances": [
+    {
+      "id": 4,
+      "role": "prefill",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.13:8000"}
+      ]
+    }
+  ]
+}
+```
+
+**`del` — 增量踢出纳管**（`id` 须与已登记实例一致）：
+
+```json
+{
+  "event": "del",
+  "instances": [
+    {
+      "id": 4,
+      "role": "prefill",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.13:8000"}
+      ]
+    }
+  ]
+}
+```
+
+```bash
+# 将上方 set 模板保存为 topology_set.json 后执行
+curl -X POST http://127.0.0.1:1026/instances/refresh \
+     -H 'Content-Type: application/json' \
+     -d @topology_set.json
+```
+
+### 字段说明
+
+| 字段 | 层级 | 必填 | 说明 |
+|------|------|------|------|
+| `event` | 顶层 | 是 | 事件类型：`set` 全量替换；`add` 增量加入；`del` 增量删除 |
+| `model_name` | 顶层 | 否（多模型时必填） | 单模型时默认从第一个可达 endpoint 的 `/v1/models` 自动获取；接口返回多个模型时必须显式指定。若 Coordinator 配置了 `motor_coordinator_config.aigw.id`，须与其一致（大小写不敏感） |
+| `dispatch_capabilities` | 顶层 | 否 | 仅允许 `prefill_handoff_decode`（默认，handoff）与 `concurrent_engine_sync`（trigger/sync）；`decode_colocation` 等其余值会被拒绝 |
+| `engine_type` | 顶层 | 否 | 默认 `vllm`；External Deployer 当前仅支持 `vllm` |
+| `instances` | 顶层 | 是 | 本批次涉及的实例列表；`set` 时为完整拓扑，`add`/`del` 时为增量子集 |
+| `instances[].id` | 实例 | 是 | 全局唯一实例 ID，整数 ≥ 1；同一请求内不可重复 |
+| `instances[].role` | 实例 | 是 | 实例角色：`prefill` 或 `decode` |
+| `instances[].endpoints` | 实例 | 是 | 该实例可达的引擎 HTTP 端点，至少 1 个；多 DP 时在同一数组内列出多个 endpoint |
+| `endpoints[].id` | 端点 | 是 | 实例内 DP 序号，整数 ≥ 0；同一实例内不可重复 |
+| `endpoints[].address` | 端点 | 是 | 引擎 `host:port`；IPv6 使用 `[addr]:port`（如 `"[2001:db8::1]:8200"`） |
+
+`set` 全量替换纳管拓扑，`add` 增量加入纳管，`del` 增量踢出纳管。这些事件只改变
+Coordinator 的内存实例池，不会启动、停止或销毁 P/D 进程。Coordinator 重启后，
+External Deployer 必须重放完整 `set`。
 
 ---
 

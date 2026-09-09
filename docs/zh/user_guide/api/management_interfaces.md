@@ -312,6 +312,69 @@ curl -X POST "http://{IP}:{Port}/instances/refresh" \
 | data.event_type | string | 事件类型，与请求`event`对应。 |
 | data.instance_count | integer | 实例数量。 |
 
+### External Deployer 精简实例事件
+
+Coordinator 独立部署复用同一 URL，支持 `event=set/add/del` 的精简协议。原 Controller
+完整协议保持不变。请求满足以下任一条件时按精简协议解析：顶层包含 `model_name`、
+`dispatch_capabilities` 或 `engine_type`；或 `instances[].endpoints` 为
+`[{"address": "host:port"}]` 数组且实例不含 `job_name`。未命中上述形态时按 Controller
+完整协议解析。同一请求混用两种实例形态时返回错误。
+
+精简请求顶层字段：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `event` | string | 是 | `set` 全量替换、`add` 加入纳管、`del` 踢出纳管。 |
+| `model_name` | string | 否（多模型时必填） | 单模型时可省略，Coordinator 从第一个可达引擎 `/v1/models` 自动发现；引擎返回多个模型时必须显式指定。若 Coordinator 配置了 `motor_coordinator_config.aigw.id`，须与其一致（忽略大小写）。 |
+| `dispatch_capabilities` | string | 否 | 仅允许 `prefill_handoff_decode`（默认，handoff）与 `concurrent_engine_sync`（trigger/sync）。`decode_colocation` 等其余值会被拒绝。 |
+| `engine_type` | string | 否 | 默认 `vllm`；当前独立精简协议仅支持 `vllm`。 |
+| `instances` | array | 是 | 待全量或增量处理的实例。 |
+| `instances[].id` | integer | 是 | 全局唯一实例 ID，必须大于 0。 |
+| `instances[].role` | string | 是 | 仅支持 `prefill` 或 `decode`。 |
+| `instances[].endpoints` | array | 是 | 至少一个业务 Endpoint。 |
+| `endpoints[].id` | integer | 是 | 实例内 DP 序号，整数 ≥ 0；同一实例内不可重复。 |
+| `endpoints[].address` | string | 是 | 引擎 `host:port`；IPv6 使用 `[addr]:port`。 |
+
+```JSON
+{
+  "event": "set",
+  "model_name": "qwen3-8b",
+  "instances": [
+    {
+      "id": 1,
+      "role": "prefill",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.11:8000"}
+      ]
+    },
+    {
+      "id": 2,
+      "role": "prefill",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.12:8000"}
+      ]
+    },
+    {
+      "id": 3,
+      "role": "decode",
+      "endpoints": [
+        {"id": 0, "address": "10.0.0.21:8000"}
+      ]
+    }
+  ]
+}
+```
+
+Coordinator 会生成 `job_name`、`status` 和 `parallel_config` 等内部字段。省略
+`model_name` 时由引擎 `/v1/models` 自动发现；省略 `dispatch_capabilities` 与
+`engine_type` 时分别默认为 `prefill_handoff_decode` 与 `vllm`。`add/del` 只改变
+Coordinator 纳管状态，不管理 P/D 生命周期；重启后必须由 External Deployer
+重放完整 `set`。为避免同一实例 ID 误删已更新的实例，`del` 必须携带与注册时一致的
+`role` 和 Endpoint 物理身份（外部协议中为 `address`）；不一致时接口返回
+HTTP 409。
+
+---
+
 ## 精度告警状态清理接口
 
 **接口功能**

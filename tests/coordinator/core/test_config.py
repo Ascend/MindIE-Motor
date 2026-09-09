@@ -18,6 +18,39 @@ import pytest
 from motor.config.coordinator import CoordinatorConfig
 
 
+def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tmp_path):
+    """A single-model standalone file loads without control-plane sections."""
+    config_path = tmp_path / "standalone.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "motor_coordinator_config": {
+                    "aigw": {"id": "test-model", "p_max_seqlen": 4096, "d_max_seqlen": 4096},
+                    "scheduler_config": {"scheduler_type": "load_balance"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = CoordinatorConfig.from_json(str(config_path))
+
+    assert config.get_aigw_models()["id"] == "test-model"
+
+
+def test_controller_integration_enabled_is_ignored_when_present(tmp_path):
+    """Legacy standalone configs may still carry the removed key; it is ignored."""
+    config_path = tmp_path / "legacy-standalone.json"
+    config_path.write_text(
+        json.dumps({"motor_coordinator_config": {"controller_integration_enabled": False}}),
+        encoding="utf-8",
+    )
+
+    config = CoordinatorConfig.from_json(str(config_path))
+
+    assert not hasattr(config, "controller_integration_enabled")
+
+
 @pytest.fixture
 def _temp_json_file():
     """Fixture for temporary JSON file that gets cleaned up."""
