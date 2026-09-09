@@ -11,8 +11,7 @@ import logging
 import argparse
 import os
 import sys
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.docker_utils import get_json_by_path, read_json, resolve_model_name, update_shell_safely
@@ -64,7 +63,7 @@ def set_env_docker(configmap_path):
 
     service_id = (
         f"{get_json_by_path(user_config, 'motor_deploy_config.job_id')}_"
-        f"{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M%S')}"
+        f"{datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d%H%M%S')}"
     )
     env_config[MOTOR_COMMON_ENV][SERVICE_ID] = service_id
     logger.info(f"Set {SERVICE_ID} environment variable to: {service_id}")
