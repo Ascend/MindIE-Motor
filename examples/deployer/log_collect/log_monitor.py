@@ -110,7 +110,7 @@ class LogMonitor:
         now = time.monotonic()
         prev = self._pod_backoff.get(pod_name)
         if prev is None:
-            count, _first_ts = 0, now
+            count, first_ts = 0, now
         else:
             count, first_ts = prev
             if now - first_ts > BACKOFF_WINDOW_SECONDS:
@@ -262,6 +262,7 @@ class LogMonitor:
                 '-n',
                 g_name_space,
                 pod_name,
+                '--all-containers=true',
             ]
             if since_time:
                 kubectl_args.extend(['--since-time', since_time])
