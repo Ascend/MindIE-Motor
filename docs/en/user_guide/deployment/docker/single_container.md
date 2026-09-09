@@ -279,10 +279,12 @@ Prepare the startup script `start_docker.sh`. The following is a script example 
 CONFIGMAP_PATH="/mnt/motor/configmap" # CONFIGMAP_PATH must be consistent with prepare.sh and must use an absolute path
 IMAGE_NAME="xxx" # Image name
 WEIGHT_MOUNT_PATH="xxx" # Host weight directory. Must use an absolute path
+SHM_SIZE="4g" # /dev/shm size. The default aligns with the Kubernetes dshm emptyDir sizeLimit of 4Gi. Increase it for larger models or higher concurrency.
 
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/devmm_svm --device=/dev/hisi_hdc"
 
 docker run -u root --rm --name single_container \
+--shm-size=$SHM_SIZE \
 -e ASCEND_RUNTIME_OPTIONS=NODRV --privileged=false \
 $ASCEND_DEVICES \
 -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
@@ -368,6 +370,7 @@ ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
 
 docker run -u root --rm --name single_container \
   --network host \
+  --shm-size=$SHM_SIZE \
   ... \
   -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
   -v /usr/lib64:/usr/lib64 \

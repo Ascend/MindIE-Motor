@@ -205,6 +205,7 @@ Prepare the startup script `start_docker.sh`. The following is a script example 
 CONFIGMAP_PATH="xxx" # CONFIGMAP_PATH must be consistent with prepare.sh and must use an absolute path
 IMAGE_NAME="xxx" # Image name
 WEIGHT_MOUNT_PATH="xxx" # Host weight directory. Must use an absolute path
+SHM_SIZE="4g" # /dev/shm size. The default aligns with the Kubernetes dshm emptyDir sizeLimit of 4Gi. Increase it for larger models or higher concurrency.
 
 if [ "$ENABLE_IPC_HOST" = "enable" ]; then
     SET_IPC_HOST_STR="--ipc=host"
@@ -222,6 +223,7 @@ for i in "${ADDR[@]}"; do
 done
 
 docker run -u root --rm --name $CONTAINER_NAME --net=host $SET_IPC_HOST_STR \
+--shm-size=$SHM_SIZE \
 -e ASCEND_RUNTIME_OPTIONS=NODRV --privileged=false \
 -e CONFIGMAP_PATH=$CONFIGMAP_PATH \
 -e CONFIG_PATH=/usr/local/Ascend/pyMotor/conf \
@@ -358,6 +360,7 @@ ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
 
 docker run -u root --rm --name $CONTAINER_NAME \
   --network host \
+  --shm-size=$SHM_SIZE \
   ... \
   -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
   -v /usr/lib64:/usr/lib64 \

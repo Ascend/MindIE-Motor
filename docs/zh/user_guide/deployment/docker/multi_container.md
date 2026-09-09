@@ -203,6 +203,7 @@ sh prepare.sh
 CONFIGMAP_PATH="xxx" # CONFIGMAP_PATH需与prepare.sh保持一致，且必须使用绝对路径
 IMAGE_NAME="xxx" # 镜像名
 WEIGHT_MOUNT_PATH="xxx" # 宿主机权重目录，必须使用绝对路径
+SHM_SIZE="4g" # /dev/shm大小，默认与K8s dshm emptyDir sizeLimit 4Gi保持一致，可按模型和并发调大
 
 if [ "$ENABLE_IPC_HOST" = "enable" ]; then
     SET_IPC_HOST_STR="--ipc=host"
@@ -220,6 +221,7 @@ for i in "${ADDR[@]}"; do
 done
 
 docker run -u root --rm --name $CONTAINER_NAME --net=host $SET_IPC_HOST_STR \
+--shm-size=$SHM_SIZE \
 -e ASCEND_RUNTIME_OPTIONS=NODRV --privileged=false \
 -e CONFIGMAP_PATH=$CONFIGMAP_PATH \
 -e CONFIG_PATH=/usr/local/Ascend/pyMotor/conf \
@@ -356,6 +358,7 @@ ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
 
 docker run -u root --rm --name $CONTAINER_NAME \
   --network host \
+  --shm-size=$SHM_SIZE \
   ... \
   -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
   -v /usr/lib64:/usr/lib64 \

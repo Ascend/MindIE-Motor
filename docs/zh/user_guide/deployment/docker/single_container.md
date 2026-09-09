@@ -276,10 +276,12 @@ source $CONFIGMAP_PATH/boot.sh
 CONFIGMAP_PATH="/mnt/motor/configmap" # CONFIGMAP_PATH需与prepare.sh保持一致，且必须使用绝对路径
 IMAGE_NAME="xxx" # 镜像名
 WEIGHT_MOUNT_PATH="xxx" # 宿主机权重目录，必须使用绝对路径
+SHM_SIZE="4g" # /dev/shm大小，默认与K8s dshm emptyDir sizeLimit 4Gi保持一致，可按模型和并发调大
 
 ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/devmm_svm --device=/dev/hisi_hdc"
 
 docker run -u root --rm --name single_container \
+--shm-size=$SHM_SIZE \
 -e ASCEND_RUNTIME_OPTIONS=NODRV --privileged=false \
 $ASCEND_DEVICES \
 -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
@@ -365,6 +367,7 @@ ASCEND_DEVICES="--device=/dev/davinci_manager --device=/dev/hisi_hdc"
 
 docker run -u root --rm --name single_container \
   --network host \
+  --shm-size=$SHM_SIZE \
   ... \
   -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
   -v /usr/lib64:/usr/lib64 \
