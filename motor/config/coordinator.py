@@ -379,6 +379,10 @@ class SchedulerConfig:
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
     endpoint_instance_score_weight: float = 0.05
+    # Window (seconds) for worker-0 per-DP telemetry: one log line per DP
+    # with request count and SHM active_tokens (dp_stats). Independent of
+    # kv_affinity hit telemetry. 0 disables emission.
+    dp_stats_window: int = 60
     # kv_cache_affinity tunables (affinity + load + per-medium weights).
     kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
     # KV event registration config for kv-conductor.
@@ -958,6 +962,11 @@ class CoordinatorConfig:
             "kv_affinity.w_disk",
             allow_zero=True,
         )
+        self._validate_positive_number(
+            self.scheduler_config.dp_stats_window,
+            "scheduler_config.dp_stats_window",
+            allow_zero=True,
+        )
         if affinity.mode not in KV_AFFINITY_MODES:
             self._errors.append(f"kv_affinity.mode must be one of {KV_AFFINITY_MODES}, got {affinity.mode!r}")
         if self.context_budget_mode not in CONTEXT_BUDGET_MODES:
@@ -1184,6 +1193,7 @@ class CoordinatorConfig:
             f"    ├─ KV Affinity W NPU:          {self.scheduler_config.kv_affinity.w_npu}\n"
             f"    ├─ KV Affinity W CPU:          {self.scheduler_config.kv_affinity.w_cpu}\n"
             f"    ├─ KV Affinity W Disk:         {self.scheduler_config.kv_affinity.w_disk}\n"
+            f"    ├─ DP Stats Window:            {self.scheduler_config.dp_stats_window}s\n"
             f"    └─ Context Budget Mode:        {self.context_budget_mode}\n"
             "\n"
             "  Multiprocess (Inference Workers):\n"
@@ -1217,6 +1227,9 @@ class CoordinatorConfig:
 
     def _validate_positive_number(self, value: float | int, field_name: str, allow_zero: bool = False) -> None:
         """Validate that a number is positive (optionally allow zero)"""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            self._errors.append(f"{field_name} must be a number, got {type(value).__name__}")
+            return
         if allow_zero and value < 0:
             self._errors.append(f"{field_name} cannot be negative")
         elif not allow_zero and value <= 0:

@@ -175,3 +175,26 @@ class TestSchedulerConnectionManager(unittest.TestCase):
             return_value=None,
         ):
             asyncio.run(scenario())
+
+    def test_from_config_logs_dp_stats_only_on_inference_worker_zero(self):
+        """Obs (worker_index None) and non-zero workers must not dump global SHM tokens."""
+        from motor.config.coordinator import CoordinatorConfig
+
+        with patch(
+            "motor.coordinator.scheduler.runtime.scheduler_connection_manager.SchedulerClient",
+        ) as mock_cls:
+            mock_cls.return_value = Mock()
+            config = CoordinatorConfig()
+            config.worker_index = 0
+            SchedulerConnectionManager.from_config(config)
+            self.assertTrue(mock_cls.call_args[0][0].log_dp_stats)
+
+            mock_cls.reset_mock()
+            config.worker_index = 1
+            SchedulerConnectionManager.from_config(config)
+            self.assertFalse(mock_cls.call_args[0][0].log_dp_stats)
+
+            mock_cls.reset_mock()
+            config.worker_index = None
+            SchedulerConnectionManager.from_config(config)
+            self.assertFalse(mock_cls.call_args[0][0].log_dp_stats)

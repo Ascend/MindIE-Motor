@@ -25,6 +25,7 @@ from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain.scheduling import UpdateWorkloadParams
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
+    CANDIDATE_POLICY_LOAD_BALANCE,
     SchedulerRequestType,
     SchedulerResponse,
     SchedulerResponseType,
@@ -887,8 +888,106 @@ async def _client_with_shm(im: InstanceManager, name: str) -> tuple[AsyncSchedul
     return client, writer
 
 
+class TestDpStatsSnapshot:
+    """Worker-0 periodic dp_stats dump. Does not need native SHM."""
+
+    def test_snapshot_skips_invalid_slots_and_missing_reader(self):
+        from motor.coordinator.scheduler.runtime.workload_shm.layout import FLAG_VALID
+
+        client = AsyncSchedulerClient(SchedulerClientConfig())
+        assert client._snapshot_dp_stats() == []
+
+        native = Mock()
+        native.read_header.return_value = {"entry_count": 3}
+        native.load_entries.return_value = [
+            {"instance_id": 2, "endpoint_id": 1, "flags": FLAG_VALID, "active_tokens": 4.0},
+            {"instance_id": 1, "endpoint_id": 10, "flags": 0, "active_tokens": 99.0},
+            {"instance_id": 1, "endpoint_id": 0, "flags": FLAG_VALID, "active_tokens": 1.5},
+        ]
+        client._workload_reader = Mock(native=native)
+        assert client._snapshot_dp_stats() == [(2, 1, 4.0), (1, 0, 1.5)]
+
+    def test_snapshot_read_failure_returns_empty(self):
+        client = AsyncSchedulerClient(SchedulerClientConfig())
+        native = Mock()
+        native.read_header.side_effect = RuntimeError("shm gone")
+        client._workload_reader = Mock(native=native)
+        assert client._snapshot_dp_stats() == []
+
+    @pytest.mark.asyncio
+    async def test_loop_emits_after_each_window(self):
+        client = AsyncSchedulerClient(SchedulerClientConfig(dp_stats_window=60, log_dp_stats=True))
+        client._snapshot_dp_stats = Mock(return_value=[(1, 10, 5.0), (1, 11, 0.0)])
+        client._dp_stats.record(1, 10)
+        client._dp_stats.record(1, 10)
+        sleeps: list[float] = []
+
+        async def fake_sleep(sec: float) -> None:
+            sleeps.append(sec)
+            if len(sleeps) >= 2:
+                raise asyncio.CancelledError
+
+        with (
+            patch("motor.coordinator.scheduler.runtime.scheduler_client.asyncio.sleep", fake_sleep),
+            patch("motor.coordinator.scheduler.runtime.dp_stats.logger.info") as mock_log,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await client._dp_stats_loop()
+
+        assert sleeps[0] == 60
+        assert mock_log.call_count == 1
+        first = mock_log.call_args_list[0].args
+        assert first[0] == "dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s"
+        assert (first[1], first[2], first[3], first[4]) == ("1", "10", 2, 5.0)
+
+    @pytest.mark.asyncio
+    async def test_connect_starts_task_only_when_enabled(self):
+        disabled = AsyncSchedulerClient(SchedulerClientConfig(log_dp_stats=False))
+        disabled._transport = AsyncMock()
+        disabled._transport.connected = True
+        disabled._transport.connect = AsyncMock(return_value=True)
+        disabled._push_subscriber = None
+        disabled._init_cache = AsyncMock()
+        assert await disabled.connect() is True
+        assert disabled._dp_stats_task is None
+
+        enabled = AsyncSchedulerClient(SchedulerClientConfig(log_dp_stats=True, dp_stats_window=60))
+        enabled._transport = AsyncMock()
+        enabled._transport.connected = True
+        enabled._transport.connect = AsyncMock(return_value=True)
+        enabled._push_subscriber = None
+        enabled._init_cache = AsyncMock()
+        enabled._transport.disconnect = AsyncMock()
+        try:
+            assert await enabled.connect() is True
+            assert enabled._dp_stats_task is not None
+            assert not enabled._dp_stats_task.done()
+        finally:
+            await enabled.disconnect()
+            assert enabled._dp_stats_task is None
+
+        zero_window = AsyncSchedulerClient(SchedulerClientConfig(log_dp_stats=True, dp_stats_window=0))
+        zero_window._transport = AsyncMock()
+        zero_window._transport.connected = True
+        zero_window._transport.connect = AsyncMock(return_value=True)
+        zero_window._push_subscriber = None
+        zero_window._init_cache = AsyncMock()
+        assert await zero_window.connect() is True
+        assert zero_window._dp_stats_task is None
+
+
 class TestSelectAndAllocateCas:
     """Local scoring + schema-4 CAS. Does not mock send_request."""
+
+    def test_dp_stats_window_follows_config(self):
+        client = AsyncSchedulerClient(
+            SchedulerClientConfig(
+                scheduler_type=CANDIDATE_POLICY_LOAD_BALANCE,
+                dp_stats_window=12,
+            )
+        )
+        assert client._dp_stats._window_sec == 12
+        assert client._log_dp_stats is False
 
     @pytest.mark.asyncio
     async def test_select_and_allocate_cas_commits_lowest_load(self, native_lib):
@@ -915,6 +1014,7 @@ class TestSelectAndAllocateCas:
             meta = client._workload_reader.entry_meta(1, 10)
             assert meta is not None
             assert meta["active_tokens"] == pytest.approx(5.0)
+            assert client._dp_stats._counter[("1", "10")] == 1
         finally:
             client._workload_reader.detach()
             writer.release()

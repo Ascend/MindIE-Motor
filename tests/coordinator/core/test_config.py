@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from motor.config.coordinator import CoordinatorConfig
+from motor.config.coordinator import CoordinatorConfig, SchedulerConfig, SchedulerType
 
 
 def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tmp_path):
@@ -657,6 +657,8 @@ def test_config_validation_rejects_enabled_management_auth_without_key_file():
     [
         ("log_max_line_length", -1, "log_max_line_length must be greater than 0"),
         ("max_retry", -1, "max_retry cannot be negative"),
+        ("max_retry", "abc", "max_retry must be a number, got str"),
+        ("max_retry", True, "max_retry must be a number, got bool"),
         ("retry_delay", -0.1, "retry_delay must be greater than 0"),
         ("first_token_timeout", -1, "first_token_timeout must be greater than 0"),
         ("infer_timeout", 0, "infer_timeout must be greater than 0"),
@@ -1276,3 +1278,30 @@ def test_invalid_render_timeout_is_rejected():
 
     with pytest.raises(ValueError, match="render_config.timeout_ms"):
         config.validate_config()
+
+
+def test_from_json_loads_dp_stats_window(_temp_json_file):
+    test_config = {
+        "scheduler_config": {
+            "scheduler_type": "load_balance",
+            "dp_stats_window": 120,
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.scheduler_config.dp_stats_window == 120
+
+
+def test_coordinator_config_accepts_nested_scheduler_config_kwargs():
+    """Kwargs construction must work; a leaked object.__new__ on the class breaks it."""
+    assert CoordinatorConfig.__dict__.get("__new__") is not object.__new__
+    config = CoordinatorConfig(
+        scheduler_config=SchedulerConfig(
+            scheduler_type=SchedulerType.LOAD_BALANCE,
+            dp_stats_window=30,
+        )
+    )
+    assert config.scheduler_config.scheduler_type == SchedulerType.LOAD_BALANCE
+    assert config.scheduler_config.dp_stats_window == 30

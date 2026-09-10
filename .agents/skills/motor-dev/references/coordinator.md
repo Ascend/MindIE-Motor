@@ -179,6 +179,16 @@ The policy is selected by `SchedulerType` (`config/coordinator.py`): `LOAD_BALAN
 
 Tunables live under `CoordinatorConfig.scheduler_config.kv_affinity`: `mode`, `load_weight`, `overlap_credit`, `prefill_load_scale`, `load_gate_topn`, `w_npu`, `w_cpu`, `w_disk`.
 
+Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every scheduling policy.
+`scheduler_config.dp_stats_window` is the emit interval (default 60 seconds; 0 disables).
+Inference **worker 0** is the only printer: every tick it snapshots schema-4 SHM and logs one line per DP
+with this worker's request count and the current `active_tokens`
+(`dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s`).
+Idle DPs with both `requests == 0` and `active_tokens == 0` are omitted.
+`record()` never logs by itself. Failed or retried CAS attempts are not counted.
+Obs and other workers do not dump (`worker_index == 0` only). The implementation is
+`scheduler/runtime/dp_stats.py`.
+
 ### Router Strategies (dynamic, by live topology)
 
 There is **no DeployMode → router class map**. `select_router_class()` (`router/dispatch.py`) decides the router per request from the live instance topology (roles currently online + dispatch compatibility):
@@ -270,6 +280,7 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 | `motor/coordinator/scheduler/policy/factory.py` | | `SchedulingPolicyFactory` registry |
 | `motor/coordinator/scheduler/runtime/scheduler_server.py` | | `AsyncSchedulerServer`: Mgmt control plane (ROUTER+PUB, CB, precision, SHM owner) |
 | `motor/coordinator/scheduler/runtime/scheduler_client.py` | | `AsyncSchedulerClient`: control-plane DEALER + instance cache + SHM CAS |
+| `motor/coordinator/scheduler/runtime/dp_stats.py` | | Worker-0 timer: per-DP request counts + SHM `active_tokens` in one `dp_stats` line; skip idle (requests=0 and active_tokens=0) |
 | `motor/coordinator/scheduler/runtime/zmq_protocol.py` | | Request/response types, msgpack framing, topic constants |
 | `motor/coordinator/scheduler/allocate_arbitration.py` | | Shared LB/KVA/RR reselect (R4; no ZMQ) |
 | `motor/coordinator/scheduler/runtime/workload_shm/` | | schema-4 layout + Reader/Owner + `native.py` ctypes |

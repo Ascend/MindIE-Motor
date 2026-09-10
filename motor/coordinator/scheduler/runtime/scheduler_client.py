@@ -41,6 +41,7 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
     unpack_recv_payload,
     ZMQMessageSerializer,
 )
+from motor.coordinator.scheduler.runtime.dp_stats import DpStatsLogger
 from motor.common.logger import get_logger
 from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
@@ -622,6 +623,10 @@ class SchedulerClientConfig:
     endpoint_instance_score_weight: float = 0.05
     # kv_cache_affinity tunables (see SchedulerConfig.kv_affinity).
     kv_affinity: KvAffinityConfig | None = None
+    dp_stats_window: int = 60
+    # Worker 0 dumps dp_stats every dp_stats_window seconds.
+    # Inference worker_index==0 sets this; Obs/standby (worker_index is None) leave it off.
+    log_dp_stats: bool = False
     tls_config: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
 
@@ -664,6 +669,10 @@ class AsyncSchedulerClient:
         self._kv_affinity_w_cpu = max(0.0, float(affinity.w_cpu))
         self._kv_affinity_w_disk = max(0.0, float(affinity.w_disk))
 
+        self._dp_stats = DpStatsLogger(window_sec=config.dp_stats_window)
+        self._log_dp_stats = bool(config.log_dp_stats)
+        self._dp_stats_task: asyncio.Task | None = None
+
         self._serializer = ZMQMessageSerializer()
         self._transport = _SchedulerTransport(config.scheduler_address, config.timeout, self._serializer)
         self._cache = _SchedulerInstanceCache()
@@ -705,10 +714,12 @@ class AsyncSchedulerClient:
             else:
                 logger.debug("Instance push SUB disabled; cache will refresh on next request/shm")
         if success:
+            self._start_dp_stats_task()
             logger.info("Async scheduler client connected to %s", self.scheduler_address)
         return success
 
     async def disconnect(self) -> None:
+        await self._stop_dp_stats_task()
         try:
             if self._push_subscriber:
                 await self._push_subscriber.disconnect()
@@ -718,6 +729,62 @@ class AsyncSchedulerClient:
         finally:
             # Always close transport so ZMQ context is terminated even if above steps raise.
             await self._transport.disconnect()
+
+    def _start_dp_stats_task(self) -> None:
+        """Start the worker-0 per-DP stats loop (requests + SHM tokens)."""
+        if not self._log_dp_stats or self._dp_stats._window_sec <= 0:
+            return
+        if self._dp_stats_task is not None and not self._dp_stats_task.done():
+            return
+        self._dp_stats_task = asyncio.create_task(self._dp_stats_loop())
+
+    async def _stop_dp_stats_task(self) -> None:
+        task = self._dp_stats_task
+        self._dp_stats_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _dp_stats_loop(self) -> None:
+        """Sleep ``window_sec``, then log each DP's requests and SHM tokens."""
+        interval = self._dp_stats._window_sec
+        while True:
+            await asyncio.sleep(interval)
+            self._emit_dp_stats()
+
+    def _emit_dp_stats(self) -> None:
+        self._dp_stats.emit_window(self._snapshot_dp_stats())
+
+    def _snapshot_dp_stats(self) -> list[tuple[int, int, float]]:
+        """Read current per-DP ``active_tokens`` from schema-4 SHM."""
+        reader = self._workload_reader
+        native = getattr(reader, "native", None) if reader is not None else None
+        if native is None:
+            return []
+        from motor.coordinator.scheduler.runtime.workload_shm.layout import FLAG_VALID
+
+        try:
+            header = native.read_header()
+            entries = native.load_entries(int(header.get("entry_count", 0)))
+        except Exception as e:
+            logger.debug("dp_stats active_tokens snapshot failed: %s", e)
+            return []
+        snapshots: list[tuple[int, int, float]] = []
+        for entry in entries:
+            if not (int(entry.get("flags", 0)) & FLAG_VALID):
+                continue
+            snapshots.append(
+                (
+                    int(entry["instance_id"]),
+                    int(entry["endpoint_id"]),
+                    float(entry["active_tokens"]),
+                )
+            )
+        return snapshots
 
     async def _send_request_result(self, request: SchedulerRequest) -> SchedulerRequestResult:
         if hasattr(type(self._transport), "send_request_result"):
@@ -1120,6 +1187,10 @@ class AsyncSchedulerClient:
             if status == STATUS_OK:
                 self._cache.patch_workload_from_shm(out_instance.id, out_endpoint.id, role, actual)
                 meta["active_tokens"] = actual
+                self._dp_stats.record(
+                    instance_id=out_instance.id,
+                    dp_rank=out_endpoint.id,
+                )
                 affinity_debug = getattr(req_info, "kv_affinity_debug", None)
                 matched_load = (
                     affinity_debug.get((out_instance.id, out_endpoint.id))
