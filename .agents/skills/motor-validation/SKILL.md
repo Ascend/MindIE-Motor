@@ -14,6 +14,8 @@ description: Motor validation entry point for deployed-service readiness, functi
 |---|---|
 | Coordinator readiness、最小冒烟 | [`motor-validation-smoke`](../motor-validation-smoke/SKILL.md) |
 | inference、metrics、tracing 或已部署 feature 行为 | [`motor-validation-functional`](../motor-validation-functional/SKILL.md) |
+| HPA、自动弹性扩缩容、External Metrics、复合指标或 scalingPolicy 自动生效 | [`motor-validation-functional`](../motor-validation-functional/SKILL.md)，按已部署 feature 行为验证 |
+| 人工在线扩缩容、`deploy.py --update_instance_num` 或显式目标实例数变更 | [`motor-scale`](../motor-scale/SKILL.md) |
 | AISBench 性能压测、打流、QPS、TTFT、TPOT、prefix-cache workload，且不以参考答案/evaluator 为目标 | [`motor-validation-benchmark`](../motor-validation-benchmark/SKILL.md) |
 | 带参考答案的数据集、AISBench 原生 evaluator、答案精度或跨服务精度对比 | [`motor-validation-accuracy`](../motor-validation-accuracy/SKILL.md) |
 | 已有有效 benchmark 的常规性能分析/归因，且不是“明确未达目标但原因未知”的异常诊断 | [`motor-validation-performance`](../motor-validation-performance/SKILL.md) |

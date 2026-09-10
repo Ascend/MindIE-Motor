@@ -76,11 +76,74 @@ External Metrics Adaptor 负责将 Coordinator 的 Prometheus 格式指标转换
 kubectl get --raw /apis/external.metrics.k8s.io/v1beta1 | grep -E "num_requests_waiting|motor:generation_tokens_per_second"
 ```
 
+## 部署 Prometheus Adapter
+
+Prometheus Adapter 是新增且与 External Metrics Adaptor 并行支持的指标接入路径：
+
+```text
+MindIE Motor Coordinator -> Prometheus -> Prometheus Adapter -> External Metrics API -> HPA
+```
+
+1. Prometheus 从 Coordinator 的 `/metrics` 端点采集指标。
+2. Prometheus Adapter 根据 `externalRules` 中的 `metricsQuery` 查询 Prometheus，并将结果注册到 `external.metrics.k8s.io`。
+3. HPA 使用 `type: External` 和 `external.metric.name` 查询该指标，Infer Operator 据此调整 Prefill 或 Decode 副本数。
+
+### 配置 Prometheus 采集 Coordinator 指标
+
+若 Prometheus 使用 Kubernetes Service 发现，可为 `mindie-motor-coordinator-obs` Service 添加以下 annotations，使 Prometheus 抓取其 endpoints：
+
+```yaml
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "1027"
+```
+
+`1027` 是 Coordinator metrics Service 的默认端口；如果部署时修改了该端口，应同步修改 annotation。Prometheus 的抓取配置还需启用对应的 Kubernetes Service 发现规则。
+
+### 配置 Prometheus Adapter External 指标
+
+Prometheus Adapter 的 ConfigMap 使用 `externalRules` 将 Prometheus 指标映射为 HPA 可用的 External 指标。下面的示例将等待请求数和运行中请求数之和暴露为 `vllm_total_requests`：
+
+```yaml
+rules:
+  externalRules:
+    - seriesQuery: '{__name__=~"vllm:(num_requests_waiting|num_requests_running)"}'
+      resources:
+        overrides:
+          kubernetes_namespace:
+            resource: namespace
+          kubernetes_pod_name:
+            resource: pod
+      name:
+        matches: "^.*$"
+        as: "vllm_total_requests"
+      metricsQuery: |
+        sum(
+          vllm:num_requests_waiting{<<.LabelMatchers>>}
+          +
+          vllm:num_requests_running{<<.LabelMatchers>>}
+        ) by (kubernetes_namespace, kubernetes_pod_name)
+```
+
+`metricsQuery` 是复杂触发规则的配置位置。可以在其中按业务需要组合多个指标、计算比值，或使用 `avg_over_time` 等时间窗口函数；Motor deployer 只透传 HPA 的 `scalingPolicy`，不参与 PromQL 的计算。
+
+Adapter 暴露的指标名称必须与 `scalingPolicy.spec.metrics[].external.metric.name` 一致。例如上述规则应配合 `name: vllm_total_requests` 使用。若 HPA 配置了 `kubernetes_namespace` 或 `infer_huawei_com_inferservice_name` selector，Prometheus 时序及 Adapter 规则必须保留对应标签；否则 HPA 无法匹配目标指标。
+
+完成部署后，可查询 External Metrics API 验证新路径：
+
+```bash
+kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/vllm_total_requests"
+```
+
 ## 配置弹性扩缩容策略
 
 在 `examples/deployer/yaml_template/infer_service_template.yaml` 中，为 Prefill 和 Decode 角色的配置块下添加 `scalingPolicy`。
 
-以下示例为 Prefill 按排队请求数扩缩容，Decode 按生成 token 速率扩缩容：
+使用原有 External Metrics Adaptor 路径时，沿用原有 `scalingPolicy` 配置即可，`external.metric` 下**无需新增** `selector`。
+
+使用 Prometheus Adapter 路径时，需要在 `external.metric` 下新增 `selector.matchLabels`，以 Prometheus Adapter 暴露的标签限定指标范围。以下示例为 Prometheus Adapter 场景：Prefill 按排队请求数扩缩容，Decode 按生成 token 速率扩缩容。
 
 ```yaml
 roles:
@@ -100,6 +163,10 @@ roles:
           external:
             metric:
               name: vllm:num_requests_waiting
+              selector:
+                matchLabels:
+                  infer_huawei_com_inferservice_name: vllm-0
+                  kubernetes_namespace: mindie-motor
             target:
               type: AverageValue
               averageValue: "5"
@@ -125,6 +192,10 @@ roles:
           external:
             metric:
               name: motor:generation_tokens_per_second
+              selector:
+                matchLabels:
+                  infer_huawei_com_inferservice_name: vllm-0
+                  kubernetes_namespace: mindie-motor
             target:
               type: AverageValue
               averageValue: "10"
@@ -135,6 +206,34 @@ roles:
       # ... 其余配置保持不变 ...
 ```
 
+Prometheus Adapter 场景下，`selector.matchLabels` 用于筛选本服务的指标，标签名称和值须与 Prometheus Adapter 返回的指标一致。
+例如 Prometheus Adapter 暴露的指标名为 `vllm_total_requests`，则将上述 `metric.name` 改为该名称。
+模板中的 `infer_huawei_com_inferservice_name` 应填写 InferServiceSet 展开出的实例名；单实例部署为 `<InferServiceSet 名>-0`，例如 `vllm-0`。
+
+`kubernetes_namespace` 表示被采集的 Motor 服务所在命名空间，不是 Prometheus Adapter 自身的部署命名空间。
+生成 `infer_service.yaml` 时，deployer 会遍历各角色的 HPA External 指标，将已配置的
+`selector.matchLabels.kubernetes_namespace` 更新为 `user_config.json` 中的
+`motor_deploy_config.job_id`。例如模板写的是 `mindie-motor`，而 `job_id` 为 `my-motor`，
+则生成后的资源 `metadata.namespace` 和该指标标签均为 `my-motor`。
+其他指标名、标签、阈值和副本上下限保持原样；未配置该标签时不会自动补充，也不会自动启用扩缩容。
+此联动发生在两处：从模板生成 `infer_service.yaml` 时，以及仅更新实例数的手动扩缩容路径（如 `deploy.py --update_instance_num`）改写已生成的 `infer_service.yaml` 时；两者都会按当前 `job_id` 回填 selector，无需手动修改。
+
+> [!WARNING]
+> 手动扩缩容路径只改已生成的 `infer_service.yaml`，不会重新读取模板。更换 `job_id`（即更换部署命名空间）时，必须先按新 `job_id` 重新生成 `infer_service.yaml` 再执行扩缩容，否则模板里的旧 selector 会残留到新命名空间的资源中。
+
+原有 External Metrics Adaptor 场景不需要添加上述 selector。只需填写该 Adaptor 实际暴露的指标名称和目标值，例如：
+
+```yaml
+metrics:
+  - type: External
+    external:
+      metric:
+        name: vllm:num_requests_waiting
+      target:
+        type: AverageValue
+        averageValue: "5"
+```
+
 ### scalingPolicy 参数说明
 
 | 参数 | 说明 | 取值 |
@@ -142,13 +241,16 @@ roles:
 | `scalingPolicy.type` | 弹性扩缩容策略类型 | 当前仅支持 `HPA` |
 | `scalingPolicy.spec.minReplicas` | 缩容下限，实例数不会低于此值 | 正整数 |
 | `scalingPolicy.spec.maxReplicas` | 扩容上限，实例数不会超过此值 | 正整数，且 ≥ minReplicas |
-| `scalingPolicy.spec.metrics[].type` | 指标类型 | `External`（由 External Metrics Adaptor 提供） |
-| `scalingPolicy.spec.metrics[].external.metric.name` | 外部指标名称 | 需与 Adaptor 暴露的指标名一致 |
+| `scalingPolicy.spec.metrics[].type` | 指标类型 | `External`（由 External Metrics Adaptor 或 Prometheus Adapter 提供） |
+| `scalingPolicy.spec.metrics[].external.metric.name` | 外部指标名称 | 需与所选指标接入组件暴露的指标名一致 |
+| `scalingPolicy.spec.metrics[].external.metric.selector` | 指标选择器 | 仅 Prometheus Adapter 场景需要配置；External Metrics Adaptor 场景无需新增 |
+| `scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.kubernetes_namespace` | 指标所属命名空间 | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 生成 YAML 会将其更新为 `motor_deploy_config.job_id` |
+| `scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.infer_huawei_com_inferservice_name` | 指标所属 InferService | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 按 `<InferServiceSet 名>-0` 自动更新；缺失时不注入 |
 | `scalingPolicy.spec.metrics[].external.target.type` | 目标值类型 | `AverageValue`（Pod 平均值） |
 | `scalingPolicy.spec.metrics[].external.target.averageValue` | 目标平均值阈值 | 按指标量纲设定 |
 
 > [!NOTE]
-> `scalingPolicy.spec.metrics[].external.metric.name` 需填写 External Metrics Adaptor 暴露的指标名。Adaptor 可能对 MindIE Motor 原始 Prometheus 指标名（如 `vllm:num_requests_waiting`）做映射或重命名。部署 Adaptor 后，可通过以下命令查看实际暴露的指标列表：
+> `scalingPolicy.spec.metrics[].external.metric.name` 需填写所选指标接入组件暴露的指标名。External Metrics Adaptor 或 Prometheus Adapter 都可能对 MindIE Motor 原始 Prometheus 指标名（如 `vllm:num_requests_waiting`）做映射或重命名。部署后，可通过以下命令查看实际暴露的指标列表：
 >
 > ```bash
 > kubectl get --raw /apis/external.metrics.k8s.io/v1beta1 | grep -E "vllm:|motor:"

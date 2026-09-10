@@ -357,6 +357,32 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     k8s_utils.apply_additional_labels_annotations(role, kv_conductor_config)
 
 
+def _set_scaling_policy_scope(infer_doc: dict, namespace: str) -> None:
+    """Scope opted-in HPA metrics to the generated single InferService instance.
+
+    Infer Operator names the instance expanded from an InferServiceSet as
+    ``{InferServiceSet.name}-{index}``. The deployer renders one set replica,
+    so the generated instance name is ``{name}-0``. Only labels already
+    present in the template are synchronized; missing labels are not injected.
+    """
+    infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
+    instance_name = f"{infer_name}-0"
+    for role in infer_doc.get(C.SPEC, {}).get(C.TEMPLATE, {}).get(C.ROLES, []):
+        policy = role.get("scalingPolicy") or {}
+        if policy.get("type") != "HPA":
+            continue
+        for metric in policy.get(C.SPEC, {}).get("metrics", []):
+            if metric.get("type") != "External":
+                continue
+            metric_conf = (metric.get("external") or {}).get("metric") or {}
+            selector = metric_conf.get(C.SELECTOR) or {}
+            labels = selector.get(C.MATCHLABELS) or {}
+            if "kubernetes_namespace" in labels:
+                labels["kubernetes_namespace"] = namespace
+            if "infer_huawei_com_inferservice_name" in labels:
+                labels["infer_huawei_com_inferservice_name"] = instance_name
+
+
 def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     """Generate InferServiceSet yaml from template and user_config."""
     logger.info("Generating InferServiceSet YAML from %s to %s", input_yaml, output_file)
@@ -369,6 +395,7 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
     infer_name = infer_doc.get(C.METADATA, {}).get(C.NAME, "mindie-server")
     set_rbac_namespace(extract_rbac_resources(all_docs), namespace)
     infer_doc[C.METADATA][C.NAMESPACE] = namespace
+    _set_scaling_policy_scope(infer_doc, namespace)
     # Must call before engine config so g_mmc_local_service_mode is set
     # when build_engine_env_items() reads it. Second call in _configure_kv_store_role is idempotent.
     if k8s_utils.g_kv_store_enabled:
@@ -475,6 +502,7 @@ def update_infer_service_replicas_only(infer_service_yaml_path, deploy_config, u
     if not isinstance(all_docs, list):
         all_docs = [all_docs]
     infer_doc = _find_infer_service_set_doc(all_docs)
+    _set_scaling_policy_scope(infer_doc, deploy_config[C.CONFIG_JOB_ID])
 
     e_total = obtain_engine_e_instance_total(deploy_config)
     encode_role = get_infer_role(infer_doc, C.ROLE_ENCODE)
