@@ -20,9 +20,9 @@ MindIE Motor 支持以下部署方式，可根据自身环境选择：
 
 ## Slurm 部署
 
-适用于 HPC / Slurm + Apptainer 集群，通过 `examples/slurm_deployer` 提交作业拉起服务。
+适用于 HPC / Slurm + Apptainer 集群，通过 `examples/deployer/slurm_deploy.py` 提交作业拉起服务。
 
-→ 从 [Slurm 部署概述](../slurm/README.md) 开始，或直接查看 [环境准备](../slurm/environment_preparation.md) 与 [服务部署](../slurm/service_deployment.md)
+→ 从 [Slurm 部署概述](slurm/README.md) 开始，或直接查看 [环境准备](slurm/environment_preparation.md) 与 [服务部署](slurm/service_deployment.md)
 
 ## Coordinator 独立部署
 

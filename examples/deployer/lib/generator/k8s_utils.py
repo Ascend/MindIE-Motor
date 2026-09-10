@@ -16,6 +16,7 @@ import shutil
 import subprocess
 
 import lib.constant as C
+from lib.prepare_utils import kubectl_from_file_args
 from lib.utils import (
     get_coordinator_service_name,
     logger,
@@ -44,6 +45,7 @@ g_user_config_path = None
 g_mf_store_service = "mf_store"
 g_mf_store_enabled = False
 g_engine_type = "vllm"
+_DEPLOYER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def resolve_nodeports_for_yaml_files(
@@ -536,26 +538,7 @@ def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mod
             "create",
             "configmap",
             C.MOTOR_CONFIG_CONFIGMAP_NAME,
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/boot.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/common.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/hccl_tools.py",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/mooncake/mooncake_config.py",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/controller.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/coordinator.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/engine.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_cache_store.sh",
-            f"--from-file=kv_store_backends.mooncake.mooncake.sh=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/mooncake/mooncake.sh",
-            f"--from-file=kv_store_backends.memcache.memcache.sh=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/memcache.sh",
-            f"--from-file=kv_store_backends.memcache.memcache_meta_service.py=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/memcache_meta_service.py",
-            f"--from-file=kv_store_backends.memcache.mmc-local-inprocess.conf=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/mmc-local-inprocess.conf",
-            f"--from-file=kv_store_backends.memcache.mmc-local-standalone.conf=./{C.STARTUP_ROOT_PATH}/roles/kv_store_backends/memcache/mmc-local-standalone.conf",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/kv_conductor.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/mf_store.sh",
-            f"--from-file=./{C.STARTUP_ROOT_PATH}/roles/all_combine_in_single_container.sh",
-            "--from-file=./probe/probe.sh",
-            "--from-file=./probe/probe.py",
-            "--from-file=./prestop/prestop.sh",
-            "--from-file=./prestop/prestop.py",
+            *kubectl_from_file_args(_DEPLOYER_DIR),
             f"--from-file=user_config.json={config_path}",
             f"--from-file={C.NODEPORT_CONFLICT_COORDINATOR_FILE}={coordinator_conflict}",
             f"--from-file={C.NODEPORT_CONFLICT_CONTROLLER_FILE}={controller_conflict}",

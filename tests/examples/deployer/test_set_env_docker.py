@@ -51,6 +51,7 @@ def _prepare_configmap(tmp_path):
         "engine.sh",
         "kv_pool.sh",
         "kv_conductor.sh",
+        "mf_store.sh",
     ]
     for name in shell_names:
         (tmp_path / name).write_text("", encoding="utf-8")
@@ -66,6 +67,7 @@ def _prepare_configmap(tmp_path):
                 "motor_controller_env": {},
                 "motor_coordinator_env": {},
                 "motor_engine_union_env": {"UNION_ONLY_KEY": "union"},
+                "motor_mf_store_env": {"MF_STORE_TEST_KEY": "mf-store"},
             }
         ),
         encoding="utf-8",
@@ -79,10 +81,12 @@ def test_set_env_docker_injects_union_env_for_single_container_hybrid(tmp_path):
 
     single_container_shell = (tmp_path / "all_combine_in_single_container.sh").read_text(encoding="utf-8")
     common_shell = (tmp_path / "common.sh").read_text(encoding="utf-8")
+    mf_store_shell = (tmp_path / "mf_store.sh").read_text(encoding="utf-8")
 
     assert "function set_union_env()" in single_container_shell
     assert 'export UNION_ONLY_KEY="union"' in single_container_shell
     assert 'export engine_type="vllm"' in common_shell
+    assert 'export MF_STORE_TEST_KEY="mf-store"' in mf_store_shell
 
 
 def test_set_env_docker_uses_union_engine_type_when_prefill_absent(tmp_path):

@@ -200,7 +200,9 @@ NodeName=<compute-node-2> CPUs=<cpu-num> Boards=<boards> SocketsPerBoard=<socket
 PartitionName=<partition-name> Nodes=<compute-node-1>,<compute-node-2> Default=YES MaxTime=INFINITE State=UP
 ```
 
-`Gres=npu:` 与该机卡数一致。`examples/slurm_deployer/deploy.sh` 中的 `PARTITION` 必须设置为上面配置的实际分区名。主节点参与计算时加入 `NodeName` 和分区 `Nodes=`。
+`Gres=npu:` 与该机卡数一致。运行 `examples/deployer/slurm_deploy.py start` 时，
+`--partition` 必须设置为上面配置的实际分区名。主节点参与计算时加入 `NodeName`
+和分区 `Nodes=`。
 
 同步到全部计算节点：
 

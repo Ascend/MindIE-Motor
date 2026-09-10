@@ -10,6 +10,17 @@
 
 建议在正式部署前先阅读上述文档，按文档完成环境准备与配置后再使用本目录中的工具进行部署。
 
+## 部署入口
+
+| 运行环境 | 入口 |
+|----------|------|
+| Kubernetes | `python3 deploy.py` |
+| Docker | `python3 docker_deploy.py` |
+| Slurm + Apptainer | `python3 slurm_deploy.py` |
+
+Slurm 的完整参数和共享文件系统要求见
+[Slurm 服务部署](../../docs/zh/user_guide/deployment/slurm/service_deployment.md)。
+
 ## deploy.py使用方法
 
 ### 参数说明

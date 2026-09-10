@@ -1,6 +1,6 @@
 # Slurm 部署
 
-本文档介绍如何在 Slurm 集群上部署 MindIE Motor。完整流程包括：准备集群软件、配置 NPU 资源、验证 Slurm 集群，以及使用 `examples/slurm_deployer` 启动 Motor 服务。
+本文档介绍如何在 Slurm 集群上部署 MindIE Motor。完整流程包括：准备集群软件、配置 NPU 资源、验证 Slurm 集群，以及使用 `examples/deployer/slurm_deploy.py` 启动 Motor 服务。
 
 ## 部署流程
 
@@ -11,7 +11,7 @@
 | 阶段 | 文档 | 主要内容 |
 |------|------|----------|
 | 1 | [环境准备](./environment_preparation.md) | 安装 Slurm 和 Apptainer，配置 Munge、NPU GRES 与 cgroup |
-| 2 | [服务部署](./service_deployment.md) | 配置 `examples/slurm_deployer`，提交、查看和停止服务作业 |
+| 2 | [服务部署](./service_deployment.md) | 使用 `examples/deployer/slurm_deploy.py` 提交、查看和停止服务作业 |
 
 ## 节点角色
 

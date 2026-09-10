@@ -12,17 +12,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
 import re
-import shutil
 import socket
 import subprocess
 from dataclasses import dataclass, field
 
 import lib.constant as C
+from lib.prepare_utils import prepare_rendered_local_configmap
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -1153,22 +1152,6 @@ def validate_devices_vs_world_size(
     )
 
 
-_ROLE_ROOT_FILES = ["boot.sh", "common.sh", "hccl_tools.py"]
-_KV_BACKEND_FILES = [
-    ("roles/kv_store_backends/mooncake/mooncake.sh", "kv_store_backends.mooncake.mooncake.sh"),
-    ("roles/kv_store_backends/mooncake/mooncake_config.py", "kv_store_backends.mooncake.mooncake_config.py"),
-    ("roles/kv_store_backends/memcache/memcache.sh", "kv_store_backends.memcache.memcache.sh"),
-    (
-        "roles/kv_store_backends/memcache/memcache_meta_service.py",
-        "kv_store_backends.memcache.memcache_meta_service.py",
-    ),
-    (
-        "roles/kv_store_backends/memcache/mmc-local-inprocess.conf",
-        "kv_store_backends.memcache.mmc-local-inprocess.conf",
-    ),
-]
-
-
 def prepare_configmap(
     deployer_dir: str,
     configmap_path: str,
@@ -1178,45 +1161,24 @@ def prepare_configmap(
     role: str | None = None,
     engine_ports: EnginePortOverrides | None = None,
 ) -> None:
-    startup_dir = os.path.join(deployer_dir, "startup")
-    os.makedirs(configmap_path, exist_ok=True)
-
-    for name in _ROLE_ROOT_FILES:
-        shutil.copyfile(os.path.join(startup_dir, name), os.path.join(configmap_path, name))
-
-    roles_dir = os.path.join(startup_dir, "roles")
-    for name in os.listdir(roles_dir):
-        src = os.path.join(roles_dir, name)
-        if os.path.isfile(src) and name.endswith(".sh"):
-            shutil.copyfile(src, os.path.join(configmap_path, name))
-
-    for rel_src, dst_name in _KV_BACKEND_FILES:
-        src = os.path.join(startup_dir, rel_src)
-        if os.path.exists(src):
-            shutil.copyfile(src, os.path.join(configmap_path, dst_name))
-
-    dest_user_config = os.path.join(configmap_path, "user_config.json")
-    shutil.copyfile(user_config_path, dest_user_config)
-    shutil.copyfile(env_config_path, os.path.join(configmap_path, "env.json"))
-
-    if engine_ports and engine_ports.specified():
-        with open(dest_user_config, encoding="utf-8") as handle:
+    def apply_docker_overrides(dest_user_config) -> None:
+        if not engine_ports or not engine_ports.specified():
+            return
+        with dest_user_config.open(encoding="utf-8") as handle:
             copied = json.load(handle)
         apply_engine_port_overrides(copied, role, engine_ports)
-        with open(dest_user_config, "w", encoding="utf-8", newline="\n") as handle:
+        with dest_user_config.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(copied, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
 
-    _run_set_env_docker(deployer_dir, configmap_path)
+    prepare_rendered_local_configmap(
+        deployer_dir,
+        configmap_path,
+        user_config_path,
+        env_config_path,
+        before_render=apply_docker_overrides,
+    )
     logger.info("ConfigMap prepared at %s", configmap_path)
-
-
-def _run_set_env_docker(deployer_dir: str, configmap_path: str) -> None:
-    module_path = os.path.join(deployer_dir, "startup", "set_env_docker.py")
-    spec = importlib.util.spec_from_file_location("set_env_docker", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    module.set_env_docker(configmap_path)
 
 
 def render_start_motor_sh(

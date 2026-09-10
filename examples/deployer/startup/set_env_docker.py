@@ -38,6 +38,7 @@ def set_env_docker(configmap_path):
     engine_shell_path = os.path.join(configmap_path, "engine.sh")
     kv_cache_store_shell_path = os.path.join(configmap_path, "kv_cache_store.sh")
     kv_conductor_shell_path = os.path.join(configmap_path, "kv_conductor.sh")
+    mf_store_shell_path = os.path.join(configmap_path, "mf_store.sh")
 
     deploy_mode = get_json_by_path(user_config, "motor_deploy_config.deploy_mode")
 
@@ -73,6 +74,8 @@ def set_env_docker(configmap_path):
     union_env_key = "motor_engine_union_env"
     if union_env_key not in env_config:
         env_config[union_env_key] = dict(env_config.get("motor_engine_prefill_env", {}))
+
+    update_shell_safely(mf_store_shell_path, env_config, "motor_mf_store_env", "set_mf_store_env")
 
     if deploy_mode == "single_container":
         update_shell_safely(single_container_shell_path, env_config, "motor_controller_env", "set_controller_env")
