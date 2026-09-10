@@ -45,6 +45,17 @@ class CheckParams:
     coordinator_port: str
     coordinator_manage_port: str
     namespace: str
+    coordinator_ip: str = ""
+
+
+def is_docker_only(params: CheckParams) -> bool:
+    return bool(params.coordinator_ip)
+
+
+def resolve_coordinator_ip(params: CheckParams) -> str:
+    if params.coordinator_ip:
+        return params.coordinator_ip
+    return fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
 
 
 def resolve_model_name(engine_section, default="Unknown"):
@@ -212,7 +223,7 @@ def fetch_user_config(user_config_path: str) -> dict:
 
 def check_service_status(http_pool_manager, params: CheckParams) -> bool:
     try:
-        ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
+        ip = resolve_coordinator_ip(params)
         if not ip:
             return False
         port = params.coordinator_port
@@ -289,7 +300,7 @@ def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) ->
     """
     # Fetch metrics from API
     try:
-        coordinator_ip = fetch_ip_with_namespace_and_name(params.namespace, "coordinator")
+        coordinator_ip = resolve_coordinator_ip(params)
         if not coordinator_ip:
             return tuple(-1 for _ in metric_names)
         host_port = format_address(coordinator_ip, params.coordinator_manage_port)
@@ -345,9 +356,42 @@ def restart_service(namespace: str, boot_args):
         logging.info("Restart service successfully!")
 
 
-def main():
+def record_docker_fault_and_exit(params: CheckParams, observation: str) -> None:
+    logging.error(
+        "Docker service is down, ras_monitor exits. "
+        f"observation: {observation}, "
+        f"coordinator_ip: {params.coordinator_ip}, "
+        f"coordinator_port: {params.coordinator_port}, "
+        f"coordinator_manage_port: {params.coordinator_manage_port}"
+    )
+    sys.exit(1)
+
+
+def parse_ras_monitor_args(argv=None):
     parser = argparse.ArgumentParser(description="MindIE RAS Starter")
-    _, boot_args = parser.parse_known_args()
+    parser.add_argument(
+        "--coordinator-ip",
+        default=None,
+        help="Coordinator IP for Docker deployment; omit to discover via kubectl",
+    )
+    ras_args, boot_args = parser.parse_known_args(argv)
+    return ras_args, boot_args
+
+
+def parse_coordinator_ip(raw):
+    if raw is None:
+        return ""
+    text = raw.strip().strip("[]")
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        logging.error(f"Invalid --coordinator-ip {raw!r}. Expected a valid IPv4 or IPv6 address.")
+        sys.exit(1)
+
+
+def main():
+    ras_args, boot_args = parse_ras_monitor_args()
+    coordinator_ip = parse_coordinator_ip(ras_args.coordinator_ip)
     user_config_path = resolve_user_config_path(boot_args)
 
     logging.info(f"Boot arguments: {boot_args}")
@@ -385,28 +429,33 @@ def main():
         coordinator_port=str(infer_port),
         coordinator_manage_port=str(metric_port),
         namespace=user_config["motor_deploy_config"]["job_id"],
+        coordinator_ip=coordinator_ip,
     )
+    docker_only = is_docker_only(params)
 
     # Check if service is deployed
-    while True:
-        if is_mindie_service_detected(params.namespace):
-            break
-        logging.info(f"Waiting for service {params.namespace} to be deployed...")
-        time.sleep(10)
-    logging.info(f"Service {params.namespace} is deployed!!!")
-
+    if not docker_only:
+        while True:
+            if is_mindie_service_detected(params.namespace):
+                break
+            logging.info(f"Waiting for service {params.namespace} to be deployed...")
+            time.sleep(10)
+        logging.info(f"Service {params.namespace} is deployed!!!")
+        test_deploy = subprocess.run(build_deploy_cmd(boot_args, "--dry-run"), check=False)
+        if test_deploy.returncode:
+            logging.error(f"Deploy config failed! Please check boot_args: {boot_args}")
+            sys.exit(1)
+        where = f"namespace: {params.namespace}"
+    else:
+        where = f"coordinator_ip: {params.coordinator_ip}"
     logging.info(
-        f"Starting monitoring service with namespace: {params.namespace}, "
+        f"Starting monitoring service with {where}, "
         f"model_name: {params.model_name}, coordinator_port: "
         f"{params.coordinator_port}, coordinator_manage_port: "
         f"{params.coordinator_manage_port}"
     )
 
-    test_deploy = subprocess.run(build_deploy_cmd(boot_args, "--dry-run"), check=False)
-    if test_deploy.returncode:
-        logging.error(f"Deploy config failed! Please check boot_args: {boot_args}")
-        sys.exit(1)
-
+    restart_hint = "" if docker_only else ", restart service!"
     max_retry_time = 10240
     while max_retry_time > 0:
         # Check if service is ready
@@ -417,6 +466,7 @@ def main():
             logging.info("MindIE MS Coordinator is not ready...")
             time.sleep(10)
         max_retry_time -= 1
+        observation = ""
         while True:
             time.sleep(10)
             logging.info(f"Start to monitor service, getting metrics with interval {probe_interval}s...")
@@ -432,7 +482,8 @@ def main():
             if test_metric == -1:
                 logging.info("Metrics not available, doing virtual inference...")
                 if not infer_with_retry(http_pool_manager, params, do_inference_retries, do_inference_interval):
-                    logging.info("Virtual inference failed, restart service!")
+                    observation = "Virtual inference failed"
+                    logging.info(f"{observation}{restart_hint}")
                     break
                 logging.info("Virtual inference succeeded, continue to monitor...")
 
@@ -464,7 +515,8 @@ def main():
                     )
                     if infer_with_retry(http_pool_manager, params, do_inference_retries, do_inference_interval):
                         continue
-                    logging.info("Virtual inference failed in failure increase state, restart service!")
+                    observation = "Virtual inference failed in failure increase state"
+                    logging.info(f"{observation}{restart_hint}")
                     break
                 if delta_failed == 0 or cur_failed_count == -1:
                     if cur_running_count == 0:  # No requests, idle state
@@ -475,13 +527,16 @@ def main():
                         )
                         if infer_with_retry(http_pool_manager, params, do_inference_retries, do_inference_interval):
                             continue
-                        logging.info("Virtual inference failed in idle state, restart service!")
+                        observation = "Virtual inference failed in idle state"
+                        logging.info(f"{observation}{restart_hint}")
                         break
                     if cur_running_count > 0:
                         # running state, e.g. long sequence request
                         logging.info("System is busy, continue to monitor...")
                         continue
 
+        if docker_only:
+            record_docker_fault_and_exit(params, observation)
         restart_service(params.namespace, boot_args)
 
 
