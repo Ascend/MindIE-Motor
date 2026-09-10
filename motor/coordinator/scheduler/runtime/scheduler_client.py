@@ -1197,15 +1197,20 @@ class AsyncSchedulerClient:
                     if (candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY and isinstance(affinity_debug, dict))
                     else None
                 )
+                tier_hit = matched_load[3] if matched_load and len(matched_load) > 3 else None
                 logger.info(
                     "scheduled role=%s req_id=%s instance=%s endpoint=%s policy=%s matched=%s "
-                    "load=%s committed=%s score=%s fast_path=%s repicked=%s proposed=%s-%s",
+                    "hbm=%s cpu=%s disk=%s load=%s committed=%s score=%s fast_path=%s repicked=%s "
+                    "proposed=%s-%s",
                     role_str,
                     req_info.req_id,
                     out_instance.id,
                     out_endpoint.id,
                     candidate_policy,
                     matched_load[0] if matched_load else None,
+                    tier_hit[0] if tier_hit else None,
+                    tier_hit[1] if tier_hit else None,
+                    tier_hit[2] if tier_hit else None,
                     matched_load[1] if matched_load else None,
                     committed.active_tokens,
                     selected_score,

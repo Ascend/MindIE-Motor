@@ -363,6 +363,25 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         return int(matched_raw or 0)
 
     @staticmethod
+    def _tier_hit_tokens(
+        matched_raw: object,
+        block_size: int,
+    ) -> tuple[int, int, int] | None:
+        """Return exclusive HBM (NPU), CPU, and Disk matched token counts from conductor blocks."""
+        if not isinstance(matched_raw, dict) or block_size <= 0:
+            return None
+        npu = matched_raw.get("npu_blocks")
+        cpu = matched_raw.get("cpu_blocks")
+        disk = matched_raw.get("disk_blocks")
+        if npu is None and cpu is None and disk is None:
+            return None
+        return (
+            int(npu or 0) * block_size,
+            int(cpu or 0) * block_size,
+            int(disk or 0) * block_size,
+        )
+
+    @staticmethod
     def _collect_load_candidates(
         instances: list[Instance],
         tenant: dict,
@@ -372,17 +391,19 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         w_cpu: float = 1.0,
         w_disk: float = 0.0,
         block_size: int = 0,
-    ) -> tuple[list[tuple[float, int, float, Instance, Endpoint]], bool]:
+    ) -> tuple[list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]], bool]:
         """
         Build the per-endpoint scoring tuples shared by the load-aware selection modes.
 
-        Each candidate is ``(load_cost, matched_tokens, prefill_cost, instance, endpoint)`` where
-        ``load_cost`` is the SHM-reported live workload and ``matched_tokens`` is the
-        tier-weighted affinity match capped at the prompt. Returns
-        ``(candidates, any_instance)``; ``any_instance`` distinguishes "conductor reported nothing
-        for our instances" (fall back) from "reported, but no endpoints".
+        Each candidate is ``(load_cost, matched_tokens, prefill_cost, instance, endpoint,
+        tier_hit_tokens)`` where ``load_cost`` is the SHM-reported live workload,
+        ``matched_tokens`` is the tier-weighted affinity match capped at the prompt, and
+        ``tier_hit_tokens`` is ``(hbm, cpu, disk)`` exclusive hit token counts when the conductor
+        reports per-medium blocks. Returns ``(candidates, any_instance)``; ``any_instance``
+        distinguishes "conductor reported nothing for our instances" (fall back) from "reported,
+        but no endpoints".
         """
-        candidates: list[tuple[float, int, float, Instance, Endpoint]] = []
+        candidates: list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]] = []
         any_instance = False
         for instance in instances:
             instance_data = tenant.get(conductor_instance_id(instance), None)
@@ -400,17 +421,19 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
                 matched_tokens = min(matched, isl) if isl > 0 else 0
                 prefill_cost = max(0.0, isl - overlap_credit * matched_tokens)
                 load_cost = ep.workload.calculate_workload_score(PDRole.ROLE_P)
-                candidates.append((load_cost, matched_tokens, prefill_cost, instance, ep))
+                tier_hit = KvCacheAffinityPolicy._tier_hit_tokens(matched_raw, block_size)
+                candidates.append((load_cost, matched_tokens, prefill_cost, instance, ep, tier_hit))
         return candidates, any_instance
 
     @staticmethod
     def _stash_affinity_debug(
         req_info: RequestInfo | None,
-        raw: list[tuple[float, int, float, Instance, Endpoint]],
+        raw: list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]],
         with_prefill: bool = False,
     ) -> None:
         """
-        Cache per-endpoint ``(matched_tokens, load_cost, prefill_cost)`` on ``req_info``.
+        Cache per-endpoint ``(matched_tokens, load_cost, prefill_cost, tier_hit_tokens)`` on
+        ``req_info``.
 
         Two consumers:
         * the worker's final allocation log, which reports the KV-affinity prefix hit and load of
@@ -429,8 +452,13 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             return
         try:
             req_info.kv_affinity_debug = {
-                (instance.id, ep.id): (matched_tokens, load_cost, prefill_cost if with_prefill else None)
-                for (load_cost, matched_tokens, prefill_cost, instance, ep) in raw
+                (instance.id, ep.id): (
+                    matched_tokens,
+                    load_cost,
+                    prefill_cost if with_prefill else None,
+                    tier_hit,
+                )
+                for (load_cost, matched_tokens, prefill_cost, instance, ep, tier_hit) in raw
             }
         except Exception as e:  # pragma: no cover - req_info may be immutable in some callers
             logger.debug("Could not cache kv_affinity_debug on req_info: %s", e)
@@ -477,19 +505,30 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         # Each candidate: (score, instance, endpoint, matched_tokens); lower score is better.
         candidates = [
             (prefill_load_scale * prefill_cost + load_weight * load_cost, instance, ep, matched_tokens)
-            for (load_cost, matched_tokens, prefill_cost, instance, ep) in raw
+            for (load_cost, matched_tokens, prefill_cost, instance, ep, _tier_hit) in raw
         ]
         ranked = sorted(candidates, key=lambda c: c[0])[: max(1, top_k)]
         top_score, top_inst, top_ep, top_matched = ranked[0]
+        top_tier = next(
+            (
+                tier
+                for (_load, matched, _prefill, instance, ep, tier) in raw
+                if instance.id == top_inst.id and ep.id == top_ep.id
+            ),
+            None,
+        )
         # DEBUG, not INFO: this is only the worker's *proposal*. The request's real destination is
         # decided by the scheduler's authoritative re-pick and logged once at INFO ("scheduled ...")
         # in AsyncSchedulerClient.select_and_allocate. Emitting this at INFO misleads load analysis.
         logger.debug(
-            "select_endpoint(load-aware): role=%s %s-%s matched:%s score:%.2f (top%d of %d)",
+            "select_endpoint(load-aware): role=%s %s-%s matched:%s hbm:%s cpu:%s disk:%s score:%.2f (top%d of %d)",
             top_inst.role,
             top_inst.id,
             top_ep.id,
             top_matched,
+            top_tier[0] if top_tier else None,
+            top_tier[1] if top_tier else None,
+            top_tier[2] if top_tier else None,
             top_score,
             len(ranked),
             len(candidates),
@@ -542,22 +581,26 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         gated = sorted(raw, key=lambda c: c[0])[:topn]
         # Stage 2: rank the least-loaded by longest cached prefix; tie -> lighter load.
         ranked = sorted(gated, key=lambda c: (-c[1], c[0]))[: max(1, top_k)]
-        top_load, top_matched, _prefill, top_inst, top_ep = ranked[0]
+        top_load, top_matched, _prefill, top_inst, top_ep, top_tier = ranked[0]
         # DEBUG, not INFO: worker proposal only; see _select_with_load / "scheduled ..." for the
         # authoritative destination the scheduler committed.
         logger.debug(
-            "select_endpoint(load-gated): role=%s %s-%s matched:%s load:%.2f (top%d of %d gated, %d total)",
+            "select_endpoint(load-gated): role=%s %s-%s matched:%s hbm:%s cpu:%s disk:%s load:%.2f "
+            "(top%d of %d gated, %d total)",
             top_inst.role,
             top_inst.id,
             top_ep.id,
             top_matched,
+            top_tier[0] if top_tier else None,
+            top_tier[1] if top_tier else None,
+            top_tier[2] if top_tier else None,
             top_load,
             len(ranked),
             topn,
             len(raw),
         )
         KvCacheAffinityPolicy._stash_affinity_debug(req_info, raw)
-        return [(inst, ep, load_cost) for (load_cost, _m, _p, inst, ep) in ranked]
+        return [(inst, ep, load_cost) for (load_cost, _m, _p, inst, ep, _tier) in ranked]
 
     def _select_instance(self, _: PDRole = None) -> Instance | None:
         """
@@ -647,7 +690,7 @@ class TokenizerManager(ThreadSafeSingleton):
                 return None
             try:
                 if self.engine_type == "vllm" and self._is_deepseek_v4_model(self.model_path):
-                    from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
+                    from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer  # pylint: disable=import-error,no-name-in-module
 
                     self.tokenizer = DeepseekV4Tokenizer.from_pretrained(self.model_path, trust_remote_code=True)
                     self._is_dsv4 = True

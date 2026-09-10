@@ -66,10 +66,12 @@ class RequestInfo(BaseModel):
     kv_affinity_debug: dict | None = Field(
         default=None,
         exclude=True,
-        description="Per-endpoint (matched_tokens, load_cost, prefill_cost) cached by the "
-        "kv_cache_affinity policy at selection; the worker forwards prefill_cost for the "
-        "scheduler's global fresh-load re-rank and logs matched/load for the committed endpoint. "
-        "Keyed by (instance_id, endpoint_id) tuples, so excluded from serialization.",
+        description="Per-endpoint (matched_tokens, load_cost, prefill_cost, tier_hit_tokens) "
+        "cached by the kv_cache_affinity policy at selection; tier_hit_tokens is "
+        "(hbm, cpu, disk) exclusive hit token counts when available. The worker forwards "
+        "prefill_cost for the scheduler's global fresh-load re-rank and logs matched/tier/load "
+        "for the committed endpoint. Keyed by (instance_id, endpoint_id) tuples, so excluded "
+        "from serialization.",
     )
     api: str = Field(..., description="API need to be forwarded")
     entry_api: str = Field(

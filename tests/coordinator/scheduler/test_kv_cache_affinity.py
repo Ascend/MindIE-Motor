@@ -441,6 +441,58 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
             120,
         )
 
+    def test_tier_hit_tokens_from_exclusive_blocks(self):
+        """Per-medium block counts convert to HBM/CPU/Disk token hits."""
+        self.assertEqual(
+            KvCacheAffinityPolicy._tier_hit_tokens(
+                {"npu_blocks": 6, "cpu_blocks": 1, "disk_blocks": 2, "matched_tokens": 800},
+                block_size=128,
+            ),
+            (768, 128, 256),
+        )
+
+    def test_tier_hit_tokens_unavailable_without_blocks(self):
+        """Legacy int / matched_tokens-only payloads omit tier breakdown."""
+        self.assertIsNone(KvCacheAffinityPolicy._tier_hit_tokens(200, block_size=128))
+        self.assertIsNone(
+            KvCacheAffinityPolicy._tier_hit_tokens({"matched_tokens": 120}, block_size=128),
+        )
+
+    @patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=128)
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_kv_affinity_debug_stashes_tier_hit_tokens(
+        self, mock_tokenizer_manager, mock_query_conductor, _mock_block_size
+    ):
+        """Selection caches exclusive HBM/CPU/Disk hit tokens for the scheduled log."""
+        ep = _make_endpoint(0, active_tokens=10.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep}}
+        mock_instance.get_all_endpoints.return_value = (ep,)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        mock_query_conductor.return_value = {
+            TENANT_ID: {
+                "vllm-prefill-inst": {
+                    "DP": {
+                        "0": {"npu_blocks": 6, "cpu_blocks": 1, "disk_blocks": 0, "matched_tokens": 800},
+                    }
+                }
+            }
+        }
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info, load_weight=0.0)
+        self.assertIsNotNone(result)
+        debug = mock_req_info.kv_affinity_debug[(mock_instance.id, ep.id)]
+        self.assertEqual(debug[3], (768, 128, 0))
+
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_mixed_dp_format_old_and_new(self, mock_tokenizer_manager, mock_query_conductor):
