@@ -21,11 +21,14 @@
 
 ```text
 Client
-  → Router(inject logprobs)
+  → Router(select D)
+  → SampleController/Scheduler(claim per-D sampling window)
+  → Router(inject logprobs when claimed)
   → Decode Engine
-  → Router(cache token/logprob, strip client response)
-  → SampleController(CONFIRM_SAMPLE)
-  → PrecisionReporter(check + RECORD_PRECISION_RESULT)
+  → Router(cache full token/logprob, project client response)
+  → Client response completes
+  → SampleController(background PrecisionReporter check)
+  → PrecisionReporter(RECORD_PRECISION_RESULT)
   → PrecisionAlarm(InternalRouterProbe + report_alarms)
   → Controller(_maybe_precision_auto_recover)
   → terminate_instance_for_recovery
@@ -37,7 +40,7 @@ Client
 motor/coordinator/
 ├── router/precision_sample/
 │   ├── request.py          # inject_logprobs
-│   ├── response.py         # update_logprob_cache / strip_logprobs_for_client
+│   ├── response.py         # update_logprob_cache / project_logprobs_for_client
 │   └── sample_builder.py   # build_decode_sample
 ├── fault_tolerance/
 │   ├── precision/
@@ -61,8 +64,10 @@ motor/coordinator/
 
 | 层次 | 组件 | 职责 |
 |------|------|------|
-| 数据采集 | `inject_logprobs`、`update_logprob_cache`、`build_decode_sample` | 对 Decode 请求注入采样参数，并从响应中缓存 token/logprob |
-| 出口门控 | `SampleController` + Scheduler `CONFIRM_SAMPLE` | 每个实例组每个采样窗口最多放行一条完整样本 |
+| 入口准入 | `SampleController` + Scheduler `CONFIRM_SAMPLE` | D 已选定后按 D 实例原子抢占窗口，每个窗口最多允许一条请求注入采样参数 |
+| 数据采集 | `inject_logprobs`、`update_logprob_cache`、`build_decode_sample` | 对获准的 Decode 请求注入采样参数，并从响应中缓存完整 token/logprob |
+| 客户端投影 | `project_logprobs_for_client` | 用户未请求则删除额外字段；用户请求时恢复其原始 top-k 数量 |
+| 后台检测 | `SampleController.enqueue_sample` | 响应完成后启动并跟踪检测任务，不在用户响应路径等待 msprobe/连续计数 |
 | 检测编排 | `PrecisionReporter` + `MsprobeChecker` | 执行 msprobe 检测，并记录跨 Worker 连续异常次数 |
 | 拨测告警 | `InternalRouterProbe` + `PrecisionAlarm` | pin 目标实例组进行固定问答拨测，构造并上报告警 |
 | 自动恢复 | Controller `_maybe_precision_auto_recover` | 根据精度告警终止 D 实例及可选 P 实例 |
@@ -78,7 +83,7 @@ Coordinator 侧配置类为 `PrecisionDetectionConfig`：
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `precision_check_enabled` | `false` | 总开关，关闭时不修改 Decode 请求 |
-| `interval_seconds` | `30.0` | 实例组级采样送检间隔 |
+| `interval_seconds` | `30.0` | 同一 Decode 实例两次采样参数注入的最小间隔 |
 | `logprobs_count` | `1` | 注入 top-k 宽度；1 支持重复，>=3 支持乱码，>=5 支持生僻字 |
 | `precision_issue_threshold` | `10` | 连续异常触发拨测/告警的阈值 |
 | `precision_clear_threshold` | `10` | 活动告警下连续有效正常样本触发清除的阈值 |
@@ -102,9 +107,10 @@ Router 公共基类提供三类方法：
 
 | 方法 | 说明 |
 |------|------|
-| `_collect_logprobs_from_stream_chunk()` | 流式 chunk 级缓存 token id、logprob，并按客户端原始请求决定是否剥离 logprobs |
+| `_claim_precision_sample()` | D 已选定后按 D 实例申请窗口；成功后才修改 Decode 请求 |
+| `_collect_logprobs_from_stream_chunk()` | 流式 chunk 级缓存完整 token id、logprob，再将响应投影到客户端原始 logprobs 数量 |
 | `_collect_logprobs_from_nonstream_body()` | 非流式响应 body 级缓存 token id、logprob |
-| `_submit_token_sample()` | 构造 `DecodeSample` 并交给 `SampleController.submit_sample()` |
+| `_submit_token_sample()` | 构造 `DecodeSample` 并交给 `SampleController.enqueue_sample()` |
 
 不同路由策略负责提供实例组 key：
 
@@ -200,15 +206,18 @@ sequenceDiagram
     participant Ctrl as Controller
 
     C->>R: chat/completions
-    R->>R: inject_logprobs()
-    R->>D: Decode request
-    D-->>R: token_ids + logprobs
-    R->>R: cache token/logprob, strip client fields
-    R->>SC: confirm_sample(key, now)
-    SC->>S: CONFIRM_SAMPLE
-    S-->>SC: confirmed
-    alt confirmed
-        SC->>PR: submit_sample(DecodeSample)
+    R->>R: select Decode instance
+    R->>SC: claim_sample(d_instance_id, now)
+    SC->>S: CONFIRM_SAMPLE (compatibility wire value)
+    S-->>SC: claimed
+    alt claimed
+        R->>R: inject_logprobs(effective=max(client, Motor))
+        R->>D: Decode request
+        D-->>R: token_ids + full logprobs
+        R->>R: cache full sample, project client width
+        R-->>C: response / final stream chunk
+        R->>SC: enqueue_sample(DecodeSample)
+        SC-)PR: background handle(sample)
         PR->>M: check()
         M-->>PR: CheckResult
         PR->>S: RECORD_PRECISION_RESULT
@@ -220,6 +229,10 @@ sequenceDiagram
             Ctrl->>Ctrl: _maybe_precision_auto_recover()
             A->>S: FINISH_PRECISION_ACTION(action_token)
         end
+    else not claimed
+        R->>D: unchanged Decode request
+        D-->>R: normal response
+        R-->>C: response
     end
 ```
 
@@ -227,12 +240,12 @@ sequenceDiagram
 
 | 字段 | key | 含义 |
 |------|-----|------|
-| `_sample_exit_last_time` | `(p_instance_id, d_instance_id)` | 上次放行样本的时间戳 |
+| `_sample_admission_last_time` | `d_instance_id` | 该 Decode 实例上次获准注入采样参数的时间戳 |
 | `_precision_streak_counts` | 同上 | 当前连续异常次数 |
 | `_precision_probing` | 同上 | 是否正在执行拨测/告警 |
 | `_precision_action_tokens` | 同上 | 本轮 action 的 UUID，用于 FINISH 校验 |
 
-`CONFIRM_SAMPLE`、`RECORD_PRECISION_RESULT` 和 `FINISH_PRECISION_ACTION` 均在同一个 per-key lock 内更新状态，保证同一实例组的门控、计数和 probing 状态一致。
+入口准入使用 `(None, d_instance_id)` 对应的精度状态锁，检测结果与告警状态仍使用 `(p_instance_id, d_instance_id)`，保证“按 D 控制采样开销、按 PD 组归因告警”。获准请求即刻写入时间戳；后续请求失败也不归还窗口。
 
 ---
 
@@ -241,8 +254,9 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class SampleController {
-        +confirm_sample(key, now) bool
-        +submit_sample(sample) None
+        +claim_sample(d_instance_id, now) bool
+        +enqueue_sample(sample) None
+        +shutdown() None
     }
     class DecodeSample {
         +p_instance_id
@@ -277,7 +291,7 @@ classDiagram
         +run(...) ProbeOutcome
     }
     class Scheduler {
-        +confirm_sample_exit(...) bool
+        +claim_precision_sample(...) bool
         +record_precision_result(...) dict
         +finish_precision_action(...) bool
     }
@@ -301,7 +315,7 @@ classDiagram
 
 | 请求 | data | 响应 | 说明 |
 |------|------|------|------|
-| `CONFIRM_SAMPLE` | `p_instance_id`, `d_instance_id`, `now`, `interval_seconds` | `confirmed` | 跨 Worker 出口门控 |
+| `CONFIRM_SAMPLE` | `d_instance_id`, `now`, `interval_seconds`（`p_instance_id` 保留为空以兼容现有 wire schema） | `confirmed` | 跨 Worker、按 D 实例的入口采样准入 |
 | `RECORD_PRECISION_RESULT` | `p_instance_id`, `d_instance_id`, `has_issue`, `threshold` | `skip`, `threshold_hit`, `consecutive`, `action_token` | 全局连续计数和 probing 占位 |
 | `FINISH_PRECISION_ACTION` | `p_instance_id`, `d_instance_id`, `action_token` | `finished` | 校验 token 后清理 probing 与 streak，下一轮连续异常从 1 重新计数 |
 
@@ -336,23 +350,27 @@ classDiagram
 ## 可靠性与并发设计
 
 1. **Fail-open**：采样提交、msprobe 检测、Scheduler ZMQ 记录失败均不影响用户请求。
-2. **Scheduler 全局状态**：连续异常计数和 probing 状态集中在 Scheduler，避免多 Worker 重复触发拨测。
-3. **action_token 防误清理**：阈值触发时生成 UUID，FINISH 时必须匹配，防止旧 Worker 清掉新一轮状态。
-4. **msprobe 串行化**：`MsprobeChecker` 使用进程级 `threading.Lock` 包住 `ILLDetector.run()`，避免 msprobe 内部可变状态并发竞争。
-5. **拨测防递归**：`InternalRouterProbe` 构造 Router 时传入 `sampling_manager=None`，拨测请求不会再次进入采样链。
-6. **Controller 恢复隔离**：终止前先 `separate_instance()`，阻止后续新请求继续调度到异常实例。
-7. **告警 action 后状态提交**：raise action 成功后，若 auto-recovery 已清除则删除整组状态；否则进入 `alarm_active` 并保存 `moi`。clear action 成功后删除活动告警状态。无效检测（fail-open）不计入连续正常。
-8. **CLEAR 不触发 auto-recovery**：仅 `category=ALARM` 且 `cleared=NO` 的精度告警会触发实例终止。
-9. **CCAE Completed 生命周期**：实例终止成功后继续向 CCAE 成功上报 `Completed` 10 次；提前 ack 不停止，HTTP 失败不计数。
+2. **Scheduler 全局准入**：按 D 实例集中维护采样窗口，多个 Worker 并发请求只有一个能注入额外参数。
+3. **响应解耦**：msprobe、连续计数、拨测与告警从用户响应路径剥离；后台任务由 `SampleController` 跟踪，并在 Worker 关闭时取消、回收。
+4. **Scheduler 全局归因状态**：连续异常计数和 probing 状态仍按 PD Group 集中维护，避免多 Worker 重复触发拨测。
+5. **action_token 防误清理**：阈值触发时生成 UUID，FINISH 时必须匹配，防止旧 Worker 清掉新一轮状态。
+6. **msprobe 串行化**：`MsprobeChecker` 使用进程级 `threading.Lock` 包住 `ILLDetector.run()`，避免 msprobe 内部可变状态并发竞争。
+7. **拨测防递归**：`InternalRouterProbe` 构造 Router 时传入 `sampling_manager=None`，拨测请求不会再次进入采样链。
+8. **Controller 恢复隔离**：终止前先 `separate_instance()`，阻止后续新请求继续调度到异常实例。
+9. **告警 action 后状态提交**：raise action 成功后，若 auto-recovery 已清除则删除整组状态；否则进入 `alarm_active` 并保存 `moi`。clear action 成功后删除活动告警状态。无效检测（fail-open）不计入连续正常。
+10. **CLEAR 不触发 auto-recovery**：仅 `category=ALARM` 且 `cleared=NO` 的精度告警会触发实例终止。
+11. **CCAE Completed 生命周期**：实例终止成功后继续向 CCAE 成功上报 `Completed` 10 次；提前 ack 不停止，HTTP 失败不计数。
 
 ---
 
 ## 限制与后续规划
 
-1. `precision_check_enabled=true` 后每条 Decode 请求都会注入 logprobs，性能主要受引擎返回 logprobs 的开销影响。
+1. 只有获准采样的 Decode 请求才注入 logprobs；获准后请求失败仍消耗当前窗口。
 2. 生僻字检测依赖 msprobe 的 token2category 映射文件；新模型缺少映射时检测能力会降级。
 3. Mgmt 进程重启后采样窗口、连续异常计数和 probing 状态会清零。
 4. CCAE 北向精度控制的 `switchControl`、`immediateDelivery` 当前在 reporter 中保存状态，运行时动态开关仍需后续接入；`Completed` 状态需连续成功上报 10 次后才会停止。
+5. 本次只隔离 Motor 额外增加的 logprobs **数量**：内部先采集 `max(用户数量, Motor 配置)`，再按用户数量投影。`return_tokens_as_token_ids=true` 仍会在采样请求上强制设置，用户主动请求 logprobs 时的 token 表示兼容性留待后续决策。
+6. `SampleController` 与检测器按 Worker 生命周期构造，修改嵌套 `precision_detection_config` 后需重启 Worker 才能可靠生效。
 
 ---
 

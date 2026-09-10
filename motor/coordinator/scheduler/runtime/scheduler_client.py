@@ -1165,22 +1165,22 @@ class AsyncSchedulerClient:
         )
         return None
 
-    async def confirm_sample(
+    async def claim_sample(
         self,
-        key: tuple[int | None, int],
+        d_instance_id: int,
         now: float,
         interval_seconds: float,
     ) -> bool:
         if not self._transport.connected:
-            logger.warning("confirm_sample: scheduler transport not connected")
+            logger.warning("claim_sample: scheduler transport not connected")
             return False
         request_id = self._next_request_id()
         request = SchedulerRequest(
             request_type=SchedulerRequestType.CONFIRM_SAMPLE,
             request_id=request_id,
             data={
-                "p_instance_id": key[0],
-                "d_instance_id": key[1],
+                "p_instance_id": None,
+                "d_instance_id": d_instance_id,
                 "now": now,
                 "interval_seconds": interval_seconds,
             },
@@ -1189,9 +1189,9 @@ class AsyncSchedulerClient:
         if response and response.response_type == SchedulerResponseType.SUCCESS:
             return bool((response.data or {}).get("confirmed", False))
         if response:
-            logger.warning("confirm_sample failed pd_group=%s error=%s", key, response.error)
+            logger.warning("claim_sample failed d_instance_id=%s error=%s", d_instance_id, response.error)
         else:
-            logger.warning("confirm_sample: no response (timeout) pd_group=%s", key)
+            logger.warning("claim_sample: no response (timeout) d_instance_id=%s", d_instance_id)
         return False
 
     async def record_precision_result(

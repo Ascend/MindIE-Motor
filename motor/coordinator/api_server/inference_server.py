@@ -316,7 +316,7 @@ class InferenceServer(BaseCoordinatorServer):
                 logger.info(
                     "Precision check (token sampling): interval=%.1fs logprobs_count=%d "
                     "threshold=%d probe_attempts=%d probe_timeout=%.1fs "
-                    "exit_gate=scheduler_zmq streak=scheduler_zmq probe=internal_router",
+                    "entry_admission=scheduler_zmq streak=scheduler_zmq probe=internal_router",
                     sampling_cfg.interval_seconds,
                     sampling_cfg.logprobs_count,
                     sampling_cfg.precision_issue_threshold,
@@ -350,6 +350,9 @@ class InferenceServer(BaseCoordinatorServer):
             raise
         finally:
             logger.info("Inference server is shutting down...")
+            sampling_manager = getattr(app.state, "sampling_manager", None)
+            if sampling_manager is not None:
+                await sampling_manager.shutdown()
             if render_client is not None:
                 await render_client.aclose()
             try:

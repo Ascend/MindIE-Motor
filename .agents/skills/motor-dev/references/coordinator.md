@@ -76,7 +76,7 @@ NPU resources.
 | Request | Direction | Purpose |
 |---------|-----------|---------|
 | `GET_AVAILABLE_INSTANCES` | Worker/Obs → Mgmt | Cold start / PUB loss / stale heartbeat: instance list and workload SHM name |
-| `CONFIRM_SAMPLE` | Worker → Mgmt | Cross-worker precision-sampling exit gate |
+| `CONFIRM_SAMPLE` | Worker → Mgmt | Compatibility wire value for cross-worker, per-D entry-side sampling admission |
 | `RECORD_PRECISION_RESULT` | Worker → Mgmt | Records global consecutive failures + probing state |
 | `FINISH_PRECISION_ACTION` | Worker → Mgmt | Clears probing after a probe/alarm cycle |
 | `DISMISS_PRECISION_ALARM_STATE` | Worker → Mgmt | External recovery cleared the alarm |
@@ -251,7 +251,7 @@ claiming an incorrect KV prefix match.
 
 ### Hot-Reload
 
-Hot-reload is driven by a `ConfigWatcher` in the **Mgmt process** (not the daemon's loop): when the config file changes, it calls `CoordinatorConfig.reload()` (re-parse from JSON) and pushes the updated config into the running `ManagementServer`. The reload skip-set is exactly `frozenset({"worker_index"})` — the runtime-only field that must not change mid-flight; everything else re-applies. If no valid config path exists, hot-reload is disabled.
+Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worker, Scheduler, Mgmt, and Obs processes** (not the daemon's loop). Each watcher calls `CoordinatorConfig.reload()` against that process's config object; the Worker skip-set includes the runtime-only `worker_index`. If no valid config path exists, hot-reload is disabled. Reloading the config object does not rebuild lifespan-scoped objects: in particular, `SampleController`, its interval, checker, reporter, and enabled/disabled wiring are assembled during Worker startup, so changes under `precision_detection_config` require a Worker restart for reliable effect.
 
 ## Key Files
 
@@ -362,7 +362,7 @@ and from `mgmt_tls_config`; use TLS as well when management traffic crosses an u
 
 **Circuit breaker** (`domain/circuit_breaker.py`): per-instance state machine tracking consecutive failures. Each instance is `"closed"` (normal, schedulable) or `"open"` (tripped, blocked from scheduling). Workers report instance outcomes via `CIRCUIT_BREAKER_REPORT`; Mgmt's `CircuitBreakerManager` (inside `AsyncSchedulerServer`) is constructed from `circuit_config` (default: trip after 3 consecutive failures, 30s first timeout, 300s cap; `enable=false` disarms counting). Config is snapshotted at Coordinator startup. Success or auto-recovery resets the failure count. State changes are mirrored onto SHM `flags.BLOCKED` first; `CIRCUIT_BREAKER_TOPIC` PUB is sent only after that write succeeds (heartbeat retries both). Allocate CAS is the final gate for workers that miss the PUB. `select_router_class()` consults the Worker-local breaker cache: a P/D pair is only "compatible" if both roles have non-blocked instances, and 503 is returned when all instances are circuit-broken.
 
-**Precision detection** (`fault_tolerance/precision/` + `fault_tolerance/probe/`): cross-worker sampling (`sample_controller.py`, `streak_result.py`) coordinated with Mgmt via the four precision request types — `CONFIRM_SAMPLE` (cross-worker exit gate), `RECORD_PRECISION_RESULT` (global consecutive failures + probing state), `FINISH_PRECISION_ACTION` (clear probing after probe/alarm), `DISMISS_PRECISION_ALARM_STATE` (external recovery cleared the alarm). Alarm publishing lives in `fault_tolerance/alarm/` (`precision_alarm.py`); probes (`chat_probe.py`, `router_probe.py`) route identically to user traffic through `select_router_class()`.
+**Precision detection** (`fault_tolerance/precision/` + `fault_tolerance/probe/`): after selecting D, a Worker uses `CONFIRM_SAMPLE` as a compatibility wire value to atomically claim one sampling request per D per interval. Only the winner injects sampling fields. The completed user response is projected back to the client's requested logprobs width, while the full sample is queued for background checking. Final streak/alarm attribution remains per `(P,D)` group. The other precision request types are `RECORD_PRECISION_RESULT` (global consecutive failures + probing state), `FINISH_PRECISION_ACTION` (clear probing after probe/alarm), and `DISMISS_PRECISION_ALARM_STATE` (external recovery cleared the alarm). Alarm publishing lives in `fault_tolerance/alarm/` (`precision_alarm.py`); probes (`chat_probe.py`, `router_probe.py`) route identically to user traffic through `select_router_class()`. Sampling still forces `return_tokens_as_token_ids=true`; representation compatibility for clients that explicitly request logprobs is a known deferred decision.
 
 ## Development Rules
 

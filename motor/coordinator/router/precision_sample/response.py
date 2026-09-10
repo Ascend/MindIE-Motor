@@ -14,10 +14,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from motor.common.logger import get_logger
 from motor.coordinator.models.constants import OpenAIField
+
+if TYPE_CHECKING:
+    from motor.coordinator.router.precision_sample.request import LogprobsRequestMetadata
 
 logger = get_logger(__name__)
 
@@ -295,20 +298,62 @@ def _warn_completion_logprobs_all_null_once(request_info: dict, raw_count: int) 
     )
 
 
-def strip_logprobs_for_client(
+def project_logprobs_for_client(
     obj: dict,
     *,
-    client_requested_logprobs: bool = False,
-) -> None:
-    """Strip logprobs fields injected for sampling from a response dict (mutates obj).
+    metadata: "LogprobsRequestMetadata | None",
+) -> bool:
+    """Restore the client's requested logprobs width in-place.
 
-    When client_requested_logprobs is True the fields are kept (client asked for them).
+    Returns True when the response object was changed.
     """
-    if client_requested_logprobs:
-        return
+    changed = False
+    if metadata is None:
+        return changed
+
+    if not metadata.client_requested:
+        for ch in obj.get(OpenAIField.CHOICES) or []:
+            if isinstance(ch, dict) and "logprobs" in ch:
+                ch.pop("logprobs", None)
+                changed = True
+        return changed
+
+    if metadata.effective_count <= metadata.client_count:
+        return changed
+
     for ch in obj.get(OpenAIField.CHOICES) or []:
-        if isinstance(ch, dict):
-            ch.pop("logprobs", None)
+        if not isinstance(ch, dict):
+            continue
+        logprobs = ch.get("logprobs")
+        if not isinstance(logprobs, dict):
+            continue
+        if metadata.is_chat:
+            skip_width_trim = metadata.client_count == 0 and metadata.client_requested
+            for entry in logprobs.get("content") or []:
+                if not isinstance(entry, dict) or not isinstance(entry.get("top_logprobs"), list):
+                    continue
+                if skip_width_trim:
+                    continue
+                top_logprobs = entry["top_logprobs"]
+                if len(top_logprobs) > metadata.client_count:
+                    entry["top_logprobs"] = top_logprobs[: metadata.client_count]
+                    changed = True
+            continue
+
+        # ``logprobs=true`` is a switch, not an explicit request for zero
+        # candidates. Completion represents its width on ``logprobs`` itself,
+        # so it needs the same no-width guard as Chat's ``top_logprobs``.
+        if metadata.client_count == 0 and metadata.client_requested:
+            continue
+        top_logprobs = logprobs.get("top_logprobs")
+        if not isinstance(top_logprobs, list):
+            continue
+        for index, candidates in enumerate(top_logprobs):
+            if not isinstance(candidates, dict) or len(candidates) <= metadata.client_count:
+                continue
+            top_logprobs[index] = dict(list(candidates.items())[: metadata.client_count])
+            changed = True
+    return changed
 
 
 # encode_stream_chunk_bytes lives in motor.coordinator.router.recompute.stream

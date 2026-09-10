@@ -44,7 +44,6 @@ from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_er
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
 import motor.coordinator.router.adapters as adapters
 from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
-from motor.coordinator.router.precision_sample.request import inject_logprobs
 from motor.common.resources.instance import PDRole
 from motor.common.resources.dispatch import DispatchPlan
 from motor.coordinator.domain.scheduling import (
@@ -283,17 +282,8 @@ class PDHybridRouter(BaseRouter):
     def _mark_stream_body_sent(self) -> None:
         self._stream_body_sent = True
 
-    def _precision_sampling_enabled(self) -> bool:
-        return self.config.precision_detection_config.precision_check_enabled and self._sampling_manager is not None
-
-    def _prepare_precision_request(self, req_data: dict[str, Any]) -> None:
-        if self._precision_sampling_enabled():
-            inject_logprobs(req_data, self.config.precision_detection_config, req_id=self.req_info.req_id)
-
     def _init_hybrid_sampling_state(self) -> dict:
-        sampling_state = self._init_sampling_state()
-        sampling_state["enabled"] = self._precision_sampling_enabled()
-        return sampling_state
+        return self._init_sampling_state()
 
     async def _maybe_submit_hybrid_sample(self, resource: ScheduledResource | None, sampling_state: dict) -> None:
         if not sampling_state["enabled"] or self._sampling_manager is None or resource is None:
@@ -302,8 +292,7 @@ class PDHybridRouter(BaseRouter):
         info.setdefault("cached_output_token_ids", [])
         info.setdefault("cached_prompt_token_ids", self.req_info.token_ids)
         union_id = resource.instance.id
-        if await self._sampling_manager.confirm_sample((None, union_id), time.time()):
-            await self._submit_token_sample(None, union_id, info, resource)
+        await self._submit_token_sample(None, union_id, info, resource)
 
     async def _stream_inference_attempt(  # pylint: disable=contextmanager-generator-missing-cleanup
         self,
@@ -330,6 +319,7 @@ class PDHybridRouter(BaseRouter):
             attempt, max_retry, manage_request_context=manage_request_context
         ) as client:
             resource = self._scheduled_resource
+            await self._claim_precision_sample(resource, req_data, sampling_state)
             async for chunk in self.forward_stream_request(
                 api,
                 req_data,
@@ -382,7 +372,6 @@ class PDHybridRouter(BaseRouter):
                         self.logger.warning("Rescheduling stream[%d/%d] to a new hybrid instance", attempt, max_retry)
                     if reschedule_enabled:
                         attempt_req["return_token_ids"] = True
-                    self._prepare_precision_request(attempt_req)
                     async with aclosing(
                         self._stream_inference_attempt(
                             attempt_req,
@@ -534,12 +523,20 @@ class PDHybridRouter(BaseRouter):
                 sampling_state = self._init_hybrid_sampling_state()
                 attempt_req = req_data.copy()
                 try:
-                    self._prepare_precision_request(attempt_req)
                     async with self._inference_lifecycle(
                         attempt, max_retries, manage_request_context=manage_request_context
                     ) as client:
                         tokenized_requests = self._tokenized_hybrid_requests(attempt)
+                        if tokenized_requests:
+                            # Token-only path: inject precision-sampling fields into the
+                            # tokenized bodies, the ones actually sent to the engine.
+                            await self._claim_precision_sample_tokenized(
+                                self._scheduled_resource, tokenized_requests, sampling_state
+                            )
+                        else:
+                            await self._claim_precision_sample(self._scheduled_resource, attempt_req, sampling_state)
                         body = None
+                        generate_responses: list[dict[str, Any]] = []
                         if tokenized_requests:
                             try:
 
@@ -575,6 +572,10 @@ class PDHybridRouter(BaseRouter):
                                     self.req_info.req_id,
                                     error.status_code,
                                 )
+                                # The claimed token-only bodies were rejected by the engine;
+                                # disable sampling instead of re-claiming the fallback body,
+                                # otherwise the exit path would collect nonexistent logprobs.
+                                sampling_state = self._init_hybrid_sampling_state()
                         if body is None:
                             response = await self.forward_request(
                                 self.req_info.api,
@@ -588,7 +589,13 @@ class PDHybridRouter(BaseRouter):
 
                         if "chat" in self.req_info.effective_entry_api() and body.get("object") == "text_completion":
                             adapt_completion_nonstream_to_chat(body, req_id=self.req_info.req_id)
-                        body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
+                        if sampling_state["enabled"] and sampling_state["logprobs_metadata"] is None:
+                            # Token-only path: per-prompt GenerateResponses carry the
+                            # logprobs; collect from them in place of the derendered body.
+                            for gen_response in generate_responses:
+                                self._collect_logprobs_from_nonstream_body(gen_response, sampling_state)
+                        else:
+                            body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
                         await self._maybe_submit_hybrid_sample(self._scheduled_resource, sampling_state)
                         self._strip_logprobs_for_client(body, sampling_state)
                         adapters.strip_nonstream_response_body_for_client(
@@ -698,7 +705,6 @@ class PDHybridRouter(BaseRouter):
             request_data = req_data.copy()
             if self.config.exception_config.reschedule_enabled:
                 request_data["return_token_ids"] = True
-            self._prepare_precision_request(request_data)
             if is_resume:
                 self.rescheduler.is_rescheduling = True
                 self.rescheduler.retry_count = max(attempt_id - 1, 1)

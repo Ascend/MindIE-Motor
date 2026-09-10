@@ -9,8 +9,10 @@
 # See the Mulan PSL v2 for more details.
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from fastapi import HTTPException, Request, status
 
@@ -98,7 +100,17 @@ class TestRouterNativeTrigger:
         config.worker_metaserver_port = 12000
         return config
 
-    def _make_router(self, req_info, monkeypatch, p_client, d_client, *, config=None, scheduler=None):
+    def _make_router(
+        self,
+        req_info,
+        monkeypatch,
+        p_client,
+        d_client,
+        *,
+        config=None,
+        scheduler=None,
+        sampling_manager=None,
+    ):
         config = config or self._make_config()
         scheduler = scheduler or Scheduler(instance_provider=InstanceManager(config), config=config)
         router_obj = UnifiedPDRouter(
@@ -106,6 +118,7 @@ class TestRouterNativeTrigger:
             config,
             scheduler=scheduler,
             request_manager=RequestManager(config),
+            sampling_manager=sampling_manager,
         )
         _patch_unified_pd_clients(monkeypatch, router_obj, p_client, d_client)
         return router_obj
@@ -239,6 +252,64 @@ class TestRouterNativeTrigger:
             prompt_token_ids=[[10], [20, 21]],
         )
         assert_completion_derender(render_client, prompt_lengths=[1, 2], response_count=2, original_request=req_data)
+
+    @pytest.mark.asyncio
+    async def test_nonstream_trigger_completion_batch_sampling_claims_and_injects_bodies(
+        self, monkeypatch, trigger_pair
+    ):
+        """Batch token-only Trigger path: claim once and sample one independent prompt."""
+        del trigger_pair
+        p_client = _UnifiedPDPrefillClient()
+
+        class _LogprobDecodeClient(TokenOnlyEngineClient):
+            async def post(self, path, json=None, headers=None, timeout=None):
+                response = await super().post(path, json=json, headers=headers, timeout=timeout)
+                if str(path).endswith("/inference/v1/generate") and response.status_code == 200:
+                    payload = response.json()
+                    payload["choices"][0]["logprobs"] = {
+                        "token_logprobs": [-0.1, -0.2],
+                        "top_logprobs": [
+                            {"token_id:30": -0.1, "token_id:31": -0.3, "token_id:32": -0.5},
+                            {"token_id:31": -0.2, "token_id:33": -0.4, "token_id:34": -0.6},
+                        ],
+                    }
+                    return httpx.Response(200, json=payload, request=response.request)
+                return response
+
+        d_client = _LogprobDecodeClient(PDRole.ROLE_D)
+        req_data = {"model": "test-model", "prompt": ["first", "second"], "stream": False, "max_tokens": 8}
+        req_info = make_render_request_info("test-batch-sampling", req_data, "/v1/completions", [[10], [20, 21]])
+        render_client = make_render_client(completion_count=2)
+        config = self._make_config()
+        config.precision_detection_config.precision_check_enabled = True
+        config.precision_detection_config.interval_seconds = 0.0
+        config.precision_detection_config.logprobs_count = 3
+        sampling_manager = MagicMock()
+        sampling_manager.claim_sample = AsyncMock(return_value=True)
+        sampling_manager.enqueue_sample = MagicMock()
+        router = self._make_router(
+            req_info,
+            monkeypatch,
+            p_client,
+            d_client,
+            config=config,
+            sampling_manager=sampling_manager,
+        )
+        router.set_render_client(render_client)
+        response = await router.handle_request()
+        body = json.loads(response.body)
+
+        assert sampling_manager.claim_sample.await_count == 1
+        assert sampling_manager.claim_sample.await_args.args[0] == 1
+        assert len(d_client.requests) == 2
+        assert d_client.requests[0]["logprobs"] == 3
+        assert d_client.requests[0]["sampling_params"]["logprobs"] == 3
+        assert d_client.requests[0]["return_token_ids"] is True
+        assert d_client.requests[0]["return_tokens_as_token_ids"] is True
+        assert "logprobs" not in d_client.requests[1]
+        assert "logprobs" not in d_client.requests[1]["sampling_params"]
+        assert [choice["text"] for choice in body["choices"]] == ["result-0", "result-1"]
+        assert all("logprobs" not in choice for choice in body["choices"])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

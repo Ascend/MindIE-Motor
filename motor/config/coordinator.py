@@ -431,14 +431,14 @@ class ExceptionConfig:
 class PrecisionDetectionConfig:
     """Precision detection configuration for online token/logprob sampling per PD instance group.
 
-    For each PD instance group (keyed by D instance ID or P+D instance ID pair),
-    at most one full request's token_ids and logprobs are sampled within
-    interval_seconds for precision detection reporting.
+    For each Decode instance, at most one request injects token_ids and
+    logprobs within interval_seconds. Detection results remain attributed to
+    the final P+D instance group.
     When precision_check_enabled=False, no sampling or request modification
     occurs — zero performance overhead.
     """
 
-    interval_seconds: float = 30.0  # Sampling interval per PD instance group (seconds)
+    interval_seconds: float = 30.0  # Minimum injection interval per Decode instance (seconds)
     logprobs_count: int = 1  # Number of top_logprobs (chat) / logprobs (completion) injected during sampling
     # Also determines the detection types enabled for msprobe:
     # 1 → repetition; >=3 → +garbled; >=5 → +rare characters (requires multiple keys)

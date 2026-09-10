@@ -44,6 +44,7 @@ from motor.coordinator.router.upstream_error import UpstreamHTTPError
 import motor.coordinator.router.dispatch as router
 from motor.common.logger import get_logger
 from tests.coordinator.router.token_only_support import (
+    make_render_client,
     make_render_request_info,
 )
 
@@ -1002,15 +1003,16 @@ def _make_cancel_test_config(
 
 
 class _RecordingSamplingManager:
-    def __init__(self) -> None:
-        self.confirm_calls = []
+    def __init__(self, *, claimed: bool = True) -> None:
+        self.claimed = claimed
+        self.claim_calls = []
         self.samples = []
 
-    async def confirm_sample(self, key, now):
-        self.confirm_calls.append((key, now))
-        return True
+    async def claim_sample(self, d_instance_id, now):
+        self.claim_calls.append((d_instance_id, now))
+        return self.claimed
 
-    async def submit_sample(self, sample):
+    def enqueue_sample(self, sample):
         self.samples.append(sample)
 
 
@@ -1241,7 +1243,7 @@ class TestPDHybridCancelReschedule:
         config.precision_detection_config = PrecisionDetectionConfig(
             precision_check_enabled=True,
             interval_seconds=0.0,
-            logprobs_count=1,
+            logprobs_count=3,
         )
         config.infer_tls_config = TLSConfig(enable_tls=False)
         sampling_manager = _RecordingSamplingManager()
@@ -1259,7 +1261,13 @@ class TestPDHybridCancelReschedule:
                             "text": "ok",
                             "finish_reason": "stop",
                             "token_ids": [101, 102],
-                            "logprobs": {"token_logprobs": [-0.1, -0.2]},
+                            "logprobs": {
+                                "token_logprobs": [-0.1, -0.2],
+                                "top_logprobs": [
+                                    {"token_id:101": -0.1, "token_id:111": -0.3, "token_id:121": -0.5},
+                                    {"token_id:102": -0.2, "token_id:112": -0.4, "token_id:122": -0.6},
+                                ],
+                            },
                         }
                     ],
                 }
@@ -1269,24 +1277,132 @@ class TestPDHybridCancelReschedule:
         monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
         router_obj = self._build_router(
             config,
-            {"model": "test-model", "prompt": "Hi", "stream": False},
+            {"model": "test-model", "prompt": "Hi", "stream": False, "logprobs": 1},
             sampling_manager=sampling_manager,
         )
 
         response = await router_obj.handle_request()
         payload = json.loads(response.body.decode())
 
-        assert forwarded_requests[0]["logprobs"] == 1
+        assert forwarded_requests[0]["logprobs"] == 3
         assert forwarded_requests[0]["return_token_ids"] is True
-        assert sampling_manager.confirm_calls[0][0] == (None, 0)
+        assert sampling_manager.claim_calls[0][0] == 0
         assert len(sampling_manager.samples) == 1
         sample = sampling_manager.samples[0]
         assert sample.p_instance_id is None
         assert sample.d_instance_id == 0
         assert sample.output_token_ids == [101, 102]
         assert sample.logprobs == [-0.1, -0.2]
-        assert "logprobs" not in payload["choices"][0]
+        assert sample.topk_logprobs == [
+            {101: -0.1, 111: -0.3, 121: -0.5},
+            {102: -0.2, 112: -0.4, 122: -0.6},
+        ]
+        assert payload["choices"][0]["logprobs"]["top_logprobs"] == [
+            {"token_id:101": -0.1},
+            {"token_id:102": -0.2},
+        ]
         assert "token_ids" not in payload["choices"][0]
+
+    @pytest.mark.asyncio
+    async def test_nonstream_token_only_sampling_injects_tokenized_body(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """Token-only path: the claimed sampling window must inject into the tokenized
+        body actually sent to the engine, not into the unused OpenAI fallback body.
+        """
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=1, reschedule_enabled=False)
+        config.precision_detection_config = PrecisionDetectionConfig(
+            precision_check_enabled=True,
+            interval_seconds=0.0,
+            logprobs_count=3,
+        )
+        config.infer_tls_config = TLSConfig(enable_tls=False)
+        sampling_manager = _RecordingSamplingManager()
+        forwarded_requests = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            forwarded_requests.append(req_data.copy())
+            resp = MagicMock()
+            resp.json = MagicMock(
+                return_value={
+                    "request_id": req_data.get("request_id", "engine-id"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "token_ids": [101, 102],
+                            "finish_reason": "stop",
+                            "logprobs": {
+                                "token_logprobs": [-0.1, -0.2],
+                                "top_logprobs": [
+                                    {"token_id:101": -0.1, "token_id:111": -0.3, "token_id:121": -0.5},
+                                    {"token_id:102": -0.2, "token_id:112": -0.4, "token_id:122": -0.6},
+                                ],
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+                }
+            )
+            return resp
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        req_data = {"model": "test-model", "prompt": "Hi", "stream": False, "max_tokens": 8}
+        req_info = make_render_request_info("rid-token-only-sampling", req_data, "v1/completions", [10, 20], req_len=99)
+        router_obj = PDHybridRouter(
+            req_info,
+            config,
+            scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
+            request_manager=RequestManager(config),
+            sampling_manager=sampling_manager,
+        )
+        router_obj.set_render_client(make_render_client())
+
+        response = await router_obj.handle_request()
+        payload = json.loads(response.body.decode())
+
+        assert len(forwarded_requests) == 1
+        tokenized_body = forwarded_requests[0]
+        # The tokenized GenerateRequest body must carry the injected sampling fields.
+        assert tokenized_body["logprobs"] == 3
+        assert tokenized_body["sampling_params"]["logprobs"] == 3
+        assert tokenized_body["return_token_ids"] is True
+        assert tokenized_body["return_tokens_as_token_ids"] is True
+        assert sampling_manager.claim_calls[0][0] == 0
+        assert len(sampling_manager.samples) == 1
+        sample = sampling_manager.samples[0]
+        assert sample.p_instance_id is None
+        assert sample.d_instance_id == 0
+        assert sample.output_token_ids == [101, 102]
+        assert sample.logprobs == [-0.1, -0.2]
+        # Motor-requested logprobs must not leak into the client-visible body.
+        assert "logprobs" not in payload["choices"][0]
+
+    @pytest.mark.asyncio
+    async def test_nonstream_precision_sampling_does_not_inject_without_admission(
+        self, monkeypatch: MonkeyPatch, hybrid_pool
+    ):
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=1, reschedule_enabled=False)
+        config.precision_detection_config = PrecisionDetectionConfig(precision_check_enabled=True)
+        config.infer_tls_config = TLSConfig(enable_tls=False)
+        sampling_manager = _RecordingSamplingManager(claimed=False)
+        forwarded_requests = []
+
+        async def mock_forward(self, api, req_data, client, timeout):
+            forwarded_requests.append(req_data.copy())
+            resp = MagicMock()
+            resp.json = MagicMock(return_value={"choices": [{"text": "ok"}]})
+            return resp
+
+        monkeypatch.setattr(PDHybridRouter, "forward_request", mock_forward)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "prompt": "Hi", "stream": False},
+            sampling_manager=sampling_manager,
+        )
+
+        await router_obj.handle_request()
+
+        assert sampling_manager.claim_calls[0][0] == 0
+        assert "logprobs" not in forwarded_requests[0]
+        assert not sampling_manager.samples
 
     @pytest.mark.asyncio
     async def test_nonstream_client_disconnect_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):

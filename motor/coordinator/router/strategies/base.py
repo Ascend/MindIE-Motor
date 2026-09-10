@@ -44,6 +44,7 @@ from motor.coordinator.router.precision_sample.sample_builder import (
     _log_sample_submission,
 )
 from motor.coordinator.router.precision_sample import response as sampling_resp
+from motor.coordinator.router.precision_sample.request import inject_logprobs
 from motor.coordinator.router.adapters.stream import (
     parse_stream_chunk_json,
     encode_stream_chunk_bytes,
@@ -923,17 +924,108 @@ class BaseRouter(ABC):
                 request_structure=request_structure,
             )
             _log_sample_submission(sample)
-            await self._sampling_manager.submit_sample(sample)
+            self._sampling_manager.enqueue_sample(sample)
         except Exception as e:
             self.logger.warning("_submit_token_sample failed: %s", e)
 
     def _init_sampling_state(self) -> dict:
         return {
-            "enabled": self.config.precision_detection_config.precision_check_enabled,
-            "client_logprobs": bool(self.req_info.req_data.get("logprobs")),
+            "enabled": False,
             "lp_count": self.config.precision_detection_config.logprobs_count,
+            "logprobs_metadata": None,
             "info": {},
         }
+
+    async def _claim_precision_sample(
+        self,
+        decode_resource: ScheduledResource | None,
+        request_data: dict,
+        sampling_state: dict,
+    ) -> bool:
+        """Claim D-instance admission and inject fields only for the selected request."""
+        if (
+            decode_resource is None
+            or decode_resource.instance is None
+            or self._sampling_manager is None
+            or not self.config.precision_detection_config.precision_check_enabled
+        ):
+            return False
+        d_instance_id = decode_resource.instance.id
+        if not await self._sampling_manager.claim_sample(d_instance_id, time.time()):
+            return False
+        metadata = inject_logprobs(
+            request_data,
+            self.config.precision_detection_config,
+            req_id=self.req_info.req_id,
+        )
+        sampling_state["enabled"] = True
+        sampling_state["lp_count"] = metadata.effective_count
+        sampling_state["logprobs_metadata"] = metadata
+        return True
+
+    async def _claim_precision_sample_tokenized(
+        self,
+        decode_resource: ScheduledResource | None,
+        tokenized_requests: list,
+        sampling_state: dict,
+    ) -> bool:
+        """Claim D-instance admission and inject fields into token-only engine bodies.
+
+        Token-only requests bypass the OpenAI-shaped ``request_data`` body, so the
+        injected fields must land on each selected ``EngineRequest.body`` (and its
+        ``sampling_params``). Preserve an explicit client width from Render's
+        metadata: sampling may expand a request, never narrow it.
+        """
+        if (
+            not tokenized_requests
+            or decode_resource is None
+            or decode_resource.instance is None
+            or self._sampling_manager is None
+            or not self.config.precision_detection_config.precision_check_enabled
+        ):
+            return False
+        d_instance_id = decode_resource.instance.id
+        if not await self._sampling_manager.claim_sample(d_instance_id, time.time()):
+            return False
+        sampling_width = self.config.precision_detection_config.logprobs_count
+        for engine_request in tokenized_requests:
+            body = engine_request.body
+            sampling_params = body.get("sampling_params")
+            client_width = self._tokenized_logprobs_width(body, sampling_params)
+            effective_width = max(client_width, sampling_width)
+            body["logprobs"] = effective_width
+            if isinstance(sampling_params, dict):
+                sampling_params["logprobs"] = effective_width
+            body["return_token_ids"] = True
+            body["return_tokens_as_token_ids"] = True
+        sampling_state["enabled"] = True
+        sampling_state["lp_count"] = max(
+            self._tokenized_logprobs_width(request.body, request.body.get("sampling_params"))
+            for request in tokenized_requests
+        )
+        # The derendered client-visible body keeps the client's original logprobs
+        # contract; Motor-requested logprobs never surface, so no width projection
+        # is needed for the token-only path.
+        sampling_state["logprobs_metadata"] = None
+        logger.debug(
+            "PrecisionSample: claimed token-only d_instance_id=%s req_id=%s logprobs=%d prompts=%d",
+            d_instance_id,
+            self.req_info.req_id,
+            sampling_state["lp_count"],
+            len(tokenized_requests),
+        )
+        return True
+
+    @staticmethod
+    def _tokenized_logprobs_width(body: dict, sampling_params: object) -> int:
+        """Return the explicit positive client width retained by a token-only body."""
+        candidates = [body.get("logprobs")]
+        if isinstance(sampling_params, dict):
+            candidates.append(sampling_params.get("logprobs"))
+        return max(
+            (value for value in candidates if isinstance(value, int) and not isinstance(value, bool) and value > 0),
+            default=0,
+        )
 
     def _collect_logprobs_from_stream_chunk(self, chunk: bytes, sampling_state: dict) -> bytes:
         if not sampling_state["enabled"] or not chunk:
@@ -950,13 +1042,11 @@ class BaseRouter(ABC):
             logprobs_count=sampling_state["lp_count"],
         )
         has_logprobs_field = any(isinstance(ch, dict) and "logprobs" in ch for ch in chunk_json.get("choices") or [])
-        sampling_resp.strip_logprobs_for_client(
+        changed = sampling_resp.project_logprobs_for_client(
             chunk_json,
-            client_requested_logprobs=sampling_state["client_logprobs"],
+            metadata=sampling_state["logprobs_metadata"],
         )
-        if not sampling_state["client_logprobs"] and not has_logprobs_field:
-            return chunk
-        if sampling_state["client_logprobs"]:
+        if not has_logprobs_field or not changed:
             return chunk
         return encode_stream_chunk_bytes(chunk, chunk_json)
 
@@ -971,9 +1061,9 @@ class BaseRouter(ABC):
     def _strip_logprobs_for_client(self, body: dict, sampling_state: dict) -> None:
         if not sampling_state["enabled"]:
             return
-        sampling_resp.strip_logprobs_for_client(
+        sampling_resp.project_logprobs_for_client(
             body,
-            client_requested_logprobs=sampling_state["client_logprobs"],
+            metadata=sampling_state["logprobs_metadata"],
         )
 
     def _log_request_details(self):

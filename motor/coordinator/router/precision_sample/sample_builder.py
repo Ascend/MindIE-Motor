@@ -47,7 +47,7 @@ def build_decode_sample(
         request_structure: Content-free request structure summary for tracing.
 
     Returns:
-        A DecodeSample ready for submit_sample().
+        A DecodeSample ready for enqueue_sample().
     """
     extra: dict[str, Any] = {}
     extra["model"] = model

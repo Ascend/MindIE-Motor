@@ -9,7 +9,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Per-PD-group sampling interval control and sample submission to precision pipeline."""
+"""Per-decode-instance sampling admission and background precision checks."""
 
 from __future__ import annotations
 
@@ -56,14 +56,15 @@ class DecodeSample:
 
 
 class SampleController:
-    """Per-PD-group sampling interval and submission to precision pipeline.
+    """Per-D-instance sampling admission and background precision checks.
 
     Design:
-    - **Exit-side gate**: all decode requests inject logprobs; only one sample per PD
-      group per ``interval_seconds`` is submitted.
-    - ``confirm_sample`` delegates to the **scheduler process** via ZMQ so all
-      inference workers share one ``_last_exit_time`` table.
+    - **Entry-side admission**: only one request per D instance and
+      ``interval_seconds`` injects precision-sampling fields.
+    - ``claim_sample`` delegates to the **scheduler process** via ZMQ so all
+      inference workers share one admission table.
     - Local per-worker state is only used when ``scheduler_client`` is None (tests).
+    - Precision checks run in tracked background tasks and never block the user response.
     """
 
     def __init__(
@@ -76,56 +77,71 @@ class SampleController:
         self._interval: float = config.interval_seconds
         self._precision = precision
         self._scheduler_client = scheduler_client
-        self._local_last_exit_time: dict[PDGroupKey, float] = {}
-        self._local_locks: dict[PDGroupKey, asyncio.Lock] = {}
+        self._local_last_claim_time: dict[int, float] = {}
+        self._local_locks: dict[int, asyncio.Lock] = {}
+        self._background_tasks: set[asyncio.Task] = set()
 
-    def _local_lock(self, key: PDGroupKey) -> asyncio.Lock:
-        if key not in self._local_locks:
-            self._local_locks[key] = asyncio.Lock()
-        return self._local_locks[key]
+    def _local_lock(self, d_instance_id: int) -> asyncio.Lock:
+        if d_instance_id not in self._local_locks:
+            self._local_locks[d_instance_id] = asyncio.Lock()
+        return self._local_locks[d_instance_id]
 
-    async def _confirm_sample_local(self, key: PDGroupKey, now: float) -> bool:
-        lock = self._local_lock(key)
+    async def _claim_sample_local(self, d_instance_id: int, now: float) -> bool:
+        lock = self._local_lock(d_instance_id)
         async with lock:
-            last_exit = self._local_last_exit_time.get(key, 0.0)
-            if now - last_exit >= self._interval:
-                self._local_last_exit_time[key] = now
+            last_claim = self._local_last_claim_time.get(d_instance_id, 0.0)
+            if now - last_claim >= self._interval:
+                self._local_last_claim_time[d_instance_id] = now
                 return True
         return False
 
-    async def confirm_sample(self, key: PDGroupKey, now: float) -> bool:
-        """Exit gate: True if this PD group may submit a sample (interval elapsed)."""
+    async def claim_sample(self, d_instance_id: int, now: float) -> bool:
+        """Claim the next sampling window for a D instance before engine dispatch."""
         if self._scheduler_client is not None:
             try:
-                confirmed = await self._scheduler_client.confirm_sample(key, now, self._interval)
-                if confirmed:
+                claimed = await self._scheduler_client.claim_sample(d_instance_id, now, self._interval)
+                if claimed:
                     logger.debug(
-                        "SampleController: confirmed (scheduler) pd_group=(%s,%s) interval=%.1fs",
-                        key[0],
-                        key[1],
+                        "SampleController: claimed (scheduler) d_instance_id=%s interval=%.1fs",
+                        d_instance_id,
                         self._interval,
                     )
-                return confirmed
+                return claimed
             except Exception as e:
                 logger.warning(
-                    "SampleController: scheduler confirm_sample failed pd_group=%s: %s",
-                    key,
+                    "SampleController: scheduler claim_sample failed d_instance_id=%s: %s",
+                    d_instance_id,
                     e,
                 )
                 return False
 
-        if await self._confirm_sample_local(key, now):
+        if await self._claim_sample_local(d_instance_id, now):
             logger.debug(
-                "SampleController: confirmed (local) pd_group=(%s,%s) interval=%.1fs",
-                key[0],
-                key[1],
+                "SampleController: claimed (local) d_instance_id=%s interval=%.1fs",
+                d_instance_id,
                 self._interval,
             )
             return True
         return False
 
-    async def submit_sample(self, sample: DecodeSample) -> None:
-        """Submit a confirmed sample to the precision pipeline."""
+    def enqueue_sample(self, sample: DecodeSample) -> None:
+        """Run a completed sample through the precision pipeline in the background."""
+        task = asyncio.create_task(
+            self._handle_sample(sample),
+            name=f"precision-check-{sample.d_instance_id}-{sample.req_id}",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def shutdown(self) -> None:
+        """Cancel and drain background checks before the scheduler connection closes."""
+        tasks = tuple(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _handle_sample(self, sample: DecodeSample) -> None:
         try:
             await self._precision.handle(sample)
         except Exception as e:

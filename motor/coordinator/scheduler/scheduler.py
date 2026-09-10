@@ -61,7 +61,7 @@ class Scheduler:
                 self._config.scheduler_config.endpoint_instance_score_weight
             )
         # Global per-PD-group precision state (shared across inference workers).
-        self._sample_exit_last_time: dict[tuple[int | None, int], float] = {}
+        self._sample_admission_last_time: dict[int, float] = {}
         self._precision_streak_counts: dict[tuple[int | None, int], int] = {}
         self._precision_raise_probing: dict[tuple[int | None, int], bool] = {}
         self._precision_raise_tokens: dict[tuple[int | None, int], str] = {}
@@ -70,7 +70,7 @@ class Scheduler:
         self._precision_alarm_active: dict[tuple[int | None, int], bool] = {}
         self._precision_alarm_moi: dict[tuple[int | None, int], str] = {}
         self._precision_normal_streak_counts: dict[tuple[int | None, int], int] = {}
-        self._sample_exit_locks: dict[tuple[int | None, int], asyncio.Lock] = {}
+        self._precision_state_locks: dict[tuple[int | None, int], asyncio.Lock] = {}
         logger.info("Scheduler started.")
 
     def get_scheduling_policy(self) -> BaseSchedulingPolicy:
@@ -117,30 +117,28 @@ class Scheduler:
             return readiness
         return await asyncio.to_thread(self._instance_provider.get_required_instances_status)
 
-    def _sample_exit_lock(self, key: tuple[int | None, int]) -> asyncio.Lock:
-        if key not in self._sample_exit_locks:
-            self._sample_exit_locks[key] = asyncio.Lock()
-        return self._sample_exit_locks[key]
+    def _precision_state_lock(self, key: tuple[int | None, int]) -> asyncio.Lock:
+        if key not in self._precision_state_locks:
+            self._precision_state_locks[key] = asyncio.Lock()
+        return self._precision_state_locks[key]
 
-    async def confirm_sample_exit(
+    async def claim_precision_sample(
         self,
         *,
-        p_instance_id: int | None,
         d_instance_id: int,
         now: float,
         interval_seconds: float,
     ) -> bool:
-        """Atomically check/update per-PD-group sampling exit interval (scheduler-global)."""
-        key = (p_instance_id, d_instance_id)
-        lock = self._sample_exit_lock(key)
+        """Atomically claim a D instance's sampling window before engine dispatch."""
+        key = (None, d_instance_id)
+        lock = self._precision_state_lock(key)
         async with lock:
-            last_exit = self._sample_exit_last_time.get(key, 0.0)
-            if now - last_exit >= interval_seconds:
-                self._sample_exit_last_time[key] = now
+            last_claim = self._sample_admission_last_time.get(d_instance_id, 0.0)
+            if now - last_claim >= interval_seconds:
+                self._sample_admission_last_time[d_instance_id] = now
                 logger.debug(
-                    "Scheduler: confirm_sample_exit ok pd_group=(%s,%s) interval=%.1fs",
-                    key[0],
-                    key[1],
+                    "Scheduler: precision sample claimed d_instance_id=%s interval=%.1fs",
+                    d_instance_id,
                     interval_seconds,
                 )
                 return True
@@ -165,7 +163,7 @@ class Scheduler:
     ) -> bool:
         """Drop precision alarm/streak state after external recovery (auto-recovery / CCAE manual)."""
         key = (p_instance_id, d_instance_id)
-        lock = self._sample_exit_lock(key)
+        lock = self._precision_state_lock(key)
         async with lock:
             self._clear_precision_group_state(key)
             logger.info(
@@ -187,7 +185,7 @@ class Scheduler:
     ) -> dict[str, int | bool | str | None]:
         """Atomically update global consecutive count, alarm-active normal streak, and probing."""
         key = (p_instance_id, d_instance_id)
-        lock = self._sample_exit_lock(key)
+        lock = self._precision_state_lock(key)
         async with lock:
             if self._precision_raise_probing.get(key) or self._precision_clear_probing.get(key):
                 consecutive = self._precision_normal_streak_counts.get(key, 0)
@@ -309,7 +307,7 @@ class Scheduler:
     ) -> bool:
         """Commit raise/clear action result; rejects stale action_token."""
         key = (p_instance_id, d_instance_id)
-        lock = self._sample_exit_lock(key)
+        lock = self._precision_state_lock(key)
         async with lock:
             if action_type == "clear":
                 expected = self._precision_clear_tokens.get(key)

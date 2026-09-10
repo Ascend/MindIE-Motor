@@ -565,7 +565,7 @@ motor_coordinator_config字段配置样例如下所示：
 | model_path |string|模型权重路径，默认为空。|
 |re_register_interval_sec|int|重注册时间间隔，默认值：0。|
 | **token_sampling_config字段** |-|-|
-| interval_seconds |float|每次采样的间隔时间，默认值：30.0。|
+| interval_seconds |float|同一 Decode 实例两次采样参数注入之间的最小间隔，默认值：30.0。|
 | logprobs_count |int|采样时需要带回多少log_prob，默认值：1。取值如下：<ul><li>1：只能检测重复。</li><li>3：可以检测重复和乱码。</li><li>5：可以检测重复、乱码和生僻字。</li></ul>|
 | precision_check_enabled |bool|是否开启精度异常检测，默认值：false。|
 | precision_issue_threshold |int|连续多少次异常会被判定为精度异常并触发上报，默认值：10。|

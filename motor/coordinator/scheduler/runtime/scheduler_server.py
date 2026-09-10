@@ -251,7 +251,7 @@ class _SchedulerRequestDispatcher:
             await self._publish_circuit_breaker(instance_id, state)
 
     async def _handle_confirm_sample(self, request: SchedulerRequest) -> SchedulerResponse:
-        """Cross-worker precision sampling exit gate (per PD group, interval in request data)."""
+        """Cross-worker precision sampling admission (per D instance)."""
         data = request.data or {}
         d_instance_id = data.get("d_instance_id")
         now = data.get("now")
@@ -272,21 +272,7 @@ class _SchedulerRequestDispatcher:
                 request_id=request.request_id,
                 error=f"Invalid confirm_sample fields: {e}",
             )
-        p_raw = data.get("p_instance_id")
-        p_id: int | None
-        if p_raw is None:
-            p_id = None
-        else:
-            try:
-                p_id = int(p_raw)
-            except (TypeError, ValueError):
-                return SchedulerResponse(
-                    response_type=SchedulerResponseType.ERROR,
-                    request_id=request.request_id,
-                    error="Invalid p_instance_id",
-                )
-        confirmed = await self._scheduler.confirm_sample_exit(
-            p_instance_id=p_id,
+        confirmed = await self._scheduler.claim_precision_sample(
             d_instance_id=d_id,
             now=now_f,
             interval_seconds=interval_f,

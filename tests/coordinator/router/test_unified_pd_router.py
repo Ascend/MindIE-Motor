@@ -35,7 +35,7 @@ from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.render.vllm_render_client import RenderTimeoutError
-from motor.coordinator.router.adapters.pd_protocol import EngineProtocolError
+from motor.coordinator.router.adapters.pd_protocol import EngineProtocolError, EngineRequest
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
     AttemptState,
@@ -44,6 +44,7 @@ from motor.coordinator.router.dispatch_session import (
 )
 from motor.common.utils.error import RequestCancelledError
 from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
+from motor.coordinator.router.precision_sample.request import LogprobsRequestMetadata
 from motor.coordinator.router.strategies.unified_pd import UnifiedPDRouter
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
 from tests.coordinator.router.token_only_support import (
@@ -204,13 +205,16 @@ class _NativeHandoffPrefillClient(_Client):
         )
 
 
-async def _run_vllm_handoff(monkeypatch, req_info: RequestInfo, p_client, *, d_client=None, render_client=None):
+async def _run_vllm_handoff(
+    monkeypatch, req_info: RequestInfo, p_client, *, d_client=None, render_client=None, sampling_manager=None
+):
     config = _config()
     router = UnifiedPDRouter(
         req_info,
         config,
         scheduler=_Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm"),
         request_manager=RequestManager(config),
+        sampling_manager=sampling_manager,
     )
     router.set_render_client(render_client)
     d_client = d_client or _Client("decode")
@@ -267,8 +271,8 @@ def test_collect_logprobs_removes_null_field_when_client_did_not_request_it():
     router.logger = MagicMock()
     sampling_state = {
         "enabled": True,
-        "client_logprobs": False,
         "lp_count": 1,
+        "logprobs_metadata": LogprobsRequestMetadata(False, False, 0, 1),
         "info": {},
     }
     chunk = b'data: {"choices":[{"logprobs":null,"token_ids":[1]}]}\n\n'
@@ -284,8 +288,8 @@ def test_collect_logprobs_skips_parse_for_plain_content_chunk():
     router.logger = MagicMock()
     sampling_state = {
         "enabled": True,
-        "client_logprobs": False,
         "lp_count": 1,
+        "logprobs_metadata": LogprobsRequestMetadata(False, False, 0, 1),
         "info": {},
     }
     chunk = b'data: {"choices":[{"delta":{"content":"hello"},"index":0}]}\n\n'
@@ -300,8 +304,8 @@ def test_collect_logprobs_keeps_original_bytes_when_only_token_ids_present():
     router.logger = MagicMock()
     sampling_state = {
         "enabled": True,
-        "client_logprobs": False,
         "lp_count": 1,
+        "logprobs_metadata": LogprobsRequestMetadata(False, False, 0, 1),
         "info": {},
     }
     chunk = b'data: {"choices":[{"token_ids":[1,2,3]}]}\n\n'
@@ -310,6 +314,93 @@ def test_collect_logprobs_keeps_original_bytes_when_only_token_ids_present():
 
     assert out is chunk
     assert sampling_state["info"]["cached_output_token_ids"] == [1, 2, 3]
+
+
+def test_collect_logprobs_caches_internal_width_before_trimming_stream_for_client():
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.logger = MagicMock()
+    sampling_state = {
+        "enabled": True,
+        "lp_count": 3,
+        "logprobs_metadata": LogprobsRequestMetadata(True, True, 1, 3),
+        "info": {},
+    }
+    chunk = (
+        b'data: {"choices":[{"token_ids":[11],"logprobs":{"content":['
+        b'{"token":"token_id:11","logprob":-0.1,"top_logprobs":['
+        b'{"token":"token_id:11","logprob":-0.1},'
+        b'{"token":"token_id:12","logprob":-0.2},'
+        b'{"token":"token_id:13","logprob":-0.3}]}'
+        b']}}]}\n\n'
+    )
+
+    out = router._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+    payload = json.loads(out.removeprefix(b"data: ").strip())
+
+    assert sampling_state["info"]["cached_topk_logprobs"] == [{11: -0.1, 12: -0.2, 13: -0.3}]
+    assert len(payload["choices"][0]["logprobs"]["content"][0]["top_logprobs"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_precision_sample_claim_injects_only_after_decode_admission():
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.config = CoordinatorConfig()
+    router.config.precision_detection_config.precision_check_enabled = True
+    router.config.precision_detection_config.logprobs_count = 3
+    router.req_info = MagicMock(req_id="req-1")
+    router._sampling_manager = MagicMock()
+    router._sampling_manager.claim_sample = AsyncMock(side_effect=[False, True])
+    resource = ScheduledResource(instance=_instance(7, PDRole.ROLE_D))
+
+    denied_request = {"prompt": "hello"}
+    denied_state = router._init_sampling_state()
+    assert not await router._claim_precision_sample(resource, denied_request, denied_state)
+    assert "logprobs" not in denied_request
+
+    admitted_request = {"prompt": "hello"}
+    admitted_state = router._init_sampling_state()
+    assert await router._claim_precision_sample(resource, admitted_request, admitted_state)
+    assert admitted_request["logprobs"] == 3
+    assert admitted_state["enabled"] is True
+    assert router._sampling_manager.claim_sample.await_args_list[0].args[0] == 7
+
+
+@pytest.mark.asyncio
+async def test_precision_sample_claim_tokenized_preserves_client_width():
+    """Token-only bodies actually sent to the engine must carry the injected fields."""
+    router = UnifiedPDRouter.__new__(UnifiedPDRouter)
+    router.config = CoordinatorConfig()
+    router.config.precision_detection_config.precision_check_enabled = True
+    router.config.precision_detection_config.logprobs_count = 3
+    router.req_info = MagicMock(req_id="req-tokenized")
+    router._sampling_manager = MagicMock()
+    router._sampling_manager.claim_sample = AsyncMock(side_effect=[False, True])
+    resource = ScheduledResource(instance=_instance(7, PDRole.ROLE_D))
+
+    def _engine_body():
+        return {
+            "model": "m",
+            "sampling_params": {"max_tokens": 8, "logprobs": 5},
+            "request_id": "r",
+            "token_ids": [10, 20],
+        }
+
+    denied = EngineRequest(api="inference/v1/generate", body=_engine_body())
+    denied_state = router._init_sampling_state()
+    assert not await router._claim_precision_sample_tokenized(resource, [denied], denied_state)
+    assert "logprobs" not in denied.body
+    assert denied_state["enabled"] is False
+
+    admitted = EngineRequest(api="inference/v1/generate", body=_engine_body())
+    admitted_state = router._init_sampling_state()
+    assert await router._claim_precision_sample_tokenized(resource, [admitted], admitted_state)
+    assert admitted.body["logprobs"] == 5
+    assert admitted.body["sampling_params"]["logprobs"] == 5
+    assert admitted.body["return_token_ids"] is True
+    assert admitted.body["return_tokens_as_token_ids"] is True
+    assert admitted_state["enabled"] is True
+    assert admitted_state["logprobs_metadata"] is None
+    assert router._sampling_manager.claim_sample.await_args_list[-1].args[0] == 7
 
 
 class _StreamResponse:
@@ -741,6 +832,126 @@ async def test_unified_pd_handoff_completion_batch_fans_out_and_derenders_once(m
         response_count=2,
         original_request=req_info.req_data,
     )
+    assert [choice["text"] for choice in body["choices"]] == ["result-0", "result-1"]
+
+
+class _RecordingSamplingManager:
+    def __init__(self, *, claimed: bool = True) -> None:
+        self.claimed = claimed
+        self.claim_calls = []
+        self.samples = []
+
+    async def claim_sample(self, d_instance_id, now):
+        self.claim_calls.append((d_instance_id, now))
+        return self.claimed
+
+    def enqueue_sample(self, sample):
+        self.samples.append(sample)
+
+
+def _enable_precision_sampling(config) -> None:
+    config.precision_detection_config.precision_check_enabled = True
+    config.precision_detection_config.interval_seconds = 0.0
+    config.precision_detection_config.logprobs_count = 3
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_completion_batch_sampling_claims_and_injects_bodies(monkeypatch):
+    """A batch admission samples one independent prompt without crossing prompt boundaries."""
+    req_info = _render_info("root-batch-sampling", api="v1/completions", prompts=[[10], [20, 21]])
+    render_client = make_render_client(completion_count=2)
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+
+    class _LogprobDecodeClient(TokenOnlyEngineClient):
+        async def post(self, path, json=None, headers=None, timeout=None):
+            response = await super().post(path, json=json, headers=headers, timeout=timeout)
+            if str(path).endswith("/inference/v1/generate") and response.status_code == 200:
+                payload = response.json()
+                payload["choices"][0]["logprobs"] = {
+                    "token_logprobs": [-0.1, -0.2],
+                    "top_logprobs": [
+                        {"token_id:30": -0.1, "token_id:31": -0.3, "token_id:32": -0.5},
+                        {"token_id:31": -0.2, "token_id:33": -0.4, "token_id:34": -0.6},
+                    ],
+                }
+                return httpx.Response(200, json=payload, request=response.request)
+            return response
+
+    d_client = _LogprobDecodeClient(PDRole.ROLE_D)
+    sampling_manager = _RecordingSamplingManager()
+
+    config = _config()
+    _enable_precision_sampling(config)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm"),
+        request_manager=RequestManager(config),
+        sampling_manager=sampling_manager,
+    )
+    router.set_render_client(render_client)
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        yield p_client if resource.instance.role == PDRole.ROLE_P else d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    response = await router.handle_request()
+    body = json.loads(response.body)
+
+    # Claimed once for the whole batch against the decode instance.
+    assert sampling_manager.claim_calls == [(2, sampling_manager.claim_calls[0][1])]
+    # Only one independent prompt is sampled; the rest of the batch stays unchanged.
+    assert len(d_client.requests) == 2
+    assert d_client.requests[0]["logprobs"] == 3
+    assert d_client.requests[0]["sampling_params"]["logprobs"] == 3
+    assert d_client.requests[0]["return_token_ids"] is True
+    assert d_client.requests[0]["return_tokens_as_token_ids"] is True
+    assert "logprobs" not in d_client.requests[1]
+    assert "logprobs" not in d_client.requests[1]["sampling_params"]
+    # The submitted sample contains only the selected prompt's raw GenerateResponse.
+    assert len(sampling_manager.samples) == 1
+    sample = sampling_manager.samples[0]
+    assert sample.p_instance_id == 1
+    assert sample.d_instance_id == 2
+    assert sample.output_token_ids == [30, 31]
+    assert sample.logprobs == [-0.1, -0.2]
+    # Motor-requested logprobs must not leak into the client-visible body.
+    assert [choice["text"] for choice in body["choices"]] == ["result-0", "result-1"]
+    assert all("logprobs" not in choice for choice in body["choices"])
+
+
+@pytest.mark.asyncio
+async def test_unified_pd_handoff_completion_batch_no_admission_no_injection(monkeypatch):
+    """Batch token-only path without admission: decode bodies stay bare, no sample."""
+    req_info = _render_info("root-batch-no-admission", api="v1/completions", prompts=[[10], [20, 21]])
+    render_client = make_render_client(completion_count=2)
+    p_client = TokenOnlyEngineClient(PDRole.ROLE_P)
+    d_client = TokenOnlyEngineClient(PDRole.ROLE_D)
+    sampling_manager = _RecordingSamplingManager(claimed=False)
+
+    config = _config()
+    _enable_precision_sampling(config)
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(prefill_engine_type="vllm", decode_engine_type="vllm"),
+        request_manager=RequestManager(config),
+        sampling_manager=sampling_manager,
+    )
+    router.set_render_client(render_client)
+
+    @asynccontextmanager
+    async def _client_for(resource: ScheduledResource):
+        yield p_client if resource.instance.role == PDRole.ROLE_P else d_client
+
+    monkeypatch.setattr(router, "_client_for", _client_for)
+    response = await router.handle_request()
+    body = json.loads(response.body)
+
+    assert len(sampling_manager.claim_calls) == 1
+    assert all("logprobs" not in request for request in d_client.requests)
+    assert not sampling_manager.samples
     assert [choice["text"] for choice in body["choices"]] == ["result-0", "result-1"]
 
 

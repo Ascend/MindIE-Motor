@@ -31,7 +31,7 @@ class SchedulerRequestType(str, Enum):
     """
 
     GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker/Obs fetch instance list and workload shm name
-    CONFIRM_SAMPLE = "confirm_sample"  # cross-worker precision sampling exit gate
+    CONFIRM_SAMPLE = "confirm_sample"  # compatibility wire value for entry-side sampling admission
     RECORD_PRECISION_RESULT = "record_precision_result"  # global consecutive + probing
     FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm
     DISMISS_PRECISION_ALARM_STATE = "dismiss_precision_alarm_state"  # external recovery cleared alarm

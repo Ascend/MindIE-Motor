@@ -25,6 +25,7 @@ from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.domain.scheduling import UpdateWorkloadParams
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
+    SchedulerRequestType,
     SchedulerResponse,
     SchedulerResponseType,
 )
@@ -356,6 +357,23 @@ class TestAsyncSchedulerClient:
         self.mock_transport.send_request = AsyncMock(return_value=resp)
 
     # -- test_connect_success -----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_claim_sample_sends_per_decode_admission_request(self):
+        self.mock_transport.connected = True
+        self._mock_send_request(SchedulerResponseType.SUCCESS, {"confirmed": True})
+
+        claimed = await self.client.claim_sample(7, 123.0, 30.0)
+
+        assert claimed is True
+        request = self.mock_transport.send_request.await_args.args[0]
+        assert request.request_type == SchedulerRequestType.CONFIRM_SAMPLE
+        assert request.data == {
+            "p_instance_id": None,
+            "d_instance_id": 7,
+            "now": 123.0,
+            "interval_seconds": 30.0,
+        }
 
     @pytest.mark.asyncio
     async def test_connect_success(self):

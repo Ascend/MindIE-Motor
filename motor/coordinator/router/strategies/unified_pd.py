@@ -61,7 +61,6 @@ from motor.coordinator.router.rescheduler.rescheduler import (
     RetryRequestPlan,
 )
 from motor.coordinator.router.workload import WorkloadActionHandler
-from motor.coordinator.router.precision_sample.request import inject_logprobs
 from motor.coordinator.router.adapters.completion_to_chat import (
     adapt_completion_nonstream_to_chat,
     is_completion_like_body,
@@ -795,7 +794,11 @@ class UnifiedPDRouter(BaseRouter):
     def _bind_trigger_attempt(self, attempt: AttemptContext) -> None:
         self.req_info._trigger_attempt = attempt
 
-    def _trigger_decode_request_for_attempt(self, attempt: AttemptContext) -> tuple[dict[str, Any], str]:
+    async def _trigger_decode_request_for_attempt(
+        self,
+        attempt: AttemptContext,
+        sampling_state: dict,
+    ) -> tuple[dict[str, Any], str]:
         adapter = self._require_adapter_for_attempt(attempt)
         if not isinstance(adapter, VllmProtocolAdapter):
             raise RuntimeError(f"Trigger decode requires vLLM adapter, got {adapter.engine_type}")
@@ -890,9 +893,10 @@ class UnifiedPDRouter(BaseRouter):
     async def _run_bootstrap_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
-        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
         stream_adapter_state = {}
         sampling_state = self._init_sampling_state()
+        d_req, d_api = await self._decode_request_for_attempt(attempt, sampling_state)
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=None)
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
@@ -1137,9 +1141,10 @@ class UnifiedPDRouter(BaseRouter):
     async def _run_trigger_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         self._bind_trigger_attempt(attempt)
         attempt.transition(AttemptState.ACTIVE)
-        d_req, d_api = self._trigger_decode_request_for_attempt(attempt)
         stream_adapter_state = {}
         sampling_state = self._init_sampling_state()
+        d_req, d_api = await self._trigger_decode_request_for_attempt(attempt, sampling_state)
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=None)
         async with self._client_for(attempt.decode_resource) as d_client:
             async with aclosing(
                 self._run_stream_decode_phase(
@@ -1172,15 +1177,32 @@ class UnifiedPDRouter(BaseRouter):
         generate_responses = []
         d_instance_id = attempt.decode_resource.instance.id
         self.req_info._trigger_batch_active = True
-        async with self._client_for(attempt.decode_resource) as d_client:
-            try:
-                for index, tokenized in enumerate(tokenized_requests):
+        decode_requests: list[EngineRequest] = []
+        try:
+            for index, tokenized in enumerate(tokenized_requests):
+                self.req_info._trigger_batch_index = index
+                self.req_info.token_ids = list(tokenized.prompt_token_ids)
+                tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
+                if tokenized_decode is None:
+                    raise RuntimeError("Trigger Completion batch requires a tokenized vLLM request")
+                decode_requests.append(tokenized_decode)
+            # A Completion batch is one outer request but contains independent prompts.
+            # One admission must produce one independent sample, so select its first
+            # prompt deterministically and leave every other body untouched.
+            sampled_index = 0
+            if await self._claim_precision_sample_tokenized(
+                attempt.decode_resource,
+                [decode_requests[sampled_index]],
+                sampling_state,
+            ):
+                sampling_state["tokenized_sample_index"] = sampled_index
+                sampling_state["info"]["cached_prompt_token_ids"] = list(
+                    tokenized_requests[sampled_index].prompt_token_ids
+                )
+            async with self._client_for(attempt.decode_resource) as d_client:
+                for index, tokenized_decode in enumerate(decode_requests):
                     self._reset_trigger_batch_item(attempt)
                     self.req_info._trigger_batch_index = index
-                    self.req_info.token_ids = list(tokenized.prompt_token_ids)
-                    tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
-                    if tokenized_decode is None:
-                        raise RuntimeError("Trigger Completion batch requires a tokenized vLLM request")
                     attempt.mark_dispatched(PDRole.ROLE_D.value)
                     response = await self.forward_request(
                         tokenized_decode.api,
@@ -1191,15 +1213,17 @@ class UnifiedPDRouter(BaseRouter):
                     attempt.mark_completed(PDRole.ROLE_D.value)
                     await self._scheduler.report_cb_event(d_instance_id, "success")
                     generate_responses.append(response.json())
-            finally:
-                self.req_info._trigger_batch_active = False
-                self.req_info._trigger_batch_index = None
+        finally:
+            self.req_info._trigger_batch_active = False
+            self.req_info._trigger_batch_index = None
 
         if self._render_client is None:
             raise RuntimeError("Derender client is not configured")
         body = await finish_token_only_response(self._render_client, self.req_info, generate_responses)
         self.req_info.update_state(ReqState.DECODE_END)
-        body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
+        sampled_index = sampling_state.get("tokenized_sample_index")
+        if sampled_index is not None:
+            self._collect_logprobs_from_nonstream_body(generate_responses[sampled_index], sampling_state)
         await self._maybe_submit_sample(attempt, sampling_state)
         self._strip_logprobs_for_client(body, sampling_state)
         await self._release_attempt(attempt, wait=False)
@@ -1231,9 +1255,10 @@ class UnifiedPDRouter(BaseRouter):
                 self.req_info._trigger_batch_index = None
                 self._reset_trigger_batch_item(attempt)
 
-        d_req, d_api = self._trigger_decode_request_for_attempt(attempt)
-        tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
         sampling_state = self._init_sampling_state()
+        d_req, d_api = await self._trigger_decode_request_for_attempt(attempt, sampling_state)
+        tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=tokenized_decode)
         async with self._client_for(attempt.decode_resource) as d_client:
             return await self._await_nonstream_decode(
                 attempt,
@@ -1364,8 +1389,9 @@ class UnifiedPDRouter(BaseRouter):
     async def _run_bootstrap_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
         p_req, p_api = self._request_for_attempt(attempt, PDRole.ROLE_P)
-        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D)
         sampling_state = self._init_sampling_state()
+        d_req, d_api = await self._decode_request_for_attempt(attempt, sampling_state)
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=None)
         async with (
             self._client_for(attempt.prefill_resource) as p_client,
             self._client_for(attempt.decode_resource) as d_client,
@@ -1413,7 +1439,7 @@ class UnifiedPDRouter(BaseRouter):
     ) -> dict[str, Any]:
         d_instance_id = attempt.decode_resource.instance.id
 
-        async def decode_task() -> tuple[Any, Any, bool]:
+        async def decode_task() -> tuple[Any, Any, bool, dict[str, Any] | None]:
             fallback_request = EngineRequest(api=d_api, body=d_req)
 
             async def send(request: EngineRequest):
@@ -1431,6 +1457,7 @@ class UnifiedPDRouter(BaseRouter):
                     error.status_code,
                 )
 
+            generate_body: dict[str, Any] | None = None
             try:
                 attempt.mark_dispatched(PDRole.ROLE_D.value)
                 response, used_token_only = await run_token_only_or_fallback(
@@ -1441,6 +1468,9 @@ class UnifiedPDRouter(BaseRouter):
                 )
                 response_body = response.json()
                 if used_token_only:
+                    # The claimed sampling fields only live on the token-only body;
+                    # keep the raw GenerateResponse for logprob collection.
+                    generate_body = response_body
                     if self._render_client is None:
                         raise RuntimeError("Derender client is not configured")
                     response_body = await finish_token_only_response(
@@ -1448,9 +1478,15 @@ class UnifiedPDRouter(BaseRouter):
                         self.req_info,
                         [response_body],
                     )
+                elif sampling_state is not None and sampling_state["enabled"] and tokenized_decode is not None:
+                    # The token-only body claimed the sampling window but the engine
+                    # rejected it; the fallback body carries no injected fields, so
+                    # disable sampling instead of collecting nonexistent logprobs.
+                    sampling_state["enabled"] = False
+                    sampling_state["logprobs_metadata"] = None
                 attempt.mark_completed(PDRole.ROLE_D.value)
                 await self._scheduler.report_cb_event(d_instance_id, "success")
-                return response_body, None, used_token_only
+                return response_body, None, used_token_only, generate_body
             except asyncio.CancelledError:  # pylint: disable=try-except-raise
                 raise
             except Exception as e:
@@ -1458,7 +1494,7 @@ class UnifiedPDRouter(BaseRouter):
                     attempt.mark_completed(PDRole.ROLE_D.value)
                 if is_cb_reportable_failure(e):
                     await self._scheduler.report_cb_event(d_instance_id, "failure")
-                return None, e, False
+                return None, e, False, None
 
         d_task = attempt.register_decode_task(asyncio.create_task(decode_task()))
         try:
@@ -1474,7 +1510,7 @@ class UnifiedPDRouter(BaseRouter):
                 if d_task in done:
                     break
 
-            response, error, used_token_only = await d_task
+            response, error, used_token_only, generate_body = await d_task
             if error:
                 await attempt.cancel(repr(error))
                 await self._release_attempt(attempt, wait=False)
@@ -1487,7 +1523,13 @@ class UnifiedPDRouter(BaseRouter):
             self._submit_prefill_release_background(attempt, WorkloadAction.RELEASE_TOKENS)
             self.req_info.update_state(ReqState.DECODE_END)
             if sampling_state is not None:
-                response = self._collect_logprobs_from_nonstream_body(response, sampling_state)
+                if used_token_only and generate_body is not None:
+                    # Token-only path: logprobs live on the raw GenerateResponse, which
+                    # was consumed by Derender; collect from it without replacing the
+                    # client-visible derendered body.
+                    self._collect_logprobs_from_nonstream_body(generate_body, sampling_state)
+                else:
+                    self._collect_logprobs_from_nonstream_body(response, sampling_state)
                 await self._maybe_submit_sample(attempt, sampling_state)
                 self._strip_logprobs_for_client(response, sampling_state)
             if used_token_only:
@@ -1546,7 +1588,12 @@ class UnifiedPDRouter(BaseRouter):
             attempt,
         )
         late_decode = await self._ensure_handoff_decode_resource(attempt)
-        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+        d_req, d_api = await self._decode_request_for_attempt(
+            attempt,
+            sampling_state,
+            prefill_result=prefill_result,
+        )
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=None)
         async with self._client_for(attempt.decode_resource) as d_client:
             if late_decode:
                 # Client is now in the pool; the canceller can bind to it.
@@ -1648,6 +1695,17 @@ class UnifiedPDRouter(BaseRouter):
             tokenized_requests,
             prefill_results=prefill_results,
         )
+        # A Completion batch is one outer request but contains independent prompts.
+        # One admission must produce one independent sample, so select its first
+        # prompt deterministically and leave every other body untouched.
+        sampled_index = 0
+        if await self._claim_precision_sample_tokenized(
+            attempt.decode_resource,
+            [decode_requests[sampled_index]],
+            sampling_state,
+        ):
+            sampling_state["tokenized_sample_index"] = sampled_index
+            sampling_state["info"]["cached_prompt_token_ids"] = list(tokenized_requests[sampled_index].prompt_token_ids)
         d_instance_id = attempt.decode_resource.instance.id
         async with self._client_for(attempt.decode_resource) as d_client:
             if late_decode:
@@ -1671,7 +1729,9 @@ class UnifiedPDRouter(BaseRouter):
             raise RuntimeError("Derender client is not configured")
         body = await finish_token_only_response(self._render_client, self.req_info, generate_responses)
         self.req_info.update_state(ReqState.DECODE_END)
-        body = self._collect_logprobs_from_nonstream_body(body, sampling_state)
+        sampled_index = sampling_state.get("tokenized_sample_index")
+        if sampled_index is not None:
+            self._collect_logprobs_from_nonstream_body(generate_responses[sampled_index], sampling_state)
         await self._maybe_submit_sample(attempt, sampling_state)
         self._strip_logprobs_for_client(body, sampling_state)
         await self._release_attempt(attempt, wait=False)
@@ -1710,8 +1770,13 @@ class UnifiedPDRouter(BaseRouter):
             attempt,
         )
         late_decode = await self._ensure_handoff_decode_resource(attempt)
-        d_req, d_api = self._request_for_attempt(attempt, PDRole.ROLE_D, prefill_result=prefill_result)
+        d_req, d_api = await self._decode_request_for_attempt(
+            attempt,
+            sampling_state,
+            prefill_result=prefill_result,
+        )
         tokenized_decode = self._tokenized_handoff_decode_request(attempt, prefill_result)
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=tokenized_decode)
         async with self._client_for(attempt.decode_resource) as d_client:
             if late_decode:
                 # Client is now in the pool; the canceller can bind to it.
@@ -1834,6 +1899,44 @@ class UnifiedPDRouter(BaseRouter):
             ),
         )
 
+    async def _decode_request_for_attempt(
+        self,
+        attempt: AttemptContext,
+        sampling_state: dict,
+        *,
+        prefill_result: PrefillMetadata | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        req, api = self._base_request_for_attempt(PDRole.ROLE_D)
+        adapter = self._require_adapter_for_attempt(attempt)
+        return self._native_request_for_attempt(
+            attempt,
+            PDRole.ROLE_D,
+            adapter=adapter,
+            req=req,
+            api=api,
+            prefill_metadata=prefill_result,
+        )
+
+    async def _claim_decode_precision_sample(
+        self,
+        attempt: AttemptContext,
+        d_req: dict[str, Any],
+        sampling_state: dict,
+        *,
+        tokenized_decode: EngineRequest | None,
+    ) -> None:
+        """Claim D-instance admission against the decode body actually dispatched.
+
+        Token-only decode bypasses the OpenAI-shaped body, so when a tokenized
+        request exists the claim injects into its body instead of the fallback
+        ``d_req``; otherwise the engine would run without logprobs while the exit
+        path collects them (空采).
+        """
+        if tokenized_decode is not None:
+            await self._claim_precision_sample_tokenized(attempt.decode_resource, [tokenized_decode], sampling_state)
+        else:
+            await self._claim_precision_sample(attempt.decode_resource, d_req, sampling_state)
+
     def _base_request_for_attempt(self, role: PDRole) -> tuple[dict[str, Any], str]:
         api = self.req_info.entry_api
         req = self.req_info.req_data.copy()
@@ -1846,12 +1949,6 @@ class UnifiedPDRouter(BaseRouter):
                     self._active_retry_plan,
                     prefill=role == PDRole.ROLE_P,
                 )
-        if (
-            role == PDRole.ROLE_D
-            and self.config.precision_detection_config.precision_check_enabled
-            and self._sampling_manager is not None
-        ):
-            inject_logprobs(req, self.config.precision_detection_config, req_id=self.req_info.req_id)
         return req, api
 
     def _native_request_for_attempt(
@@ -2579,8 +2676,7 @@ class UnifiedPDRouter(BaseRouter):
         info.setdefault("cached_prompt_token_ids", self.req_info.token_ids)
         p_id = attempt.prefill_resource.instance.id
         d_id = attempt.decode_resource.instance.id
-        if await self._sampling_manager.confirm_sample((p_id, d_id), time.time()):
-            await self._submit_token_sample(p_id, d_id, info, attempt.decode_resource)
+        await self._submit_token_sample(p_id, d_id, info, attempt.decode_resource)
 
     @staticmethod
     async def _cancel_task_quietly(task: asyncio.Task | None) -> None:
