@@ -2033,3 +2033,86 @@ fn test_vllm_parent_hash_cross_event_chain() {
         "got {result:?}"
     );
 }
+
+#[test]
+fn test_vllm_map_batch_preserves_fields_and_lifecycle_events() {
+    let payload = serde_json::json!([1.5, [
+        {
+            "type": "BlockStored", "block_hashes": [100, "0xc8"],
+            "parent_block_hash": "0x32", "token_ids": [1, 2, 3, 4],
+            "block_size": 2, "medium": "cpu", "group_idx": 3,
+            "lora_id": null, "lora_name": null,
+            "kv_cache_spec_kind": "FullAttention",
+            "extra_keys": [[null, "salt"]], "future_field": {"nested": [1]}
+        },
+        {"type": "BlockRemoved", "block_hashes": [100, 200], "medium": "cpu", "group_idx": 3},
+        {"type": "AllBlocksCleared"}
+    ], 2]);
+    let packed = rmp_serde::to_vec(&payload).unwrap();
+    let (events, rank) = parse_vllm_batch(&packed).unwrap();
+    assert_eq!(rank, 2);
+    assert_eq!(events.len(), 3);
+    match &events[0] {
+        VllmEvent::BlockStored {
+            block_hashes,
+            parent_block_hash,
+            token_ids,
+            block_size,
+            medium,
+            group_idx,
+        } => {
+            assert_eq!(block_hashes, &[100, 200]);
+            assert_eq!(*parent_block_hash, Some(50));
+            assert_eq!(token_ids, &[1, 2, 3, 4]);
+            assert_eq!(*block_size, 2);
+            assert_eq!(medium.as_deref(), Some("cpu"));
+            assert_eq!(*group_idx, Some(3));
+        }
+        other => panic!("expected stored event, got {other:?}"),
+    }
+    assert!(
+        matches!(&events[1], VllmEvent::BlockRemoved { block_hashes, medium, group_idx }
+        if block_hashes == &[100, 200] && medium.as_deref() == Some("cpu") && *group_idx == Some(3))
+    );
+    assert!(matches!(events[2], VllmEvent::AllBlocksCleared));
+}
+
+#[test]
+fn test_vllm_map_optional_fields_and_attention_filter() {
+    for kind in [None, Some("FullAttention"), Some("SlidingWindow")] {
+        let mut event = serde_json::json!({
+            "type": "BlockStored", "block_hashes": [100],
+            "token_ids": [1, 2], "block_size": 2
+        });
+        if let Some(kind) = kind {
+            event["kv_cache_spec_kind"] = kind.into();
+        }
+        let packed = rmp_serde::to_vec(&event).unwrap();
+        let parsed: VllmEventMap = from_slice(&packed).unwrap();
+        if kind == Some("SlidingWindow") {
+            assert!(matches!(parsed.normalize(), VllmEvent::Ignored));
+        } else {
+            assert!(matches!(
+                parsed.normalize(),
+                VllmEvent::BlockStored {
+                    parent_block_hash: None,
+                    medium: None,
+                    group_idx: None,
+                    ..
+                }
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_vllm_map_rejects_missing_tag_and_invalid_field_types() {
+    for event in [
+        serde_json::json!({"block_hashes": [1]}),
+        serde_json::json!({"type": "BlockStored", "block_size": "invalid"}),
+        serde_json::json!({"type": "BlockStored", "block_hashes": [false]}),
+    ] {
+        let packed = rmp_serde::to_vec(&event).unwrap();
+        assert!(from_slice::<VllmEventMap>(&packed).is_err());
+    }
+}

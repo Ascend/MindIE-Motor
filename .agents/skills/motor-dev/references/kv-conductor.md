@@ -222,23 +222,31 @@ Defaults in `SchedulerConfig.kv_affinity`: `w_npu=1.0`, `w_cpu=1.0`,
 
 **Source:** vLLM/SGLang inference engine processes.
 **Transport:** ZMQ PUB or HTTP `POST /events`.
-**Format:** msgspec `array_like=True` + `tag=True` + `omit_defaults=True`.
+**Format:** the batch uses msgspec `array_like=True`; nested events use `tag=True` maps with a `type` field and `omit_defaults=True`. Batch array encoding does not propagate to events. Legacy tagged array events remain supported.
+
+ZMQ subscribers carry an explicit `EventSource`: NPU/HBM registrations use
+`Engine` and parse vLLM batches; CPU/Disk registrations use `Pool` and parse
+Mooncake/Memcache/YuanRong pool batches. The source is selected from the
+registered medium and is included in the subscriber startup log.
 
 **Key difference from pool events:** vLLM events carry `token_ids` — the actual token values. This allows the conductor to **recompute** `LocalBlockHash` via XXH3, enabling proper radix tree insertion.
 
 **Parsed event structure (`VllmEventMap`):**
 
 ``` json
-["BlockStored", block_hashes, parent_hash?, token_ids, block_size, lora_id?, medium?, lora_name?, extra_keys?, group_idx?, kv_cache_spec_kind?, kv_cache_spec_sliding_window?]
+{"type": "BlockStored", "block_hashes": [100], "parent_block_hash": null, "token_ids": [1, 2], "block_size": 2, "medium": "GPU"}
 ```
 
-Fields marked `?` are omitted when null (`omit_defaults=True`). The Rust deserializer uses `rmpv::Value` + tag-based dispatch + type-pattern parsing — robust against position shifts.
+Map fields are decoded by name with typed serde parsing and `FlexHash` hash decoding.
+Optional fields may be omitted or null; unknown fields (including `extra_keys`) are ignored.
+`type` is required. `BlockRemoved` and `AllBlocksCleared` use the same map decoder.
+Legacy arrays use `rmpv::Value` + tag-based dispatch + type-pattern parsing.
 
 **Attention-group filtering:** Following Dynamo kv-router, only `FullAttention`, `MlaAttention`, and `SinkFullAttention` events are processed. SWA, Mamba, ChunkedLocal, etc. are filtered out. This ensures all ingested events share the same `block_size`, avoiding multi-group hash granularity mismatch.
 
 **`apply_vllm_event()` logic:**
 
-1. Parse the tagged-union array into `VllmEvent` enum (`BlockStored` / `BlockRemoved` / `AllBlocksCleared`)
+1. Parse the tagged map or legacy array into `VllmEvent` enum (`BlockStored` / `BlockRemoved` / `AllBlocksCleared`)
 2. Filter: skip non-main attention groups
 3. Determine `StorageMedium` from `medium` field (default `Xpu`)
 4. **HBM (Xpu) events:**
@@ -506,7 +514,7 @@ Run the full test suite from the crate root (`motor/kv_conductor/`):
 
 ```bash
 cd motor/kv_conductor
-cargo test          # 120 unit tests in src/ + 20 integration tests
+cargo test          # Unit and integration tests
 cargo clippy -- -D warnings   # enforced by pre-commit
 cargo fmt --all               # enforced by pre-commit
 ```
@@ -572,7 +580,7 @@ RUST_LOG=trace cargo run
 **ZMQ connection issues:**
 
 ```bash
-RUST_LOG=debug cargo run --features zmq
+RUST_LOG=debug cargo run
 # Watch for: "ZMQ subscriber starting", "received message", reconnect backoff
 ```
 
@@ -586,10 +594,9 @@ curl -X POST localhost:13333/query -d '{"model":"test","block_size":128,"token_i
 ### Build & Test
 
 ```bash
-cd kv-conductor
+cd motor/kv_conductor
 cargo build --release
 cargo test --lib            # Unit tests
 cargo test                  # All tests including integration
-cargo run                   # HTTP only (no ZMQ)
-cargo run --features zmq    # HTTP + ZMQ SUB
+cargo run                   # HTTP + ZMQ SUB
 ```

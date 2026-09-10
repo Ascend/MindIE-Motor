@@ -27,6 +27,27 @@ use crate::events::{self, PoolEvent};
 use crate::indexer::Indexer;
 use crate::protocols::{HbmIpIndex, StorageMedium};
 
+/// Wire format emitted by the publisher connected to a subscriber.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventSource {
+    /// Native vLLM/SGLang engine events.
+    Engine,
+    /// Mooncake/Memcache/YuanRong pool events.
+    Pool,
+}
+
+/// Select the wire format for a subscriber from the registered media.
+pub(crate) fn event_source_for_media(media: &[StorageMedium]) -> EventSource {
+    if media
+        .iter()
+        .any(|medium| matches!(medium, StorageMedium::Cpu | StorageMedium::Disk))
+    {
+        EventSource::Pool
+    } else {
+        EventSource::Engine
+    }
+}
+
 /// Maximum backoff delay between reconnection attempts.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// Initial backoff delay.
@@ -58,6 +79,7 @@ impl ZmqSubscriber {
         backend_id: String,
         dp_rank: u32,
         default_media: Vec<StorageMedium>,
+        event_source: EventSource,
         match_mode: MatchMode,
         hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
     ) -> Result<Self, KvConductorError> {
@@ -69,6 +91,7 @@ impl ZmqSubscriber {
         tracing::info!(
             %endpoint, %model_name, %tenant_id, %backend_id, dp_rank,
             block_size,
+            event_source = ?event_source,
             "ZMQ subscriber starting"
         );
 
@@ -82,6 +105,7 @@ impl ZmqSubscriber {
                 backend_id,
                 dp_rank,
                 default_media,
+                event_source,
                 match_mode,
                 hbm_ip_index,
                 cancel_clone,
@@ -161,6 +185,7 @@ fn subscriber_loop_with_reconnect(
     backend_id: String,
     dp_rank: u32,
     default_media: Vec<StorageMedium>,
+    event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
     cancel: CancellationToken,
@@ -187,6 +212,7 @@ fn subscriber_loop_with_reconnect(
                     backend_id.clone(),
                     dp_rank,
                     default_media.clone(),
+                    event_source,
                     match_mode,
                     hbm_ip_index.clone(),
                     cancel.clone(),
@@ -228,6 +254,7 @@ fn subscriber_loop(
     backend_id: String,
     dp_rank: u32,
     default_media: Vec<StorageMedium>,
+    event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: Option<crate::protocols::HbmIpIndex>,
     cancel: CancellationToken,
@@ -280,6 +307,7 @@ fn subscriber_loop(
             _block_size,
             dp_rank,
             &default_media,
+            event_source,
             match_mode,
             &hbm_ip_index,
             &mut batch_count,
@@ -300,6 +328,7 @@ fn process_payload(
     block_size: u32,
     dp_rank: u32,
     default_media: &[StorageMedium],
+    event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: &Option<crate::protocols::HbmIpIndex>,
     batch_count: &mut u64,
@@ -309,7 +338,11 @@ fn process_payload(
     let payload_bytes: &[u8] = payload_msg;
 
     // Log the first byte so we can see which msgpack type is arriving.
-    let (source, backend) = subscriber_source_backend(backend_id);
+    let source = match event_source {
+        EventSource::Engine => "engine",
+        EventSource::Pool => "pool",
+    };
+    let (_, backend) = subscriber_source_backend(backend_id);
     tracing::trace!(
         %backend_id, dp_rank,
         source,
@@ -330,7 +363,7 @@ fn process_payload(
         Some(0x80..=0x8f) | Some(0xde) | Some(0xdf)
     );
 
-    if is_memcache_map {
+    if event_source == EventSource::Pool && is_memcache_map {
         // Format 3 — Memcache KvEvent batch: {"events": [PoolEvent, ...]}
         if let Ok(batch) = rmp_serde::from_slice::<events::MemcacheEventBatch>(payload_bytes) {
             *batch_count += 1;
@@ -374,7 +407,7 @@ fn process_payload(
             *parse_errors += 1;
             log_unparsed_payload(backend_id, dp_rank, payload_bytes, "kv_event dropped");
         }
-    } else {
+    } else if event_source == EventSource::Engine {
         // Format 1 — vLLM msgspec batch: [ts, events: [...], dp_rank]
         if let Some((vllm_events, _bdp)) = events::parse_vllm_batch(payload_bytes) {
             *batch_count += 1;
@@ -396,16 +429,25 @@ fn process_payload(
                     tracing::warn!(%backend_id, dp_rank, "kv_event apply_error backend=vllm: {e}");
                 }
             }
+        } else {
+            *parse_errors += 1;
+            log_unparsed_payload(
+                backend_id,
+                dp_rank,
+                payload_bytes,
+                "engine kv_event dropped",
+            );
         }
-        // Format 2 — Mooncake pool backend batch: (timestamp_ms, events_vec, dp_rank)
-        else if let Ok((_timestamp, events_vec, bdp)) =
+    } else if event_source == EventSource::Pool {
+        // Format 2 — Mooncake/YuanRong pool backend batch: (timestamp_ms, events_vec, dp_rank).
+        if let Ok((_timestamp, events_vec, bdp)) =
             rmp_serde::from_slice::<(i64, Vec<PoolEvent>, u32)>(payload_bytes)
         {
             *batch_count += 1;
             tracing::debug!(
                 %backend_id, dp_rank, bdp,
                 num_events = events_vec.len(),
-                "kv_event parsed backend=mooncake"
+                "kv_event parsed backend=mooncake/yuanrong"
             );
             for zmq_event in &events_vec {
                 *event_count += 1;
@@ -606,5 +648,27 @@ pub fn replay_events(
         } else {
             tracing::warn!(%replay_endpoint, "replay msgpack parse error: unknown format");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{event_source_for_media, EventSource};
+    use crate::protocols::StorageMedium;
+
+    #[test]
+    fn cpu_and_disk_subscribers_use_pool_wire_format() {
+        assert_eq!(
+            event_source_for_media(&[StorageMedium::Cpu]),
+            EventSource::Pool
+        );
+        assert_eq!(
+            event_source_for_media(&[StorageMedium::Disk]),
+            EventSource::Pool
+        );
+        assert_eq!(
+            event_source_for_media(&[StorageMedium::Npu]),
+            EventSource::Engine
+        );
     }
 }

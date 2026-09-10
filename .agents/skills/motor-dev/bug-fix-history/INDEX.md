@@ -55,3 +55,5 @@
 | 2026-09-02 | controller | A2 linkdown 被降成 L2 无法自杀 | [a2-linkdown-nm-suicide.md](controller/a2-linkdown-nm-suicide.md) | A2, linkdown, 0x81078603, NmSuicide, PreSeparateNPU |
 | 2026-09-03 | coordinator | Responses input items were rejected by Chat message validation | [responses-developer-role-rejected.md](coordinator/responses-developer-role-rejected.md) | coordinator, responses, input-item, developer-role, function-call-output, validation, HTTP-400 |
 | 2026-09-04 | coordinator | SHM CAS 分配成功后被取消，active_tokens 永久泄漏 | [workload-ledger-orphan-leak.md](coordinator/workload-ledger-orphan-leak.md) | active_tokens leak, CancelledError, cas_add rollback, pop_residual_workloads |
+| 2026-09-09 | kv_conductor | map 格式 BlockStored 无法解析 | `kv_conductor/map-block-stored.md` | BlockStored, msgspec, map, deserialize_any |
+| 2026-09-09 | kv_conductor | CPU/Disk 订阅器误按 vLLM 事件解析 | `kv_conductor/event-source-routing.md` | ZmqSubscriber, EventSource, PoolEvent, CPU, Disk |

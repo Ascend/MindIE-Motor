@@ -291,6 +291,9 @@ impl WorkerRegistry {
                 None
             };
             for (ep_url, default_media) in &endpoint_media {
+                // Engine publishers expose HBM/NPU events; CPU and Disk
+                // endpoints are pool publishers and use PoolEvent wire data.
+                let event_source = crate::zmq_subscriber::event_source_for_media(default_media);
                 let sub = crate::zmq_subscriber::ZmqSubscriber::connect(
                     ep_url.clone(),
                     req.modelname.clone(),
@@ -300,6 +303,7 @@ impl WorkerRegistry {
                     backend_id.clone(),
                     req.dp_rank,
                     default_media.clone(),
+                    event_source,
                     match_mode,
                     ip_index.clone(),
                 )?;

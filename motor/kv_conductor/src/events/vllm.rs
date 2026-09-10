@@ -18,7 +18,7 @@
 
 //! vLLM-native event types, parsing, and application logic.
 //!
-//! Handles the msgspec ``array_like`` wire format with tag-based dispatch,
+//! Handles msgspec map and legacy array events with tag-based dispatch,
 //! attention-group filtering, and two-phase offload/pool insertion.
 //! Attention-kind filtering policy: see `THIRD_PARTY_NOTICES.md`.
 
@@ -61,22 +61,9 @@ fn block_size_mismatch_warn_map() -> &'static BlockSizeMismatchWarnMap {
 // vLLM-native event types (msgspec KVEventBatch wire format)
 // ---------------------------------------------------------------------------
 
-/// A vLLM msgspec-tagged union event, sent as arrays:
-/// ``["BlockStored", block_hashes, parent_hash?, token_ids, block_size, ...]``
-/// because ``KVEventBatch`` uses ``array_like=True`` which propagates to
-/// child structs.
-///
-/// Field order (same as vLLM's ``BlockStored`` struct definition):
-///
-/// ```text
-/// [tag, block_hashes, parent_block_hash?, token_ids, block_size,
-///  lora_id?, medium?, lora_name?, extra_keys?, group_idx?,
-///  kv_cache_spec_kind?, kv_cache_spec_sliding_window?]
-/// ```
-///
-/// Optional fields are OMITTED when null (msgspec ``omit_defaults=True``),
-/// so array length varies. This deserializer collects remaining
-/// elements as ``rmpv::Value`` and matches them by type + order.
+/// A vLLM msgspec-tagged event, encoded as a map with a `type` field.
+/// The batch's `array_like=True` does not propagate to nested event structs.
+/// Legacy tagged arrays are also accepted, using type + order matching.
 #[derive(Debug)]
 pub(crate) struct VllmEventMap {
     event_type: String,
