@@ -2,7 +2,7 @@
 
 ## Feature Introduction
 
-The MindIE Motor KV Cache affinity scheduling capability relies on the Mooncake Conductor component from the Mooncake community. It allows the scheduler to preferentially dispatch requests to the instance that has cached the corresponding KV based on the KV Cache location, thereby reducing the overhead of cross-instance KV Cache transfer and improving inference throughput and response speed. For details about the related capabilities and interfaces, see [Mooncake Conductor Introduction](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md).
+The MindIE Motor KV Cache affinity scheduling capability relies on the Mooncake Conductor component from the Mooncake community. It allows the scheduler to preferentially dispatch requests to the P instance that has cached the corresponding prefix KV Cache based on the KV Cache location, thereby improving the KV Cache hit ratio of P instances, reducing redundant Prefill computation, and improving inference throughput and response speed. For details about the related capabilities and interfaces, see [Mooncake Conductor Introduction](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md).
 
 After modifying the `user_config.json` configuration file, you can complete service deployment through the `deploy.py` script.
 
@@ -222,7 +222,7 @@ Description of each parameter:
 | **topic** | string | Custom | Event topic. |
 | **replay_endpoint** | string | `tcp://*:<port>` | Event replay endpoint. |
 
-> **About Connector**: In the example, `kv_connector` uses `MultiConnector`, where `connectors[0]` (`MooncakeLayerwiseConnector`, the transport layer) determines the P/D collaboration capability, and `connectors[1]` (`AscendStoreConnector`, the KV pool backend) does not participate in the determination and does not need to be in the identification whitelist. For details about the identification whitelist and the `dispatch_profile` escape hatch.
+> **About Connector**: In the example, `kv_connector` uses `MultiConnector`, where `connectors[0]` (`MooncakeLayerwiseConnector`, the transport layer) determines the P/D collaboration capability, and `connectors[1]` (`AscendStoreConnector`, the KV pool backend) does not participate in the determination and does not need to be in the identification whitelist. For details about the identification whitelist and the `dispatch_profile` escape hatch, see [PD Disaggregation Feature Description](pd_disaggregation.md).
 
 ## Principle Description
 
@@ -234,7 +234,7 @@ The KV Cache affinity tuning capability of MindIE Motor is implemented based on 
 
 2. **Conductor event collection**: The Mooncake Conductor component receives and indexes the KV Cache events published by the P instance, maintaining a global KV Cache location mapping table.
 
-3. **Affinity tuning decision**: When allocating requests, the scheduler in the Coordinator (`scheduler_type: kv_cache_affinity`) queries the KV Cache location information in Conductor and preferentially schedules requests to the D instance that caches the corresponding KV Cache, thereby reducing cross-node KV Cache transfer.
+3. **Affinity tuning decision**: When allocating requests, the scheduler in the Coordinator (`scheduler_type: kv_cache_affinity`) queries the KV Cache location information in Conductor and preferentially schedules requests to the P instance that caches the corresponding prefix KV Cache, thereby improving the KV Cache hit ratio of P instances and reducing redundant Prefill computation.
 
 4. **P/D collaboration**: The P and D instances establish a transfer channel through the `kv_connector` configured in `kv_transfer_config`, with the producer/consumer roles distinguished by `kv_role`.
 

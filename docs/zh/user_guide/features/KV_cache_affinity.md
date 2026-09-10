@@ -2,7 +2,7 @@
 
 ## 功能介绍
 
-MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到缓存了对应 KV 的实例，从而减少 KV Cache 跨实例传输开销，提升推理吞吐与响应速度。相关能力和接口的介绍可参考 [Mooncake Conductor 介绍文档](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md)。
+MindIE Motor KV Cache亲和性调度能力依赖 Mooncake 社区的 Mooncake Conductor 组件，允许调度器根据 KV Cache 位置优先将请求调度到已缓存对应前缀 KV Cache 的 P 实例，从而提高 P 实例的 KV Cache 命中率、减少重复 Prefill 计算，提升推理吞吐与响应速度。相关能力和接口的介绍可参考 [Mooncake Conductor 介绍文档](https://github.com/yejj710/Mooncake/blob/6dca8cc76ce074fa9c41f02e9a2195c7c1c9308f/docs/source/design/conductor/indexer-api-design.md)。
 
 通过修改 `user_config.json` 配置文件后即可通过 `deploy.py` 脚本完成服务部署。
 
@@ -225,7 +225,7 @@ MindIE Motor KV Cache 亲和性调度能力基于 Mooncake Conductor 组件实�
 
 1. **KV Cache 事件发布**：P 实例完成 PreFill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 sequence 的 KV Cache 位置信息）。
 2. **Conductor 事件收集**：Mooncake Conductor 组件接收并索引 P 实例发布的 KV Cache 事件，维护一张全局的 KV Cache 位置映射表。
-3. **亲和性调度决策**：Coordinator 中的调度器（`scheduler_type: kv_cache_affinity`）在分配请求时查询 Conductor 中的 KV Cache 位置信息，优先将请求调度到缓存了对应 KV Cache 的 D 实例，从而减少 KV Cache 跨节点传输。
+3. **亲和性调度决策**：Coordinator 中的调度器（`scheduler_type: kv_cache_affinity`）在分配请求时查询 Conductor 中的 KV Cache 位置信息，优先将请求调度到缓存了对应前缀 KV Cache 的 P 实例，从而提高 P 实例的 KV Cache 命中率、减少重复 Prefill 计算。
 4. **P/D 协同**：P 与 D 实例之间通过 `kv_transfer_config` 配置的 `kv_connector` 建立传输通道，由 `kv_role` 区分生产者/消费者角色。
 
 ### 部署流程
