@@ -103,6 +103,22 @@ _MOTOR_COMPUTED_METRICS: list[ComputedMetricDef] = [
 ]
 
 
+# Cumulative counters that must stay monotonic across engine restarts.
+_CUMULATIVE_COUNTERS: frozenset[str] = frozenset(
+    {
+        "vllm:prompt_tokens_total",
+        "vllm:generation_tokens_total",
+        "vllm:new_tokens_total",
+        "vllm:request_success_total",
+        "vllm:num_preemptions_total",
+        "vllm:prefix_cache_queries_total",
+        "vllm:prefix_cache_hits_total",
+        "vllm:gpu_prefix_cache_queries_total",
+        "vllm:gpu_prefix_cache_hits_total",
+    }
+)
+
+
 # ---------------------------------------------------------------------------
 # MotorMetricComputer
 # ---------------------------------------------------------------------------
@@ -125,8 +141,10 @@ class MotorMetricComputer:
     """
 
     def __init__(self) -> None:
-        # DP-level counter-rate tracking state.
-        # Key:  (job_name, dp_rank, source_counter_name)
+        # Per-series counter tracking state.  A series is one label of one
+        # counter, so a multi-label counter never shares an offset between
+        # labels.
+        # Key:  (job_name, dp_rank, series_label)
         # Value: dict with baseline, last_effective, last_raw, last_ts, last_ins_id
         self._dp_state: dict[tuple[str, int, str], dict[str, Any]] = {}
 
@@ -139,9 +157,7 @@ class MotorMetricComputer:
         collects: dict[int, dict[str, Any]],
     ) -> None:
         """DP-level metrics: inject into each endpoint's metrics list."""
-        for defn in _get_defs_by_phase("pre_aggregation"):
-            if defn.compute_type == "counter_rate":
-                self._compute_counter_rates(collects, defn)
+        self._correct_cumulative_counters(collects)
 
     def compute_post_aggregation(
         self,
@@ -155,22 +171,24 @@ class MotorMetricComputer:
                 self._compute_worker_counts(aggregate, collects, deploy_config, defn)
 
     # ------------------------------------------------------------------
-    # Counter rate (DP-level)
+    # Cumulative counters (DP-level): restart compensation + TPS
     # ------------------------------------------------------------------
 
-    def _compute_counter_rates(
+    def _correct_cumulative_counters(
         self,
         collects: dict[int, dict[str, Any]],
-        defn: ComputedMetricDef,
     ) -> None:
-        """Correct raw counters in-place with baseline and inject TPS gauges.
+        """Correct cumulative counters in-place and inject TPS gauges.
 
-        For each endpoint that carries one of *defn.source_counters* the
-        raw vLLM counter value is adjusted so that it never drops across
-        engine restarts (tracked per ``(job_name, dp_rank)``).  A TPS
-        rate gauge is also injected.
+        An engine restart resets these counters to 0, and the Obs process
+        cannot see the unavailable-instance pool, so nothing else carries the
+        old totals forward.  Every label is tracked as its own series: sharing
+        one offset across labels would move a label's history onto labels that
+        never fired.  Counters declared by a ``counter_rate`` definition also
+        get their TPS gauge injected here.
         """
         now = time.monotonic()
+        rate_defs = _get_rate_defs_by_source()
         for ins_id, ins_data in collects.items():
             job_name: str = ins_data.get("job_name", "")
             if not job_name:
@@ -178,43 +196,38 @@ class MotorMetricComputer:
 
             for ep_id, pod_info in ins_data.get("endpoints", {}).items():
                 metrics: list[Metric] = pod_info.get("metrics", [])
-                if not metrics:
-                    continue
+                injected: list[Metric] = []
 
-                for src_name in defn.source_counters:
-                    src_metric = _find_metric(metrics, src_name)
-                    if src_metric is None:
+                for metric in metrics:
+                    if metric.name not in _CUMULATIVE_COUNTERS:
                         continue
 
-                    raw_total = float(sum(src_metric.value))
-                    effective, tps = self._compute_effective_and_rate(
-                        job_name=job_name,
-                        dp_rank=ep_id,
-                        src_name=src_name,
-                        raw_counter=raw_total,
-                        ins_id=ins_id,
-                        now=now,
-                    )
-
-                    # Correct raw counter values in-place so that every
-                    # downstream view (dp / instance / role / full) sees a
-                    # continuous total across engine restarts.
-                    offset = effective - raw_total
-                    if offset != 0.0:
-                        _per_label = offset / float(len(src_metric.value))
-                        for i in range(len(src_metric.value)):
-                            src_metric.value[i] += _per_label
-
-                    # Inject TPS rate (GAUGE)
-                    metrics.append(
-                        Metric(
-                            name=defn.name,
-                            help=defn.help,
-                            type=MetricType.GAUGE,
-                            label=[defn.name],
-                            value=[tps],
+                    tps_total = 0.0
+                    for i, label in enumerate(metric.label):
+                        effective, tps = self._compute_effective_and_rate(
+                            job_name=job_name,
+                            dp_rank=ep_id,
+                            series=label,
+                            raw_counter=float(metric.value[i]),
+                            ins_id=ins_id,
+                            now=now,
                         )
-                    )
+                        metric.value[i] = effective
+                        tps_total += tps
+
+                    defn = rate_defs.get(metric.name)
+                    if defn is not None:
+                        injected.append(
+                            Metric(
+                                name=defn.name,
+                                help=defn.help,
+                                type=MetricType.GAUGE,
+                                label=[defn.name],
+                                value=[tps_total],
+                            )
+                        )
+
+                metrics.extend(injected)
 
     # ------------------------------------------------------------------
     # Effective counter + TPS (shared state machine)
@@ -224,13 +237,17 @@ class MotorMetricComputer:
         self,
         job_name: str,
         dp_rank: int,
-        src_name: str,
+        series: str,
         raw_counter: float,
         ins_id: int,
         now: float,
     ) -> tuple[float, float]:
-        """Return ``(effective_counter, tps_rate)`` with restart-resilient baseline."""
-        key = (job_name, dp_rank, src_name)
+        """Return ``(effective_counter, tps_rate)`` with restart-resilient baseline.
+
+        *series* identifies one label of one counter, so each label keeps its
+        own baseline.
+        """
+        key = (job_name, dp_rank, series)
         state = self._dp_state.get(key)
 
         if state is None:
@@ -289,13 +306,15 @@ class MotorMetricComputer:
         else:
             return
 
-        aggregate.append(Metric(
-            name=name,
-            help=defn.help,
-            type=MetricType.GAUGE,
-            label=[name],
-            value=[value],
-        ))
+        aggregate.append(
+            Metric(
+                name=name,
+                help=defn.help,
+                type=MetricType.GAUGE,
+                label=[name],
+                value=[value],
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -318,12 +337,14 @@ def _get_counter_sum(metrics: list[Metric], name: str) -> float | None:
     return None
 
 
-def _find_metric(metrics: list[Metric], name: str) -> Metric | None:
-    """Return the Metric with *name* in *metrics*, or None."""
-    for m in metrics:
-        if m.name == name:
-            return m
-    return None
+def _get_rate_defs_by_source() -> dict[str, ComputedMetricDef]:
+    """Map source counter name → the counter_rate definition that reads it."""
+    return {
+        src: defn
+        for defn in _MOTOR_COMPUTED_METRICS
+        if defn.compute_type == "counter_rate"
+        for src in defn.source_counters
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -332,15 +353,11 @@ def _find_metric(metrics: list[Metric], name: str) -> Metric | None:
 
 
 def get_inherited_metric_names() -> set[str]:
-    """Return source counter names whose values are inherited across restarts.
+    """Return counter names whose values are inherited across restarts.
 
     These raw vLLM counters are corrected in-place by
-    ``MotorMetricComputer._compute_counter_rates``, so the inactive
-    aggregate must NOT preserve their old values (the new instance
-    already carries forward the inherited total via baseline offset).
+    ``MotorMetricComputer._correct_cumulative_counters``, so the inactive
+    aggregate must NOT preserve their old values (the new instance already
+    carries forward the inherited total via baseline offset).
     """
-    inherited: set[str] = set()
-    for defn in _MOTOR_COMPUTED_METRICS:
-        if defn.compute_type == "counter_rate":
-            inherited.update(defn.source_counters)
-    return inherited
+    return set(_CUMULATIVE_COUNTERS)

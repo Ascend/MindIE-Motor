@@ -256,7 +256,9 @@ ComputedMetricDef(
 ),
 ```
 
-**完成**。`compute_type="counter_rate"` 已在 `MotorMetricComputer._compute_counter_rates()` 中实现，无需编写额外代码。TPS 指标会自动注入到各 endpoint 的 metrics 列表，并通过聚合流水线在所有视图中输出。
+**完成**。`compute_type="counter_rate"` 已在 `MotorMetricComputer._correct_cumulative_counters()` 中实现，无需编写额外代码。TPS 指标会自动注入到各 endpoint 的 metrics 列表，并通过聚合流水线在所有视图中输出。
+
+注意：源计数还需加入 `_CUMULATIVE_COUNTERS`，否则不会做重启补偿，实例重启后累计值会回退。
 
 ### 场景二：新增 Service 级聚合指标
 
