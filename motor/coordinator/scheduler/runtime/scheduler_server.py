@@ -711,6 +711,11 @@ class AsyncSchedulerServer:
             return False
         return await self._dispatcher.apply_refresh(event_type, instances)
 
+    @property
+    def circuit_breaker_manager(self) -> CircuitBreakerManager | None:
+        """Mgmt-owned circuit breaker pool; None before control plane start."""
+        return self._cb_manager
+
     async def stop(self):
         """Stop the control plane (ROUTER, PUB, SHM, heartbeat, probe timers)."""
         logger.info("Stopping control plane...")

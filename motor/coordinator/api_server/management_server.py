@@ -26,6 +26,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 
 from motor.common.resources.http_msg_spec import ExternalInsEventMsg, InsEventMsg
+from motor.common.resources.instance import InsStatus
+
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
@@ -109,7 +111,36 @@ def _build_readiness_response(message: str, ready: bool) -> dict[str, Any]:
     return {"status": "ok", "message": message, "ready": ready}
 
 
-def _summarize_instance(instance: Any) -> dict[str, Any]:
+_CB_CLOSED_VIEW = {
+    "state": "closed",
+    "trip_count": 0,
+    "failure_count": 0,
+    "current_timeout": 0.0,
+}
+
+
+def _controller_status_value(instance: Any) -> str:
+    status = instance.status
+    return status.value if hasattr(status, "value") else str(status)
+
+
+def _circuit_breaker_view(state: Any | None) -> dict[str, Any]:
+    if state is None:
+        return dict(_CB_CLOSED_VIEW)
+    return {
+        "state": state.state,
+        "trip_count": state.trip_count,
+        "failure_count": state.failure_count,
+        "current_timeout": state.current_timeout,
+    }
+
+
+def _summarize_instance(
+    instance: Any,
+    *,
+    pool: str | None = None,
+    circuit_breaker: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     endpoints: list[dict[str, Any]] = []
     for pod_eps in (instance.endpoints or {}).values():
         for ep in (pod_eps or {}).values():
@@ -121,14 +152,20 @@ def _summarize_instance(instance: Any) -> dict[str, Any]:
                     "headless": bool(getattr(ep, "headless", False)),
                 }
             )
-    status = instance.status.value if hasattr(instance.status, "value") else instance.status
+    pool_name = pool if pool is not None else "unknown"
+    cb_view = circuit_breaker or dict(_CB_CLOSED_VIEW)
+    status = _controller_status_value(instance)
     role = instance.role.value if hasattr(instance.role, "value") else instance.role
+    healthy = pool_name == "available" and status == InsStatus.ACTIVE.value and cb_view.get("state") == "closed"
     return {
         "id": instance.id,
         "role": role,
         "job_name": instance.job_name,
         "model_name": instance.model_name,
         "status": status,
+        "pool": pool_name,
+        "healthy": healthy,
+        "circuit_breaker": cb_view,
         "endpoints": endpoints,
     }
 
@@ -325,6 +362,11 @@ class ManagementServer(BaseCoordinatorServer):
         if not secrets.compare_digest(api_key.encode("utf-8"), self._mgmt_api_key.encode("utf-8")):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid management API key")
 
+    def _instance_circuit_breaker_view(self, instance_id: int) -> dict[str, Any]:
+        manager = getattr(self._control_plane, "circuit_breaker_manager", None)
+        state = manager.get(instance_id) if manager is not None else None
+        return _circuit_breaker_view(state)
+
     def _log_configuration(self) -> None:
         super()._log_configuration()
         logger.info(
@@ -439,7 +481,14 @@ class ManagementServer(BaseCoordinatorServer):
         async def list_instances(request: Request):
             self._verify_mgmt_api_key(request)
             tracked = await self._instance_manager.snapshot_instances()
-            summaries = [_summarize_instance(inst) for inst in tracked]
+            summaries = [
+                _summarize_instance(
+                    inst,
+                    pool=self._instance_manager.get_tracked_instance_pool(inst.id),
+                    circuit_breaker=self._instance_circuit_breaker_view(inst.id),
+                )
+                for inst in tracked
+            ]
             summaries.sort(key=lambda item: (item.get("role") or "", item.get("id") or 0))
             return {"count": len(summaries), "instances": summaries}
 
@@ -497,7 +546,7 @@ class ManagementServer(BaseCoordinatorServer):
                     "GET /liveness": "liveness check",
                     "GET /startup": "startup probe",
                     "GET /readiness": "readiness check",
-                    "GET /instances": "list registered instances",
+                    "GET /instances": "list registered instances with controller status and circuit-breaker overlay",
                     "POST /instances/refresh": "refresh instances",
                     "POST /precision/alarm_cleared": "clear precision alarm scheduler state",
                 },

@@ -290,7 +290,7 @@ python3 -m motor.coordinator.register list
 # 等价：curl http://127.0.0.1:1026/instances
 ```
 
-返回 `count` 与 `instances[]`（`id` / `role` / `job_name` / `model_name` / `status` / `endpoints`）。完整字段见 [实例查询接口](../api/management_interfaces.md#实例查询接口)。
+返回 `count` 与 `instances[]`（`id` / `role` / `job_name` / `model_name` / `status` / `pool` / `healthy` / `circuit_breaker` / `endpoints`）。完整字段见 [实例查询接口](../api/management_interfaces.md#实例查询接口)。
 
 ### 增
 

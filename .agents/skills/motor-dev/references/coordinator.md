@@ -281,7 +281,7 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 | `motor/coordinator/router/dispatch_session.py` | | Dispatch attempt session/state tracking |
 | `motor/coordinator/router/rescheduler/` | | `Rescheduler` (retry plans for failed requests) |
 | `motor/coordinator/api_client/` | | `ConductorApiClient` / `ControllerApiClient` / `NativeEngineApiClient` (HTTP clients to kv-conductor, controller, engine) |
-| `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `GET /instances`, `/instances/refresh`, `/precision/alarm_cleared` |
+| `motor/coordinator/api_server/management_server.py` | | Mgmt: `/liveness`, `/readiness`, `GET /instances`（`status`/`pool`/`healthy` + 熔断快照）, `/instances/refresh`, `/precision/alarm_cleared` |
 | `motor/coordinator/api_server/observability_server.py` | | Obs: `/metrics`, `/health` (`/instance/metrics` deprecated → `GET /metrics?type=instance`) |
 | `motor/coordinator/api_server/inference_server.py` | | Infer: `/v1/completions`, `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/v1/messages` + `/v1/messages/count_tokens` (Anthropic); dedicated metaserver app `POST /v1/metaserver` |
 | `motor/coordinator/domain/responses_input.py` | | Text-only scheduling view for native Responses input; maps `developer` to `system` without rewriting the engine request |
@@ -357,6 +357,11 @@ The secret is read from `api_key_file` and supplied in `X-Motor-Management-Key`.
 unauthenticated so Kubernetes probes continue to work. Controller and standalone `motor.coordinator.register` clients
 load the same secret from a mounted/local file. This authentication is independent from inference `api_key_config`
 and from `mgmt_tls_config`; use TLS as well when management traffic crosses an untrusted network.
+
+`GET /instances` is the external query for ras_monitor / customer tools. Each item keeps Controller-pushed `status`,
+adds Coordinator pool membership (`available` / `unavailable` / `paused`; `unknown` when membership is missing), overlays the circuit-breaker snapshot
+(`state` / `trip_count` / `failure_count` / `current_timeout`), and derives `healthy` (`true` only when
+`pool=available`, `status=active`, and the breaker is `closed`).
 
 ## Fault Tolerance: Circuit Breaker & Precision Detection
 

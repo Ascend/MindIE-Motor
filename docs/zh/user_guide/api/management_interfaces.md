@@ -143,6 +143,9 @@ curl -X GET "http://{IP}:{Port}/health"
 **接口功能**
 
 查询 Coordinator 当前登记的实例（含 available / unavailable / paused）。
+`status` 来自 Controller（或独立注册）推送，熔断不会改写它；`pool` 是 Coordinator 内部池；
+`circuit_breaker` 是熔断状态机快照；`healthy` 仅当 `pool=available` 且 `status=active` 且熔断
+`closed` 时为 `true`。
 
 **接口格式**
 
@@ -179,6 +182,14 @@ python3 -m motor.coordinator.register list
       "job_name": "Qwen3-8B-decode-10.10.0.12-8000",
       "model_name": "Qwen3-8B",
       "status": "active",
+      "pool": "available",
+      "healthy": true,
+      "circuit_breaker": {
+        "state": "closed",
+        "trip_count": 0,
+        "failure_count": 0,
+        "current_timeout": 0.0
+      },
       "endpoints": [
         {
           "id": 0,
@@ -194,6 +205,14 @@ python3 -m motor.coordinator.register list
       "job_name": "Qwen3-8B-prefill-10.10.0.11-8000",
       "model_name": "Qwen3-8B",
       "status": "active",
+      "pool": "available",
+      "healthy": true,
+      "circuit_breaker": {
+        "state": "closed",
+        "trip_count": 0,
+        "failure_count": 0,
+        "current_timeout": 0.0
+      },
       "endpoints": [
         {
           "id": 0,
@@ -217,7 +236,14 @@ python3 -m motor.coordinator.register list
 | `instances[].role` | string | 实例角色：`prefill` / `decode` / `union`。 |
 | `instances[].job_name` | string | 实例作业名。 |
 | `instances[].model_name` | string | 模型名。 |
-| `instances[].status` | string | 实例状态，如 `active` / `inactive` / `paused`。 |
+| `instances[].status` | string | Controller 推送的实例状态，如 `active` / `inactive` / `paused`。熔断不会改写它。 |
+| `instances[].pool` | string | Coordinator 内部池：`available` / `unavailable` / `paused`；查不到归属时为 `unknown`。 |
+| `instances[].healthy` | bool | 仅当 `pool=available` 且 `status=active` 且熔断 `closed` 时为 `true`。 |
+| `instances[].circuit_breaker` | object | 熔断状态机快照。 |
+| `instances[].circuit_breaker.state` | string | `closed`（未熔断）/ `open`（已熔断）。 |
+| `instances[].circuit_breaker.trip_count` | int | 累计 trip 次数。 |
+| `instances[].circuit_breaker.failure_count` | int | 当前连续失败次数。 |
+| `instances[].circuit_breaker.current_timeout` | float | 当前熔断超时秒数。 |
 | `instances[].endpoints` | array | 该实例下的业务 endpoint。 |
 | `instances[].endpoints[].business_port` | string | 引擎 HTTP 端口。 |
 

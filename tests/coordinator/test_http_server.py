@@ -479,6 +479,7 @@ class TestCoordinatorServer:
             endpoints={"10.0.0.2": {0: Endpoint(id=0, ip="10.0.0.2", business_port="8000")}},
         )
         self.coordinator_server.instance_manager.snapshot_instances = AsyncMock(return_value=[instance, decode])
+        self.coordinator_server.instance_manager.get_tracked_instance_pool.return_value = None
 
         response = self.mgmt_client.get("/instances")
         assert response.status_code == 200
@@ -491,6 +492,14 @@ class TestCoordinatorServer:
             "job_name": "qwen-prefill-10.0.0.1-8000",
             "model_name": "Qwen3-8B",
             "status": "active",
+            "pool": "unknown",
+            "healthy": False,
+            "circuit_breaker": {
+                "state": "closed",
+                "trip_count": 0,
+                "failure_count": 0,
+                "current_timeout": 0.0,
+            },
             "endpoints": [{"id": 0, "ip": "10.0.0.1", "business_port": "8000", "headless": False}],
         }
 

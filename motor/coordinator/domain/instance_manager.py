@@ -223,6 +223,15 @@ class InstanceManager:
                 *self._paused_pool.values(),
             ]
 
+    def get_tracked_instance_pool(self, instance_id: int) -> str | None:
+        if instance_id in self._available_pool:
+            return "available"
+        if instance_id in self._unavailable_pool:
+            return "unavailable"
+        if instance_id in self._paused_pool:
+            return "paused"
+        return None
+
     async def validate_refresh_instances(self, event_type: EventType, instances: list[Instance]) -> None:
         """Validate an instance refresh without modifying pools."""
         async with self._lock:
