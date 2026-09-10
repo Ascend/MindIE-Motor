@@ -301,7 +301,12 @@ class KvConductorConfig:
 
     block_size: int = 128
     """KV block size in tokens — determines token→hash granularity.
-    Must match the engine's ``--block-size``.  Default 128."""
+
+    Must match the main-attention KV event ``block_size``, not necessarily
+    the engine ``--block-size`` / scheduler LCM. In hybrid-KV models (e.g.
+    DeepSeek-V4 MLA = 128 while ``--block-size`` may be 32), register the
+    MLA event grain or events are dropped as ``block_size_mismatch``.
+    Default 128."""
 
     engine_type: str = "vLLM"
     """Inference engine type, sent to conductor on registration."""
@@ -622,6 +627,8 @@ class PrefillKvEventConfig:
     conductor_service: str = field(default_factory=lambda: Env.conductor_service or "")
     http_server_port: int = 13333
     block_size: int = 128
+    """Must match main-attention KV event ``block_size`` (hybrid KV ≠
+    engine ``--block-size``; e.g. DeepSeek-V4 MLA = 128). Default 128."""
     endpoint: str = ""
     replay_endpoint: str = ""
     engine_type: str = "vLLM"

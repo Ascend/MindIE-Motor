@@ -27,6 +27,22 @@ def test_classify_vllm_dispatch_profile_handoff():
     assert classify_vllm_dispatch_profile(config) == DispatchProfile.HANDOFF
 
 
+def test_classify_vllm_dispatch_profile_ascend_multi_connector_follows_transport():
+    # vLLM-Ascend wraps PD transport in AscendMultiConnector; classify by connectors[0].
+    config = {
+        "kv_transfer_config": {
+            "kv_connector": "AscendMultiConnector",
+            "kv_connector_extra_config": {
+                "connectors": [
+                    {"kv_connector": "MooncakeHybridConnector", "kv_role": "kv_producer"},
+                    {"kv_connector": "AscendStoreConnector", "kv_role": "kv_producer"},
+                ]
+            },
+        }
+    }
+    assert classify_vllm_dispatch_profile(config) == DispatchProfile.HANDOFF
+
+
 def test_classify_vllm_dispatch_profile_unknown_connector():
     config = {"kv_transfer_config": {"kv_connector": "UnknownConnector"}}
     assert classify_vllm_dispatch_profile(config) == DispatchProfile.UNKNOWN

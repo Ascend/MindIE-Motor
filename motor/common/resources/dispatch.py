@@ -91,7 +91,7 @@ def _classify_vllm_kv_transfer_config(kv_transfer_config: Any) -> DispatchProfil
         return DispatchProfile.UNKNOWN
 
     connector = _normalized(kv_transfer_config.get(KV_CONNECTOR_KEY))
-    if connector == "multiconnector":
+    if connector in ("multiconnector", "ascendmulticonnector"):
         return _classify_vllm_multi_connector(kv_transfer_config)
 
     if connector in _VLLM_HANDOFF_CONNECTORS:

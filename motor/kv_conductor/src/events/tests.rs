@@ -287,6 +287,97 @@ fn test_vllm_all_blocks_cleared_always_accepted() {
 }
 
 // -----------------------------------------------------------------------
+// Tagged-map (msgspec `tag=True` without `array_like`) wire format
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_vllm_map_format_block_stored_accepted() {
+    // vLLM encodes KVCacheEvent as a tagged map when only `tag=True` is set
+    // (the concrete event struct does not declare `array_like`). The map uses
+    // the "type" key for the tag and named keys for each field.
+    let map = serde_json::json!({
+        "type": "BlockStored",
+        "block_hashes": [100, 200],
+        "parent_block_hash": 99,
+        "token_ids": [1, 2, 3, 4],
+        "block_size": 4,
+        "medium": "GPU",
+        "group_idx": 0,
+        "kv_cache_spec_kind": "MlaAttention",
+    });
+    let packed = rmp_serde::to_vec(&map).unwrap();
+    let parsed: VllmEventMap = from_slice(&packed).unwrap();
+    match parsed.normalize() {
+        VllmEvent::BlockStored {
+            block_hashes,
+            parent_block_hash,
+            token_ids,
+            block_size,
+            medium,
+            ..
+        } => {
+            assert_eq!(block_hashes, vec![100, 200]);
+            assert_eq!(parent_block_hash, Some(99));
+            assert_eq!(token_ids, vec![1, 2, 3, 4]);
+            assert_eq!(block_size, 4);
+            assert_eq!(medium.as_deref(), Some("GPU"));
+        }
+        _ => panic!("expected BlockStored from map format"),
+    }
+}
+
+#[test]
+fn test_vllm_map_format_block_removed_accepted() {
+    let map = serde_json::json!({
+        "type": "BlockRemoved",
+        "block_hashes": [300, 400],
+        "medium": "cpu",
+    });
+    let packed = rmp_serde::to_vec(&map).unwrap();
+    let parsed: VllmEventMap = from_slice(&packed).unwrap();
+    match parsed.normalize() {
+        VllmEvent::BlockRemoved {
+            block_hashes,
+            medium,
+            ..
+        } => {
+            assert_eq!(block_hashes, vec![300, 400]);
+            assert_eq!(medium.as_deref(), Some("cpu"));
+        }
+        _ => panic!("expected BlockRemoved from map format"),
+    }
+}
+
+#[test]
+fn test_vllm_map_format_all_blocks_cleared_accepted() {
+    let map = serde_json::json!({"type": "AllBlocksCleared"});
+    let packed = rmp_serde::to_vec(&map).unwrap();
+    let parsed: VllmEventMap = from_slice(&packed).unwrap();
+    assert!(matches!(parsed.normalize(), VllmEvent::AllBlocksCleared));
+}
+
+#[test]
+fn test_vllm_map_format_ignores_unknown_fields() {
+    // Future vLLM fields (e.g. locality/ownership) must not break decoding.
+    let map = serde_json::json!({
+        "type": "BlockStored",
+        "block_hashes": [500],
+        "token_ids": [1, 2],
+        "block_size": 2,
+        "locality": "REMOTE",
+        "ownership": "someone",
+    });
+    let packed = rmp_serde::to_vec(&map).unwrap();
+    let parsed: VllmEventMap = from_slice(&packed).unwrap();
+    match parsed.normalize() {
+        VllmEvent::BlockStored { block_hashes, .. } => {
+            assert_eq!(block_hashes, vec![500]);
+        }
+        _ => panic!("expected BlockStored from map format with unknown fields"),
+    }
+}
+
+// -----------------------------------------------------------------------
 // VllmEventMap normalize — correct field extraction
 // -----------------------------------------------------------------------
 
@@ -364,6 +455,35 @@ fn make_vllm_block_stored_payload(
     rmp_serde::to_vec(&batch).unwrap()
 }
 
+/// Tagged-map inner event inside a Format-A `KVEventBatch` layout
+/// `[ts, events, dp_rank]`. Covers the DSV4 wire path end-to-end through
+/// `parse_vllm_batch` (not just bare `VllmEventMap` decode).
+fn make_vllm_map_block_stored_payload(
+    kind: Option<&str>,
+    block_hashes: Vec<u64>,
+    token_ids: Vec<i64>,
+    block_size: u32,
+    dp_rank: Option<i32>,
+) -> Vec<u8> {
+    let mut inner = serde_json::json!({
+        "type": "BlockStored",
+        "block_hashes": block_hashes,
+        "parent_block_hash": 99,
+        "token_ids": token_ids,
+        "block_size": block_size,
+        "medium": "GPU",
+        "group_idx": 0,
+    });
+    if let Some(k) = kind {
+        inner
+            .as_object_mut()
+            .unwrap()
+            .insert("kv_cache_spec_kind".into(), serde_json::json!(k));
+    }
+    let batch = serde_json::json!([1.0, [inner], dp_rank]);
+    rmp_serde::to_vec(&batch).unwrap()
+}
+
 #[test]
 fn test_parse_vllm_batch_format_a() {
     let payload =
@@ -381,6 +501,63 @@ fn test_parse_vllm_batch_filters_swa_events() {
     let (events, _) = parse_vllm_batch(&payload).unwrap();
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0], VllmEvent::Ignored));
+}
+
+#[test]
+fn test_parse_vllm_batch_map_format_a() {
+    let payload = make_vllm_map_block_stored_payload(
+        Some("MlaAttention"),
+        vec![100, 200],
+        vec![1, 2, 3, 4],
+        4,
+        Some(3),
+    );
+    let (events, dp_rank) = parse_vllm_batch(&payload).unwrap();
+    assert_eq!(dp_rank, 3);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        VllmEvent::BlockStored {
+            block_hashes,
+            parent_block_hash,
+            token_ids,
+            block_size,
+            medium,
+            ..
+        } => {
+            assert_eq!(block_hashes, &vec![100, 200]);
+            assert_eq!(*parent_block_hash, Some(99));
+            assert_eq!(token_ids, &vec![1, 2, 3, 4]);
+            assert_eq!(*block_size, 4);
+            assert_eq!(medium.as_deref(), Some("GPU"));
+        }
+        other => panic!("expected BlockStored from map batch, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_parse_vllm_batch_map_format_b_dp_rank_first() {
+    // Format B: [ts, dp_rank, events] — map inner must still parse via
+    // the fallback layout.
+    let inner = serde_json::json!({
+        "type": "BlockStored",
+        "block_hashes": [42],
+        "token_ids": [9, 8, 7, 6],
+        "block_size": 4,
+        "medium": "GPU",
+        "kv_cache_spec_kind": "MlaAttention",
+    });
+    let batch = serde_json::json!([1.0, 7, [inner]]);
+    let payload = rmp_serde::to_vec(&batch).unwrap();
+    let (events, dp_rank) = parse_vllm_batch(&payload).unwrap();
+    assert_eq!(dp_rank, 7);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0],
+        VllmEvent::BlockStored {
+            block_hashes: ref h,
+            ..
+        } if h == &vec![42]
+    ));
 }
 
 // -----------------------------------------------------------------------
@@ -449,6 +626,71 @@ fn test_apply_vllm_block_stored_computes_tokens_hash() {
     assert!(
         !scores.blocks.is_empty(),
         "query should match stored blocks"
+    );
+}
+
+#[test]
+fn test_apply_vllm_drops_hybrid_group_block_size_mismatch() {
+    // DeepSeek-V4 MLA events carry native block_size=128 while the engine
+    // scheduler LCM / --block-size is 32. A registered size of 32 must not
+    // ingest those events; 128 must.
+    use crate::indexer::Indexer;
+
+    let token_ids: Vec<i64> = (0..128).collect();
+    let event_block_size = 128u32;
+    let event = VllmEvent::BlockStored {
+        block_hashes: vec![0x1111],
+        parent_block_hash: None,
+        token_ids: token_ids.clone(),
+        block_size: event_block_size,
+        medium: Some("GPU".into()),
+        group_idx: Some(0),
+    };
+
+    let dropped = Indexer::new();
+    apply_vllm_event(
+        &dropped,
+        &event,
+        "dsv4",
+        "default",
+        "vllm-prefill-1",
+        0,
+        &[StorageMedium::Npu],
+        MatchMode::None,
+        &None,
+        32,
+    )
+    .unwrap();
+    let dropped_entry = dropped.get_or_create("dsv4", "default");
+    assert!(
+        dropped_entry
+            .find_matches(&token_ids, event_block_size)
+            .blocks
+            .is_empty(),
+        "MLA block_size=128 must be dropped when conductor is registered at 32"
+    );
+
+    let ingested = Indexer::new();
+    apply_vllm_event(
+        &ingested,
+        &event,
+        "dsv4",
+        "default",
+        "vllm-prefill-1",
+        0,
+        &[StorageMedium::Npu],
+        MatchMode::None,
+        &None,
+        128,
+    )
+    .unwrap();
+    let ingested_entry = ingested.get_or_create("dsv4", "default");
+    assert!(
+        !ingested_entry
+            .find_matches(&token_ids, event_block_size)
+            .blocks
+            .is_empty(),
+        "MLA block_size=128 must be indexed when conductor is registered at 128"
     );
 }
 

@@ -22,6 +22,11 @@
 //! attention-group filtering, and two-phase offload/pool insertion.
 //! Attention-kind filtering policy: see `THIRD_PARTY_NOTICES.md`.
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 use serde::Deserialize;
 
 use crate::backend::MatchMode;
@@ -32,6 +37,25 @@ use crate::protocols::*;
 
 use super::flex_hash::FlexHash;
 use super::helpers::{resolve_medium, resolve_workers};
+
+/// Minimum interval between repeated `block_size_mismatch` WARN lines for the
+/// same `(backend_id, event_block_size, registered_block_size)` key.
+const BLOCK_SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(30);
+
+struct BlockSizeMismatchWarnState {
+    last_warn: Instant,
+    /// Events dropped since the last WARN (excluding the one that triggers
+    /// the next WARN).
+    suppressed: u64,
+}
+
+type BlockSizeMismatchKey = (String, u32, u32);
+type BlockSizeMismatchWarnMap = Mutex<HashMap<BlockSizeMismatchKey, BlockSizeMismatchWarnState>>;
+
+fn block_size_mismatch_warn_map() -> &'static BlockSizeMismatchWarnMap {
+    static MAP: OnceLock<BlockSizeMismatchWarnMap> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 // ---------------------------------------------------------------------------
 // vLLM-native event types (msgspec KVEventBatch wire format)
@@ -110,7 +134,14 @@ impl VllmEventMap {
     }
 }
 
-/// Deserializes the **array format** from vLLM's msgspec ``array_like`` encoding.
+/// Deserializes a vLLM msgspec KV event, tolerating both the tagged-array
+/// (``array_like``) and tagged-map wire shapes.
+///
+/// msgspec's ``tag=True`` emits an event as either ``["BlockStored", ...]``
+/// or ``{"type": "BlockStored", ...}`` depending on whether ``array_like``
+/// was also enabled on the concrete event struct. The outer ``KVEventBatch``
+/// is always an array; the inner event shape varies across vLLM versions, so
+/// both forms are decoded here.
 impl<'de> Deserialize<'de> for VllmEventMap {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -121,7 +152,7 @@ impl<'de> Deserialize<'de> for VllmEventMap {
             type Value = VllmEventMap;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a sequence representing a vLLM KV cache event")
+                f.write_str("a tagged sequence or map representing a vLLM KV cache event")
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<VllmEventMap, A::Error>
@@ -146,8 +177,26 @@ impl<'de> Deserialize<'de> for VllmEventMap {
                     _ => Ok(VllmEventMap::empty(event_type)),
                 }
             }
+
+            fn visit_map<A>(self, mut map: A) -> Result<VllmEventMap, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut event_type: Option<String> = None;
+                let mut fields: Vec<(String, rmpv::Value)> = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let value: rmpv::Value = map.next_value()?;
+                    if key == "type" {
+                        event_type = value.as_str().map(|s| s.to_string());
+                    } else {
+                        fields.push((key, value));
+                    }
+                }
+                let event_type = event_type.unwrap_or_default();
+                parse_vllm_event_map(event_type, &fields).map_err(serde::de::Error::custom)
+            }
         }
-        deserializer.deserialize_seq(VllmEventVisitor)
+        deserializer.deserialize_any(VllmEventVisitor)
     }
 }
 
@@ -198,6 +247,43 @@ fn i64_vec_from_rmpv(v: &rmpv::Value) -> Option<Vec<i64>> {
 
 fn u32_from_rmpv(v: &rmpv::Value) -> Option<u32> {
     v.as_u64().and_then(|n| u32::try_from(n).ok())
+}
+
+fn rmpv_type_name(v: &rmpv::Value) -> &'static str {
+    match v {
+        rmpv::Value::Nil => "nil",
+        rmpv::Value::Boolean(_) => "bool",
+        rmpv::Value::Integer(_) => "integer",
+        rmpv::Value::F32(_) => "f32",
+        rmpv::Value::F64(_) => "f64",
+        rmpv::Value::String(_) => "string",
+        rmpv::Value::Binary(_) => "binary",
+        rmpv::Value::Array(_) => "array",
+        rmpv::Value::Map(_) => "map",
+        rmpv::Value::Ext(..) => "ext",
+    }
+}
+
+/// Like `get(name).and_then(convert)`, but logs when the key is present and
+/// the value cannot be converted — distinguishing omit-defaults from a wire
+/// shape mismatch that would otherwise silently drop the event.
+fn map_field_or_warn<T>(
+    fields: &[(String, rmpv::Value)],
+    name: &str,
+    convert: impl Fn(&rmpv::Value) -> Option<T>,
+) -> Option<T> {
+    let (_, value) = fields.iter().find(|(k, _)| k == name)?;
+    match convert(value) {
+        Some(ok) => Some(ok),
+        None => {
+            tracing::warn!(
+                field = name,
+                value_type = rmpv_type_name(value),
+                "vllm map field present but not convertible; treating as omitted"
+            );
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +451,66 @@ fn parse_block_removed_values(
         medium,
         group_idx,
     ))
+}
+
+/// Build a [`VllmEventMap`] from a tagged-map event's ``(key, value)`` pairs.
+///
+/// The map form carries the same logical fields as the array form but names
+/// them explicitly (``block_hashes``, ``parent_block_hash``, ``token_ids``,
+/// ``block_size``, ``medium``, ``group_idx``, ``kv_cache_spec_kind``). Unknown
+/// keys are ignored so future vLLM fields (e.g. ``locality``, ``extra_keys``)
+/// do not break decoding.
+fn parse_vllm_event_map(
+    event_type: String,
+    fields: &[(String, rmpv::Value)],
+) -> Result<VllmEventMap, String> {
+    let get = |name: &str| -> Option<&rmpv::Value> {
+        fields.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+    };
+
+    match event_type.as_str() {
+        "BlockStored" => {
+            // Known fields that gate ingestion: warn on present-but-bad types
+            // so wire-format drift is visible (missing keys stay silent /
+            // omit_defaults).
+            let block_hashes = map_field_or_warn(fields, "block_hashes", flex_hashes_from_rmpv);
+            let parent_block_hash = get("parent_block_hash").and_then(flex_hash_from_rmpv);
+            let token_ids = map_field_or_warn(fields, "token_ids", i64_vec_from_rmpv);
+            let block_size = map_field_or_warn(fields, "block_size", u32_from_rmpv);
+            let medium = get("medium").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let group_idx = get("group_idx").and_then(u32_from_rmpv);
+            let kv_cache_spec_kind =
+                get("kv_cache_spec_kind").and_then(|v| v.as_str().map(|s| s.to_string()));
+
+            Ok(VllmEventMap {
+                event_type,
+                block_hashes,
+                parent_block_hash,
+                token_ids,
+                block_size,
+                medium,
+                group_idx,
+                lora_id: None,
+                lora_name: None,
+                kv_cache_spec_kind,
+                kv_cache_spec_sliding_window: None,
+            })
+        }
+        "BlockRemoved" => {
+            let block_hashes = map_field_or_warn(fields, "block_hashes", flex_hashes_from_rmpv);
+            let medium = get("medium").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let group_idx = get("group_idx").and_then(u32_from_rmpv);
+
+            Ok(VllmEventMap::with_removed(
+                event_type,
+                block_hashes,
+                medium,
+                group_idx,
+            ))
+        }
+        "AllBlocksCleared" => Ok(VllmEventMap::empty(event_type)),
+        _ => Ok(VllmEventMap::empty(event_type)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +704,56 @@ pub(crate) fn parse_vllm_batch(payload: &[u8]) -> Option<(Vec<VllmEvent>, u32)> 
 // vLLM event application
 // ---------------------------------------------------------------------------
 
+/// Emit a rate-limited WARN for `block_size_mismatch` drops.
+///
+/// Misconfigured deployments can drop every BlockStored event; without
+/// rate limiting that floods logs. Warn on first occurrence of each
+/// `(backend_id, block_size, registered)` key, then at most once per
+/// [`BLOCK_SIZE_MISMATCH_WARN_INTERVAL`], including how many events were
+/// suppressed in between.
+fn warn_block_size_mismatch(backend_id: &str, dp: u32, block_size: u32, registered: u32) {
+    let key = (backend_id.to_string(), block_size, registered);
+    let now = Instant::now();
+    let suppressed_to_report = {
+        let mut map = block_size_mismatch_warn_map().lock();
+        match map.get_mut(&key) {
+            Some(state) => {
+                if now.duration_since(state.last_warn) >= BLOCK_SIZE_MISMATCH_WARN_INTERVAL {
+                    let suppressed = state.suppressed;
+                    state.last_warn = now;
+                    state.suppressed = 0;
+                    Some(suppressed)
+                } else {
+                    state.suppressed = state.suppressed.saturating_add(1);
+                    None
+                }
+            }
+            None => {
+                map.insert(
+                    key,
+                    BlockSizeMismatchWarnState {
+                        last_warn: now,
+                        suppressed: 0,
+                    },
+                );
+                Some(0)
+            }
+        }
+    };
+
+    if let Some(suppressed) = suppressed_to_report {
+        tracing::warn!(
+            %backend_id,
+            dp,
+            block_size,
+            registered,
+            suppressed,
+            reason = "block_size_mismatch",
+            "kv_event dropped backend=vllm"
+        );
+    }
+}
+
 /// Apply a parsed vLLM-native event to the indexer.
 ///
 /// vLLM `BlockStored` events carry `token_ids` and `block_size`, allowing
@@ -600,13 +796,16 @@ pub(crate) fn apply_vllm_event(
             medium,
             group_idx: _,
         } => {
+            // Hybrid KV groups publish their *native* block_size (DeepSeek-V4
+            // MLA = 128), which can differ from the engine `--block-size` /
+            // LCM page size (32). Conductor `kv_conductor_config.block_size`
+            // must match the main-attention event grain, not the scheduler LCM.
             if *block_size != 0 && *block_size != registered_block_size {
-                tracing::trace!(
-                    %backend_id, dp = subscriber_dp_rank,
-                    block_size,
-                    registered = registered_block_size,
-                    reason = "block_size_mismatch",
-                    "kv_event dropped backend=vllm"
+                warn_block_size_mismatch(
+                    backend_id,
+                    subscriber_dp_rank,
+                    *block_size,
+                    registered_block_size,
                 );
                 return Ok(());
             }

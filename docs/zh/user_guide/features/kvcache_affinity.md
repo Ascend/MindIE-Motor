@@ -187,7 +187,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 | 配置项 | 类型 | 取值范围 | 说明 |
 |--------|------|----------|------|
-| **block_size** | uint | ≥ 1 | 事件广播的 hash 粒度（token 数）。须与引擎 `--block-size` / `hash_block_size` 一致。标准模型默认 128；**DeepSeek V4 的取值见 [DeepSeek V4 / 混合 KV Cache 模型](#deepseek-v4)** |
+| **block_size** | uint | ≥ 1 | 注册给 conductor 的 hash 粒度。须与**主注意力组** KV 事件的 `block_size` 一致（标准模型通常等于引擎 `--block-size`，默认 128；**混合 KV / DeepSeek V4 见下节**，常 ≠ `--block-size`） |
 | **http_server_port** | int | 1024–65535 | kv-conductor HTTP API 端口，Coordinator 通过此端口查询缓存命中，默认 `13333` |
 | **re_register_interval_sec** | int | ≥ 0 | 周期性重注册间隔（秒），0 或负数禁用（默认 0） |
 | **conductor_service** | string | hostname / IP | kv-conductor 服务地址；空则禁用。部署时也可由环境变量注入 |
@@ -250,7 +250,11 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 ## DeepSeek V4 / 混合 KV Cache 模型
 
-DeepSeek V4 部署时，引擎 `--block-size` 与 `kv_conductor_config.block_size` **均必须设为 512**，二者保持一致，否则 conductor 查询命中率始终为 0：
+混合 KV 下主注意力组（如 `mla_attention`）事件的 `block_size` 往往与引擎 `--block-size` 不同。
+`kv_conductor_config.block_size` 须对齐**主组事件**粒度（以 conductor 日志
+`event_parsed ... spec_kind=mla_attention` 为准），不必等于 `--block-size`。
+
+典型 Flash A2：引擎 `--block-size=128`，conductor 配 `512`：
 
 ```json
 "kv_conductor_config": {
@@ -258,26 +262,9 @@ DeepSeek V4 部署时，引擎 `--block-size` 与 `kv_conductor_config.block_siz
 }
 ```
 
-> `block_size` 与端口一样是**注册制**：Coordinator 注册实例时将其上报给 kv-conductor，取值须与该实例
-> 引擎的实际 `--block-size` 一致；未显式配置时自动从引擎配置推导。当前 Coordinator 按全局一个
-> `block_size` 注册所有实例，因此要求各引擎实例的 `--block-size` 保持一致。
-
-引擎侧启动参数示例：
-
-```bash
-vllm serve ... --block-size 512
-```
-
-引擎启动日志会打印实际的 `hash_block_size`，可据此确认：
-
-```text
-# vLLM 日志输出
-hash_block_size = 512
-```
-
-> **DCP 特例**：vLLM 开启 DCP（Decode Context Parallel，解码上下文并行）后，引擎侧前缀哈希粒度按 DCP 大小放大，`kv_conductor_config.block_size` 需相应配置为 **引擎 `block_size` × DCP 大小**，否则 hash 粒度不匹配，conductor 查询命中率同样为 0。DeepSeek V4 开启 DCP（通常 DCP 大小为 2）后，引擎 block size 一般变为 1024，此时 `kv_conductor_config.block_size` 应配置为 1024。
+> 混合 KV 务必显式配置；若误配成引擎页大小，主组事件会被 `block_size_mismatch` 丢弃，命中率为 0。
 >
-> **警告**：若 `kv_conductor_config.block_size` 与引擎实际 `hash_block_size` 不一致（例如仍用默认 128），conductor 查询时 hash 粒度不匹配，命中率始终为 0。
+> **DCP**：若 DCP 改变了主组事件粒度，conductor 同步改为日志中的新粒度即可。
 
 ## 原理说明
 
@@ -367,7 +354,7 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 | 纯吞吐优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 0`（纯亲和性，不感知负载） |
 | 负载均衡优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 2.0`（负载权重更高） |
 | 延迟敏感（保守） | `kv_affinity.mode: load_gated`，`kv_affinity.load_gate_topn: 3`（只在低负载中选最优前缀） |
-| DeepSeek V4 | `block_size: 512`（引擎 `--block-size` 同步设为 512） |
+| DeepSeek V4 | `kv_conductor_config.block_size` 对齐主组 MLA 事件（常见 512；以日志为准），不必改引擎 `--block-size` |
 | `http_server_port` | 确保不与集群其他服务端口冲突，默认 `13333` |
 
 ## 常见问题
