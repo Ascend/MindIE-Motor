@@ -25,6 +25,27 @@ sys.path.insert(0, str(DEPLOYER_DIR))
 import slurm_deploy  # noqa: E402
 
 
+def test_slurm_deploy_does_not_require_pyyaml_at_import():
+    script = f"""
+import builtins
+import sys
+
+sys.path.insert(0, {str(DEPLOYER_DIR)!r})
+original_import = builtins.__import__
+
+def import_without_yaml(name, *args, **kwargs):
+    if name == "yaml" or name.startswith("yaml."):
+        raise ImportError("PyYAML is unavailable")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = import_without_yaml
+import slurm_deploy
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+
 def _user_config():
     return {
         "motor_deploy_config": {

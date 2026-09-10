@@ -21,7 +21,6 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import uuid
-import yaml as ym
 
 import lib.constant as C
 
@@ -43,6 +42,8 @@ def write_json(file_path, data):
 
 def write_yaml(data, output_file, single_doc=True):
     """Write to YAML file"""
+    import yaml as ym
+
     logger.info(f"Writing YAML to {output_file}")
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
@@ -55,6 +56,8 @@ def write_yaml(data, output_file, single_doc=True):
 
 def load_yaml(input_yaml, single_doc):
     """Load YAML file"""
+    import yaml as ym
+
     with open(input_yaml, 'r', encoding="utf-8") as f:
         if single_doc:
             data = ym.safe_load(f)
