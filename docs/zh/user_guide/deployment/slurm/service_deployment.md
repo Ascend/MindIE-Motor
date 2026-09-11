@@ -43,7 +43,8 @@ python3 slurm_deploy.py start \
 | `--prefill-cpus` | `PREFILL_CPUS` | `16` | 每个 Prefill task 申请的 CPU 数 |
 | `--decode-cpus` | `DECODE_CPUS` | `16` | 每个 Decode task 申请的 CPU 数 |
 | `--union-cpus` | `UNION_CPUS` | `16` | 每个 Union task 申请的 CPU 数 |
-| `--distribution-path` | `SLURM_DISTRIBUTION_PATH` | `./slurm_workspace` | 计算节点上的分发根目录 |
+| `--distribution-path` | `SLURM_DISTRIBUTION_PATH` | `/tmp` | 计算节点上的分发根目录 |
+| `--log-path` | `SLURM_LOG_PATH` | `./slurm_workspace` | 计算节点上的日志根目录 |
 | `--coordinator-service` | `COORDINATOR_SERVICE` | `<coordinator-ip>` | Coordinator 地址 |
 | `--controller-service` | `CONTROLLER_SERVICE` | `<controller-ip>` | Controller 地址 |
 | `--kvs-master-service` | `KVS_MASTER_SERVICE` | `<kvs-master-ip>` | KV Store 地址 |
@@ -65,15 +66,20 @@ export ENCODE_CPUS=16
 export PREFILL_CPUS=16
 export DECODE_CPUS=16
 export UNION_CPUS=16
-export SLURM_DISTRIBUTION_PATH=/data/motor/slurm_workspace
+export SLURM_DISTRIBUTION_PATH=/tmp
+export SLURM_LOG_PATH=./slurm_workspace
 export COORDINATOR_SERVICE=<coordinator-address>
 export CONTROLLER_SERVICE=<controller-address>
 
 python3 slurm_deploy.py start --config_dir /path/to/model/config
 ```
 
-相对形式的分发路径会根据执行命令时的当前目录转换为绝对路径。计算节点必须能够创建该路径。
-ConfigMap 在计算节点和容器内使用同一个绝对路径。
+相对形式的分发路径和日志路径都会根据执行命令时的当前目录转换为绝对路径。计算节点必须能够
+创建这两个路径。ConfigMap 在计算节点和容器内使用同一个绝对路径。日志路径独立配置，修改
+`SLURM_DISTRIBUTION_PATH` 不会改变日志的落盘位置。
+
+Slurm 作业固定以计算节点本地的 `/tmp` 作为初始工作目录，再由 `slurm_job.sh` 在每个节点创建
+分发目录和日志目录。因此，作业启动不依赖提交节点当前目录在计算节点上存在。
 
 ## 节点配置
 
@@ -134,17 +140,18 @@ ConfigMap 数据写入作业脚本后，脚本大小不能超过 Slurm 的 `MaxS
 ```text
 <distribution-path>/<deployment-id>/
 ├── mindie_motor_<slurm-job-id>.sh
-├── mindie_motor_<slurm-job-id>_<task-id>/
-│   └── configmap/
+└── mindie_motor_<slurm-job-id>_<task-id>/
+    └── configmap/
+
+<log-path>/<deployment-id>/
 └── <role>_<slurm-job-id>_task<task-id>_<node-name>.log
 ```
 
 Job ID 和 Task ID 用于隔离不同作业和不同节点上的运行目录。ConfigMap 以只读方式挂载到
-Apptainer 容器中的相同绝对路径。标准输出和标准错误直接写入 deployment 目录下的 `.log`
-文件。
+Apptainer 容器中的相同绝对路径。标准输出和标准错误写入独立日志目录下的 `.log` 文件。
 
-任务退出时会删除本 task 的 ConfigMap 和分发脚本，日志文件保留。分发目录位于每个计算节点，
-查看日志时需要登录对应节点。如需长期保留日志，应将分发路径放在可靠的本地存储上。
+任务退出时会删除本 task 的 ConfigMap 和分发脚本，日志文件保留。日志目录位于每个计算节点，
+查看日志时需要登录对应节点。如需长期保留日志，应将日志路径放在可靠的本地存储上。
 
 ## Engine 作业
 

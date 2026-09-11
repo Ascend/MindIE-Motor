@@ -4,7 +4,8 @@ set -euo pipefail
 # slurm_deploy.py replaces this token with the packed ConfigMap.
 CONFIGMAP_ARCHIVE_B64="__MOTOR_CONFIGMAP_ARCHIVE_B64__"
 SLURM_DEPLOYMENT_PATH="${SLURM_DISTRIBUTION_PATH}/${SLURM_DEPLOYMENT_ID}"
-export SLURM_DEPLOYMENT_PATH
+SLURM_DEPLOYMENT_LOG_PATH="${SLURM_LOG_PATH}/${SLURM_DEPLOYMENT_ID}"
+export SLURM_DEPLOYMENT_PATH SLURM_DEPLOYMENT_LOG_PATH
 
 # The first process creates the deployment directory on every assigned node.
 # It then copies this script to every node and starts one worker on each node.
@@ -14,7 +15,7 @@ if [ "${1:-}" != "__worker" ]; then
   export ROLE="$1"
   export CONTAINER_NAME="$ROLE"
   export JOB_NAME="${2:-}"
-  srun --ntasks-per-node=1 mkdir -m 700 -p "$SLURM_DEPLOYMENT_PATH"
+  srun --ntasks-per-node=1 mkdir -m 700 -p "$SLURM_DEPLOYMENT_PATH" "$SLURM_DEPLOYMENT_LOG_PATH"
   export SLURM_LOCAL_WORKER_SCRIPT="${SLURM_DEPLOYMENT_PATH}/mindie_motor_${SLURM_JOB_ID}.sh"
   sbcast --force "$0" "$SLURM_LOCAL_WORKER_SCRIPT"
   exec srun --ntasks-per-node=1 bash "$SLURM_LOCAL_WORKER_SCRIPT" __worker
@@ -34,7 +35,7 @@ trap cleanup_worker EXIT TERM INT
 
 rm -rf "$LOCAL_WORKSPACE_PATH"
 mkdir -m 700 -p "$LOCAL_WORKSPACE_PATH"
-LOCAL_LOG_FILE="$SLURM_DEPLOYMENT_PATH/${ROLE}_${SLURM_JOB_ID}_task${SLURM_PROCID:-0}_${SLURMD_NODENAME:-unknown-node}.log"
+LOCAL_LOG_FILE="$SLURM_DEPLOYMENT_LOG_PATH/${ROLE}_${SLURM_JOB_ID}_task${SLURM_PROCID:-0}_${SLURMD_NODENAME:-unknown-node}.log"
 exec >>"$LOCAL_LOG_FILE" 2>&1
 
 printf '%s' "$CONFIGMAP_ARCHIVE_B64" | base64 --decode | tar -xzf - -C "$LOCAL_WORKSPACE_PATH"

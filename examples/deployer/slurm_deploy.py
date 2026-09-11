@@ -59,7 +59,8 @@ ENCODE_CPUS = 16
 PREFILL_CPUS = 16
 DECODE_CPUS = 16
 UNION_CPUS = 16
-SLURM_DISTRIBUTION_PATH = "./slurm_workspace"
+SLURM_DISTRIBUTION_PATH = "/tmp"  # nosec B108 - deployment ID creates an isolated subdirectory
+SLURM_LOG_PATH = "./slurm_workspace"
 
 DEPLOYER_DIR = Path(__file__).resolve().parent
 JOB_SCRIPT_TEMPLATE = DEPLOYER_DIR / "slurm_job.sh"
@@ -290,12 +291,12 @@ def _base_job_args(partition: str, role: str, nodes: int, cpus: int) -> list[str
     return [
         "--export=ALL",
         f"--partition={partition}",
-        f"--chdir={Path.cwd()}",
+        "--chdir=/tmp",  # nosec B108 - compute nodes start from their local temporary directory
         f"--nodes={nodes}",
         f"--cpus-per-task={cpus}",
         f"--job-name={role}",
-        "-o=/dev/null",
-        "-e=/dev/null",
+        "--output=/dev/null",
+        "--error=/dev/null",
     ]
 
 
@@ -420,6 +421,7 @@ def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namesp
         "CONFIG_PATH": CONTAINER_CONFIG_PATH,
         "SLURM_DEPLOYMENT_ID": deployment_id,
         "SLURM_DISTRIBUTION_PATH": args.distribution_path,
+        "SLURM_LOG_PATH": args.log_path,
     }
     if k8s_utils.g_mf_store_enabled:
         values["ASCEND_MF_STORE_URL"] = (
@@ -652,7 +654,13 @@ def parse_arguments() -> argparse.Namespace:
         "--distribution-path",
         type=_absolute_directory,
         default=_env_value("SLURM_DISTRIBUTION_PATH", SLURM_DISTRIBUTION_PATH) or None,
-        help="root on every Slurm node used for distributed files and logs (default: ./slurm_workspace)",
+        help="root on every Slurm node used for distributed files (default: /tmp)",
+    )
+    parser.add_argument(
+        "--log-path",
+        type=_absolute_directory,
+        default=_env_value("SLURM_LOG_PATH", SLURM_LOG_PATH) or None,
+        help="root on every Slurm node used for logs (default: ./slurm_workspace)",
     )
     parser.add_argument("--coordinator-service", default=_env_value("COORDINATOR_SERVICE", COORDINATOR_SERVICE))
     parser.add_argument("--controller-service", default=_env_value("CONTROLLER_SERVICE", CONTROLLER_SERVICE))
@@ -674,7 +682,10 @@ def main() -> None:
                 _require_service("PARTITION", args.partition)
                 if args.distribution_path is None:
                     raise ValueError("--distribution-path or SLURM_DISTRIBUTION_PATH is required")
+                if args.log_path is None:
+                    raise ValueError("--log-path or SLURM_LOG_PATH is required")
                 args.distribution_path = _absolute_directory(args.distribution_path)
+                args.log_path = _absolute_directory(args.log_path)
                 result = start(args)
         else:
             if args.update_instance_num:

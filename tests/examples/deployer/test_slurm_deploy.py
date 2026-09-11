@@ -46,6 +46,16 @@ import slurm_deploy
     assert result.returncode == 0, result.stderr
 
 
+def test_base_job_args_use_valid_long_output_options():
+    args = slurm_deploy._base_job_args("test-partition", "prefill", 2, 16)
+
+    assert "--chdir=/tmp" in args
+    assert "--output=/dev/null" in args
+    assert "--error=/dev/null" in args
+    assert "-o=/dev/null" not in args
+    assert "-e=/dev/null" not in args
+
+
 def _user_config():
     return {
         "motor_deploy_config": {
@@ -113,7 +123,8 @@ def test_slurm_job_broadcasts_configmap_to_configurable_node_local_workspace():
 
     assert slurm_deploy.USER_WORKSPACE_PATH == Path("slurm_workspace")
     assert slurm_deploy.CONFIGMAP_PREPARE_PATH == Path("slurm_workspace/configmap")
-    assert slurm_deploy.SLURM_DISTRIBUTION_PATH == "./slurm_workspace"
+    assert slurm_deploy.SLURM_DISTRIBUTION_PATH == "/tmp"
+    assert slurm_deploy.SLURM_LOG_PATH == "./slurm_workspace"
     assert slurm_deploy.ENCODE_CPUS == 16
     assert slurm_deploy.PREFILL_CPUS == 16
     assert slurm_deploy.DECODE_CPUS == 16
@@ -123,12 +134,15 @@ def test_slurm_job_broadcasts_configmap_to_configurable_node_local_workspace():
     assert slurm_deploy.CONFIGMAP_ARCHIVE_MARKER in job_script
     assert 'sbcast --force "$0" "$SLURM_LOCAL_WORKER_SCRIPT"' in job_script
     assert 'SLURM_DEPLOYMENT_PATH="${SLURM_DISTRIBUTION_PATH}/${SLURM_DEPLOYMENT_ID}"' in job_script
-    assert 'srun --ntasks-per-node=1 mkdir -m 700 -p "$SLURM_DEPLOYMENT_PATH"' in job_script
+    assert 'SLURM_DEPLOYMENT_LOG_PATH="${SLURM_LOG_PATH}/${SLURM_DEPLOYMENT_ID}"' in job_script
+    assert (
+        'srun --ntasks-per-node=1 mkdir -m 700 -p "$SLURM_DEPLOYMENT_PATH" "$SLURM_DEPLOYMENT_LOG_PATH"' in job_script
+    )
     assert '${SLURM_DEPLOYMENT_PATH}/mindie_motor_${SLURM_JOB_ID}.sh' in job_script
     assert '${SLURM_DEPLOYMENT_PATH}/mindie_motor_${SLURM_JOB_ID}_${SLURM_PROCID:-0}' in job_script
     assert 'export CONFIGMAP_PATH="$LOCAL_WORKSPACE_PATH/configmap"' in job_script
     assert '--bind "$CONFIGMAP_PATH:$CONFIGMAP_PATH:ro"' in job_script
-    assert 'LOCAL_LOG_FILE="$SLURM_DEPLOYMENT_PATH/${ROLE}_${SLURM_JOB_ID}_task' in job_script
+    assert 'LOCAL_LOG_FILE="$SLURM_DEPLOYMENT_LOG_PATH/${ROLE}_${SLURM_JOB_ID}_task' in job_script
     assert 'LOCAL_LOG_DIR=' not in job_script
     assert 'exec >>"$LOCAL_LOG_FILE" 2>&1' in job_script
     assert 'rm -rf "$LOCAL_WORKSPACE_PATH/configmap"' in job_script
@@ -181,7 +195,7 @@ def test_submit_engine_jobs_reports_skipped_resources(monkeypatch, capsys):
     assert "Skipping prefill: pod_num=0, npu_num=8" in capsys.readouterr().out
 
 
-def test_cli_uses_one_coordinator_service_and_configurable_distribution_path(monkeypatch):
+def test_cli_uses_configurable_distribution_and_log_paths(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -198,6 +212,8 @@ def test_cli_uses_one_coordinator_service_and_configurable_distribution_path(mon
             "48",
             "--distribution-path",
             "/data/slurm",
+            "--log-path",
+            "/data/slurm-logs",
         ],
     )
 
@@ -215,6 +231,7 @@ def test_cli_uses_one_coordinator_service_and_configurable_distribution_path(mon
     assert args.kv_conductor_cpus == 8
     assert args.mf_store_cpus == 8
     assert args.distribution_path == "/data/slurm"
+    assert args.log_path == "/data/slurm-logs"
     assert not args.update_instance_num
 
 
@@ -269,6 +286,7 @@ def test_start_without_k8s_deploy_mode_prepares_once_and_submits_roles(tmp_path,
         decode_cpus=32,
         union_cpus=40,
         distribution_path="/data/slurm",
+        log_path="/data/slurm-logs",
         coordinator_service="10.0.0.1",
         controller_service="10.0.0.2",
         kvs_master_service="",
@@ -285,6 +303,7 @@ def test_start_without_k8s_deploy_mode_prepares_once_and_submits_roles(tmp_path,
     assert previous_log.read_text(encoding="utf-8") == "previous deployment"
     assert os.environ["SLURM_DEPLOYMENT_ID"].startswith("slurm-test_")
     assert os.environ["SLURM_DISTRIBUTION_PATH"] == "/data/slurm"
+    assert os.environ["SLURM_LOG_PATH"] == "/data/slurm-logs"
     assert os.environ["COORDINATOR_INFER_SERVICE"] == args.coordinator_service
     assert os.environ["COORDINATOR_OBS_SERVICE"] == args.coordinator_service
     assert [label for label, _args in submitted] == [
@@ -353,6 +372,7 @@ def test_start_submits_basic_memcache_pool_and_kv_conductor(tmp_path, monkeypatc
         decode_cpus=16,
         union_cpus=16,
         distribution_path="/data/slurm",
+        log_path="/data/slurm-logs",
         coordinator_service="10.0.0.1",
         controller_service="10.0.0.2",
         kvs_master_service="10.0.0.3",

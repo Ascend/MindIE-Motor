@@ -10,6 +10,8 @@
 
 """Shared preparation helpers for Docker, K8s, and Slurm deployers."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 import importlib.util
 from pathlib import Path
