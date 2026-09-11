@@ -184,7 +184,8 @@ Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every sched
 Inference **worker 0** is the only printer: every tick it snapshots schema-4 SHM and logs one line per DP
 with this worker's request count and the current `active_tokens`
 (`dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s`).
-Idle DPs with both `requests == 0` and `active_tokens == 0` are omitted.
+A DP whose `(requests, active_tokens)` pair is unchanged since the last printed line
+(implicit baseline `(0, 0)`) is omitted. Drain-to-zero is logged once.
 `record()` never logs by itself. Failed or retried CAS attempts are not counted.
 Obs and other workers do not dump (`worker_index == 0` only). The implementation is
 `scheduler/runtime/dp_stats.py`.
@@ -280,7 +281,7 @@ Hot-reload is driven by a process-local `ConfigWatcher` in the **Inference Worke
 | `motor/coordinator/scheduler/policy/factory.py` | | `SchedulingPolicyFactory` registry |
 | `motor/coordinator/scheduler/runtime/scheduler_server.py` | | `AsyncSchedulerServer`: Mgmt control plane (ROUTER+PUB, CB, precision, SHM owner) |
 | `motor/coordinator/scheduler/runtime/scheduler_client.py` | | `AsyncSchedulerClient`: control-plane DEALER + instance cache + SHM CAS |
-| `motor/coordinator/scheduler/runtime/dp_stats.py` | | Worker-0 timer: per-DP request counts + SHM `active_tokens` in one `dp_stats` line; skip idle (requests=0 and active_tokens=0) |
+| `motor/coordinator/scheduler/runtime/dp_stats.py` | | Worker-0 timer: per-DP request counts + SHM `active_tokens` in one `dp_stats` line; skip unchanged snapshots (baseline `(0, 0)`) |
 | `motor/coordinator/scheduler/runtime/zmq_protocol.py` | | Request/response types, msgpack framing, topic constants |
 | `motor/coordinator/scheduler/allocate_arbitration.py` | | Shared LB/KVA/RR reselect (R4; no ZMQ) |
 | `motor/coordinator/scheduler/runtime/workload_shm/` | | schema-4 layout + Reader/Owner + `native.py` ctypes |

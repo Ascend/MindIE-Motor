@@ -14,9 +14,10 @@ Counts successfully committed ALLOCATE_ONLY requests per
 ``(instance_id, dp_rank)`` with ``collections.Counter``.  Emission is driven
 by the scheduler client's ``window_sec`` timer (worker 0): each tick
 snapshots schema-4 SHM ``active_tokens`` and prints them together with the
-request counts accumulated since the previous tick.  Idle DPs with both
-``requests == 0`` and ``active_tokens == 0`` are omitted.  ``record()``
-never logs by itself.  ``window_sec <= 0`` disables emission.
+request counts accumulated since the previous tick.  A DP whose
+``(requests, active_tokens)`` pair is unchanged since the last printed
+line (implicit baseline ``(0, 0)``) is omitted.  ``record()`` never logs
+by itself.  ``window_sec <= 0`` disables emission.
 
 The window comes from ``scheduler_config.dp_stats_window``
 (independent of the kv-affinity stats window), so per-DP stats are
@@ -45,8 +46,8 @@ class DpStatsLogger:
     ``(instance_id, dp_rank)``.  ``emit_window()`` is the only printer: it
     logs each DP's request count and current ``active_tokens`` on the
     scheduler client's ``window_sec`` timer (worker 0).
-    Idle DPs with ``requests == 0`` and ``active_tokens == 0`` are omitted.
-    ``window_sec <= 0`` disables emission.
+    Unchanged ``(requests, active_tokens)`` snapshots are omitted
+    (implicit baseline ``(0, 0)``).  ``window_sec <= 0`` disables emission.
 
     Threading contract: ``record()`` and ``emit_window()`` run on the
     coordinator worker's asyncio event loop, so no locking is needed and
@@ -64,6 +65,8 @@ class DpStatsLogger:
         # First-seen / last-seen order used by the eviction cap: move_to_end
         # on every record.
         self._key_order: OrderedDict[tuple[str, str], None] = OrderedDict()
+        # Last printed (requests, active_tokens) per DP; used to skip repeats.
+        self._last_emitted: dict[tuple[str, str], tuple[int, float]] = {}
 
     def record(self, instance_id: int, dp_rank: int) -> None:
         """Count one successfully committed ALLOCATE_ONLY request."""
@@ -89,13 +92,16 @@ class DpStatsLogger:
             tokens[(str(instance_id), str(dp_rank))] = float(active_tokens)
         keys = set(counts) | set(tokens)
         if not keys:
+            self._last_emitted.clear()
             return
         for instance_id, dp_rank in sorted(keys):
             key = (instance_id, dp_rank)
             requests = int(counts.get(key, 0))
             active_tokens = tokens.get(key, 0.0)
-            if requests == 0 and active_tokens == 0:
+            current = (requests, active_tokens)
+            if self._last_emitted.get(key, (0, 0.0)) == current:
                 continue
+            self._last_emitted[key] = current
             logger.info(
                 "dp_stats instance=%s dp_rank=%s requests=%d active_tokens=%s",
                 instance_id,
@@ -103,10 +109,14 @@ class DpStatsLogger:
                 requests,
                 active_tokens,
             )
+        for key in list(self._last_emitted):
+            if key not in keys:
+                self._last_emitted.pop(key, None)
 
     def _evict_oldest_key(self) -> None:
         key, _ = self._key_order.popitem(last=False)
         self._counter.pop(key, None)
+        self._last_emitted.pop(key, None)
         logger.warning(
             "dp_stats tracking more than %d distinct (instance, dp_rank) keys; evicting stale key %s",
             _MAX_TRACKED_KEYS,

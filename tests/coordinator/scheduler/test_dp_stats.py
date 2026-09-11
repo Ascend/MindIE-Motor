@@ -69,6 +69,42 @@ class TestDpStatsLogger(unittest.TestCase):
             assert _values(mock_log, 0)[_IDX["requests"]] == 1
             assert _values(mock_log, 1)[_IDX["requests"]] == 0
             assert _values(mock_log, 1)[_IDX["active_tokens"]] == 3.0
+            logger.emit_window([(1, 0, 3.0)])
+            assert mock_log.call_count == 2
+
+    def test_emit_window_skips_unchanged_snapshot(self):
+        """Reprint the same (requests, active_tokens) pair only when it changes."""
+        logger = DpStatsLogger(window_sec=60)
+        with patch("motor.coordinator.scheduler.runtime.dp_stats.logger.info") as mock_log:
+            logger.record(instance_id=1, dp_rank=0)
+            logger.record(instance_id=1, dp_rank=0)
+            logger.emit_window([(1, 0, 5.0)])
+            logger.record(instance_id=1, dp_rank=0)
+            logger.record(instance_id=1, dp_rank=0)
+            logger.emit_window([(1, 0, 5.0)])
+            assert mock_log.call_count == 1
+
+            logger.record(instance_id=1, dp_rank=0)
+            logger.emit_window([(1, 0, 5.0)])
+            assert mock_log.call_count == 2
+            assert _values(mock_log, 1)[_IDX["requests"]] == 1
+
+            logger.emit_window([(1, 0, 8.0)])
+            assert mock_log.call_count == 3
+            assert _values(mock_log, 2)[_IDX["active_tokens"]] == 8.0
+
+            logger.emit_window([(1, 0, 0.0)])
+            assert mock_log.call_count == 4
+            assert _values(mock_log, 3)[_IDX["requests"]] == 0
+            assert _values(mock_log, 3)[_IDX["active_tokens"]] == 0.0
+            logger.emit_window([(1, 0, 0.0)])
+            assert mock_log.call_count == 4
+
+            logger.record(instance_id=1, dp_rank=0)
+            logger.emit_window([(1, 0, 8.0)])
+            assert mock_log.call_count == 5
+            assert _values(mock_log, 4)[_IDX["requests"]] == 1
+            assert _values(mock_log, 4)[_IDX["active_tokens"]] == 8.0
 
     def test_float_window_sec_uses_integer_buckets(self):
         """JSON 30.5 must not produce float buckets that miss other windows."""
@@ -87,8 +123,8 @@ class TestDpStatsLogger(unittest.TestCase):
             DpStatsLogger(window_sec=60).emit_window([])
             mock_log.assert_not_called()
 
-    def test_emit_window_skips_idle_dp(self):
-        """Idle DPs (requests=0 and active_tokens=0) must not print."""
+    def test_emit_window_skips_zero_baseline(self):
+        """First-seen (0, 0) is the implicit baseline and must not print."""
         logger = DpStatsLogger(window_sec=60)
         with patch("motor.coordinator.scheduler.runtime.dp_stats.logger.info") as mock_log:
             logger.emit_window([(1, 0, 0.0), (1, 1, 0)])
