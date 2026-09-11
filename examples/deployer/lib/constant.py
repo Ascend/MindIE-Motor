@@ -193,6 +193,22 @@ NODE_TYPE_U = "u"
 ROLE_SINGLE_CONTAINER = "SINGLE_CONTAINER"
 REQUESTS = "requests"
 LIMITS = "limits"
+SCALING_POLICY = 'scaling_policy'
+SCALING_POLICY_FIELD = 'scalingPolicy'
+SCALING_MIN_REPLICAS = 'min_replicas'
+SCALING_MAX_REPLICAS = 'max_replicas'
+SCALING_METRIC = 'metric'
+SCALING_TARGET = 'target'
+SCALING_TARGET_TYPE = 'target_type'
+DEFAULT_SCALING_MIN_REPLICAS = 1
+DEFAULT_SCALING_TARGET = 0.8
+# The capacity-planning utilization metrics are already normalized by the
+# current replica count, so HPA must compare them with type "Value" —
+# "AverageValue" would divide by the pod count a second time.
+DEFAULT_SCALING_TARGET_TYPE = 'Value'
+SCALING_TARGET_TYPES = ('Value', 'AverageValue')
+DEFAULT_PREFILL_SCALING_METRIC = 'motor_prefill_utilization'
+DEFAULT_DECODE_SCALING_METRIC = 'motor_decode_utilization'
 PREFILL_NODE_SELECTOR = "prefill_node_selector"
 DECODE_NODE_SELECTOR = "decode_node_selector"
 CONTROLLER_NODE_SELECTOR = "controller_node_selector"

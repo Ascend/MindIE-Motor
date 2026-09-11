@@ -86,3 +86,7 @@ helm uninstall pymotor --namespace mindie
 | `cleanup` | 清理目标 namespace 中由部署流程使用的资源。 |
 
 三个 Job 均使用 Helm `post-install,post-upgrade` hook，并通过 `before-hook-creation` 在重复执行前清理同名旧 Job。
+
+## 弹性扩缩容（HPA）
+
+可选的 `scalingPolicy` values 用于为 InferServiceSet 的引擎角色（prefill/decode/union）渲染 HPA 形态的 `scalingPolicy` 字段。该配置会被注入 deployer 的 `user_config` 作为 `scaling_policy` 段，每个角色条目支持 `min_replicas`、`max_replicas`、`metric`（按角色默认 `motor_prefill_utilization` / `motor_decode_utilization`）和 `target`（默认 `0.8`）。未配置时不渲染 `scalingPolicy`，部署产物与现状一致。配置示例见 `values.yaml`，完整 HPA 对接流程（External Metrics Adaptor、推荐指标）见 `docs/zh/user_guide/features/auto_scaling.md`。

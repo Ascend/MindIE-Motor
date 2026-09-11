@@ -210,6 +210,98 @@ def _zero_engine_role_replicas(infer_doc, user_config, role_name):
         k8s_utils.apply_additional_labels_annotations(role, user_config.get(get_config_key(role_name), {}))
 
 
+_DEFAULT_SCALING_METRICS = {
+    C.ROLE_PREFILL: C.DEFAULT_PREFILL_SCALING_METRIC,
+    C.ROLE_DECODE: C.DEFAULT_DECODE_SCALING_METRIC,
+}
+
+
+def _build_scaling_policy(role_name, policy_cfg, default_max_replicas, namespace="", instance_name=""):
+    """Build the InferServiceSet role scalingPolicy (HPA) block from user config.
+
+    The metric selector carries the deployment scope labels (namespace =
+    job_id, instance name) so multiple Motor deployments in one cluster do
+    not read each other's metrics; ``_set_scaling_policy_scope`` re-syncs
+    both labels at generation time (idempotent with the values set here).
+    """
+    if not isinstance(policy_cfg, dict):
+        raise ValueError(f"scaling_policy for role '{role_name}' must be a dict")
+    metric_name = policy_cfg.get(C.SCALING_METRIC) or _DEFAULT_SCALING_METRICS.get(role_name)
+    if not metric_name:
+        raise ValueError(
+            f"scaling_policy for role '{role_name}' requires '{C.SCALING_METRIC}' (no default metric for this role)"
+        )
+    min_replicas = int(policy_cfg.get(C.SCALING_MIN_REPLICAS, C.DEFAULT_SCALING_MIN_REPLICAS))
+    max_replicas = int(policy_cfg.get(C.SCALING_MAX_REPLICAS, default_max_replicas))
+    if min_replicas < 1 or max_replicas < min_replicas:
+        raise ValueError(
+            f"scaling_policy for role '{role_name}' requires 1 <= min_replicas <= max_replicas, "
+            f"got min_replicas={min_replicas}, max_replicas={max_replicas}"
+        )
+    target = float(policy_cfg.get(C.SCALING_TARGET, C.DEFAULT_SCALING_TARGET))
+    if target <= 0:
+        raise ValueError(f"scaling_policy for role '{role_name}' requires target > 0, got {target}")
+    target_type = policy_cfg.get(C.SCALING_TARGET_TYPE, C.DEFAULT_SCALING_TARGET_TYPE)
+    if target_type not in C.SCALING_TARGET_TYPES:
+        raise ValueError(
+            f"scaling_policy for role '{role_name}' requires target_type in {C.SCALING_TARGET_TYPES}, "
+            f"got {target_type!r}"
+        )
+    target_block = (
+        {"type": "Value", "value": str(target)}
+        if target_type == "Value"
+        else {"type": "AverageValue", "averageValue": str(target)}
+    )
+    metric_selector = {}
+    if namespace or instance_name:
+        metric_selector = {
+            C.SELECTOR: {
+                C.MATCHLABELS: {
+                    "kubernetes_namespace": namespace,
+                    "infer_huawei_com_inferservice_name": instance_name,
+                }
+            }
+        }
+    return {
+        "type": "HPA",
+        C.SPEC: {
+            "minReplicas": min_replicas,
+            "maxReplicas": max_replicas,
+            "metrics": [
+                {
+                    "type": "External",
+                    "external": {
+                        "metric": {C.NAME: metric_name, **metric_selector},
+                        "target": target_block,
+                    },
+                }
+            ],
+        },
+    }
+
+
+def _apply_scaling_policy(role, user_config, role_name, infer_name=""):
+    """Render optional user_config scaling_policy section into the role's scalingPolicy field.
+
+    When scaling_policy is absent or empty, the role is left untouched so the generated
+    yaml stays identical to deployments without this feature.
+    """
+    scaling_policy = (user_config or {}).get(C.SCALING_POLICY)
+    if not scaling_policy:
+        return
+    if not isinstance(scaling_policy, dict):
+        raise ValueError(f"'{C.SCALING_POLICY}' in user config must be a dict")
+    policy_cfg = scaling_policy.get(role_name)
+    if policy_cfg is None:
+        return
+    deploy_config = user_config.get(C.MOTOR_DEPLOY_CONFIG, {})
+    namespace = deploy_config.get(C.CONFIG_JOB_ID, "")
+    instance_name = f"{infer_name}-0" if infer_name else ""
+    role[C.SCALING_POLICY_FIELD] = _build_scaling_policy(
+        role_name, policy_cfg, role.get(C.REPLICAS, 1), namespace, instance_name
+    )
+
+
 def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     role = get_infer_role(infer_doc, role_name)
@@ -264,6 +356,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name)
     apply_engine_node_selector_overrides(pod_spec, deploy_config, prefix)
     k8s_utils.apply_additional_labels_annotations(role, user_config.get(get_config_key(role_name), {}))
+    _apply_scaling_policy(role, user_config, role_name, infer_name)
 
 
 def _set_role_primary_service_port(role, service_port):

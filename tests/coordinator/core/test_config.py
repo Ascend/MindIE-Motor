@@ -1305,3 +1305,45 @@ def test_coordinator_config_accepts_nested_scheduler_config_kwargs():
     )
     assert config.scheduler_config.scheduler_type == SchedulerType.LOAD_BALANCE
     assert config.scheduler_config.dp_stats_window == 30
+
+
+def test_capacity_planning_validation_default_passes():
+    config = CoordinatorConfig()
+    config.validate_config()
+
+
+def test_capacity_planning_validation_fraction_fields():
+    for field in ("target_utilization", "kv_target_utilization", "ema_alpha", "pd_ratio_smooth_alpha"):
+        config = CoordinatorConfig()
+        setattr(config.prometheus_metrics_config.capacity_planning, field, 1.5)
+        with pytest.raises(ValueError, match=f"capacity_planning.{field}"):
+            config.validate_config()
+
+
+def test_capacity_planning_validation_decay_range():
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.capacity_planning.capacity_decay = 1.0
+    with pytest.raises(ValueError, match="capacity_planning.capacity_decay"):
+        config.validate_config()
+
+
+def test_capacity_planning_validation_negative_prior():
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.capacity_planning.decode_tps_capacity_prior = -1.0
+    with pytest.raises(ValueError, match="capacity_planning.decode_tps_capacity_prior"):
+        config.validate_config()
+
+
+def test_capacity_planning_validation_window_cycles():
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.capacity_planning.capacity_window_cycles = 0
+    with pytest.raises(ValueError, match="capacity_planning.capacity_window_cycles"):
+        config.validate_config()
+
+
+def test_capacity_planning_validation_pd_ratio_bounds():
+    config = CoordinatorConfig()
+    config.prometheus_metrics_config.capacity_planning.pd_ratio_min = 5.0
+    config.prometheus_metrics_config.capacity_planning.pd_ratio_max = 2.0
+    with pytest.raises(ValueError, match="pd_ratio_min <= pd_ratio_max"):
+        config.validate_config()

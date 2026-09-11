@@ -123,6 +123,12 @@ scalingPolicy:
           averageValue: "0.8"
 ```
 
+#### 1.3.4 HPA 契约指标与 PD 配比信号
+
+除原始引擎指标外，Motor Coordinator 在 `/metrics` 上直接暴露一组面向 HPA 的**契约指标**：容量规划利用率（`motor:prefill_utilization` / `motor:decode_utilization`，需求速率 /（当前实例数 × 单实例容量估计），>1 表示供给不足，HPA target 即目标利用率 ρ）、容量规划推导的所需实例数（`motor:prefill_replicas_required` / `motor:decode_replicas_required`）、入口请求速率（`motor:request_rate`）、Prefill 时延分位数（`vllm:request_prefill_time_seconds` p50/p95/p99）以及 PD 配比信号（`motor:pd_ratio_current` / `motor:pd_ratio_suggested`）。契约指标在输出渲染层同时以无冒号别名（`:` → `_`，如 `motor_prefill_utilization`）暴露，适配 K8s External Metrics 命名习惯；别名的生成同样由 Motor Coordinator 完成，External Metrics Adaptor 无需做名称映射或二次计算（指标语义详见[指标接口](../user_guide/api/metrics_interfaces.md)）。
+
+契约指标背后的容量规划模型同样归属 Motor Coordinator：需求侧由入口完成请求统计推导到达率 λ 与平均输入/输出长度，供给侧在线标定单实例容量（`C_p` 取纯 prefill 处理吞吐的 EMA，`C_d` 取单实例 generation TPS 峰值学习并带衰减下限 floor），再按 `N_p = ⌈λ·L̄_in/(C_p·ρ)⌉`、`N_d = max(吞吐约束, KV 约束)` 推导所需实例数。这一归属划分与前述解耦原则一致：需求推导、容量标定、实例数推导、配比建议等语义计算属于"指标聚合"，由 Motor 负责；而阈值判断、扩缩容执行、配比调整仍完全在 HPA / 外部控制器侧。特别地，`motor:pd_ratio_suggested` 只是基于所需实例数之比的**建议信号**（经指数平滑与区间裁剪），Motor 不依据它修改任何实例数量或 K8s 资源——参考执行方式（CronJob 定期按建议配比调整 InferServiceSet role replicas）见[自动弹性扩缩容](../user_guide/features/auto_scaling.md)。容量规划算法的正确性由仓库内合成闭环仿真测试（`tests/coordinator/core/`）回归保障。
+
 ### 1.4 扩缩容策略配置
 
 在 `examples/deployer/yaml_template/infer_service_template.yaml` 中，为 Prefill 和 Decode 角色的配置块下添加 `scalingPolicy`。

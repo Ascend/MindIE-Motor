@@ -2202,12 +2202,12 @@ def test_computed_registry_pre_aggregation_defs():
 
 
 def test_computed_registry_post_aggregation_defs():
-    """Post-aggregation phase contains worker_count definitions."""
+    """Post-aggregation phase contains worker_count / pd_ratio definitions."""
     defs = _get_defs_by_phase("post_aggregation")
     assert len(defs) >= 4
     for d in defs:
         assert d.phase == "post_aggregation"
-        assert d.compute_type == "worker_count"
+        assert d.compute_type in {"worker_count", "pd_ratio"}
 
 
 # ---------------------------------------------------------------------------
@@ -2286,4 +2286,28 @@ def test_dp_view_includes_tps_with_labels():
     assert "motor:generation_tokens_per_second" in result
     assert 'dp_rank="0"' in result
     assert 'role="decode"' in result
+    _cleanup_singletons()
+
+
+@patch("threading.Thread.start", MagicMock())
+def test_collect_metrics_survives_planner_exception():
+    """CapacityPlanner failure is contained: collection loop lives, last output kept."""
+    _cleanup_singletons()
+    config = CoordinatorConfig()
+    collector = MetricsCollector(config)
+
+    # Seed a known-good planner output, then make update_planner blow up.
+    collector._motor_computer._planner_output = {"prefill_replicas_required": 3.0}
+    collector._get_available_instances = MagicMock(return_value=({}, {}))
+    collector._fetch_instance_metrics = MagicMock(return_value={})
+    collector._parse_metrics = MagicMock(return_value=True)
+    collector._motor_computer.update_planner = MagicMock(side_effect=RuntimeError("planner boom"))
+
+    with patch("motor.coordinator.metrics.metrics_collector.logger") as mock_logger:
+        collects = collector._collect_metrics()
+        mock_logger.error.assert_called_once()
+
+    # The collection cycle completes normally and the cached output survives.
+    assert collects == {}
+    assert collector._motor_computer._planner_output == {"prefill_replicas_required": 3.0}
     _cleanup_singletons()

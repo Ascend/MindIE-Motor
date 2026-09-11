@@ -101,10 +101,13 @@ _VLLM_METRIC_REGISTRY: dict[str, MetricSemanticConfig] = {
         semantic=MetricSemantic.HISTOGRAM_LATENCY,
         metadata={"quantiles": [0.5, 0.95, 0.99]},
     ),
-    # -- Other histograms (no quantile metadata → no quantile output) --------
+    # -- Prefill-side latency histogram (quantiles scoped to prefill) ----------
     "vllm:request_prefill_time_seconds": MetricSemanticConfig(
         semantic=MetricSemantic.HISTOGRAM_LATENCY,
+        role_scope="prefill",
+        metadata={"quantiles": [0.5, 0.95, 0.99]},
     ),
+    # -- Other histograms (no quantile metadata → no quantile output) ----------
     "vllm:request_decode_time_seconds": MetricSemanticConfig(
         semantic=MetricSemantic.HISTOGRAM_LATENCY,
     ),
@@ -221,6 +224,46 @@ _VLLM_METRIC_REGISTRY: dict[str, MetricSemanticConfig] = {
         semantic=MetricSemantic.METADATA_GAUGE,
     ),
     "motor:generation_tokens_per_second": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:request_rate": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    # -- Coordinator-side (HPA capacity planning contract) --------------------
+    "motor:prefill_utilization": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:decode_utilization": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:prefill_replicas_required": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:decode_replicas_required": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:prefill_capacity_tps": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:decode_capacity_tps": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:prefill_demand_tps": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:decode_demand_tps": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:kv_demand_tokens": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:capacity_calibrated": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:pd_ratio_current": MetricSemanticConfig(
+        semantic=MetricSemantic.METADATA_GAUGE,
+    ),
+    "motor:pd_ratio_suggested": MetricSemanticConfig(
         semantic=MetricSemantic.METADATA_GAUGE,
     ),
 }

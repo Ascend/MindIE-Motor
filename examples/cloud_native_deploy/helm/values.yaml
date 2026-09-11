@@ -31,6 +31,23 @@ jobs:
     enabled: true
     name: cleanup
 
+# scalingPolicy is optional. When set, it is injected into the deployer user_config as the
+# "scaling_policy" section and rendered into each InferServiceSet role's scalingPolicy (HPA)
+# field. When left empty, nothing is rendered and the deploy artifacts stay unchanged.
+scalingPolicy: {}
+# Example:
+# scalingPolicy:
+#   prefill:
+#     min_replicas: 1
+#     max_replicas: 8
+#     metric: motor_prefill_utilization
+#     target: 0.8
+#   decode:
+#     min_replicas: 1
+#     max_replicas: 8
+#     metric: motor_decode_utilization
+#     target: 0.8
+
 userConfig: |
   {
     "version": "v2.0",

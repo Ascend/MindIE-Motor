@@ -390,6 +390,38 @@ class SchedulerConfig:
 
 
 @dataclass
+class CapacityPlanningConfig:
+    """HPA capacity planning (demand-driven autoscaling) tunables.
+
+    Field names map one-to-one onto the CapacityPlanner's PlannerConfig,
+    plus the PD-ratio suggestion smoothing/clamping parameters.
+    """
+
+    # Target per-instance utilization the replica derivation aims for.
+    target_utilization: float = 0.8
+    # Target KV cache utilization for the decode KV constraint.
+    kv_target_utilization: float = 0.9
+    # EMA coefficient for demand / capacity / wait-time smoothing.
+    # Samples are already 3s-window aggregate means, so heavy smoothing is
+    # unnecessary: 0.85 converges within 3 collection cycles; transient spikes
+    # are absorbed by the downstream HPA stabilization window.
+    ema_alpha: float = 0.85
+    # Slow decay applied to the decode capacity peak per interval.
+    capacity_decay: float = 0.005
+    # Capacity priors (tokens/s per instance). 0 means "no prior": the
+    # estimate is uncalibrated until the first valid online sample.
+    prefill_tps_capacity_prior: float = 0.0
+    decode_tps_capacity_prior: float = 0.0
+    # Sliding-window length (in planning cycles) for the decode capacity decay
+    # floor: the estimate never decays below max(prior, window sample peak).
+    capacity_window_cycles: int = 200
+    # --- PD ratio suggestion tunables ---
+    pd_ratio_smooth_alpha: float = 0.3  # EMA coefficient; lower = smoother
+    pd_ratio_min: float = 0.05  # clamp bounds for motor:pd_ratio_suggested
+    pd_ratio_max: float = 20.0
+
+
+@dataclass
 class PrometheusMetricsConfig:
     """Prometheus metrics configuration class"""
 
@@ -400,6 +432,8 @@ class PrometheusMetricsConfig:
     kv_store_backend: str = ""  # e.g. "memcache", "mooncake"
     kv_store_service: str = ""  # default falls back to $KVS_MASTER_SERVICE
     kv_store_metrics_port: int = 0  # 0 → auto: 50088 (mooncake) / 50090 (default)
+    # --- HPA capacity planning (planner + PD ratio suggestion) ---
+    capacity_planning: CapacityPlanningConfig = field(default_factory=CapacityPlanningConfig)
 
 
 @dataclass
@@ -1024,6 +1058,7 @@ class CoordinatorConfig:
 
         # Validate Prometheus metrics configuration
         self._validate_positive_number(self.prometheus_metrics_config.reuse_time, "reuse_time")
+        self._validate_capacity_planning()
 
         # Validate standby configuration
         self._validate_positive_number(
@@ -1234,6 +1269,40 @@ class CoordinatorConfig:
             self._errors.append(f"{field_name} cannot be negative")
         elif not allow_zero and value <= 0:
             self._errors.append(f"{field_name} must be greater than 0")
+
+    def _validate_capacity_planning(self) -> None:
+        """Validate capacity_planning ranges at load time.
+
+        Mirrors CapacityPlanner's PlannerConfig.__post_init__ checks so an
+        invalid value fails fast at config load instead of surfacing as a
+        per-collection-cycle planner error.
+        """
+        prefix = "prometheus_metrics_config.capacity_planning"
+        cp = self.prometheus_metrics_config.capacity_planning
+
+        def fraction(field_name: str, value: float) -> None:
+            if not 0.0 < value <= 1.0:
+                self._errors.append(f"{prefix}.{field_name} must be in (0, 1], got {value}")
+
+        fraction("target_utilization", cp.target_utilization)
+        fraction("kv_target_utilization", cp.kv_target_utilization)
+        fraction("ema_alpha", cp.ema_alpha)
+        fraction("pd_ratio_smooth_alpha", cp.pd_ratio_smooth_alpha)
+        if not 0.0 <= cp.capacity_decay < 1.0:
+            self._errors.append(f"{prefix}.capacity_decay must be in [0, 1), got {cp.capacity_decay}")
+        self._validate_positive_number(
+            cp.prefill_tps_capacity_prior, f"{prefix}.prefill_tps_capacity_prior", allow_zero=True
+        )
+        self._validate_positive_number(
+            cp.decode_tps_capacity_prior, f"{prefix}.decode_tps_capacity_prior", allow_zero=True
+        )
+        if cp.capacity_window_cycles < 1:
+            self._errors.append(f"{prefix}.capacity_window_cycles must be >= 1, got {cp.capacity_window_cycles}")
+        if not 0.0 < cp.pd_ratio_min <= cp.pd_ratio_max:
+            self._errors.append(
+                f"{prefix} requires 0 < pd_ratio_min <= pd_ratio_max, "
+                f"got pd_ratio_min={cp.pd_ratio_min}, pd_ratio_max={cp.pd_ratio_max}"
+            )
 
     def _validate_worker_metaserver_ports(self) -> None:
         """Allow 0 (disabled); otherwise each worker port must fit in 1-65535."""

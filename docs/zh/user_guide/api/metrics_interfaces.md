@@ -199,7 +199,7 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 | `vllm:time_per_output_token_seconds` | 每输出 token 时延（TPOT），仅统计 Decode 侧 | p50 / p95 / p99 |
 | `vllm:e2e_request_latency_seconds` | 请求端到端时延，仅统计 Decode 侧 | p50 / p95 / p99 |
 | `vllm:request_queue_time_seconds` | 请求排队时延 | p50 / p95 / p99 |
-| `vllm:request_prefill_time_seconds` | 请求 Prefill 阶段耗时 | 无 |
+| `vllm:request_prefill_time_seconds` | 请求 Prefill 阶段耗时，仅统计 Prefill 侧 | p50 / p95 / p99 |
 | `vllm:request_decode_time_seconds` | 请求 Decode 阶段耗时 | 无 |
 | `vllm:request_params_n` | 请求参数数量 | 无 |
 | `vllm:request_params_max_tokens` | 请求最大 token 数 | 无 |
@@ -247,6 +247,124 @@ vllm:num_requests_running{pod_ip="192.168.1.10",role="prefill",model_name="Qwen2
 | `motor:active_decode_workers` | 当前活跃 Decode 实例数 |
 | `motor:inactive_prefill_workers` | 当前非活跃 Prefill 实例数（配置数 − 可用数） |
 | `motor:inactive_decode_workers` | 当前非活跃 Decode 实例数（配置数 − 可用数） |
+| `motor:request_rate` | 入口请求速率（requests/s），由 `vllm:request_success_total` 计数器增量计算 |
+| `motor:prefill_utilization` | Prefill 需求/供给利用率（>1 表示供给不足），详见[容量规划指标](#容量规划指标) |
+| `motor:decode_utilization` | Decode 需求/供给利用率（>1 表示供给不足），详见[容量规划指标](#容量规划指标) |
+| `motor:prefill_replicas_required` | 容量规划推导的所需 Prefill 实例数，详见[容量规划指标](#容量规划指标) |
+| `motor:decode_replicas_required` | 容量规划推导的所需 Decode 实例数（吞吐与 KV 双约束），详见[容量规划指标](#容量规划指标) |
+| `motor:pd_ratio_current` | 当前 PD 配比：`active Prefill 实例数 / max(active Decode 实例数, 1)` |
+| `motor:pd_ratio_suggested` | 建议 PD 配比（仅为建议信号，Motor 不执行任何调整），详见[容量规划指标](#容量规划指标) |
+
+### 容量规划指标
+
+以下指标面向 HPA 自动扩缩容与 PD 配比管理场景，均为 service/role 级派生 Gauge，
+由 Coordinator 内置的容量规划器按采集周期刷新。
+
+**理论依据**：Prefill 阶段为算力受限，单实例在充分负载下的输入 token 处理速率近似
+恒定 `C_p`；Decode 阶段为显存带宽受限，单实例持续生成吞吐近似 `C_d`，KV cache
+容量 `K`（块数 × block_size）是第二约束。排队论表明供给/需求 ≥ `1/ρ` 时等待有界
+（ρ 为目标利用率），Little's law 给出 KV 驻留 token 需求
+`D_kv = λ·W_kv·(L̄_in+L̄_out)`。
+
+**计算口径**（每采集周期，counter delta + EMA 平滑）：
+
+```text
+需求侧（分角色聚合）：
+  λ     = Δrequest_success_total / Δt              （完成请求口径）
+  L̄_in  = Δprompt_tokens_total / Δrequests         （平均输入长度）
+  L̄_out = Δgeneration_tokens_total / Δrequests     （平均输出长度）
+  W_kv  = Δqueue_time/Δcount + Δdecode_time/Δcount （Decode 侧 KV 驻留时长）
+
+供给侧（在线标定）：
+  C_p = EMA(Δprompt_tokens_total / Δprefill_time_sum)
+        （纯处理吞吐：vLLM 的 prefill_time 不含排队与空闲）
+  C_d = 单实例 generation TPS 峰值学习：观测到更高值即上抬，否则每周期
+        ×(1-capacity_decay)，但不跌破 floor = max(先验, 滑动窗口样本峰值)
+        （窗口长度 capacity_window_cycles，默认 200 周期 ≈ 10 分钟）
+  K   = vllm:cache_config_info label 中的 num_gpu_blocks × block_size
+
+实例数与利用率推导（ρ、ρ_kv 可配）：
+  N_p    = ⌈ λ·L̄_in / (C_p·ρ) ⌉
+  N_d_tp = ⌈ λ·L̄_out / (C_d·ρ) ⌉
+  N_d_kv = ⌈ λ·W_kv·(L̄_in+L̄_out) / (K·ρ_kv) ⌉
+  N_d    = max(N_d_tp, N_d_kv)
+  U      = 需求速率 / (当前实例数 × C)
+```
+
+**指标清单**：
+
+| 指标名 | 语义 | 公式 |
+|--------|------|------|
+| `motor:prefill_utilization` | Prefill 需求/供给利用率 | `λ·L̄_in/(N_p·C_p)` |
+| `motor:decode_utilization` | Decode 需求/供给利用率 | `λ·L̄_out/(N_d·C_d)` |
+| `motor:prefill_replicas_required` | 所需 Prefill 实例数 | `⌈λ·L̄_in/(C_p·ρ)⌉` |
+| `motor:decode_replicas_required` | Decode 所需实例数 | `max(N_d_tp, N_d_kv)` |
+| `motor:prefill_capacity_tps` | 单实例 Prefill 容量估计（诊断） | `C_p` |
+| `motor:decode_capacity_tps` | 单实例 Decode 容量估计（诊断） | `C_d` |
+| `motor:prefill_demand_tps` | Prefill 需求速率 tokens/s（诊断） | `λ·L̄_in` |
+| `motor:decode_demand_tps` | Decode 需求速率 tokens/s（诊断） | `λ·L̄_out` |
+| `motor:kv_demand_tokens` | KV 驻留 token 需求（诊断） | `λ·W_kv·(L̄_in+L̄_out)` |
+| `motor:capacity_calibrated` | 容量估计是否已标定（0/1，label `role`） | 先验 >0 或已有有效观测 |
+| `motor:pd_ratio_current` | 当前 PD 配比 | `N_p_active/max(N_d_active, 1)` |
+| `motor:pd_ratio_suggested` | 建议 PD 配比（建议信号） | `N_p/N_d`，EMA + 裁剪；未标定/无需求时回退现状比 |
+| `motor:request_rate` | 入口请求速率 requests/s | `Δrequest_success/Δt` |
+
+计算规则要点：
+
+- **输出条件**：`utilization` 仅在容量估计 `C > 0` 且对应角色有 active 实例时输出；
+  `replicas_required` 始终输出（容量未标定或无需求时取值为 `0`），Decode 侧取
+  吞吐约束 `N_d_tp` 与 KV 约束 `N_d_kv` 的较大者；`kv_demand_tokens` 仅在 `K`
+  已知时输出。`utilization` 取值 >1 表示供给不足，适合直接作为 HPA 的 target
+  指标（target 即 ρ，推荐配置见[自动弹性扩缩容](../features/auto_scaling.md)）。
+- **保守性（安全方向）**：`C_p` 与 `C_d` 均为真实容量的下界估计——并发 / chunked
+  场景下各请求的 prefill_time 存在重叠使 `C_p` 系统性偏低，需求不足时则观测不到
+  `C_d` 的真实峰值——因此 `utilization` 偏高、扩容倾向偏多，且自矫正：多扩后承接
+  更多需求，可观测到更高的 TPS，容量估计随之收敛。
+- **标定置信标志**：`motor:capacity_calibrated{role="prefill"|"decode"}` 为 `1`
+  表示该角色已有有效在线观测或配置了容量先验，为 `0` 表示未标定（此时
+  `replicas_required` 仍照常输出，下游可据此区分置信度）。
+- **KV 信息缺失退化**：引擎未暴露 `vllm:cache_config_info`（或解析失败）时 KV
+  约束自动跳过，`N_d` 仅由吞吐约束决定，并记录一次性 WARNING（K 恢复后可再次
+  触发）。
+- **PD 混合部署不输出**：容量规划指标仅按 prefill / decode 角色实例计算，PD 混合
+  （hybrid / union）部署不输出上述 P/D 侧容量规划指标。
+- **建议信号不执行**：Motor 只输出 `motor:pd_ratio_suggested` 信号，不会依据它修改
+  任何实例数量或 K8s 资源，执行由外部控制器完成。
+
+相关配置项（均位于 `prometheus_metrics_config.capacity_planning` 子配置段，均可选）：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `target_utilization` | `0.8` | 目标单实例利用率 ρ，实例数推导与 HPA target 的语义基准 |
+| `kv_target_utilization` | `0.9` | KV 约束的目标利用率 ρ_kv |
+| `ema_alpha` | `0.85` | 需求速率、平均长度、W_kv 与 `C_p` 的 EMA 平滑系数；样本本身是 3s 窗口聚合均值，无需重平滑，3 个采集周期内收敛 |
+| `capacity_decay` | `0.005` | `C_d` 峰值每周期慢衰减系数 |
+| `capacity_window_cycles` | `200` | `C_d` 衰减下限的滑动窗口长度（周期数，默认 ≈10 分钟） |
+| `prefill_tps_capacity_prior` | `0`（无先验） | 单实例 Prefill 容量先验（tokens/s），`0` 表示无先验 |
+| `decode_tps_capacity_prior` | `0`（无先验） | 单实例 Decode 容量先验（tokens/s），`0` 表示无先验 |
+| `pd_ratio_smooth_alpha` | `0.3` | `motor:pd_ratio_suggested` 的 EMA 平滑系数，越小越平滑 |
+| `pd_ratio_min` | `0.05` | 建议配比裁剪下界 |
+| `pd_ratio_max` | `20.0` | 建议配比裁剪上界 |
+
+### HPA 契约指标与无冒号别名
+
+K8s External Metrics 命名习惯不含 `:`，因此下列 HPA 契约指标在 `/metrics` 输出（`prometheus` 与 `opentelemetry` 两种格式）中会**同时**以原始名和无冒号别名（`:` 替换为 `_`）各暴露一条序列，两者取值一致，别名序列的 HELP 文本带“(HPA alias)”后缀。HPA / External Metrics Adaptor 推荐使用别名接入。
+
+| 原始指标名 | HPA 别名 |
+|------------|----------|
+| `motor:prefill_utilization` | `motor_prefill_utilization` |
+| `motor:decode_utilization` | `motor_decode_utilization` |
+| `motor:prefill_replicas_required` | `motor_prefill_replicas_required` |
+| `motor:decode_replicas_required` | `motor_decode_replicas_required` |
+| `motor:request_rate` | `motor_request_rate` |
+| `motor:pd_ratio_current` | `motor_pd_ratio_current` |
+| `motor:pd_ratio_suggested` | `motor_pd_ratio_suggested` |
+| `vllm:request_prefill_time_seconds`（含 `_mean` / `_p50` / `_p95` / `_p99` 派生分位数） | `vllm_request_prefill_time_seconds`（及对应后缀形式，如 `vllm_request_prefill_time_seconds_p95`） |
+
+>[!NOTE]说明
+>
+> - 仅上述契约清单（恰好 8 个原始指标）内的指标会生成别名，其他指标（如 `vllm:num_requests_running`）只以原始名输出；容量规划的诊断指标（`*_capacity_tps` / `*_demand_tps` / `motor:kv_demand_tokens` / `motor:capacity_calibrated`）不生成别名。
+> - 别名只在输出渲染层追加，聚合语义、`type` / `role` 等查询参数行为均不受影响。
 
 ### 进程与运行时指标
 
@@ -293,7 +411,7 @@ Coordinator 在 `/metrics` 端点内部完成全部数据加工，调用方直�
 - **负值处理**：仅 Gauge 允许负值；Counter / 直方图出现负值视为损坏，丢弃该采样行。
 - **空指标处理**：无采样值的指标族仍会输出，值为显式 `0`，避免抓取端丢失系列。
 - **非活跃实例**：实例不可用后其 Gauge 归零平滑衰减而非消失；Counter 清零（累计历史由新实例通过基线偏移承接）。
-- **角色过滤（role_scope）**：TTFT / TPOT 等指标在 PD 分离模式下仅统计 Decode 侧（Prefill 节点不产出 token），Prefill 与 Decode 合设（PD 混合）时不受影响。
+- **角色过滤（role_scope）**：TTFT / TPOT 等指标在 PD 分离模式下仅统计 Decode 侧（Prefill 节点不产出 token），`vllm:request_prefill_time_seconds` 仅统计 Prefill 侧；Prefill 与 Decode 合设（PD 混合）时不受影响。
 - **分位数计算**：带分位数配置的直方图指标在合并桶后计算 p50 / p95 / p99 及均值。
 
 ## 对接 Prometheus

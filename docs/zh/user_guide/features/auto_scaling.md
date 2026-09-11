@@ -73,7 +73,7 @@ External Metrics Adaptor 负责将 Coordinator 的 Prometheus 格式指标转换
 部署前需确认 Adaptor 配置了正确的 Coordinator metrics 端点地址和抓取间隔。部署完成后，执行以下命令验证指标可用：
 
 ```bash
-kubectl get --raw /apis/external.metrics.k8s.io/v1beta1 | grep -E "num_requests_waiting|motor:generation_tokens_per_second"
+kubectl get --raw /apis/external.metrics.k8s.io/v1beta1 | grep -E "motor_prefill_utilization|motor_decode_utilization"
 ```
 
 ## 部署 Prometheus Adapter
@@ -143,7 +143,7 @@ kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/
 
 使用原有 External Metrics Adaptor 路径时，沿用原有 `scalingPolicy` 配置即可，`external.metric` 下**无需新增** `selector`。
 
-使用 Prometheus Adapter 路径时，需要在 `external.metric` 下新增 `selector.matchLabels`，以 Prometheus Adapter 暴露的标签限定指标范围。以下示例为 Prometheus Adapter 场景：Prefill 按排队请求数扩缩容，Decode 按生成 token 速率扩缩容。
+使用 Prometheus Adapter 路径时，需要在 `external.metric` 下新增 `selector.matchLabels`，以 Prometheus Adapter 暴露的标签限定指标范围。以下示例为 Prometheus Adapter 场景：Prefill / Decode 分别按容量规划利用率指标扩缩容（target 即目标利用率 ρ）。
 
 ```yaml
 roles:
@@ -162,14 +162,14 @@ roles:
         - type: External
           external:
             metric:
-              name: vllm:num_requests_waiting
+              name: motor_prefill_utilization
               selector:
                 matchLabels:
                   infer_huawei_com_inferservice_name: vllm-0
                   kubernetes_namespace: mindie-motor
             target:
-              type: AverageValue
-              averageValue: "5"
+              type: Value
+              value: "0.8"
     metadata:
       labels:
         infer.huawei.com/gang-schedule: 'true'
@@ -191,14 +191,14 @@ roles:
         - type: External
           external:
             metric:
-              name: motor:generation_tokens_per_second
+              name: motor_decode_utilization
               selector:
                 matchLabels:
                   infer_huawei_com_inferservice_name: vllm-0
                   kubernetes_namespace: mindie-motor
             target:
-              type: AverageValue
-              averageValue: "10"
+              type: Value
+              value: "0.8"
     metadata:
       labels:
         infer.huawei.com/gang-schedule: 'true'
@@ -246,8 +246,8 @@ metrics:
 | `scalingPolicy.spec.metrics[].external.metric.selector` | 指标选择器 | 仅 Prometheus Adapter 场景需要配置；External Metrics Adaptor 场景无需新增 |
 | `scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.kubernetes_namespace` | 指标所属命名空间 | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 生成 YAML 会将其更新为 `motor_deploy_config.job_id` |
 | `scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.infer_huawei_com_inferservice_name` | 指标所属 InferService | 仅 Prometheus Adapter 场景配置。模板包含此标签时，deployer 按 `<InferServiceSet 名>-0` 自动更新；缺失时不注入 |
-| `scalingPolicy.spec.metrics[].external.target.type` | 目标值类型 | `AverageValue`（Pod 平均值） |
-| `scalingPolicy.spec.metrics[].external.target.averageValue` | 目标平均值阈值 | 按指标量纲设定 |
+| `scalingPolicy.spec.metrics[].external.target.type` | 目标值类型 | `Value` 或 `AverageValue`（Pod 平均值）。容量规划利用率指标（`motor_*_utilization`）已按当前实例数归一化，**必须用 `Value`**；`AverageValue` 会被 HPA 再除一次副本数导致失真。原始量纲指标（如排队数、KV 使用率）用 `AverageValue` |
+| `scalingPolicy.spec.metrics[].external.target.value` / `averageValue` | 目标阈值 | 与 `target.type` 对应；按指标量纲设定 |
 
 > [!NOTE]
 > `scalingPolicy.spec.metrics[].external.metric.name` 需填写所选指标接入组件暴露的指标名。External Metrics Adaptor 或 Prometheus Adapter 都可能对 MindIE Motor 原始 Prometheus 指标名（如 `vllm:num_requests_waiting`）做映射或重命名。部署后，可通过以下命令查看实际暴露的指标列表：
@@ -258,7 +258,7 @@ metrics:
 >
 > 若 Adaptor 暴露的指标名与本文示例不同，请以实际返回值为准。
 >
-> 本特性依赖 MindCluster Infer Operator 版本 ≥ 26.1.0。用户需按上文示例在 `infer_service_template.yaml` 中手动添加 `scalingPolicy` 配置。
+> 本特性依赖 MindCluster Infer Operator 版本 ≥ 26.1.0。`scalingPolicy` 可在 user_config 的 `scaling_policy` 配置段中按角色声明，由 deployer/helm 自动渲染（默认指标 `motor_prefill_utilization` / `motor_decode_utilization`，target 0.8、类型 `Value`，并自动带上 namespace 与实例 selector），也可按上文示例手动添加到 `infer_service_template.yaml`。
 
 ## 推荐的扩缩容指标
 
@@ -268,6 +268,7 @@ MindIE Motor `/metrics` 端点提供了丰富的引擎级指标，下表列出�
 
 | 指标名 | 类型 | 说明 | 推荐阈值建议 |
 |--------|------|------|-------------|
+| `motor:prefill_utilization`（别名 `motor_prefill_utilization`） | Gauge | Prefill 需求/供给利用率（>1 供给不足，Motor 计算） | target 即 ρ，默认 0.8，推荐首选 |
 | `vllm:num_requests_waiting` | Gauge | 等待调度的请求数 | > 5 触发扩容，< 2 触发缩容 |
 | `vllm:num_requests_running` | Gauge | 当前运行中的请求数 | 视 NPU 规格和模型而定 |
 | `vllm:kv_cache_usage_perc` | Gauge | KV Cache 使用率（0-1） | > 0.8 触发扩容 |
@@ -278,6 +279,7 @@ MindIE Motor `/metrics` 端点提供了丰富的引擎级指标，下表列出�
 
 | 指标名 | 类型 | 说明 | 推荐阈值建议 |
 |--------|------|------|-------------|
+| `motor:decode_utilization`（别名 `motor_decode_utilization`） | Gauge | Decode 需求/供给利用率（>1 供给不足，Motor 计算） | target 即 ρ，默认 0.8，推荐首选 |
 | `vllm:num_requests_waiting` | Gauge | 等待调度的请求数 | > 5 触发扩容 |
 | `vllm:num_requests_running` | Gauge | 当前运行中的请求数 | 视 NPU 规格和模型而定 |
 | `motor:generation_tokens_per_second` | Gauge | 生成 token 速率（Motor 计算） | 按 SLA 目标设定 |
@@ -304,10 +306,10 @@ scalingPolicy:
     - type: External
       external:
         metric:
-          name: vllm:num_requests_waiting
+          name: motor_decode_utilization
         target:
-          type: AverageValue
-          averageValue: "5"
+          type: Value
+          value: "0.8"
     - type: External
       external:
         metric:
@@ -316,6 +318,117 @@ scalingPolicy:
           type: AverageValue
           averageValue: "0.8"
 ```
+
+## 基于容量规划利用率的 HPA（推荐）
+
+原始指标（排队请求数、TPS、KV Cache 使用率）的量纲随硬件与模型变化，阈值难以统一设定。
+MindIE Motor 基于容量规划模型提供需求/供给利用率指标：取值为
+`需求速率 / (当前实例数 × 单实例容量估计)`，>1 表示供给不足，**target 即目标利用率 ρ
+（默认 0.8）**，是推荐的 HPA target：
+
+- **Prefill 角色**：`motor_prefill_utilization`（原始名 `motor:prefill_utilization`），
+  target 建议设为 `0.8`；
+- **Decode 角色**：`motor_decode_utilization`（原始名 `motor:decode_utilization`），
+  target 建议设为 `0.8`。
+
+利用率由 Motor Coordinator 内置容量规划器计算：需求侧由入口统计推导（完成请求速率 λ、
+平均输入/输出长度），供给侧在线标定单实例容量（详见下文）。指标语义与全部配置项详见
+[监控接口 - 容量规划指标](../api/metrics_interfaces.md#容量规划指标)。K8s External
+Metrics 命名不含 `:`，请使用无冒号别名（`motor_prefill_utilization` /
+`motor_decode_utilization`）接入 HPA；别名与原始指标在 `/metrics` 中同时输出、取值一致。
+
+> [!IMPORTANT]
+> **target 类型**：利用率指标已按当前实例数归一化（取值 = 需求 / 供给），HPA 配置中
+> `target.type` 必须使用 `Value`。若误用 `AverageValue`，HPA 会把指标值再除一次
+> 当前副本数，导致扩缩容目标失真。
+>
+> **迁移提示**：初版归一化饱和度指标（`motor:prefill_saturation` /
+> `motor:decode_saturation`）已移除，曾按初版文档配置 `motor_*_saturation` 的用户
+> 请改用上述 `motor_*_utilization` 指标。
+
+配置示例（Decode 角色按利用率扩缩容）：
+
+```yaml
+scalingPolicy:
+  type: HPA
+  spec:
+    minReplicas: 1
+    maxReplicas: 4
+    metrics:
+    - type: External
+      external:
+        metric:
+          name: motor_decode_utilization
+        target:
+          type: Value
+          value: "0.8"
+```
+
+### 容量标定说明
+
+利用率与所需实例数的准确性取决于单实例容量估计 `C_p` / `C_d`，Motor 以**在线学习为主、
+benchmark 先验为辅**：
+
+- **在线学习（默认）**：`C_p` 由 `Δprompt_tokens / Δprefill_time_sum`（不含排队与空闲的
+  纯处理吞吐）经 EMA 估计（`ema_alpha` 默认 `0.85`：样本本身是 3s 窗口聚合均值，无需重
+  平滑，需求/容量估计在 3 个采集周期内收敛，毛刺由下游 HPA 稳定窗口兜底）；`C_d` 采用单实例 generation TPS 峰值学习——观测到更高值即上抬，
+  否则每周期按 `capacity_decay`（默认 `0.005`）慢衰减，但**不跌破下限
+  `floor = max(先验, 滑动窗口样本峰值)`**（窗口长度 `capacity_window_cycles`，默认 200
+  周期 ≈ 10 分钟）。floor 机制消除了低载时 `C_d` 指数衰减至零导致的幻影扩容；当真实容量
+  下降时，旧峰值滑出窗口后估计可重新向下学习。**注意**：floor 的窗口兜底有时限——持续低载
+  超过 `capacity_window_cycles` 后，窗口内只剩低水位样本，`C_d` 会缓慢向观测水位（≈ 当前
+  每实例吞吐）衰减，利用率随之虚高，可能诱发最多 +1 副本的缓慢漂移（每衰减一轮至多一次）。
+  配置 benchmark 先验可彻底规避（见下条）。
+- **benchmark 先验（建议生产环境始终配置）**：在目标硬件与模型上以贴近现网的输入/输出长度
+  分布运行 benchmark，测出**单实例饱和 TPS**（时延开始显著劣化前的吞吐拐点），配置
+  `prometheus_metrics_config.capacity_planning.prefill_tps_capacity_prior` /
+  `decode_tps_capacity_prior`（默认 `0` 表示无先验）。先验可消除冷启动阶段的估计偏差，
+  且作为 `floor = max(先验, 窗口峰值)` 的硬下限，钉死低载衰减路径，同时使角色自启动起即
+  视为已标定。**取值宁低勿高**：略低于真实容量是安全的——在线学习观测到更高 TPS 会立即
+  向上采纳，估计只会向上突破先验；而先验过高时无向下纠偏机制（估计不会跌破先验），
+  `utilization` 与 `replicas_required` 将双双低估，HPA 该扩不扩，牺牲时延 SLO。
+- **置信标志**：`motor:capacity_calibrated{role="prefill"|"decode"}` 为 `0` 表示容量
+  尚未标定（无先验且无有效观测），此时利用率暂不输出、所需实例数指标取 `0`；标定完成
+  （置 `1`）后正常输出。
+- **保守方向**：容量估计为真实容量的下界，`utilization` 因此偏高、扩容倾向偏多（安全
+  方向），且多扩后承接更多需求可观测到更高 TPS，估计自行收敛。
+
+### Prometheus 侧平滑建议
+
+Coordinator 按 `reuse_time`（默认 `3` 秒）粒度采集，利用率与 RPS 在单周期内可能有明显
+抖动。建议 External Metrics Adaptor / Prometheus 侧先以 `avg_over_time(1m)` 平滑后再送入
+HPA，例如：
+
+```text
+avg_over_time(motor_decode_utilization[1m])
+```
+
+指标本身保持原始粒度输出，不做预平滑，以便排障时仍能观察到瞬时尖峰。
+
+## PD 配比收敛（建议信号）
+
+P、D 两个角色由各自独立的 HPA 扩缩容，负载结构（输入/输出长度分布）变化时，PD 配比可能逐渐偏离最优。MindIE Motor 基于容量规划模型提供配比信号：
+
+- `motor:pd_ratio_current`（别名 `motor_pd_ratio_current`）：当前 PD 配比，即 active Prefill 实例数 / max(active Decode 实例数, 1)；
+- `motor:pd_ratio_suggested`（别名 `motor_pd_ratio_suggested`）：建议 PD 配比，由容量规划推导的所需实例数之比 `motor:prefill_replicas_required / motor:decode_replicas_required` 计算，经指数平滑（默认 α=0.3）与区间裁剪（默认 [0.05, 20.0]）后输出。容量未标定或无需求（所需 Decode 实例数为 0）时该比值无意义，此时回退为现状比 `motor:pd_ratio_current`，容量标定完成后平滑过渡到模型推导值。
+
+所需实例数指标本身也以别名 `motor_prefill_replicas_required` /
+`motor_decode_replicas_required` 暴露，外部控制器可直接读取，跳过配比换算。
+
+> [!IMPORTANT]说明
+> `motor:pd_ratio_suggested` 仅为**建议信号**，MindIE Motor 不会依据它自动调整任何实例数量或 K8s 资源，执行由外部控制器完成。
+
+参考执行方式：使用 CronJob 周期性读取建议配比并调整 InferServiceSet 各 role 的 `replicas`。步骤如下：
+
+1. 从 External Metrics API 或 Prometheus 读取 `motor_pd_ratio_suggested`（同样建议先 `avg_over_time` 平滑）；
+2. 在实例总数 `N` 约束下按建议配比 `r` 换算目标实例数：`P = round(N × r / (1 + r))`，`D = N - P`；
+3. 通过 `kubectl patch` 更新 InferServiceSet 对应 role 的 `replicas`。
+
+执行约束：
+
+- **执行周期 ≥ 5 分钟**，并设置冷却时间（两次调整之间至少间隔一个 HPA 稳定窗口），避免与 HPA 扩缩容叠加引发震荡；
+- 单次调整幅度建议设上限（如每次最多变更 1~2 个实例），平滑收敛；
+- 配比寻优的正确性由仓库内合成闭环仿真测试（`tests/coordinator/core/`）回归保障，但真实集群的最佳配比仍与硬件/模型/负载分布相关，建议结合观测数据验证。
 
 ## 验证扩缩容效果
 
@@ -373,6 +486,7 @@ kubectl get hpa -n {namespace} --watch
 - 建议 `minReplicas` 至少设为 1，避免缩容到 0 导致服务完全不可用。
 - Counter 类型指标（如 token 总数）不会因 `/metrics` 请求而重置，建议优先使用 Gauge 类型指标或 MindIE Motor 计算的 TPS 指标作为扩缩容依据。
 - 若使用不带 `type` 参数的 `/metrics` 端点（默认 `full`），HPA 获取到的是全局聚合值。如需按 Prefill/Decode 角色独立扩缩容，Adaptor 需分别请求 `/metrics?type=role&role=prefill` 和 `/metrics?type=role&role=decode`。
+- HPA 扩缩容路径依赖 Infer Operator 创建的 HPA 资源；`multi_deployment` 部署模式没有 Infer Operator，不支持本文所述的 HPA 路径。
 
 ## 参考文档
 

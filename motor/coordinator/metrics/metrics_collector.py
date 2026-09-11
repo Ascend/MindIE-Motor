@@ -31,6 +31,7 @@ from motor.coordinator.metrics.metric_types import (
     MetricType,
 )
 from motor.coordinator.metrics.aggregation_engine import SemanticAggregationEngine
+from motor.coordinator.metrics.hpa_contract import get_hpa_alias
 from motor.coordinator.metrics.metric_registry import MetricRegistry
 from motor.coordinator.metrics.metric_computer import MotorMetricComputer, get_inherited_metric_names
 
@@ -507,6 +508,13 @@ class MetricsCollector(ThreadSafeSingleton):
             if aggregated:
                 labeled = [self._inject_labels(m, role=role) for m in aggregated]
                 result[role] = self._format_prometheus(labeled)
+        # Append the role's HPA utilization metric (from the CapacityPlanner's
+        # latest output; the colon-free alias is added by the rendering layer).
+        for role in list(result.keys()):
+            utilization_metrics = self._motor_computer.compute_role_utilization(collects, role)
+            if utilization_metrics:
+                labeled = [self._inject_labels(m, role=role) for m in utilization_metrics]
+                result[role] += self._format_prometheus(labeled)
         return result
 
     def _update_metrics_thread(self) -> None:
@@ -604,6 +612,18 @@ class MetricsCollector(ThreadSafeSingleton):
         # Step 3: compute Motor-specific DP-level metrics (e.g. TPS) and
         # inject them into each endpoint's metrics list.
         self._motor_computer.compute_pre_aggregation(collects)
+
+        # Step 4: feed the CapacityPlanner on the collection cycle so its
+        # signals advance even when no full view is scraped.  The full /
+        # role views only render the planner's cached output.  A planner
+        # failure must not kill the collection loop: log and keep the last
+        # cached output.
+        with self._config_lock:
+            metrics_config = self._prometheus_metrics_config
+        try:
+            self._motor_computer.update_planner(collects, metrics_config)
+        except Exception as e:
+            logger.error("[Metrics] CapacityPlanner update failed, keeping last output: %s", e)
 
         return collects
 
@@ -1005,7 +1025,8 @@ class MetricsCollector(ThreadSafeSingleton):
         )
         with self._config_lock:
             deploy_config = self._deploy_config
-        self._motor_computer.compute_post_aggregation(aggregate, collects, deploy_config)
+            metrics_config = self._prometheus_metrics_config
+        self._motor_computer.compute_post_aggregation(aggregate, collects, deploy_config, metrics_config)
         return self._format_prometheus(aggregate)
 
     def _format_prometheus(self, aggregate: list[Metric]) -> str:
@@ -1013,24 +1034,39 @@ class MetricsCollector(ThreadSafeSingleton):
         for item in aggregate:
             lines.append("# HELP {} {}".format(item.name, item.help))
             lines.append("# TYPE {} {}".format(item.name, item.type))
-            if not item.label or not item.value:
-                # Keep zero-valued / empty-sample families visible on :1027/metrics.
-                lines.append("{} 0".format(item.name))
-                continue
-            for i, label in enumerate(item.label):
-                v = item.value[i]
-                if math.isnan(v):
-                    vs = "Nan"
-                elif v == float("inf"):
-                    vs = "+Inf"
-                elif v == float("-inf"):
-                    vs = "-Inf"
-                else:
-                    vs = str(v)
-                lines.append("{} {}".format(label, vs))
+            sample_lines = self._format_metric_samples(item)
+            lines.extend(sample_lines)
+            alias = get_hpa_alias(item.name)
+            if alias is not None:
+                # HPA contract: expose the same family a second time under a
+                # colon-free name for K8s External Metrics consumers.
+                lines.append("# HELP {} {} (HPA alias)".format(alias, item.help))
+                lines.append("# TYPE {} {}".format(alias, item.type))
+                for sample in sample_lines:
+                    lines.append(alias + sample[len(item.name) :])
         if not lines:
             return ""
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _format_metric_samples(item: Metric) -> list[str]:
+        """Render the sample lines of one metric family (labels carry the name)."""
+        if not item.label or not item.value:
+            # Keep zero-valued / empty-sample families visible on :1027/metrics.
+            return ["{} 0".format(item.name)]
+        sample_lines = []
+        for i, label in enumerate(item.label):
+            v = item.value[i]
+            if math.isnan(v):
+                vs = "Nan"
+            elif v == float("inf"):
+                vs = "+Inf"
+            elif v == float("-inf"):
+                vs = "-Inf"
+            else:
+                vs = str(v)
+            sample_lines.append("{} {}".format(label, vs))
+        return sample_lines
 
     @staticmethod
     def _prepend_dim_labels(

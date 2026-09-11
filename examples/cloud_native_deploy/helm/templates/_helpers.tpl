@@ -45,3 +45,11 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- .value | toPrettyJson -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "mindie-pymotor.userConfig" -}}
+{{- $userConfig := include "mindie-pymotor.renderJson" (dict "root" . "value" .Values.userConfig) | fromJson -}}
+{{- if .Values.scalingPolicy -}}
+{{- $_ := set $userConfig "scaling_policy" .Values.scalingPolicy -}}
+{{- end -}}
+{{- $userConfig | toPrettyJson -}}
+{{- end -}}

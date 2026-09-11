@@ -1,0 +1,36 @@
+# ServiceMonitor 示例（Prometheus Operator 形态）
+#
+# 抓取 Motor Coordinator Observability 进程暴露的 /metrics（容器端口 1027）。
+# CRD（InferServiceSet）部署形态下，obs Service 由 Infer Operator 创建，默认命名：
+#   mindie-motor-coordinator-obs-<infer_service_set_name>-0-coordinator
+# 例如模板默认 infer_service_set 名称为 vllm 时：
+#   mindie-motor-coordinator-obs-vllm-0-coordinator（NodePort 31017）
+#
+# 使用前请确认：
+# 1. metadata.namespace / spec.namespaceSelector 与 Motor 部署 namespace（job_id）一致；
+# 2. spec.selector 匹配 obs Service 的实际 label（可通过
+#    `kubectl get svc -n <namespace> --show-labels | grep coordinator-obs` 查看），
+#    必要时先 `kubectl label svc` 为 obs Service 打上本示例选择的 label；
+# 3. metadata.labels 需被 Prometheus CR 的 serviceMonitorSelector 选中（本示例用 release: prometheus）；
+# 4. 指标名带冒号（vllm:/motor:）时，Prometheus 需开启 UTF-8 指标名支持
+#    （Prometheus >= 3.0，Prometheus CR 配置 metricNameValidationScheme: UTF8）；
+#    无冒号别名指标（motor_prefill_utilization 等 HPA 契约指标）不受此限制。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mindie-motor-coordinator
+  namespace: mindie
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - mindie
+  selector:
+    matchLabels:
+      app: mindie-motor-coordinator
+  endpoints:
+    - targetPort: 1027
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

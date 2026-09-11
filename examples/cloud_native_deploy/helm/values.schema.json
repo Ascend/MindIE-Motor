@@ -18,6 +18,19 @@
       }
     },
     "userConfig": {"type": "string"},
-    "envConfig": {"type": "string"}
+    "envConfig": {"type": "string"},
+    "scalingPolicy": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "min_replicas": {"type": "integer", "minimum": 1},
+          "max_replicas": {"type": "integer", "minimum": 1},
+          "metric": {"type": "string", "minLength": 1},
+          "target": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "additionalProperties": false
+      }
+    }
   }
 }
