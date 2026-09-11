@@ -16,11 +16,11 @@ The MoE EP solution includes general-purpose compute nodes and intelligent compu
 
 **Solution**
 
-Run the `kubectl get pod -A -owide` command on the master node to check whether the Pod status of calico and kube-proxy is normal.
+Run the `kubectl get pod -A -owide` command on the master node to check whether the Pod status of Calico and kube-proxy is normal.
 ![](../../imgs/example_normal_calico.png)
 
 - If the network-related Pods are normal (`READY: 1/1` + `STATUS: Running`, as shown in the preceding figure):
-  If the Pod status of calico and kube-proxy is normal, restart the Pod. (Run the following command on the master node to delete the network-related Pod. The Pod will be restarted several seconds later.)
+  If the Pod status of Calico and kube-proxy is normal, restart the Pod. (Run the following command on the master node to delete the network-related Pod. The Pod will be restarted several seconds later.)
 
   ```bash
   kubectl get pods -n kube-system | grep calico | awk '{print $1}' | xargs kubectl delete pod -n kube-system

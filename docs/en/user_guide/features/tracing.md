@@ -10,7 +10,7 @@ After modifying the `env.json` configuration file and the `user_config.json` con
 
 To enable the Tracing capability of MindIE Motor, the `env.json` configuration file and the `user_config.json` configuration file must be modified, after which the service can be deployed by using the `deploy.py` script. The specific process is as follows.
 
-### Configuring `env.json`
+### Configuring env.json
 
 Using the `env.json` instance in [MindIE Motor Quick Start](../quick_start.md) as the reference baseline, the configuration file example after enabling the Tracing capability is as follows.
 
@@ -49,7 +49,7 @@ You need to add the following three environment variables under the three config
 
 - `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`: the protocol for reporting data. The options are `grpc` and `http/protobuf`. Set it according to your actual development habits.
 
-### Configuring `user_config.json`
+### Configuring user_config.json
 
 Using the `user_config.json` instance in [MindIE Motor Quick Start](../quick_start.md) as the reference baseline, the configuration file example after enabling the Tracing capability is as follows.
 

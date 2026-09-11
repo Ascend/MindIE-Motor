@@ -28,13 +28,13 @@ After modifying the `user_config.json` configuration file, you can complete the 
 
 Because the layerwise KV-cache transfer combined with KV pooling in the vllm code has an inference bug, you need to apply the `vllm_multi_connector.patch`. For detailed steps, see [MindIE Motor Applying Patches](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/patch/README.md).
 
-## Configuring `user_config.json`
+## Configuring user_config.json
 
 To enable the KV pooling capability in MindIE Motor, you only need to modify the `user_config.json` configuration file. All other configuration items remain the same as when pooling is disabled. Pay attention to the following two configurations.
 
 > Note: Before enabling the pooling capability, refer to [MindIE Motor Quick Start](../../quick_start.md) to ensure that the environment can properly complete basic PD disaggregation service deployment.
 
-### `kv_transfer_config` (in the `engine_config` of P/D Instances)
+### kv_transfer_config (in the engine_config of P/D Instances)
 
 Pooling is implemented by combining a transfer connector (`connectors[0]`) and a pooling backend connector (`connectors[1]`) through `MultiConnector`. The following uses `MooncakeConnectorV1` (P/D collaboration) + `AscendStoreConnector` (KV pool backend) as an example.
 
@@ -112,14 +112,14 @@ The `backend` field of `AscendStoreConnector` determines the pooling backend to 
 
 > For more details about the Connector principles, as well as the identification whitelist and the `dispatch_profile` escape hatch.
 
-### `kv_cache_store_config` (Global Configuration)
+### kv_cache_store_config (Global Configuration)
 
 `kv_cache_store_config` is the global configuration for KV pooling, shared by P/D instances (using the default backend MemCache as an example):
 
 ```json
 "kv_cache_store_config": {
   "backend": "memcache",
-  "local_service_mode": "standalone",
+  "local_service_mode": "standalone"
 }
 ```
 

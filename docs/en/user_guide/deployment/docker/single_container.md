@@ -179,7 +179,7 @@ If `coordinator_api_infer_port` is modified, the container-side port in the `doc
 
 ### Preparing the configmap
 
-During the preparation phase, copy the configuration files and startup scripts to the directory corresponding to the environment variable **`CONFIGMAP_PATH`**, and load the environment variables through `set_env_docker.py`. The following is an example of the preparation phase script **h`prepare.s`** (**`EXAMPLES_PATH`**, **`CONFIGMAP_PATH`**, **`USER_CONFIG_PATH`**, and **`ENV_PATH`** must be changed to the actual paths):
+During the preparation phase, copy the configuration files and startup scripts to the directory corresponding to the environment variable **`CONFIGMAP_PATH`**, and load the environment variables through `set_env_docker.py`. The following is an example of the preparation phase script **`prepare.sh`** (**`EXAMPLES_PATH`**, **`CONFIGMAP_PATH`**, **`USER_CONFIG_PATH`**, and **`ENV_PATH`** must be changed to the actual paths):
 
 The following uses `/mnt/motor` as the root path as an example.
 

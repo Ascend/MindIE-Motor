@@ -12,7 +12,7 @@
 
   - [PD Co-location Deployment](./deployment/k8s/pd_aggregation_deployment.md)
 
-  - [K8s-based Single-Container PD Disaggregation Deployment](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/single_container/README.md)
+  - [K8s-based Single-Container PD Disaggregation Deployment](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/single_container/README_EN.md)
 
   - [K8s-based Multi-Container PD Disaggregation Deployment](./deployment/k8s/pd_disaggregation_deployment.md)
 
@@ -54,7 +54,7 @@
 
   - [Rescheduling in Fault Scenarios](./features/fault_tolerance/rescheduler.md)
 
-  - [vLLM Deployment Script Conversion Tool](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README.md)
+  - [vLLM Deployment Script Conversion Tool](https://gitcode.com/Ascend/MindIE-Motor/blob/v3.1.0/examples/infer_engines/vllm/models/README_EN.md)
 
 - [API Reference]()
 

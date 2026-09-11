@@ -121,7 +121,7 @@ flowchart TB
     end
     subgraph IA[InstanceAssembler]
         assembler_loop[_instances_assembler_loop]
-        cmd_sender[_start_commmand_sender]
+        cmd_sender[_start_command_sender]
     end
     subgraph EP[EventPusher]
         event_consumer[_event_consumer]
@@ -391,7 +391,7 @@ The assembly process of `InstanceAssembler` is completed through the collaborati
 
    - Marks the instance as `ASSEMBLED` after all are ready.
 
-2. **Start command sending thread** (`_start_commmand_sender`):
+2. **Start command sending thread** (`_start_command_sender`):
 
    - Sends `StartCmdMsg` to instances in the `ASSEMBLED` state.
 

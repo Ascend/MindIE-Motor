@@ -141,7 +141,7 @@ roles:
       # ... Keep the remaining configuration unchanged ...
 ```
 
-### `scalingPolicy` Parameter Description
+### scalingPolicy Parameter Description
 
 | Parameter | Description | Value |
 |------|------|------|

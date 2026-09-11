@@ -68,7 +68,7 @@ After modifying the `user_config.json` configuration file, MindIE Motor can comp
    >- The RAS feature is not supported. Set `enable_fault_tolerance` to `false`.
    >- Ensure that the ports of each component do not overlap:
    >
-   >   - For `ode_manager_port`/`dp_rpc_port`/`lookup_rpc_port`, ensure that each instance does not overlap. During actual deployment, they are automatically offset by 1 in the order of P first and then D, with a value range of [base port, base port + total number of instances). The base port of `dp_rpc_port`/`lookup_rpc_port` is determined by the prefill configuration.
+   >   - For `node_manager_port`/`dp_rpc_port`/`lookup_rpc_port`, ensure that each instance does not overlap. During actual deployment, they are automatically offset by 1 in the order of P first and then D, with a value range of [base port, base port + total number of instances). The base port of `dp_rpc_port`/`lookup_rpc_port` is determined by the prefill configuration.
    >   - For `kv_port`, ensure that each dp group does not overlap. During actual deployment, they are automatically offset by the number of cards in the dp group in the order of P first and then D, with a value range of [kv_port, kv_port + total number of cards).
 
 2. Deploy the service.

@@ -6,7 +6,7 @@ In MindIE Motor, some configuration parameters can be dynamically modified while
 
 The fields that support hot update are **mainly related to the log level, instance runtime data query, request processing timeout, and similar content**.
 
-- **`motor_controller_config`**
+- **motor_controller_config**
 
     `logging_config.log_level`: Controller log level. The options include `DEBUG`, `INFO`, `WARNING`, and `ERROR`.
 
@@ -14,7 +14,7 @@ The fields that support hot update are **mainly related to the log level, instan
 
     `observability_config.metrics_ttl`: how often the metric data of the inference instance is refreshed, unit: second.
 
-- **`motor_coordinator_config`**
+- **motor_coordinator_config**
 
     `logging_config.log_level`: Coordinator log level. The options include `DEBUG`, `INFO`, `WARNING`, and `ERROR`.
 
@@ -36,11 +36,11 @@ The fields that support hot update are **mainly related to the log level, instan
 
     `rate_limit_config.error_status_code`: HTTP status code returned when rate limiting is triggered, usually 4xx (such as 429).
 
-    `rate_limit_config.max_request_body_size`: maximum request body size (MB). If exceeded, the request is rejected directly and 413 is returned, without consuming rate limiting tokens. `<= 0` means no limit. Decimal values are supported (for example, `0.5` means 0.5 MB, and 1 MB = 1024\*1024 bytes).
+    `rate_limit_config.max_request_body_size`: maximum request body size (MB). If exceeded, the request is rejected directly and 413 is returned, without consuming rate limiting tokens. `<= 0` means no limit. Decimal values are supported (for example, `0.5` means 0.5 MB, and 1 MB = 1024*1024 bytes).
 
-    Note: `rate_limit_config.enable_rate_limit` `rate_limit_config.provider`, `rate_limit_config.scope`, and `rate_limit_config.olc_config_path` are read only when the service starts and do not support hot update. To switch the rate limiting provider (simple/olc) or modify the OLC rule path, restart the service.
+    Note: `rate_limit_config.enable_rate_limit`, `rate_limit_config.provider`, `rate_limit_config.scope`, and `rate_limit_config.olc_config_path` are read only when the service starts and do not support hot update. To switch the rate limiting provider (simple/olc) or modify the OLC rule path, restart the service.
 
-- **`motor_nodemanger_config`**
+- **motor_nodemanger_config**
 
     `logging_config.log_level`: NodeManager log level. Options include `DEBUG`, `INFO`, `WARNING`, and `ERROR`.
 
@@ -57,6 +57,6 @@ Other configuration parameters do not support hot update yet. For the meanings a
 2. Run the following command. The configuration parameters modified in step 1 will take effect in the running service.
 
     ```bash
-    # --update_config indicates hot update configuration.tes hot update configuration.
+    # --update_config indicates hot update configuration.
     python deploy.py --config_dir <configuration_directory> --update_config
     ```
