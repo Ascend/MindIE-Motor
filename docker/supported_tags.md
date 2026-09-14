@@ -4,9 +4,33 @@ A full list of MindIE-Motor tags published on [AscendHub](https://www.hiascend.c
 
 The official image name is `mindie-motor`. Each tag is a multi-arch image (`arm64` / `x86_64`).
 
-## MindIE-Motor 3.1.0
+## vllm_ascend_deepseek_v4.1_flash
+
+Dedicated images for DeepSeek V4.1 Flash, released to pair with the vllm-ascend `deepseek-v4.1-flash` images.
+
+| Tag | Dockerfile | Architecture |
+|---|---|---|
+| `vllm_ascend_deepseek_v4.1_flash-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 |
+| `vllm_ascend_deepseek_v4.1_flash-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 |
+| `vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 |
+| `vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 |
+
+## MindIE-Motor 3.2.0b1
+
+Released to pair with the vllm-ascend v0.26.0rc images.
 
 Current published tag format: `<MotorVersion>-vllm_ascend<EngineVersion>-<ChipSeries>-<OperatingSystem>-<PythonVersion>`
+
+| Tag | Dockerfile | Architecture |
+|---|---|---|
+| `3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 |
+
+## MindIE-Motor 3.1.0
 
 | Tag | Dockerfile | Architecture | Updated |
 |---|---|---|---|
@@ -68,6 +92,8 @@ Dedicated images for Kimi K3.
 
 | Version | Description | Notes |
 |---|---|---|
+| deepseek_v4.1_flash | Released to pair with the vllm-ascend `deepseek-v4.1-flash` images | vllm-ascend `deepseek-v4.1-flash` series (`3.2.0+deepseek.v4.1.flash`), chips a2 / a3. Source branch `master`, commit `65125d851660163bd5591ebfc8b1ee92b234fb29` |
+| 3.2.0b1 | Released to pair with the vllm-ascend v0.26.0rc images | vllm-ascend 0.26.0rc1, chips a2 / a3 / a5. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `v3.2.0.beta.1`, commit `d6554728c45f06208b1992ba1f1411e1371c3f82` |
 | 3.1.0 | MindIE-Motor 3.1.0 | 2026/08/18: vllm-ascend 0.23.0, chips a2 / a3 / a5. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `v3.1.0`, commit `34e8335241c7f054e0c4607dbd7c3096d401e37b` |
 | kimi_k3 | Kimi K3 dedicated image | 2026/08/03: vllm-ascend `kimi-k3` series (`3.1.0+kimi.k3`). Source branch `v3.1.0`, commit `636f9623fcf771a4902f5814f3536947df3b0485` |
 | 3.1.0b1 | MindIE-Motor 3.1.0 beta.1 | 2026/07/23: vllm-ascend 0.23.0rc1. Source `https://gitcode.com/Ascend/MindIE-Motor.git` branch `v3.1.0`, commit `85aec828752b6d1832747b35fa0e41eb52ae70de` |

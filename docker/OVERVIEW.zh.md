@@ -31,26 +31,37 @@
 
 | 字段 | 示例值 | 说明 |
 |---|---|---|
-| `Motor版本` | `3.1.0`、`3.1.0b1` | MindIE-Motor 版本号 |
-| `引擎版本` | `0.23.0`、`0.23.0rc1` | 配套 vllm-ascend 版本 |
+| `Motor版本` | `3.2.0b1`、`3.1.0` | MindIE-Motor 版本号 |
+| `引擎版本` | `0.26.0rc1`、`0.23.0` | 配套 vllm-ascend 版本 |
 | `芯片系列` | `a2`、`a3`、`a5` | 目标昇腾芯片系列 |
 | `操作系统` | `ubuntu22.04`、`openeuler24.03` | 基础操作系统 |
 | `python版本` | `py3.12` | Python 版本 |
 
 3.0.x 历史 Tag 使用另一套命名，见 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)。
 
-### 最新版本 MindIE-Motor 3.1.0
+### 最新专用镜像 vllm_ascend_deepseek_v4.1_flash
 
-如下所示是 MindIE-Motor 在 AscendHub 最新发布的 3.1.0 版本的所有镜像（2026/08/18），历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)
+如下所示是 MindIE-Motor 在 AscendHub 最新发布的 DeepSeek V4.1 Flash 专用镜像，用于配套 vllm-ascend 的 `deepseek-v4.1-flash` 镜像发布。其 Tag 不遵循上述通用格式。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)
 
 | Tag | Dockerfile | 架构 | 镜像内容 |
 |---|---|---|---|
-| `3.1.0-vllm_ascend0.23.0-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
-| `3.1.0-vllm_ascend0.23.0-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
-| `3.1.0-vllm_ascend0.23.0-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
-| `3.1.0-vllm_ascend0.23.0-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
-| `3.1.0-vllm_ascend0.23.0-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
-| `3.1.0-vllm_ascend0.23.0-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.0-vllm_ascend0.23.0-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.23.0 |
+| `vllm_ascend_deepseek_v4.1_flash-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
+| `vllm_ascend_deepseek_v4.1_flash-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
+| `vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
+| `vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
+
+### 最新版本 MindIE-Motor 3.2.0b1
+
+如下所示是 MindIE-Motor 在 AscendHub 最新发布的 3.2.0b1 版本的所有镜像，用于配套 vllm-ascend v0.26.0rc 的镜像进行发布。历史版本所有的 Tag 请参考 [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md)
+
+| Tag | Dockerfile | 架构 | 镜像内容 |
+|---|---|---|---|
+| `3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
+| `3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
 
 ## 快速开始
 
@@ -61,14 +72,14 @@
 
 ### 使用 Motor
 
-参考[快速入门](../docs/zh/user_guide/quick_start.md)
+参考[快速入门](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docs/zh/user_guide/quick_start.md)
 
 ### 如何本地构建
 
 每个 Dockerfile 会在构建时自动 clone 指定分支与 commit 的源码，并在镜像内执行 `build.sh` 安装 `motor` / `ccae_reporter`，**无需本地源码或构建上下文**。将 `<tag>` 替换为目标组合后，在项目根目录执行：
 
 ```bash
-TAG="3.1.0-vllm_ascend0.23.0-a2-ubuntu22.04-py3.12"
+TAG="3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12"
 
 docker build --network=host \
     --platform=linux/arm64 \
