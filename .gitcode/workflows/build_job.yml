@@ -1,0 +1,51 @@
+name: UT Job
+
+on:
+  workflow_call:
+    inputs:
+      CP_DOCKER_IMG:
+        required: true
+        type: string
+      pr_id:
+        required: true
+        type: string
+      runs_on_arch:
+        required: true
+        type: string
+
+jobs:
+  JOB_Compile:
+    name: Test
+    select: selected_by_default
+    needs: [ ]
+    runs-on: [ 'dedicate-hosted', '${{ inputs.runs_on_arch }}', '2xlarge' ]
+    container:
+      image: ${{ inputs.CP_DOCKER_IMG }}
+    steps:
+      - name: Checkout repository with pre merge
+        uses: checkout
+        with:
+          fetch-depth: 0
+          repository: ${{atomgit.repositoryurl}}
+
+      - name: Install grpc protobuf deps
+        run: |
+          python3 -m pip install 'grpcio-tools>=1.82.1' 'protobuf>=7.35.1,<8.0.0'
+
+      - name: Execute_shell
+        run: |-
+          abi_type=${{ inputs.abi_type }}
+          python_version=3.11
+          arch=$(uname -m)
+          WORKSPACE=${{atomgit.workspace}}
+          python_3rdparty_path=/opt/buildtools/python-3.11.4/lib/python3.11/site-packages
+          export PYTHONPATH=${python_3rdparty_path}:$PYTHONPATH
+          export PATH=/opt/buildtools/python-3.11.4/bin:$PATH
+
+          pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple -r requirements.txt
+          cd ${WORKSPACE}
+          sh build.sh
+
+          cd ./examples/features/observability
+          bash -x build.sh
+          ls -l dist/
