@@ -111,8 +111,6 @@ stages:
           - name: Run malicious code scan
             uses: openlibing/malicious-code-scan-action/malicious-code-pr-scan-action@v1.0.0
             with:
-              repository-name: "${{ atomgit.event.repository.name }}"
-              pr-id: "${{ atomgit.event.pull_request.number }}"
               project-name: MindIE
               # rule、debug、platform-domain 等为可选项
 
