@@ -195,6 +195,12 @@
 
    上述命令执行后，窗口将自动**创建容器**、**进入容器**以及**启动管理服务**，用户在**屏幕上可观察到日志打印**。
 
+   **开启池化时**，以上管理面命令需要额外增加 `--kv-store-ip` 参数：
+
+   ```text
+   --kv-store-ip <kv_store 所在服务器的 IP地址>
+   ```
+
 2. **部署 KV Cache Store（仅开启池化时）**
 
    未开启池化请跳过本步。选择任意一台服务器，在 `examples/deployer` 目录下执行：
@@ -235,7 +241,7 @@
 
    `--devices` 为创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，将按硬件类型挂载模板中的全部卡（A2/A5 为 0–7，A3 为 0–15）。
 
-   开启池化时，以上 Prefill / Decode 两条命令需要加上 `--kv-store-ip` 参数：
+   **开启池化时**，以上 Prefill / Decode 两条命令同样需要加上 `--kv-store-ip` 参数：
 
    ```text
    --kv-store-ip <kv_store 所在服务器的 IP地址>
@@ -255,7 +261,7 @@
    | `--pod-ip` | **当前服务器**的 IP。 |
    | `--nic-name` | **当前服务器**对应 `--pod-ip` 的网卡名。 |
    | `--coordinator-ip` / `--controller-ip` | Coordinator / Controller 所在服务器的 IP。部署推理服务、kv_store 时填写。分容器部署管理服务时，Controller 填写 `--coordinator-ip`，Coordinator 填写 `--controller-ip`。 |
-   | `--kv-store-ip` | kv_store 所在服务器的 IP。开启池化后，部署 Prefill / Decode 时必填。 |
+   | `--kv-store-ip` | kv_store 所在服务器的 IP。开启池化后，部署管理面（coordinator / controller）和 Prefill / Decode 时必填。`--role kv_store` 可省略，默认使用 `--pod-ip`。 |
 
    执行以下命令可以查看网卡名和本机 IP。`dev` 后面是 `--nic-name`，`src` 后面是 `--pod-ip`。
 

@@ -401,6 +401,8 @@ VOLCANO_QUEUE_ANNOTATION = "scheduling.volcano.sh/queue-name"
 
 # Docker-only create templates (examples/deployer/docker_deploy.py --create / one-click).
 # Edit these literals to change host devices and binds. Do not add --rm.
+# Host binds /root/ascend/log, /root/.cache, /var/coredump, /data match K8s hostPath
+# (plog-path / cache-path / coredump / data). docker_deploy.py mkdir -p these before create.
 # Engine / single-container templates use --shm-size=4g to match K8s dshm emptyDir sizeLimit 4Gi.
 # CTRL / KVS YAML has no dshm volume, so those templates omit --shm-size.
 # motor_deploy_config.dshm_size overrides an existing --shm-size line only (does not insert one).
@@ -429,6 +431,10 @@ ENTER_DOCKER_RUN_A2 = """docker run -it --name "$NAME" -u root \\
   -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \\
   -v /etc/ascend_install.info:/etc/ascend_install.info \\
   -v /etc/hccn.conf:/etc/hccn.conf \\
+  -v /root/ascend/log:/root/ascend/log \\
+  -v /root/.cache:/root/.cache \\
+  -v /var/coredump:/var/coredump \\
+  -v /data:/data \\
   -v "$EXAMPLES:$EXAMPLES" \\
   -v "$WEIGHT:$WEIGHT:ro" \\
   "$IMAGE" bash
@@ -467,6 +473,10 @@ ENTER_DOCKER_RUN_A3 = """docker run -it --name "$NAME" -u root \\
   -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \\
   -v /etc/ascend_install.info:/etc/ascend_install.info \\
   -v /etc/hccn.conf:/etc/hccn.conf \\
+  -v /root/ascend/log:/root/ascend/log \\
+  -v /root/.cache:/root/.cache \\
+  -v /var/coredump:/var/coredump \\
+  -v /data:/data \\
   -v "$EXAMPLES:$EXAMPLES" \\
   -v "$WEIGHT:$WEIGHT:ro" \\
   "$IMAGE" bash
@@ -503,6 +513,10 @@ ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
   -v /etc/hixlep:/etc/hixlep \\
   -v /lib/route.conf:/lib/route.conf \\
   -v /usr/bin/urma_admin:/usr/bin/urma_admin \\
+  -v /root/ascend/log:/root/ascend/log \\
+  -v /root/.cache:/root/.cache \\
+  -v /var/coredump:/var/coredump \\
+  -v /data:/data \\
   -v "$EXAMPLES:$EXAMPLES" \\
   -v "$WEIGHT:$WEIGHT:ro" \\
   "$IMAGE" bash
@@ -512,6 +526,10 @@ ENTER_DOCKER_RUN_CTRL = """docker run -it --name "$NAME" -u root \\
   --net=host \\
   -e NAME="$NAME" \\
   -e WEIGHT="$WEIGHT" \\
+  -v /root/ascend/log:/root/ascend/log \\
+  -v /root/.cache:/root/.cache \\
+  -v /var/coredump:/var/coredump \\
+  -v /data:/data \\
   -v "$EXAMPLES:$EXAMPLES" \\
   -v "$WEIGHT:$WEIGHT:ro" \\
   "$IMAGE" bash
@@ -524,6 +542,10 @@ ENTER_DOCKER_RUN_KVS = """docker run -it --name "$NAME" -u root \\
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
   -v /driver:/driver \\
   -v /var/log:/var/log \\
+  -v /root/ascend/log:/root/ascend/log \\
+  -v /root/.cache:/root/.cache \\
+  -v /var/coredump:/var/coredump \\
+  -v /data:/data \\
   -v "$EXAMPLES:$EXAMPLES" \\
   -v "$WEIGHT:$WEIGHT:ro" \\
   "$IMAGE" bash

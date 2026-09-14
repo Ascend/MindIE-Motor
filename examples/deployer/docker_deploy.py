@@ -21,7 +21,14 @@ from datetime import datetime
 
 import lib.constant as C
 import lib.docker_utils as D
-from lib.docker_utils import logger, read_json, resolve_config_paths, validate_instance_nums, validate_pd_hybrid_config
+from lib.docker_utils import (
+    logger,
+    read_json,
+    resolve_config_paths,
+    validate_pod_layouts,
+    validate_instance_nums,
+    validate_pd_hybrid_config,
+)
 from lib.in_place_run import run_in_place
 
 
@@ -94,6 +101,7 @@ def _validate_topology(user_config: dict) -> bool:
             return False
     try:
         validate_instance_nums(user_config)
+        validate_pod_layouts(user_config)
     except (KeyError, ValueError) as exc:
         logger.error("%s", exc)
         return False
@@ -103,8 +111,23 @@ def _validate_topology(user_config: dict) -> bool:
 def _controller_ports(user_config: dict):
     api = (user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}).get("api_config") or {}
     return [
-        ("controller", int(api.get("controller_api_port", 2026))),
-        ("controller-obs", int(api.get("observability_api_port", 2027))),
+        ("controller", int(api.get("controller_api_port", D.DEFAULT_CONTROLLER_API_PORT))),
+        ("controller-obs", int(api.get("observability_api_port", D.DEFAULT_CONTROLLER_OBS_PORT))),
+    ]
+
+
+def _coordinator_ports(user_config: dict, params: D.DockerDeployParams, *, in_place: bool):
+    api = (user_config.get(C.MOTOR_COORDINATOR_CONFIG) or {}).get("api_config") or {}
+    if in_place:
+        infer = int(api.get("coordinator_api_infer_port", D.DEFAULT_COORD_INFER_PORT))
+        obs = int(api.get("coordinator_obs_port", D.DEFAULT_COORD_OBS_PORT))
+    else:
+        infer = params.infer_host_port
+        obs = params.obs_host_port
+    return [
+        ("infer", infer),
+        ("mgmt", int(api.get("coordinator_api_mgmt_port", D.DEFAULT_COORD_MGMT_PORT))),
+        ("obs", obs),
     ]
 
 
@@ -115,17 +138,18 @@ def _ports_to_check(
     in_place: bool = False,
 ):
     if identity is None:
+        ports = _coordinator_ports(user_config, params, in_place=in_place)
         if in_place:
-            return [("infer", params.infer_container_port), ("obs", params.obs_container_port)]
-        return [("infer", params.infer_host_port), ("obs", params.obs_host_port)]
-    control = D.control_role_of(identity.role)
-    ports = []
-    if control in ("coordinator", D.ROLE_COORDINATOR_CONTROLLER):
-        ports.extend([("infer", params.infer_container_port), ("obs", params.obs_container_port)])
-    if control in ("controller", D.ROLE_COORDINATOR_CONTROLLER):
-        ports.extend(_controller_ports(user_config))
-    if D.engine_role_of(identity.role):
-        ports.extend(D.collect_engine_listen_ports(user_config, identity.role))
+            ports.extend(_controller_ports(user_config))
+    else:
+        control = D.control_role_of(identity.role)
+        ports = []
+        if control in ("coordinator", D.ROLE_COORDINATOR_CONTROLLER):
+            ports.extend(_coordinator_ports(user_config, params, in_place=True))
+        if control in ("controller", D.ROLE_COORDINATOR_CONTROLLER):
+            ports.extend(_controller_ports(user_config))
+        if D.engine_role_of(identity.role):
+            ports.extend(D.collect_engine_listen_ports(user_config, identity.role))
     seen: set[int] = set()
     unique = []
     for label, port in ports:
@@ -173,7 +197,7 @@ def preflight(
 
     if check_devices and (identity is None or D.engine_role_of(identity.role)):
         try:
-            D.validate_devices_vs_world_size(
+            D.validate_attached_npu_count(
                 config_for_ports,
                 identity.role if identity else None,
                 devices_arg=devices_arg,
@@ -695,7 +719,7 @@ def _validate_one_click_identity(args, deployer_dir: str) -> None:
     )
     engine_ports = D.engine_port_overrides_from_args(args)
     D.validate_engine_port_overrides(identity, engine_ports)
-    D.validate_devices_vs_world_size(
+    D.validate_attached_npu_count(
         user_config,
         identity.role if identity else None,
         devices_arg=getattr(args, "devices", None),
@@ -755,7 +779,7 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
             user_config_path, _env_config_path = resolve_config_paths(
                 args.config_dir, args.user_config_path, args.env_config_path
             )
-            D.validate_devices_vs_world_size(
+            D.validate_attached_npu_count(
                 read_json(user_config_path),
                 getattr(args, "role", None),
                 devices_arg=devices_arg,

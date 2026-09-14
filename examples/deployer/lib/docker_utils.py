@@ -304,9 +304,13 @@ CONTAINER_CONFIG_PATH = "/usr/local/Ascend/pyMotor/conf"
 
 _API_CONFIG = "api_config"
 _COORD_INFER_PORT = "coordinator_api_infer_port"
+_COORD_MGMT_PORT = "coordinator_api_mgmt_port"
 _COORD_OBS_PORT = "coordinator_obs_port"
 DEFAULT_COORD_INFER_PORT = 1025
+DEFAULT_COORD_MGMT_PORT = 1026
 DEFAULT_COORD_OBS_PORT = 1027
+DEFAULT_CONTROLLER_API_PORT = 1026
+DEFAULT_CONTROLLER_OBS_PORT = 1027
 DEFAULT_INFER_NODE_PORT = 31015
 DEFAULT_OBS_NODE_PORT = 31017
 
@@ -377,16 +381,20 @@ def _engine_world_size(engine_section: dict) -> int:
 
 
 def required_visible_device_count(user_config: dict) -> int:
+    """Total NPUs when one container holds every instance (single-container)."""
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     if C.HYBRID_INSTANCES_NUM in deploy_config:
         instances = int(deploy_config[C.HYBRID_INSTANCES_NUM])
-        union_section = user_config.get(C.MOTOR_ENGINE_UNION_CONFIG) or {}
-        return instances * _engine_world_size(union_section)
+        pod_npu = validate_role_pod_layout(user_config, "union")
+        pod_num = _require_instance_pod_num(user_config, "union")
+        return instances * pod_num * pod_npu
     p_instances = int(deploy_config[C.P_INSTANCES_NUM])
     d_instances = int(deploy_config[C.D_INSTANCES_NUM])
-    prefill_section = user_config[C.MOTOR_ENGINE_PREFILL_CONFIG]
-    decode_section = user_config[C.MOTOR_ENGINE_DECODE_CONFIG]
-    return p_instances * _engine_world_size(prefill_section) + d_instances * _engine_world_size(decode_section)
+    p_npu = validate_role_pod_layout(user_config, "prefill")
+    d_npu = validate_role_pod_layout(user_config, "decode")
+    p_pods = _require_instance_pod_num(user_config, "prefill")
+    d_pods = _require_instance_pod_num(user_config, "decode")
+    return p_instances * p_pods * p_npu + d_instances * d_pods * d_npu
 
 
 def parse_visible_device_ids(raw: str) -> list[int]:
@@ -953,20 +961,35 @@ def _enable_multi_endpoints(section: dict) -> bool:
     return True
 
 
-def _pod_npu_num(user_config: dict, engine_role: str) -> int:
-    deploy = user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}
-    key = {
-        "prefill": C.P_POD_NPU_NUM,
-        "decode": C.D_POD_NPU_NUM,
-        "union": C.HYBRID_POD_NPU_NUM,
-    }.get(engine_role)
-    if not key:
-        return 0
+_ENGINE_POD_NUM_KEY = {
+    "prefill": C.SINGER_P_INSTANCES_NUM,
+    "decode": C.SINGER_D_INSTANCES_NUM,
+    "union": C.SINGLE_HYBRID_INSTANCE_POD_NUM,
+}
+_ENGINE_POD_NPU_KEY = {
+    "prefill": C.P_POD_NPU_NUM,
+    "decode": C.D_POD_NPU_NUM,
+    "union": C.HYBRID_POD_NPU_NUM,
+}
+
+
+def _require_positive_int(value, field_name: str) -> int:
+    if value in (None, ""):
+        raise ValueError(f"{field_name} is required.")
     try:
-        n = int(deploy.get(key) or 0)
-    except (TypeError, ValueError):
-        return 0
-    return n if n > 0 else 0
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer.") from exc
+    if number <= 0:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return number
+
+
+def _first_present_value(cfg: dict, *keys):
+    for key in keys:
+        if key in cfg and cfg[key] not in (None, ""):
+            return cfg[key]
+    return None
 
 
 def _engine_section(user_config: dict, role: str | None) -> dict | None:
@@ -976,57 +999,78 @@ def _engine_section(user_config: dict, role: str | None) -> dict | None:
     return section if isinstance(section, dict) else None
 
 
-def instance_world_size(user_config: dict, role: str | None) -> int:
-    if role and engine_role_of(role):
-        section = _engine_section(user_config, role)
-        if section is None:
-            raise ValueError(f"--role {role} has no engine section to derive world_size.")
-        return max(1, _engine_world_size(section))
-    return required_visible_device_count(user_config)
-
-
-def _engine_nnodes(section: dict) -> int:
+def _engine_parallel_sizes(section: dict) -> tuple[int, int, int]:
     cfg = _engine_config_normalized(section)
-    try:
-        n = int(cfg.get("nnodes") or 1)
-    except (TypeError, ValueError):
-        n = 1
-    return n if n > 0 else 1
+    dp_raw = _first_present_value(cfg, "data_parallel_size", "dp_size")
+    tp_raw = _first_present_value(cfg, "tensor_parallel_size", "tp_size")
+    if dp_raw is None:
+        raise ValueError("engine_config.data_parallel_size is required.")
+    if tp_raw is None:
+        raise ValueError("engine_config.tensor_parallel_size is required.")
+    dp = _require_positive_int(dp_raw, "engine_config.data_parallel_size")
+    tp = _require_positive_int(tp_raw, "engine_config.tensor_parallel_size")
+    pp_raw = _first_present_value(cfg, "pipeline_parallel_size", "pp_size")
+    pp = 1 if pp_raw is None else _require_positive_int(pp_raw, "engine_config.pipeline_parallel_size")
+    return dp, tp, pp
 
 
-def instance_local_npu_count(user_config: dict, role: str | None) -> int:
-    """NPUs this container must attach (one node), not the full instance world_size.
+def _require_instance_pod_num(user_config: dict, engine_role: str) -> int:
+    key = _ENGINE_POD_NUM_KEY.get(engine_role)
+    if not key:
+        raise ValueError(f"unknown engine role {engine_role}")
+    deploy = user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}
+    if key not in deploy:
+        raise ValueError(f"motor_deploy_config.{key} is required.")
+    return _require_positive_int(deploy.get(key), f"motor_deploy_config.{key}")
 
-    Matches NodeManager: nnodes=1 → world_size; nnodes>1 → world_size/nnodes
-    (TP stays intra-node; PCP/PP may span). Same number K8s puts in *_pod_npu_num.
-    """
+
+def _require_pod_npu_num(user_config: dict, engine_role: str) -> int:
+    key = _ENGINE_POD_NPU_KEY.get(engine_role)
+    if not key:
+        raise ValueError(f"unknown engine role {engine_role}")
+    deploy = user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}
+    if key not in deploy:
+        raise ValueError(f"motor_deploy_config.{key} is required.")
+    return _require_positive_int(deploy.get(key), f"motor_deploy_config.{key}")
+
+
+def validate_role_pod_layout(user_config: dict, engine_role: str) -> int:
+    """Ensure pod_num × pod_npu == dp × tp × pp. Return NPUs for this container."""
+    section = _engine_section(user_config, engine_role)
+    if section is None:
+        raise ValueError(f"{engine_role} has no engine section to derive NPU count.")
+    pod_num = _require_instance_pod_num(user_config, engine_role)
+    pod_npu = _require_pod_npu_num(user_config, engine_role)
+    dp, tp, pp = _engine_parallel_sizes(section)
+    left = pod_num * pod_npu
+    right = dp * tp * pp
+    if left != right:
+        raise ValueError(
+            f"{engine_role}: {pod_num} containers × {pod_npu} NPUs = {left}, "
+            f"but data_parallel_size×tensor_parallel_size×pipeline_parallel_size "
+            f"= {dp}×{tp}×{pp} = {right}."
+        )
+    return pod_npu
+
+
+def validate_pod_layouts(user_config: dict) -> None:
+    deploy = user_config.get(C.MOTOR_DEPLOY_CONFIG) or {}
+    if not isinstance(deploy, dict):
+        return
+    if C.HYBRID_INSTANCES_NUM in deploy:
+        validate_role_pod_layout(user_config, "union")
+        return
+    if C.MOTOR_ENGINE_PREFILL_CONFIG in user_config:
+        validate_role_pod_layout(user_config, "prefill")
+    if C.MOTOR_ENGINE_DECODE_CONFIG in user_config:
+        validate_role_pod_layout(user_config, "decode")
+
+
+def container_npu_count(user_config: dict, role: str | None) -> int:
+    """NPUs this container must attach after pod-layout validation."""
     if not (role and engine_role_of(role)):
         return required_visible_device_count(user_config)
-    section = _engine_section(user_config, role)
-    if section is None:
-        raise ValueError(f"--role {role} has no engine section to derive NPU count.")
-    world = max(1, _engine_world_size(section))
-    nnodes = _engine_nnodes(section)
-    cfg = _engine_config_normalized(section)
-    try:
-        dp = int(cfg.get("data_parallel_size") or cfg.get("dp_size") or 1)
-    except (TypeError, ValueError):
-        dp = 1
-    if nnodes > 1 and dp > 1:
-        raise ValueError(f"--role {role}: nnodes>1 with data_parallel_size>1 is unsupported.")
-    if nnodes > 1:
-        if world % nnodes != 0:
-            raise ValueError(f"--role {role}: world_size={world} is not divisible by nnodes={nnodes}.")
-        expected = world // nnodes
-    else:
-        expected = world
-    pod_npu = _pod_npu_num(user_config, engine_role_of(role))
-    if pod_npu > 0 and pod_npu != expected:
-        raise ValueError(
-            f"--role {role}: pod NPU count is {pod_npu}, but this node needs {expected} "
-            f"(world_size={world}, nnodes={nnodes})."
-        )
-    return expected
+    return validate_role_pod_layout(user_config, engine_role_of(role))
 
 
 def _instance_endpoint_num(user_config: dict, section: dict, engine_role: str) -> int:
@@ -1049,9 +1093,7 @@ def _instance_endpoint_num(user_config: dict, section: dict, engine_role: str) -
         pp = max(1, int(cfg.get("pipeline_parallel_size") or cfg.get("pp_size") or 1))
         pcp = max(1, int(cfg.get("prefill_context_parallel_size") or 1))
         devices_per_dp = tp * pp * pcp
-        device_num = _pod_npu_num(user_config, engine_role)
-        if device_num <= 0:
-            device_num = _engine_world_size(section)
+        device_num = _require_pod_npu_num(user_config, engine_role)
     except (TypeError, ValueError):
         return 1
     if devices_per_dp < 1 or device_num < devices_per_dp:
@@ -1063,7 +1105,7 @@ def collect_engine_listen_ports(user_config: dict, role: str) -> list[tuple[str,
     """Ports this engine instance binds on host network after CLI overrides.
 
     Aligns with NodeManager defaults/service_ports and vLLM-Ascend Mooncake
-    handshake ports: kv_port .. kv_port+world_size-1.
+    handshake ports: kv_port .. kv_port+pod_npu-1.
     """
     engine_role = engine_role_of(role) or role
     section = _engine_section(user_config, role)
@@ -1106,8 +1148,8 @@ def collect_engine_listen_ports(user_config: dict, role: str) -> list[tuple[str,
     kv_port = _read_kv_port(engine_config)
     if kv_port is not None:
         try:
-            n_cards = max(1, _engine_world_size(section))
-        except (TypeError, ValueError):
+            n_cards = max(1, _require_pod_npu_num(user_config, engine_role))
+        except ValueError:
             n_cards = 1
         for i in range(n_cards):
             add(f"kv[{i}]", _host_listen_port(kv_port + i))
@@ -1124,7 +1166,7 @@ def attached_npu_count(devices_arg: str | None, hardware_type: str, *, template_
     return None
 
 
-def validate_devices_vs_world_size(
+def validate_attached_npu_count(
     user_config: dict,
     role: str | None,
     *,
@@ -1132,10 +1174,10 @@ def validate_devices_vs_world_size(
     hardware_type: str,
     template_fallback: bool,
 ) -> None:
-    """Require attached NPUs to match this node's card count, not cluster P+D total."""
+    """Require attached NPUs to match this container's *_pod_npu_num."""
     if role and engine_role_of(role) is None:
         return
-    expected = instance_local_npu_count(user_config, role)
+    expected = container_npu_count(user_config, role)
     got = attached_npu_count(devices_arg, hardware_type, template_fallback=template_fallback)
     if got is None or got == expected:
         return
@@ -1147,8 +1189,7 @@ def validate_devices_vs_world_size(
         source = "docker-run NPU template"
     raise ValueError(
         f"{source} attaches {got} NPU(s), but this container needs {expected} "
-        f"(this node: world_size/nnodes, or *_pod_npu_num; not cluster P+D total). "
-        f"Pass --devices with exactly {expected} card(s)."
+        f"(*_pod_npu_num). Pass --devices with exactly {expected} card(s)."
     )
 
 

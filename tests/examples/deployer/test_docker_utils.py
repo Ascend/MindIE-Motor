@@ -31,6 +31,8 @@ def _pd_config():
             "d_instances_num": 1,
             "p_pod_npu_num": 1,
             "d_pod_npu_num": 1,
+            "single_p_instance_pod_num": 1,
+            "single_d_instance_pod_num": 1,
             "image_name": "img",
             "hardware_type": "800I_A3",
             "deploy_mode": "single_container",
@@ -194,3 +196,51 @@ class DockerDeployTests(unittest.TestCase):
             if leftover.poll() is None:
                 leftover.kill()
                 leftover.wait(timeout=2)
+
+
+def _multi_pod_pd_config():
+    """P: dp=2/tp=8 two containers; D: dp=8/tp=4 four containers."""
+    return {
+        "motor_deploy_config": {
+            "p_instances_num": 1,
+            "d_instances_num": 1,
+            "single_p_instance_pod_num": 2,
+            "single_d_instance_pod_num": 4,
+            "p_pod_npu_num": 8,
+            "d_pod_npu_num": 8,
+            "image_name": "img",
+            "hardware_type": "800I_A2",
+        },
+        "motor_controller_config": {},
+        "motor_coordinator_config": {},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "data_parallel_size": 2,
+                "tensor_parallel_size": 8,
+                "pipeline_parallel_size": 1,
+            },
+        },
+        "motor_engine_decode_config": {
+            "engine_type": "vllm",
+            "engine_config": {
+                "data_parallel_size": 8,
+                "tensor_parallel_size": 4,
+                "pipeline_parallel_size": 1,
+            },
+        },
+    }
+
+
+class DockerPreflightLayoutTests(unittest.TestCase):
+    def test_multi_pod_layout_uses_pod_npu_not_world(self):
+        cfg = _multi_pod_pd_config()
+        D.validate_pod_layouts(cfg)
+        self.assertEqual(D.container_npu_count(cfg, "prefill"), 8)
+        self.assertEqual(D.container_npu_count(cfg, "decode"), 8)
+
+    def test_layout_mismatch_raises(self):
+        cfg = _multi_pod_pd_config()
+        cfg["motor_deploy_config"]["p_pod_npu_num"] = 4
+        with self.assertRaisesRegex(ValueError, "prefill"):
+            D.validate_pod_layouts(cfg)
