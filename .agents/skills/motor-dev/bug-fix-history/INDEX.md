@@ -57,3 +57,4 @@
 | 2026-09-04 | coordinator | SHM CAS 分配成功后被取消，active_tokens 永久泄漏 | [workload-ledger-orphan-leak.md](coordinator/workload-ledger-orphan-leak.md) | active_tokens leak, CancelledError, cas_add rollback, pop_residual_workloads |
 | 2026-09-09 | kv_conductor | map 格式 BlockStored 无法解析 | `kv_conductor/map-block-stored.md` | BlockStored, msgspec, map, deserialize_any |
 | 2026-09-09 | kv_conductor | CPU/Disk 订阅器误按 vLLM 事件解析 | `kv_conductor/event-source-routing.md` | ZmqSubscriber, EventSource, PoolEvent, CPU, Disk |
+| 2026-09-09 | coordinator | PD 分离请求在 Decode 才因 Prefill 改写字段被拒绝 | [pd-stream-options-late-rejection.md](coordinator/pd-stream-options-late-rejection.md) | coordinator, PD separation, stream_options, min_tokens, Decode HTTP-400, KV cache expiry |

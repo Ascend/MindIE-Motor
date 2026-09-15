@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from pydantic import TypeAdapter, ValidationError
 
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
@@ -53,6 +54,9 @@ from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.agent_hint import agent_hint_implies_manage_request
 
 logger = get_logger(__name__)
+
+_OPENAI_INT_ADAPTER = TypeAdapter(int)
+_OPENAI_BOOL_ADAPTER = TypeAdapter(bool)
 
 
 def get_request_manager(request: Request) -> RequestManager:
@@ -186,6 +190,50 @@ def _validate_openai_request(body_json: dict[str, Any], request_type: RequestTyp
         )
     _validate_positive_int_field(body_json, OpenAIField.MAX_TOKENS)
     _validate_positive_int_field(body_json, OpenAIField.MAX_COMPLETION_TOKENS)
+    for field_name, adapter in (
+        (OpenAIField.STREAM, _OPENAI_BOOL_ADAPTER),
+        (OpenAIField.MIN_TOKENS, _OPENAI_INT_ADAPTER),
+    ):
+        if field_name not in body_json or (field_name == OpenAIField.STREAM and body_json[field_name] is None):
+            continue
+        try:
+            adapter.validate_python(body_json[field_name])
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid {field_name} field.",
+            ) from exc
+
+    min_tokens = (
+        0
+        if OpenAIField.MIN_TOKENS not in body_json
+        else _OPENAI_INT_ADAPTER.validate_python(body_json[OpenAIField.MIN_TOKENS])
+    )
+
+    # Deliberately inspect the raw stream value, matching the engine protocol's
+    # mode="before" validator. String "false" is truthy here and later coerced
+    # to False, so Prefill and Decode consistently accept it.
+    if body_json.get(OpenAIField.STREAM_OPTIONS) and not body_json.get(OpenAIField.STREAM):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Stream options can only be defined when `stream=True`.",
+        )
+    max_field = (
+        OpenAIField.MAX_COMPLETION_TOKENS
+        if OpenAIField.MESSAGES in body_json and OpenAIField.MAX_COMPLETION_TOKENS in body_json
+        else OpenAIField.MAX_TOKENS
+    )
+    max_tokens = body_json.get(max_field)
+    if min_tokens < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{OpenAIField.MIN_TOKENS} must be greater than or equal to 0.",
+        )
+    if max_tokens is not None and min_tokens > max_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{OpenAIField.MIN_TOKENS} must be less than or equal to {max_field}.",
+        )
     if request_type != RequestType.OPENAI:
         return
     if OpenAIField.PROMPT not in body_json and OpenAIField.MESSAGES not in body_json:
