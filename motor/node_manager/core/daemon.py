@@ -552,10 +552,15 @@ class Daemon(ThreadSafeSingleton):
         Used by the engine relaunch flow: while engines are being re-pulled
         (or a potential engine fault is being reported to the Controller) the
         abnormal observations must not accumulate the threshold that would
-        kill this pod before recovery completes.
+        kill this pod before recovery completes. Concurrent death reporting
+        may request a shorter wait window while an explicit engine relaunch
+        has already installed a longer freeze. Never shorten the existing
+        deadline in that case; doing so can make the pod suicide before the
+        relaunch completion timeout.
         """
         with self._suicide_lock:
-            self._suicide_freeze_until = time.monotonic() + seconds
+            requested_until = time.monotonic() + seconds
+            self._suicide_freeze_until = max(self._suicide_freeze_until, requested_until)
             self._suicide_abnormal_count = 0
             self._should_suicide = False
 

@@ -547,6 +547,27 @@ def test_freeze_suspends_counting_and_expires(daemon):
     assert not daemon.is_suicide_frozen()
 
 
+def test_freeze_does_not_shorten_existing_relaunch_window(daemon):
+    """A concurrent short death-report freeze must not replace relaunch freeze."""
+    with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0):
+        daemon.freeze_suicide(720)
+
+    with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1001.0):
+        daemon.freeze_suicide(180)
+
+    # 1500 is between the short deadline (1181) and the relaunch deadline (1720).
+    # A direct-assignment regression would expire here; max-based behavior stays frozen.
+    with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1500.0):
+        assert daemon.is_suicide_frozen()
+    assert daemon._suicide_freeze_until == 1720.0
+
+    with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1179.0):
+        assert daemon.is_suicide_frozen()
+
+    with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1721.0):
+        assert not daemon.is_suicide_frozen()
+
+
 def test_engine_death_reported_and_deduped_by_pid(daemon):
     """A dead engine PID freezes suicide and reports once; a fresh PID reports again."""
     with (
