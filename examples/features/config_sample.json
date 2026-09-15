@@ -225,7 +225,8 @@
       "connection_timeout": 10,
       "read_timeout": 15,
       "write_timeout": 15,
-      "keep_alive_timeout": 60
+      "keep_alive_timeout": 60,
+      "engine_client_keepalive_expiry": 3.0
     },
     "api_key_config": {
       "enable_api_key": false,

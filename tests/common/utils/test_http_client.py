@@ -12,9 +12,10 @@ import os
 import tempfile
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 import requests
-from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.http.http_client import AsyncSafeHTTPSClient, SafeHTTPSClient
 from motor.config.tls_config import TLSConfig
 
 
@@ -72,6 +73,14 @@ def test_init_without_certificates(base_url):
 
     assert client.base_url == f"http://{base_url}"
     assert client.protocol == 'http://'
+
+
+def test_async_client_applies_configured_keepalive_expiry(base_url):
+    with patch("motor.common.http.http_client.HttpClientContext") as mock_client:
+        AsyncSafeHTTPSClient.create_client(base_url, keepalive_expiry=2.5)
+
+    limits = mock_client.call_args.kwargs["limits"]
+    assert limits.keepalive_expiry == 2.5
 
 
 def test_init_applies_custom_headers(base_url):
@@ -276,3 +285,22 @@ def test_http_error_non_error_body_falls_back_to_text(base_url):
         mock_request.side_effect = requests.exceptions.HTTPError(response=mock_response)
         with pytest.raises(Exception, match="gateway down"):
             client.get("/query")
+
+
+def test_async_client_expires_idle_connections_before_server_boundary(base_url):
+    """The Coordinator must retire idle vLLM connections before the server's 5s timeout."""
+    with patch("motor.common.http.http_client.HttpClientContext") as mock_client:
+        AsyncSafeHTTPSClient.create_client(base_url)
+
+    limits = mock_client.call_args.kwargs["limits"]
+    assert limits.keepalive_expiry == 3.0
+
+
+def test_async_client_preserves_custom_connection_limits(base_url):
+    """Explicit limits supplied by a caller must not be replaced by pool defaults."""
+    custom_limits = httpx.Limits(keepalive_expiry=1.0)
+
+    with patch("motor.common.http.http_client.HttpClientContext") as mock_client:
+        AsyncSafeHTTPSClient.create_client(base_url, limits=custom_limits)
+
+    assert mock_client.call_args.kwargs["limits"] is custom_limits

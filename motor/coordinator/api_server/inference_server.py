@@ -483,6 +483,7 @@ class InferenceServer(BaseCoordinatorServer):
     def _make_on_instance_refreshed(self):
         """Create on_instance_refreshed callback: cleanup and warmup HTTP pool on instance change."""
         tls_config = self.coordinator_config.infer_tls_config
+        keepalive_expiry = self.coordinator_config.timeout_config.engine_client_keepalive_expiry
         pool = HTTPClientPool()
 
         async def _callback(active_endpoints: list[tuple[str, str]]) -> None:
@@ -498,6 +499,7 @@ class InferenceServer(BaseCoordinatorServer):
                 results = await pool.warmup_clients(
                     endpoints=active_endpoints,
                     tls_config=tls_config,
+                    keepalive_expiry=keepalive_expiry,
                 )
                 new_count = sum(1 for v in results.values() if v)
                 if new_count > 0:

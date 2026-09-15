@@ -328,7 +328,10 @@ class BaseRouter(ABC):
         t0_client = time.perf_counter()
         client_pool = HTTPClientPool()
         client = await client_pool.get_client(
-            ip=endpoint.ip, port=endpoint.business_port, tls_config=self.config.infer_tls_config
+            ip=endpoint.ip,
+            port=endpoint.business_port,
+            tls_config=self.config.infer_tls_config,
+            keepalive_expiry=self.config.timeout_config.engine_client_keepalive_expiry,
         )
         elapsed_client_ms = (time.perf_counter() - t0_client) * 1000
         self.logger.debug(

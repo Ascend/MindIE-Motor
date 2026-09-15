@@ -100,6 +100,7 @@ COMPLETE_CONFIG = {
         "read_timeout": 15,
         "write_timeout": 15,
         "keep_alive_timeout": 60,
+        "engine_client_keepalive_expiry": 3.0,
     },
     "api_key_config": {
         "enable_api_key": True,
@@ -149,6 +150,7 @@ def test_default_config_initialization():
     assert not hasattr(config.scheduler_config, "deploy_mode")
     assert config.scheduler_config.scheduler_type.value == "load_balance"
     assert config.timeout_config.request_timeout == 30
+    assert config.timeout_config.engine_client_keepalive_expiry == 3.0
     assert config.api_key_config.enable_api_key is False
     assert config.mgmt_api_key_config.enable_api_key is False
     assert config.rate_limit_config.enable_rate_limit is False
@@ -854,6 +856,7 @@ def test_config_validation_rejects_enabled_management_auth_without_key_file():
         ("read_timeout", -1, "read_timeout must be greater than 0"),
         ("write_timeout", 0, "write_timeout must be greater than 0"),
         ("keep_alive_timeout", -1, "keep_alive_timeout must be greater than 0"),
+        ("engine_client_keepalive_expiry", 0, "engine_client_keepalive_expiry must be greater than 0"),
         ("coordinator_api_infer_port", 0, "coordinator_api_infer_port must be in range 1-65535"),
         ("coordinator_api_mgmt_port", 65536, "coordinator_api_mgmt_port must be in range 1-65535"),
         ("max_requests", -1, "max_requests must be greater than 0"),
@@ -874,7 +877,14 @@ def test_config_validation_errors(param, value, expected_error):
             setattr(config.logging_config, param, value)
         elif param in ["max_retry", "retry_delay", "first_token_timeout", "infer_timeout"]:
             setattr(config.exception_config, param, value)
-        elif param in ["request_timeout", "connection_timeout", "read_timeout", "write_timeout", "keep_alive_timeout"]:
+        elif param in [
+            "request_timeout",
+            "connection_timeout",
+            "read_timeout",
+            "write_timeout",
+            "keep_alive_timeout",
+            "engine_client_keepalive_expiry",
+        ]:
             setattr(config.timeout_config, param, value)
         elif param in ["coordinator_api_infer_port", "coordinator_api_mgmt_port"]:
             setattr(config.api_config, param, value)

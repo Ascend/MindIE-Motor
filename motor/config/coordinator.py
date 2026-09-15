@@ -517,6 +517,7 @@ class TimeoutConfig:
     read_timeout: int = 15
     write_timeout: int = 15
     keep_alive_timeout: int = 60
+    engine_client_keepalive_expiry: float = 3.0
 
 
 @dataclass
@@ -988,6 +989,10 @@ class CoordinatorConfig:
         self._validate_positive_number(self.timeout_config.read_timeout, "read_timeout")
         self._validate_positive_number(self.timeout_config.write_timeout, "write_timeout")
         self._validate_positive_number(self.timeout_config.keep_alive_timeout, "keep_alive_timeout")
+        self._validate_positive_number(
+            self.timeout_config.engine_client_keepalive_expiry,
+            "engine_client_keepalive_expiry",
+        )
 
         # Validate exception configuration
         self._validate_positive_number(self.exception_config.max_retry, "max_retry", allow_zero=True)

@@ -333,7 +333,8 @@ motor_coordinator_config字段配置样例如下所示：
     "connection_timeout": 10,
     "read_timeout": 15,
     "write_timeout": 15,
-    "keep_alive_timeout": 60
+    "keep_alive_timeout": 60,
+    "engine_client_keepalive_expiry": 3.0
   },
   "api_key_config": {
     "enable_api_key": false,
@@ -528,6 +529,7 @@ motor_coordinator_config字段配置样例如下所示：
 | read_timeout | int | 读操作超时时间（秒）。默认值：`15` |
 | write_timeout | int | 写操作超时时间（秒）。默认值：`15` |
 | keep_alive_timeout | int | 连接保活时长，超时无活动则关闭（秒）。默认值：`60` |
+| engine_client_keepalive_expiry | float | Coordinator 到推理引擎的 HTTP 客户端空闲连接过期时间（秒）。默认值：`3.0`，应小于推理引擎服务端的 keep-alive 超时时间（vLLM/uvicorn 默认 `5` 秒）。 |
 | **api_key_config字段** |-|-|
 | enable_api_key | bool | 是否开启 API Key 鉴权。可选：`true` / `false`。默认值：`false` |
 | valid_keys | array | 合法的 API Key 字符串列表。默认值：`[]` |

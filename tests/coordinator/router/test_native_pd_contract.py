@@ -497,4 +497,5 @@ async def test_native_pd_client_uses_coordinator_inference_tls_config(monkeypatc
         ip=endpoint.ip,
         port=endpoint.business_port,
         tls_config=config.infer_tls_config,
+        keepalive_expiry=config.timeout_config.engine_client_keepalive_expiry,
     )
