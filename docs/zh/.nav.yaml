@@ -49,6 +49,7 @@ nav:
           - 虚推健康探测: user_guide/features/sim_inference.md
           - 故障场景重调度: user_guide/features/fault_tolerance/rescheduler.md
           - 精度检测: user_guide/features/precision_detection.md
+          - 数据混淆推理（PMCC）: user_guide/features/data_obfuscation.md
       - 服务维护:
           - 镜像制作: user_guide/maintenance/build_motor_image_from_vllm_ascend.md
           - 常用维护技巧: user_guide/maintenance/maintenance_tips.md

@@ -564,7 +564,10 @@ class PDHybridRouter(BaseRouter):
                                     generate_responses,
                                 )
                             except UpstreamHTTPError as error:
-                                if not is_token_only_unsupported(error):
+                                if (
+                                    not is_token_only_unsupported(error)
+                                    or self.req_info._token_obfuscation_service is not None
+                                ):
                                     raise
                                 self.logger.warning(
                                     "vLLM token-only Union is unsupported; fallback to native OpenAI request "

@@ -27,6 +27,7 @@ class TokenizedRequest(BaseModel):
     """Runtime-neutral prompt tokenization result used by Coordinator."""
 
     prompt_token_ids: list[int]
+    engine_prompt_token_ids: list[int] | None = None
     tokenizer_source: TokenizerSource
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -38,3 +39,17 @@ class TokenizedRequest(BaseModel):
         if any(not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0 for token_id in value):
             raise ValueError("prompt_token_ids must contain non-negative integers")
         return value
+
+    @field_validator("engine_prompt_token_ids", mode="before")
+    @classmethod
+    def validate_engine_prompt_token_ids(cls, value: Any) -> list[int] | None:
+        if value is None:
+            return None
+        return cls.validate_prompt_token_ids(value)
+
+    @property
+    def physical_prompt_token_ids(self) -> list[int]:
+        """Return the token IDs that must be submitted to the inference engine."""
+        if self.engine_prompt_token_ids is not None:
+            return self.engine_prompt_token_ids
+        return self.prompt_token_ids

@@ -154,6 +154,193 @@ def test_default_config_initialization():
     assert config.rate_limit_config.enable_rate_limit is False
     assert config.api_config.coordinator_api_infer_port == 1025
     assert config.api_config.coordinator_api_mgmt_port == 1026
+    assert config.token_obfuscation_config.enabled is False
+    assert config.token_obfuscation_config.vocab_size == 0
+    assert config.token_obfuscation_config.seed_content == ""
+    assert config.token_obfuscation_config.token_white_list == []
+
+
+def test_token_obfuscation_requires_vocab_size_or_model_dir() -> None:
+    """Unset vocab_size is read from config.json; without a model directory it must be given."""
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.token_white_list = [151643]
+
+    with pytest.raises(ValueError, match="vocab_size must be explicitly configured or resolvable"):
+        config.validate_config()
+
+
+def test_token_obfuscation_vocab_size_optional_with_model_dir() -> None:
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.token_white_list = [151643]
+    config.engine_model_paths = ["/data/weights/model-obf"]
+
+    config.validate_config()
+
+
+def test_token_obfuscation_vocab_size_rejects_multiple_model_dirs() -> None:
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.token_white_list = [151643]
+    config.engine_model_paths = ["/data/weights/a-obf", "/data/weights/b-obf"]
+
+    with pytest.raises(ValueError, match="vocab_size must be explicitly configured or resolvable"):
+        config.validate_config()
+
+    config.token_obfuscation_config.model_path = "/data/weights/a-obf"
+    config.validate_config()
+
+
+def test_token_obfuscation_requires_explicit_white_list() -> None:
+    """The white list is model-specific, so it must not be preset in code."""
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.vocab_size = 151936
+
+    with pytest.raises(ValueError, match="token_white_list must be explicitly configured"):
+        config.validate_config()
+
+    config.token_obfuscation_config.token_white_list = [151643, 198]
+    config.validate_config()
+
+
+def test_token_obfuscation_rejects_white_list_out_of_vocab() -> None:
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.vocab_size = 100
+    config.token_obfuscation_config.token_white_list = [99]
+    config.validate_config()
+
+    config.token_obfuscation_config.token_white_list = [100]
+    with pytest.raises(ValueError, match="integer token ids within vocab_size"):
+        config.validate_config()
+
+
+def test_token_obfuscation_requires_render() -> None:
+    config = CoordinatorConfig()
+    config.token_obfuscation_config.enabled = True
+
+    with pytest.raises(ValueError, match="requires render_config.enabled=true"):
+        config.validate_config()
+
+
+def test_token_obfuscation_requires_explicit_seed() -> None:
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.enabled = True
+
+    with pytest.raises(ValueError, match="seed_content must be explicitly configured"):
+        config.validate_config()
+
+
+def test_image_obfuscation_requires_render() -> None:
+    """Image permutation runs on the Render payload, so Render must be enabled."""
+    config = CoordinatorConfig()
+    config.token_obfuscation_config.image_config.enabled = True
+
+    with pytest.raises(ValueError, match="image_config requires render_config.enabled=true"):
+        config.validate_config()
+
+
+def test_image_obfuscation_requires_explicit_seed() -> None:
+    """Image client permutes the same seed, so an empty seed must be rejected too."""
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.image_config.enabled = True
+
+    with pytest.raises(ValueError, match="seed_content must be explicitly configured"):
+        config.validate_config()
+
+
+def test_image_obfuscation_requires_geometry_or_model_dir() -> None:
+    """Unset geometry is read from the served weights directory; without one it must be given."""
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.image_config.enabled = True
+
+    with pytest.raises(ValueError, match=r"image_config requires explicit geometry \(patch_size"):
+        config.validate_config()
+
+
+def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
+    """A served model directory makes the geometry optional (resolved from the model files)."""
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.image_config.enabled = True
+    config.engine_model_paths = ["/data/weights/model-obf"]
+
+    config.validate_config()
+
+
+def test_image_obfuscation_model_path_makes_geometry_optional() -> None:
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    config.token_obfuscation_config.image_config.enabled = True
+    config.token_obfuscation_config.image_config.model_path = "/data/weights/model-obf"
+
+    config.validate_config()
+
+
+def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
+    """Explicitly configured fields stay untouched, so no model directory is required."""
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    image_config = config.token_obfuscation_config.image_config
+    image_config.enabled = True
+    image_config.patch_size = 16
+    image_config.merge_size = 2
+    image_config.temporal_patch_size = 2
+    image_config.longest_edge = 16777216
+    image_config.shortest_edge = 65536
+
+    config.validate_config()
+
+
+def test_image_obfuscation_rejects_inverted_edge_range() -> None:
+    config = CoordinatorConfig()
+    config.render_config.enabled = True
+    config.token_obfuscation_config.seed_content = "seed"
+    image_config = config.token_obfuscation_config.image_config
+    image_config.enabled = True
+    image_config.patch_size = 16
+    image_config.merge_size = 2
+    image_config.temporal_patch_size = 2
+    image_config.shortest_edge = 16777216
+    image_config.longest_edge = 65536
+
+    with pytest.raises(ValueError, match="longest_edge must be greater than or equal to shortest_edge"):
+        config.validate_config()
+
+
+def test_from_json_collects_engine_model_paths(_temp_json_file) -> None:
+    """Engine sections expose the served weights directory for data-obfuscation auto-reading."""
+    raw = {
+        "motor_coordinator_config": {"scheduler_config": {"deploy_mode": "single_node"}},
+        "motor_engine_prefill_config": {"engine_config": {"model": "/data/weights/shared-obf"}},
+        "motor_engine_decode_config": {"engine_config": {"model": "/data/weights/shared-obf"}},
+        "motor_engine_union_config": {"model_config": {"model_path": "/data/weights/legacy-obf"}},
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(raw, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.engine_model_paths == ["/data/weights/shared-obf", "/data/weights/legacy-obf"]
 
 
 def test_from_json_success(_temp_json_file):
@@ -772,7 +959,12 @@ def test_config_validation_multiple_errors():
 def test_to_dict():
     """Test configuration serialization to dict"""
     config = CoordinatorConfig()
+    config.engine_model_paths = ["/data/weights/model-obf"]
     config_dict = config.to_dict()
+
+    # Internal fields derived from the engine sections stay out of the public configuration
+    assert "engine_model_paths" not in config_dict
+    assert "config_path" not in config_dict
 
     # Check that all config sections are present
     expected_keys = [

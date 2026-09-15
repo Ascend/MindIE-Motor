@@ -200,6 +200,22 @@
       "timeout_ms": 5000,
       "image_name": ""
     },
+    "token_obfuscation_config": {
+      "enabled": false,
+      "model_path": "",
+      "vocab_size": 0,
+      "token_white_list": [],
+      "seed_content": "",
+      "image_config": {
+        "enabled": false,
+        "model_path": "",
+        "patch_size": 0,
+        "merge_size": 0,
+        "longest_edge": 0,
+        "shortest_edge": 0,
+        "temporal_patch_size": 0
+      }
+    },
     "inference_workers_config": {
       "num_workers": 4,
       "worker_metaserver_base_port": 12000

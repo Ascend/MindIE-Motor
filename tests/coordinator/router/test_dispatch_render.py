@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,24 +49,41 @@ def dispatch_request(monkeypatch):
 
     monkeypatch.setattr(dispatch, "select_router_class", select_router)
 
-    def send(results, body=None, config=None, render_client=None):
+    def send(
+        results,
+        body=None,
+        config=None,
+        render_client=None,
+        obfuscation_service=None,
+        image_obfuscation_service=None,
+        path="/v1/completions",
+        expect_status=HTTPStatus.OK,
+    ):
+        config = config or CoordinatorConfig()
+        sync_owner = TokenizationService(
+            config.render_config,
+            local_tokenizer=MagicMock(),
+            obfuscation_service=obfuscation_service,
+        )
         service = MagicMock()
         service.tokenize = AsyncMock(return_value=results)
-        service.sync_sampling_params = MagicMock(wraps=TokenizationService.sync_sampling_params)
+        service.sync_sampling_params = MagicMock(wraps=sync_owner.sync_sampling_params)
         service.render_client = render_client
-        config = config or CoordinatorConfig()
         app = FastAPI()
         app.state.tokenization_service = service
+        app.state.token_obfuscation_service = obfuscation_service
+        app.state.image_obfuscation_service = image_obfuscation_service
         request_manager = RequestManager(config)
 
-        @app.post("/v1/completions")
-        async def completions(request: Request):
+        @app.post(path)
+        async def entry(request: Request):
             return await dispatch.handle_request(
                 request, config, scheduler=AsyncMock(), request_manager=request_manager
             )
 
-        response = TestClient(app).post("/v1/completions", json=body or {"model": "model", "prompt": "hello"})
-        assert response.status_code == 200
+        response = TestClient(app).post(path, json=body or {"model": "model", "prompt": "hello"})
+        captured["response"] = response
+        assert response.status_code == expect_status
         captured["service"] = service
         return captured
 
@@ -90,6 +108,78 @@ def test_dispatch_keeps_batch_and_uses_longest_prompt_for_scheduler(dispatch_req
 
     assert captured["routed"].token_ids == [20, 21, 22]
     assert captured["routed"].tokenized_requests == results
+
+
+def test_dispatch_keeps_semantic_and_engine_token_views_separate(dispatch_request):
+    obfuscation_service = MagicMock()
+    result = _tokenized([10, 20], engine_prompt_token_ids=[110, 120])
+
+    captured = dispatch_request([result], obfuscation_service=obfuscation_service)
+
+    assert captured["routed"].token_ids == [10, 20]
+    assert captured["routed"].engine_token_ids == [110, 120]
+    assert captured["routed"]._token_obfuscation_service is obfuscation_service
+
+
+def test_dispatch_rejects_streaming_for_obfuscated_inference(dispatch_request):
+    """Streaming stays rejected for obfuscated inference."""
+    captured = dispatch_request(
+        [_tokenized([10, 20])],
+        {"model": "model", "prompt": "hello", "stream": True},
+        obfuscation_service=MagicMock(),
+        expect_status=HTTPStatus.NOT_IMPLEMENTED,
+    )
+
+    assert "non-streaming" in captured["response"].json()["detail"]
+
+
+def test_dispatch_rejects_render_less_api_for_obfuscated_inference(dispatch_request):
+    """Routes without a Render contract must never forward a plaintext prompt to a protected model."""
+    captured = dispatch_request(
+        [_tokenized([10, 20])],
+        {"model": "model", "input": "hello"},
+        obfuscation_service=MagicMock(),
+        path="/v1/responses",
+        expect_status=HTTPStatus.NOT_IMPLEMENTED,
+    )
+
+    assert "v1/responses" in captured["response"].json()["detail"]
+
+
+def test_dispatch_rejects_render_less_api_for_image_only_obfuscation(dispatch_request):
+    """Image-only obfuscation needs the same Render contract guards as token obfuscation."""
+    captured = dispatch_request(
+        [_tokenized([10, 20])],
+        {"model": "model", "input": "hello"},
+        image_obfuscation_service=MagicMock(),
+        path="/v1/responses",
+        expect_status=HTTPStatus.NOT_IMPLEMENTED,
+    )
+
+    assert "v1/responses" in captured["response"].json()["detail"]
+
+
+def test_dispatch_rejects_streaming_for_image_only_obfuscation(dispatch_request):
+    """Image-only obfuscation rejects streaming before reaching the local tokenizer."""
+    captured = dispatch_request(
+        [_tokenized([10, 20])],
+        {"model": "model", "prompt": "hello", "stream": True},
+        image_obfuscation_service=MagicMock(),
+        expect_status=HTTPStatus.NOT_IMPLEMENTED,
+    )
+
+    assert "non-streaming" in captured["response"].json()["detail"]
+
+
+def test_dispatch_allows_render_less_api_without_obfuscation(dispatch_request):
+    """The Render-less guard only applies to obfuscated inference."""
+    captured = dispatch_request(
+        [_tokenized([10, 20], TokenizerSource.LOCAL)],
+        {"model": "model", "input": "hello"},
+        path="/v1/responses",
+    )
+
+    assert captured["routed"].token_ids == [10, 20]
 
 
 def test_dispatch_continues_when_tokenization_is_unavailable(dispatch_request):

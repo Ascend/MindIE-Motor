@@ -18,6 +18,7 @@ from motor.common.utils.config_runtime import log_configuration_summary
 from motor.common.utils.port_allocator import apply_coordinator_ports, run_port_setup_or_exit
 from motor.common.utils.startup_banner import log_startup_banner
 from motor.common.logger import get_logger, reconfigure_logging
+from motor.coordinator.render.obfuscation_library import configure_obfuscation_library_path
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,9 @@ async def main() -> None:
         logger.info("Starting Motor Coordinator Daemon...")
 
         config = CoordinatorConfig.from_json()
+        obfuscation_config = config.token_obfuscation_config
+        if obfuscation_config.enabled or obfuscation_config.image_config.enabled:
+            configure_obfuscation_library_path()
         reconfigure_logging(config.logging_config)
         run_port_setup_or_exit(apply_coordinator_ports, config)
         if config.config_path:

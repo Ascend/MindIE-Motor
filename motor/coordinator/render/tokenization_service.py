@@ -16,7 +16,9 @@ from typing import Any, Protocol
 from motor.common.logger import get_logger
 from motor.config.coordinator import CONTEXT_BUDGET_OFF, CONTEXT_BUDGET_ON, RenderConfig
 from motor.coordinator.render.api_spec import RenderApiSpec, get_render_api_spec
+from motor.coordinator.render.image_obfuscation_service import ImageObfuscationError, ImageObfuscationService
 from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
+from motor.coordinator.render.token_obfuscation_service import TokenObfuscationError, TokenObfuscationService
 from motor.coordinator.render.vllm_render_client import (
     RenderClientError,
     RenderUnavailableError,
@@ -26,10 +28,12 @@ from motor.coordinator.render.vllm_render_client import (
 logger = get_logger(__name__)
 
 _MESSAGES = "messages"
+_FEATURES = "features"
 _MAX_COMPLETION_TOKENS = "max_completion_tokens"
 _MAX_TOKENS = "max_tokens"
 _MODEL = "model"
 _PROMPT = "prompt"
+_TEMPERATURE = "temperature"
 _TOOLS = "tools"
 
 
@@ -56,10 +60,14 @@ class TokenizationService:
         local_tokenizer: LocalTokenizer | None = None,
         *,
         context_budget_mode: str = CONTEXT_BUDGET_OFF,
+        obfuscation_service: TokenObfuscationService | None = None,
+        image_obfuscation_service: ImageObfuscationService | None = None,
     ) -> None:
         self._config = config
         self._render_client = render_client
         self._context_budget_enabled = context_budget_mode == CONTEXT_BUDGET_ON
+        self._obfuscation_service = obfuscation_service
+        self._image_obfuscation_service = image_obfuscation_service
         if local_tokenizer is None:
             from motor.coordinator.scheduler.policy.kv_cache_affinity import (
                 TokenizerManager,
@@ -87,18 +95,22 @@ class TokenizationService:
             try:
                 if self._render_client is None:
                     raise RenderUnavailableError("Render client is not initialized")
+                self._apply_render_chat_template_defaults(request_data)
                 output_budget = self._select_output_budget(spec, request_data)
                 render_request = self._prepare_render_request(request_data, output_budget)
                 result = await self._render_client.render(api, render_request)
+                self._obfuscate(result)
+                obfuscated_images = self._obfuscate_images(result)
                 latency_ms = (time.perf_counter() - start) * 1000
                 logger.info(
                     "render tokenize success request_id=%s model=%s prompt_length=%d "
-                    "latency_ms=%.2f tokenizer_source=%s",
+                    "latency_ms=%.2f tokenizer_source=%s obfuscated_images=%d",
                     request_id,
                     request_data.get(_MODEL, ""),
                     sum(len(item.prompt_token_ids) for item in result),
                     latency_ms,
                     result[0].tokenizer_source.value,
+                    obfuscated_images,
                 )
 
                 return result
@@ -113,6 +125,10 @@ class TokenizationService:
                     render_reason,
                     latency_ms,
                 )
+                if self._obfuscation_service is not None:
+                    raise TokenObfuscationError("Render is required for token-obfuscated inference") from e
+                if self._image_obfuscation_service is not None:
+                    raise ImageObfuscationError("Render is required for image-obfuscated inference") from e
 
         try:
             result = self._tokenize_local(request_data)
@@ -188,6 +204,47 @@ class TokenizationService:
             )
         ]
 
+    def _obfuscate(self, results: list[TokenizedRequest]) -> None:
+        if self._obfuscation_service is None:
+            return
+        for result in results:
+            result.engine_prompt_token_ids = self._obfuscation_service.obfuscate(result.prompt_token_ids)
+
+    def _obfuscate_images(self, results: list[TokenizedRequest]) -> int:
+        """Permute the Render image tensors the engine is about to consume."""
+        service = self._image_obfuscation_service
+        if service is None:
+            return 0
+        replaced = 0
+        for result in results:
+            features = result.metadata.get(_FEATURES)
+            if not isinstance(features, dict):
+                continue
+            replaced += service.obfuscate_render_features(features)
+        return replaced
+
+    def _apply_render_chat_template_defaults(self, request_data: dict[str, Any]) -> None:
+        """Map OpenAI thinking fields into chat_template_kwargs for Render and Derender."""
+        if _MESSAGES not in request_data or self._obfuscation_service is None:
+            return
+
+        configured = request_data.get("chat_template_kwargs")
+        if configured is not None and not isinstance(configured, dict):
+            # Preserve malformed input so the Render endpoint remains responsible for validation.
+            return
+        if isinstance(configured, dict) and "enable_thinking" in configured:
+            return
+
+        template_kwargs = dict(configured or {})
+        thinking = request_data.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") in {"enabled", "disabled"}:
+            template_kwargs["enable_thinking"] = thinking["type"] == "enabled"
+        elif request_data.get("reasoning_effort") is not None:
+            template_kwargs["enable_thinking"] = request_data["reasoning_effort"] != "none"
+        else:
+            return
+        request_data["chat_template_kwargs"] = template_kwargs
+
     def _select_output_budget(
         self,
         spec: RenderApiSpec,
@@ -214,8 +271,8 @@ class TokenizationService:
         render_request[parameter] = 1
         return render_request
 
-    @staticmethod
     def sync_sampling_params(
+        self,
         request_data: dict[str, Any],
         results: list[TokenizedRequest],
     ) -> None:
@@ -227,10 +284,41 @@ class TokenizationService:
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 effective_tokens = value
                 break
-        if effective_tokens is None:
-            return
 
         for result in results:
             sampling_params = result.metadata.get("sampling_params")
-            if isinstance(sampling_params, dict):
+            if not isinstance(sampling_params, dict):
+                continue
+            if effective_tokens is not None:
                 sampling_params[_MAX_TOKENS] = effective_tokens
+            self._guard_obfuscated_thinking_sampling(request_data, sampling_params)
+
+    @staticmethod
+    def _thinking_enabled(request_data: dict[str, Any]) -> bool:
+        configured = request_data.get("chat_template_kwargs")
+        if isinstance(configured, dict) and "enable_thinking" in configured:
+            return bool(configured["enable_thinking"])
+
+        thinking = request_data.get("thinking")
+        if isinstance(thinking, dict):
+            if thinking.get("type") == "enabled":
+                return True
+            if thinking.get("type") == "disabled":
+                return False
+
+        reasoning_effort = request_data.get("reasoning_effort")
+        if reasoning_effort is not None:
+            return reasoning_effort != "none"
+        return False
+
+    def _guard_obfuscated_thinking_sampling(
+        self,
+        request_data: dict[str, Any],
+        sampling_params: dict[str, Any],
+    ) -> None:
+        """Obfuscated weights need greedy decoding to keep thinking tokens stable."""
+        if self._obfuscation_service is None or not self._thinking_enabled(request_data):
+            return
+        if _TEMPERATURE in request_data:
+            return
+        sampling_params[_TEMPERATURE] = 0.0

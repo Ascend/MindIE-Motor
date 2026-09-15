@@ -51,6 +51,37 @@ TRIGGER, and Union/PDHybrid, then Derender into the client response. Completion 
 one scheduling allocation. Streaming Chat and single-prompt Completion may use token-only Prefill; batched streaming
 Completion, SGLang, and locally tokenized requests keep the existing path.
 
+With `token_obfuscation_config.enabled=true`, each Worker initializes one `ai-asset-obfuscate` data permutation.
+Render token IDs remain the semantic IDs used by Derender, while `engine_prompt_token_ids` are the physical IDs sent
+to vLLM and KV Conductor. GenerateResponse token IDs are deobfuscated immediately before Derender. The protected path
+is fail-closed: it accepts only non-streaming Render token-only requests and disables native OpenAI fallback. The
+permutation seed has no default and must be supplied through controlled configuration when obfuscation is enabled;
+store it with the same access controls as the obfuscated weights and never commit or log it. Every obfuscation
+parameter is model-specific (`vocab_size` / `token_white_list` for tokens; `patch_size` / `merge_size` /
+`longest_edge` / `shortest_edge` / `temporal_patch_size` for vision), so none of them has a built-in default: an
+unset value is `0` / `[]` / `""`. `resolve_token_obfuscation_config` reads an unset `vocab_size` from
+`<model dir>/config.json` (`text_config.vocab_size`, falling back to the top-level key) and
+`resolve_image_obfuscation_config` reads unset vision geometry from `<model dir>/preprocessor_config.json`; an
+explicitly configured value always wins and `model_path` on either config pins the directory (default: the engine
+sections' `engine_config.model`). `token_white_list` and `seed_content` can never be derived and are always
+required — validation fails closed when a parameter is unset and no unambiguous model directory is available.
+
+With `token_obfuscation_config.image_config.enabled=true`, the Coordinator additionally obfuscates the Render
+payload: `TokenizationService._obfuscate_images` walks every `TokenizedRequest.metadata["features"]["kwargs_data"]`
+modality and calls `ImageObfuscationService.obfuscate_render_features`, which delegates to the SDK's
+`ImageDataAssetObfuscation.image_render_obf` (the SDK owns the Render payload format and the patch layout, so the
+Coordinator needs neither the msgpack codec nor the model flatten order). `null` entries are Render cache hits and
+stay untouched; every modality is validated (same length, nulls preserved, non-empty strings) and only committed
+after all modalities pass, so a partially obfuscated payload can never reach the engine. Any SDK failure or shape
+violation fails the request closed. The mode requires `render_config.enabled=true` and shares `seed_content` with
+token obfuscation. Geometry (`patch_size`/`merge_size`/`longest_edge`/`shortest_edge`/`temporal_patch_size`) is
+resolved at startup by `resolve_image_obfuscation_config`: an explicitly configured value always wins, every field
+left at `0` is read from the served weights directory (`preprocessor_config.json`, both the current
+`size.{shortest,longest}_edge` and the legacy `min_pixels`/`max_pixels` layouts). The directory comes from
+`image_config.model_path` when set, otherwise from `CoordinatorConfig.engine_model_paths` (collected by
+`resolve_engine_model_paths` from `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`). Without
+either source the unset fields must be configured explicitly, otherwise startup fails closed.
+
 The deployer adds the sidecar to Coordinator Pods in all supported deployment modes. `render_config.image_name`
 selects a CPU image; otherwise the service image and read-only Ascend driver libraries are reused without requesting
 NPU resources.

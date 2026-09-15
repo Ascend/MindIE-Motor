@@ -62,6 +62,12 @@ SSL_KEYFILE = "ssl_keyfile"
 ADDITIONAL_CONFIG = "additional_config"
 KV_TRANSFER_CONFIG = "kv_transfer_config"
 KV_CONNECTOR_EXTRA_CONFIG = "kv_connector_extra_config"
+ENGINE_MODEL_PATH_SECTIONS = (
+    "motor_engine_prefill_config",
+    "motor_engine_decode_config",
+    "motor_engine_encode_config",
+    "motor_engine_union_config",
+)
 DEPLOY_CONFIG = "deploy_config"
 P_INSTANCES_NUM = "p_instances_num"
 D_INSTANCES_NUM = "d_instances_num"
@@ -205,6 +211,28 @@ def _update_instances_num(
         P_INSTANCES_NUM: deploy_config.get(P_INSTANCES_NUM, 1),
         D_INSTANCES_NUM: deploy_config.get(D_INSTANCES_NUM, 1),
     }
+
+
+def resolve_engine_model_paths(user_config_data: dict[str, Any]) -> list[str]:
+    """Collect the distinct served model directories declared by engine sections.
+
+    Used by data-obfuscation to read model-side parameters (image geometry) when the user does
+    not configure them explicitly; the result is order-preserving and de-duplicated so a PD
+    deployment sharing one weights directory yields a single entry. Engine-specific key variants
+    and the legacy ``model_config.model_path`` fallback are owned by ``ConfigResolver``, so this
+    helper is limited to the multi-section walk and de-duplication.
+    """
+    if not isinstance(user_config_data, dict):
+        return []
+    paths: list[str] = []
+    for section_name in ENGINE_MODEL_PATH_SECTIONS:
+        section = user_config_data.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        model = ConfigResolver(section).get_model_path()
+        if isinstance(model, str) and model.strip() and model not in paths:
+            paths.append(model)
+    return paths
 
 
 def _resolve_re_register_interval_sec(user_config_data: dict[str, Any]) -> int:

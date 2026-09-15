@@ -41,7 +41,12 @@ from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.scheduling import InstanceReadiness, has_decode_colocation_candidate
 from motor.coordinator.router.dispatch import handle_metaserver_request, handle_request
+from motor.coordinator.render.image_obfuscation_service import ImageObfuscationService, resolve_image_obfuscation_config
 from motor.coordinator.render.tokenization_service import TokenizationService
+from motor.coordinator.render.token_obfuscation_service import (
+    TokenObfuscationService,
+    resolve_token_obfuscation_config,
+)
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
 from motor.coordinator.tracer.tracing import TracerManager
@@ -328,9 +333,34 @@ class InferenceServer(BaseCoordinatorServer):
             app.state.sampling_manager = None
         render_client = None
         app.state.tokenization_service = None
+        app.state.token_obfuscation_service = None
+        app.state.image_obfuscation_service = None
         try:
+            obfuscation_config = self.coordinator_config.token_obfuscation_config
             render_config = self.coordinator_config.render_config
             if render_config.enabled:
+                if obfuscation_config.enabled:
+                    token_config, vocab_source = resolve_token_obfuscation_config(
+                        obfuscation_config,
+                        self.coordinator_config.engine_model_paths,
+                    )
+                    app.state.token_obfuscation_service = TokenObfuscationService(token_config)
+                    logger.info("Token data obfuscation is enabled vocab_size_source=%s", vocab_source)
+                image_obfuscation_service = None
+                if obfuscation_config.image_config.enabled:
+                    image_config, geometry_source = resolve_image_obfuscation_config(
+                        obfuscation_config.image_config,
+                        self.coordinator_config.engine_model_paths,
+                    )
+                    image_obfuscation_service = ImageObfuscationService(
+                        image_config,
+                        obfuscation_config.seed_content,
+                    )
+                    logger.info(
+                        "Vision data obfuscation is enabled for Render image items geometry_source=%s",
+                        geometry_source,
+                    )
+                app.state.image_obfuscation_service = image_obfuscation_service
                 render_client = VLLMRenderClient(render_config)
                 if await render_client.health():
                     logger.info("vLLM Render sidecar is available")
@@ -341,6 +371,8 @@ class InferenceServer(BaseCoordinatorServer):
                     render_client=render_client,
                     local_tokenizer=TokenizerManager(self.coordinator_config),
                     context_budget_mode=self.coordinator_config.context_budget_mode,
+                    obfuscation_service=app.state.token_obfuscation_service,
+                    image_obfuscation_service=image_obfuscation_service,
                 )
             yield
         except asyncio.CancelledError:

@@ -100,7 +100,7 @@ def build_token_only_batch(
     """Build an ordered engine batch without exposing topology names to Render data."""
     return [
         adapter.build_tokenized_request(
-            tokenized.prompt_token_ids,
+            tokenized.physical_prompt_token_ids,
             tokenized.metadata,
             leg_factory(index),
         )
@@ -131,7 +131,7 @@ def build_trigger_token_only_decode_request(
 ) -> EngineRequest:
     """Translate Trigger decode state into the shared token-only engine contract."""
     return adapter.build_tokenized_request(
-        tokenized.prompt_token_ids,
+        tokenized.physical_prompt_token_ids,
         tokenized.metadata,
         EngineLegSpec(
             context=context,
@@ -159,7 +159,7 @@ def build_trigger_token_only_prefill_request(
     params["do_remote_prefill"] = False
     params.pop("metaserver", None)
     return adapter.build_tokenized_request(
-        tokenized.prompt_token_ids,
+        tokenized.physical_prompt_token_ids,
         tokenized.metadata,
         EngineLegSpec(
             context=context,
@@ -181,6 +181,7 @@ async def run_token_only_or_fallback(
     send: Callable[[_T], Awaitable[_R]],
     *,
     on_unsupported: Callable[[UpstreamHTTPError], None] | None = None,
+    allow_fallback: bool = True,
 ) -> tuple[_R, bool]:
     """Run token-only first and replay natively only for an explicit unsupported response."""
     if token_only is None:
@@ -188,7 +189,7 @@ async def run_token_only_or_fallback(
     try:
         return await send(token_only), True
     except UpstreamHTTPError as error:
-        if not is_token_only_unsupported(error):
+        if not is_token_only_unsupported(error) or not allow_fallback:
             raise
         if on_unsupported is not None:
             on_unsupported(error)
@@ -227,6 +228,9 @@ async def finish_token_only_response(
     """Validate ordered GenerateResponses and convert them into one OpenAI response."""
     adapter = VllmProtocolAdapter()
     validated = [adapter.validate_tokenized_decode_response(response) for response in generate_responses]
+    obfuscation_service = req_info._token_obfuscation_service
+    if obfuscation_service is not None:
+        validated = obfuscation_service.deobfuscate_generate_responses(validated)
     response = await derender_response(
         render_client,
         api=req_info.effective_entry_api(),

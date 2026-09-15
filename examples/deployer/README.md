@@ -223,6 +223,27 @@ Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Eng
 - 非流式 Chat Completions 和 Completions 请求支持完整 Token In/Token Out 链路。
 - Render tokenization 失败会回退本地 tokenizer；Derender 失败直接返回客户端。
 
+数据混淆权重可通过 `motor_coordinator_config.token_obfuscation_config.enabled=true` 开启 token 混淆。
+`vocab_size` 与 `token_white_list` 都没有内置默认值：`vocab_size` 未配置时由 Coordinator 从被服务权重目录的
+`config.json` 自动读取（多模态取 `text_config.vocab_size`，可用 `model_path` 指定目录），显式配置优先；
+`token_white_list` 必须按离线权重混淆参数显式配置（Qwen3-32B /
+Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../../docs/zh/user_guide/features/data_obfuscation.md)，也可从混淆权重目录的
+`obf_config.json` 中抄录）；`seed_content` 默认留空，开启时必须通过受控配置显式注入。
+Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止提交到代码仓库或写入日志。
+开启后仅支持非流式 vLLM Render token-only 链路；Render、混淆或 token-only endpoint 失败时请求直接失败，
+不回退原生 OpenAI 路径。
+
+多模态数据混淆权重还可通过 `motor_coordinator_config.token_obfuscation_config.image_config.enabled=true`
+开启图像混淆：Coordinator 在 Render 返回后，对 `features.kwargs_data` 中每个模态的张量载荷调用 SDK 的
+`image_render_obf`，将混淆后的绑定重新编码后转发给引擎（与 token 混淆共用 `seed_content`，要求 render 已开启）。
+几何参数（`patch_size` / `merge_size` / `longest_edge` / `shortest_edge` / `temporal_patch_size`）**可不配置**：
+未配置时 Coordinator 从被服务权重目录的 `preprocessor_config.json` 自动读取（目录取自
+`motor_engine_*_config.engine_config.model`，也可用 `image_config.model_path` 显式指定）；显式配置的值优先。
+这些值与权重混淆时使用的不一致会导致 SDK 只告警并原样返回（即请求未混淆），因此修改权重来源后需确认日志中
+无 `pixel_values D=... != expected ...` 告警。注意：`vocab_size` 与 `token_white_list` 仍需显式配置
+（模型目录中无记录）。SDK 报错或返回格式不符时请求失败（fail closed）；
+图像混淆不依赖客户端图片是内联 base64 还是远程 URL（Render 已统一取回并张量化）。
+
 ### env.json
 
 包含环境变量配置，主要字段：

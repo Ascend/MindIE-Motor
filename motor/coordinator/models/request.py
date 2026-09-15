@@ -58,6 +58,11 @@ class RequestInfo(BaseModel):
         description="Prompt token ids tokenized once before routing; reused for context budgeting, "
         "prefill load accounting, and KV affinity",
     )
+    engine_token_ids: list[int] | None = Field(
+        default=None,
+        exclude=True,
+        description="Obfuscated prompt token ids used by the engine and KV Conductor",
+    )
     tokenized_requests: list[TokenizedRequest] = Field(
         default_factory=list,
         exclude=True,
@@ -101,6 +106,7 @@ class RequestInfo(BaseModel):
     _trigger_attempt: object | None = PrivateAttr(default=None)
     _trigger_batch_active: bool = PrivateAttr(default=False)
     _trigger_batch_index: int | None = PrivateAttr(default=None)
+    _token_obfuscation_service: object | None = PrivateAttr(default=None)
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")

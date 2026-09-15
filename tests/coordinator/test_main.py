@@ -212,6 +212,9 @@ async def test_main_daemon_flow():
         mock_config.get_config_summary.return_value = "Config summary"
         mock_config.logging_config.log_level = "INFO"
         mock_config.logging_config.log_file = None
+        # Default deployment: neither obfuscation switch is on, so the SDK bootstrap must not run.
+        mock_config.token_obfuscation_config.enabled = False
+        mock_config.token_obfuscation_config.image_config.enabled = False
         mock_from_json.return_value = mock_config
 
         mock_daemon_instance = MagicMock()
@@ -224,6 +227,38 @@ async def test_main_daemon_flow():
         mock_logger.info.assert_any_call("Starting Motor Coordinator Daemon...")
         mock_daemon_class.assert_called_once_with(mock_config)
         daemon_run.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_main_bootstraps_obfuscation_library_when_enabled():
+    """Enabling either obfuscation switch prepares the SDK native library path (SDK fully mocked)."""
+    daemon_run = AsyncMock()
+
+    with (
+        patch.dict("os.environ", {"USER_CONFIG_PATH": "/fake/config.json"}),
+        patch("motor.config.coordinator.CoordinatorConfig.from_json") as mock_from_json,
+        patch("motor.coordinator.main.configure_obfuscation_library_path") as mock_bootstrap,
+        patch("motor.coordinator.main.run_port_setup_or_exit"),
+        patch("motor.coordinator.main.CoordinatorDaemon") as mock_daemon_class,
+        patch("motor.coordinator.main.logger"),
+    ):
+        mock_config = MagicMock()
+        mock_config.config_path = ""
+        mock_config.get_config_summary.return_value = "Config summary"
+        mock_config.logging_config.log_level = "INFO"
+        mock_config.logging_config.log_file = None
+        mock_config.token_obfuscation_config.enabled = False
+        mock_config.token_obfuscation_config.image_config.enabled = True
+        mock_from_json.return_value = mock_config
+
+        mock_daemon_instance = MagicMock()
+        mock_daemon_instance.run = daemon_run
+        mock_daemon_class.return_value = mock_daemon_instance
+
+        await main()
+
+    mock_bootstrap.assert_called_once()
+    daemon_run.assert_called_once()
 
 
 def test_process_table_has_no_scheduler_process():

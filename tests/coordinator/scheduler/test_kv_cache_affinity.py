@@ -1119,6 +1119,17 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         )
         self.assertEqual(req.req_data, native_body)
 
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_ensure_token_ids_prefers_obfuscated_engine_tokens(self, mock_tokenizer_manager):
+        """KV Conductor must hash the same physical token IDs that entered the protected model."""
+        req = Mock()
+        req.req_data = {"prompt": "hi"}
+        req.token_ids = [7, 8, 9]
+        req.engine_token_ids = [107, 108, 109]
+
+        self.assertEqual(KvCacheAffinityPolicy._ensure_token_ids(req), [107, 108, 109])
+        mock_tokenizer_manager.assert_not_called()
+
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.attach_block_offsets')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_ensure_token_ids_attaches_chat_block_offsets(self, mock_tokenizer_manager, mock_attach_block_offsets):

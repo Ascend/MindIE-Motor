@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
+from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.router.adapters.pd_protocol import (
     EngineEndpointMetadata,
     EngineLegSpec,
@@ -28,6 +29,7 @@ from motor.coordinator.router.token_only import (
     build_token_only_batch,
     build_trigger_token_only_decode_request,
     build_trigger_token_only_prefill_request,
+    finish_token_only_response,
     require_kv_transfer,
     run_token_only_or_fallback,
 )
@@ -38,6 +40,7 @@ def test_build_token_only_batch_preserves_order_and_keeps_topology_in_leg_factor
     tokenized_requests = [
         TokenizedRequest(
             prompt_token_ids=[index],
+            engine_prompt_token_ids=[index + 100],
             tokenizer_source=TokenizerSource.RENDER,
             metadata={"sampling_params": {"max_tokens": 4}},
         )
@@ -58,7 +61,7 @@ def test_build_token_only_batch_preserves_order_and_keeps_topology_in_leg_factor
 
     requests = build_token_only_batch(VllmProtocolAdapter(), tokenized_requests, leg_factory)
 
-    assert [request.body["token_ids"] for request in requests] == [[10], [20]]
+    assert [request.body["token_ids"] for request in requests] == [[110], [120]]
     assert [request.body["request_id"] for request in requests] == ["request#p0", "request#p1"]
 
 
@@ -188,3 +191,82 @@ async def test_run_token_only_propagates_non_unsupported_errors() -> None:
 
     assert raised.value is error
     send.assert_awaited_once_with("token-only")
+
+
+@pytest.mark.asyncio
+async def test_run_token_only_does_not_fallback_for_protected_tokens() -> None:
+    error = _upstream_error(404)
+    send = AsyncMock(side_effect=error)
+
+    with pytest.raises(UpstreamHTTPError) as raised:
+        await run_token_only_or_fallback("token-only", "native", send, allow_fallback=False)
+
+    assert raised.value is error
+    send.assert_awaited_once_with("token-only")
+
+
+@pytest.mark.asyncio
+async def test_finish_token_only_deobfuscates_before_derender() -> None:
+    render_client = AsyncMock()
+    render_client.derender.return_value = {"choices": [{"index": 0, "text": "ok"}]}
+    obfuscation_service = Mock()
+    obfuscation_service.deobfuscate_generate_responses.return_value = [
+        {"choices": [{"index": 0, "token_ids": [11, 12]}]}
+    ]
+    api_path = "/v1/completions".strip("/")
+    req_info = RequestInfo(
+        req_id="request",
+        req_data={"model": "model", "prompt": "hello"},
+        req_len=10,
+        api=api_path,
+        entry_api=api_path,
+        tokenized_requests=[
+            TokenizedRequest(
+                prompt_token_ids=[1, 2],
+                engine_prompt_token_ids=[101, 102],
+                tokenizer_source=TokenizerSource.RENDER,
+            )
+        ],
+    )
+    req_info._token_obfuscation_service = obfuscation_service
+    generated = [{"choices": [{"index": 0, "token_ids": [111, 112]}]}]
+
+    response = await finish_token_only_response(render_client, req_info, generated)
+
+    obfuscation_service.deobfuscate_generate_responses.assert_called_once_with(generated)
+    derender_payload = render_client.derender.await_args.args[1]
+    assert derender_payload["generate_responses"][0]["choices"][0]["token_ids"] == [11, 12]
+    assert response["choices"][0]["token_ids"] == [11, 12]
+
+
+@pytest.mark.asyncio
+async def test_finish_token_only_preserves_chat_template_kwargs_for_derender() -> None:
+    render_client = AsyncMock()
+    render_client.derender.return_value = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}]}
+    api_path = "v1/chat/completions"
+    req_info = RequestInfo(
+        req_id="request",
+        req_data={
+            "model": "model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        req_len=2,
+        api=api_path,
+        entry_api=api_path,
+        tokenized_requests=[
+            TokenizedRequest(
+                prompt_token_ids=[1, 2],
+                tokenizer_source=TokenizerSource.RENDER,
+            )
+        ],
+    )
+
+    await finish_token_only_response(
+        render_client,
+        req_info,
+        [{"choices": [{"index": 0, "token_ids": [11, 12]}]}],
+    )
+
+    derender_payload = render_client.derender.await_args.args[1]
+    assert derender_payload["chat_request"]["chat_template_kwargs"] == {"enable_thinking": False}

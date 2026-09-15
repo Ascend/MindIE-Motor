@@ -35,6 +35,7 @@ from motor.config.config_utils import (
     log_json_config_load_error,
     reload_dataclass_config_from_json,
     resolve_config_json_path,
+    resolve_engine_model_paths,
     save_instance_config_to_json,
     _update_tls_config,
     _update_instances_num,
@@ -692,6 +693,56 @@ class RenderConfig:
     image_name: str = ""
 
 
+IMAGE_OBFUSCATION_GEOMETRY_FIELDS = (
+    "patch_size",
+    "merge_size",
+    "temporal_patch_size",
+    "longest_edge",
+    "shortest_edge",
+)
+
+
+@dataclass
+class ImageObfuscationConfig:
+    """Vision data permutation matching the data-obfuscated multimodal weights.
+
+    Geometry mirrors the model's image processor, so every field may be left at ``0``: an unset
+    field is read from the served model directory (``preprocessor_config.json``) at startup, and an
+    explicitly configured value always wins. ``model_path`` optionally pins that directory when it
+    cannot be taken from the engine sections (e.g. standalone deployment). See the data-obfuscation
+    feature guide.
+    """
+
+    enabled: bool = False
+    model_path: str = ""
+    patch_size: int = 0
+    merge_size: int = 0
+    longest_edge: int = 0
+    shortest_edge: int = 0
+    temporal_patch_size: int = 0
+
+
+@dataclass
+class TokenObfuscationConfig:
+    """Data-obfuscation settings matching the data-obfuscated weights.
+
+    ``vocab_size`` / ``token_white_list`` / ``seed_content`` drive prompt token permutation; the
+    nested ``image_config`` shares the same data seed for multimodal (vision tensor) permutation.
+    All of them are model-specific (they must match the offline weight obfuscation) and the code
+    ships no built-in default: unset values are ``0`` / ``[]`` / ``""``. ``vocab_size`` is read from
+    the served model directory when unset; ``token_white_list`` and ``seed_content`` always have to
+    be configured. ``model_path`` optionally pins that directory when it cannot be taken from the
+    engine sections. See the data-obfuscation feature guide.
+    """
+
+    enabled: bool = False
+    model_path: str = ""
+    vocab_size: int = 0
+    token_white_list: list[int] = field(default_factory=list)
+    seed_content: str = ""
+    image_config: ImageObfuscationConfig = field(default_factory=ImageObfuscationConfig)
+
+
 @dataclass
 class CoordinatorConfig:
     """Coordinator configuration class with validation, reload and error handling support"""
@@ -720,6 +771,7 @@ class CoordinatorConfig:
     deploy_config: DeployConfig = field(default_factory=DeployConfig)
     tracer_config: TracerConfig = field(default_factory=TracerConfig)
     render_config: RenderConfig = field(default_factory=RenderConfig)
+    token_obfuscation_config: TokenObfuscationConfig = field(default_factory=TokenObfuscationConfig)
     prefill_kv_event_config: PrefillKvEventConfig = field(default_factory=PrefillKvEventConfig)
     precision_detection_config: PrecisionDetectionConfig = field(default_factory=PrecisionDetectionConfig)
     circuit_config: CircuitConfig = field(default_factory=CircuitConfig)
@@ -728,6 +780,7 @@ class CoordinatorConfig:
     # internal fields
     config_path: str | None = field(default=None, init=False)
     last_modified: float | None = field(default=None, init=False)
+    engine_model_paths: list[str] = field(default_factory=list, init=False)
     _errors: list[str] = field(default_factory=list, init=False)
     worker_index: int | None = field(default=None, repr=False)
     worker_metaserver_port: int | None = field(default=None, repr=False)
@@ -764,6 +817,9 @@ class CoordinatorConfig:
                         _redirect_prefill_kv_event_config(cfg, raw)
                         _update_prefill_kv_event_config(cfg, raw)
                         _merge_kv_store_metrics_config(cfg, raw)
+                        # Data obfuscation reads model-side parameters (image geometry) from the
+                        # served weights directory when the user leaves them unconfigured.
+                        cfg["engine_model_paths"] = resolve_engine_model_paths(raw)
         except (json.JSONDecodeError, Exception) as e:
             log_json_config_load_error(json_path, e)
 
@@ -850,6 +906,7 @@ class CoordinatorConfig:
                 ("deploy_config", config.deploy_config, None),
                 ("tracer_config", config.tracer_config, None),
                 ("render_config", config.render_config, None),
+                ("token_obfuscation_config", config.token_obfuscation_config, None),
                 ("prefill_kv_event_config", config.prefill_kv_event_config, None),
                 ("precision_detection_config", config.precision_detection_config, None),
                 ("circuit_config", config.circuit_config, None),
@@ -875,6 +932,8 @@ class CoordinatorConfig:
             if "aigw" in cfg:
                 config.aigw_model = dict(cfg["aigw"])
 
+            config.engine_model_paths = list(cfg.get("engine_model_paths", []))
+
             apply_config_path_metadata(config, config_path)
 
             # Auto-enable etcd persistence when master/standby is enabled
@@ -893,6 +952,24 @@ class CoordinatorConfig:
         except Exception as e:
             logger.error("Failed to create configuration instance: %s", e)
             raise
+
+    def _obfuscation_model_path_issue(self, explicit_model_path: str) -> str:
+        """Describe why model-side obfuscation params cannot be auto-resolved ('' when they can).
+
+        Model-side parameters (``vocab_size``, vision geometry) are read from the served weights
+        directory. An explicitly configured ``model_path`` always works; otherwise the directory
+        declared by the engine sections is used, and it must be unambiguous.
+        """
+        if isinstance(explicit_model_path, str) and explicit_model_path.strip():
+            return ""
+        if not self.engine_model_paths:
+            return "no model directory is configured (set model_path, or ensure engine_config.model is set)"
+        if len(self.engine_model_paths) > 1:
+            return (
+                "model_path is required because multiple model directories are served: "
+                f"{', '.join(self.engine_model_paths)}"
+            )
+        return ""
 
     def validate_config(self) -> None:
         """Validate the validity of configuration values"""
@@ -953,6 +1030,76 @@ class CoordinatorConfig:
             self._errors.append("render_config.image_name must be a string")
         elif self.render_config.image_name and not self.render_config.image_name.strip():
             self._errors.append("render_config.image_name cannot contain only whitespace")
+
+        obfuscation = self.token_obfuscation_config
+        if not isinstance(obfuscation.enabled, bool):
+            self._errors.append("token_obfuscation_config.enabled must be a bool")
+        if obfuscation.enabled and not self.render_config.enabled:
+            self._errors.append("token_obfuscation_config requires render_config.enabled=true")
+        if not isinstance(obfuscation.vocab_size, int) or isinstance(obfuscation.vocab_size, bool):
+            self._errors.append("token_obfuscation_config.vocab_size must be an integer")
+        elif obfuscation.vocab_size < 0:
+            self._errors.append("token_obfuscation_config.vocab_size must not be negative")
+        elif obfuscation.enabled and obfuscation.vocab_size == 0:
+            # Unset vocab_size is read from the served model directory (config.json).
+            reason = self._obfuscation_model_path_issue(obfuscation.model_path)
+            if reason:
+                self._errors.append(
+                    "token_obfuscation_config.vocab_size must be explicitly configured or resolvable from the "
+                    f"served model directory: {reason}"
+                )
+        white_list = obfuscation.token_white_list
+        if not isinstance(white_list, list) or any(
+            not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0 for token_id in white_list
+        ):
+            self._errors.append("token_obfuscation_config.token_white_list must contain non-negative integer token ids")
+        elif obfuscation.enabled and not white_list:
+            self._errors.append(
+                "token_obfuscation_config.token_white_list must be explicitly configured when obfuscation is enabled"
+            )
+        elif obfuscation.vocab_size > 0 and any(token_id >= obfuscation.vocab_size for token_id in white_list):
+            self._errors.append(
+                "token_obfuscation_config.token_white_list must contain integer token ids within vocab_size"
+            )
+        if not isinstance(obfuscation.seed_content, str):
+            self._errors.append("token_obfuscation_config.seed_content must be a string")
+        elif (obfuscation.enabled or obfuscation.image_config.enabled) and not obfuscation.seed_content:
+            self._errors.append(
+                "token_obfuscation_config.seed_content must be explicitly configured when obfuscation is enabled"
+            )
+
+        image = obfuscation.image_config
+        if not isinstance(image.enabled, bool):
+            self._errors.append("token_obfuscation_config.image_config.enabled must be a bool")
+        if image.enabled and not self.render_config.enabled:
+            self._errors.append("token_obfuscation_config.image_config requires render_config.enabled=true")
+        unset_geometry = []
+        for field_name in IMAGE_OBFUSCATION_GEOMETRY_FIELDS:
+            value = getattr(image, field_name)
+            field_path = f"token_obfuscation_config.image_config.{field_name}"
+            if not isinstance(value, int) or isinstance(value, bool):
+                self._errors.append(f"{field_path} must be an integer")
+            elif value < 0:
+                self._errors.append(f"{field_path} must not be negative")
+            elif value == 0:
+                unset_geometry.append(field_name)
+        if image.enabled and unset_geometry:
+            # Unset fields are read from the served weights directory; without one they must be given.
+            reason = self._obfuscation_model_path_issue(image.model_path)
+            if reason:
+                self._errors.append(
+                    "token_obfuscation_config.image_config requires explicit geometry "
+                    f"({', '.join(unset_geometry)}) or a readable served model directory: {reason}"
+                )
+        if (
+            image.enabled
+            and image.longest_edge > 0
+            and image.shortest_edge > 0
+            and image.longest_edge < image.shortest_edge
+        ):
+            self._errors.append(
+                "token_obfuscation_config.image_config.longest_edge must be greater than or equal to shortest_edge"
+            )
 
         # Validate scheduler score configuration
         self._validate_positive_number(
@@ -1152,6 +1299,8 @@ class CoordinatorConfig:
         # Remove internal fields that shouldn't be in the output
         config_dict.pop("config_path", None)
         config_dict.pop("last_modified", None)
+        # Derived from the engine sections on load; never part of the public configuration surface
+        config_dict.pop("engine_model_paths", None)
 
         # Convert enums to their string values for JSON serialization
         if 'scheduler_config' in config_dict:

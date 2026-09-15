@@ -33,6 +33,10 @@ from motor.common.resources.dispatch import DispatchPlan
 from motor.common.resources.instance import PDRole
 from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestInfo, ReqState
+from motor.coordinator.render.api_spec import get_render_api_spec
+from motor.coordinator.render.image_obfuscation_service import ImageObfuscationError
+from motor.coordinator.render.obfuscation_library import is_obfuscation_enabled
+from motor.coordinator.render.token_obfuscation_service import TokenObfuscationError
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.domain.agent_hint import (
@@ -336,17 +340,42 @@ async def handle_request(
         )
 
     tokenization_service = getattr(raw_request.app.state, "tokenization_service", None)
+    obfuscation_service = getattr(raw_request.app.state, "token_obfuscation_service", None)
+    image_obfuscation_service = getattr(raw_request.app.state, "image_obfuscation_service", None)
+    req_info._token_obfuscation_service = obfuscation_service
+    if is_obfuscation_enabled(obfuscation_service, image_obfuscation_service):
+        if req_info.req_data.get("stream", False):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Token-obfuscated inference currently supports non-streaming requests only",
+            )
+        # Routes without a Render contract have no obfuscation either: tokenization would silently use
+        # the local tokenizer and forward plaintext prompts/images to the obfuscated engine.
+        if get_render_api_spec(req_info.effective_entry_api()) is None:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=(
+                    "Token-obfuscated inference does not support "
+                    f"{req_info.effective_entry_api()}; use /v1/chat/completions or /v1/completions"
+                ),
+            )
     tokenized_requests = None
     if tokenization_service is not None:
-        tokenized_requests = await tokenization_service.tokenize(
-            req_info.req_id,
-            req_info.api,
-            req_info.req_data,
-        )
+        try:
+            tokenized_requests = await tokenization_service.tokenize(
+                req_info.req_id,
+                req_info.api,
+                req_info.req_data,
+            )
+        except TokenObfuscationError as error:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+        except ImageObfuscationError as error:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
         if tokenized_requests is not None:
             req_info.tokenized_requests = list(tokenized_requests)
             longest_prompt = max(tokenized_requests, key=lambda item: len(item.prompt_token_ids))
             req_info.token_ids = list(longest_prompt.prompt_token_ids)
+            req_info.engine_token_ids = list(longest_prompt.physical_prompt_token_ids)
 
     adapt_context_budget(req_info, config)
     if tokenized_requests is not None:

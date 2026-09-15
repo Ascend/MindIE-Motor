@@ -272,6 +272,9 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         tokenized at most once.
         """
         cached = getattr(req_info, "token_ids", None)
+        engine_cached = getattr(req_info, "engine_token_ids", None)
+        if isinstance(engine_cached, list):
+            return engine_cached
         if isinstance(cached, list):
             return cached
         encoded_ids: list[int] = []

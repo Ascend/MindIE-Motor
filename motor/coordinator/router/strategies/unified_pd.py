@@ -1343,6 +1343,7 @@ class UnifiedPDRouter(BaseRouter):
                         fallback_request,
                         send,
                         on_unsupported=log_fallback,
+                        allow_fallback=self.req_info._token_obfuscation_service is None,
                     )
                     attempt.mark_completed(PDRole.ROLE_P.value)
                     body = response.json()
@@ -1465,6 +1466,7 @@ class UnifiedPDRouter(BaseRouter):
                     fallback_request,
                     send,
                     on_unsupported=log_fallback,
+                    allow_fallback=self.req_info._token_obfuscation_service is None,
                 )
                 response_body = response.json()
                 if used_token_only:
@@ -1565,7 +1567,7 @@ class UnifiedPDRouter(BaseRouter):
             return None
         context = self._native_leg_context(attempt, PDRole.ROLE_D, self.req_info.entry_api)
         return adapter.build_tokenized_request(
-            tokenized.prompt_token_ids,
+            tokenized.physical_prompt_token_ids,
             tokenized.metadata,
             EngineLegSpec(
                 context=context,
@@ -1884,7 +1886,7 @@ class UnifiedPDRouter(BaseRouter):
             return None
         context = self._native_leg_context(attempt, PDRole.ROLE_P, self.req_info.entry_api)
         return adapter.build_tokenized_request(
-            tokenized_request.prompt_token_ids,
+            tokenized_request.physical_prompt_token_ids,
             tokenized_request.metadata,
             EngineLegSpec(
                 context=context,
@@ -2024,6 +2026,7 @@ class UnifiedPDRouter(BaseRouter):
                 fallback_request,
                 send,
                 on_unsupported=log_fallback,
+                allow_fallback=self.req_info._token_obfuscation_service is None,
             )
         except UpstreamHTTPError:
             attempt.mark_completed(PDRole.ROLE_P.value)

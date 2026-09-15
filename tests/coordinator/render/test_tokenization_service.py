@@ -15,6 +15,7 @@ import pytest
 
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.coordinator import RenderConfig
+from motor.coordinator.render.image_obfuscation_service import ImageObfuscationError
 from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
 from motor.coordinator.render.tokenization_service import TokenizationService
 from motor.coordinator.render.vllm_render_client import RenderTimeoutError, VLLMRenderClient
@@ -83,6 +84,119 @@ async def test_render_success_does_not_call_local_tokenizer(service_factory, ren
     )
     render_client.render.assert_awaited_once_with("v1/completions", request)
     assert render_client.render.await_args.args[1] is request
+    local.encode.assert_not_called()
+
+
+async def test_render_chat_request_is_unchanged_without_obfuscation(service_factory, render_client, local):
+    request = {
+        "model": "model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "chat_template_kwargs": {"enable_thinking": True},
+        "max_tokens": 10,
+    }
+    await service_factory(context_budget_mode="off").tokenize("request-chat", "v1/chat/completions", request)
+
+    render_request = render_client.render.await_args.args[1]
+    assert render_request is request
+    assert render_request["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+async def test_render_chat_request_leaves_thinking_unspecified_for_obfuscation(render_client, local):
+    obfuscation_service = MagicMock()
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        render_client,
+        local,
+        obfuscation_service=obfuscation_service,
+    )
+    request = {
+        "model": "model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 10,
+    }
+
+    await service.tokenize("request-obfuscated-chat", "v1/chat/completions", request)
+
+    render_request = render_client.render.await_args.args[1]
+    assert "chat_template_kwargs" not in render_request
+
+
+@pytest.mark.parametrize(
+    "request_override,expected",
+    [
+        ({"chat_template_kwargs": {"enable_thinking": True, "custom": 1}}, True),
+        ({"thinking": {"type": "enabled"}}, True),
+        ({"thinking": {"type": "disabled"}}, False),
+        ({"reasoning_effort": "high"}, True),
+        ({"reasoning_effort": "none"}, False),
+    ],
+)
+async def test_obfuscated_render_respects_explicit_thinking_mode(render_client, local, request_override, expected):
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        render_client,
+        local,
+        obfuscation_service=MagicMock(),
+    )
+    request = {
+        "model": "model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "documents": [{"title": "doc"}],
+        "max_tokens": 10,
+        **request_override,
+    }
+
+    await service.tokenize("request-obfuscated-chat", "v1/chat/completions", request)
+
+    template_kwargs = render_client.render.await_args.args[1]["chat_template_kwargs"]
+    assert template_kwargs["enable_thinking"] is expected
+    assert "documents" not in template_kwargs
+    assert "reasoning_effort" not in template_kwargs
+
+
+async def test_render_success_keeps_semantic_tokens_and_obfuscates_engine_tokens(render_client, local):
+    obfuscation_service = MagicMock()
+    obfuscation_service.obfuscate.return_value = [111, 112]
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        render_client,
+        local,
+        obfuscation_service=obfuscation_service,
+    )
+
+    result = await service.tokenize("request-obfuscated", "v1/completions", {"model": "model", "prompt": "hi"})
+
+    assert result[0].prompt_token_ids == [11, 12]
+    assert result[0].engine_prompt_token_ids == [111, 112]
+    obfuscation_service.obfuscate.assert_called_once_with([11, 12])
+
+
+async def test_render_failure_is_fail_closed_when_obfuscation_is_enabled(render_client, local):
+    render_client.render.side_effect = RenderTimeoutError("timeout")
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        render_client,
+        local,
+        obfuscation_service=MagicMock(),
+    )
+
+    with pytest.raises(RuntimeError, match="Render is required"):
+        await service.tokenize("request-obfuscated", "v1/completions", {"model": "model", "prompt": "hi"})
+    local.encode.assert_not_called()
+
+
+async def test_render_failure_is_fail_closed_when_image_obfuscation_is_enabled(render_client, local):
+    """Image-only obfuscation must not fall back to the local tokenizer either."""
+    render_client.render.side_effect = RenderTimeoutError("timeout")
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        render_client,
+        local,
+        image_obfuscation_service=MagicMock(),
+    )
+
+    with pytest.raises(ImageObfuscationError, match="Render is required for image-obfuscated inference"):
+        await service.tokenize("request-image-obfuscated", "v1/chat/completions", {"model": "model", "prompt": "hi"})
     local.encode.assert_not_called()
 
 
@@ -206,5 +320,54 @@ async def test_context_budget_preflight_uses_one_token_without_mutating_request(
 )
 def test_sync_sampling_params_uses_effective_request_budget(request_data, expected):
     result = _render_result()
-    TokenizationService.sync_sampling_params(request_data, result)
+    TokenizationService(RenderConfig(enabled=True), AsyncMock()).sync_sampling_params(request_data, result)
     assert result[0].metadata["sampling_params"]["max_tokens"] == expected
+
+
+def test_sync_sampling_params_greedy_for_obfuscated_thinking():
+    obfuscation_service = MagicMock()
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        AsyncMock(),
+        obfuscation_service=obfuscation_service,
+    )
+    result = [
+        TokenizedRequest(
+            prompt_token_ids=[1],
+            tokenizer_source=TokenizerSource.RENDER,
+            metadata={"sampling_params": {"max_tokens": 10, "temperature": 0.6}},
+        )
+    ]
+    request_data = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 8,
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
+
+    service.sync_sampling_params(request_data, result)
+
+    assert result[0].metadata["sampling_params"]["temperature"] == 0.0
+
+
+def test_sync_sampling_params_keeps_explicit_temperature_for_obfuscated_thinking():
+    service = TokenizationService(
+        RenderConfig(enabled=True),
+        AsyncMock(),
+        obfuscation_service=MagicMock(),
+    )
+    result = [
+        TokenizedRequest(
+            prompt_token_ids=[1],
+            tokenizer_source=TokenizerSource.RENDER,
+            metadata={"sampling_params": {"max_tokens": 10, "temperature": 0.6}},
+        )
+    ]
+    request_data = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.7,
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
+
+    service.sync_sampling_params(request_data, result)
+
+    assert result[0].metadata["sampling_params"]["temperature"] == 0.6
