@@ -298,6 +298,7 @@ async def test_inference_server_callback_cleanup_and_warmup():
 
     with patch("motor.coordinator.api_server.inference_server.HTTPClientPool", return_value=mock_pool):
         config = CoordinatorConfig()
+        config.timeout_config.engine_client_keepalive_expiry = 2.5
         request_manager = MagicMock(spec=RequestManager)
         server = InferenceServer(config=config, request_manager=request_manager)
 
@@ -306,4 +307,8 @@ async def test_inference_server_callback_cleanup_and_warmup():
 
     mock_pool.get_pool_keys_for_endpoints.assert_called_once()
     mock_pool.cleanup_unused_clients.assert_awaited_once()
-    mock_pool.warmup_clients.assert_awaited_once()
+    mock_pool.warmup_clients.assert_awaited_once_with(
+        endpoints=[("10.0.0.1", "8001")],
+        tls_config=config.infer_tls_config,
+        keepalive_expiry=2.5,
+    )

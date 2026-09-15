@@ -51,6 +51,7 @@ UPDATE_CONFIG_WHITELIST = {
             "read_timeout",
             "write_timeout",
             "keep_alive_timeout",
+            "engine_client_keepalive_expiry",
         ],
     },
     "motor_nodemanger_config": {

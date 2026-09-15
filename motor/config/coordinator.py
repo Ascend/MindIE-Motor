@@ -256,6 +256,7 @@ class TimeoutConfig:
     read_timeout: int = 15
     write_timeout: int = 15
     keep_alive_timeout: int = 60
+    engine_client_keepalive_expiry: float = 3.0
 
 
 @dataclass
@@ -623,6 +624,10 @@ class CoordinatorConfig:
         self._validate_positive_number(self.timeout_config.read_timeout, "read_timeout")
         self._validate_positive_number(self.timeout_config.write_timeout, "write_timeout")
         self._validate_positive_number(self.timeout_config.keep_alive_timeout, "keep_alive_timeout")
+        self._validate_positive_number(
+            self.timeout_config.engine_client_keepalive_expiry,
+            "engine_client_keepalive_expiry",
+        )
 
         # Validate exception configuration
         self._validate_positive_number(self.exception_config.max_retry, "max_retry", allow_zero=True)
@@ -689,8 +694,7 @@ class CoordinatorConfig:
             )
         if self.context_budget_mode not in CONTEXT_BUDGET_MODES:
             self._errors.append(
-                "context_budget_mode must be one of "
-                f"{CONTEXT_BUDGET_MODES}, got {self.context_budget_mode!r}"
+                f"context_budget_mode must be one of {CONTEXT_BUDGET_MODES}, got {self.context_budget_mode!r}"
             )
         if self.context_budget_mode == CONTEXT_BUDGET_ON:
             if not self.prefill_kv_event_config.model_path:
@@ -703,9 +707,7 @@ class CoordinatorConfig:
             if not any(
                 isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in context_limits
             ):
-                self._errors.append(
-                    "aigw.p_max_seqlen or aigw.d_max_seqlen is required when context_budget_mode='on'"
-                )
+                self._errors.append("aigw.p_max_seqlen or aigw.d_max_seqlen is required when context_budget_mode='on'")
 
         # Validate host address
         self._validate_ip_or_hostname(self.api_config.coordinator_api_host, "coordinator_api_host")

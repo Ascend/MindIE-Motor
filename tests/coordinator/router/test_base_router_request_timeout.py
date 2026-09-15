@@ -3,7 +3,9 @@
 
 """Tests for BaseRouter._build_request_timeout (bounded TCP connect phase)."""
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import (
@@ -54,3 +56,27 @@ class TestBuildRequestTimeout:
 
         assert timeout.connect == 30.0
         assert timeout.read == 30.0
+
+
+@pytest.mark.asyncio
+async def test_manage_client_context_passes_configured_keepalive_expiry():
+    config = CoordinatorConfig()
+    config.timeout_config.engine_client_keepalive_expiry = 2.5
+    router = _make_router(config)
+    resource = MagicMock()
+    resource.endpoint.ip = "127.0.0.1"
+    resource.endpoint.business_port = "8000"
+    client = MagicMock()
+    pool = MagicMock()
+    pool.get_client = AsyncMock(return_value=client)
+
+    with patch("motor.coordinator.router.strategies.base.HTTPClientPool", return_value=pool):
+        async with router._manage_client_context(resource) as actual:
+            assert actual is client
+
+    pool.get_client.assert_awaited_once_with(
+        ip="127.0.0.1",
+        port="8000",
+        tls_config=config.infer_tls_config,
+        keepalive_expiry=2.5,
+    )

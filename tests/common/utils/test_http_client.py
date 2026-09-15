@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -14,9 +12,10 @@ import os
 import tempfile
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 import requests
-from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.http.http_client import AsyncSafeHTTPSClient, SafeHTTPSClient
 from motor.config.tls_config import TLSConfig
 
 
@@ -47,18 +46,9 @@ def test_init_with_valid_parameters(base_url, cert_files):
     """test init with valid parameters"""
     cert_file, key_file, ca_file = cert_files
 
-    tls_config = TLSConfig(
-        enable_tls=True,
-        cert_file=cert_file,
-        key_file=key_file,
-        ca_file=ca_file
-    )
+    tls_config = TLSConfig(enable_tls=True, cert_file=cert_file, key_file=key_file, ca_file=ca_file)
 
-    client = SafeHTTPSClient(
-        address=base_url,
-        tls_config=tls_config,
-        timeout=10
-    )
+    client = SafeHTTPSClient(address=base_url, tls_config=tls_config, timeout=10)
 
     assert client.base_url == f"https://{base_url}"
     assert client.timeout == 10
@@ -68,17 +58,10 @@ def test_init_with_valid_parameters(base_url, cert_files):
 
 def test_init_with_missing_cert_files(base_url):
     """test init with missing cert files"""
-    tls_config = TLSConfig(
-        enable_tls=True,
-        cert_file="nonexistent.crt",
-        key_file="nonexistent.key"
-    )
-    # CertUtil.create_ssl_context returns None if cert files don't exist, 
+    tls_config = TLSConfig(enable_tls=True, cert_file="nonexistent.crt", key_file="nonexistent.key")
+    # CertUtil.create_ssl_context returns None if cert files don't exist,
     # but client can still be initialized (SSL will fail at runtime)
-    client = SafeHTTPSClient(
-        address=base_url,
-        tls_config=tls_config
-    )
+    client = SafeHTTPSClient(address=base_url, tls_config=tls_config)
     # Client should still initialize, but SSL context creation may have failed
     assert client.base_url == f"https://{base_url}"
     assert client.protocol == 'https://'
@@ -90,6 +73,14 @@ def test_init_without_certificates(base_url):
 
     assert client.base_url == f"http://{base_url}"
     assert client.protocol == 'http://'
+
+
+def test_async_client_applies_configured_keepalive_expiry(base_url):
+    with patch("motor.common.http.http_client.HttpClientContext") as mock_client:
+        AsyncSafeHTTPSClient.create_client(base_url, keepalive_expiry=2.5)
+
+    limits = mock_client.call_args.kwargs["limits"]
+    assert limits.keepalive_expiry == 2.5
 
 
 def test_url_construction(base_url):
@@ -207,3 +198,22 @@ def test_request_timeout(base_url):
 
         call_kwargs = mock_request.call_args[1]
         assert call_kwargs['timeout'] == 3.5
+
+
+def test_async_client_expires_idle_connections_before_server_boundary(base_url):
+    """The Coordinator must retire idle vLLM connections before the server's 5s timeout."""
+    with patch("motor.common.http.http_client.HttpClientContext") as mock_client:
+        AsyncSafeHTTPSClient.create_client(base_url)
+
+    limits = mock_client.call_args.kwargs["limits"]
+    assert limits.keepalive_expiry == 3.0
+
+
+def test_async_client_preserves_custom_connection_limits(base_url):
+    """Explicit limits supplied by a caller must not be replaced by pool defaults."""
+    custom_limits = httpx.Limits(keepalive_expiry=1.0)
+
+    with patch("motor.common.http.http_client.HttpClientContext") as mock_client:
+        AsyncSafeHTTPSClient.create_client(base_url, limits=custom_limits)
+
+    assert mock_client.call_args.kwargs["limits"] is custom_limits
