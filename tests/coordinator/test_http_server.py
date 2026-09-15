@@ -1714,6 +1714,125 @@ class TestValidateAnthropicRequest:
         )
 
 
+class TestValidateOpenaiStreamOptions:
+    """Regression coverage for issue #566."""
+
+    @pytest.mark.parametrize("stream", [None, False])
+    @pytest.mark.parametrize(
+        "body_fields",
+        [
+            {"messages": [{"role": "user", "content": "hi"}]},
+            {"prompt": "hi"},
+        ],
+    )
+    def test_nonstream_request_with_stream_options_is_rejected(self, body_fields, stream):
+        body = {
+            "model": "m",
+            **body_fields,
+            "stream_options": {"include_usage": True},
+        }
+        if stream is not None:
+            body["stream"] = stream
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_openai_request(body)
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "Stream options can only be defined when `stream=True`."
+
+    def test_stream_request_with_stream_options_is_accepted(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        _validate_openai_request(body)
+
+    def test_empty_stream_options_matches_upstream_acceptance(self):
+        body = {
+            "model": "m",
+            "prompt": "hi",
+            "stream": False,
+            "stream_options": {},
+        }
+
+        _validate_openai_request(body)
+
+    def test_string_false_stream_matches_vllm_023_before_validator(self):
+        body = {
+            "model": "m",
+            "prompt": "hi",
+            "stream": "false",
+            "stream_options": {"include_usage": True},
+        }
+
+        _validate_openai_request(body)
+
+
+class TestValidateOpenaiPrefillGenerationParams:
+    """Cover all client fields overwritten by the vLLM Prefill adapter."""
+
+    @pytest.mark.parametrize(
+        ("body_fields", "field_name"),
+        [
+            ({"messages": [{"role": "user", "content": "hi"}], "max_tokens": "invalid"}, "max_tokens"),
+            (
+                {
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_completion_tokens": "invalid",
+                },
+                "max_completion_tokens",
+            ),
+            ({"prompt": "hi", "min_tokens": None}, "min_tokens"),
+            ({"prompt": "hi", "stream": "invalid"}, "stream"),
+        ],
+    )
+    def test_invalid_rewritten_field_type_is_rejected(self, body_fields, field_name):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_openai_request({"model": "m", **body_fields})
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == f"Invalid {field_name} field."
+
+    @pytest.mark.parametrize(
+        "body_fields",
+        [
+            {"prompt": "hi", "max_tokens": 0},
+            {"messages": [{"role": "user", "content": "hi"}], "max_completion_tokens": -1},
+            {"prompt": "hi", "min_tokens": -1},
+            {"prompt": "hi", "max_tokens": 4, "min_tokens": 5},
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 8,
+                "max_completion_tokens": 4,
+                "min_tokens": 5,
+            },
+        ],
+    )
+    def test_invalid_rewritten_field_value_is_rejected(self, body_fields):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_openai_request({"model": "m", **body_fields})
+
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.parametrize(
+        "body_fields",
+        [
+            {"prompt": "hi", "stream": "true", "max_tokens": "4", "min_tokens": 4.0},
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 0,
+                "max_completion_tokens": 4,
+                "min_tokens": 4,
+            },
+        ],
+    )
+    def test_vllm_023_compatible_values_are_accepted(self, body_fields):
+        _validate_openai_request({"model": "m", **body_fields})
+
+
 class TestAnthropicEndpoints:
     """Integration tests for Anthropic API endpoints."""
 

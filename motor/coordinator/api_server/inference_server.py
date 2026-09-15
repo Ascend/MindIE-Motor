@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from pydantic import TypeAdapter, ValidationError
 
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
@@ -34,12 +35,16 @@ from motor.coordinator.middleware.rate_limiter import SimpleRateLimiter
 from motor.coordinator.scheduler.runtime import SchedulerConnectionManager
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.common.http.http_client import HTTPClientPool
+from motor.coordinator.models.constants import OpenAIField
 from motor.coordinator.models.request import RequestType
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.router.dispatch import handle_request
 from motor.coordinator.tracer.tracing import TracerManager
 
 logger = get_logger(__name__)
+
+_VLLM_INT_ADAPTER = TypeAdapter(int)
+_VLLM_BOOL_ADAPTER = TypeAdapter(bool)
 
 
 def get_request_manager(request: Request) -> RequestManager:
@@ -75,11 +80,75 @@ def _validate_anthropic_request(body_json: dict[str, Any], *, require_max_tokens
 
 
 def _validate_openai_request(body_json: Any) -> None:
-    """Keep ingress validation structural; the engine owns OpenAI request semantics."""
+    """Validate request structure and Prefill-rewritten fields before scheduling."""
     if not isinstance(body_json, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Request body must be a JSON object",
+        )
+
+    # vLLM 0.23 parses these fields before constructing SamplingParams. Validate
+    # every field rewritten for Prefill so Decode cannot reject the untouched
+    # client value after Prefill has already allocated KV cache.
+    parsed: dict[OpenAIField, int | bool | None] = {}
+    adapters = {
+        OpenAIField.STREAM: _VLLM_BOOL_ADAPTER,
+        OpenAIField.MAX_TOKENS: _VLLM_INT_ADAPTER,
+        OpenAIField.MAX_COMPLETION_TOKENS: _VLLM_INT_ADAPTER,
+        OpenAIField.MIN_TOKENS: _VLLM_INT_ADAPTER,
+    }
+    nullable_fields = {
+        OpenAIField.STREAM,
+        OpenAIField.MAX_TOKENS,
+        OpenAIField.MAX_COMPLETION_TOKENS,
+    }
+    for field_name, adapter in adapters.items():
+        if field_name not in body_json:
+            continue
+        value = body_json[field_name]
+        if value is None and field_name in nullable_fields:
+            parsed[field_name] = None
+            continue
+        try:
+            parsed[field_name] = adapter.validate_python(value)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid {field_name} field.",
+            ) from exc
+
+    # Deliberately inspect the raw value, matching vLLM 0.23's mode="before"
+    # validator. For example, the string "false" is truthy here and is later
+    # coerced to False by Pydantic, so both Prefill and Decode accept it.
+    if body_json.get(OpenAIField.STREAM_OPTIONS) and not body_json.get(OpenAIField.STREAM):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Stream options can only be defined when `stream=True`.",
+        )
+
+    is_chat_request = OpenAIField.MESSAGES in body_json
+    max_field = (
+        OpenAIField.MAX_COMPLETION_TOKENS
+        if is_chat_request and parsed.get(OpenAIField.MAX_COMPLETION_TOKENS) is not None
+        else OpenAIField.MAX_TOKENS
+    )
+    max_tokens = parsed.get(max_field)
+    if max_tokens is not None and max_tokens < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{max_field} must be at least 1.",
+        )
+
+    min_tokens = parsed.get(OpenAIField.MIN_TOKENS, 0)
+    if min_tokens is not None and min_tokens < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{OpenAIField.MIN_TOKENS} must be greater than or equal to 0.",
+        )
+    if max_tokens is not None and min_tokens is not None and min_tokens > max_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{OpenAIField.MIN_TOKENS} must be less than or equal to {max_field}.",
         )
 
 
