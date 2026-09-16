@@ -25,6 +25,13 @@ def resolve_pinned_instance(
     return instances.get(target_instance_id)
 
 
+def resolve_pinned_endpoint(instance: Instance, target_endpoint_id: int | None) -> Endpoint | None:
+    """Return the exact DP endpoint requested on a pinned instance."""
+    if instance is None or target_endpoint_id is None:
+        return None
+    return next((endpoint for endpoint in instance.get_all_endpoints() if endpoint.id == target_endpoint_id), None)
+
+
 def select_endpoint_for_instance(
     instance: Instance,
     *,

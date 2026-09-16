@@ -38,6 +38,50 @@ def test_parse_agent_hint_resolves_header_ids_and_preserves_extensions():
     assert hint.raw_extra == {"extension": {"enabled": True}}
 
 
+def test_parse_agent_hint_prefers_canonical_vllm_program_id():
+    """Canonical vLLM identity wins over agent_hint/session fallbacks."""
+    hint = parse_agent_hint(
+        {
+            "agent_hint": {"session_id": "session-fallback"},
+            "vllm_xargs": {
+                "agentic_context": {
+                    "program_id": "canonical-program",
+                    "task_id": "task-a",
+                    "agent_id": "lead",
+                }
+            },
+        }
+    )
+    assert hint.program_id == "canonical-program"
+    assert hint.task_id == "task-a"
+    assert hint.agent_id == "lead"
+
+
+def test_parse_agent_hint_derives_canonical_task_agent_identity():
+    """Canonical context derives task:agent when program_id is absent."""
+    hint = parse_agent_hint({"vllm_xargs": {"agentic_context": {"task_id": "task-a", "agent_id": "worker"}}})
+    assert hint.program_id == "task-a:worker"
+
+
+def test_parse_agent_hint_maps_framework_headers():
+    """Claude and Codex framework headers produce stable S:agent identities."""
+    claude = parse_agent_hint({}, headers={"x-claude-code-session-id": "s", "x-claude-code-agent-id": "a"})
+    codex = parse_agent_hint({}, headers={"session-id": "s", "thread-id": "t"})
+    opencode = parse_agent_hint({}, headers={"x-session-id": "open-code"})
+    assert claude.program_id == "s:a"
+    assert codex.program_id == "s:t"
+    assert opencode.program_id == "open-code"
+
+
+def test_parse_agent_hint_infers_root_parent_task_for_canonical_context():
+    """Canonical child context without task_id inherits the root parent namespace."""
+    hint = parse_agent_hint(
+        {"vllm_xargs": {"agentic_context": {"session_id": "child", "parent_session_id": "root", "agent_id": "worker"}}}
+    )
+    assert hint.program_id == "root:worker"
+    assert hint.parent_program_id == "root"
+
+
 def test_parse_agent_hint_complements_single_session_id():
     """A single valid identifier is mirrored to the missing identifier field."""
     hint = parse_agent_hint({"agent_hint": {"parent_session_id": "session-1"}})

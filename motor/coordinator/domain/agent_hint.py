@@ -29,6 +29,13 @@ logger = get_logger(__name__)
 # Header fallback field names (lowercase to match Starlette's header normalization)
 HEADER_SESSION_ID = "x-session-id"
 HEADER_PARENT_SESSION_ID = "x-parent-session-id"
+HEADER_CLAUDE_SESSION_ID = "x-claude-code-session-id"
+HEADER_CLAUDE_AGENT_ID = "x-claude-code-agent-id"
+HEADER_CLAUDE_PARENT_SESSION_ID = "x-claude-code-parent-session-id"
+HEADER_CODEX_SESSION_ID = "session-id"
+HEADER_CODEX_THREAD_ID = "thread-id"
+HEADER_CODEX_PARENT_SESSION_ID = "parent-session-id"
+HEADER_OPENCODE_SESSION_ID = HEADER_SESSION_ID
 _AGENT_HINT_KNOWN_FIELDS = frozenset(
     {
         "session_id",
@@ -38,6 +45,10 @@ _AGENT_HINT_KNOWN_FIELDS = frozenset(
         "session_control",
         "latency_control",
         "priority_control",
+        "program_id",
+        "parent_program_id",
+        "task_id",
+        "agent_id",
     }
 )
 _CACHE_TYPE_ALLOWED = "ephemeral"
@@ -321,10 +332,10 @@ class AgentHintInfo(BaseModel):
     """
     Structured info parsed from the OpenAI request's agent_hint.
 
-    In the minimal version, only session_id / parent_session_id / cache_control
-    are consumed by the Scheduler. context_management / latency_control /
-    priority_control are parsed and populated for forward compatibility but
-    do not currently drive scheduling decisions.
+    Session fields and the canonical RFC identity are consumed by the
+    Coordinator scheduler. context_management / latency_control /
+    priority_control are parsed and populated for forward compatibility but do
+    not currently drive scheduling decisions.
     """
 
     session_id: str | None = Field(default=None, description="Session ID; supplied by client or auto-generated.")
@@ -346,6 +357,10 @@ class AgentHintInfo(BaseModel):
     )
     latency_control: LatencyControl | None = Field(default=None, description="Latency control hint (design-only).")
     priority_control: PriorityControl | None = Field(default=None, description="Priority control hint (design-only).")
+    program_id: str | None = Field(default=None, description="Canonical Program identity.")
+    parent_program_id: str | None = Field(default=None, description="Canonical parent Program identity.")
+    task_id: str | None = Field(default=None, description="Canonical task identity.")
+    agent_id: str | None = Field(default=None, description="Canonical agent identity.")
     raw_extra: dict | None = Field(
         default_factory=dict, description="Pass-through dict for unrecognized extension fields in agent_hint."
     )
@@ -817,6 +832,52 @@ def parse_agent_hint(
 
     session_id, parent_session_id = _resolve_session_ids(agent_hint_data, headers)
 
+    context = {}
+    vllm_xargs = request_json.get("vllm_xargs") if isinstance(request_json, dict) else None
+    if isinstance(vllm_xargs, dict) and isinstance(vllm_xargs.get("agentic_context"), dict):
+        context = vllm_xargs["agentic_context"]
+
+    def _identity_value(*values: Any) -> str | None:
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    framework_session = _identity_value(
+        (headers or {}).get(HEADER_CLAUDE_SESSION_ID),
+        (headers or {}).get(HEADER_CODEX_SESSION_ID),
+        (headers or {}).get(HEADER_OPENCODE_SESSION_ID),
+    )
+    framework_agent = _identity_value(
+        (headers or {}).get(HEADER_CLAUDE_AGENT_ID),
+        (headers or {}).get(HEADER_CODEX_THREAD_ID),
+    )
+    framework_parent = _identity_value(
+        (headers or {}).get(HEADER_CLAUDE_PARENT_SESSION_ID),
+        (headers or {}).get(HEADER_CODEX_PARENT_SESSION_ID),
+    )
+    explicit_program_id = _identity_value(context.get("program_id"), agent_hint_data.get("program_id"))
+    task_id = _identity_value(context.get("task_id"), agent_hint_data.get("task_id"))
+    agent_id = _identity_value(context.get("agent_id"), agent_hint_data.get("agent_id"), framework_agent)
+    if not context and not agent_hint_data.get("session_id") and framework_session:
+        session_id = framework_session
+    if not context and not agent_hint_data.get("parent_session_id") and framework_parent:
+        parent_session_id = framework_parent
+    session_id = _identity_value(context.get("session_id"), session_id, framework_session)
+    parent_session_id = _identity_value(context.get("parent_session_id"), parent_session_id, framework_parent)
+    parent_program_id = _identity_value(
+        context.get("parent_program_id"), agent_hint_data.get("parent_program_id"), parent_session_id
+    )
+    # Root-parent inference: child agents without an explicit task inherit the
+    # parent's task namespace while retaining their own agent suffix.
+    # The RFC's root-parent task inference applies to canonical vLLM context.
+    # Framework mappings and agent_hint preserve their documented S[:agent]
+    # identity even when they carry a parent relationship.
+    inferred_task = task_id or (parent_session_id if context and parent_session_id else session_id)
+    program_id = explicit_program_id
+    if program_id is None and inferred_task:
+        program_id = f"{inferred_task}:{agent_id}" if agent_id else inferred_task
+
     messages = request_json.get("messages") if isinstance(request_json, dict) else None
     tools = request_json.get("tools") if isinstance(request_json, dict) else None
 
@@ -856,6 +917,10 @@ def parse_agent_hint(
         session_control=session_control,
         latency_control=latency_control,
         priority_control=priority_control,
+        program_id=program_id,
+        parent_program_id=parent_program_id,
+        task_id=task_id,
+        agent_id=agent_id,
         raw_extra=raw_extra,
     )
 

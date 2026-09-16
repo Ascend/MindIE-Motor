@@ -189,6 +189,18 @@
         "w_npu": 1.0,
         "w_cpu": 1.0,
         "w_disk": 0.0
+      },
+      "progress_ttl": {
+        "enabled": false,
+        "mode": "auto",
+        "ttl_seconds": 10.0,
+        "rolling_window_size": 100,
+        "min_ttl_seconds": 10.0,
+        "max_ttl_seconds": 120.0,
+        "target_min_segment_rounds": 9,
+        "privileged_lookahead_rounds": 14.0,
+        "shared_prefix_freshness_warmup_seconds": 100.0,
+        "fallback_total_kv_tokens": 0
       }
     },
     "render_config": {

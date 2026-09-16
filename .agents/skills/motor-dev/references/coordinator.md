@@ -364,6 +364,17 @@ and from `mgmt_tls_config`; use TLS as well when management traffic crosses an u
 
 **Precision detection** (`fault_tolerance/precision/` + `fault_tolerance/probe/`): cross-worker sampling (`sample_controller.py`, `streak_result.py`) coordinated with Mgmt via the four precision request types — `CONFIRM_SAMPLE` (cross-worker exit gate), `RECORD_PRECISION_RESULT` (global consecutive failures + probing state), `FINISH_PRECISION_ACTION` (clear probing after probe/alarm), `DISMISS_PRECISION_ALARM_STATE` (external recovery cleared the alarm). Alarm publishing lives in `fault_tolerance/alarm/` (`precision_alarm.py`); probes (`chat_probe.py`, `router_probe.py`) route identically to user traffic through `select_router_class()`.
 
+### Program-Level Progress-TTL Admission
+
+When `scheduler_config.progress_ttl.enabled=true`, requests carrying a stable Program identity are gated before
+P/Union forwarding. The Mgmt-owned control-plane dispatcher keeps generation-safe Program state and exposes
+`PROGRAM_ADMIT`, `PROGRAM_POLL`, `PROGRAM_COMPLETE`, `PROGRAM_CANCEL`, `PROGRAM_STATS`, and `PROGRAM_RELEASE`
+over the existing ZMQ channel. Endpoint workload allocation remains on the `all_in_one` SHM CAS data path.
+
+Capacity is probed from each native vLLM endpoint when possible, with the configured static total-KV fallback.
+Program state is sharded by `(instance_id, endpoint_id)` so admission capacity and sticky dispatch refer to the
+same DP endpoint. Requests without a stable identity or usable capacity facts bypass the gate.
+
 ## Development Rules
 
 - **New scheduling policies**: subclass `BaseSchedulingPolicy`, implement `select_instance()`, register in `factory.py`.

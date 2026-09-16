@@ -37,6 +37,13 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
 from motor.coordinator.scheduler.scheduler import Scheduler
 
 
+def test_program_backend_key_includes_dp_endpoint() -> None:
+    """Program schedulers are isolated per instance and DP endpoint."""
+    assert _SchedulerRequestDispatcher._program_backend_id({"target_instance_id": 7, "target_endpoint_id": 3}) == "7:3"
+    assert _SchedulerRequestDispatcher._program_backend_id({"target_instance_id": 7}) == "7"
+    assert _SchedulerRequestDispatcher._program_backend_id({}) == "default"
+
+
 # ---------------------------------------------------------------------------
 # Shared test helpers
 # ---------------------------------------------------------------------------
@@ -124,10 +131,12 @@ def _make_dispatcher(
     scheduler_type: SchedulerType = SchedulerType.LOAD_BALANCE,
     workload_writer=None,
     on_refresh_done=None,
+    progress_ttl_enabled: bool = False,
 ) -> tuple[_SchedulerRequestDispatcher, InstanceManager, Scheduler, CoordinatorConfig]:
     config = CoordinatorConfig()
     config.scheduler_config.scheduler_type = scheduler_type
     config.scheduler_config.endpoint_instance_score_weight = 0.0
+    config.scheduler_config.progress_ttl.enabled = progress_ttl_enabled
     instance_manager = InstanceManager(config)
     scheduler = Scheduler(instance_provider=instance_manager, config=config)
     dispatcher = _SchedulerRequestDispatcher(
@@ -163,6 +172,31 @@ class TestControlPlaneProtocol:
         assert "REFRESH_INSTANCES" not in names
         assert "GET_AVAILABLE_INSTANCES" in names
         assert "CIRCUIT_BREAKER_REPORT" in names
+        assert "PROGRAM_ADMIT" in names
+        assert "PROGRAM_POLL" in names
+
+    @pytest.mark.asyncio
+    async def test_program_admission_is_served_by_all_in_one_control_plane(self):
+        dispatcher, *_ = _make_dispatcher(progress_ttl_enabled=True)
+        response = await dispatcher.dispatch(
+            SchedulerRequest(
+                request_type=SchedulerRequestType.PROGRAM_ADMIT,
+                request_id="rpc-1",
+                data={
+                    "req_id": "request-1",
+                    "program_id": "program-1",
+                    "prompt_tokens": 100,
+                    "max_output_tokens": 10,
+                    "capacity_total_kv_tokens": 1000,
+                    "target_instance_id": 1,
+                    "target_endpoint_id": 2,
+                },
+            )
+        )
+
+        assert response.response_type is SchedulerResponseType.SUCCESS
+        assert response.data["disposition"] == "admitted"
+        assert dispatcher._program_request_backends["request-1"] == "1:2"
 
 
 class TestDispatchUnknownType:

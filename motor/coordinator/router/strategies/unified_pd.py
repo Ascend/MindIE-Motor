@@ -526,6 +526,7 @@ class UnifiedPDRouter(BaseRouter):
                             )
                         attempt.transition(AttemptState.DONE)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
+                        await self._complete_program()
                         return
                     except GeneratorExit:
                         cleanup_reason = AttemptStopReason.CLIENT_DISCONNECT
@@ -597,6 +598,7 @@ class UnifiedPDRouter(BaseRouter):
                             body,
                             client_return_token_ids=self.req_info.client_expects_token_ids,
                         )
+                        await self._complete_program()
                         return JSONResponse(content=body)
                     except (asyncio.CancelledError, Exception) as e:
                         error, retry = await self._process_response_error(attempt, attempt_index, e)
@@ -657,6 +659,7 @@ class UnifiedPDRouter(BaseRouter):
             await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))
         else:
             self.req_info.update_state(ReqState.EXCEPTION)
+            await self._cancel_program_admission()
         return error, retry
 
     @staticmethod
@@ -2008,19 +2011,36 @@ class UnifiedPDRouter(BaseRouter):
         required_engine_type: str | None = None,
     ) -> ScheduledResource:
         self.req_info.update_state(ReqState.P_SCHEDULING if role == PDRole.ROLE_P else ReqState.D_SCHEDULING)
+        program_admission = await self._admit_program_if_needed(role)
+        if program_admission == "rejected":
+            raise HTTPException(status_code=503, detail="Program admission queue timeout")
+        program_admitted = program_admission == "admitted"
         target_instance_id = None
+        target_endpoint_id = None
         constraint = self.req_info.scheduling_constraint
         if constraint is not None:
             target_instance_id = constraint.target_for_role(role)
+        elif getattr(self, "_program_target_instance_id", None) is not None:
+            target_instance_id = self._program_target_instance_id
+            target_endpoint_id = getattr(self, "_program_target_endpoint_id", None)
         scheduler_kwargs = {"target_instance_id": target_instance_id}
+        if target_endpoint_id is not None:
+            scheduler_kwargs["target_endpoint_id"] = target_endpoint_id
         if required_engine_type is not None:
             scheduler_kwargs["required_engine_type"] = required_engine_type
-        result = await self._scheduler.select_and_allocate(role, self.req_info, **scheduler_kwargs)
+        try:
+            result = await self._scheduler.select_and_allocate(role, self.req_info, **scheduler_kwargs)
+        except Exception:
+            if program_admitted:
+                await self._cancel_program_admission()
+            raise
         if result is None:
             error_message = f"No instance available for role {role}"
             if required_engine_type is not None:
                 error_message += f" with engine_type={required_engine_type}"
             self.req_info.trace_obj.set_trace_error_message(error_message)
+            if program_admitted:
+                await self._cancel_program_admission()
             if required_engine_type is not None:
                 raise HTTPException(status_code=503, detail=error_message)
             raise RuntimeError(error_message)

@@ -656,6 +656,9 @@ class PDHybridRouter(BaseRouter):
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}")
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}", is_meta=True)
                     trace_obj.set_trace_prompt(req_data)
+                    if isinstance(e, HTTPException):
+                        self.req_info.update_state(ReqState.EXCEPTION)
+                        raise
                     if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) and not is_retryable_upstream_error(e):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise

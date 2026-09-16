@@ -79,6 +79,9 @@ class SchedulerConnectionManager:
             kv_affinity=coordinator_config.scheduler_config.kv_affinity,
             tls_config=coordinator_config.infer_tls_config,
             on_instance_refreshed=on_instance_refreshed,
+            progress_ttl_fallback_total_kv_tokens=(
+                coordinator_config.scheduler_config.progress_ttl.fallback_total_kv_tokens
+            ),
         )
         client = SchedulerClient(client_config)
         return cls(client=client, client_config=scheduler_config)

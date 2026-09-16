@@ -34,6 +34,15 @@ from motor.coordinator.domain.circuit_breaker import (
 from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
 from motor.coordinator.domain.instance_manager import InstanceManager
 from motor.coordinator.scheduler.scheduler import Scheduler
+from motor.coordinator.scheduler.program import (
+    AdmissionDecision,
+    AdmissionRequest,
+    CapacitySnapshot,
+    ProgramIdentity,
+    ProgramScheduler,
+    ProgramSchedulerConfig,
+    ProgressTTLMode,
+)
 from motor.coordinator.scheduler.runtime.workload_shm import WorkloadSharedMemoryOwner
 from motor.coordinator.scheduler.runtime.workload_shm.layout import (
     DEFAULT_WORKLOAD_SHM_MAX_ENTRIES,
@@ -118,11 +127,75 @@ class _SchedulerRequestDispatcher:
         # True when InstanceManager has changes not yet reflected in the SHM snapshot; drained by
         # _retry_dirty_snapshot (also forces a resync on the next apply_refresh).
         self._snapshot_dirty = False
+        progress_ttl = getattr(config.scheduler_config, "progress_ttl", None)
+        self._program_scheduler = ProgramScheduler(
+            ProgramSchedulerConfig(
+                enabled=bool(getattr(progress_ttl, "enabled", False)),
+                ttl_seconds=float(getattr(progress_ttl, "ttl_seconds", 10.0)),
+                force_resume_timeout_seconds=float(getattr(progress_ttl, "force_resume_timeout_seconds", 1800.0)),
+                paused_program_ttl_seconds=float(getattr(progress_ttl, "paused_program_ttl_seconds", 1800.0)),
+                decode_buffer_tokens=int(getattr(progress_ttl, "decode_buffer_tokens", 100)),
+                resume_capacity_ratio=float(getattr(progress_ttl, "resume_capacity_ratio", 0.95)),
+                pause_capacity_ratio=float(getattr(progress_ttl, "pause_capacity_ratio", 1.0)),
+                target_min_segment_rounds=int(getattr(progress_ttl, "target_min_segment_rounds", 9)),
+                target_max_segment_rounds=int(getattr(progress_ttl, "target_max_segment_rounds", 14)),
+                mode=ProgressTTLMode(str(getattr(progress_ttl, "mode", "on")).lower()),
+                rolling_window_size=int(getattr(progress_ttl, "rolling_window_size", 100)),
+                auto_enable_utility_seconds=float(getattr(progress_ttl, "auto_enable_utility_seconds", 20.0)),
+                auto_disable_utility_seconds=float(getattr(progress_ttl, "auto_disable_utility_seconds", 5.0)),
+                min_ttl_seconds=float(getattr(progress_ttl, "min_ttl_seconds", 10.0)),
+                max_ttl_seconds=float(getattr(progress_ttl, "max_ttl_seconds", 120.0)),
+                ttl_decode_throughput_alpha=float(getattr(progress_ttl, "ttl_decode_throughput_alpha", 0.15)),
+                ttl_prefill_seconds_per_1k_uncached_tokens=float(
+                    getattr(progress_ttl, "ttl_prefill_seconds_per_1k_uncached_tokens", 0.29)
+                ),
+                ttl_max_cache_miss_impact_ratio=float(getattr(progress_ttl, "ttl_max_cache_miss_impact_ratio", 1.0)),
+                shared_prefix_freshness_warmup_seconds=float(
+                    getattr(progress_ttl, "shared_prefix_freshness_warmup_seconds", 100.0)
+                ),
+                shared_prefix_freshness_kv_turnovers=float(
+                    getattr(progress_ttl, "shared_prefix_freshness_kv_turnovers", 2.0)
+                ),
+                capacity_safety_margin_tokens=int(getattr(progress_ttl, "capacity_safety_margin_tokens", 0)),
+                pause_capacity_lookahead_rounds=float(getattr(progress_ttl, "pause_capacity_lookahead_rounds", 2.0)),
+                privileged_lookahead_rounds=float(getattr(progress_ttl, "privileged_lookahead_rounds", 14.0)),
+                privileged_max_context_tokens=int(getattr(progress_ttl, "privileged_max_context_tokens", 262144)),
+            )
+        )
+        self._program_schedulers: dict[str, ProgramScheduler] = {"default": self._program_scheduler}
+        self._program_request_backends: dict[str, str] = {}
+        self._program_id_backends: dict[str, str] = {}
+        self._program_pending_decisions: dict[str, AdmissionDecision] = {}
+
+    def _program_scheduler_for(self, backend_id: object) -> tuple[str, ProgramScheduler]:
+        key = str(backend_id).strip() if backend_id is not None else "default"
+        if not key:
+            key = "default"
+        scheduler = self._program_schedulers.get(key)
+        if scheduler is None:
+            scheduler = ProgramScheduler(self._program_scheduler.config)
+            self._program_schedulers[key] = scheduler
+        return key, scheduler
+
+    @staticmethod
+    def _program_backend_id(data: dict) -> str:
+        """Build the per-dispatch-target key used by ProgramScheduler shards."""
+        instance_id = data.get("target_instance_id")
+        endpoint_id = data.get("target_endpoint_id")
+        if instance_id is None:
+            return "default"
+        return f"{instance_id}:{endpoint_id}" if endpoint_id is not None else str(instance_id)
 
     async def dispatch(self, request: SchedulerRequest) -> SchedulerResponse:
         """Dispatch control-plane request to the appropriate handler."""
         handlers = {
             SchedulerRequestType.GET_AVAILABLE_INSTANCES.value: self._handle_get_available_instances,
+            SchedulerRequestType.PROGRAM_ADMIT.value: self._handle_program_admit,
+            SchedulerRequestType.PROGRAM_POLL.value: self._handle_program_poll,
+            SchedulerRequestType.PROGRAM_COMPLETE.value: self._handle_program_complete,
+            SchedulerRequestType.PROGRAM_CANCEL.value: self._handle_program_cancel,
+            SchedulerRequestType.PROGRAM_STATS.value: self._handle_program_stats,
+            SchedulerRequestType.PROGRAM_RELEASE.value: self._handle_program_release,
             SchedulerRequestType.CONFIRM_SAMPLE.value: self._handle_confirm_sample,
             SchedulerRequestType.RECORD_PRECISION_RESULT.value: self._handle_record_precision_result,
             SchedulerRequestType.FINISH_PRECISION_ACTION.value: self._handle_finish_precision_action,
@@ -607,6 +680,236 @@ class _SchedulerRequestDispatcher:
         task = self._recovery_timers.pop(key, None)
         if task and not task.done():
             task.cancel()
+
+    def _program_capacity(self, data: dict) -> CapacitySnapshot | None:
+        progress_ttl = getattr(self._config.scheduler_config, "progress_ttl", None)
+        total = data.get("capacity_total_kv_tokens")
+        if total is None:
+            total = getattr(progress_ttl, "fallback_total_kv_tokens", 0)
+        try:
+            total_tokens = int(total)
+            native_used = int(data.get("native_used_kv_tokens", 0))
+            native_waiting = int(data.get("native_waiting_kv_tokens", 0))
+        except (TypeError, ValueError):
+            return None
+        if total_tokens <= 0:
+            return None
+        return CapacitySnapshot(
+            total_kv_tokens=total_tokens,
+            native_used_kv_tokens=max(0, native_used),
+            native_waiting_kv_tokens=max(0, native_waiting),
+            safety_ratio=float(getattr(progress_ttl, "resume_capacity_ratio", 0.95)),
+        )
+
+    @staticmethod
+    def _program_response(request_id: str, decision: AdmissionDecision) -> SchedulerResponse:
+        program = None
+        if decision.program is not None:
+            program = {"program_id": decision.program.program_id, "generation": decision.program.generation}
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request_id,
+            data={
+                "disposition": decision.disposition.value,
+                "program": program,
+                "reason": decision.reason,
+            },
+        )
+
+    async def _handle_program_admit(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        request_id = str(data.get("req_id") or request.request_id)
+        program_id = str(data.get("program_id") or "").strip()
+        if not program_id:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={"disposition": "bypass", "reason": "missing_program_identity"},
+            )
+        capacity = self._program_capacity(data)
+        if capacity is None and self._program_scheduler.config.enabled:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={"disposition": "bypass", "reason": "capacity_unavailable"},
+            )
+        if capacity is None:
+            capacity = CapacitySnapshot(total_kv_tokens=2**63 - 1, safety_ratio=1.0)
+        admission = AdmissionRequest(
+            request_id=request_id,
+            identity=ProgramIdentity(
+                program_id=program_id,
+                parent_program_id=str(data["parent_program_id"]) if data.get("parent_program_id") else None,
+            ),
+            prompt_tokens=max(0, int(data.get("prompt_tokens", 0))),
+            max_output_tokens=max(0, int(data.get("max_output_tokens", 0))),
+            shared_prefix_tokens=max(0, int(data.get("shared_prefix_tokens", 0))),
+            arrived_at=time.monotonic(),
+        )
+        backend_key, program_scheduler = self._program_scheduler_for(self._program_backend_id(data))
+        decision = program_scheduler.arrive(admission, capacity)
+        logger.info(
+            "ProgressTTL admit request_id=%s program_id=%s disposition=%s reason=%s "
+            "capacity_kv=%s native_used=%s native_waiting=%s target=%s-%s",
+            request_id,
+            program_id,
+            decision.disposition.value,
+            decision.reason,
+            capacity.total_kv_tokens,
+            capacity.native_used_kv_tokens,
+            capacity.native_waiting_kv_tokens,
+            data.get("target_instance_id"),
+            data.get("target_endpoint_id"),
+        )
+        if decision.program is not None:
+            self._program_request_backends[request_id] = backend_key
+            self._program_id_backends[program_id] = backend_key
+        if decision.disposition.value == "admitted":
+            self._program_pending_decisions.pop(request_id, None)
+        return self._program_response(request.request_id, decision)
+
+    async def _handle_program_poll(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        capacity = self._program_capacity(data)
+        if capacity is None:
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.SUCCESS,
+                request_id=request.request_id,
+                data={"disposition": "bypass", "reason": "capacity_unavailable"},
+            )
+        requested_id = str(data.get("req_id") or request.request_id)
+        backend_key = self._program_request_backends.get(requested_id, self._program_backend_id(data))
+        _, program_scheduler = self._program_scheduler_for(backend_key)
+        pending = self._program_pending_decisions.pop(requested_id, None)
+        if pending is not None:
+            logger.info(
+                "ProgressTTL poll request_id=%s disposition=%s reason=%s source=pending_decision queue_depth=%s",
+                requested_id,
+                pending.disposition.value,
+                pending.reason,
+                program_scheduler.queued_request_count,
+            )
+            return self._program_response(request.request_id, pending)
+        decisions = program_scheduler.tick(capacity)
+        for decision in decisions:
+            self._program_pending_decisions[decision.request_id] = decision
+        for decision in decisions:
+            if decision.request_id == requested_id:
+                self._program_pending_decisions.pop(requested_id, None)
+                return self._program_response(request.request_id, decision)
+        logger.info(
+            "ProgressTTL poll request_id=%s disposition=queued reason=capacity_wait queue_depth=%s "
+            "capacity_kv=%s native_used=%s native_waiting=%s",
+            requested_id,
+            program_scheduler.queued_request_count,
+            capacity.total_kv_tokens,
+            capacity.native_used_kv_tokens,
+            capacity.native_waiting_kv_tokens,
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"disposition": "queued", "reason": "capacity_wait"},
+        )
+
+    async def _handle_program_complete(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        request_id = str(data.get("req_id") or "")
+        try:
+            total_tokens = int(data.get("total_tokens", 0))
+        except (TypeError, ValueError):
+            total_tokens = 0
+        try:
+            prompt_tokens = int(data["prompt_tokens"]) if data.get("prompt_tokens") is not None else None
+        except (TypeError, ValueError):
+            prompt_tokens = None
+        try:
+            completion_tokens = int(data["completion_tokens"]) if data.get("completion_tokens") is not None else None
+        except (TypeError, ValueError):
+            completion_tokens = None
+        backend_key = self._program_request_backends.pop(request_id, "default")
+        self._program_pending_decisions.pop(request_id, None)
+        _, program_scheduler = self._program_scheduler_for(backend_key)
+        completed = program_scheduler.complete(
+            request_id,
+            total_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        logger.info(
+            "ProgressTTL complete request_id=%s completed=%s total_tokens=%s prompt_tokens=%s completion_tokens=%s",
+            request_id,
+            completed,
+            total_tokens,
+            prompt_tokens,
+            completion_tokens,
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"completed": completed},
+        )
+
+    async def _handle_program_cancel(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        request_id = str(data.get("req_id") or "")
+        backend_key = self._program_request_backends.pop(request_id, "default")
+        self._program_pending_decisions.pop(request_id, None)
+        _, program_scheduler = self._program_scheduler_for(backend_key)
+        cancelled = program_scheduler.cancel(request_id)
+        logger.info("ProgressTTL cancel request_id=%s cancelled=%s", request_id, cancelled)
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"cancelled": cancelled},
+        )
+
+    async def _handle_program_stats(self, request: SchedulerRequest) -> SchedulerResponse:
+        snapshots = [scheduler.snapshot() for scheduler in self._program_schedulers.values()]
+        keys = (
+            "active_programs",
+            "paused_programs",
+            "reasoning_programs",
+            "acting_programs",
+            "queued_requests",
+            "used_kv_tokens",
+            "privileged_programs",
+        )
+        aggregate = {key: sum(int(snapshot.get(key, 0)) for snapshot in snapshots) for key in keys}
+        logger.info(
+            "ProgressTTL stats active=%s paused=%s reasoning=%s acting=%s queued=%s privileged=%s used_kv=%s",
+            aggregate["active_programs"],
+            aggregate["paused_programs"],
+            aggregate["reasoning_programs"],
+            aggregate["acting_programs"],
+            aggregate["queued_requests"],
+            aggregate["privileged_programs"],
+            aggregate["used_kv_tokens"],
+        )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data=aggregate,
+        )
+
+    async def _handle_program_release(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = request.data or {}
+        program_id = str(data.get("program_id") or "")
+        generation = data.get("generation")
+        try:
+            generation_value = int(generation) if generation is not None else None
+        except (TypeError, ValueError):
+            generation_value = None
+        backend_key = self._program_id_backends.get(program_id, "default")
+        _, program_scheduler = self._program_scheduler_for(backend_key)
+        released = bool(program_id) and program_scheduler.release(program_id, generation_value)
+        if released:
+            self._program_id_backends.pop(program_id, None)
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data={"released": released},
+        )
 
     async def _publish_circuit_breaker(self, instance_id: int, state: str) -> None:
         """Publish circuit breaker state change to PUB subscribers."""

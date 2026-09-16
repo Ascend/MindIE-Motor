@@ -22,6 +22,7 @@ from motor.common.resources.endpoint import Endpoint, Workload, EndpointStatus, 
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import InstanceReadiness
 from motor.coordinator.domain.instance_manager import InstanceManager
+from motor.coordinator.domain.agent_hint import parse_agent_hint
 from motor.coordinator.domain.scheduling import UpdateWorkloadParams
 from motor.coordinator.models.request import RequestInfo
 from motor.coordinator.scheduler.runtime.zmq_protocol import (
@@ -33,6 +34,7 @@ from motor.coordinator.scheduler.runtime.scheduler_client import (
     SchedulerClientConfig,
     _SchedulerInstanceCache,
     _collect_active_endpoints_from_cache,
+    resolve_program_id,
 )
 from motor.coordinator.scheduler.runtime.workload_shm.native import (
     STATUS_BLOCKED,
@@ -104,6 +106,27 @@ def _build_instance_dict(instance_id: int = 1, role: str = "prefill") -> dict:
         endpoints={"pod1": {1: ep}},
     )
     return inst.model_dump(mode="json")
+
+
+def test_resolve_program_id_uses_canonical_hint_fields() -> None:
+    """The scheduler resolver and parser share one canonical identity source."""
+    req_info = Mock(spec=RequestInfo)
+    req_info.req_data = {"agent_hint": {"task_id": "fallback", "agent_id": "old"}}
+    req_info.agent_hint_info = parse_agent_hint(
+        {
+            "agent_hint": {"session_id": "session"},
+            "vllm_xargs": {"agentic_context": {"program_id": "canonical"}},
+        }
+    )
+    assert resolve_program_id(req_info) == "canonical"
+
+
+def test_resolve_program_id_falls_back_to_parsed_task_agent() -> None:
+    """Parsed agent_hint task/agent fields are honored without raw_extra."""
+    req_info = Mock(spec=RequestInfo)
+    req_info.req_data = {}
+    req_info.agent_hint_info = parse_agent_hint({"agent_hint": {"task_id": "task", "agent_id": "worker"}})
+    assert resolve_program_id(req_info) == "task:worker"
 
 
 def _build_mock_scheduler_response(

@@ -42,6 +42,7 @@ from motor.coordinator.scheduler.runtime.zmq_protocol import (
     ZMQMessageSerializer,
 )
 from motor.common.logger import get_logger
+from motor.common.utils.net import format_address
 from motor.config.coordinator import (
     KV_AFFINITY_MODE_UNIFIED,
     KV_AFFINITY_MODES,
@@ -53,6 +54,7 @@ from motor.coordinator.fault_tolerance.precision.streak_result import (
 from motor.coordinator.scheduler.policy.load_balance import LoadBalancePolicy
 from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
 from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
+from motor.coordinator.scheduler.runtime.program_capacity import ProgramCapacityProvider
 from motor.coordinator.domain.workload_calculator import (
     calculate_committed_workload,
     calculate_demand_workload,
@@ -64,6 +66,7 @@ from motor.coordinator.scheduler.allocate_arbitration import (
 )
 from motor.coordinator.domain.scheduling_pin import (
     resolve_pinned_instance,
+    resolve_pinned_endpoint,
     select_endpoint_for_instance,
 )
 from motor.coordinator.models.request import RequestInfo
@@ -624,6 +627,26 @@ class SchedulerClientConfig:
     kv_affinity: KvAffinityConfig | None = None
     tls_config: Any | None = None
     on_instance_refreshed: OnInstanceRefreshedCallback | None = None
+    progress_ttl_fallback_total_kv_tokens: int = 0
+
+
+def resolve_program_id(req_info: RequestInfo) -> str | None:
+    """Resolve the stable RFC task/agent identity used by all affinity probes."""
+    req_data = req_info.req_data or {}
+    hint = getattr(req_info, "agent_hint_info", None)
+    canonical_program_id = getattr(hint, "program_id", None)
+    if canonical_program_id:
+        return canonical_program_id
+    vllm_xargs = req_data.get("vllm_xargs")
+    context = vllm_xargs.get("agentic_context", {}) if isinstance(vllm_xargs, dict) else {}
+    if isinstance(context, dict) and context.get("program_id"):
+        return context["program_id"]
+    raw_extra = getattr(hint, "raw_extra", None) or {}
+    task_id = getattr(hint, "task_id", None) or raw_extra.get("task_id") or req_data.get("task_id")
+    agent_id = getattr(hint, "agent_id", None) or raw_extra.get("agent_id") or req_data.get("agent_id")
+    if task_id and agent_id:
+        return f"{task_id}:{agent_id}"
+    return getattr(hint, "session_id", None) or req_data.get("session_id")
 
 
 class AsyncSchedulerClient:
@@ -635,6 +658,7 @@ class AsyncSchedulerClient:
     def __init__(self, config: SchedulerClientConfig):
         self.scheduler_address = config.scheduler_address
         self.timeout = config.timeout
+        self._tls_config = config.tls_config
         self._client_index = max(0, config.client_index)
         self._client_count = max(1, config.client_count)
         # Per-request ids: one-time full-uuid prefix + monotonic counter, avoiding a uuid4() per call.
@@ -673,6 +697,10 @@ class AsyncSchedulerClient:
         self._workload_reader = None
         self._last_instance_version: int | None = None
         self._on_instance_refreshed = config.on_instance_refreshed
+        self._program_capacity_provider = ProgramCapacityProvider(config.progress_ttl_fallback_total_kv_tokens)
+        # Keep a Program on the endpoint selected for its first admitted round.
+        # This prevents a capacity probe on A from being followed by allocation on B.
+        self._program_target_instances: dict[str, tuple[int, int]] = {}
         self._cb_blocked_instances: set[int] = set()
 
         instance_pub = (config.instance_pub_address or "").strip()
@@ -889,12 +917,186 @@ class AsyncSchedulerClient:
         except Exception as e:
             logger.warning("on_instance_refreshed callback failed: %s", e)
 
+    async def admit_program(
+        self,
+        *,
+        request_id: str,
+        program_id: str,
+        parent_program_id: str | None = None,
+        prompt_tokens: int = 0,
+        max_output_tokens: int = 0,
+        shared_prefix_tokens: int = 0,
+        capacity_total_kv_tokens: int = 0,
+        native_used_kv_tokens: int = 0,
+        native_waiting_kv_tokens: int = 0,
+        target_instance_id: int | None = None,
+        target_endpoint_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Ask SchedulerServer for Program-level admission before forwarding."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.PROGRAM_ADMIT,
+            request_id=self._next_request_id(),
+            data={
+                "req_id": request_id,
+                "program_id": program_id,
+                "parent_program_id": parent_program_id,
+                "prompt_tokens": max(0, prompt_tokens),
+                "max_output_tokens": max(0, max_output_tokens),
+                "shared_prefix_tokens": max(0, shared_prefix_tokens),
+                "capacity_total_kv_tokens": max(0, capacity_total_kv_tokens),
+                "native_used_kv_tokens": max(0, native_used_kv_tokens),
+                "native_waiting_kv_tokens": max(0, native_waiting_kv_tokens),
+                "target_instance_id": target_instance_id,
+                "target_endpoint_id": target_endpoint_id,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response is None or response.response_type != SchedulerResponseType.SUCCESS:
+            return {"disposition": "bypass", "reason": "scheduler_unavailable"}
+        return response.data or {"disposition": "bypass", "reason": "empty_scheduler_response"}
+
+    async def get_program_capacity(
+        self, role: PDRole, req_info: RequestInfo
+    ) -> tuple[int, int, int, int | None, int | None]:
+        """Probe the best candidate endpoint for fresh logical KV capacity."""
+        try:
+            candidates, _ = await self._select_endpoint_candidates_with_policy(
+                req_info,
+                role,
+                top_k=32,
+                required_engine_type=None,
+            )
+            program_id = resolve_program_id(req_info)
+            preferred_target = self._program_target_instances.get(str(program_id)) if program_id else None
+            if not candidates:
+                if preferred_target is not None:
+                    return 0, 0, 0, preferred_target[0], preferred_target[1]
+                return 0, 0, 0, None, None
+            if preferred_target is not None:
+                candidates = [item for item in candidates if (item[0].id, item[1].id) == preferred_target]
+                if not candidates:
+                    return 0, 0, 0, preferred_target[0], preferred_target[1]
+            _instance, endpoint, _score = candidates[0]
+            address = format_address(endpoint.ip, endpoint.business_port)
+            capacity = await self._program_capacity_provider.read(address, self._tls_config)
+            if capacity is None:
+                return 0, 0, 0, _instance.id, endpoint.id
+            if program_id:
+                self._program_target_instances[str(program_id)] = (_instance.id, endpoint.id)
+            return (
+                capacity.total_kv_tokens,
+                capacity.native_used_kv_tokens,
+                capacity.native_waiting_kv_tokens,
+                _instance.id,
+                endpoint.id,
+            )
+        except Exception as exc:
+            logger.warning("Program capacity probe failed role=%s error=%s", role, exc)
+            return 0, 0, 0, None, None
+
+    async def poll_program(
+        self,
+        *,
+        request_id: str,
+        capacity_total_kv_tokens: int = 0,
+        native_used_kv_tokens: int = 0,
+        native_waiting_kv_tokens: int = 0,
+        target_instance_id: int | None = None,
+        target_endpoint_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Poll one queued Program request using fresh capacity facts."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.PROGRAM_POLL,
+            request_id=self._next_request_id(),
+            data={
+                "req_id": request_id,
+                "capacity_total_kv_tokens": max(0, capacity_total_kv_tokens),
+                "native_used_kv_tokens": max(0, native_used_kv_tokens),
+                "native_waiting_kv_tokens": max(0, native_waiting_kv_tokens),
+                "target_instance_id": target_instance_id,
+                "target_endpoint_id": target_endpoint_id,
+            },
+        )
+        response = await self._transport.send_request(request)
+        if response is None or response.response_type != SchedulerResponseType.SUCCESS:
+            return {"disposition": "bypass", "reason": "scheduler_unavailable"}
+        return response.data or {"disposition": "queued", "reason": "empty_scheduler_response"}
+
+    async def complete_program(
+        self,
+        request_id: str,
+        total_tokens: int,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> bool:
+        """Commit completion facts and arm the Program's acting TTL."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.PROGRAM_COMPLETE,
+            request_id=self._next_request_id(),
+            data={
+                "req_id": request_id,
+                "total_tokens": max(0, total_tokens),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            },
+        )
+        response = await self._transport.send_request(request)
+        return bool(
+            response
+            and response.response_type == SchedulerResponseType.SUCCESS
+            and (response.data or {}).get("completed")
+        )
+
+    async def cancel_program(self, request_id: str) -> bool:
+        """Remove one queued or admitted Program request."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.PROGRAM_CANCEL,
+            request_id=self._next_request_id(),
+            data={"req_id": request_id},
+        )
+        response = await self._transport.send_request(request)
+        return bool(
+            response
+            and response.response_type == SchedulerResponseType.SUCCESS
+            and (response.data or {}).get("cancelled")
+        )
+
+    async def get_program_stats(self) -> dict[str, int]:
+        """Return low-cardinality Program scheduler stats for observability."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.PROGRAM_STATS,
+            request_id=self._next_request_id(),
+            data={},
+        )
+        response = await self._transport.send_request(request)
+        if response is None or response.response_type != SchedulerResponseType.SUCCESS:
+            return {}
+        return response.data or {}
+
+    async def release_program(self, program_id: str, generation: int | None = None) -> bool:
+        """Release an idle Program generation after a terminal API lifecycle signal."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.PROGRAM_RELEASE,
+            request_id=self._next_request_id(),
+            data={"program_id": program_id, "generation": generation},
+        )
+        response = await self._transport.send_request(request)
+        released = bool(
+            response
+            and response.response_type == SchedulerResponseType.SUCCESS
+            and (response.data or {}).get("released")
+        )
+        if released:
+            self._program_target_instances.pop(program_id, None)
+        return released
+
     async def select_and_allocate(
         self,
         role: "PDRole",
         req_info: RequestInfo,
         *,
         target_instance_id: int | None = None,
+        target_endpoint_id: int | None = None,
         required_engine_type: str | None = None,
         required_dispatch_capability: str | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:
@@ -942,12 +1144,23 @@ class AsyncSchedulerClient:
                     req_info.req_id,
                 )
                 return None
-            endpoint = select_endpoint_for_instance(
-                instance,
-                scheduler_type=self._scheduler_type or "round_robin",
-                endpoint_rr_counters=self._endpoint_rr_counters,
-                is_blocked=self.is_instance_blocked,
-            )
+            endpoint = resolve_pinned_endpoint(instance, target_endpoint_id)
+            if target_endpoint_id is not None and endpoint is None:
+                logger.warning(
+                    "Pinned endpoint_id=%s unavailable on instance_id=%s role=%s req_id=%s",
+                    target_endpoint_id,
+                    target_instance_id,
+                    role_str,
+                    req_info.req_id,
+                )
+                return None
+            if endpoint is None:
+                endpoint = select_endpoint_for_instance(
+                    instance,
+                    scheduler_type=self._scheduler_type or "round_robin",
+                    endpoint_rr_counters=self._endpoint_rr_counters,
+                    is_blocked=self.is_instance_blocked,
+                )
             if endpoint is None:
                 logger.warning(
                     "No endpoint on pinned instance_id=%s role=%s req_id=%s",

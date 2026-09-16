@@ -1236,6 +1236,31 @@ class TestPDHybridCancelReschedule:
         assert payload["choices"][0]["message"]["content"] == "ok"
 
     @pytest.mark.asyncio
+    async def test_nonstream_program_admission_timeout_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):
+        """A completed admission wait must not restart for every transport retry."""
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=3, reschedule_enabled=True)
+        router_obj = self._build_router(
+            config,
+            {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}], "stream": False},
+            api="v1/chat/completions",
+        )
+        admission_calls = 0
+
+        async def reject_admission(role):
+            nonlocal admission_calls
+            admission_calls += 1
+            return "rejected"
+
+        monkeypatch.setattr(router_obj, "_admit_program_if_needed", reject_admission)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await router_obj.handle_request()
+
+        assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert exc_info.value.detail == "Program admission queue timeout"
+        assert admission_calls == 1
+
+    @pytest.mark.asyncio
     async def test_nonstream_precision_sampling_submits_union_as_decode_id(self, monkeypatch: MonkeyPatch, hybrid_pool):
         config = _make_cancel_test_config(monkeypatch, transport_max_retry=1, reschedule_enabled=False)
         config.precision_detection_config = PrecisionDetectionConfig(

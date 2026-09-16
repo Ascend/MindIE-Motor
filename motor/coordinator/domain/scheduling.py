@@ -157,6 +157,7 @@ class SchedulingFacade(Protocol):
         req_info: RequestInfo,
         *,
         target_instance_id: int | None = None,
+        target_endpoint_id: int | None = None,
         required_engine_type: str | None = None,
         required_dispatch_capability: str | None = None,
     ) -> tuple[Instance, Endpoint, Workload] | None:

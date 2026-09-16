@@ -368,6 +368,43 @@ class KvAffinityConfig:
 
 
 @dataclass
+class ProgressTTLConfig:
+    """Coordinator-side Program admission settings.
+
+    The feature is deliberately disabled by default.  When enabled, the
+    SchedulerServer gates only requests with a stable agent session identity;
+    native batching and physical KV management remain engine responsibilities.
+    """
+
+    enabled: bool = False
+    ttl_seconds: float = 10.0
+    force_resume_timeout_seconds: float = 1800.0
+    paused_program_ttl_seconds: float = 1800.0
+    decode_buffer_tokens: int = 100
+    resume_capacity_ratio: float = 0.95
+    pause_capacity_ratio: float = 1.0
+    target_min_segment_rounds: int = 9
+    target_max_segment_rounds: int = 14
+    capacity_refresh_seconds: float = 5.0
+    fallback_total_kv_tokens: int = 0
+    mode: str = "on"
+    rolling_window_size: int = 100
+    auto_enable_utility_seconds: float = 20.0
+    auto_disable_utility_seconds: float = 5.0
+    min_ttl_seconds: float = 10.0
+    max_ttl_seconds: float = 120.0
+    ttl_decode_throughput_alpha: float = 0.15
+    ttl_prefill_seconds_per_1k_uncached_tokens: float = 0.29
+    ttl_max_cache_miss_impact_ratio: float = 1.0
+    shared_prefix_freshness_warmup_seconds: float = 100.0
+    shared_prefix_freshness_kv_turnovers: float = 2.0
+    capacity_safety_margin_tokens: int = 0
+    pause_capacity_lookahead_rounds: float = 2.0
+    privileged_lookahead_rounds: float = 14.0
+    privileged_max_context_tokens: int = 262144
+
+
+@dataclass
 class SchedulerConfig:
     scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
     enable_pd_separation_fallback_to_hybrid: bool = True
@@ -376,6 +413,8 @@ class SchedulerConfig:
     endpoint_instance_score_weight: float = 0.05
     # kv_cache_affinity tunables (affinity + load + per-medium weights).
     kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
+    # Program-level Progress-TTL admission (disabled by default).
+    progress_ttl: ProgressTTLConfig = field(default_factory=ProgressTTLConfig)
     # KV event registration config for kv-conductor.
     kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
 
@@ -953,6 +992,84 @@ class CoordinatorConfig:
         )
         if affinity.mode not in KV_AFFINITY_MODES:
             self._errors.append(f"kv_affinity.mode must be one of {KV_AFFINITY_MODES}, got {affinity.mode!r}")
+        progress_ttl = self.scheduler_config.progress_ttl
+        if not isinstance(progress_ttl.enabled, bool):
+            self._errors.append("progress_ttl.enabled must be a boolean")
+        if progress_ttl.mode not in {"on", "off", "auto"}:
+            self._errors.append("progress_ttl.mode must be one of {'on', 'off', 'auto'}")
+        self._validate_positive_number(progress_ttl.rolling_window_size, "progress_ttl.rolling_window_size")
+        self._validate_positive_number(progress_ttl.ttl_seconds, "progress_ttl.ttl_seconds", allow_zero=True)
+        self._validate_positive_number(
+            progress_ttl.force_resume_timeout_seconds,
+            "progress_ttl.force_resume_timeout_seconds",
+            allow_zero=True,
+        )
+        self._validate_positive_number(
+            progress_ttl.paused_program_ttl_seconds,
+            "progress_ttl.paused_program_ttl_seconds",
+            allow_zero=True,
+        )
+        self._validate_positive_number(
+            progress_ttl.decode_buffer_tokens,
+            "progress_ttl.decode_buffer_tokens",
+            allow_zero=True,
+        )
+        if not 0 < progress_ttl.resume_capacity_ratio <= 1:
+            self._errors.append("progress_ttl.resume_capacity_ratio must be in (0, 1]")
+        if not 0 < progress_ttl.pause_capacity_ratio <= 1:
+            self._errors.append("progress_ttl.pause_capacity_ratio must be in (0, 1]")
+        self._validate_positive_number(
+            progress_ttl.target_min_segment_rounds,
+            "progress_ttl.target_min_segment_rounds",
+        )
+        self._validate_positive_number(
+            progress_ttl.target_max_segment_rounds,
+            "progress_ttl.target_max_segment_rounds",
+        )
+        if progress_ttl.target_max_segment_rounds < progress_ttl.target_min_segment_rounds:
+            self._errors.append("progress_ttl.target_max_segment_rounds must be >= target_min_segment_rounds")
+        self._validate_positive_number(
+            progress_ttl.capacity_refresh_seconds,
+            "progress_ttl.capacity_refresh_seconds",
+        )
+        self._validate_positive_number(
+            progress_ttl.fallback_total_kv_tokens,
+            "progress_ttl.fallback_total_kv_tokens",
+            allow_zero=True,
+        )
+        if progress_ttl.auto_disable_utility_seconds > progress_ttl.auto_enable_utility_seconds:
+            self._errors.append("progress_ttl.auto_disable_utility_seconds must be <= auto_enable_utility_seconds")
+        self._validate_positive_number(progress_ttl.min_ttl_seconds, "progress_ttl.min_ttl_seconds", allow_zero=True)
+        self._validate_positive_number(progress_ttl.max_ttl_seconds, "progress_ttl.max_ttl_seconds")
+        if progress_ttl.max_ttl_seconds < progress_ttl.min_ttl_seconds:
+            self._errors.append("progress_ttl.max_ttl_seconds must be >= min_ttl_seconds")
+        if not 0 <= progress_ttl.ttl_decode_throughput_alpha <= 1:
+            self._errors.append("progress_ttl.ttl_decode_throughput_alpha must be in [0, 1]")
+        self._validate_positive_number(
+            progress_ttl.ttl_prefill_seconds_per_1k_uncached_tokens,
+            "progress_ttl.ttl_prefill_seconds_per_1k_uncached_tokens",
+            allow_zero=True,
+        )
+        if not 0 <= progress_ttl.ttl_max_cache_miss_impact_ratio <= 1:
+            self._errors.append("progress_ttl.ttl_max_cache_miss_impact_ratio must be in [0, 1]")
+        self._validate_positive_number(
+            progress_ttl.shared_prefix_freshness_warmup_seconds,
+            "progress_ttl.shared_prefix_freshness_warmup_seconds",
+            allow_zero=True,
+        )
+        self._validate_positive_number(
+            progress_ttl.shared_prefix_freshness_kv_turnovers,
+            "progress_ttl.shared_prefix_freshness_kv_turnovers",
+        )
+        self._validate_positive_number(
+            progress_ttl.capacity_safety_margin_tokens,
+            "progress_ttl.capacity_safety_margin_tokens",
+            allow_zero=True,
+        )
+        self._validate_positive_number(
+            progress_ttl.privileged_max_context_tokens,
+            "progress_ttl.privileged_max_context_tokens",
+        )
         if self.context_budget_mode not in CONTEXT_BUDGET_MODES:
             self._errors.append(
                 f"context_budget_mode must be one of {CONTEXT_BUDGET_MODES}, got {self.context_budget_mode!r}"

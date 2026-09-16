@@ -57,6 +57,7 @@ from motor.coordinator.router.workload import WorkloadActionHandler
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.scheduling import InstanceReadiness
+from motor.coordinator.scheduler.runtime.scheduler_client import resolve_program_id
 
 logger = get_logger(__name__)
 
@@ -141,6 +142,8 @@ class BaseRouter(ABC):
         self._sampling_manager = sampling_manager
         self._forward_resource: ScheduledResource | None = None
         self._sched_to_p_logged = False
+        self._program_target_instance_id: int | None = None
+        self._program_target_endpoint_id: int | None = None
 
     def _stream_overall_timeout(self) -> float:
         """Remaining infer_timeout budget for the streaming response, counted from request arrival.
@@ -383,9 +386,20 @@ class BaseRouter(ABC):
         """Select instance + allocate workload (one RPC), record in RequestManager, retry on failure."""
         self.req_info.update_state(_scheduling_state_for_role(role))
 
+        program_admission = await self._admit_program_if_needed(role)
+        if program_admission == "rejected":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Program admission queue timeout",
+            )
+        program_admitted = program_admission == "admitted"
+        program_target_instance_id = getattr(self, "_program_target_instance_id", None)
+        program_target_endpoint_id = getattr(self, "_program_target_endpoint_id", None)
         constraint = self.req_info.scheduling_constraint
         if target_instance_id is None and constraint is not None:
             target_instance_id = constraint.target_for_role(role)
+        elif target_instance_id is None and program_target_instance_id is not None:
+            target_instance_id = program_target_instance_id
 
         last_exception = None
         t0_prepare = time.perf_counter()
@@ -393,6 +407,8 @@ class BaseRouter(ABC):
             try:
                 t0_select = time.perf_counter()
                 scheduler_kwargs = {"target_instance_id": target_instance_id}
+                if constraint is None and program_target_endpoint_id is not None:
+                    scheduler_kwargs["target_endpoint_id"] = program_target_endpoint_id
                 if required_engine_type is not None:
                     scheduler_kwargs["required_engine_type"] = required_engine_type
                 if required_dispatch_capability is not None:
@@ -486,6 +502,8 @@ class BaseRouter(ABC):
                     continue
 
         self.req_info.update_state(ReqState.EXCEPTION)
+        if program_admitted:
+            await self._cancel_program_admission()
         error_detail = f"Scheduling failed after {self.config.exception_config.max_retry} attempts, role: {role}"
         if last_exception:
             error_detail += f", last error: {str(last_exception)}"
@@ -493,6 +511,196 @@ class BaseRouter(ABC):
         trace_obj.set_trace_error_message(error_detail, is_meta=self.is_meta)
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=error_detail)
+
+    def _program_identity(self) -> tuple[str | None, str | None]:
+        """Resolve RFC-style task/agent identity with session fallback."""
+        hint = getattr(self.req_info, "agent_hint_info", None)
+        session_id = resolve_program_id(self.req_info)
+        parent_id = getattr(hint, "parent_program_id", None) or getattr(hint, "parent_session_id", None)
+        return session_id, parent_id
+
+    async def _admit_program_if_needed(self, role: PDRole) -> str:
+        """Gate P/Union forwarding while preserving fail-open compatibility."""
+        self._program_target_instance_id = None
+        self._program_target_endpoint_id = None
+        # CPCD/Handoff owns decode-side KV transfer.  Coordinator admission is
+        # intentionally scoped to the P/Union leg; D is allocated at handoff.
+        if role not in (PDRole.ROLE_P, PDRole.ROLE_U):
+            return "bypass"
+        progress_ttl = getattr(self.config.scheduler_config, "progress_ttl", None)
+        if not progress_ttl or not getattr(progress_ttl, "enabled", False):
+            return "bypass"
+        program_id, parent_program_id = self._program_identity()
+        admit = getattr(self._scheduler, "admit_program", None)
+        poll = getattr(self._scheduler, "poll_program", None)
+        if not program_id or not callable(admit) or not callable(poll):
+            return "bypass"
+        token_ids = getattr(self.req_info, "token_ids", None)
+        prompt_tokens = len(token_ids) if isinstance(token_ids, list) else 0
+        req_data = self.req_info.req_data or {}
+        max_output_tokens = int(req_data.get("max_completion_tokens", req_data.get("max_tokens", 0)) or 0)
+        shared_prefix_tokens = int(req_data.get("cached_tokens", 0) or 0)
+        capacity_total = int(getattr(progress_ttl, "fallback_total_kv_tokens", 0))
+        native_used = 0
+        native_waiting = 0
+        program_target_instance_id = None
+        program_target_endpoint_id = None
+        capacity_probe = getattr(self._scheduler, "get_program_capacity", None)
+        if callable(capacity_probe):
+            capacity_result = await capacity_probe(role, self.req_info)
+            if len(capacity_result) == 5:
+                capacity_total, native_used, native_waiting, program_target_instance_id, program_target_endpoint_id = (
+                    capacity_result
+                )
+            elif len(capacity_result) == 4:
+                capacity_total, native_used, native_waiting, program_target_instance_id = capacity_result
+            elif len(capacity_result) == 3:
+                capacity_total, native_used, native_waiting = capacity_result
+            else:
+                capacity_total, native_used = capacity_result
+        self._program_target_instance_id = program_target_instance_id
+        self._program_target_endpoint_id = program_target_endpoint_id
+        wait_started = time.monotonic()
+        wait_deadline = wait_started + max(0.0, self.config.exception_config.first_token_timeout - 1.0)
+        last_poll_log = wait_started
+        self.logger.info(
+            "ProgressTTL request_start request_id=%s program_id=%s parent_program_id=%s hint_session_id=%s hint_parent_session_id=%s role=%s prompt_tokens=%d max_output_tokens=%d shared_prefix_tokens=%d capacity_kv=%d native_used=%d native_waiting=%d target=%s-%s",
+            self.req_info.req_id,
+            program_id,
+            parent_program_id,
+            getattr(self.req_info.agent_hint_info, "session_id", None),
+            getattr(self.req_info.agent_hint_info, "parent_session_id", None),
+            role,
+            prompt_tokens,
+            max_output_tokens,
+            shared_prefix_tokens,
+            capacity_total,
+            native_used,
+            native_waiting,
+            program_target_instance_id,
+            program_target_endpoint_id,
+        )
+        try:
+            response = await admit(
+                request_id=self.req_info.req_id,
+                program_id=program_id,
+                parent_program_id=parent_program_id,
+                prompt_tokens=prompt_tokens,
+                max_output_tokens=max_output_tokens,
+                shared_prefix_tokens=max(0, shared_prefix_tokens),
+                capacity_total_kv_tokens=capacity_total,
+                native_used_kv_tokens=native_used,
+                native_waiting_kv_tokens=native_waiting,
+                target_instance_id=program_target_instance_id,
+                target_endpoint_id=program_target_endpoint_id,
+            )
+            while response.get("disposition") == "queued":
+                if time.monotonic() >= wait_deadline:
+                    await self._cancel_program_admission()
+                    self.logger.info(
+                        "ProgressTTL request_timeout request_id=%s program_id=%s waited_ms=%.2f disposition=queued",
+                        self.req_info.req_id,
+                        program_id,
+                        (time.monotonic() - wait_started) * 1000,
+                    )
+                    return "rejected"
+                await asyncio.sleep(0.1)
+                if callable(capacity_probe):
+                    capacity_result = await capacity_probe(role, self.req_info)
+                    if len(capacity_result) == 5:
+                        (
+                            capacity_total,
+                            native_used,
+                            native_waiting,
+                            program_target_instance_id,
+                            program_target_endpoint_id,
+                        ) = capacity_result
+                    elif len(capacity_result) == 4:
+                        capacity_total, native_used, native_waiting, program_target_instance_id = capacity_result
+                    elif len(capacity_result) == 3:
+                        capacity_total, native_used, native_waiting = capacity_result
+                    elif len(capacity_result) == 2:
+                        capacity_total, native_used = capacity_result
+                self._program_target_instance_id = program_target_instance_id
+                self._program_target_endpoint_id = program_target_endpoint_id
+                response = await poll(
+                    request_id=self.req_info.req_id,
+                    capacity_total_kv_tokens=capacity_total,
+                    native_used_kv_tokens=native_used,
+                    native_waiting_kv_tokens=native_waiting,
+                    target_instance_id=program_target_instance_id,
+                    target_endpoint_id=program_target_endpoint_id,
+                )
+                now = time.monotonic()
+                if response.get("disposition") != "queued" or now - last_poll_log >= 1.0:
+                    self.logger.info(
+                        "ProgressTTL request_poll request_id=%s program_id=%s disposition=%s waited_ms=%.2f capacity_kv=%d native_used=%d native_waiting=%d target=%s-%s",
+                        self.req_info.req_id,
+                        program_id,
+                        response.get("disposition"),
+                        (now - wait_started) * 1000,
+                        capacity_total,
+                        native_used,
+                        native_waiting,
+                        program_target_instance_id,
+                        program_target_endpoint_id,
+                    )
+                    last_poll_log = now
+        except asyncio.CancelledError:
+            await self._cancel_program_admission()
+            raise
+        if response.get("disposition") == "admitted":
+            self.logger.info(
+                "ProgressTTL request_admitted request_id=%s program_id=%s", self.req_info.req_id, program_id
+            )
+            return "admitted"
+        if response.get("disposition") == "bypass":
+            return "bypass"
+        return "rejected"
+
+    async def _cancel_program_admission(self) -> None:
+        """Best-effort cleanup when endpoint allocation cannot be completed."""
+        cancel = getattr(self._scheduler, "cancel_program", None)
+        if callable(cancel):
+            with CancelScope(shield=True):
+                await cancel(self.req_info.req_id)
+
+    async def _complete_program(self) -> None:
+        """Publish response completion after the endpoint workload is released."""
+        complete = getattr(self._scheduler, "complete_program", None)
+        program_id, _ = self._program_identity()
+        if not program_id or not callable(complete):
+            return
+        token_ids = getattr(self.req_info, "cached_token_ids", None)
+        prompt_ids = getattr(self.req_info, "prompt_token_ids", None)
+        usage_prompt = getattr(self.req_info, "usage_prompt_tokens", None)
+        usage_completion = getattr(self.req_info, "usage_completion_tokens", None)
+        prompt_tokens = usage_prompt if usage_prompt is not None else len(prompt_ids or [])
+        completion_tokens = usage_completion if usage_completion is not None else len(token_ids or [])
+        accounting_origin = "usage" if usage_prompt is not None or usage_completion is not None else "token_ids"
+        if completion_tokens == 0 and getattr(self.req_info.trace_obj, "count_token", 0) > 0:
+            completion_tokens = self.req_info.trace_obj.count_token
+            accounting_origin = "other"
+        total_tokens = prompt_tokens + completion_tokens
+        self.logger.info(
+            "ProgressTTL completion_usage request_id=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d source=%s usage_prompt=%s usage_completion=%s token_ids_prompt=%d token_ids_completion=%d",
+            self.req_info.req_id,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            accounting_origin,
+            usage_prompt,
+            usage_completion,
+            len(prompt_ids or []),
+            len(token_ids or []),
+        )
+        with CancelScope(shield=True):
+            await complete(
+                self.req_info.req_id,
+                total_tokens,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
 
     async def _rollback_allocated_workload(
         self,
@@ -625,9 +833,11 @@ class BaseRouter(ABC):
                     frame_end = split_idx + delim_len
                     frame = pending[:frame_end]
                     pending = pending[frame_end:]
+                    self._capture_usage_from_chunk(frame)
                     yield frame
             if pending:
                 # Keep backward compatibility for non-SSE upstream responses.
+                self._capture_usage_from_chunk(pending)
                 yield pending
             trace_obj.set_count_token(count_token)
 
@@ -694,6 +904,15 @@ class BaseRouter(ABC):
                 await response.aread()
 
         trace_obj.add_trace_event(f"Post ok: {response.status_code}", is_meta=self.is_meta)
+        # Non-streaming responses carry usage in the completed JSON body.  Capture
+        # it here while the response is still available so Progress-TTL completion
+        # accounting does not depend on precision-sampling token-id fields.
+        try:
+            body = response.json()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            body = None
+        if isinstance(body, dict):
+            self.req_info.update_usage(body)
         elapsed_forward_ms = (time.perf_counter() - t0_forward) * 1000
         if _should_log_scheduling_sample(self.req_info.req_id):
             self.logger.info(
@@ -702,6 +921,23 @@ class BaseRouter(ABC):
                 api,
             )
         return response
+
+    def _capture_usage_from_chunk(self, chunk: bytes) -> None:
+        """Capture usage fields from a response frame without requiring precision sampling."""
+        if not chunk or b"usage" not in chunk:
+            return
+        parsed = parse_stream_chunk_json(chunk, self.logger)
+        # Anthropic SSE frames include an ``event:`` line before ``data:``;
+        # parse_stream_chunk_json intentionally handles the OpenAI single-line
+        # form, so extract the data payload for the multi-line form as well.
+        if parsed is None:
+            for line in chunk.splitlines():
+                if line.startswith(b"data:"):
+                    parsed = parse_stream_chunk_json(line, self.logger)
+                    if parsed is not None:
+                        break
+        if isinstance(parsed, dict):
+            self.req_info.update_usage(parsed)
 
     @contextlib.asynccontextmanager
     async def _open_nonstream_response(
@@ -766,7 +1002,10 @@ class BaseRouter(ABC):
 
     async def release_all(self, resource: ScheduledResource):
         """Release compute ledger (active_tokens)."""
-        return await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)
+        result = await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)
+        if result and resource.instance.role in (PDRole.ROLE_P, PDRole.ROLE_U, "prefill", "union", "both"):
+            await self._complete_program()
+        return result
 
     async def release_tokens(self, resource: ScheduledResource):
         return await self._update_workload(resource, WorkloadAction.RELEASE_TOKENS)

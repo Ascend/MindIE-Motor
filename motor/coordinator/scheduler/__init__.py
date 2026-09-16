@@ -22,9 +22,13 @@ __all__ = [
     "LoadBalancePolicy",
     "RoundRobinPolicy",
     "SchedulingPolicyFactory",
+    "ProgramScheduler",
+    "ProgramSchedulerConfig",
+    "ProgressTTLMode",
 ]
 
 from motor.coordinator.scheduler.scheduler import Scheduler
+from motor.coordinator.scheduler.program import ProgramScheduler, ProgramSchedulerConfig, ProgressTTLMode
 from motor.coordinator.scheduler.policy import (
     BaseSchedulingPolicy,
     LoadBalancePolicy,

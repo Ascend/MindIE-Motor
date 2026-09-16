@@ -22,6 +22,7 @@ from motor.common.resources.endpoint import Endpoint, EndpointStatus, Workload, 
 from motor.common.resources.instance import Instance, InsStatus, PDRole, ParallelConfig
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.domain import ScheduledResource
+from motor.coordinator.domain.agent_hint import parse_agent_hint
 from motor.coordinator.models.request import ReqState, RequestInfo
 from motor.coordinator.router.strategies.base import BaseRouter
 

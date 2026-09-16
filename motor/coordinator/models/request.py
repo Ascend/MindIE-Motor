@@ -102,6 +102,10 @@ class RequestInfo(BaseModel):
     prompt_tokens_details: dict = Field(default={}, description="prefill prompt_tokens_details")
     prompt_token_ids: list = Field(default=[], description="prefill prompt_token_ids")
     cached_token_ids: list = Field(default=[], description="Cached token_ids")
+    usage_prompt_tokens: int | None = Field(default=None, description="Prompt token count reported by upstream usage")
+    usage_completion_tokens: int | None = Field(
+        default=None, description="Completion token count reported by upstream usage"
+    )
     scheduling_constraint: SchedulingConstraint | None = Field(
         default=None,
         description="Internal pin-to-instance constraint (e.g. precision probe); not from client API",
@@ -133,6 +137,26 @@ class RequestInfo(BaseModel):
 
     def update_prompt_tokens_details(self, prompt_tokens_details: dict):
         self.prompt_tokens_details = prompt_tokens_details
+
+    def update_usage(self, payload: dict) -> None:
+        """Capture upstream usage for Progress-TTL accounting independent of token-id sampling."""
+        candidates = [payload]
+        nested = payload.get("payload") if isinstance(payload, dict) else None
+        if isinstance(nested, dict):
+            candidates.append(nested)
+        for candidate in candidates:
+            usage = candidate.get("usage")
+            if not isinstance(usage, dict):
+                message = candidate.get("message")
+                usage = message.get("usage") if isinstance(message, dict) else None
+            if not isinstance(usage, dict):
+                continue
+            prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+            completion = usage.get("completion_tokens", usage.get("output_tokens"))
+            if isinstance(prompt, (int, float)):
+                self.usage_prompt_tokens = max(0, int(prompt))
+            if isinstance(completion, (int, float)):
+                self.usage_completion_tokens = max(0, int(completion))
 
     def set_cancel_scope(self, cancel_scope: anyio.CancelScope, role: PDRole):
         if role == PDRole.ROLE_P:

@@ -47,9 +47,13 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-08-22 | scheduler | New Programs were incorrectly queued as paused | [initial-admission-state.md](scheduler/initial-admission-state.md) | scheduler, program, admission, paused, capacity |
 | 2026-08-21 | kv_conductor | MultiConnector 顶层配置下引擎 offload 事件被静默丢弃 | `kv_conductor/multi-connector-kv-events-dropped.md` | MultiConnector、offload 事件丢失、两阶段匹配、kv_transfer_config |
 | 2026-08-24 | coordinator | 实例注册接受 ID 碰撞和不完整引擎就绪 | [instance-registration-validation.md](coordinator/instance-registration-validation.md) | CRC32 collision, instance ID, Endpoint extra fields, empty models |
 | 2026-08-24 | coordinator | Coordinator models 与 domain 包循环导入 | [domain-model-circular-import.md](coordinator/domain-model-circular-import.md) | circular import, domain __init__, models.request, lazy exports |
+| 2026-08-29 | coordinator | Admission timeout was retried as a transport failure | [admission-timeout-retry.md](coordinator/admission-timeout-retry.md) | coordinator, program admission, timeout, retry, HTTP 503 |
+| 2026-08-30 | coordinator | Program allocation switched endpoint after admission | [program-endpoint-ownership.md](coordinator/program-endpoint-ownership.md) | scheduler client, endpoint pin, capacity probe, Program admission, DP |
+| 2026-08-30 | scheduler | Program admission bypassed queue and stale capacity facts | [admission-capacity-invariants.md](scheduler/admission-capacity-invariants.md) | scheduler, queue precedence, shared prefix, capacity, max segment |
 | 2026-08-25 | controller | 增量实例刷新失败后未及时收敛 | [incremental-refresh-set-fallback.md](controller/incremental-refresh-set-fallback.md) | EventPusher, incremental refresh, SET reconciliation, fingerprint |
 | 2026-09-02 | controller | A2 linkdown 被降成 L2 无法自杀 | [a2-linkdown-nm-suicide.md](controller/a2-linkdown-nm-suicide.md) | A2, linkdown, 0x81078603, NmSuicide, PreSeparateNPU |
 | 2026-09-03 | coordinator | Responses input items were rejected by Chat message validation | [responses-developer-role-rejected.md](coordinator/responses-developer-role-rejected.md) | coordinator, responses, input-item, developer-role, function-call-output, validation, HTTP-400 |
