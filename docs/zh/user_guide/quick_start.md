@@ -60,7 +60,7 @@ chmod -R 755 /mnt/weight
      python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A2
      ```
 
-     生成结果位于 `examples/deployer/config_tool/output_config/`。完整步骤与注意事项见 [MindIE Motor 配置自动生成指导](../../../examples/infer_engines/vllm/models/README.md)。
+     生成结果位于 `examples/deployer/config_tool/output_config/`。完整步骤与注意事项见 [MindIE Motor 配置自动生成指导](https://gitcode.com/Ascend/MindIE-Motor/blob/master/examples/infer_engines/vllm/models/README.md)。
 
    - **手工编辑（本快速入门）**：下文以 Qwen3-8B、P/D 各 1 实例为例，直接编辑 `examples/infer_engines/vllm/` 下配置。
 
