@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 import configparser
 import logging
 import logging.handlers
@@ -33,6 +34,19 @@ IDLE_EXIT_SECONDS = 5  # exit when no pods in namespace for this duration
 BACKOFF_WINDOW_SECONDS = 60
 BACKOFF_BASE_SECONDS = 2
 BACKOFF_MAX_SECONDS = 120
+
+# kubectl logs -f that lives this long with 0 new lines is a quiet disconnect
+# (typical apiserver ~4h timeout), not a crash-loop / immediate pull failure.
+QUIET_FOLLOW_SECONDS = 10
+
+
+class PullOutcome(Enum):
+    """Result of one ``kubectl logs -f`` session."""
+
+    WROTE = "wrote"
+    QUIET = "quiet"
+    FAILED = "failed"
+
 
 # Configuration parameters, Configured in the 'log_config.ini' file
 # The log file size is configured in bytes.
@@ -126,6 +140,16 @@ class LogMonitor:
         if count > 0:
             log_w(f"{pod_name}: restart backoff count={count}, sleeping {delay}s before re-collecting logs.")
         return delay
+
+    @staticmethod
+    def _remove_failed_empty_log(file_path: str, existed_before_pull: bool) -> None:
+        """Remove only an empty file created by the failed pull attempt."""
+        if existed_before_pull:
+            return
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
 
     def setup_rotating_logger(self, pod_name: str, log_file: str) -> logging.Logger | None:
         """
@@ -236,25 +260,38 @@ class LogMonitor:
         ts = (when or datetime.now(timezone.utc)) - timedelta(seconds=lookback_seconds)
         return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    @staticmethod
+    def _pull_outcome(wrote: bool, elapsed: float) -> PullOutcome:
+        """Classify a stream session: any line, long quiet follow, or immediate fail."""
+        if wrote:
+            return PullOutcome.WROTE
+        if elapsed >= QUIET_FOLLOW_SECONDS:
+            return PullOutcome.QUIET
+        return PullOutcome.FAILED
+
     def shell_pull_log(
         self,
         pod_name: str,
         file_path: str,
         interval: float = 0.2,
         since_time: str | None = None,
-    ) -> bool:
+    ) -> PullOutcome:
         """
         Execute the kubectl command to obtain the log.
 
         :param since_time: If set, pass ``--since-time`` so reconnects only fetch
             new lines (avoids re-dumping the full container history).
+        :return: ``WROTE`` if any line was saved; ``QUIET`` if the follow lived
+            at least ``QUIET_FOLLOW_SECONDS`` with no new lines; ``FAILED`` if
+            the process exited immediately without output.
         """
-        b_write_flag = False
+        wrote = False
         abs_path = os.path.abspath(os.path.normpath(file_path))
+        started = time.monotonic()
 
         logger = self.setup_rotating_logger(pod_name, abs_path)
         if logger is None:
-            return b_write_flag
+            return PullOutcome.FAILED
 
         process = None
         try:
@@ -298,7 +335,7 @@ class LogMonitor:
                         break
                     time.sleep(interval)
                     continue
-                b_write_flag = True
+                wrote = True
                 # Remove newlines and ANSI escape codes, then write to log.
                 log_line = self._strip_ansi(line.rstrip('\n'))
                 logger.info(log_line)
@@ -312,7 +349,7 @@ class LogMonitor:
                 handler.close()
                 logger.removeHandler(handler)
             log_i(f"{pod_name}: log stream session ended.")
-        return b_write_flag
+        return self._pull_outcome(wrote, time.monotonic() - started)
 
     def pull_log_and_save(self, pod_name: str, interval: float = 3) -> None:
         """
@@ -358,7 +395,12 @@ class LogMonitor:
                             "(target path already exists)."
                         )
                     index = allocated_log_index
-                if self.shell_pull_log(pod_name, file_path, since_time=since_time):
+                # Quiet follow (0 new lines after a long -f) must not reset
+                # since_time or switch files: that would re-dump full history
+                # into _1/_2/_3. Immediate failures still back off.
+                file_existed_before_pull = os.path.exists(os.path.abspath(os.path.normpath(file_path)))
+                outcome = self.shell_pull_log(pod_name, file_path, since_time=since_time)
+                if outcome is PullOutcome.WROTE:
                     # Reserve next slot for a future collector generation, but keep
                     # appending to the same file for this thread's reconnects.
                     self._pod_log_next_slot[pod_name] = max(
@@ -367,8 +409,6 @@ class LogMonitor:
                     )
                     # Capture before sleep so logs during the pause are still fetched.
                     since_time = self._kubectl_since_time()
-                    # Stream reconnect (not a pod crash-loop) — keep a short pause.
-                    # Backoff is reserved for cases that start a brand-new file.
                     delay = interval
                     log_i(
                         f"{pod_name}: Log stream ended; pausing {delay:.0f}s before "
@@ -376,16 +416,26 @@ class LogMonitor:
                         f"(same file, --since-time={since_time})."
                     )
                     time.sleep(delay)
+                elif outcome is PullOutcome.QUIET:
+                    # Do not advance since_time. If this follow was stale, the
+                    # next reconnect can still catch up from the last cursor.
+                    # Short pause — this is not a crash-loop.
+                    delay = interval
+                    log_i(
+                        f"{pod_name}: Log stream ended with no new lines; pausing {delay:.0f}s "
+                        f"before re-checking pod and reopening logs "
+                        f"(same file, --since-time={since_time})."
+                    )
+                    time.sleep(delay)
                 else:
-                    # No data written — clean up empty file to avoid slot inflation
-                    try:
-                        os.remove(file_path)
-                    except OSError:
-                        pass
-                    file_path = None
-                    allocated_log_index = None
-                    since_time = None
-                    # Failed / crash-loop pulls — exponential backoff before retry.
+                    # Immediate fail: drop only an empty file this attempt created.
+                    # If the file already has history, keep path and since_time
+                    # so a retry does not open a new slot and dump full history.
+                    self._remove_failed_empty_log(file_path, file_existed_before_pull)
+                    if not file_existed_before_pull:
+                        file_path = None
+                        allocated_log_index = None
+                        since_time = None
                     delay = self._backoff_sleep(pod_name)
                     log_w(f"{pod_name}: Failed to pull logs; pausing {delay:.0f}s before retry.")
                     time.sleep(delay)
