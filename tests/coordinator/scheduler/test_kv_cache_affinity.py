@@ -194,10 +194,13 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_from_list_no_instance_data(self, mock_tokenizer_manager, mock_query_conductor):
-        """Test select_endpoint_from_list function - no instance data"""
+        """Tenant has no data for any of our instances: fall back to load_balance (return None)."""
         # Preparing Test Data
         mock_instance = Mock()
         mock_instance.id = "instance-5"
+        ep = _make_endpoint(0)
+        mock_instance.endpoints = {"group": {0: ep}}
+        mock_instance.get_all_endpoints.return_value = (ep,)
         instances = [mock_instance]
 
         mock_req_info = Mock()
@@ -208,7 +211,7 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         mock_tokenizer.encode.return_value = list(range(2048))
         mock_tokenizer_manager.return_value = mock_tokenizer
 
-        # Mock ConductorApiClient return value
+        # Conductor reports only unrelated instances; none of ours appear in tenant.
         mock_query_conductor.return_value = {
             TENANT_ID: {"vllm-prefill-instance-6": {"GPU": 100, "DP": {"endpoint-1": 50}}}
         }
@@ -221,11 +224,57 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
 
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_select_endpoint_partial_tenant_includes_unindexed_instances(
+        self, mock_tokenizer_manager, mock_query_conductor
+    ):
+        """Regression: partial tenant hit lets unindexed instances score as zero-match.
+
+        Mirrors the P-node load imbalance: tenant only lists instances that already have KV
+        blocks; the rest must still participate (matched_tokens=0) instead of being skipped.
+        """
+        ep_indexed = _make_endpoint(0, active_tokens=500.0)
+        inst_indexed = Mock()
+        inst_indexed.id = "indexed"
+        inst_indexed.endpoints = {"group": {0: ep_indexed}}
+        inst_indexed.get_all_endpoints.return_value = (ep_indexed,)
+
+        ep_unindexed = _make_endpoint(0, active_tokens=0.0)
+        inst_unindexed = Mock()
+        inst_unindexed.id = "unindexed"
+        inst_unindexed.endpoints = {"group": {0: ep_unindexed}}
+        inst_unindexed.get_all_endpoints.return_value = (ep_unindexed,)
+
+        instances = [inst_indexed, inst_unindexed]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(2048))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-indexed": {"DP": {"0": 100}}}}
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info, load_weight=1.0)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].id, "unindexed")
+        self.assertEqual(result[1].id, 0)
+
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_from_list_no_selected_instance(self, mock_tokenizer_manager, mock_query_conductor):
-        """Test the select_endpoint_from_list method. No instance is selected."""
+        """Endpoint missing from the reported DP map still matches with zero prefix and is picked.
+
+        With the zero-match fix, "conductor knows the instance but not this endpoint" is no
+        longer a bail-out: the endpoint scores with matched_tokens=0 and can be selected.
+        """
         # Preparing Test Data
         mock_instance = Mock()
         mock_instance.id = "instance-7"
+        ep = _make_endpoint(0)
+        mock_instance.endpoints = {"group": {0: ep}}
+        mock_instance.get_all_endpoints.return_value = (ep,)
         instances = [mock_instance]
 
         mock_req_info = Mock()
@@ -237,13 +286,17 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         mock_tokenizer_manager.return_value = mock_tokenizer
 
         # Mock the return value of ConductorApiClient.
-        mock_query_conductor.return_value = {TENANT_ID: {"instance-7": {"GPU": 100, "DP": {"endpoint-1": 50}}}}
+        mock_query_conductor.return_value = {
+            TENANT_ID: {"vllm-prefill-instance-7": {"GPU": 100, "DP": {"endpoint-1": 50}}}
+        }
 
         # Performing the test
         result = KvCacheAffinityPolicy.select_endpoint_from_list(instances, mock_req_info)
 
         # verification result
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].id, "instance-7")
+        self.assertEqual(result[1].id, 0)
 
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
@@ -834,9 +887,12 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
     @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
     def test_select_endpoint_load_aware_no_instance_data(self, mock_tokenizer_manager, mock_query_conductor):
-        """load_weight > 0: with no matching instance data, fall back (return None)."""
+        """load_weight > 0: tenant has no data for our instances, fall back (return None)."""
         mock_instance = Mock()
         mock_instance.id = "inst"
+        ep = _make_endpoint(0)
+        mock_instance.endpoints = {"group": {0: ep}}
+        mock_instance.get_all_endpoints.return_value = (ep,)
         instances = [mock_instance]
 
         mock_req_info = Mock()

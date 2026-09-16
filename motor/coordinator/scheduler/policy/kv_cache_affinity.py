@@ -402,17 +402,24 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         tier_hit_tokens)`` where ``load_cost`` is the SHM-reported live workload,
         ``matched_tokens`` is the tier-weighted affinity match capped at the prompt, and
         ``tier_hit_tokens`` is ``(hbm, cpu, disk)`` exclusive hit token counts when the conductor
-        reports per-medium blocks. Returns ``(candidates, any_instance)``; ``any_instance``
-        distinguishes "conductor reported nothing for our instances" (fall back) from "reported,
-        but no endpoints".
+        reports per-medium blocks. Returns ``(candidates, any_instance)``; ``any_instance`` is
+        True when the conductor tenant map contains at least one of *our* instances (fall back
+        to load_balance when False). Instances absent from a partial tenant map are scored as
+        zero-match rather than skipped, so they can still win on load when other instances
+        already have KV indexes.
         """
         candidates: list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]] = []
         any_instance = False
         for instance in instances:
-            instance_data = tenant.get(conductor_instance_id(instance), None)
+            # The conductor tenant map is index-driven: instances with no cached KV blocks
+            # are absent. Treat absence as "zero match" instead of skipping, otherwise an
+            # instance can never be picked (no blocks -> not in map -> never scored ->
+            # never gets blocks), locking all traffic onto the already-indexed instances.
+            instance_data = tenant.get(conductor_instance_id(instance))
             if instance_data is None:
-                continue
-            any_instance = True
+                instance_data = {"DP": {}}
+            else:
+                any_instance = True
             dp_map = instance_data.get("DP", {})
             # get_all_endpoints() is the canonical accessor: it flattens the per-DP map and
             # already excludes headless endpoints / respects enable_multi_endpoints.
