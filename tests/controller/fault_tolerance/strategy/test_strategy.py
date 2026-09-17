@@ -40,9 +40,12 @@ from motor.controller.fault_tolerance.strategy.strategy import (
     level6_strategy,
     generate_strategy_map,
 )
-from motor.controller.fault_tolerance.strategy.token_reinference import TokenReinferenceStrategy
+from motor.controller.fault_tolerance.strategy.token_reinference import (
+    TokenReinferenceStrategy,
+)
 from motor.controller.fault_tolerance.strategy.nm_suicide import NmSuicideStrategy
 from motor.controller.fault_tolerance.strategy.scale_p2d import ScaleP2DStrategy
+from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
 from motor.config.controller import ControllerConfig
 
 
@@ -414,22 +417,21 @@ def test_level6_strategy_respects_config_switch(mock_instance_manager, decode_in
 # -- engine relaunch (fallback) hooking ----------------------------------------
 
 
-def test_level2_engine_dead_returns_engine_relaunch(mock_config):
-    """ENGINE_DEAD (L2 software fault) escalates to the relaunch fallback."""
-    from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+@pytest.mark.parametrize(
+    "fault_code,scale_down,relaunch,expected",
+    [
+        (SpecialFaultCode.ENGINE_DEAD, False, True, EngineRelaunchStrategy),
+        (SpecialFaultCode.ENGINE_DEAD, False, False, None),
+        (SpecialFaultCode.ENGINE_DEAD, True, True, EngineRelaunchStrategy),
+        (SpecialFaultCode.ENGINE_UNHEALTHY, False, True, EngineRelaunchStrategy),
+        (SpecialFaultCode.ENGINE_UNHEALTHY, True, True, EngineRelaunchStrategy),
+    ],
+)
+def test_level2_engine_fault_strategy_switch_matrix(mock_config, fault_code, scale_down, relaunch, expected):
+    mock_config.fault_tolerance_config.enable_dp_scale_down = scale_down
+    mock_config.fault_tolerance_config.enable_engine_relaunch = relaunch
 
-    assert level2_strategy(int(SpecialFaultCode.ENGINE_DEAD), 1, mock_config) is EngineRelaunchStrategy
-
-
-def test_level2_engine_dead_respects_switch(mock_config):
-    """enable_engine_relaunch=False restores the legacy no-op behavior."""
-    mock_config.fault_tolerance_config.enable_engine_relaunch = False
-    assert level2_strategy(int(SpecialFaultCode.ENGINE_DEAD), 1, mock_config) is None
-
-
-def test_level2_engine_unhealthy_stays_none(mock_config):
-    """ENGINE_UNHEALTHY keeps the current no-op behavior (fast-recovery domain)."""
-    assert level2_strategy(int(SpecialFaultCode.ENGINE_UNHEALTHY), 1, mock_config) is None
+    assert level2_strategy(int(fault_code), 1, mock_config) is expected
 
 
 def test_strategy_base_failed_semantics():

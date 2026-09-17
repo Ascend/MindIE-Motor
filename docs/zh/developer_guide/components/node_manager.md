@@ -18,13 +18,13 @@ Node Manager 是部署在推理节点上的管理进程，负责连接 Controlle
 | `NodeManager` | `motor/node_manager/node_manager.py` | `Application` 子类：组装模块并运行 daemon loop，每 tick 检查自杀标志 |
 | `NodeManagerConfig` | `motor/config/node_manager.py` | 加载、校验和重载节点配置，推导 endpoint 数量与端口 |
 | `NodeManagerAPI` | `motor/node_manager/api_server/node_manager_api.py` | 在后台线程中运行 FastAPI/uvicorn，提供启动、停止和探针接口 |
-| `Daemon` | `motor/node_manager/core/daemon.py` | 服务编排器：根据配置发现并实例化原生 Engine 与 KV-store 服务，维护进程监控器与自杀仲裁线程，持有 FaultReporter |
+| `Daemon` | `motor/node_manager/core/daemon.py` | 服务编排器：根据配置发现并实例化原生 Engine 与 KV-store 服务，维护进程监控器与自杀仲裁线程，持有 EngineFtManager |
 | `NativeEngineService` | `motor/node_manager/core/services/native_engine/service.py` | 原生引擎子进程生命周期管理：构造 `LaunchContext`、拉起/追踪/停止 vLLM/SGLang 进程组、重拉编排（`restart`）、`/health` 就绪等待（`wait_ready`） |
 | 启动加速适配 | `motor/node_manager/core/services/native_engine/startup_acceleration.py` | 将 Motor 配置映射为 vLLM StartPlan/图复用环境变量与引擎覆盖项，并在拉起前完成 StartPlan 候选文件的 DFX 预检查 |
 | `LocalService` | `motor/node_manager/core/services/memcache/lifecycle.py` | memcache 后端生命周期管理：配置准备、子进程拉起（通过 `memcache/worker.py`）、健康检查与重启 |
 | `RegisterManager` | `motor/node_manager/core/register_manager.py` | 注册/重注册、校验启动命令、处理 ranktable、快照元数据、持久化引擎重拉参数 |
 | `HeartbeatManager` | `motor/node_manager/core/heartbeat_manager.py` | 轮询 endpoint 状态、上报心跳、维护暂停/恢复状态；仅报告状态事实，自杀裁决在 Daemon |
-| `FaultReporter` | `motor/node_manager/core/fault_reporter.py` | 轮询引擎 FT 状态接口并上报软件故障给 Controller；由 Daemon 持有，重拉期间暂停/恢复 |
+| `EngineFtManager` | `motor/node_manager/core/engine_ft_manager.py` | 轮询引擎 FT 状态接口并上报软件故障给 Controller；由 Daemon 持有，重拉期间暂停/恢复 |
 | `ControllerApiClient` | `motor/node_manager/api_client/controller_api_client.py` | 调用 Controller 的注册、重注册、心跳和故障上报接口 |
 
 `Daemon`、`RegisterManager` 和 `HeartbeatManager` 均为线程安全单例。HTTP 路由和后台线程通过这些单例共享实例、endpoint 和进程状态。`Application` 和 `NodeManager` 不是单例，由 `main.py` 显式创建。
@@ -54,7 +54,7 @@ Controller 调用 `POST /node-manager/start` 后，处理流程为：
 2. 校验 `job_name`、endpoint 数量以及每个 endpoint 的 IP 是否与本节点配置一致。
 3. 保存 `instance_id`、endpoints、`node_rank` 和 D2D peer 信息；如配置了 `RANKTABLE_PATH`，将实例 ranktable 写入该文件。
 4. 准备快照运行目录和元数据。
-5. `Daemon.pull_engine()` 为每个 endpoint 拉起一个原生引擎进程组（`vllm serve` / SGLang），并启动 `Daemon` 持有的 `FaultReporter`（仅在故障容忍功能开启时生效）。
+5. `Daemon.pull_engine()` 为每个 endpoint 拉起一个原生引擎进程组（`vllm serve` / SGLang），并启动 `Daemon` 持有的 `EngineFtManager`（仅在故障容忍功能开启时生效）。
 6. 更新 `HeartbeatManager` 中的 endpoint，并启动状态轮询和心跳线程。
 
 从宿主机侧快照恢复时，第 5 步不会再次拉起引擎，而是更新恢复元数据、endpoint 和恢复状态。
@@ -74,13 +74,21 @@ Node Manager API 默认监听 `api_config.pod_ip:api_config.node_manager_port`�
 |------|------|----------|------|
 | `POST` | `/node-manager/start` | `200 {}` | 校验启动命令并拉起原生引擎；快照恢复时执行恢复准备 |
 | `POST` | `/node-manager/stop` | `200 {"message": "All engine processes stopped successfully."}` | 停止全部原生引擎进程后延时 SIGTERM 自身（退出码 `-1` → k8s 重启 Pod），即 Controller 下发的「自杀」指令，用于实例拆除与跨机部分失联协同 |
-| `POST` | `/node-manager/engine-restart` | `200 {"message": ...}` | Controller 驱动的容器内引擎重拉：body `{"action": "restart"\|"abort", "instance_id"?}`。`restart` 整体委托 `Daemon.restart_engine`（Daemon 解析启动参数、冻结自杀仲裁、暂停/恢复 FaultReporter、杀掉并重拉全部引擎，KV store 不动）；`abort` = 解冻自杀仲裁（重拉失败回退容器重启）。并发 409、快照恢复中 409、无启动记录 400、重拉失败 500 且解冻 |
+| `POST` | `/node-manager/engine-restart` | `200 {"message": ...}` | Controller 驱动的容器内引擎重拉：body `{"action": "restart"\|"abort", "instance_id"?}`。`restart` 整体委托 `Daemon.restart_engine`（Daemon 解析启动参数、冻结自杀仲裁、暂停/恢复 EngineFtManager、杀掉并重拉全部引擎，KV store 不动）；`abort` = 解冻自杀仲裁（重拉失败回退容器重启）。并发 409、快照恢复中 409、无启动记录 400、重拉失败 500 且解冻 |
 | `POST` | `/node-manager/pause` | `200 {"status":"ok", ...}` | 将全部 endpoint 标记为 `PAUSED`，并返回非 headless 原生引擎的 `engine_metrics_targets` |
 | `POST` | `/node-manager/resume` | `200 {"status":"ok", ...}` | 仅将 `PAUSED` endpoint 恢复为 `NORMAL` |
+| `POST` | `/node-manager/fault-tolerance/status` | `200 {...}` | 查询显式 DP rank 的引擎 FT 状态；仅供 Controller 控制面调用 |
+| `POST` | `/node-manager/fault-tolerance/apply` | `200 {"status":"accepted"}` | 下发 `retry` 或 `scale_down`；仅供 Controller 控制面调用 |
+| `POST` | `/node-manager/fault-tolerance/guard` | `200 {"status":"guarded"}` | 冻结缩容事务期间的自杀仲裁，lease 最大 300 秒 |
+| `POST` | `/node-manager/fault-tolerance/finalize` | `200 {"status":...}` | 提交本地退役 rank 或释放事务 guard |
 | `GET` | `/node-manager/status` | `200 {"status": true/false}` | 返回全部 endpoint 是否为 `NORMAL`；`relaxed=true`（引擎重拉轮询）时无 `ABNORMAL` 即 `true`；无 endpoint 时为 `false` |
 | `GET` | `/readiness` | `200` 或 `503` | Kubernetes Readiness Probe 接口。实例节点 Pod 默认不配置该探针；仅在容器快照默认应用场景下配置，用于判断执行容器 checkpoint 前的稳态点。未到达稳态点时返回 `503`，到达后返回 `200` |
 
 `/node-manager/pause` 用于 PreStop 优雅下线：暂停状态会使 readiness 失败，并通过心跳通知 Controller；原生健康轮询不会覆盖手动设置的 `PAUSED`。响应中的 `engine_metrics_targets` 使用原生业务端口，并排除 headless 成员。如果 PreStop 被取消，可调用 `/node-manager/resume` 恢复调度。
+
+`/node-manager/fault-tolerance/*` 是有状态的内部管理接口，其中 `guard` 会暂时冻结 Pod 自愈。
+部署必须通过 Kubernetes NetworkPolicy、服务网格或等价控制面 ACL 限制为仅 Controller 可访问，禁止直接暴露到业务网络。
+当前 `mgmt_tls_config` 提供服务端 TLS，但不等同于客户端身份认证。
 
 `/readiness` 仅用于快照默认应用场景，即 MindCluster 实例重调度，不作为 Node Manager 的通用健康检查接口。MindCluster 通过该接口查询实例节点是否到达稳态点。在容器快照的用户自定义应用场景中，可调用 `/node-manager/status` 查询稳态点；接口返回 `200 {"status": true}` 表示已到达稳态点。
 
@@ -209,7 +217,7 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 | `health_check_config.startup_timeout` | `1800` | 原生引擎模型加载启动窗口，窗口内 `/health` 未监听不判死 |
 | `health_check_config.health_collector_timeout_retry_attempts` | `3` | 单次原生 `/health` 请求超时后的最大尝试次数；仅超时重试，包含首次请求 |
 | `fault_tolerance_config.enable_fault_tolerance` | `false` | 显式开启软件故障轮询；引擎 user config 检测到 FT 时自动开启，无需配置 |
-| `fault_tolerance_config.poll_interval_sec` | `5.0` | 轮询引擎 FT 状态的时间间隔（秒） |
+| `fault_tolerance_config.poll_interval_sec` | `1.0` | 轮询引擎 FT 状态的时间间隔（秒） |
 | `fault_tolerance_config.poll_timeout_sec` | `5.0` | 单次轮询的 HTTP 超时（秒） |
 | `fault_tolerance_config.max_poll_failures` | `3` | 连续轮询失败阈值，达到后按 `dead` 上报 |
 | `snapshot_config.enable_snapshot` | `false` | 是否启用容器快照；当前仅 vLLM 原生引擎支持，SGLang 配置为 `true` 会校验失败 |
@@ -230,7 +238,7 @@ Node Manager 从 `engine_config.nnodes` 推导每节点 `local_world_size`。当
 1. `_refresh_check_interval()` — 从配置刷新 daemon loop 间隔。
 2. 遍历所有模块调用 `update_config()`：
    - `HeartbeatManager` 动态更新 `heartbeat_interval_seconds`。
-   - `Daemon` 更新配置，并根据 `enable_fault_tolerance`、endpoint 的变化启停或重建其持有的 `FaultReporter`。
+   - `Daemon` 更新配置，并根据 `enable_fault_tolerance`、endpoint 的变化启停或重建其持有的 `EngineFtManager`。
    - `RegisterManager` 更新配置。
 3. 打印更新后的配置摘要 `log_configuration_summary()`。
 4. API 监听地址、监听端口、TLS 和 `Daemon` 已缓存的设备参数不会热重启，修改后需要重启 Node Manager。
@@ -325,7 +333,10 @@ registry.add_discovery_path("new_backend", "path.to.new_backend_module")
 
 ## 软件故障上报
 
-`FaultReporter` 在以下任一条件满足时自动启用：`fault_tolerance_config.enable_fault_tolerance` 显式开启，或 user config 的引擎配置（如 `motor_engine_prefill_config.engine_config`）中检测到 `enable-fault-tolerance` / `enable_fault_tolerance` 为 `true`（无需 NodeManager 显式配置）。启用后在后台线程中按 `poll_interval_sec` 间隔轮询每个 endpoint 的 FT 状态接口：
+`EngineFtManager` 在 `fault_tolerance_config.enable_fault_tolerance` 显式开启，或归一化后的
+`basic_config.ft_capability.enabled` 为 `true` 时启用。后者由引擎配置中的
+`enable-fault-tolerance` / `enable_fault_tolerance` 推导。启用后在后台线程中按
+`poll_interval_sec` 间隔轮询每个 endpoint 的 FT 状态接口：
 
 ```text
 GET http://{endpoint.ip}:{endpoint.business_port}/fault_tolerance/status

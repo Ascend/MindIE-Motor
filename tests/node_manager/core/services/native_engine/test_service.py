@@ -185,6 +185,22 @@ def test_health_check_empty_when_no_deaths():
     assert service.health_check() == []
 
 
+def test_wait_ready_returns_true_when_all_endpoints_are_ready():
+    service = _native_engine_service()
+    endpoints = [_make_endpoint(0), _make_endpoint(1)]
+    service.supervisor.state.return_value = RuntimeState.READY
+
+    assert service.wait_ready(endpoints, timeout=1) is True
+
+
+def test_wait_ready_returns_false_on_timeout():
+    service = _native_engine_service()
+    service.supervisor.state.return_value = RuntimeState.STARTING
+
+    with patch.object(service_module.time, "monotonic", side_effect=[0.0, 2.0]):
+        assert service.wait_ready([_make_endpoint(0)], timeout=1) is False
+
+
 def test_pull_registers_single_virtual_worker_when_enabled():
     service = _native_engine_service(engine_type="vllm")
     service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config())

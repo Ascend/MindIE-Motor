@@ -47,6 +47,7 @@ class HeartbeatManager(ThreadSafeSingleton):
         self._role = "prefill"
         self._instance_id = -1
         self._endpoints: list[Endpoint] = []
+        self._retired_endpoint_ids: set[int] = set()
         self._heartbeat_report_thread = threading.Thread(
             target=self._report_heartbeat_loop,
             daemon=True,
@@ -104,6 +105,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             self._role = node_manager_info.role
             self._instance_id = node_manager_info.instance_id
             self._endpoints.clear()
+            self._retired_endpoint_ids.clear()
             for item in node_manager_info.endpoints:
                 self._endpoints.append(item)
             self._endpoints_generation += 1
@@ -119,7 +121,10 @@ class HeartbeatManager(ThreadSafeSingleton):
         kill the pod.
         """
         with self._endpoint_lock:
-            return any(item.status == EndpointStatus.ABNORMAL for item in self._endpoints)
+            return any(
+                item.id not in self._retired_endpoint_ids and item.status == EndpointStatus.ABNORMAL
+                for item in self._endpoints
+            )
 
     def normal_endpoint_ids(self) -> list[int]:
         """Ids of the endpoints currently NORMAL.
@@ -129,7 +134,11 @@ class HeartbeatManager(ThreadSafeSingleton):
         observations must not be reported as engine death.
         """
         with self._endpoint_lock:
-            return [item.id for item in self._endpoints if item.status == EndpointStatus.NORMAL]
+            return [
+                item.id
+                for item in self._endpoints
+                if item.id not in self._retired_endpoint_ids and item.status == EndpointStatus.NORMAL
+            ]
 
     def abnormal_endpoint_ids(self) -> list[int]:
         """Ids of the endpoints currently ABNORMAL.
@@ -139,7 +148,30 @@ class HeartbeatManager(ThreadSafeSingleton):
         crash) — either way the engine is unusable and must be relaunched.
         """
         with self._endpoint_lock:
-            return [item.id for item in self._endpoints if item.status == EndpointStatus.ABNORMAL]
+            return [
+                item.id
+                for item in self._endpoints
+                if item.id not in self._retired_endpoint_ids and item.status == EndpointStatus.ABNORMAL
+            ]
+
+    def retire_endpoints(self, endpoint_ids: list[int]) -> None:
+        """Exclude committed scale-down ranks from heartbeat and suicide facts."""
+        with self._endpoint_lock:
+            self._validate_retire_endpoints_locked(endpoint_ids)
+            self._retired_endpoint_ids.update(endpoint_ids)
+            self._endpoints_generation += 1
+        logger.info("Retired local DP ranks after scale-down commit: %s", sorted(endpoint_ids))
+
+    def validate_retire_endpoints(self, endpoint_ids: list[int]) -> None:
+        """Validate a retirement set without changing heartbeat state."""
+        with self._endpoint_lock:
+            self._validate_retire_endpoints_locked(endpoint_ids)
+
+    def _validate_retire_endpoints_locked(self, endpoint_ids: list[int]) -> None:
+        managed_ids = {item.id for item in self._endpoints}
+        missing = set(endpoint_ids) - managed_ids
+        if missing:
+            raise ValueError("cannot retire unmanaged endpoint ids: %s" % sorted(missing))
 
     def endpoints_generation(self) -> int:
         """Incremented on every endpoint update (Daemon resets its suicide
@@ -147,6 +179,20 @@ class HeartbeatManager(ThreadSafeSingleton):
         """
         with self._endpoint_lock:
             return self._endpoints_generation
+
+    def get_endpoints(self, include_headless: bool = False) -> list[Endpoint]:
+        """Return a stable snapshot of all endpoints owned by this NodeManager."""
+        with self._endpoint_lock:
+            return [e for e in self._endpoints if include_headless or not e.headless]
+
+    def get_active_endpoints(self, include_headless: bool = False) -> list[Endpoint]:
+        """Return endpoints that have not been committed as retired."""
+        with self._endpoint_lock:
+            return [
+                endpoint
+                for endpoint in self._endpoints
+                if endpoint.id not in self._retired_endpoint_ids and (include_headless or not endpoint.headless)
+            ]
 
     def is_within_grace_period(self) -> bool:
         """True during the 120s cold-start window after endpoints were set."""
@@ -173,6 +219,8 @@ class HeartbeatManager(ThreadSafeSingleton):
             if not self._endpoints:
                 return False
             for endpoint in self._endpoints:
+                if endpoint.id in self._retired_endpoint_ids:
+                    continue
                 if endpoint.status == EndpointStatus.ABNORMAL:
                     return False
         return True
@@ -189,6 +237,8 @@ class HeartbeatManager(ThreadSafeSingleton):
                 logger.debug("[snapshot] No endpoints were pulled up yet")
                 return False
             for endpoint in self._endpoints:
+                if endpoint.id in self._retired_endpoint_ids:
+                    continue
                 if endpoint.status != EndpointStatus.NORMAL:
                     logger.warning(
                         "Endpoint %d at %s:%s is in status %s",
@@ -221,7 +271,11 @@ class HeartbeatManager(ThreadSafeSingleton):
         from motor.node_manager.core.daemon import Daemon  # pylint: disable=cyclic-import
 
         with self._endpoint_lock:
-            endpoints = [endpoint for endpoint in self._endpoints if not endpoint.headless]
+            endpoints = [
+                endpoint
+                for endpoint in self._endpoints
+                if endpoint.id not in self._retired_endpoint_ids and not endpoint.headless
+            ]
         daemon = Daemon()
         return [target for endpoint in endpoints if (target := daemon.get_engine_metrics_target(endpoint)) is not None]
 
@@ -347,9 +401,10 @@ class HeartbeatManager(ThreadSafeSingleton):
             is_normal = True
             try:
                 with self._endpoint_lock:
-                    is_normal = all(item.status == EndpointStatus.NORMAL for item in self._endpoints)
+                    active_endpoints = [item for item in self._endpoints if item.id not in self._retired_endpoint_ids]
+                    is_normal = all(item.status == EndpointStatus.NORMAL for item in active_endpoints)
 
-                    endpoint_status_list = {item.id: item.status for item in self._endpoints}
+                    endpoint_status_list = {item.id: item.status for item in active_endpoints}
 
                 # If container snapshot enabled
                 # During cold start, when suspend done, node manager should not report heartbeat to controller until engine checkpoint is done

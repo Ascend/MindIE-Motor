@@ -128,6 +128,11 @@ class EngineRelaunchStrategy(StrategyBase):
                 self._phase_restart_container()
                 return
 
+            from motor.controller.fault_tolerance.dp_scale_down import (
+                get_ft_runtime_store,
+            )
+
+            get_ft_runtime_store().prepare_after_engine_relaunch(instance_id)
             self._finish(RelaunchState.SUCCESS)
         except Exception as e:
             logger.exception("Engine relaunch failed for instance %d", instance_id)

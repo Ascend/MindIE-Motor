@@ -34,6 +34,14 @@ _HB_LOSS_SET_THRESHOLD = 1
 _HA_SET_RETRY_DELAY_SEC = 1.0
 
 
+def _get_serving_overlay():
+    # Import after motor.controller.core finishes initialization to avoid the
+    # fault_tolerance package importing InstanceManager through FaultManager.
+    from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
+
+    return ServingOverlay
+
+
 @dataclass
 class Event:
     event_type: EventType
@@ -64,12 +72,14 @@ class EventPusher(Observer):
         with self.config_lock:
             self.coordinator_heartbeat_interval = config.event_config.coordinator_heartbeat_interval
             self._set_sync_interval = config.event_config.coordinator_set_sync_interval
+            ft_config = config.fault_tolerance_config
+            self.enable_dp_scale_down = ft_config.enable_fault_tolerance and ft_config.enable_dp_scale_down
 
         # Track last periodic SET sync time (initialized to now so first sync fires after interval)
         self._last_set_sync_time = time.time()
 
         # Last successfully sent instance-ID fingerprint; used to suppress noisy periodic SET logs
-        self._last_sent_fingerprint: tuple[int, ...] | None = None
+        self._last_sent_fingerprint: tuple[tuple[int, tuple[int, ...]], ...] | None = None
 
         # Coalesce consecutive incremental refresh failures into one queued SET.
         self._failed_incremental_set_pending = False
@@ -96,7 +106,9 @@ class EventPusher(Observer):
         # Create event pusher threads
         self.event_consumer_thread = threading.Thread(target=self._event_consumer, daemon=True, name="EventConsumer")
         self.heartbeat_detector_thread = threading.Thread(
-            target=self._coordinator_heartbeat_detector, daemon=True, name="HeartbeatDetector"
+            target=self._coordinator_heartbeat_detector,
+            daemon=True,
+            name="HeartbeatDetector",
         )
 
         self.event_consumer_thread.start()
@@ -109,18 +121,18 @@ class EventPusher(Observer):
             self.work_condition.notify_all()
         # Only join threads that have been started
         if (
-            hasattr(self, 'event_consumer_thread')
+            hasattr(self, "event_consumer_thread")
             and self.event_consumer_thread is not None
             and self.event_consumer_thread.is_alive()
         ):
             self.event_consumer_thread.join()
         if (
-            hasattr(self, 'heartbeat_detector_thread')
+            hasattr(self, "heartbeat_detector_thread")
             and self.heartbeat_detector_thread is not None
             and self.heartbeat_detector_thread.is_alive()
         ):
             self.heartbeat_detector_thread.join()
-        if hasattr(self, 'heart_client'):
+        if hasattr(self, "heart_client"):
             self.heart_client.close()
         logger.info("EventPusher stopped.")
 
@@ -138,6 +150,23 @@ class EventPusher(Observer):
         with self.config_lock:
             self.coordinator_heartbeat_interval = config.event_config.coordinator_heartbeat_interval
             self._set_sync_interval = config.event_config.coordinator_set_sync_interval
+            ft_config = config.fault_tolerance_config
+            self.enable_dp_scale_down = ft_config.enable_fault_tolerance and ft_config.enable_dp_scale_down
+
+    def _project_instance(self, instance: ReadOnlyInstance) -> Instance | None:
+        if not self.enable_dp_scale_down:
+            return instance.to_instance()
+        return _get_serving_overlay().project(instance)
+
+    def _serving_snapshot(self) -> tuple[list[Instance], tuple]:
+        with self.lock:
+            instances = list(self.instances.values())
+        if not self.enable_dp_scale_down:
+            projected = [instance.to_instance() for instance in instances]
+            return projected, tuple(sorted(instance.id for instance in projected))
+        serving_overlay = _get_serving_overlay()
+        projected = serving_overlay.project_many(instances)
+        return projected, serving_overlay.fingerprint(projected)
 
     def update(self, instance: ReadOnlyInstance, event: ObserverEvent) -> None:
         # Event pusher will interact with coordinator and send instances.
@@ -146,7 +175,11 @@ class EventPusher(Observer):
             with self.lock:
                 self.instances[instance.job_name] = instance
             # Deep copy the instance to ensure data consistency during async HTTP sending
-            event = Event(EventType.ADD, instance.to_instance())
+            projected = self._project_instance(instance)
+            if projected is None:
+                logger.info("Instance serving view remains withdrawn: %s", instance.job_name)
+                return
+            event = Event(EventType.ADD, projected)
             logger.info("Instance ready: %s", instance.job_name)
         elif event == ObserverEvent.INSTANCE_SEPARATED:
             with self.lock:
@@ -169,7 +202,11 @@ class EventPusher(Observer):
         elif event == ObserverEvent.INSTANCE_RESUMED:
             with self.lock:
                 self.instances[instance.job_name] = instance
-            event = Event(EventType.RESUME, instance.to_instance())
+            projected = self._project_instance(instance)
+            if projected is None:
+                logger.info("Instance serving view remains withdrawn: %s", instance.job_name)
+                return
+            event = Event(EventType.RESUME, projected)
             logger.info("Instance resumed: %s", instance.job_name)
         elif event == ObserverEvent.INSTANCE_REMOVED:
             with self.lock:
@@ -222,14 +259,9 @@ class EventPusher(Observer):
                 elif event_type == EventType.RESUME:
                     event_msg = InsEventMsg(event=event_type, instances=[event.instance])
                 elif event_type == EventType.SET:
-                    with self.lock:
-                        instances = list(self.instances.values())
-                        set_fingerprint = tuple(sorted(inst.id for inst in instances))
-
+                    instances, set_fingerprint = self._serving_snapshot()
                     if instances:
-                        event_msg = InsEventMsg(
-                            event=event_type, instances=[instance.to_instance() for instance in instances]
-                        )
+                        event_msg = InsEventMsg(event=event_type, instances=instances)
                     else:
                         logger.debug(
                             "SET event skipped: no instances in memory (Controller may have lost its own instances)."
@@ -269,6 +301,8 @@ class EventPusher(Observer):
                         self._last_sent_fingerprint = set_fingerprint
                         self.is_coordinator_reset = False
                         self._resync_after_hb_loss = False
+                    if self.enable_dp_scale_down and event_type in {EventType.ADD, EventType.RESUME, EventType.SET}:
+                        _get_serving_overlay().mark_published(event_msg.instances)
 
     def notify_coordinator_failover(self, master_host: str | None = None) -> None:
         """Push all instances after a Coordinator reported it became master.
@@ -381,10 +415,12 @@ class EventPusher(Observer):
                     event = Event(EventType.SET, None)
                     self.event_queue.put(event)
                     self._last_set_sync_time = now
-                    with self.lock:
-                        fingerprint = tuple(sorted(inst.id for inst in self.instances.values()))
+                    _, fingerprint = self._serving_snapshot()
                     if fingerprint != self._last_sent_fingerprint:
-                        logger.info("Periodic SET sync triggered (interval=%ds)", self._set_sync_interval)
+                        logger.info(
+                            "Periodic SET sync triggered (interval=%ds)",
+                            self._set_sync_interval,
+                        )
 
             with self.config_lock:
                 heartbeat_interval = self.coordinator_heartbeat_interval

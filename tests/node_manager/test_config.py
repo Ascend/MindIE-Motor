@@ -21,11 +21,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from motor.config.node_manager import (
     NodeManagerConfig,
+    NodeManagerFaultToleranceConfig,
     SingleContainerNodemanagerConfig,
     VLLMStartupAccelerationConfig,
 )
 from motor.common.resources.dispatch import DispatchPlan
-from motor.common.resources.instance import ParallelConfig, PDRole
+from motor.common.resources.instance import FtCapabilitySnapshot, ParallelConfig, PDRole
 
 
 @pytest.fixture(name="nm_config_data")
@@ -60,6 +61,10 @@ def create_config_mock(config_dict):
 def clear_node_manager_config():
     """Clear any cached state (no longer needed for non-singleton)"""
     pass
+
+
+def test_engine_ft_manager_default_poll_interval_is_one_second():
+    assert NodeManagerFaultToleranceConfig().poll_interval_sec == 1.0
 
 
 def create_config_object():
@@ -437,6 +442,7 @@ def test_to_dict():
 
     assert config_dict["basic_config"]["model_name"] == "test_model"
     assert "dispatch_capabilities" not in config_dict["basic_config"]
+    assert config_dict["basic_config"]["ft_capability"] == (FtCapabilitySnapshot().model_dump())
 
     assert "config_path" not in config_dict
 
@@ -855,6 +861,30 @@ def test_user_dispatch_capabilities_cannot_override_connector_semantics():
     assert "dispatch_capabilities" not in user_config["motor_engine_prefill_config"]
 
 
+@pytest.mark.parametrize(
+    "controller_ft,expected",
+    [
+        ({"enable_fault_tolerance": True, "enable_dp_scale_down": True}, True),
+        ({"enable_fault_tolerance": True, "enable_dp_scale_down": False}, False),
+        ({"enable_fault_tolerance": False, "enable_dp_scale_down": True}, False),
+    ],
+)
+@patch.dict("os.environ", {"ROLE": "prefill"})
+def test_dp_scale_down_proxy_gate_is_derived_from_controller(controller_ft, expected):
+    user_config = {
+        "motor_deploy_config": {"hardware_type": "800I-A3"},
+        "motor_controller_config": {"fault_tolerance_config": controller_ft},
+        "motor_engine_prefill_config": {
+            "engine_type": "vllm",
+            "engine_config": {},
+        },
+    }
+
+    config_data = NodeManagerConfig._load_node_manager_config_data(user_config)
+
+    assert config_data["fault_tolerance_config"]["enable_dp_scale_down_proxy"] is expected
+
+
 @patch.dict("os.environ", {"ROLE": "prefill"})
 def test_user_dispatch_capabilities_cannot_enable_unknown_connector():
     user_config = {
@@ -901,6 +931,69 @@ def test_sglang_infers_concurrent_capability():
     )
 
     assert capabilities == [DispatchPlan.CONCURRENT_ENGINE_SYNC.value]
+
+
+@pytest.mark.parametrize(
+    "native,expected_auto_recovery",
+    [
+        (
+            {
+                "enable_fault_tolerance": True,
+                "data_parallel_external_lb": True,
+                "enable_eplb": True,
+                "eplb_config": {"num_redundant_experts": 2},
+                "additional_config": {"enable_fused_mc2": 1},
+                "fault_tolerance_config": {},
+            },
+            False,
+        ),
+        (
+            {
+                "enable-fault-tolerance": True,
+                "data-parallel-external-lb": True,
+                "enable-eplb": True,
+                "eplb-config": '{"num-redundant-experts": 2}',
+                "additional-config": '{"enable-fused-mc2": 1}',
+                "fault-tolerance-config": '{"auto-recovery": true}',
+            },
+            True,
+        ),
+    ],
+)
+def test_vllm_ft_capability_is_inferred_from_official_engine_config(
+    native,
+    expected_auto_recovery,
+):
+    capability = NodeManagerConfig._infer_ft_capability(
+        {
+            "engine_type": "vllm",
+            "engine_config": native,
+        }
+    )
+
+    assert capability == FtCapabilitySnapshot(
+        enabled=True,
+        scale_down_supported=True,
+        external_lb=True,
+        auto_recovery=expected_auto_recovery,
+        fused_mc2_enabled=True,
+        eplb_enabled=True,
+        num_redundant_experts=2,
+    )
+
+
+def test_non_vllm_does_not_advertise_scale_down_support():
+    capability = NodeManagerConfig._infer_ft_capability(
+        {
+            "engine_type": "sglang",
+            "engine_config": {
+                "enable_fault_tolerance": True,
+                "data_parallel_external_lb": True,
+            },
+        }
+    )
+
+    assert capability.scale_down_supported is False
 
 
 # ===== Cross-Node PCP Tests =====

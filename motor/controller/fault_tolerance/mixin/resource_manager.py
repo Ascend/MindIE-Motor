@@ -21,6 +21,8 @@ from motor.controller.fault_tolerance.fault_types import (
     FaultInfo,
     FaultLevel,
     HardwareFaultType,
+    hardware_fault_identity,
+    hardware_fault_storage_key,
     InstanceMetadata,
     NodeMetadata,
     NodeStatus,
@@ -182,7 +184,7 @@ class _ResourceManagerMixin:
         InstanceMetadata is created, and per-node ResourceMonitors are started.
         """
         logger.debug("Adding new instance %d (%s) to fault manager", instance.id, instance.job_name)
-        ins_metadata = InstanceMetadata(instance_id=instance.id)
+        ins_metadata = InstanceMetadata(instance_id=instance.id, recovery_ready=False)
         self.instances[instance.id] = ins_metadata
 
         new_job_name = instance.job_name
@@ -537,12 +539,10 @@ class _ResourceManagerMixin:
 
         with self.lock:
             node_reboot_fault = node_metadata.hardware_fault_infos.get(node_reboot_key)
-
             node_metadata.hardware_fault_infos.clear()
-            for code, infos in grouped.items():
-                # Copy before adjusting: the dynamic PreSeparateNPU downgrade
-                # below must not mutate the caller's FaultInfo object.
-                info = max(infos, key=lambda i: i.fault_level.value).model_copy()
+            for raw_info in fault_infos:
+                code = int(raw_info.fault_code)
+                info = raw_info.model_copy()
                 info.fault_category = FaultCategory.HARDWARE
 
                 # Dynamically adjust PreSeparateNPU fault level based on
@@ -572,27 +572,21 @@ class _ResourceManagerMixin:
                             code,
                             node_name,
                         )
-
-                # Preserve NPU info in stored entry: note count when multiple NPUs
-                # share the same fault code so downstream consumers can see the scope.
-                npu_names = [i.npu_name for i in infos if i.npu_name]
-                if len(npu_names) > 1:
-                    if len(npu_names) <= 4:
-                        info.npu_name = ", ".join(npu_names)
-                    else:
-                        info.npu_name = f"{', '.join(npu_names[:3])}, ... ({len(npu_names)} total)"
-                node_metadata.hardware_fault_infos[code] = info
+                storage_key = hardware_fault_storage_key(info)
+                existing = node_metadata.hardware_fault_infos.get(storage_key)
+                if existing is None or info.fault_level >= existing.fault_level:
+                    node_metadata.hardware_fault_infos[storage_key] = info
 
             if node_reboot_fault:
                 node_metadata.hardware_fault_infos[node_reboot_key] = node_reboot_fault
+            stored_fault_count = len(node_metadata.hardware_fault_infos) - int(node_reboot_fault is not None)
 
         logger.info(
             "Updated node %s with %d hardware fault infos (preserved node_reboot: %s)",
             node_name,
-            len(grouped),
+            stored_fault_count,
             node_reboot_fault is not None,
         )
-
         # Refresh fault levels for ALL LIVE instances on this node (skip stale/removed ones)
         affected_ids = [iid for iid in node_metadata.instance_ids if iid in self.instances]
         stale_count = len(node_metadata.instance_ids) - len(affected_ids)
@@ -603,6 +597,16 @@ class _ResourceManagerMixin:
                 node_name,
             )
         for instance_id in affected_ids:
+            # Only actionable ConfigMap evidence opens the 5-second FT
+            # correlation window. Observation-only L1/L2 events keep their
+            # legacy fault-level semantics and cannot trigger engine recovery.
+            actionable_keys = {
+                hardware_fault_identity(node_name, fault)
+                for fault in node_metadata.hardware_fault_infos.values()
+                if fault.fault_level >= FaultLevel.L4
+            }
+            if actionable_keys:
+                self._record_hardware_fault_event(instance_id, actionable_keys)
             self._refresh_instance_fault_level(instance_id)
 
         # Wake the strategy center — hardware fault data changed

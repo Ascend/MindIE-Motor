@@ -11,6 +11,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +29,100 @@ from motor.node_manager.api_server.node_manager_api import app
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+def _ft_config(enabled=True):
+    return SimpleNamespace(
+        fault_tolerance_config=SimpleNamespace(
+            enable_dp_scale_down_proxy=enabled,
+            poll_timeout_sec=3,
+            engine_restart_freeze_sec=30,
+        ),
+        basic_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(dp_master_port=29500),
+        ),
+    )
+
+
+def test_engine_ft_status_routes_explicit_endpoints(client):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config()
+        query = daemon.return_value.engine_ft_manager.query
+        query.return_value = {1: {"status": "unhealthy"}}
+        response = client.post("/node-manager/fault-tolerance/status", json={"endpoint_ids": [1]})
+
+    assert response.status_code == 200
+    query.assert_called_once_with([1], 3)
+
+
+def test_engine_ft_proxy_is_unavailable_when_controller_switch_is_off(client):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config(False)
+        query = daemon.return_value.engine_ft_manager.query
+        response = client.post("/node-manager/fault-tolerance/status", json={"endpoint_ids": [1]})
+
+    assert response.status_code == 404
+    query.assert_not_called()
+
+
+def test_disabled_engine_ft_guard_rejects_before_parsing_payload(client):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config(False)
+        response = client.post(
+            "/node-manager/fault-tolerance/guard",
+            content=b"{",
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 404
+    daemon.return_value.engine_ft_manager.guard.assert_not_called()
+
+
+def test_engine_ft_apply_guard_and_finalize_routes(client):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config()
+        manager = daemon.return_value.engine_ft_manager
+        apply, guard, finalize = manager.apply, manager.guard, manager.finalize
+        apply_response = client.post(
+            "/node-manager/fault-tolerance/apply",
+            json={
+                "endpoint_ids": [0],
+                "instruction": "scale_down",
+                "params": {"removed_dp_ranks": [1]},
+                "request_id": "request",
+            },
+        )
+        guard_response = client.post(
+            "/node-manager/fault-tolerance/guard",
+            json={"request_id": "request", "lease_sec": 45},
+        )
+        finalize_response = client.post(
+            "/node-manager/fault-tolerance/finalize",
+            json={"request_id": "request", "retired_endpoint_ids": [1], "commit": True},
+        )
+
+    assert apply_response.status_code == 200
+    apply.assert_called_once_with([0], "scale_down", {"removed_dp_ranks": [1]}, "request", 3, 29500)
+    assert guard_response.status_code == 200
+    guard.assert_called_once_with("request", 45)
+    assert finalize_response.json() == {"status": "committed"}
+    finalize.assert_called_once_with("request", [1], True)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("status", []),
+        ("apply", {"endpoint_ids": [0]}),
+        ("finalize", {"request_id": "request", "retired_endpoint_ids": "1", "commit": True}),
+    ],
+)
+def test_engine_ft_routes_reject_malformed_payload_with_400(client, path, payload):
+    with patch("motor.node_manager.api_server.node_manager_api.Daemon") as daemon:
+        daemon.return_value.config = _ft_config()
+        response = client.post("/node-manager/fault-tolerance/%s" % path, json=payload)
+
+    assert response.status_code == 400
 
 
 @pytest.fixture

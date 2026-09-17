@@ -59,6 +59,46 @@ def test_restart_engine_client_construction_failure_returns_false(node_mgr):
         assert NodeManagerApiClient.restart_engine(node_mgr, action="restart") is False
 
 
+def test_engine_ft_proxy_contract_carries_explicit_endpoint_ids(node_mgr, mock_http_client):
+    mock_http_client.post.return_value = {"0": {"status": "unhealthy"}}
+
+    result = NodeManagerApiClient.query_engine_ft_entries(node_mgr, [0], 3)
+    assert result == {0: {"status": "unhealthy"}}
+    assert mock_http_client.post.call_args.kwargs["data"] == {"endpoint_ids": [0]}
+
+    NodeManagerApiClient.apply_engine_ft_instructions(
+        node_mgr, [0], "scale_down", {"removed_dp_ranks": [1]}, "request", 3
+    )
+    assert mock_http_client.post.call_args.kwargs["data"]["endpoint_ids"] == [0]
+
+
+@pytest.mark.parametrize(
+    "commit,path,payload",
+    [
+        (
+            True,
+            "/node-manager/fault-tolerance/finalize",
+            {"request_id": "request", "retired_endpoint_ids": [1], "commit": True},
+        ),
+        (
+            False,
+            "/node-manager/fault-tolerance/finalize",
+            {"request_id": "request", "retired_endpoint_ids": [], "commit": False},
+        ),
+    ],
+)
+def test_finalize_engine_ft_contract(node_mgr, mock_http_client, commit, path, payload):
+    NodeManagerApiClient.finalize_engine_ft(node_mgr, "request", payload["retired_endpoint_ids"], commit, 3)
+    assert mock_http_client.post.call_args.args[0] == path
+    assert mock_http_client.post.call_args.kwargs["data"] == payload
+
+
+def test_guard_engine_ft_contract(node_mgr, mock_http_client):
+    NodeManagerApiClient.guard_engine_ft(node_mgr, "request", 45, 3)
+    assert mock_http_client.post.call_args.args[0] == "/node-manager/fault-tolerance/guard"
+    assert mock_http_client.post.call_args.kwargs["data"] == {"request_id": "request", "lease_sec": 45}
+
+
 def test_stop_timeout_returns_false(node_mgr, mock_http_client):
     """Stop timeout is unreachable, not a dispatch exception to retry as ERROR."""
     mock_http_client.post.side_effect = requests.exceptions.ReadTimeout("read timeout=5")

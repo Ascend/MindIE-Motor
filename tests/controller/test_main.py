@@ -149,7 +149,7 @@ def test_init_modules_with_fault_tolerance():
         patch("motor.controller.controller.InstanceManager") as mock_mgr,
         patch("motor.controller.controller.ControllerAPI"),
         patch(
-            "motor.controller.fault_tolerance.FaultManager",
+            "motor.controller.fault_tolerance.fault_manager.FaultManager",
             return_value=mock_fm,
         ),
     ):
@@ -261,7 +261,7 @@ def test_start_modules_standby_mode_with_fault_tolerance():
         patch("motor.controller.controller.InstanceManager"),
         patch("motor.controller.controller.ControllerAPI"),
         patch(
-            "motor.controller.fault_tolerance.FaultManager",
+            "motor.controller.fault_tolerance.fault_manager.FaultManager",
             return_value=MagicMock(name="FaultManager"),
         ),
         patch("motor.controller.controller.Controller._start_config_watcher"),
@@ -423,7 +423,7 @@ def test_on_config_updated_enable_fault_tolerance():
     with (
         patch("motor.controller.controller.logger"),
         patch(
-            "motor.controller.fault_tolerance.FaultManager",
+            "motor.controller.fault_tolerance.fault_manager.FaultManager",
             return_value=mock_fm,
         ),
     ):
@@ -459,7 +459,7 @@ def test_on_config_updated_enable_fault_tolerance_exception():
     with (
         patch("motor.controller.controller.logger") as mock_log,
         patch(
-            "motor.controller.fault_tolerance.FaultManager",
+            "motor.controller.fault_tolerance.fault_manager.FaultManager",
             side_effect=Exception("Test error"),
         ),
     ):

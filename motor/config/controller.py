@@ -48,7 +48,7 @@ class ApiConfig:
     """API configuration class"""
 
     # controller API configuration
-    controller_api_host: str = field(default_factory=lambda: Env.pod_ip or '127.0.0.1')
+    controller_api_host: str = field(default_factory=lambda: Env.pod_ip or "127.0.0.1")
     controller_api_dns: str | None = field(default_factory=lambda: Env.controller_service or "127.0.0.1")
     controller_api_port: int = 1026
     observability_api_port: int = 1027
@@ -103,6 +103,18 @@ class EventPusherConfig:
 
 
 @dataclass
+class DpScaleDownConfig:
+    """Advanced tuning for one DP scale-down transaction."""
+
+    # The Controller timeout wraps NodeManager's own engine FT request. Keep
+    # enough headroom over NodeManager's default 5s timeout for scheduling,
+    # serialization and the HTTP response path.
+    request_timeout_sec: float = 11.0
+    poll_interval_sec: float = 1.0
+    execution_deadline_sec: float = 30.0
+
+
+@dataclass
 class FaultToleranceConfig:
     """Fault tolerance configuration class"""
 
@@ -128,6 +140,20 @@ class FaultToleranceConfig:
     enable_token_reinference: bool = True  # Enable/disable token reinference strategy
     scale_p2d_d_instance_reinit_wait_timeout: int = 60  # seconds to wait for D instance re-init before ScaleP2D
 
+    # Controller-level DP feature switches apply to both prefill and decode.
+    # Engine-native capabilities remain in each engine config and are checked
+    # independently by FtGate; enabling scale-down never enables them implicitly.
+    enable_dp_scale_down: bool = False
+    # Provisional name: allow Pod recycling only when scale-up can replenish
+    # the capacity. DP ranks may still be masked when this switch is disabled.
+    enable_dp_scale_up: bool = False
+    dp_scale_down_config: DpScaleDownConfig = field(default_factory=DpScaleDownConfig)
+    # Derived as the maximum cpu-distributed-timeout-seconds configured for
+    # prefill, decode, or union. If no engine role configures it, use 60s.
+    cpu_distributed_timeout_seconds: float = 60.0
+    # Correlate a hardware ConfigMap event with engine FT reports. If no FT
+    # report arrives in this window, engine-native recovery is unsafe.
+    hardware_ft_correlation_window_sec: float = 5.0
     # Fallback engine relaunch (restart engines in place, then containers):
     # when an engine is reported DEAD or a fast-recovery strategy fails, the
     # strategy center escalates to EngineRelaunchStrategy. Disabling restores
@@ -178,15 +204,16 @@ class ControllerConfig:
         init_motor_config(self, "controller")
 
     @classmethod
-    def from_json(cls, json_path: str | None = None) -> 'ControllerConfig':
+    def from_json(cls, json_path: str | None = None) -> "ControllerConfig":
         """Load configuration from JSON file"""
         json_path, config_path = resolve_config_json_path(json_path)
 
         cfg = {}
+        raw = {}
         hardware_type = ""
         try:
             if config_path and config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:  # Only parse if file is not empty
                         raw = json.loads(content)
@@ -201,13 +228,38 @@ class ControllerConfig:
                             cfg = raw
                             if isinstance(cfg, dict) and cfg.get("hardware_type"):
                                 hardware_type = str(cfg.get("hardware_type") or "")
-                        tls_configs = [MGMT_TLS_CONFIG, ETCD_TLS_CONFIG, GRPC_TLS_CONFIG, OBSERVABILITY_TLS_CONFIG]
+                        tls_configs = [
+                            MGMT_TLS_CONFIG,
+                            ETCD_TLS_CONFIG,
+                            GRPC_TLS_CONFIG,
+                            OBSERVABILITY_TLS_CONFIG,
+                        ]
                         _update_tls_config(tls_configs, cfg, raw)
         except (json.JSONDecodeError, Exception) as e:
             log_json_config_load_error(json_path, e)
 
         try:
             config = cls()
+
+            # A Controller may manage separate P/D and mixed-deployment Union
+            # instances at the same time. Use the largest configured Gloo
+            # timeout so no role is classified before its collective expires.
+            cpu_timeouts: list[float] = []
+            if isinstance(raw, dict):
+                for engine_key in (
+                    "motor_engine_prefill_config",
+                    "motor_engine_decode_config",
+                    "motor_engine_union_config",
+                ):
+                    engine_section = raw.get(engine_key)
+                    if not isinstance(engine_section, dict):
+                        continue
+                    engine_config = engine_section.get("engine_config")
+                    if not isinstance(engine_config, dict):
+                        continue
+                    cpu_timeout = engine_config.get("cpu-distributed-timeout-seconds")
+                    if cpu_timeout is not None:
+                        cpu_timeouts.append(float(cpu_timeout))
 
             # Helper function to update config object from dict
             def update_config_from_dict(config_obj, config_dict):
@@ -217,50 +269,64 @@ class ControllerConfig:
                         setattr(config_obj, key, value)
 
             # Update configuration sections if they exist in JSON
-            if 'logging_config' in cfg:
-                update_config_from_dict(config.logging_config, cfg['logging_config'])
+            if "logging_config" in cfg:
+                update_config_from_dict(config.logging_config, cfg["logging_config"])
 
-            if 'api_config' in cfg:
-                update_config_from_dict(config.api_config, cfg['api_config'])
+            if "api_config" in cfg:
+                update_config_from_dict(config.api_config, cfg["api_config"])
 
-            if 'mgmt_tls_config' in cfg:
-                update_config_from_dict(config.mgmt_tls_config, cfg['mgmt_tls_config'])
+            if "mgmt_tls_config" in cfg:
+                update_config_from_dict(config.mgmt_tls_config, cfg["mgmt_tls_config"])
 
-            if 'etcd_tls_config' in cfg:
-                update_config_from_dict(config.etcd_tls_config, cfg['etcd_tls_config'])
+            if "etcd_tls_config" in cfg:
+                update_config_from_dict(config.etcd_tls_config, cfg["etcd_tls_config"])
 
-            if 'grpc_tls_config' in cfg:
-                update_config_from_dict(config.grpc_tls_config, cfg['grpc_tls_config'])
+            if "grpc_tls_config" in cfg:
+                update_config_from_dict(config.grpc_tls_config, cfg["grpc_tls_config"])
 
-            if 'observability_tls_config' in cfg:
-                update_config_from_dict(config.observability_tls_config, cfg['observability_tls_config'])
+            if "observability_tls_config" in cfg:
+                update_config_from_dict(config.observability_tls_config, cfg["observability_tls_config"])
 
-            if 'instance_config' in cfg:
-                update_config_from_dict(config.instance_config, cfg['instance_config'])
+            if "instance_config" in cfg:
+                update_config_from_dict(config.instance_config, cfg["instance_config"])
 
-            if 'event_config' in cfg:
-                update_config_from_dict(config.event_config, cfg['event_config'])
+            if "event_config" in cfg:
+                update_config_from_dict(config.event_config, cfg["event_config"])
 
-            if 'fault_tolerance_config' in cfg:
-                update_config_from_dict(config.fault_tolerance_config, cfg['fault_tolerance_config'])
+            if "fault_tolerance_config" in cfg:
+                fault_tolerance_config = dict(cfg["fault_tolerance_config"])
+                dp_scale_down_config = fault_tolerance_config.pop("dp_scale_down_config", None)
+                update_config_from_dict(config.fault_tolerance_config, fault_tolerance_config)
+                if dp_scale_down_config is not None:
+                    if not isinstance(dp_scale_down_config, dict):
+                        raise ValueError("dp_scale_down_config must be an object")
+                    update_config_from_dict(
+                        config.fault_tolerance_config.dp_scale_down_config,
+                        dp_scale_down_config,
+                    )
 
-            if 'standby_config' in cfg:
-                update_config_from_dict(config.standby_config, cfg['standby_config'])
+            # This is an engine-derived internal value, not an independent
+            # Controller tuning knob. Apply it after Controller config parsing
+            # so the three role configs remain the single source of truth.
+            config.fault_tolerance_config.cpu_distributed_timeout_seconds = max(cpu_timeouts) if cpu_timeouts else 60.0
 
-            if 'etcd_config' in cfg:
-                update_config_from_dict(config.etcd_config, cfg['etcd_config'])
+            if "standby_config" in cfg:
+                update_config_from_dict(config.standby_config, cfg["standby_config"])
 
-            if 'observability_config' in cfg:
-                update_config_from_dict(config.observability_config, cfg['observability_config'])
+            if "etcd_config" in cfg:
+                update_config_from_dict(config.etcd_config, cfg["etcd_config"])
 
-            if 'port_allocator_config' in cfg:
-                update_config_from_dict(config.port_allocator_config, cfg['port_allocator_config'])
+            if "observability_config" in cfg:
+                update_config_from_dict(config.observability_config, cfg["observability_config"])
 
-            if 'precision_auto_recovery_enabled' in cfg:
-                config.precision_auto_recovery_enabled = bool(cfg['precision_auto_recovery_enabled'])
+            if "port_allocator_config" in cfg:
+                update_config_from_dict(config.port_allocator_config, cfg["port_allocator_config"])
 
-            if 'daemon_loop_interval' in cfg:
-                config.daemon_loop_interval = float(cfg['daemon_loop_interval'])
+            if "precision_auto_recovery_enabled" in cfg:
+                config.precision_auto_recovery_enabled = bool(cfg["precision_auto_recovery_enabled"])
+
+            if "daemon_loop_interval" in cfg:
+                config.daemon_loop_interval = float(cfg["daemon_loop_interval"])
 
             if hardware_type:
                 config.hardware_type = hardware_type
@@ -270,9 +336,9 @@ class ControllerConfig:
             apply_config_path_metadata(config, config_path)
             if not config_path:
                 config.last_modified = None
-                config.last_modified = None
 
             apply_standby_persistence_rule(config)
+            config.validate_config()
 
             finalize_json_config_load(
                 config_path,
@@ -290,7 +356,7 @@ class ControllerConfig:
         errors = []
 
         # Validate logging configuration
-        valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+        valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]
         if self.logging_config.log_level.upper() not in valid_log_levels:
             errors.append(f"log_level must be one of: {', '.join(valid_log_levels)}")
 
@@ -335,6 +401,7 @@ class ControllerConfig:
             errors.append("scale_p2d_d_instance_reinit_wait_timeout must be in range 1-600")
 
         ft_config = self.fault_tolerance_config
+        scale_down_config = ft_config.dp_scale_down_config
         if not (60 <= ft_config.engine_relaunch_complete_timeout_sec <= 3600):
             errors.append("engine_relaunch_complete_timeout_sec must be in range 60-3600")
 
@@ -347,6 +414,16 @@ class ControllerConfig:
         if not (1 <= ft_config.engine_relaunch_nm_unreachable_threshold <= 10):
             errors.append("engine_relaunch_nm_unreachable_threshold must be in range 1-10")
 
+        if not (0 < scale_down_config.request_timeout_sec <= 60):
+            errors.append("dp_scale_down_config.request_timeout_sec must be in range (0, 60]")
+        if not (0 < scale_down_config.poll_interval_sec <= 60):
+            errors.append("dp_scale_down_config.poll_interval_sec must be in range (0, 60]")
+        if not (1 <= scale_down_config.execution_deadline_sec <= 600):
+            errors.append("dp_scale_down_config.execution_deadline_sec must be in range 1-600")
+        if not (0 < ft_config.cpu_distributed_timeout_seconds <= 600):
+            errors.append("cpu_distributed_timeout_seconds must be in range (0, 600]")
+        if not (0 < ft_config.hardware_ft_correlation_window_sec <= 60):
+            errors.append("hardware_ft_correlation_window_sec must be in range (0, 60]")
         # Validate standby configuration
         if self.standby_config.master_standby_check_interval <= 0:
             errors.append("master_standby_check_interval must be greater than 0")
@@ -382,8 +459,8 @@ class ControllerConfig:
         config_dict = asdict(self)
 
         # Remove internal fields that shouldn't be in the output
-        config_dict.pop('config_path', None)
-        config_dict.pop('last_modified', None)
+        config_dict.pop("config_path", None)
+        config_dict.pop("last_modified", None)
 
         return config_dict
 

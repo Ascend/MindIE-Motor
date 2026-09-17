@@ -315,6 +315,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                     model_name=msg.model_name,
                     engine_type=msg.engine_type,
                     dispatch_capabilities=msg.dispatch_capabilities,
+                    ft_capability=msg.ft_capability,
                     id=self.ins_id_cnt,
                     role=msg.role,
                     parallel_config=msg.parallel_config,
@@ -339,6 +340,16 @@ class InstanceAssembler(ThreadSafeSingleton):
                     return -1
                 with metadata.lock:
                     metadata.register_timestamp = time.time()
+
+            if metadata.instance.ft_capability != msg.ft_capability:
+                logger.error(
+                    "Instance %s received inconsistent FT capability from pod %s: expected=%s, actual=%s",
+                    msg.job_name,
+                    msg.pod_ip,
+                    metadata.instance.ft_capability.model_dump(),
+                    msg.ft_capability.model_dump(),
+                )
+                return -1
 
         if metadata.instance.has_node_mgr(msg.pod_ip):
             logger.info("Pod %s already registered in node_managers, skip duplicate registration.", msg.pod_ip)
@@ -403,6 +414,7 @@ class InstanceAssembler(ThreadSafeSingleton):
                     model_name=msg.model_name,
                     engine_type=msg.engine_type,
                     dispatch_capabilities=msg.dispatch_capabilities,
+                    ft_capability=msg.ft_capability,
                     id=msg.instance_id,
                     role=msg.role,
                     parallel_config=msg.parallel_config,
@@ -424,6 +436,17 @@ class InstanceAssembler(ThreadSafeSingleton):
                     return -1
                 with metadata.lock:
                     metadata.register_timestamp = time.time()
+
+            if metadata.instance.ft_capability != msg.ft_capability:
+                logger.error(
+                    "Instance %s received inconsistent FT capability from pod %s during reregistration: "
+                    "expected=%s, actual=%s",
+                    msg.job_name,
+                    msg.pod_ip,
+                    metadata.instance.ft_capability.model_dump(),
+                    msg.ft_capability.model_dump(),
+                )
+                return -1
 
             # recover ins_id_cnt
             self.ins_id_cnt = max(self.ins_id_cnt, msg.instance_id + 1)
@@ -542,7 +565,11 @@ class InstanceAssembler(ThreadSafeSingleton):
         self, msg: RegisterMsg, start_idx: int, devices_per_endpoint: int, id_offset: int
     ) -> list[DeviceInfo]:
         if isinstance(msg.ranktable, Ranktable):
-            return msg.ranktable.server_list[0].device
+            server = next(
+                (item for item in msg.ranktable.server_list if msg.pod_ip in (item.container_ip, item.server_id)),
+                msg.ranktable.server_list[0],
+            )
+            return server.device[start_idx : start_idx + devices_per_endpoint]
 
         device_infos = []
         for j in range(devices_per_endpoint):

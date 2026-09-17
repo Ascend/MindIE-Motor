@@ -17,23 +17,35 @@
 7. Strategy Center Processing
 """
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
-from motor.common.resources.instance import Instance, InsStatus, NodeManagerInfo
+import pytest
+
+from motor.common.resources.endpoint import DeviceInfo, Endpoint
+from motor.common.resources.instance import Instance, InsStatus, NodeManagerInfo, ParallelConfig
 from motor.config.controller import ControllerConfig
 from motor.controller.core import ObserverEvent
+from motor.controller.fault_tolerance.dp_scale_down import FtPhase, ScaleDownContext, get_ft_runtime_store
 from motor.controller.fault_tolerance.fault_manager import FaultManager
+from motor.controller.fault_tolerance.recovery_planner import build_recovery_plan
 from motor.controller.fault_tolerance.fault_types import (
     FaultCategory,
     FaultInfo,
     FaultLevel,
     HardwareFaultType,
+    hardware_fault_identity,
     InstanceMetadata,
     NodeMetadata,
     NodeStatus,
     OriginFaultLevel,
     SpecialFaultCode,
+)
+from motor.controller.fault_tolerance.strategy import (
+    DpScaleDownStrategy,
+    EngineFastRecoveryStrategy,
+    EngineRelaunchStrategy,
+    InstanceReconfigurationStrategy,
+    ScaleP2DStrategy,
 )
 
 # pylint: disable=redefined-outer-name,duplicate-code
@@ -56,16 +68,28 @@ def FI(*, fault_type, npu_name, fault_code, fault_level, origin_fault_level=None
 
 
 FAULT_DEVICE_L1_0x1000 = FI(
-    fault_type=HardwareFaultType.CARD_UNHEALTHY, npu_name="npu0", fault_code=0x1000, fault_level=FaultLevel.L1
+    fault_type=HardwareFaultType.CARD_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x1000,
+    fault_level=FaultLevel.L1,
 )
 FAULT_DEVICE_L2_0x1000 = FI(
-    fault_type=HardwareFaultType.CARD_UNHEALTHY, npu_name="npu0", fault_code=0x1000, fault_level=FaultLevel.L2
+    fault_type=HardwareFaultType.CARD_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x1000,
+    fault_level=FaultLevel.L2,
 )
 FAULT_DEVICE_L2 = FI(
-    fault_type=HardwareFaultType.CARD_UNHEALTHY, npu_name="npu0", fault_code=0x2000, fault_level=FaultLevel.L2
+    fault_type=HardwareFaultType.CARD_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x2000,
+    fault_level=FaultLevel.L2,
 )
 FAULT_DEVICE_L3 = FI(
-    fault_type=HardwareFaultType.CARD_UNHEALTHY, npu_name="npu0", fault_code=0x2000, fault_level=FaultLevel.L3
+    fault_type=HardwareFaultType.CARD_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x2000,
+    fault_level=FaultLevel.L3,
 )
 FAULT_SWITCH_L2 = FI(
     fault_type=HardwareFaultType.CARD_NETWORK_UNHEALTHY,
@@ -74,10 +98,16 @@ FAULT_SWITCH_L2 = FI(
     fault_level=FaultLevel.L2,
 )
 FAULT_NODE_L3 = FI(
-    fault_type=HardwareFaultType.NODE_UNHEALTHY, npu_name="", fault_code=0x3000, fault_level=FaultLevel.L3
+    fault_type=HardwareFaultType.NODE_UNHEALTHY,
+    npu_name="",
+    fault_code=0x3000,
+    fault_level=FaultLevel.L3,
 )
 FAULT_CM_DEVICE_L3_0x1234 = FI(
-    fault_type=HardwareFaultType.CARD_UNHEALTHY, npu_name="npu0", fault_code=0x1234, fault_level=FaultLevel.L3
+    fault_type=HardwareFaultType.CARD_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x1234,
+    fault_level=FaultLevel.L3,
 )
 FAULT_CM_SWITCH_L2_0x5678 = FI(
     fault_type=HardwareFaultType.CARD_NETWORK_UNHEALTHY,
@@ -111,7 +141,11 @@ def _etcd_node_entry(*, pod_ip, node_name, instance_id, node_status, hardware_fa
 
 
 def _etcd_instance_entry(*, instance_id, fault_level, fault_code):
-    return {"instance_id": instance_id, "fault_level": fault_level.value, "fault_code": fault_code}
+    return {
+        "instance_id": instance_id,
+        "fault_level": fault_level.value,
+        "fault_code": fault_code,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -130,11 +164,17 @@ def setup_test_environment():
     """Setup and teardown for each test"""
     from motor.common.utils.singleton import ThreadSafeSingleton
 
+    store = get_ft_runtime_store()
+    store.set_persist_callback(None)
+    store.clear()
     # Clear singleton instances before each test
     if FaultManager in ThreadSafeSingleton._instances:
         fault_manager = ThreadSafeSingleton._instances[FaultManager]
         fault_manager.stop()
         del ThreadSafeSingleton._instances[FaultManager]
+    yield
+    store.set_persist_callback(None)
+    store.clear()
 
 
 @pytest.fixture
@@ -322,7 +362,11 @@ def test_persist_data_exception_handling(fault_manager_with_instances):
     """Test data persistence exception handling"""
     manager = fault_manager_with_instances
 
-    with patch.object(manager.etcd_client, "persist_data", side_effect=Exception("ETCD connection error")):
+    with patch.object(
+        manager.etcd_client,
+        "persist_data",
+        side_effect=Exception("ETCD connection error"),
+    ):
         result = manager.persist_data()
 
         assert result is False  # Verify persist_data failure
@@ -379,6 +423,12 @@ def test_restore_data_success(fault_manager):
             )
         },
         "instances": {"1": _etcd_instance_entry(instance_id=1, fault_level=FaultLevel.HEALTHY, fault_code=0x0)},
+        "ft_runtime": {
+            "1": {
+                "phase": FtPhase.SCALING_DOWN.value,
+                "fallback_strategy": "ScaleP2DStrategy",
+            }
+        },
     }
 
     persistent_state = PersistentState(data=fault_data, version=1, timestamp=1234567890.0, checksum="")
@@ -406,6 +456,9 @@ def test_restore_data_success(fault_manager):
     instance = manager.instances[1]
     assert instance.instance_id == 1
     _assert_instance_fault(instance, fault_level=FaultLevel.HEALTHY, fault_code=0x0)
+    assert instance.prev_strategy_failed is True
+    assert instance.prev_strategy_name == "DpScaleDownStrategy"
+    assert instance.prev_strategy_fallback == "ScaleP2DStrategy"
 
 
 def test_restore_data_none_data(fault_manager):
@@ -424,7 +477,11 @@ def test_restore_data_etcd_failure(fault_manager):
     """Test data restoration when ETCD operations fail"""
     manager = fault_manager
 
-    with patch.object(manager.etcd_client, "restore_data", side_effect=Exception("ETCD connection error")):
+    with patch.object(
+        manager.etcd_client,
+        "restore_data",
+        side_effect=Exception("ETCD connection error"),
+    ):
         result = manager.restore_data()
 
         assert result is False  # Verify restore_data failure
@@ -473,7 +530,9 @@ def test_fault_manager_start_with_persistence_enabled(fault_manager):
             fault_manager.start()
 
             mock_thread.assert_called_once_with(
-                target=fault_manager._ft_strategy_center, daemon=True, name="FaultToleranceStrategyCenter"
+                target=fault_manager._ft_strategy_center,
+                daemon=True,
+                name="FaultToleranceStrategyCenter",
             )
             mock_restore.assert_called_once()  # Verify restore_data was called
             mock_thread.return_value.start.assert_called_once()
@@ -488,7 +547,9 @@ def test_fault_manager_start_with_persistence_disabled(fault_manager):
             fault_manager.start()
 
             mock_thread.assert_called_once_with(
-                target=fault_manager._ft_strategy_center, daemon=True, name="FaultToleranceStrategyCenter"
+                target=fault_manager._ft_strategy_center,
+                daemon=True,
+                name="FaultToleranceStrategyCenter",
             )
             mock_restore.assert_not_called()
             mock_thread.return_value.start.assert_called_once()
@@ -504,7 +565,9 @@ def test_fault_manager_start_restore_data_failed(fault_manager):
                 fault_manager.start()
 
                 mock_thread.assert_called_once_with(
-                    target=fault_manager._ft_strategy_center, daemon=True, name="FaultToleranceStrategyCenter"
+                    target=fault_manager._ft_strategy_center,
+                    daemon=True,
+                    name="FaultToleranceStrategyCenter",
                 )
                 mock_restore.assert_called_once()
                 mock_logger.warning.assert_called_once_with(
@@ -564,11 +627,13 @@ def test_update_instance_removed(fault_manager, mock_instance):
         instance_pod_ips={1: "192.168.1.1"},
         instance_job_names={1: "test_job"},
     )
+    get_ft_runtime_store().transition(1, phase=FtPhase.RECONFIGURING)
 
     with patch.object(fault_manager, "_stop_resource_monitor_for_node"):
         fault_manager.update(mock_instance, ObserverEvent.INSTANCE_REMOVED)
 
     assert 1 not in fault_manager.instances
+    assert get_ft_runtime_store().get(1) is None
     # Nodes are preserved for potential transfer to other instances (e.g., scale_p2d swap)
     assert "node_0" in fault_manager.nodes
 
@@ -618,7 +683,8 @@ def test_handle_instance_initial_existing_instance(fault_manager, mock_instance)
             fault_manager.update(mock_instance, ObserverEvent.INSTANCE_INITIAL)
 
             mock_logger.debug.assert_called_once_with(
-                "Instance %d already exists in fault manager, skipping add operation.", 1
+                "Instance %d already exists in fault manager, skipping add operation.",
+                1,
             )
             mock_create_monitor.assert_not_called()
 
@@ -725,7 +791,14 @@ def test_update_config():
         new_config.etcd_config.enable_etcd_persistence = True
 
         mock_etcd_class.reset_mock()
-        manager.update_config(new_config)
+        with patch.object(manager, "persist_data", return_value=True) as persist:
+            manager.update_config(new_config)
+            store = get_ft_runtime_store()
+            store.clear()
+            store.transition(991, phase=FtPhase.SCALING_DOWN)
+            persist.assert_called_once()
+            store.set_persist_callback(None)
+            store.clear()
 
         assert manager.config is new_config
         assert manager.config.etcd_config.etcd_host == "new-etcd-host"
@@ -740,10 +813,16 @@ def test_update_config_with_configmap_changes():
     ins_metadata = InstanceMetadata(instance_id=1)
     manager.instances[1] = ins_metadata
     manager.nodes["node_0"] = NodeMetadata(
-        node_name="node_0", instance_ids={1}, instance_pod_ips={1: "192.168.1.1"}, instance_job_names={1: ""}
+        node_name="node_0",
+        instance_ids={1},
+        instance_pod_ips={1: "192.168.1.1"},
+        instance_job_names={1: ""},
     )
     manager.nodes["node_1"] = NodeMetadata(
-        node_name="node_1", instance_ids={1}, instance_pod_ips={1: "192.168.1.2"}, instance_job_names={1: ""}
+        node_name="node_1",
+        instance_ids={1},
+        instance_pod_ips={1: "192.168.1.2"},
+        instance_job_names={1: ""},
     )
     mock_monitor1, mock_monitor2 = MagicMock(), MagicMock()
     manager.resource_monitors.update({"node_0": mock_monitor1, "node_1": mock_monitor2})
@@ -758,7 +837,10 @@ def test_update_config_with_configmap_changes():
     ):
         manager.update_config(new_config)
 
-        assert (manager.configmap_prefix, manager.configmap_namespace) == ("new-prefix", "new-namespace")
+        assert (manager.configmap_prefix, manager.configmap_namespace) == (
+            "new-prefix",
+            "new-namespace",
+        )
 
         mock_monitor1.stop_monitoring.assert_called_once()
         mock_monitor2.stop_monitoring.assert_called_once()
@@ -983,7 +1065,9 @@ def test_refresh_instance_fault_level_instance_not_found(fault_manager):
         mock_logger.warning.assert_called_once_with("Instance %d not found, skipping fault level refresh", 999)
 
 
-def test_refresh_instance_fault_level_instance_not_found_with_instances(fault_manager_with_instances):
+def test_refresh_instance_fault_level_instance_not_found_with_instances(
+    fault_manager_with_instances,
+):
     """Test _refresh_instance_fault_level when instance is not found"""
     manager = fault_manager_with_instances
 
@@ -1093,6 +1177,138 @@ def test_refresh_instance_fault_level_with_l2_faults(fault_manager_with_instance
             )
 
 
+def test_refresh_same_level_fault_does_not_treat_unhealthy_as_fast_recovery_eligibility(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    node = manager.nodes["node_0"]
+    node.hardware_fault_infos = {FAULT_DEVICE_L2.fault_code: FAULT_DEVICE_L2}
+    node.software_fault_infos = {
+        "1000002:0": FaultInfo.from_exception(RuntimeError("unhealthy"), engine_id=0, engine_status=2)
+    }
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.is_instance_separated.return_value = False
+        manager._refresh_instance_fault_level(1)
+
+    _assert_instance_fault(manager.instances[1], fault_level=FaultLevel.L2, fault_code=FAULT_DEVICE_L2.fault_code)
+
+
+def test_software_faults_are_isolated_between_instances_sharing_pod_ip(fault_manager_with_instances):
+    """Completing one instance must not consume another instance's engine fault."""
+    manager = fault_manager_with_instances
+    node = manager.nodes["node_0"]
+    node.instance_ids = {1, 2}
+    node.instance_pod_ips = {1: "127.0.0.1", 2: "127.0.0.1"}
+
+    prefill_fault = FaultInfo.from_exception(
+        RuntimeError("prefill unhealthy"), engine_id=0, engine_status=2, instance_id=1
+    )
+    decode_fault = FaultInfo.from_exception(RuntimeError("decode dead"), engine_id=1, engine_status=1, instance_id=2)
+    manager.report_software_fault(prefill_fault, pod_ip="127.0.0.1", instance_id=1)
+    manager.report_software_fault(decode_fault, pod_ip="127.0.0.1", instance_id=2)
+
+    manager._clear_software_faults(1)
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        context = manager._build_scale_down_context(2)
+    assert context.pending_removed_ranks == (1,)
+    assert all(fault.instance_id == 2 for fault in node.software_fault_infos.values())
+
+
+def test_card_fault_is_isolated_to_device_owner_in_mixed_deployment(fault_manager):
+    manager = fault_manager
+    pod_ip = "192.0.2.10"
+    manager.instances[1] = InstanceMetadata(instance_id=1)
+    manager.instances[2] = InstanceMetadata(instance_id=2)
+    manager.nodes["node-a"] = NodeMetadata(
+        node_name="node-a",
+        instance_ids={1, 2},
+        instance_pod_ips={1: pod_ip, 2: pod_ip},
+        instance_job_names={1: "prefill-0", 2: "decode-0"},
+        hardware_fault_infos={
+            "9000:npu-15": FI(
+                fault_type=HardwareFaultType.CARD_UNHEALTHY,
+                npu_name="npu-15",
+                fault_code=0x9000,
+                fault_level=FaultLevel.L5,
+                origin_fault_level=OriginFaultLevel.RESTART_NPU,
+            )
+        },
+    )
+    prefill = Instance(
+        job_name="prefill-0",
+        model_name="model",
+        id=1,
+        role="prefill",
+        parallel_config=ParallelConfig(dp_size=1),
+    )
+    prefill.add_endpoints(
+        pod_ip,
+        {0: Endpoint(id=0, ip=pod_ip, business_port="8000", device_infos=[DeviceInfo(device_id="0", rank_id="0")])},
+    )
+    decode = Instance(
+        job_name="decode-0",
+        model_name="model",
+        id=2,
+        role="decode",
+        parallel_config=ParallelConfig(dp_size=1),
+    )
+    decode.add_endpoints(
+        pod_ip,
+        {0: Endpoint(id=0, ip=pod_ip, business_port="8001", device_infos=[DeviceInfo(device_id="15", rank_id="0")])},
+    )
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager = instance_manager_cls.return_value
+        instance_manager.get_instance.side_effect = lambda instance_id: {1: prefill, 2: decode}[instance_id]
+        instance_manager.is_instance_separated.return_value = False
+        manager._refresh_instance_fault_level(1)
+        manager._refresh_instance_fault_level(2)
+
+    assert manager.instances[1].fault_level == FaultLevel.HEALTHY
+    assert manager.instances[2].fault_level == FaultLevel.L5
+    instance_manager.separate_instance.assert_called_once_with(2)
+
+
+@pytest.mark.parametrize(
+    ("engine_status", "status_name"),
+    [(1, "DEAD"), (2, "UNHEALTHY")],
+)
+def test_report_software_fault_logs_dp_rank_and_status(fault_manager_with_instances, engine_status, status_name):
+    manager = fault_manager_with_instances
+    fault = FaultInfo.from_exception(RuntimeError("engine fault"), engine_id=3, engine_status=engine_status)
+
+    with patch("motor.controller.fault_tolerance.fault_manager.logger") as mock_logger:
+        manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1)
+
+    mock_logger.info.assert_any_call(
+        "Reported software fault for node %s (instances %s): dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
+        "node_0",
+        [1],
+        3,
+        "RuntimeError",
+        engine_status,
+        status_name,
+        "L2",
+    )
+
+
+def test_new_dp_status_replaces_previous_status_in_collection_round(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    unhealthy = FaultInfo.from_exception(RuntimeError("unhealthy"), 0, 2, instance_id=1)
+    dead = FaultInfo.from_exception(RuntimeError("dead"), 0, 1, instance_id=1)
+
+    manager.report_software_fault(unhealthy, pod_ip="192.168.1.1", instance_id=1)
+    manager.report_software_fault(dead, pod_ip="192.168.1.1", instance_id=1)
+
+    faults = list(manager.nodes["node_0"].software_fault_infos.values())
+    assert len(faults) == 1
+    assert faults[0].engine_id == 0
+    assert faults[0].engine_status == 1
+
+
 def test_refresh_instance_fault_level_multiple_nodes(fault_manager_with_instances):
     """Test _refresh_instance_fault_level with multiple nodes having different fault levels"""
     manager = fault_manager_with_instances
@@ -1147,7 +1363,9 @@ def test_process_instance_strategy_with_healthy_instance(fault_manager_with_inst
         mock_im.separate_instance.assert_not_called()
 
 
-def test_process_instance_strategy_with_unhealthy_instance(fault_manager_with_instances):
+def test_process_instance_strategy_with_unhealthy_instance(
+    fault_manager_with_instances,
+):
     """Test processing strategy for an unhealthy instance"""
     manager = fault_manager_with_instances
 
@@ -1168,7 +1386,7 @@ def test_process_instance_strategy_with_unhealthy_instance(fault_manager_with_in
         manager.config.fault_tolerance_config.enable_scale_p2d = True
 
         with patch(
-            'motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager',
+            "motor.controller.fault_tolerance.strategy.scale_p2d.InstanceManager",
             mock_im_class,
         ):
             manager._process_instance_strategy(1)
@@ -1183,7 +1401,7 @@ def test_ft_strategy_center_processing(fault_manager_with_instances):
     manager = fault_manager_with_instances
 
     # Mock work_condition.wait to avoid actual sleeping
-    with patch.object(manager.work_condition, 'wait') as mock_wait:
+    with patch.object(manager.work_condition, "wait") as mock_wait:
         # Mock _process_instance_strategy to track calls
         with patch.object(manager, "_process_instance_strategy") as mock_process:
             # Simulate the loop by raising KeyboardInterrupt after first iteration
@@ -1204,7 +1422,7 @@ def test_ft_strategy_center_processing(fault_manager_with_instances):
 def test_ft_strategy_center_with_empty_instances(fault_manager):
     """Test _ft_strategy_center with no instances"""
     # Mock work_condition.wait to avoid actual sleeping and interrupt the loop
-    with patch.object(fault_manager.work_condition, 'wait', side_effect=KeyboardInterrupt()):
+    with patch.object(fault_manager.work_condition, "wait", side_effect=KeyboardInterrupt()):
         with patch.object(fault_manager, "_process_instance_strategy") as mock_process:
             with pytest.raises(KeyboardInterrupt):
                 fault_manager._ft_strategy_center()
@@ -1217,7 +1435,7 @@ def test_ft_strategy_center_stop_event_handling(fault_manager_with_instances):
     manager = fault_manager_with_instances
     manager.stop_event.set()
 
-    with patch.object(manager.work_condition, 'wait') as mock_wait:
+    with patch.object(manager.work_condition, "wait") as mock_wait:
         with patch.object(manager, "_process_instance_strategy") as mock_process:
             # Should exit immediately due to stop_event being set
             manager._ft_strategy_center()
@@ -1570,6 +1788,15 @@ FAULT_PRE_SEPARATE_L6 = FaultInfo(
     origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
 )
 
+FAULT_MANUALLY_SEPARATE_L6 = FaultInfo(
+    fault_category=FaultCategory.HARDWARE,
+    fault_type=HardwareFaultType.CARD_NETWORK_UNHEALTHY,
+    npu_name="npu0",
+    fault_code=0x00F1FEF6,
+    fault_level=FaultLevel.L6,
+    origin_fault_level=OriginFaultLevel.MANUALLY_SEPARATE_NPU,
+)
+
 
 def _mk_active_instance(instance_id, job_name, role="decode"):
     """Create a mock instance that appears INITIAL / ACTIVE."""
@@ -1589,636 +1816,989 @@ def _mk_core_im(instance):
     return mock_im
 
 
-# -- _node_has_active_instances ----------------------------------------------
+# -- Shared node-state helpers -------------------------------------------------
 
 
-def test_node_has_active_instances_true(fault_manager):
-    """Returns True when at least one instance on the node is ACTIVE."""
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
+def _seed_fault_node(manager, fault=None, *, status=InsStatus.ACTIVE, node_name="node_a"):
+    manager.instances[1] = InstanceMetadata(instance_id=1)
     node = NodeMetadata(
-        node_name="node_a",
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "decode-1"},
-    )
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
-        assert fault_manager._node_has_active_instances(node) is True
-
-
-def test_node_has_active_instances_false_inactive_status(fault_manager):
-    """Returns False when the only instance on the node is INACTIVE."""
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    node = NodeMetadata(
-        node_name="node_a",
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "decode-1"},
-    )
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(inst)
-        assert fault_manager._node_has_active_instances(node) is False
-
-
-def test_node_has_active_instances_false_no_instances(fault_manager):
-    """Returns False when node has no instance_ids."""
-    node = NodeMetadata(node_name="empty_node")
-    assert fault_manager._node_has_active_instances(node) is False
-
-
-def test_node_has_active_instances_false_instance_not_in_manager(fault_manager):
-    """Returns False when instance_id is not in self.instances (stale)."""
-    node = NodeMetadata(
-        node_name="node_a",
-        instance_ids={999},  # Not in fault_manager.instances
-        instance_pod_ips={999: "10.0.0.1"},
-        instance_job_names={999: "old-job"},
-    )
-    assert fault_manager._node_has_active_instances(node) is False
-
-
-# -- _handle_fault_info_update: PreSeparateNPU downgrade --------------------
-
-
-def test_handle_fault_info_pre_separate_downgrade_to_l2(fault_manager):
-    """PreSeparateNPU should be downgraded to L2 when the node has ACTIVE instances."""
-    node_name = "node_a"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
         node_name=node_name,
         instance_ids={1},
         instance_pod_ips={1: "10.0.0.1"},
         instance_job_names={1: "decode-1"},
     )
+    if fault is not None:
+        node.hardware_fault_infos = {fault.fault_code: fault.model_copy()}
+    manager.nodes[node_name] = node
+    instance = _mk_active_instance(1, "decode-1")
+    instance.status = status
+    return node, instance
 
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
-        fault_manager._handle_fault_info_update([FAULT_PRE_SEPARATE_L6], node_name)
 
-    node = fault_manager.nodes[node_name]
-    assert len(node.hardware_fault_infos) == 1
+def _refresh_with_instance(manager, instance):
+    instance_manager = _mk_core_im(instance)
+    with patch(_CORE_IM, return_value=instance_manager), patch(_FAULT_MGR_IM, return_value=instance_manager):
+        manager._refresh_instance_fault_level(1)
+    return instance_manager
+
+
+@pytest.mark.parametrize(
+    "statuses,tracked,expected",
+    [
+        ([InsStatus.ACTIVE], [True], True),
+        ([InsStatus.INACTIVE], [True], False),
+        ([InsStatus.ACTIVE], [False], False),
+        ([InsStatus.INACTIVE, InsStatus.ACTIVE], [True, True], True),
+    ],
+    ids=["active", "inactive", "stale", "mixed"],
+)
+def test_node_has_active_instances(fault_manager, statuses, tracked, expected):
+    instances = {}
+    ids = set(range(1, len(statuses) + 1))
+    for instance_id, (status, is_tracked) in enumerate(zip(statuses, tracked), 1):
+        instance = _mk_active_instance(instance_id, f"job-{instance_id}")
+        instance.status = status
+        instances[instance_id] = instance
+        if is_tracked:
+            fault_manager.instances[instance_id] = InstanceMetadata(instance_id=instance_id)
+    node = NodeMetadata(node_name="node_a", instance_ids=ids)
+    instance_manager = MagicMock()
+    instance_manager.get_instance.side_effect = instances.get
+    with patch(_CORE_IM, return_value=instance_manager):
+        assert fault_manager._node_has_active_instances(node) is expected
+
+
+# -- Fault ingestion ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fault,status,expected_level",
+    [
+        (FAULT_PRE_SEPARATE_L6, InsStatus.ACTIVE, FaultLevel.L2),
+        (FAULT_PRE_SEPARATE_L6, InsStatus.INACTIVE, FaultLevel.L6),
+        (FAULT_MANUALLY_SEPARATE_L6, InsStatus.ACTIVE, FaultLevel.L6),
+        (FAULT_MANUALLY_SEPARATE_L6, InsStatus.INACTIVE, FaultLevel.L6),
+    ],
+    ids=["pre-active", "pre-inactive", "manual-active", "manual-inactive"],
+)
+def test_handle_separate_fault_level(fault_manager, fault, status, expected_level):
+    node, instance = _seed_fault_node(fault_manager, status=status)
+    with patch(_CORE_IM, return_value=_mk_core_im(instance)):
+        fault_manager._handle_fault_info_update([fault.model_copy()], node.node_name)
     stored = next(iter(node.hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L2, "PreSeparateNPU should be L2 when active instances exist on the node"
-    assert stored.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU
+    assert (stored.fault_level, stored.origin_fault_level) == (expected_level, fault.origin_fault_level)
 
 
-def test_handle_fault_info_pre_separate_stays_l6_no_active_instances(fault_manager):
-    """PreSeparateNPU stays L6 when the node has NO active instances."""
-    node_name = "node_b"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.2"},
-        instance_job_names={1: "decode-1"},
-    )
-
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(inst)
-        fault_manager._handle_fault_info_update([FAULT_PRE_SEPARATE_L6], node_name)
-
-    node = fault_manager.nodes[node_name]
-    stored = next(iter(node.hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L6, "PreSeparateNPU should stay L6 when no active instances on the node"
-
-
-# -- _handle_fault_info_update: same fault_code, different NPUs, different levels --
-
-
-def test_handle_fault_info_same_code_highest_level_wins(fault_manager):
-    """When multiple NPUs share the same fault_code but have different
-    fault_levels, the highest level should be used.
-
-    Reproduces: npu-4 (RestartNPU/L5) + npu-5/6/7 (NotHandleFault/L1)
-    sharing fault_code 0x8F184C16 → L5 must win.
-    """
-    node_name = "work16"
-    fault_manager.instances[3] = InstanceMetadata(instance_id=3)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={3},
-        instance_pod_ips={3: "10.0.0.16"},
-        instance_job_names={3: "mindie-motor-vllm-0-d0"},
-    )
-
-    fault_npu4 = FI(
-        fault_type=HardwareFaultType.CARD_UNHEALTHY,
-        npu_name="npu-4",
-        fault_code=0x8F184C16,
-        fault_level=FaultLevel.L5,
-        origin_fault_level=OriginFaultLevel.RESTART_NPU,
-    )
-    fault_npu5 = FI(
-        fault_type=HardwareFaultType.CARD_UNHEALTHY,
-        npu_name="npu-5",
-        fault_code=0x8F184C16,
-        fault_level=FaultLevel.L1,
-        origin_fault_level=OriginFaultLevel.NOT_HANDLE_FAULT,
-    )
-    fault_npu6 = FI(
-        fault_type=HardwareFaultType.CARD_UNHEALTHY,
-        npu_name="npu-6",
-        fault_code=0x8F184C16,
-        fault_level=FaultLevel.L1,
-        origin_fault_level=OriginFaultLevel.NOT_HANDLE_FAULT,
-    )
-    fault_npu7 = FI(
-        fault_type=HardwareFaultType.CARD_UNHEALTHY,
-        npu_name="npu-7",
-        fault_code=0x8F184C16,
-        fault_level=FaultLevel.L1,
-        origin_fault_level=OriginFaultLevel.NOT_HANDLE_FAULT,
-    )
-
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(_mk_active_instance(3, "mindie-motor-vllm-0-d0"))
-        fault_manager._handle_fault_info_update([fault_npu4, fault_npu5, fault_npu6, fault_npu7], node_name)
-
-    node = fault_manager.nodes[node_name]
-    # Deduplicated to 1 fault_code
-    assert len(node.hardware_fault_infos) == 1
-    stored = next(iter(node.hardware_fault_infos.values()))
-    # RestartNPU (L5) must win over NotHandleFault (L1)
-    assert stored.fault_level == FaultLevel.L5, (
-        f"Expected L5 (RestartNPU), got {stored.fault_level.name} "
-        f"({stored.origin_fault_level.value if stored.origin_fault_level else 'N/A'})"
-    )
-    # All 4 NPU names should be preserved
-    assert "npu-4" in stored.npu_name
-    assert "npu-5" in stored.npu_name
-    assert "npu-6" in stored.npu_name
-    assert "npu-7" in stored.npu_name
-
-
-# -- _refresh_instance_fault_level: PreSeparateNPU exclusion -----------------
-
-
-def test_refresh_pre_separate_l6_included_when_instances_inactive(
-    fault_manager_with_instances,
-):
-    """PreSeparateNPU L6 on a node with INACTIVE instances should be
-    included in instance fault level — the fault killed the instance,
-    L6 must trigger ScaleP2D so the instance can be rescheduled.
-    """
-    manager = fault_manager_with_instances
-    node = manager.nodes["node_0"]
-    # node_0.instance_ids = {1} — instance is still on this node
-    node.hardware_fault_infos = {
-        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
+def test_handle_fault_info_same_code_keeps_each_npu(fault_manager):
+    node, instance = _seed_fault_node(fault_manager, node_name="work16")
+    faults = [
+        FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name=f"npu-{chip}",
+            fault_code=0x8F184C16,
+            fault_level=FaultLevel.L5 if chip == 4 else FaultLevel.L1,
+            origin_fault_level=OriginFaultLevel.RESTART_NPU if chip == 4 else OriginFaultLevel.NOT_HANDLE_FAULT,
+        )
+        for chip in range(4, 8)
+    ]
+    with patch(_CORE_IM, return_value=_mk_core_im(instance)):
+        fault_manager._handle_fault_info_update(faults, node.node_name)
+    assert {fault.npu_name: fault.fault_level for fault in node.hardware_fault_infos.values()} == {
+        "npu-4": FaultLevel.L5,
+        "npu-5": FaultLevel.L1,
+        "npu-6": FaultLevel.L1,
+        "npu-7": FaultLevel.L1,
     }
 
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(inst)
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
 
-            manager._refresh_instance_fault_level(1)
-
-    # Instance should get L6 — PreSeparateNPU L6 with instances still on node
-    # means the fault killed them, ScaleP2D must be triggered
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L6, (
-        "PreSeparateNPU L6 with inactive instances on node should trigger ScaleP2D"
-    )
-    assert ins_meta.fault_code == FAULT_PRE_SEPARATE_L6.fault_code
+# -- Fault refresh and recovery -----------------------------------------------
 
 
-def test_refresh_pre_separate_l2_included_when_active_instances(
-    fault_manager_with_instances,
-):
-    """PreSeparateNPU L2 (downgraded because active instances exist) should
-    be included in instance fault level computation.
-    """
+@pytest.mark.parametrize(
+    "fault,status,expected_level",
+    [
+        (FAULT_PRE_SEPARATE_L6.model_copy(update={"fault_level": FaultLevel.L2}), InsStatus.ACTIVE, FaultLevel.L2),
+        (FAULT_PRE_SEPARATE_L6.model_copy(update={"fault_level": FaultLevel.L2}), InsStatus.INACTIVE, FaultLevel.L6),
+        (FAULT_MANUALLY_SEPARATE_L6, InsStatus.ACTIVE, FaultLevel.L6),
+        (FAULT_MANUALLY_SEPARATE_L6, InsStatus.INACTIVE, FaultLevel.L6),
+    ],
+    ids=["pre-active", "pre-reevaluated", "manual-active", "manual-inactive"],
+)
+def test_refresh_separate_fault_level(fault_manager_with_instances, fault, status, expected_level):
     manager = fault_manager_with_instances
-    pre_sep_l2 = FaultInfo(
-        fault_category=FaultCategory.HARDWARE,
-        fault_type=HardwareFaultType.CARD_UNHEALTHY,
-        npu_name="npu0",
-        fault_code=0x00F1FEF5,
-        fault_level=FaultLevel.L2,
-        origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
-    )
-    node = manager.nodes["node_0"]
-    node.hardware_fault_infos = {pre_sep_l2.fault_code: pre_sep_l2}
+    manager.nodes["node_0"].hardware_fault_infos = {fault.fault_code: fault.model_copy()}
+    instance = _mk_active_instance(1, "decode-1")
+    instance.status = status
 
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
+    _refresh_with_instance(manager, instance)
 
-            manager._refresh_instance_fault_level(1)
-
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L2, (
-        "PreSeparateNPU L2 with active business should be reflected in instance fault level"
-    )
-    assert ins_meta.fault_code == 0x00F1FEF5
+    metadata = manager.instances[1]
+    assert (metadata.fault_level, metadata.fault_code) == (expected_level, fault.fault_code)
+    if fault.origin_fault_level == OriginFaultLevel.PRE_SEPARATE_NPU:
+        assert manager.nodes["node_0"].hardware_fault_infos[fault.fault_code].fault_level == expected_level
 
 
-# -- Re-evaluation: L2 → L6 when instances leave -----------------------------
-
-
-def test_reevaluate_pre_separate_l2_to_l6_when_instance_leaves(
-    fault_manager_with_instances,
-):
-    """When all instances on a node become INACTIVE, PreSeparateNPU should be
-    re-evaluated from L2 to L6.  The L6 fault should now be included in the
-    instance's fault level — the instance is still on this node, meaning the
-    fault killed it.  ScaleP2D must be triggered.
-    """
-    manager = fault_manager_with_instances
-    pre_sep_l2 = FaultInfo(
-        fault_category=FaultCategory.HARDWARE,
-        fault_type=HardwareFaultType.CARD_UNHEALTHY,
-        npu_name="npu0",
-        fault_code=0x00F1FEF5,
-        fault_level=FaultLevel.L2,
-        origin_fault_level=OriginFaultLevel.PRE_SEPARATE_NPU,
-    )
-    node = manager.nodes["node_0"]
-    node.hardware_fault_infos = {pre_sep_l2.fault_code: pre_sep_l2}
-
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(inst)
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
-
-            manager._refresh_instance_fault_level(1)
-
-    # Fault on node should have been re-evaluated to L6
-    stored = node.hardware_fault_infos[0x00F1FEF5]
-    assert stored.fault_level == FaultLevel.L6, (
-        "PreSeparateNPU should escalate to L6 when all instances become inactive"
-    )
-    # Instance fault level should be L6 — included because instance is still
-    # on this node (was killed by the fault, must trigger ScaleP2D)
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L6
-    assert ins_meta.fault_code == 0x00F1FEF5
-
-
-# -- PreSeparateNPU L6 coexisting with other faults ---------------------------
-
-
-def test_refresh_pre_separate_l6_included_not_masked_by_l3(
-    fault_manager_with_instances,
-):
-    """When a node has PreSeparateNPU L6 (instances inactive but still on node)
-    AND another node has L3 fault, the instance should get L6 — PreSeparateNPU
-    L6 is now included and L6 > L3.
-    """
-    manager = fault_manager_with_instances
-
-    node0 = manager.nodes["node_0"]
-    node0.hardware_fault_infos = {
-        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
-    }
-    node1 = manager.nodes["node_1"]
-    node1.hardware_fault_infos = {
-        FAULT_NODE_L3.fault_code: FAULT_NODE_L3,
-    }
-
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(inst)
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
-
-            manager._refresh_instance_fault_level(1)
-
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L6, "PreSeparateNPU L6 with instances on node should be included; L6 > L3"
-    assert ins_meta.fault_code == FAULT_PRE_SEPARATE_L6.fault_code
-
-
-# -- ScaleP2D triggered for PreSeparateNPU L6 when instances on node ----------
-
-
-def test_pre_separate_l6_inactive_instances_triggers_scale_p2d(
-    fault_manager_with_instances,
-):
-    """PreSeparateNPU L6 with inactive instances still on the node SHOULD
-    trigger ScaleP2D — the fault killed the instance, it must be rescheduled.
-    """
+def test_pre_separate_l6_triggers_scale_p2d(fault_manager_with_instances):
     manager = fault_manager_with_instances
     manager.config.fault_tolerance_config.enable_scale_p2d = True
-
-    node = manager.nodes["node_0"]
-    node.hardware_fault_infos = {
-        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6,
+    manager.nodes["node_0"].hardware_fault_infos = {
+        FAULT_PRE_SEPARATE_L6.fault_code: FAULT_PRE_SEPARATE_L6.model_copy()
     }
+    instance = _mk_active_instance(1, "decode-1")
+    instance.status = InsStatus.INACTIVE
+    core_instance_manager = _mk_core_im(instance)
+    instance_manager = MagicMock()
 
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(inst)
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
-            # Prevent async ScaleP2D.execute from racing: without a scale_p2d IM
-            # patch, execute aborts immediately, marks finished, and
-            # _process_instance_strategy clears strategy before assertions.
-            with patch.object(manager.executor, "submit") as mock_submit:
-                # First refresh fault level → L6 (included because node has instances)
-                manager._refresh_instance_fault_level(1)
-                # Then process strategy → should trigger ScaleP2D
-                manager._process_instance_strategy(1)
-
-                ins_meta = manager.instances[1]
-                assert ins_meta.fault_level == FaultLevel.L6, (
-                    "PreSeparateNPU L6 with instances on node should set instance fault to L6"
-                )
-                assert ins_meta.strategy is not None, (
-                    "PreSeparateNPU L6 with inactive instances should trigger ScaleP2D"
-                )
-                mock_submit.assert_called_once()
-
-
-# =============================================================================
-# 10. ManuallySeparateNPU tests — no downgrade, L6 always triggers separation
-# =============================================================================
-
-FAULT_MANUALLY_SEPARATE_L6 = FaultInfo(
-    fault_category=FaultCategory.HARDWARE,
-    fault_type=HardwareFaultType.CARD_NETWORK_UNHEALTHY,
-    npu_name="npu0",
-    fault_code=0x00F1FEF6,
-    fault_level=FaultLevel.L6,
-    origin_fault_level=OriginFaultLevel.MANUALLY_SEPARATE_NPU,
-)
-
-
-# -- _handle_fault_info_update: ManuallySeparateNPU never downgraded ---------
-
-
-def test_handle_fault_info_manually_separate_not_downgraded_with_active_instances(fault_manager):
-    """ManuallySeparateNPU should stay at L6 even when the node has ACTIVE instances.
-    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded to L2.
-    """
-    node_name = "node_a"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "decode-1"},
-    )
-
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
-        fault_manager._handle_fault_info_update([FAULT_MANUALLY_SEPARATE_L6], node_name)
-
-    node = fault_manager.nodes[node_name]
-    assert len(node.hardware_fault_infos) == 1
-    stored = next(iter(node.hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L6, (
-        "ManuallySeparateNPU should stay L6 even when active instances exist on the node"
-    )
-    assert stored.origin_fault_level == OriginFaultLevel.MANUALLY_SEPARATE_NPU
-
-
-def test_handle_fault_info_manually_separate_stays_l6_no_active_instances(fault_manager):
-    """ManuallySeparateNPU stays L6 when the node has no active instances."""
-    node_name = "node_b"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.2"},
-        instance_job_names={1: "decode-1"},
-    )
-
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(inst)
-        fault_manager._handle_fault_info_update([FAULT_MANUALLY_SEPARATE_L6], node_name)
-
-    node = fault_manager.nodes[node_name]
-    stored = next(iter(node.hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L6, (
-        "ManuallySeparateNPU should stay L6 when no active instances on the node"
-    )
-
-
-# -- _refresh_instance_fault_level: ManuallySeparateNPU L6 triggers separation
-
-
-def test_refresh_manually_separate_l6_triggers_separation(
-    fault_manager_with_instances,
-):
-    """ManuallySeparateNPU L6 should ALWAYS affect instance fault level
-    and trigger separation, even when instances are inactive.
-    This is the key difference from PreSeparateNPU L6 (which is excluded).
-    """
-    manager = fault_manager_with_instances
-    node = manager.nodes["node_0"]
-    node.hardware_fault_infos = {
-        FAULT_MANUALLY_SEPARATE_L6.fault_code: FAULT_MANUALLY_SEPARATE_L6,
-    }
-
-    inst = _mk_active_instance(1, "decode-1")
-    inst.status = InsStatus.INACTIVE
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(inst)
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
-
-            manager._refresh_instance_fault_level(1)
-
-    # Instance should get L6 — ManuallySeparateNPU L6 is NOT excluded
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L6, (
-        "ManuallySeparateNPU L6 should affect instance fault level regardless of active instances"
-    )
-    assert ins_meta.fault_code == 0x00F1FEF6
-
-
-def test_refresh_manually_separate_l6_with_active_instances(
-    fault_manager_with_instances,
-):
-    """ManuallySeparateNPU L6 should affect instance fault level even when
-    instances are ACTIVE (never downgraded, always L6 → triggers separation).
-    """
-    manager = fault_manager_with_instances
-    node = manager.nodes["node_0"]
-    node.hardware_fault_infos = {
-        FAULT_MANUALLY_SEPARATE_L6.fault_code: FAULT_MANUALLY_SEPARATE_L6,
-    }
-
-    with patch(_CORE_IM) as mock_core_im_class:
-        mock_core_im_class.return_value = _mk_core_im(_mk_active_instance(1, "decode-1"))
-        with patch(_FAULT_MGR_IM) as mock_fm_im_class:
-            mock_fm_im = MagicMock()
-            mock_fm_im_class.return_value = mock_fm_im
-
-            manager._refresh_instance_fault_level(1)
-
-    ins_meta = manager.instances[1]
-    assert ins_meta.fault_level == FaultLevel.L6, (
-        "ManuallySeparateNPU L6 with active instances should still set instance fault level to L6"
-    )
-    assert ins_meta.fault_code == 0x00F1FEF6
-
-
-# -- ManuallySeparateNPU vs PreSeparateNPU: L6 exclusion contrast --------------
-
-
-def test_manually_separate_l6_not_excluded_by_affects_instance():
-    """The _affects_instance filter should return True for ManuallySeparateNPU L6
-    (not PreSeparateNPU → first check returns True immediately).
-
-    For PreSeparateNPU L6: included when instance still on node (len > 0),
-    excluded when instance has left the node (len == 0).
-    """
-
-    # Reconstruct the filter logic from _refresh_instance_fault_level
-    from motor.controller.fault_tolerance.fault_types import pre_separate_fault_affects_instance
-
-    inst = _mk_active_instance(1, "decode-1")
-    inst.get_all_endpoints.return_value = ()
-
-    # Node with instances still on it
-    node_with_instances = NodeMetadata(
-        node_name="node_a",
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "decode-1"},
-    )
-    # Node with no instances (instance moved away)
-    node_no_instances = NodeMetadata(
-        node_name="node_b",
-        instance_ids=set(),
-    )
-
-    # ManuallySeparateNPU is NOT PreSeparateNPU → filter returns True
-    assert (
-        pre_separate_fault_affects_instance(FAULT_MANUALLY_SEPARATE_L6.model_copy(), node_with_instances, inst, "")
-        is True
-    ), "ManuallySeparateNPU L6 should always be included"
-
-    # PreSeparateNPU L6: included when instance still on node
-    assert (
-        pre_separate_fault_affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_with_instances, inst, "") is True
-    ), "PreSeparateNPU L6 should be included when instances remain on node"
-    # PreSeparateNPU L6: excluded when no instances on node (already moved)
-    assert (
-        pre_separate_fault_affects_instance(FAULT_PRE_SEPARATE_L6.model_copy(), node_no_instances, inst, "") is False
-    ), "PreSeparateNPU L6 should be excluded when instance has left the node"
-
-
-# -- Multi-instance: one active, one inactive --------------------------------
-
-
-def test_node_has_active_instances_true_when_any_instance_active(fault_manager):
-    """If a node hosts instance 1 (ACTIVE) and instance 2 (INACTIVE),
-    _node_has_active_instances should return True — the presence of at
-    least one active instance is sufficient regardless of iteration order.
-    """
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.instances[2] = InstanceMetadata(instance_id=2)
-    node = NodeMetadata(
-        node_name="shared_node",
-        instance_ids=[1, 2],
-        instance_pod_ips={1: "10.0.0.1", 2: "10.0.0.2"},
-        instance_job_names={1: "decode-1", 2: "prefill-1"},
-    )
-
-    def side_effect(iid):
-        if iid == 1:
-            return _mk_active_instance(1, "decode-1")
-        inst = _mk_active_instance(2, "prefill-1")
-        inst.status = InsStatus.INACTIVE
-        return inst
-
-    mock_im = MagicMock()
-    mock_im.get_instance.side_effect = side_effect
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = mock_im
-        assert fault_manager._node_has_active_instances(node) is True
-
-
-def test_process_instance_strategy_escalates_after_failed_strategy(fault_manager_with_instances):
-    """A failed strategy escalates to the EngineRelaunch fallback next round."""
-    manager = fault_manager_with_instances
-    manager.instances[1].fault_level = FaultLevel.L2
-    manager.instances[1].fault_code = int(SpecialFaultCode.ENGINE_DEAD)
-    manager.instances[1].prev_strategy_failed = True
-    manager.instances[1].strategy = None
-
-    # A running (not yet finished) failed-strategy marker must trigger the fallback selection.
-    # executor.submit is mocked so the strategy stays "running" (is_finished=False) — without
-    # the mock the strategy would execute and finish instantly (mocked InstanceManager) and the
-    # completion hook would clear it, making this assertion race the executor thread.
     with (
-        patch("motor.controller.core.instance_manager.InstanceManager") as mock_im_class,
-        patch.object(manager.executor, "submit") as mock_submit,
+        patch(_CORE_IM, return_value=core_instance_manager),
+        patch(_FAULT_MGR_IM, return_value=instance_manager),
+        patch.object(manager.executor, "submit") as submit,
     ):
-        mock_im = MagicMock()
-        mock_im_class.return_value = mock_im
-
+        manager._refresh_instance_fault_level(1)
         manager._process_instance_strategy(1)
 
-        from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
+    assert manager.instances[1].fault_level == FaultLevel.L6
+    assert manager.instances[1].strategy is not None
+    submit.assert_called_once()
 
+
+@pytest.mark.parametrize(
+    "previous,enable_scale_down,enable_relaunch,expected",
+    [
+        (None, True, True, EngineRelaunchStrategy),
+        ("EngineFastRecoveryStrategy", True, True, InstanceReconfigurationStrategy),
+        ("EngineFastRecoveryStrategy", True, False, InstanceReconfigurationStrategy),
+        ("EngineFastRecoveryStrategy", False, True, InstanceReconfigurationStrategy),
+        ("EngineFastRecoveryStrategy", False, False, InstanceReconfigurationStrategy),
+        ("DpScaleDownStrategy", True, False, InstanceReconfigurationStrategy),
+        ("EngineRelaunchStrategy", True, True, InstanceReconfigurationStrategy),
+        ("InstanceReconfigurationStrategy", True, True, None),
+    ],
+    ids=[
+        "baseline-to-relaunch",
+        "fast-recovery-without-candidate-to-relaunch",
+        "fast-recovery-without-candidate-to-reconfiguration",
+        "fast-recovery-to-relaunch",
+        "fast-recovery-to-reconfiguration",
+        "scale-down-to-reconfiguration",
+        "relaunch-to-reconfiguration",
+        "reconfiguration-not-repeated",
+    ],
+)
+def test_failed_strategy_uses_next_fallback(
+    fault_manager_with_instances,
+    previous,
+    enable_scale_down,
+    enable_relaunch,
+    expected,
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = enable_scale_down
+    manager.config.fault_tolerance_config.enable_engine_relaunch = enable_relaunch
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    metadata.prev_strategy_failed = True
+    metadata.prev_strategy_name = previous
+    metadata.strategy = None
+
+    with patch.object(manager.executor, "submit") as mock_submit:
+        manager._process_instance_strategy(1)
+
+    if expected is None:
+        mock_submit.assert_not_called()
+        assert metadata.strategy is None
+    else:
         mock_submit.assert_called_once()
-        assert manager.instances[1].strategy is not None
-        assert isinstance(manager.instances[1].strategy, EngineRelaunchStrategy)
+        assert isinstance(metadata.strategy, expected)
+        assert metadata.strategy._controller_config is manager.config
 
 
-def test_strategy_completion_records_failure_flag(fault_manager_with_instances):
-    """A finished failed strategy marks prev_strategy_failed on the instance."""
+def test_disabled_scale_down_falls_back_to_reconfiguration(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = False
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+
+    with (
+        patch.object(
+            manager,
+            "_build_scale_down_context",
+            return_value=ScaleDownContext(
+                pending_removed_ranks=(1,),
+                source="software",
+                collection_complete=True,
+                engine_fault_observed=True,
+            ),
+        ) as build_context,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+
+    build_context.assert_called_once_with(1)
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+
+
+def test_healthy_instance_does_not_probe_fast_recovery(fault_manager_with_instances):
     manager = fault_manager_with_instances
 
-    failed_strategy = MagicMock()
-    failed_strategy.is_finished.return_value = True
-    failed_strategy.is_failed.return_value = True
-    manager.instances[1].strategy = failed_strategy
-    manager.instances[1].strategy_fault_level = FaultLevel.L2
+    with (
+        patch.object(EngineFastRecoveryStrategy, "is_applicable", return_value=True) as is_applicable,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
 
-    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as mock_im_class:
+    is_applicable.assert_not_called()
+    submit.assert_not_called()
+
+
+def test_dead_rank_scale_down_precedes_fast_recovery_applicability(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_DEAD)
+    manager.nodes["node_1"].software_fault_infos = {
+        "1000001:1": FaultInfo.from_exception(RuntimeError("executor died"), engine_id=1, engine_status=1)
+    }
+    manager.nodes["node_0"].software_fault_infos = {
+        "1000002:0": FaultInfo.from_exception(RuntimeError("peer failed"), engine_id=0, engine_status=2)
+    }
+    manager.nodes["node_1"].software_fault_infos = {
+        "1000001:1": FaultInfo.from_exception(RuntimeError("dead"), engine_id=1, engine_status=1)
+    }
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "hardware:1": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="",
+            fault_code=0x2000,
+            fault_level=FaultLevel.L4,
+        )
+    }
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(EngineFastRecoveryStrategy, "is_applicable", return_value=True),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, DpScaleDownStrategy)
+    assert metadata.strategy.strategy_context.pending_removed_ranks == (1,)
+
+
+def test_fault_level_without_ft_evidence_waits_for_status(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+
+    submit.assert_not_called()
+    assert metadata.strategy is None
+
+
+@pytest.mark.parametrize(
+    "hardware_case",
+    ["none", "actionable", "observation"],
+)
+def test_all_dp_unhealthy_evaluates_fast_recovery(fault_manager_with_instances, hardware_case):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    metadata.fault_collection_started_at = 1.0
+    for rank, node_name in enumerate(("node_0", "node_1")):
+        manager.nodes[node_name].software_fault_infos = {
+            f"1:1000002:{rank}": FaultInfo.from_exception(RuntimeError("collective failed"), rank, 2, instance_id=1)
+        }
+    if hardware_case != "none":
+        observation_only = hardware_case == "observation"
+        manager.nodes["node_0"].hardware_fault_infos = {
+            "hardware:0": FI(
+                fault_type=HardwareFaultType.CARD_UNHEALTHY,
+                npu_name="",
+                fault_code=0x81078603 if observation_only else 0x2000,
+                fault_level=FaultLevel.L2 if observation_only else FaultLevel.L4,
+            )
+        }
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(EngineFastRecoveryStrategy, "is_applicable", return_value=True),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, EngineFastRecoveryStrategy)
+
+
+@pytest.mark.parametrize(
+    ("enable_relaunch", "expected"),
+    [(True, InstanceReconfigurationStrategy), (False, InstanceReconfigurationStrategy)],
+)
+def test_incomplete_ft_status_round_times_out_to_fallback(fault_manager_with_instances, enable_relaunch, expected):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.config.fault_tolerance_config.enable_engine_relaunch = enable_relaunch
+    manager.config.fault_tolerance_config.cpu_distributed_timeout_seconds = 5
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    metadata.fault_collection_started_at = 1.0
+    manager.nodes["node_0"].software_fault_infos = {
+        "1:1000002:0": FaultInfo.from_exception(RuntimeError("collective failed"), 0, 2, instance_id=1)
+    }
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch("motor.controller.fault_tolerance.fault_manager.time.time", return_value=7.0),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, expected)
+
+
+def test_fast_recovery_failure_falls_back_directly_to_reconfiguration(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    placeholder = EngineFastRecoveryStrategy()
+    placeholder.execute(1)
+    metadata.strategy = placeholder
+    metadata.strategy_fault_level = FaultLevel.L2
+    manager.nodes["node_0"].software_fault_infos = {
+        "1000002:0": FaultInfo.from_exception(RuntimeError("peer fault"), engine_id=0, engine_status=2)
+    }
+    manager.nodes["node_1"].software_fault_infos = {
+        "1000001:1": FaultInfo.from_exception(RuntimeError("executor died"), engine_id=1, engine_status=1)
+    }
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(manager, "_refresh_instance_fault_level"),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+    submit.return_value.add_done_callback.assert_called_once_with(manager._on_strategy_finished)
+
+
+@pytest.mark.parametrize("failed", [True, False])
+def test_strategy_completion_records_failure_flag(fault_manager_with_instances, failed):
+    manager = fault_manager_with_instances
+    strategy = MagicMock()
+    strategy.is_finished.return_value = True
+    strategy.is_failed.return_value = failed
+    strategy.strategy_context = ScaleDownContext()
+    metadata = manager.instances[1]
+    metadata.strategy = strategy
+    metadata.strategy_fault_level = FaultLevel.L2
+    metadata.prev_strategy_failed = not failed
+    if not failed:
+        get_ft_runtime_store().transition(
+            1,
+            phase=FtPhase.SCALED_DOWN_RUNNING,
+            original_dp_ranks=[0, 1],
+            dead_committed=[1],
+            serving_published=True,
+        )
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as mock_im_class,
+        patch.object(manager, "_clear_software_faults") as mock_clear,
+        patch.object(manager, "_build_scale_down_context") as build_context,
+        patch.object(manager, "_refresh_instance_fault_level"),
+    ):
         mock_im_class.return_value = MagicMock()
         manager._process_instance_strategy(1)
 
-    assert manager.instances[1].prev_strategy_failed is True
+    assert metadata.prev_strategy_failed is failed
+    assert metadata.strategy is None
+    build_context.assert_not_called()
+    if failed:
+        mock_clear.assert_not_called()
+    else:
+        assert get_ft_runtime_store().get(1)["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
+
+
+def test_new_higher_level_evidence_does_not_preempt_active_recovery_round(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = False
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L3
+    metadata.strategy_fault_level = FaultLevel.L2
+    manager.strategies[FaultLevel.L3] = lambda *_: EngineRelaunchStrategy
+    current = MagicMock()
+    current.is_finished.return_value = True
+    current_future = MagicMock()
+    current_future.done.return_value = False
+    metadata.strategy = current
+    metadata.strategy_future = current_future
+
+    with (
+        patch.object(manager.executor, "submit") as submit,
+        patch.object(manager, "_refresh_instance_fault_level"),
+    ):
+        manager._process_instance_strategy(1)
+        current.stop.assert_not_called()
+        submit.assert_not_called()
+        assert metadata.strategy is current
+        assert metadata.strategy_preempted is False
+
+
+def _hardware_dp_instance() -> Instance:
+    instance = Instance(
+        job_name="decode-1",
+        model_name="model",
+        id=1,
+        role="decode",
+        parallel_config=ParallelConfig(dp_size=2),
+    )
+    instance.add_endpoints(
+        "192.168.1.1",
+        {
+            0: Endpoint(
+                id=0,
+                ip="192.168.1.1",
+                business_port="8000",
+                device_infos=[DeviceInfo(device_id="0", rank_id="0")],
+            )
+        },
+    )
+    instance.add_endpoints(
+        "192.168.1.2",
+        {
+            1: Endpoint(
+                id=1,
+                ip="192.168.1.2",
+                business_port="8000",
+                device_infos=[DeviceInfo(device_id="1", rank_id="1")],
+            )
+        },
+    )
+    instance.status = InsStatus.ACTIVE
+    return instance
+
+
+def test_higher_hardware_fault_uses_scale_down_despite_engine_unhealthy(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.instances[1].fault_level = FaultLevel.L5
+    manager.instances[1].fault_code = 0x8F184C16
+    manager.instances[1].hardware_fault_observed_at = 10.0
+    manager.instances[1].fault_collection_started_at = 11.0
+    manager.instances[1].software_dead_observed_at = {1: 11.0}
+    manager.instances[1].software_unhealthy_observed_at = {0: 11.0}
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "8f184c16:Ascend910-1": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-1",
+            fault_code=0x8F184C16,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.nodes["node_0"].software_fault_infos = {
+        "1000002:0": FaultInfo.from_exception(RuntimeError("unhealthy"), engine_id=0, engine_status=2)
+    }
+    manager.nodes["node_1"].software_fault_infos = {
+        "1000001:1": FaultInfo.from_exception(RuntimeError("dead"), engine_id=1, engine_status=1)
+    }
+    manager.strategies[FaultLevel.L5] = lambda *_: ScaleP2DStrategy
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(manager.executor, "submit") as mock_submit,
+    ):
+        manager._process_instance_strategy(1)
+
+    mock_submit.assert_called_once()
+    strategy = manager.instances[1].strategy
+    assert isinstance(strategy, DpScaleDownStrategy)
+    assert strategy.strategy_context.pending_removed_ranks == (1,)
+    assert strategy.strategy_context.source == "hardware"
+    assert strategy.strategy_context.fallback_strategy == "InstanceReconfigurationStrategy"
+
+
+def test_next_collection_excludes_previously_committed_dead_rank(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    instance = _hardware_dp_instance()
+    get_ft_runtime_store().transition(
+        1,
+        phase=FtPhase.SCALED_DOWN_RUNNING,
+        original_dp_ranks=[0, 1],
+        dead_committed=[0],
+    )
+    manager.nodes["node_1"].software_fault_infos = {
+        "dead-1": FaultInfo.from_exception(RuntimeError("dead"), 1, 1, instance_id=1)
+    }
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        context = manager._build_scale_down_context(1)
+
+    assert context.pending_removed_ranks == (1,)
+    assert context.collection_complete is False
+    assert context.all_dp_removed is True
+    get_ft_runtime_store().clear()
+
+
+def test_hardware_first_waits_five_seconds_then_reconfigures_without_ft(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.config.fault_tolerance_config.hardware_ft_correlation_window_sec = 5
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L5
+    metadata.fault_code = 0x9001
+    metadata.hardware_fault_observed_at = 10.0
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "card-1": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-1",
+            fault_code=0x9001,
+            fault_level=FaultLevel.L5,
+        )
+    }
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch("motor.controller.fault_tolerance.fault_manager.time.time", return_value=14.9),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+        submit.assert_not_called()
+        patcher = patch("motor.controller.fault_tolerance.fault_manager.time.time", return_value=15.0)
+        with patcher:
+            manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+
+
+def test_pre_ready_hardware_fault_is_baselined_without_opening_window(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.recovery_ready = False
+
+    manager._record_hardware_fault_event(1, {"node_0:card-0"})
+
+    assert metadata.hardware_fault_observed_at is None
+    assert metadata.ignored_pre_ready_hardware_faults == {"node_0:card-0"}
+
+
+def test_ready_baselines_hardware_and_discards_startup_ft_status(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.recovery_ready = False
+    fault = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="Ascend910-0",
+        fault_code=0x9001,
+        fault_level=FaultLevel.L5,
+    )
+    manager.nodes["node_0"].hardware_fault_infos = {"card-0": fault}
+    manager.nodes["node_0"].software_fault_infos = {
+        "startup-dead": FaultInfo.from_exception(RuntimeError("starting"), 0, 1, instance_id=1)
+    }
+    replacement = Mock(id=1, job_name="job1")
+    superseded = Mock(id=0, job_name="job1")
+    instance_manager = MagicMock()
+    instance_manager.get_instances.return_value = [superseded, replacement]
+    get_ft_runtime_store().transition(0, phase=FtPhase.RECONFIGURING)
+
+    with (
+        patch.object(manager, "_refresh_instance_fault_level") as refresh,
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+    ):
+        manager.update(replacement, ObserverEvent.INSTANCE_READY)
+        get_ft_runtime_store().transition(1, phase=FtPhase.SCALING_DOWN)
+        manager.update(superseded, ObserverEvent.INSTANCE_READY)
+
+    assert metadata.recovery_ready is True
+    assert hardware_fault_identity("node_0", fault) in metadata.ignored_pre_ready_hardware_faults
+    assert manager.nodes["node_0"].software_fault_infos == {}
+    assert get_ft_runtime_store().get(0) is None
+    assert get_ft_runtime_store().get(1)["phase"] == FtPhase.SCALING_DOWN.value
+    refresh.assert_called_once_with(1)
+
+
+def test_ready_does_not_ignore_startup_hardware_when_scale_down_is_disabled(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = False
+    metadata = manager.instances[1]
+    metadata.recovery_ready = False
+    fault = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="Ascend910-0",
+        fault_code=0x9001,
+        fault_level=FaultLevel.L5,
+    )
+    manager.nodes["node_0"].hardware_fault_infos = {"card-0": fault}
+
+    with patch.object(manager, "_refresh_instance_fault_level"):
+        manager._mark_instance_recovery_ready(1)
+
+    assert metadata.ignored_pre_ready_hardware_faults == set()
+
+
+def test_hardware_first_complete_ft_after_window_still_scales_down(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.config.fault_tolerance_config.hardware_ft_correlation_window_sec = 5
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L5
+    metadata.fault_code = 0x9001
+    metadata.hardware_fault_observed_at = 10.0
+    metadata.fault_collection_started_at = 15.1
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "card-1": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-1",
+            fault_code=0x9001,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.nodes["node_0"].software_fault_infos = {
+        "unhealthy-0": FaultInfo.from_exception(RuntimeError("peer"), 0, 2, instance_id=1),
+        "dead-1": FaultInfo.from_exception(RuntimeError("dead"), 1, 1, instance_id=1),
+    }
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, DpScaleDownStrategy)
+
+
+@pytest.mark.parametrize("reported_rank", [0, 1], ids=["survivor", "affected-rank"])
+def test_hardware_scale_down_waits_for_dead_and_survivor_evidence(fault_manager_with_instances, reported_rank):
+    manager = fault_manager_with_instances
+    instance = _hardware_dp_instance()
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "card-1": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-1",
+            fault_code=0x9001,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.nodes[f"node_{reported_rank}"].software_fault_infos = {
+        f"unhealthy-{reported_rank}": FaultInfo.from_exception(RuntimeError("peer"), reported_rank, 2, instance_id=1)
+    }
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        context = manager._build_scale_down_context(1)
+
+    assert context.pending_removed_ranks == ()
+    assert context.hardware_affected_ranks == (1,)
+    assert context.collection_complete is False
+    assert context.engine_fault_observed is True
+
+
+def test_node_hardware_fault_selects_all_dp_ranks_on_faulty_nodes(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    instance = _hardware_dp_instance()
+    manager.nodes["node_0"].hardware_fault_infos = {
+        "all-devices": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="",
+            fault_code=0x81078603,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "all-devices-peer": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="",
+            fault_code=0x81078603,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.nodes["node_0"].software_fault_infos = {
+        "dead-0": FaultInfo.from_exception(RuntimeError("dead"), 0, 1, instance_id=1),
+        "unhealthy-1": FaultInfo.from_exception(RuntimeError("peer"), 1, 2, instance_id=1),
+    }
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        context = manager._build_scale_down_context(1)
+
+    assert context.pending_removed_ranks == (0,)
+    assert context.hardware_affected_ranks == (0, 1)
+    assert context.collection_complete is True
+    assert context.all_dp_removed is False
+
+
+def test_l2_hardware_fault_covering_all_dp_is_not_actionable(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    instance = _hardware_dp_instance()
+    for node_name in ("node_0", "node_1"):
+        manager.nodes[node_name].hardware_fault_infos = {
+            "pre-separate": FI(
+                fault_type=HardwareFaultType.CARD_UNHEALTHY,
+                npu_name="",
+                fault_code=0x81078603,
+                fault_level=FaultLevel.L2,
+            )
+        }
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        context = manager._build_scale_down_context(1)
+
+    assert context.source == "software"
+    assert context.pending_removed_ranks == ()
+    assert context.all_dp_removed is False
+
+
+def test_node_hardware_fault_keeps_dp_on_other_nodes_as_survivor(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    instance = _hardware_dp_instance()
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "node-fault": FI(
+            fault_type=HardwareFaultType.NODE_UNHEALTHY,
+            npu_name="",
+            fault_code=0x9002,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.nodes["node_0"].software_fault_infos = {
+        "survivor": FaultInfo.from_exception(RuntimeError("peer"), 0, 2, instance_id=1)
+    }
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        context = manager._build_scale_down_context(1)
+
+    assert context.pending_removed_ranks == ()
+    assert context.hardware_affected_ranks == (1,)
+    assert context.collection_complete is False
+    assert context.all_dp_removed is False
+
+
+def test_all_dp_on_faulty_node_reconfigures_instead_of_scaling_down(fault_manager):
+    context = ScaleDownContext(
+        pending_removed_ranks=(0, 1),
+        source="hardware",
+        collection_complete=True,
+        engine_fault_observed=True,
+        all_dp_removed=True,
+        hardware_fault_observed=True,
+        hardware_affected_ranks=(0, 1),
+        hardware_ft_observed=True,
+    )
+
+    plan = build_recovery_plan(
+        1,
+        fault_manager.config,
+        context,
+        DpScaleDownStrategy,
+        FaultLevel.L5,
+        0x9001,
+    )
+
+    assert plan.strategy is InstanceReconfigurationStrategy
+
+
+def test_hardware_fault_without_engine_fault_does_not_start_l2_recovery(
+    fault_manager_with_instances,
+):
+    manager = fault_manager_with_instances
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = 0x81078603
+    manager.nodes["node_0"].hardware_fault_infos = {
+        "existing": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="",
+            fault_code=0x81078603,
+            fault_level=FaultLevel.L2,
+        )
+    }
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
+        manager._process_instance_strategy(1)
+
+    submit.assert_not_called()
+
+
+def test_unmapped_hardware_fault_keeps_original_scale_p2d(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.instances[1].fault_level = FaultLevel.L5
+    manager.instances[1].fault_code = 0x2000
+    manager.nodes["node_1"].hardware_fault_infos = {
+        "2000:switch0": FAULT_SWITCH_L2.model_copy(update={"fault_level": FaultLevel.L5})
+    }
+    manager.nodes["node_0"].hardware_fault_infos = {
+        "2000:Ascend910-0": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-0",
+            fault_code=0x2000,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    manager.strategies[FaultLevel.L5] = lambda *_: ScaleP2DStrategy
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(manager.executor, "submit"),
+    ):
+        manager._process_instance_strategy(1)
+
+    assert isinstance(manager.instances[1].strategy, ScaleP2DStrategy)
+
+
+def test_failed_hardware_scale_down_uses_reconfiguration_fallback(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L5
+    metadata.fault_code = 0x8F184C16
+    metadata.prev_strategy_failed = True
+    metadata.prev_strategy_name = "DpScaleDownStrategy"
+    metadata.prev_strategy_fallback = "ScaleP2DStrategy"
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(manager.executor, "submit"),
+    ):
+        manager._process_instance_strategy(1)
+
+    assert isinstance(metadata.strategy, InstanceReconfigurationStrategy)
+
+
+def test_partial_engine_snapshot_waits_despite_fast_recovery_hook(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)
+    manager.nodes["node_0"].hardware_fault_infos = {
+        "2000:Ascend910-0": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-0",
+            fault_code=0x2000,
+            fault_level=FaultLevel.L2,
+        )
+    }
+    manager.nodes["node_0"].software_fault_infos = {
+        "1000002:0": FaultInfo.from_exception(RuntimeError("unhealthy"), engine_id=0, engine_status=2)
+    }
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(EngineFastRecoveryStrategy, "is_applicable", return_value=True),
+        patch.object(manager.executor, "submit"),
+    ):
+        manager._process_instance_strategy(1)
+
     assert manager.instances[1].strategy is None
 
 
-def test_strategy_completion_clears_failure_flag(fault_manager_with_instances):
-    """A finished successful strategy clears prev_strategy_failed."""
+def test_handled_hardware_fault_does_not_retrigger_recovery(fault_manager_with_instances):
     manager = fault_manager_with_instances
+    fault = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="Ascend910-1",
+        fault_code=0x8F184C16,
+        fault_level=FaultLevel.L5,
+    )
+    manager.nodes["node_1"].hardware_fault_infos = {"8f184c16:Ascend910-1": fault}
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L5
+    metadata.fault_code = fault.fault_code
+    metadata.handled_hardware_faults.add(hardware_fault_identity("node_1", fault))
+    instance_manager = _mk_core_im(_hardware_dp_instance())
 
-    ok_strategy = MagicMock()
-    ok_strategy.is_finished.return_value = True
-    ok_strategy.is_failed.return_value = False
-    manager.instances[1].strategy = ok_strategy
-    manager.instances[1].strategy_fault_level = FaultLevel.L2
-    manager.instances[1].prev_strategy_failed = True
+    with patch(_FAULT_MGR_IM, return_value=instance_manager):
+        manager._refresh_instance_fault_level(1)
 
-    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as mock_im_class:
-        mock_im_class.return_value = MagicMock()
-        manager._process_instance_strategy(1)
+    assert metadata.fault_level == FaultLevel.HEALTHY
+    instance_manager.separate_instance.assert_not_called()
+    instance_manager.recover_instance.assert_called_once_with(1)
 
-    assert manager.instances[1].prev_strategy_failed is False
+
+def test_mappable_l5_hardware_fault_defers_legacy_separation_for_dp_scale_down(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    fault = FI(
+        fault_type=HardwareFaultType.CARD_UNHEALTHY,
+        npu_name="Ascend910-1",
+        fault_code=0x8F184C16,
+        fault_level=FaultLevel.L5,
+    )
+    manager.nodes["node_1"].hardware_fault_infos = {"8f184c16:Ascend910-1": fault}
+
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _hardware_dp_instance()
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager):
+        manager._refresh_instance_fault_level(1)
+
+    assert manager.instances[1].fault_level == FaultLevel.L5
+    instance_manager.separate_instance.assert_not_called()
 
 
 def _endpoint_with_chip_ids(pod_ip: str, chip_ids: list[int]):
-    from motor.common.resources.endpoint import DeviceInfo, Endpoint
-
     return Endpoint(
         id=0,
         ip=pod_ip,
@@ -2237,159 +2817,62 @@ FAULT_A2_LINKDOWN_CHIP6 = FaultInfo(
 )
 
 
-def test_a2_linkdown_isolates_only_instance_owning_the_npu(fault_manager):
-    """Colocated P/D: linkdown on chip 6 isolates Prefill only, not Decode."""
+@pytest.mark.parametrize("chip,owner_id", [(6, 1), (4, 2)], ids=["prefill", "decode"])
+def test_a2_linkdown_isolates_only_npu_owner(fault_manager, chip, owner_id):
     fault_manager.config.hardware_type = "800I_A2"
     node_name = "node-37-210"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.instances[2] = InstanceMetadata(instance_id=2)
+    fault_manager.instances.update({1: InstanceMetadata(instance_id=1), 2: InstanceMetadata(instance_id=2)})
+    fault = FAULT_A2_LINKDOWN_CHIP6.model_copy(update={"npu_name": f"Ascend910-{chip}"})
     fault_manager.nodes[node_name] = NodeMetadata(
         node_name=node_name,
         instance_ids={1, 2},
         instance_pod_ips={1: "10.244.246.54", 2: "10.244.246.27"},
         instance_job_names={1: "vllm-0-p0", 2: "vllm-0-d0"},
-        hardware_fault_infos={int(SpecialFaultCode.CARD_NETWORK_LINKDOWN): FAULT_A2_LINKDOWN_CHIP6.model_copy()},
+        hardware_fault_infos={fault.fault_code: fault},
     )
+    instances = {
+        1: _mk_active_instance(1, "vllm-0-p0", role="prefill"),
+        2: _mk_active_instance(2, "vllm-0-d0", role="decode"),
+    }
+    instances[1].get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.54", [6, 7]),)
+    instances[2].get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.27", [4, 5]),)
+    instance_manager = MagicMock()
+    instance_manager.get_instance.side_effect = instances.get
 
-    prefill = _mk_active_instance(1, "vllm-0-p0", role="prefill")
-    prefill.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.54", [6, 7]),)
-    decode = _mk_active_instance(2, "vllm-0-d0", role="decode")
-    decode.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.27", [4, 5]),)
-
-    def _get_instance(iid):
-        return {1: prefill, 2: decode}.get(iid)
-
-    mock_im = MagicMock()
-    mock_im.get_instance.side_effect = _get_instance
-
-    with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
-    ):
+    with patch(_CORE_IM, return_value=instance_manager), patch(_FAULT_MGR_IM, return_value=instance_manager):
         fault_manager._refresh_instance_fault_level(1)
         fault_manager._refresh_instance_fault_level(2)
 
-    assert fault_manager.instances[1].fault_level == FaultLevel.L6
-    assert fault_manager.instances[1].fault_code == int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)
-    mock_im.separate_instance.assert_any_call(1)
-    assert fault_manager.instances[2].fault_level == FaultLevel.HEALTHY
-    mock_im.separate_instance.assert_called_with(1)
-    assert mock_im.separate_instance.call_args_list == [((1,),)]
+    other_id = 2 if owner_id == 1 else 1
+    assert fault_manager.instances[owner_id].fault_level == FaultLevel.L6
+    assert fault_manager.instances[other_id].fault_level == FaultLevel.HEALTHY
+    assert instance_manager.separate_instance.call_args_list == [((owner_id,),)]
 
 
-def test_a2_linkdown_isolates_decode_owning_the_npu(fault_manager):
-    """Colocated P/D: linkdown on a Decode chip isolates Decode only."""
+@pytest.mark.parametrize(
+    "role,node_count,fault,expected_level",
+    [
+        ("prefill", 1, FAULT_A2_LINKDOWN_CHIP6, FaultLevel.L6),
+        ("decode", 1, FAULT_A2_LINKDOWN_CHIP6, FaultLevel.L6),
+        ("union", 1, FAULT_A2_LINKDOWN_CHIP6, FaultLevel.L2),
+        ("union", 2, FAULT_A2_LINKDOWN_CHIP6, FaultLevel.L6),
+        ("decode", 1, FAULT_PRE_SEPARATE_L6, FaultLevel.L2),
+    ],
+    ids=["prefill", "decode", "union-single", "union-multi", "non-isolation"],
+)
+def test_a2_separate_fault_ingestion(fault_manager, role, node_count, fault, expected_level):
     fault_manager.config.hardware_type = "800I_A2"
-    node_name = "node-37-210"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.instances[2] = InstanceMetadata(instance_id=2)
-    fault = FAULT_A2_LINKDOWN_CHIP6.model_copy(update={"npu_name": "Ascend910-4"})
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1, 2},
-        instance_pod_ips={1: "10.244.246.54", 2: "10.244.246.27"},
-        instance_job_names={1: "vllm-0-p0", 2: "vllm-0-d0"},
-        hardware_fault_infos={int(SpecialFaultCode.CARD_NETWORK_LINKDOWN): fault},
-    )
+    job = f"vllm-0-{role[0]}0"
+    node, instance = _seed_fault_node(fault_manager, node_name=f"node-{role}")
+    node.instance_job_names[1] = job
+    instance.job_name = job
+    instance.role = role
+    instance.get_node_managers_num.return_value = node_count
 
-    prefill = _mk_active_instance(1, "vllm-0-p0", role="prefill")
-    prefill.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.54", [6, 7]),)
-    decode = _mk_active_instance(2, "vllm-0-d0", role="decode")
-    decode.get_all_endpoints.return_value = (_endpoint_with_chip_ids("10.244.246.27", [4, 5]),)
+    with patch(_CORE_IM, return_value=_mk_core_im(instance)):
+        fault_manager._handle_fault_info_update([fault.model_copy()], node.node_name)
 
-    def _get_instance(iid):
-        return {1: prefill, 2: decode}.get(iid)
-
-    mock_im = MagicMock()
-    mock_im.get_instance.side_effect = _get_instance
-
-    with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
-    ):
-        fault_manager._refresh_instance_fault_level(1)
-        fault_manager._refresh_instance_fault_level(2)
-
-    assert fault_manager.instances[2].fault_level == FaultLevel.L6
-    assert fault_manager.instances[1].fault_level == FaultLevel.HEALTHY
-    assert mock_im.separate_instance.call_args_list == [((2,),)]
-
-
-def test_handle_fault_info_a2_linkdown_stays_l6_for_prefill_and_decode(fault_manager):
-    """P or D linkdown on A2 must stay L6 so that instance's NMs can be stopped."""
-    fault_manager.config.hardware_type = "800I_A2"
-    for role, iid, job in (("prefill", 1, "vllm-0-p0"), ("decode", 2, "vllm-0-d0")):
-        node_name = f"node-{role}"
-        fault_manager.instances[iid] = InstanceMetadata(instance_id=iid)
-        fault_manager.nodes[node_name] = NodeMetadata(
-            node_name=node_name,
-            instance_ids={iid},
-            instance_pod_ips={iid: "10.0.0.1"},
-            instance_job_names={iid: job},
-        )
-        with patch(_CORE_IM) as mock_im_class:
-            mock_im_class.return_value = _mk_core_im(_mk_active_instance(iid, job, role=role))
-            fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-        stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
-        assert stored.fault_level == FaultLevel.L6, f"{role} A2 linkdown must stay L6"
-
-
-def test_handle_fault_info_a2_non_isolation_pre_separate_still_downgrades(fault_manager):
-    """A2 must not keep every PreSeparateNPU at L6; only isolation-set codes."""
-    fault_manager.config.hardware_type = "800I_A2"
-    node_name = "node_decode"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "vllm-0-d0"},
-    )
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(_mk_active_instance(1, "vllm-0-d0", role="decode"))
-        fault_manager._handle_fault_info_update([FAULT_PRE_SEPARATE_L6], node_name)
-    stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L2
-
-
-def test_handle_fault_info_a2_linkdown_union_single_pod_downgrades_to_l2(fault_manager):
-    """Single-pod union keeps PreSeparateNPU L2 while business is active."""
-    fault_manager.config.hardware_type = "800I_A2"
-    node_name = "node-union-1"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "vllm-0-u0"},
-    )
-    union = _mk_active_instance(1, "vllm-0-u0", role="union")
-    union.get_node_managers_num.return_value = 1
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(union)
-        fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-    stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L2
-
-
-def test_handle_fault_info_a2_linkdown_union_multi_pod_stays_l6(fault_manager):
-    """Multi-pod union linkdown stays L6 so every Pod of the instance is stopped."""
-    fault_manager.config.hardware_type = "800I_A2"
-    node_name = "node-union-2"
-    fault_manager.instances[1] = InstanceMetadata(instance_id=1)
-    fault_manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={1},
-        instance_pod_ips={1: "10.0.0.1"},
-        instance_job_names={1: "vllm-0-u0"},
-    )
-    union = _mk_active_instance(1, "vllm-0-u0", role="union")
-    union.get_node_managers_num.return_value = 2
-    with patch(_CORE_IM) as mock_im_class:
-        mock_im_class.return_value = _mk_core_im(union)
-        fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-    stored = next(iter(fault_manager.nodes[node_name].hardware_fault_infos.values()))
-    assert stored.fault_level == FaultLevel.L6
+    assert next(iter(node.hardware_fault_infos.values())).fault_level == expected_level
 
 
 def test_process_instance_strategy_skips_superseded_instance(fault_manager_with_instances):
@@ -2411,135 +2894,69 @@ def test_process_instance_strategy_skips_superseded_instance(fault_manager_with_
     manager.executor.shutdown(wait=False)
 
 
-# =============================================================================
-# 10. Non-A2 linkdown noise suppression (A3/A5 false positives)
-# =============================================================================
+# -- Non-A2 linkdown handling -------------------------------------------------
 
 
-def _seed_linkdown_node(manager, node_name, instance_id, pod_ip="10.0.0.1", job="vllm-0-d0"):
-    """Seed a node+instance and return a mock InstanceManager for active decode."""
-    manager.instances[instance_id] = InstanceMetadata(instance_id=instance_id)
-    manager.nodes[node_name] = NodeMetadata(
-        node_name=node_name,
-        instance_ids={instance_id},
-        instance_pod_ips={instance_id: pod_ip},
-        instance_job_names={instance_id: job},
-    )
-    inst = _mk_active_instance(instance_id, job, role="decode")
-
-    def _get_instance(iid):
-        return inst if iid == instance_id else None
-
-    mock_im = MagicMock()
-    mock_im.get_instance.side_effect = _get_instance
-    mock_im.get_instance_by_job_name.return_value = inst
-    return mock_im
+def _seed_linkdown_node(manager, node_name="node_a"):
+    node, instance = _seed_fault_node(manager, node_name=node_name)
+    instance.job_name = "vllm-0-d0"
+    node.instance_job_names[1] = instance.job_name
+    instance_manager = MagicMock()
+    instance_manager.get_instance.side_effect = lambda instance_id: instance if instance_id == 1 else None
+    instance_manager.get_instance_by_job_name.return_value = instance
+    return node, instance_manager
 
 
-def test_handle_fault_info_non_a2_linkdown_drop_keeps_real_faults(fault_manager):
-    """Dropping the linkdown must not drop a real fault in the same ConfigMap."""
-    manager = fault_manager
-    manager.config.hardware_type = "800I_A3"
-    node_name = "node_a"
-    mock_im = _seed_linkdown_node(manager, node_name, 1)
-
-    with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
-    ):
-        manager._handle_fault_info_update(
-            [FAULT_A2_LINKDOWN_CHIP6.model_copy(), FAULT_PRE_SEPARATE_L6.model_copy()], node_name
+def test_non_a2_linkdown_drop_keeps_real_faults(fault_manager):
+    fault_manager.config.hardware_type = "800I_A3"
+    node, instance_manager = _seed_linkdown_node(fault_manager)
+    with patch(_CORE_IM, return_value=instance_manager), patch(_FAULT_MGR_IM, return_value=instance_manager):
+        fault_manager._handle_fault_info_update(
+            [FAULT_A2_LINKDOWN_CHIP6.model_copy(), FAULT_PRE_SEPARATE_L6.model_copy()], node.node_name
         )
 
-    stored = manager.nodes[node_name].hardware_fault_infos
-    assert int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) not in stored
-    assert 0x00F1FEF5 in stored
-    # Real PreSeparateNPU fault still downgrades to L2 with active business.
-    assert stored[0x00F1FEF5].fault_level == FaultLevel.L2
-
-
-def test_handle_fault_info_unknown_hardware_keeps_legacy_linkdown_store(fault_manager):
-    """Empty hardware_type keeps the legacy store+downgrade behavior."""
-    manager = fault_manager  # hardware_type == ""
-    node_name = "node_a"
-    mock_im = _seed_linkdown_node(manager, node_name, 1)
-
-    with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
-    ):
-        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-
-    stored = manager.nodes[node_name].hardware_fault_infos
-    assert int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) in stored
-    assert stored[int(SpecialFaultCode.CARD_NETWORK_LINKDOWN)].fault_level == FaultLevel.L2
+    stored = list(node.hardware_fault_infos.values())
+    assert all(fault.fault_code != int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) for fault in stored)
+    assert next(fault for fault in stored if fault.fault_code == 0x00F1FEF5).fault_level == FaultLevel.L2
 
 
 def test_non_a2_linkdown_cannot_block_engine_dead_relaunch(fault_manager):
-    """Linkdown dropped at ingest must not steal the code from ENGINE_DEAD."""
-    manager = fault_manager
-    manager.config.hardware_type = "800I_A3"
-    node_name = "node_a"
-    mock_im = _seed_linkdown_node(manager, node_name, 1)
-
-    with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
-    ):
-        # Linkdown-only ConfigMap is dropped at ingest: nothing stored, HEALTHY.
-        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-        assert manager.nodes[node_name].hardware_fault_infos == {}
-        assert manager.instances[1].fault_level == FaultLevel.HEALTHY
-
-        # Engine death then owns the fault code and maps to relaunch.
-        engine_dead = FaultInfo.from_exception(RuntimeError("engine died"), engine_id=1, engine_status=1)
-        manager.report_software_fault(engine_dead, pod_ip="10.0.0.1")
-
-    from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy
     from motor.controller.fault_tolerance.strategy.strategy import level2_strategy
 
-    assert manager.instances[1].fault_level == FaultLevel.L2
-    assert manager.instances[1].fault_code == int(SpecialFaultCode.ENGINE_DEAD)
-    assert level2_strategy(manager.instances[1].fault_code, 1, manager.config) is EngineRelaunchStrategy
+    fault_manager.config.hardware_type = "800I_A3"
+    node, instance_manager = _seed_linkdown_node(fault_manager)
+    with patch(_CORE_IM, return_value=instance_manager), patch(_FAULT_MGR_IM, return_value=instance_manager):
+        fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node.node_name)
+        fault_manager.report_software_fault(
+            FaultInfo.from_exception(RuntimeError("engine died"), engine_id=1, engine_status=1),
+            pod_ip="10.0.0.1",
+        )
+
+    metadata = fault_manager.instances[1]
+    assert node.hardware_fault_infos == {}
+    assert (metadata.fault_level, metadata.fault_code) == (FaultLevel.L2, int(SpecialFaultCode.ENGINE_DEAD))
+    assert level2_strategy(metadata.fault_code, 1, fault_manager.config) is EngineRelaunchStrategy
 
 
-def test_non_a2_linkdown_drop_warns_once_per_node(caplog, fault_manager):
-    """Dropped non-A2 linkdown is visible to operators, rate-limited per node."""
-    manager = fault_manager
-    manager.config.hardware_type = "800I_A3"
-    node_name = "node_drop_warn"
-    mock_im = _seed_linkdown_node(manager, node_name, 1)
-
+@pytest.mark.parametrize(
+    "hardware_type,stored,fragments,count_message",
+    [
+        ("800I_A3", False, ("linkdown", "800I_A3", "not stored"), "Ignored 1 linkdown fault"),
+        ("", True, ("hardware_type is unset", "may suppress ENGINE_DEAD"), "Stored 1 linkdown fault"),
+    ],
+    ids=["non-a2-dropped", "unknown-hardware-legacy"],
+)
+def test_linkdown_warning_is_rate_limited(caplog, fault_manager, hardware_type, stored, fragments, count_message):
+    fault_manager.config.hardware_type = hardware_type
+    node, instance_manager = _seed_linkdown_node(fault_manager)
     with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
+        patch(_CORE_IM, return_value=instance_manager),
+        patch(_FAULT_MGR_IM, return_value=instance_manager),
         caplog.at_level("WARNING"),
     ):
-        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)  # refresh repeats
+        for _ in range(2):
+            fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node.node_name)
 
-    assert manager.nodes[node_name].hardware_fault_infos == {}
-    # Warning raised on first occurrence only (rate-limit), mentioning the hardware.
-    assert "linkdown" in caplog.text and "800I_A3" in caplog.text and "not stored" in caplog.text
-    assert caplog.text.count("Ignored 1 linkdown fault") == 1
-
-
-def test_unknown_hardware_linkdown_store_warns_legacy_path(caplog, fault_manager):
-    """Empty hardware_type keeps legacy store but warns that ENGINE_DEAD may be suppressed."""
-    manager = fault_manager  # hardware_type == ""
-    node_name = "node_legacy_warn"
-    mock_im = _seed_linkdown_node(manager, node_name, 1)
-
-    with (
-        patch(_CORE_IM, return_value=mock_im),
-        patch(_FAULT_MGR_IM, return_value=mock_im),
-        caplog.at_level("WARNING"),
-    ):
-        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)
-        manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node_name)  # refresh repeats
-
-    stored = manager.nodes[node_name].hardware_fault_infos
-    assert int(SpecialFaultCode.CARD_NETWORK_LINKDOWN) in stored
-    # Warning raised on first occurrence only (rate-limit), pointing to hardware_type config.
-    assert "hardware_type is unset" in caplog.text and "may suppress ENGINE_DEAD" in caplog.text
-    assert caplog.text.count("Stored 1 linkdown fault") == 1
+    assert bool(node.hardware_fault_infos) is stored
+    assert all(fragment in caplog.text for fragment in fragments)
+    assert caplog.text.count(count_message) == 1

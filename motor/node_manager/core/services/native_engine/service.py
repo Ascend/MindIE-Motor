@@ -312,15 +312,21 @@ class NativeEngineService:
         print(banner, flush=True)
         logger.info("Engine relaunch #%d separator printed to container log", self._restart_count)
 
-    def wait_ready(self, endpoints: list[Endpoint], timeout: float = 60.0) -> None:
+    def wait_ready(self, endpoints: list[Endpoint], timeout: float | None = None) -> bool:
         """Wait until every native engine's readiness probe succeeds.
 
         The probe hits the engine's business port (the OpenAI API), which only
-        accepts connections once the model finished loading — so this waits
-        out the (potentially long) model load. Returns on timeout as well:
-        the HeartbeatManager's STARTING-preserves-status semantics keep the
-        loading window from being misreported as a death.
+        accepts connections once the model finished loading.  By default the
+        wait uses the longest configured probe startup timeout.  False means
+        at least one endpoint did not become ready before the deadline.
         """
+        if timeout is None:
+            startup_timeouts = [
+                probe.startup_timeout_seconds
+                for endpoint in endpoints
+                if (probe := self.supervisor.probe_spec(endpoint.id)) is not None
+            ]
+            timeout = max(startup_timeouts, default=60.0)
         deadline = time.monotonic() + timeout
         for endpoint in endpoints:
             address = format_address(endpoint.ip, endpoint.business_port)
@@ -330,6 +336,10 @@ class NativeEngineService:
                     logger.info("Native engine at %s is ready.", address)
                     break
                 time.sleep(1)
+            else:
+                logger.error("Timed out waiting for native engine at %s to become ready", address)
+                return False
+        return True
 
     def health_check(self) -> list:
         """Return deaths ``[(pid, endpoint_id)]`` for the Daemon's death handling.

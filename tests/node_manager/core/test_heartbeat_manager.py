@@ -745,6 +745,24 @@ class TestHeartBeatManager:
             ]
         assert heart_beat_manager.has_abnormal_endpoints() is False
 
+    def test_retired_endpoint_is_excluded_from_suicide_facts(self, heart_beat_manager):
+        with heart_beat_manager._endpoint_lock:
+            heart_beat_manager._endpoints = [
+                Endpoint(id=1, ip="192.168.1.1", business_port="8080", status=EndpointStatus.ABNORMAL),
+                Endpoint(id=2, ip="192.168.1.1", business_port="8082", status=EndpointStatus.NORMAL),
+            ]
+
+        heart_beat_manager.retire_endpoints([1])
+
+        assert heart_beat_manager.has_abnormal_endpoints() is False
+        assert heart_beat_manager.abnormal_endpoint_ids() == []
+        assert heart_beat_manager.normal_endpoint_ids() == [2]
+        assert [endpoint.id for endpoint in heart_beat_manager.get_active_endpoints()] == [2]
+        assert heart_beat_manager.check_all_endpoints_normal() is True
+
+        heart_beat_manager.retire_endpoints([2])
+        assert heart_beat_manager.check_all_endpoints_normal() is True
+
     def test_endpoints_generation_increments_on_update(self, heart_beat_manager, sample_start_cmd_msg):
         gen_before = heart_beat_manager.endpoints_generation()
         heart_beat_manager.update_endpoint(sample_start_cmd_msg)

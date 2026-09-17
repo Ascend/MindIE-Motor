@@ -15,14 +15,20 @@ from unittest.mock import Mock, patch, MagicMock
 from motor.config.controller import ControllerConfig
 from motor.controller.core.event_pusher import EventPusher, Event
 from motor.common.resources.instance import Instance, ReadOnlyInstance
+from motor.common.resources.endpoint import Endpoint
 from motor.controller.core.observer import ObserverEvent
 from motor.common.resources.http_msg_spec import EventType
+from motor.controller.fault_tolerance.dp_scale_down import (
+    FtPhase,
+    FtRuntime,
+    get_ft_runtime_store,
+)
 
 
 @pytest.fixture
 def event_pusher():
     """create EventPusher object fixture"""
-    with patch('threading.Thread') as mock_thread_class:
+    with patch("threading.Thread") as mock_thread_class:
         mock_thread = MagicMock()
         mock_thread_class.return_value = mock_thread
 
@@ -42,7 +48,7 @@ def mock_instance():
 @pytest.fixture
 def mock_http_client():
     """mock HTTP client fixture"""
-    with patch('motor.controller.core.event_pusher.CoordinatorApiClient.send_instance_refresh') as mock_send_method:
+    with patch("motor.controller.core.event_pusher.CoordinatorApiClient.send_instance_refresh") as mock_send_method:
         mock_send_method.return_value = True
         yield mock_send_method
 
@@ -58,9 +64,26 @@ def test_init(event_pusher):
     assert event_pusher.heartbeat_detector_thread is None
 
 
+def test_update_bypasses_serving_overlay_when_scale_down_is_disabled(event_pusher):
+    config = ControllerConfig()
+    config.fault_tolerance_config.enable_fault_tolerance = False
+    config.fault_tolerance_config.enable_dp_scale_down = True
+    event_pusher.update_config(config)
+    instance = ReadOnlyInstance(Instance(job_name="baseline", model_name="model", id=100, role="decode"))
+
+    with patch("motor.controller.core.event_pusher._get_serving_overlay") as get_overlay:
+        event_pusher.update(instance, ObserverEvent.INSTANCE_READY)
+
+    assert event_pusher.enable_dp_scale_down is False
+    get_overlay.assert_not_called()
+    event = event_pusher.event_queue.get_nowait()
+    assert event.event_type == EventType.ADD
+    assert event.instance.id == 100
+
+
 def test_start():
     """test start method creates and starts threads"""
-    with patch('threading.Thread') as mock_thread_class:
+    with patch("threading.Thread") as mock_thread_class:
         mock_thread = MagicMock()
         mock_thread_class.return_value = mock_thread
 
@@ -107,7 +130,7 @@ def test_event_consumer_add_event(event_pusher, mock_http_client):
         except queue.Empty:
             raise StopIteration
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
+    with patch.object(event_pusher.event_queue, "get", side_effect=mock_get):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -137,7 +160,7 @@ def test_event_consumer_del_event(event_pusher, mock_http_client):
         except queue.Empty:
             raise StopIteration
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
+    with patch.object(event_pusher.event_queue, "get", side_effect=mock_get):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -176,7 +199,7 @@ def test_event_consumer_set_event(event_pusher, mock_http_client):
         except queue.Empty:
             raise StopIteration
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
+    with patch.object(event_pusher.event_queue, "get", side_effect=mock_get):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -184,6 +207,49 @@ def test_event_consumer_set_event(event_pusher, mock_http_client):
 
         # check send_instance_refresh is called
         mock_http_client.assert_called_once()
+
+
+def test_event_consumer_set_projects_scaled_down_view_without_mutating_source(event_pusher, mock_http_client):
+    event_pusher.enable_dp_scale_down = True
+    test_instance = Instance(job_name="test_decode_job", model_name="test_model", id=20, role="decode")
+    test_instance.add_endpoints(
+        "192.0.2.1",
+        {0: Endpoint(id=0, ip="192.0.2.1", business_port="8000")},
+    )
+    test_instance.add_endpoints(
+        "192.0.2.2",
+        {1: Endpoint(id=1, ip="192.0.2.2", business_port="8000")},
+    )
+    event_pusher.instances[test_instance.job_name] = ReadOnlyInstance(test_instance)
+    get_ft_runtime_store().put(
+        FtRuntime(
+            instance_id=20,
+            phase=FtPhase.SCALED_DOWN_RUNNING,
+            dead_committed=[1],
+            serving_published=False,
+            last_error="ServingOverlay publication pending",
+        )
+    )
+
+    try:
+        with patch.object(
+            event_pusher.event_queue,
+            "get",
+            side_effect=[Event(event_type=EventType.SET, instance=None), StopIteration],
+        ):
+            with pytest.raises(StopIteration):
+                event_pusher._event_consumer()
+
+        event_msg = mock_http_client.call_args.args[0]
+        assert event_msg.event == EventType.SET
+        assert [endpoint.id for endpoint in event_msg.instances[0].get_all_endpoints(True)] == [0]
+        assert sorted(endpoint.id for endpoint in test_instance.get_all_endpoints(True)) == [0, 1]
+        runtime = get_ft_runtime_store().get(20)
+        assert runtime["serving_published"] is True
+        assert runtime["can_serve"] is True
+        assert runtime["last_error"] is None
+    finally:
+        get_ft_runtime_store().clear()
 
 
 def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client):
@@ -208,7 +274,7 @@ def test_event_consumer_set_event_missing_decode(event_pusher, mock_http_client)
         except queue.Empty:
             raise StopIteration
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=mock_get):
+    with patch.object(event_pusher.event_queue, "get", side_effect=mock_get):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -227,7 +293,7 @@ def test_event_consumer_failed_incremental_event_queues_set(event_pusher, mock_h
     event_pusher.instances["test_job"] = readonly_instance
     test_event = Event(event_type=event_type, instance=readonly_instance.to_instance())
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=[test_event, StopIteration]):
+    with patch.object(event_pusher.event_queue, "get", side_effect=[test_event, StopIteration]):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -247,7 +313,7 @@ def test_event_consumer_failed_set_does_not_mark_synced_or_loop(event_pusher, mo
     event_pusher.instances["test_job"] = ReadOnlyInstance(test_instance)
     test_event = Event(event_type=EventType.SET, instance=None)
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=[test_event, StopIteration]):
+    with patch.object(event_pusher.event_queue, "get", side_effect=[test_event, StopIteration]):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -268,7 +334,7 @@ def test_event_consumer_coalesces_consecutive_failed_incremental_events(event_pu
         Event(event_type=EventType.DEL, instance=readonly_instance.to_instance()),
     ]
 
-    with patch.object(event_pusher.event_queue, 'get', side_effect=[*events, StopIteration]):
+    with patch.object(event_pusher.event_queue, "get", side_effect=[*events, StopIteration]):
         try:
             event_pusher._event_consumer()
         except StopIteration:
@@ -283,7 +349,7 @@ def test_event_consumer_coalesces_consecutive_failed_incremental_events(event_pu
 def test_heartbeat_detector_normal(event_pusher):
     """test heartbeat detector"""
     # Mock CoordinatorApiClient.query_status to return successful response
-    with patch('motor.controller.core.event_pusher.CoordinatorApiClient.query_status') as mock_query_status:
+    with patch("motor.controller.core.event_pusher.CoordinatorApiClient.query_status") as mock_query_status:
         mock_query_status.return_value = {"ready": True}
 
         # mock reset flag，重置为 True 时应发送一次 SET 事件并清零标志
@@ -298,7 +364,7 @@ def test_heartbeat_detector_normal(event_pusher):
             if call_count >= 2:
                 raise StopIteration
 
-        with patch.object(event_pusher.work_condition, 'wait', side_effect=mock_wait):
+        with patch.object(event_pusher.work_condition, "wait", side_effect=mock_wait):
             try:
                 event_pusher._coordinator_heartbeat_detector()
             except StopIteration:
@@ -329,7 +395,10 @@ def test_heartbeat_detector_failure(event_pusher):
             # Subsequent calls fail
             raise RuntimeError("Connection failed")
 
-    with patch('motor.controller.core.event_pusher.CoordinatorApiClient.query_status', side_effect=mock_query_status):
+    with patch(
+        "motor.controller.core.event_pusher.CoordinatorApiClient.query_status",
+        side_effect=mock_query_status,
+    ):
         sleep_count = 0
 
         def mock_wait(timeout=None):
@@ -338,8 +407,8 @@ def test_heartbeat_detector_failure(event_pusher):
             if sleep_count >= 5:  # Run enough iterations to trigger reset detection
                 raise StopIteration
 
-        with patch('motor.controller.core.event_pusher.logger') as mock_logger:
-            with patch.object(event_pusher.work_condition, 'wait', side_effect=mock_wait):
+        with patch("motor.controller.core.event_pusher.logger") as mock_logger:
+            with patch.object(event_pusher.work_condition, "wait", side_effect=mock_wait):
                 try:
                     event_pusher._coordinator_heartbeat_detector()
                 except StopIteration:
@@ -377,7 +446,10 @@ def test_heartbeat_detector_ready_false_not_repeated(event_pusher):
         call_count += 1
         return val
 
-    with patch('motor.controller.core.event_pusher.CoordinatorApiClient.query_status', side_effect=mock_query_status):
+    with patch(
+        "motor.controller.core.event_pusher.CoordinatorApiClient.query_status",
+        side_effect=mock_query_status,
+    ):
         iter_count = 0
 
         def mock_wait(timeout=None):
@@ -386,7 +458,7 @@ def test_heartbeat_detector_ready_false_not_repeated(event_pusher):
             if iter_count > len(ready_values):
                 raise StopIteration
 
-        with patch.object(event_pusher.work_condition, 'wait', side_effect=mock_wait):
+        with patch.object(event_pusher.work_condition, "wait", side_effect=mock_wait):
             try:
                 event_pusher._coordinator_heartbeat_detector()
             except StopIteration:
@@ -561,7 +633,12 @@ def test_update_deep_copy_seperated_instance(event_pusher):
 
 def test_update_seperated_instance_initial_stage_abnormal(event_pusher):
     """test update seperated instance when instance abnormal in initial stage"""
-    test_instance = Instance(job_name="test_job_initial_abnormal", model_name="test_model", id=1, role="prefill")
+    test_instance = Instance(
+        job_name="test_job_initial_abnormal",
+        model_name="test_model",
+        id=1,
+        role="prefill",
+    )
     readonly_instance = ReadOnlyInstance(test_instance)
     # Intentionally do not add the instance to event_pusher.instances
     # dict to simulate abnormal instance in initial stage
@@ -577,7 +654,7 @@ def test_update_seperated_instance_initial_stage_abnormal(event_pusher):
 
 def test_update_config():
     """Test update_config method updates configuration"""
-    with patch('threading.Thread') as mock_thread_class:
+    with patch("threading.Thread") as mock_thread_class:
         mock_thread = MagicMock()
         mock_thread_class.return_value = mock_thread
 

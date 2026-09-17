@@ -15,7 +15,7 @@ from enum import Enum
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-from motor.common.resources.instance import ParallelConfig, PDRole
+from motor.common.resources.instance import FtCapabilitySnapshot, ParallelConfig, PDRole
 from motor.common.resources.dispatch import (
     DISPATCH_PROFILE_KEY,
     DispatchPlan,
@@ -56,6 +56,8 @@ MOTOR_ENGINE_PREFILL_CONFIG_KEY = "motor_engine_prefill_config"
 MOTOR_ENGINE_DECODE_CONFIG_KEY = "motor_engine_decode_config"
 MOTOR_ENGINE_UNION_CONFIG_KEY = "motor_engine_union_config"
 MOTOR_CONTAINER_SNAPSHOT_CONFIG_KEY = "motor_container_snapshot_config"
+MOTOR_CONTROLLER_CONFIG_KEY = "motor_controller_config"
+FAULT_TOLERANCE_CONFIG_KEY = "fault_tolerance_config"
 VLLM_STARTUP_ACCELERATION_CONFIG_KEY = "vllm_startup_acceleration_config"
 ENGINE_CONFIG_KEY = "engine_config"
 KV_TRANSFER_CONFIG_KEY = "kv_transfer_config"
@@ -115,6 +117,7 @@ class BasicConfig:
     model_name: str = ""
     engine_type: str | None = None
     dispatch_capabilities: list[str] = field(default_factory=list)
+    ft_capability: FtCapabilitySnapshot = field(default_factory=FtCapabilitySnapshot)
     hardware_type: HardwareType = HardwareType.TYPE_800I_A3
 
     # Heartbeat sending configuration
@@ -199,8 +202,8 @@ class SingleContainerNodemanagerConfig:
             config.dp_rpc_port = int(union_parallel_config["dp_rpc_port"]) + index
             return config
 
-        p_instances_num = user_config_data['motor_deploy_config']['p_instances_num']
-        d_instances_num = user_config_data['motor_deploy_config']['d_instances_num']
+        p_instances_num = user_config_data["motor_deploy_config"]["p_instances_num"]
+        d_instances_num = user_config_data["motor_deploy_config"]["d_instances_num"]
         encode_section = user_config_data.get(MOTOR_ENGINE_ENCODE_CONFIG_KEY, {})
         prefill_section = user_config_data[MOTOR_ENGINE_PREFILL_CONFIG_KEY]
         decode_section = user_config_data[MOTOR_ENGINE_DECODE_CONFIG_KEY]
@@ -229,7 +232,7 @@ class SingleContainerNodemanagerConfig:
         lookup_rpc_port_offset = 0
         dp_rpc_port_offset = 0
 
-        if Env.role == 'prefill':
+        if Env.role == "prefill":
             config.node_manager_port_offset = index
             config.base_port_offset = index * d_dp_size * 2
             config.device_offset = index * p_world_size
@@ -237,7 +240,7 @@ class SingleContainerNodemanagerConfig:
             kv_port_offset = config.device_offset
             lookup_rpc_port_offset = index
             dp_rpc_port_offset = index
-        elif Env.role == 'decode':
+        elif Env.role == "decode":
             config.node_manager_port_offset = d_node_manager_port_offset
             config.base_port_offset = d_base_port_offset
             config.device_offset = d_device_offset
@@ -245,7 +248,7 @@ class SingleContainerNodemanagerConfig:
             kv_port_offset = config.device_offset
             lookup_rpc_port_offset = p_instances_num + index
             dp_rpc_port_offset = p_instances_num + index
-        elif Env.role == 'encode':
+        elif Env.role == "encode":
             config.node_manager_port_offset = e_node_manager_port_offset
             config.base_port_offset = e_base_port_offset
             config.device_offset = e_device_offset
@@ -291,12 +294,16 @@ class NodeManagerFaultToleranceConfig:
     """Fault tolerance configuration for NodeManager"""
 
     enable_fault_tolerance: bool = False
-    poll_interval_sec: float = 5.0
-    #: Polling interval for engine FT status (vLLM /fault_tolerance/status).
-    poll_timeout_sec: float = 5.0
+    # Internal execution gate derived from the Controller-level switches in
+    # the shared user_config. It is not a NodeManager user-facing switch.
+    enable_dp_scale_down_proxy: bool = False
+    #: Polling interval for engine FT status (vLLM /v1/fault_tolerance/status).
+    poll_interval_sec: float = 1.0
     #: HTTP timeout for a single status poll.
+    poll_timeout_sec: float = 5.0
+    # Consecutive transport failures must reach this threshold before the
+    # runtime engine is reported DEAD.
     max_poll_failures: int = 3
-    #: Consecutive poll failures before the engine is reported as dead.
     #: In-place engine relaunch (container keeps running). Mirrors the
     #: Controller-side switch of the same name — the NodeManager holds its
     #: own copy because the two run in separate processes with separate
@@ -436,7 +443,10 @@ class NodeManagerConfig:
             cls._update_from_config_data(config, config_data)
             cls._set_native_bootstrap_port(config, raw)
         else:
-            logger.warning("Config file does not exist, using default configuration: %s", config_path_obj)
+            logger.warning(
+                "Config file does not exist, using default configuration: %s",
+                config_path_obj,
+            )
 
         cls._set_device_count_from_config(config, raw)
         cls._parse_kv_cache_store_config(config, raw)
@@ -504,6 +514,24 @@ class NodeManagerConfig:
         else:
             config_data = {}
 
+        # Controller is the single source of truth for the Motor feature
+        # switch. NodeManager derives a private proxy gate from the same
+        # user_config so customers never configure a second P/D switch.
+        controller_config = user_cfg.get(MOTOR_CONTROLLER_CONFIG_KEY, {})
+        if not isinstance(controller_config, dict):
+            controller_config = {}
+        controller_ft = controller_config.get(FAULT_TOLERANCE_CONFIG_KEY, {})
+        if not isinstance(controller_ft, dict):
+            controller_ft = {}
+        proxy_enabled = controller_ft.get("enable_fault_tolerance", True) in (True, 1) and controller_ft.get(
+            "enable_dp_scale_down", False
+        ) in (True, 1)
+        node_manager_ft = config_data.get(FAULT_TOLERANCE_CONFIG_KEY)
+        if not isinstance(node_manager_ft, dict):
+            node_manager_ft = {}
+            config_data[FAULT_TOLERANCE_CONFIG_KEY] = node_manager_ft
+        node_manager_ft["enable_dp_scale_down_proxy"] = proxy_enabled
+
         if BASIC_CONFIG_KEY not in config_data:
             config_data[BASIC_CONFIG_KEY] = {}
 
@@ -511,6 +539,7 @@ class NodeManagerConfig:
         config_data[BASIC_CONFIG_KEY][MODEL_NAME_KEY] = resolver.get_model_name("")
         config_data[BASIC_CONFIG_KEY][ENGINE_TYPE_KEY] = engine_config.get(ENGINE_TYPE_KEY)
         config_data[BASIC_CONFIG_KEY][DISPATCH_CAPABILITIES_KEY] = cls._infer_dispatch_capabilities(engine_config)
+        config_data[BASIC_CONFIG_KEY]["ft_capability"] = cls._infer_ft_capability(engine_config).model_dump()
         config_data[BASIC_CONFIG_KEY][HARDWARE_TYPE_KEY] = user_cfg["motor_deploy_config"][HARDWARE_TYPE_KEY]
 
         # Read nnodes from engine_config for cross-node PCP support
@@ -522,6 +551,16 @@ class NodeManagerConfig:
 
         if Env.role in ("encode", "prefill", "decode", "union", "both"):
             config_data[BASIC_CONFIG_KEY]["parallel_config"] = resolver.get_parallel_config()
+            # Keep the DP store port in NodeManager's local configuration.  The
+            # Controller deliberately does not need to know this engine detail.
+            dp_port = engine_cfg.get(
+                "data_parallel_master_port",
+                engine_cfg.get("data-parallel-master-port", 29500),
+            )
+            try:
+                config_data[BASIC_CONFIG_KEY]["parallel_config"]["dp_master_port"] = int(dp_port)
+            except (TypeError, ValueError):
+                raise ValueError("data_parallel_master_port must be an integer")
             config_data[BASIC_CONFIG_KEY][ENABLE_MULTI_ENDPOINTS_KEY] = resolver.get_enable_multi_endpoints()
 
         # Adjust local_world_size for cross-node PCP/PP. Only PCP and PP ranks can span
@@ -626,6 +665,63 @@ class NodeManagerConfig:
             return capabilities
         return []
 
+    @staticmethod
+    def _infer_ft_capability(engine_section: dict[str, Any]) -> FtCapabilitySnapshot:
+        """Normalize static control-plane gates; the engine owns actual expert placement."""
+        engine_type = str(engine_section.get(ENGINE_TYPE_KEY, "")).strip().lower()
+        native = engine_section.get(ENGINE_CONFIG_KEY, {})
+        if not isinstance(native, dict):
+            native = {}
+
+        enabled = any(native.get(key) in (True, 1) for key in ("enable_fault_tolerance", "enable-fault-tolerance"))
+        external_lb = any(
+            native.get(key) in (True, 1) for key in ("data_parallel_external_lb", "data-parallel-external-lb")
+        )
+        ft_config = native.get("fault_tolerance_config", native.get("fault-tolerance-config", {}))
+        if isinstance(ft_config, str):
+            try:
+                ft_config = json.loads(ft_config)
+            except json.JSONDecodeError:
+                ft_config = {}
+        auto_recovery = isinstance(ft_config, dict) and ft_config.get(
+            "auto_recovery", ft_config.get("auto-recovery", False)
+        ) in (True, 1)
+        additional_config = native.get("additional_config", native.get("additional-config", {}))
+        if isinstance(additional_config, str):
+            try:
+                additional_config = json.loads(additional_config)
+            except json.JSONDecodeError:
+                additional_config = {}
+        fused_mc2_enabled = isinstance(additional_config, dict) and additional_config.get(
+            "enable_fused_mc2", additional_config.get("enable-fused-mc2", 0)
+        ) in (True, 1)
+        eplb_enabled = any(native.get(key) in (True, 1) for key in ("enable_eplb", "enable-eplb"))
+        eplb_config = native.get("eplb_config", native.get("eplb-config", {}))
+        if isinstance(eplb_config, str):
+            try:
+                eplb_config = json.loads(eplb_config)
+            except json.JSONDecodeError:
+                eplb_config = {}
+        raw_redundancy = (
+            eplb_config.get("num_redundant_experts", eplb_config.get("num-redundant-experts", 0))
+            if isinstance(eplb_config, dict)
+            else 0
+        )
+        try:
+            num_redundant_experts = int(raw_redundancy)
+        except (TypeError, ValueError):
+            num_redundant_experts = 0
+        num_redundant_experts = max(0, num_redundant_experts)
+        return FtCapabilitySnapshot(
+            enabled=enabled,
+            scale_down_supported=engine_type == ENGINE_TYPE_VLLM and enabled,
+            external_lb=external_lb,
+            auto_recovery=auto_recovery,
+            fused_mc2_enabled=fused_mc2_enabled,
+            eplb_enabled=eplb_enabled,
+            num_redundant_experts=num_redundant_experts,
+        )
+
     @classmethod
     def _update_from_config_data(cls, config: "NodeManagerConfig", cfg: dict[str, Any]):
         """Update configuration from config JSON data"""
@@ -673,6 +769,9 @@ class NodeManagerConfig:
                 pc = basic_cfg["parallel_config"]
                 if isinstance(pc, dict):
                     config.basic_config.parallel_config = ParallelConfig(**pc)
+            ft_capability = basic_cfg.get("ft_capability")
+            if isinstance(ft_capability, dict):
+                config.basic_config.ft_capability = FtCapabilitySnapshot(**ft_capability)
 
         if config.single_container_config.single_container_flag:
             config.api_config.node_manager_port += config.single_container_config.node_manager_port_offset
@@ -785,7 +884,10 @@ class NodeManagerConfig:
         """Set device count for single container mode using parallel_config.world_size"""
         device_count = config.basic_config.parallel_config.world_size
         if device_count > 0:
-            logger.info("Single container mode: using world_size %d from parallel_config", device_count)
+            logger.info(
+                "Single container mode: using world_size %d from parallel_config",
+                device_count,
+            )
             config.basic_config.device_num = device_count
         else:
             logger.warning("Single container mode: world_size is 0, falling back to single_container_config.device_num")
@@ -920,6 +1022,8 @@ class NodeManagerConfig:
         # Handle BaseModel objects that can't be serialized by asdict
         if hasattr(self.basic_config.parallel_config, "model_dump"):
             config_dict["basic_config"]["parallel_config"] = self.basic_config.parallel_config.model_dump()
+        if hasattr(self.basic_config.ft_capability, "model_dump"):
+            config_dict["basic_config"]["ft_capability"] = self.basic_config.ft_capability.model_dump()
 
         # Remove internal fields that shouldn't be in the output
         config_dict.pop("config_path", None)

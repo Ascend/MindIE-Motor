@@ -33,6 +33,10 @@ def _read_version() -> str:
 # skips even when headers exist). The Python runtime handles a missing conductor gracefully.
 _package_data: dict[str, list[str]] = {
     "motor": ["version.info"],
+    # boot.sh compiles these sources for the protobuf runtime installed in
+    # the target image. They must be present even when generated modules
+    # happen to exist in a developer worktree.
+    "motor.common.etcd.proto": ["*.proto"],
 }
 
 _kv_bin = os.path.join("motor", "kv_conductor", "bin", "kv-conductor")

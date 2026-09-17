@@ -71,112 +71,32 @@ def create_test_monitor(
     )
 
 
-def test_resource_monitor_initialization_with_valid_params():
-    """Test ResourceMonitor initialization with valid parameters"""
-    monitor = create_test_monitor(retry_interval=30)
+def test_resource_monitor_initialization():
+    node_handler = Mock()
+    configmap_handler = Mock()
+    monitor = create_test_monitor(
+        retry_interval=30,
+        node_handler=node_handler,
+        configmap_handler=configmap_handler,
+    )
 
-    assert monitor.node_name == DEFAULT_NODE_NAME
-    assert monitor.namespace == DEFAULT_NAMESPACE
-    assert monitor.configmap_name_prefix == DEFAULT_CONFIGMAP_PREFIX
-    assert monitor.retry_interval == 30
-    assert monitor.node_change_handler is None
-    assert monitor.configmap_change_handler is None
-    assert monitor.stop_event.is_set() is False
-    assert not monitor.monitor_threads
-
-
-def test_resource_monitor_initialization_with_handlers():
-    """Test ResourceMonitor initialization with change handlers"""
-
-    def node_handler(status, ip):
-        pass
-
-    def configmap_handler(faults, ip):
-        pass
-
-    monitor = create_test_monitor(node_handler=node_handler, configmap_handler=configmap_handler)
-
+    assert (
+        monitor.node_name,
+        monitor.namespace,
+        monitor.configmap_name_prefix,
+        monitor.retry_interval,
+    ) == (DEFAULT_NODE_NAME, DEFAULT_NAMESPACE, DEFAULT_CONFIGMAP_PREFIX, 30)
     assert monitor.node_change_handler is node_handler
     assert monitor.configmap_change_handler is configmap_handler
-
-
-def test_resource_monitor_kubernetes_config_incluster_success():
-    """Test successful loading of in-cluster Kubernetes config"""
-    # This test is skipped when kubernetes is not available
-    # In real environment with kubernetes, this would work
-    # For testing purposes, we verify the logic by checking the attributes
-    monitor = create_test_monitor()
-
-    # When kubernetes is not available, v1 client is not created
-    # This test verifies the initialization logic
-    assert monitor.node_name == DEFAULT_NODE_NAME
-    assert monitor.namespace == DEFAULT_NAMESPACE
-    assert monitor.configmap_name_prefix == DEFAULT_CONFIGMAP_PREFIX
-
-
-def test_resource_monitor_kubernetes_config_incluster_failure_kubeconfig_success():
-    """Test fallback to kubeconfig when in-cluster config fails"""
-    # Simplified test - in real environment this would test config loading
-    # Here we just verify basic initialization works
-    monitor = create_test_monitor()
-
-    assert monitor.node_name == DEFAULT_NODE_NAME
-    assert monitor.retry_interval == DEFAULT_RETRY_INTERVAL
-
-
-def test_resource_monitor_kubernetes_config_both_fail():
-    """Test when both in-cluster and kubeconfig loading fail"""
-    # Simplified test - in real environment this would test error handling
-    monitor = create_test_monitor()
-
-    # Verify basic attributes are set
-    assert monitor.node_change_handler is None
-    assert monitor.configmap_change_handler is None
-
-
-def test_resource_monitor_kubernetes_not_available():
-    """Test when Kubernetes client is not available"""
-    monitor = create_test_monitor()
-
-    # Verify that v1 client was not created (when config loading fails, __init__ returns early)
+    assert not monitor.stop_event.is_set()
+    assert not monitor.monitor_threads
     assert not hasattr(monitor, "v1")
 
 
-def test_start_monitoring_success(caplog):
-    """Test successful start of monitoring"""
-    # This test would require kubernetes to be available
-    # In test environment, we verify that when kubernetes is not available,
-    # monitoring does not start
+def test_start_monitoring_without_kubernetes():
     monitor = create_test_monitor()
-
-    # Start monitoring
     monitor.start_monitoring()
-
-    # Verify that no monitoring threads were started (kubernetes not available)
-    assert len(monitor.monitor_threads) == 0
-
-
-def test_start_monitoring_hostname_not_found(caplog):
-    """Test start monitoring when hostname cannot be found"""
-    # Simplified test - in test environment without kubernetes
-    monitor = create_test_monitor()
-
-    # Start monitoring
-    monitor.start_monitoring()
-
-    # Verify that no monitoring threads were started
-    assert len(monitor.monitor_threads) == 0
-
-
-def test_start_monitoring_kubernetes_not_available(caplog):
-    """Test start monitoring when Kubernetes is not available"""
-    monitor = create_test_monitor()
-
-    # Start monitoring
-    monitor.start_monitoring()
-
-    # Verify that no monitoring threads were started (v1 is not set when config loading fails)
-    assert len(monitor.monitor_threads) == 0
+    assert not monitor.monitor_threads
 
 
 def test_stop_monitoring():
@@ -207,64 +127,9 @@ def test_stop_monitoring():
     assert not monitor.monitor_threads
 
 
-def test_is_alive_kubernetes_available():
-    """Test is_alive when Kubernetes is available"""
-    # In test environment, kubernetes is not available
+def test_is_alive_without_kubernetes():
     monitor = create_test_monitor()
-
-    # Test when stop event is not set but no threads (kubernetes not available)
     assert monitor.is_alive() is False
-
-
-def test_is_alive_kubernetes_not_available():
-    """Test is_alive when Kubernetes is not available"""
-    monitor = create_test_monitor()
-
-    # Simulate Kubernetes not available (no v1 attribute)
-    if hasattr(monitor, "v1"):
-        delattr(monitor, "v1")
-
-    assert monitor.is_alive() is False
-
-
-def test_is_alive_stop_event_set():
-    """Test is_alive when stop event is set"""
-    monitor = create_test_monitor()
-
-    # Set stop event
-    monitor.stop_event.set()
-
-    assert monitor.is_alive() is False
-
-
-def test_is_alive_no_threads():
-    """Test is_alive when no monitoring threads exist"""
-    monitor = create_test_monitor()
-
-    assert monitor.is_alive() is False
-
-
-def test_is_alive_threads_not_alive():
-    """Test is_alive when monitoring threads are not alive"""
-    monitor = create_test_monitor()
-
-    # Add thread that is not alive
-    mock_thread = Mock()
-    mock_thread.is_alive.return_value = False
-    monitor.monitor_threads = [mock_thread]
-
-    assert monitor.is_alive() is False
-
-
-def test_monitor_methods_exist():
-    """Test that monitor methods exist and are callable"""
-    monitor = create_test_monitor()
-
-    # Verify monitor methods exist
-    assert hasattr(monitor, "_monitor_node")
-    assert callable(monitor._monitor_node)
-    assert hasattr(monitor, "_monitor_configmap")
-    assert callable(monitor._monitor_configmap)
 
 
 def test_handle_node_change_added_modified():
@@ -698,75 +563,26 @@ def test_process_configmap_data_exception_handling():
     assert not result
 
 
-def test_get_node_ready_status_ready_true():
-    """Test extracting ready status when Ready condition is True"""
+@pytest.mark.parametrize(
+    "condition_type,status,expected",
+    [
+        ("Ready", "True", NodeStatus.READY),
+        ("Ready", "False", NodeStatus.NOT_READY),
+        ("MemoryPressure", "False", NodeStatus.NOT_READY),
+        (None, None, NodeStatus.NOT_READY),
+        ("empty", None, NodeStatus.NOT_READY),
+    ],
+)
+def test_get_node_ready_status(condition_type, status, expected):
     monitor = create_test_monitor()
+    node = Mock()
+    node.metadata.name = "test-node"
+    if condition_type is None:
+        node.status.conditions = None
+    elif condition_type == "empty":
+        node.status.conditions = []
+    else:
+        condition = Mock(type=condition_type, status=status)
+        node.status.conditions = [condition]
 
-    mock_node = Mock()
-    mock_node.metadata = Mock()
-    mock_node.metadata.name = "test-node"
-    mock_node.status = Mock()
-    mock_condition = Mock()
-    mock_condition.type = "Ready"
-    mock_condition.status = "True"
-    mock_node.status.conditions = [mock_condition]
-
-    assert monitor._get_node_ready_status(mock_node) == NodeStatus.READY
-
-
-def test_get_node_ready_status_ready_false():
-    """Test extracting ready status when Ready condition is False"""
-    monitor = create_test_monitor()
-
-    mock_node = Mock()
-    mock_node.metadata = Mock()
-    mock_node.metadata.name = "test-node"
-    mock_node.status = Mock()
-    mock_condition = Mock()
-    mock_condition.type = "Ready"
-    mock_condition.status = "False"
-    mock_node.status.conditions = [mock_condition]
-
-    assert monitor._get_node_ready_status(mock_node) == NodeStatus.NOT_READY
-
-
-def test_get_node_ready_status_no_ready_condition():
-    """Test extracting ready status when no Ready condition exists"""
-    monitor = create_test_monitor()
-
-    mock_node = Mock()
-    mock_node.metadata = Mock()
-    mock_node.metadata.name = "test-node"
-    mock_node.status = Mock()
-    mock_condition = Mock()
-    mock_condition.type = "MemoryPressure"
-    mock_condition.status = "False"
-    mock_node.status.conditions = [mock_condition]
-
-    assert monitor._get_node_ready_status(mock_node) == NodeStatus.NOT_READY
-
-
-def test_get_node_ready_status_no_conditions():
-    """Test extracting ready status when conditions is None"""
-    monitor = create_test_monitor()
-
-    mock_node = Mock()
-    mock_node.metadata = Mock()
-    mock_node.metadata.name = "test-node"
-    mock_node.status = Mock()
-    mock_node.status.conditions = None
-
-    assert monitor._get_node_ready_status(mock_node) == NodeStatus.NOT_READY
-
-
-def test_get_node_ready_status_empty_conditions():
-    """Test extracting ready status when conditions list is empty"""
-    monitor = create_test_monitor()
-
-    mock_node = Mock()
-    mock_node.metadata = Mock()
-    mock_node.metadata.name = "test-node"
-    mock_node.status = Mock()
-    mock_node.status.conditions = []
-
-    assert monitor._get_node_ready_status(mock_node) == NodeStatus.NOT_READY
+    assert monitor._get_node_ready_status(node) == expected

@@ -411,15 +411,16 @@ def test_mooncake_connector_preserves_pp_layer_partition():
 
 
 def test_access_log_endpoints_excluded_by_default():
-    """Health/metrics are excluded from the vLLM access log unless user configures otherwise."""
+    """Health, metrics, and FT polling are excluded from access logs by default."""
     endpoint_config = _make_endpoint_config()
     config = VLLMConfig(endpoint_config=endpoint_config)
     config.initialize()
     flattened = config._flatten_config()
 
-    assert flattened["disable_access_log_for_endpoints"] == "/health,/metrics,/snapshot/health"
+    expected = "/health,/metrics,/snapshot/health,/v1/fault_tolerance/status"
+    assert flattened["disable_access_log_for_endpoints"] == expected
     cli_args = config.get_cli_args()
-    assert cli_args[cli_args.index("--disable-access-log-for-endpoints") + 1] == "/health,/metrics,/snapshot/health"
+    assert cli_args[cli_args.index("--disable-access-log-for-endpoints") + 1] == expected
 
 
 def test_access_log_endpoints_user_override_wins():

@@ -15,7 +15,9 @@ import signal
 import socket
 import logging
 import threading
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import Any
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import Response
 import uvicorn
@@ -50,6 +52,139 @@ app = FastAPI(lifespan=lifespan)
 
 MAX_CONCURRENT_THREADS = 10
 thread_semaphore = asyncio.Semaphore(MAX_CONCURRENT_THREADS)
+
+
+def _require_ft_proxy(action: str) -> tuple[Any, NodeManagerConfig]:
+    """Return the local FT manager when the proxy feature is enabled."""
+    try:
+        daemon = Daemon()
+        config = daemon.config
+        if not config.fault_tolerance_config.enable_dp_scale_down_proxy:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DP scale-down proxy is disabled")
+        return daemon.engine_ft_manager, config
+    except HTTPException:
+        raise
+    except Exception as err:
+        logger.error("Failed to prepare engine FT %s request: %s", action, err)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Engine FT %s failed" % action,
+        ) from err
+
+
+async def _parse_ft_payload(request: Request, action: str) -> dict:
+    """Parse one FT request and reject malformed client input with HTTP 400."""
+    try:
+        payload = await request.json()
+    except Exception as err:
+        logger.error("Failed to parse engine FT %s request: %s", action, err)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON body for engine FT %s" % action,
+        ) from err
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Body must be a JSON object")
+    return payload
+
+
+def _require_int_list(payload: dict, field_name: str, *, allow_empty: bool = False) -> list[int]:
+    value = payload.get(field_name)
+    if (
+        not isinstance(value, list)
+        or (not allow_empty and not value)
+        or any(not isinstance(item, int) or isinstance(item, bool) for item in value)
+    ):
+        detail = "'%s' must be %sa list of integer DP ranks" % (
+            field_name,
+            "an empty or " if allow_empty else "a non-empty ",
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+    return value
+
+
+async def _ft_request_context(request: Request, action: str) -> tuple[dict, Any, NodeManagerConfig]:
+    """Parse and gate one NodeManager FT proxy request."""
+    payload = await _parse_ft_payload(request, action)
+    manager, config = _require_ft_proxy(action)
+    return payload, manager, config
+
+
+async def _run_ft_operation(action: str, operation: Callable[..., Any], *args: Any) -> Any:
+    """Run one blocking FT operation and preserve the public 502 contract."""
+    try:
+        return await asyncio.to_thread(operation, *args)
+    except Exception as err:
+        logger.error("Failed to %s engine FT request: %s", action, err)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Engine FT %s failed" % action,
+        ) from err
+
+
+@app.post("/node-manager/fault-tolerance/status")
+async def fault_tolerance_status(request: Request):
+    """Proxy local engine FT status; engine HTTP details stay in NodeManager."""
+    payload, manager, config = await _ft_request_context(request, "status query")
+    return await _run_ft_operation(
+        "status query",
+        manager.query,
+        _require_int_list(payload, "endpoint_ids"),
+        config.fault_tolerance_config.poll_timeout_sec,
+    )
+
+
+@app.post("/node-manager/fault-tolerance/apply")
+async def fault_tolerance_apply(request: Request):
+    """Apply FT instruction after NodeManager adds its configured DP store port."""
+    payload, manager, config = await _ft_request_context(request, "apply")
+    endpoint_ids = _require_int_list(payload, "endpoint_ids")
+    instruction = payload.get("instruction")
+    if instruction not in {"retry", "scale_down"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported FT instruction")
+    params = payload.get("params", {})
+    if not isinstance(params, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="'params' must be a JSON object")
+    await _run_ft_operation(
+        "apply",
+        manager.apply,
+        endpoint_ids,
+        instruction,
+        params,
+        payload.get("request_id", ""),
+        config.fault_tolerance_config.poll_timeout_sec,
+        config.basic_config.parallel_config.dp_master_port,
+    )
+    return {"status": "accepted"}
+
+
+@app.post("/node-manager/fault-tolerance/guard")
+async def fault_tolerance_guard(request: Request):
+    """Freeze local suicide before Controller starts the distributed transaction."""
+    manager, _ = _require_ft_proxy("guard")
+    payload = await _parse_ft_payload(request, "guard")
+    await _run_ft_operation(
+        "guard",
+        manager.guard,
+        payload.get("request_id"),
+        payload.get("lease_sec"),
+    )
+    return {"status": "guarded"}
+
+
+@app.post("/node-manager/fault-tolerance/finalize")
+async def fault_tolerance_finalize(request: Request):
+    """Commit local retired ranks, or abort the local scale-down guard."""
+    payload, manager, _ = await _ft_request_context(request, "finalize")
+    commit = payload.get("commit") is True
+    retired_endpoint_ids = _require_int_list(payload, "retired_endpoint_ids", allow_empty=not commit)
+    await _run_ft_operation(
+        "finalize",
+        manager.finalize,
+        payload.get("request_id"),
+        retired_endpoint_ids,
+        commit,
+    )
+    return {"status": "committed" if commit else "aborted"}
 
 
 @app.post("/node-manager/start")
@@ -170,7 +305,7 @@ async def engine_restart(request: Request):
 
     - ``restart``: kill and re-pull all engine subprocesses in place
       (``Daemon.restart_engine`` — resolves the launch params, freezes
-      suicide, suspends/resumes the FaultReporter; KV store untouched).
+      suicide, suspends/resumes the EngineFtManager; KV store untouched).
       Returns 200 once the processes were spawned (model loading continues
       asynchronously — completion is polled by the Controller via
       ``/node-manager/status``).

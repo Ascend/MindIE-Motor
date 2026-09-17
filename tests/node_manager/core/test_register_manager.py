@@ -24,7 +24,7 @@ from motor.node_manager.api_client.controller_api_client import ControllerApiCli
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.http_msg_spec import StartCmdMsg, RegisterMsg, ReregisterMsg
 from motor.common.resources.endpoint import Endpoint
-from motor.common.resources.instance import ParallelConfig, PDRole
+from motor.common.resources.instance import FtCapabilitySnapshot, ParallelConfig, PDRole
 
 from tests.node_manager.conftest import apply_node_manager_test_config, create_config_mock
 
@@ -156,6 +156,34 @@ class TestRegisterManager:
         else:
             # If None is returned, that's acceptable for this implementation
             pass
+
+    def test_registration_messages_include_ft_capability(self, register_manager, sample_endpoints):
+        capability = FtCapabilitySnapshot(
+            enabled=True,
+            scale_down_supported=True,
+            external_lb=True,
+            fused_mc2_enabled=True,
+            eplb_enabled=True,
+            num_redundant_experts=1,
+        )
+        register_manager._config.basic_config.job_name = "test_job"
+        register_manager._config.basic_config.model_name = "test_model"
+        register_manager._config.basic_config.role = PDRole.ROLE_U
+        register_manager._config.basic_config.ft_capability = capability
+        register_manager._config.api_config.pod_ip = "192.168.1.100"
+        register_manager._config.endpoint_config.service_ports = ["8080"]
+        register_manager._config.api_config.node_manager_port = 8080
+        register_manager._config.basic_config.parallel_config = ParallelConfig()
+
+        register_msg = register_manager._gen_register_msg()
+        assert register_msg is not None
+        assert register_msg.ft_capability == capability
+
+        register_manager.endpoints = sample_endpoints
+        register_manager.instance_id = 1
+        reregister_msg = register_manager._gen_reregister_msg()
+        assert reregister_msg is not None
+        assert reregister_msg.ft_capability == capability
 
     def test_gen_register_msg_includes_is_snapshot_master(self, register_manager):
         """Test _gen_register_msg propagates is_snapshot_master as is_master."""

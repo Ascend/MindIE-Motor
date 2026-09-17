@@ -10,6 +10,7 @@
 
 import threading
 import time
+from typing import Any
 
 from motor.common.resources.instance import PDRole
 from motor.common.resources.endpoint import Endpoint
@@ -18,7 +19,7 @@ from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.logger import get_logger
 from motor.config.node_manager import NodeManagerConfig
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
-from motor.node_manager.core.fault_reporter import FaultReporter
+from motor.node_manager.core.engine_ft_manager import EngineFtManager
 from motor.node_manager.core.heartbeat_manager import HeartbeatManager
 from motor.node_manager.core.services.protocols import DaemonService, PreparableService
 from motor.node_manager.core.services.registry import (
@@ -110,6 +111,8 @@ class Daemon(ThreadSafeSingleton):
         self._suicide_freeze_until = 0.0
         self._should_suicide = False
         self._suicide_lock = threading.Lock()
+        self._engine_ft_transaction_id: str | None = None
+        self._engine_ft_transaction_lock = threading.Lock()
         self._last_endpoints_generation = -1
         # Consecutive abnormal observations that trigger suicide. Arbitrated
         # in a dedicated loop paced by the configured heartbeat interval
@@ -130,8 +133,13 @@ class Daemon(ThreadSafeSingleton):
         # process monitor and the suicide arbitration — owned by the Daemon
         # (the process-lifecycle owner), started when engines are pulled,
         # paused across an engine relaunch.
-        self._fault_reporter = FaultReporter(config)
+        self._engine_ft_manager = EngineFtManager(
+            config,
+            guard_callback=self.guard_engine_ft_transaction,
+            finalize_callback=self.finalize_engine_ft_transaction,
+        )
         self._endpoints_info: list[Endpoint] = []
+        self._instance_id: int | None = None
         # Set once the pulled engines' mgmt ports accept connections — the
         # HeartbeatManager starts probing engine status only after this
         # handoff (no engine readiness logic of its own).
@@ -139,6 +147,8 @@ class Daemon(ThreadSafeSingleton):
         self._engine_restart_in_progress = False
         self._engine_restart_lock = threading.Lock()
         self._reported_dead_pids: set[int] = set()
+        self._retired_endpoint_ids: set[int] = set()
+        self._retired_endpoint_lock = threading.Lock()
         # Endpoint ids whose ABNORMAL state was already reported (dedup —
         # cleared once all endpoints recover, so a re-failure is reported
         # again).
@@ -165,7 +175,11 @@ class Daemon(ThreadSafeSingleton):
         d2d_peer_ips: list[str] | None = None,
         node_rank: int = 0,
     ) -> None:
+        with self._retired_endpoint_lock:
+            self._retired_endpoint_ids.clear()
+        self._engine_ft_manager.reset_retired_endpoints()
         self._endpoints_info = endpoints_info
+        self._instance_id = instance_id
 
         # Phase 1: run PreparableService.prepare() before engines start
         for reg in registry.get_preparable():
@@ -185,17 +199,16 @@ class Daemon(ThreadSafeSingleton):
                 node_rank=node_rank,
             )
 
-        # Phase 3: signal engine readiness in the background (mgmt ports up),
-        # then start the FT status reporter on the launched engines
-        # (idempotent — a restart keeps the existing thread).
+        # Phase 3: wait for engine readiness in the background.  The FT
+        # reporter must not poll while models are still loading: connection
+        # failures and transient startup states are not runtime FT faults.
         self._engine_ready.clear()
         threading.Thread(
             target=self._wait_engines_ready,
-            args=(endpoints_info,),
+            args=(endpoints_info, instance_id),
             daemon=True,
             name="engine_ready_wait",
         ).start()
-        self._fault_reporter.start(endpoints_info)
 
     def restart_engine(self, instance_id: int | None = None) -> None:
         """Relaunch the engine service in place, owned entirely by the Daemon.
@@ -205,7 +218,7 @@ class Daemon(ThreadSafeSingleton):
         from the RegisterManager (raises :class:`EngineRestartParamError` when
         nothing was started or the instance id mismatches), freezes suicide
         arbitration for the relaunch window (unfrozen on failure so the
-        container-restart fallback stays live), suspends the FaultReporter
+        container-restart fallback stays live), suspends the EngineFtManager
         while the engines are down and resumes it afterwards. Used by the
         Controller-driven engine relaunch flow (``/node-manager/engine-restart``).
         """
@@ -213,40 +226,65 @@ class Daemon(ThreadSafeSingleton):
             if self._engine_restart_in_progress:
                 raise EngineRestartInProgressError()
             self._engine_restart_in_progress = True
+        readiness_handoff_started = False
         try:
-            self._fault_reporter.pause()
-            try:
-                restart_params = self._get_register_manager().get_restart_params()
-                if restart_params is None:
-                    raise EngineRestartParamError("no engine start recorded")
-                if instance_id is not None and instance_id != restart_params["instance_id"]:
-                    raise EngineRestartParamError("instance id mismatch")
-                with self.config_lock:
-                    freeze_sec = self._config.fault_tolerance_config.engine_restart_freeze_sec
-                self.freeze_suicide(freeze_sec)
-                try:
-                    # Phase 1: re-run PreparableService.prepare() (idempotent) before engines start
-                    for reg in registry.get_preparable():
-                        svc = self._services.get(reg.name)
-                        if svc is not None and isinstance(svc, PreparableService):
-                            svc.prepare(endpoints_count=len(restart_params["endpoints"]))
+            self._engine_ft_manager.pause()
+            restart_params = self._get_register_manager().get_restart_params()
+            if restart_params is None:
+                raise EngineRestartParamError("no engine start recorded")
+            if instance_id is not None and instance_id != restart_params["instance_id"]:
+                raise EngineRestartParamError("instance id mismatch")
+            with self.config_lock:
+                freeze_sec = self._config.fault_tolerance_config.engine_restart_freeze_sec
+            self.freeze_suicide(freeze_sec)
 
-                    # Phase 2: engine service owns its own relaunch lifecycle.
-                    engine = self._services.get(SERVICE_ENGINE)
-                    if engine is not None:
-                        engine.restart(  # type: ignore[attr-defined]
-                            PDRole(restart_params["role"]),
-                            restart_params["endpoints"],
-                            restart_params["instance_id"],
-                            restart_params["master_dp_ip"],
-                            d2d_peer_ips=restart_params["d2d_peer_ips"],
-                            node_rank=restart_params["node_rank"],
-                        )
-                except Exception:
-                    self.unfreeze_suicide()
-                    raise
-            finally:
-                self._fault_reporter.resume()
+            # Phase 1: re-run PreparableService.prepare() (idempotent) before engines start.
+            for reg in registry.get_preparable():
+                svc = self._services.get(reg.name)
+                if svc is not None and isinstance(svc, PreparableService):
+                    svc.prepare(endpoints_count=len(restart_params["endpoints"]))
+
+            # Phase 2: engine service owns its own relaunch lifecycle.
+            engine = self._services.get(SERVICE_ENGINE)
+            if engine is None:
+                raise RuntimeError("native engine service is unavailable")
+            engine.restart(  # type: ignore[attr-defined]
+                PDRole(restart_params["role"]),
+                restart_params["endpoints"],
+                restart_params["instance_id"],
+                restart_params["master_dp_ip"],
+                d2d_peer_ips=restart_params["d2d_peer_ips"],
+                node_rank=restart_params["node_rank"],
+            )
+
+            # Phase 3: keep runtime FT polling paused until model readiness.
+            # The API returns immediately while this handoff runs in the
+            # background, matching the normal cold-start lifecycle.
+            threading.Thread(
+                target=self._finish_engine_restart,
+                args=(engine, restart_params["endpoints"]),
+                daemon=True,
+                name="engine_restart_ready_wait",
+            ).start()
+            readiness_handoff_started = True
+        except Exception:
+            self.unfreeze_suicide()
+            self._engine_ft_manager.resume()
+            raise
+        finally:
+            if not readiness_handoff_started:
+                with self._engine_restart_lock:
+                    self._engine_restart_in_progress = False
+
+    def _finish_engine_restart(self, engine: Any, endpoints: list[Endpoint]) -> None:
+        """Resume FT polling only after every relaunched engine is ready."""
+        try:
+            if engine.wait_ready(endpoints):
+                self._engine_ft_manager.resume()
+            else:
+                logger.error("Relaunched engines did not become ready; Engine FT polling remains paused")
+        except Exception:
+            logger.exception("Failed while waiting for relaunched engines to become ready")
         finally:
             with self._engine_restart_lock:
                 self._engine_restart_in_progress = False
@@ -266,8 +304,56 @@ class Daemon(ThreadSafeSingleton):
         """Apply a new config, (re)configuring the FT status reporter."""
         with self.config_lock:
             self._config = config
-        self._fault_reporter.update_config(config, self._endpoints_info)
+        self._engine_ft_manager.update_config(config, self._endpoints_info)
         logger.info("Daemon configuration updated")
+
+    @property
+    def config(self) -> NodeManagerConfig:
+        """Return the current in-memory configuration used by NodeManager."""
+        with self.config_lock:
+            return self._config
+
+    @property
+    def engine_ft_manager(self) -> EngineFtManager:
+        """Return the single owner of engine FT polling, cache and commands."""
+        return self._engine_ft_manager
+
+    def commit_retired_endpoints(self, endpoint_ids: list[int]) -> None:
+        """Commit local DP retirement across heartbeat and fault detection."""
+        if not endpoint_ids:
+            return
+        heartbeat_manager = HeartbeatManager()
+        heartbeat_manager.validate_retire_endpoints(endpoint_ids)
+        self._engine_ft_manager.validate_retire_endpoints(endpoint_ids)
+        heartbeat_manager.retire_endpoints(endpoint_ids)
+        self._engine_ft_manager.retire_endpoints(endpoint_ids)
+        with self._retired_endpoint_lock:
+            self._retired_endpoint_ids.update(endpoint_ids)
+
+    def guard_engine_ft_transaction(self, request_id: str, lease_sec: float) -> None:
+        """Acquire or renew the local suicide guard for one scale-down transaction."""
+        with self._engine_ft_transaction_lock:
+            if self._engine_ft_transaction_id not in {None, request_id} and self.is_suicide_frozen():
+                raise RuntimeError("another engine FT transaction is active: %s" % self._engine_ft_transaction_id)
+            self._engine_ft_transaction_id = request_id
+            self.freeze_suicide(lease_sec)
+
+    def finalize_engine_ft_transaction(
+        self,
+        request_id: str,
+        retired_endpoint_ids: list[int],
+        commit: bool,
+    ) -> None:
+        """Commit or abort only the transaction that currently owns the guard."""
+        with self._engine_ft_transaction_lock:
+            if request_id != self._engine_ft_transaction_id:
+                raise RuntimeError("stale engine FT transaction finalize: %s" % request_id)
+            try:
+                if commit:
+                    self.commit_retired_endpoints(retired_endpoint_ids)
+            finally:
+                self._engine_ft_transaction_id = None
+                self.unfreeze_suicide()
 
     def pull_kv_store(self) -> None:
         """Start/restart the KV store service (if active)."""
@@ -318,22 +404,26 @@ class Daemon(ThreadSafeSingleton):
         """
         return self._engine_ready
 
-    def _wait_engines_ready(self, endpoints_info: list[Endpoint]) -> None:
-        """Background wait for the engines' readiness probes, then flag ready.
+    def _wait_engines_ready(self, endpoints_info: list[Endpoint], instance_id: int) -> None:
+        """Wait for engine readiness, then start runtime FT reporting.
 
         Runs detached so the start command returns immediately; the event is
         set even when the wait aborted (engine died or the load exceeds the
         timeout) so the HeartbeatManager never blocks on it — its probing
         then reports ABNORMAL (or keeps STARTING) and the arbitration handles
-        the death.
+        the death.  EngineFtManager starts only after successful readiness so
+        cold-start failures cannot enter the runtime fault pipeline.
         """
         engine = self._services.get(SERVICE_ENGINE)
+        ready = False
         if engine is not None:
             try:
-                engine.wait_ready(endpoints_info)  # type: ignore[attr-defined]
+                ready = engine.wait_ready(endpoints_info)  # type: ignore[attr-defined]
             except Exception:
                 logger.exception("Failed to wait for engines ready")
         self._engine_ready.set()
+        if ready and not self._monitor_stop.is_set():
+            self._engine_ft_manager.start(endpoints_info, instance_id=instance_id)
 
     def is_engine_restart_in_progress(self) -> bool:
         with self._engine_restart_lock:
@@ -347,7 +437,7 @@ class Daemon(ThreadSafeSingleton):
         if self._suicide_thread is not None and self._suicide_thread.is_alive():
             self._suicide_thread.join(timeout=5.0)
         self._suicide_thread = None
-        self._fault_reporter.stop()
+        self._engine_ft_manager.stop()
 
         # Stop services in reverse registration order
         for svc in reversed(list(self._services.values())):
@@ -402,6 +492,9 @@ class Daemon(ThreadSafeSingleton):
         if not deaths:
             return
         for pid, endpoint_id in deaths:
+            with self._retired_endpoint_lock:
+                if endpoint_id in self._retired_endpoint_ids:
+                    continue
             if pid in self._reported_dead_pids:
                 continue
             try:
@@ -409,7 +502,7 @@ class Daemon(ThreadSafeSingleton):
                     pod_ip = self._config.api_config.pod_ip
                     enable_relaunch = self._config.fault_tolerance_config.enable_engine_relaunch
                     freeze_sec = self._config.fault_tolerance_config.engine_restart_wait_timeout_sec
-                if self._report_engine_death(endpoint_id, pod_ip):
+                if self._report_engine_death(endpoint_id, pod_ip, self._instance_id):
                     if enable_relaunch:
                         self.freeze_suicide(freeze_sec)
                     self._reported_dead_pids.add(pid)
@@ -422,7 +515,7 @@ class Daemon(ThreadSafeSingleton):
                 logger.error("Failed to handle engine death pid=%s: %s", pid, e)
 
     @staticmethod
-    def _report_engine_death(endpoint_id: int, pod_ip: str) -> bool:
+    def _report_engine_death(endpoint_id: int, pod_ip: str, instance_id: int | None = None) -> bool:
         """Report a dead engine to the Controller via the shared software-fault channel."""
         fault_data = {
             "exception_type": "EngineDeadError",
@@ -431,6 +524,8 @@ class Daemon(ThreadSafeSingleton):
             "engine_status": 1,
             "pod_ip": pod_ip,
         }
+        if instance_id is not None:
+            fault_data["instance_id"] = instance_id
         try:
             return ControllerApiClient.report_software_fault(fault_data)
         except Exception as e:
@@ -535,7 +630,7 @@ class Daemon(ThreadSafeSingleton):
                     pod_ip = self._config.api_config.pod_ip
                     enable_relaunch = self._config.fault_tolerance_config.enable_engine_relaunch
                     freeze_sec = self._config.fault_tolerance_config.engine_restart_wait_timeout_sec
-                if self._report_engine_death(ep_id, pod_ip):
+                if self._report_engine_death(ep_id, pod_ip, self._instance_id):
                     if enable_relaunch:
                         self.freeze_suicide(freeze_sec)
                     self._reported_abnormal_ep_ids.add(ep_id)

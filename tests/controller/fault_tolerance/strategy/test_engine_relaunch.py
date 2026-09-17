@@ -19,6 +19,11 @@ from motor.controller.fault_tolerance.strategy.engine_relaunch import (
     EngineRelaunchStrategy,
     RelaunchState,
 )
+from motor.controller.fault_tolerance.dp_scale_down import (
+    FtPhase,
+    FtRuntime,
+    get_ft_runtime_store,
+)
 
 # pylint: disable=redefined-outer-name
 
@@ -91,6 +96,34 @@ def test_execute_dispatch_and_poll_until_all_normal(nm_a, nm_b):
     for call in restart_calls:
         assert call.kwargs["instance_id"] == 1
     assert mock_client.query_status.call_count >= 6
+
+
+def test_success_prepares_ft_runtime_for_republication(nm_a):
+    instance = _make_instance([nm_a])
+    store = get_ft_runtime_store()
+    store.clear()
+    store.put(
+        FtRuntime(
+            instance_id=1,
+            phase=FtPhase.RECONFIGURING,
+            serving_published=False,
+            last_error="scale-down failed",
+        )
+    )
+    with _apply_patch() as (mock_im_cls, mock_client):
+        mock_im_cls.return_value.get_instance.return_value = instance
+        mock_client.query_status.return_value = {"status": True}
+
+        strategy = _new_strategy()
+        strategy.execute(1)
+
+    runtime = store.get(1)
+    assert strategy.context.current_state == RelaunchState.SUCCESS
+    assert runtime["phase"] == FtPhase.NORMAL.value
+    assert runtime["serving_published"] is False
+    assert runtime["can_serve"] is False
+    assert runtime["last_error"] is None
+    store.clear()
 
 
 @pytest.mark.parametrize(

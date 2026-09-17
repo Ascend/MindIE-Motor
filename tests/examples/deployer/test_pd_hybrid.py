@@ -30,7 +30,7 @@ from lib.config_validator import (  # noqa: E402
     validate_pd_hybrid_config,
 )
 from lib.generator import k8s_utils  # noqa: E402
-from lib.generator.engine import generate_yaml_engine, validate_instance_nums  # noqa: E402
+from lib.generator.engine import apply_engine_ft_labels, generate_yaml_engine, validate_instance_nums  # noqa: E402
 from lib.generator.infer_service import (  # noqa: E402
     generate_yaml_infer_service_set,
     update_infer_service_replicas_only,
@@ -104,6 +104,74 @@ def make_deploy_paths(tmp_path):
     }
 
 
+def enable_dp_scale_down(user_config, *engine_keys):
+    user_config[C.MOTOR_CONTROLLER_CONFIG] = {
+        C.FAULT_TOLERANCE_CONFIG: {
+            C.ENABLE_FAULT_TOLERANCE: True,
+            C.ENABLE_DP_SCALE_DOWN: True,
+        }
+    }
+    for engine_key in engine_keys:
+        user_config.setdefault(engine_key, {}).setdefault(C.ENGINE_CONFIG, {})[C.ENABLE_FAULT_TOLERANCE] = True
+
+
+def assert_engine_ft_labels(labels, enabled):
+    if enabled:
+        assert labels[C.FAULT_SCHEDULING_LABEL] == C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED
+        assert labels[C.POD_RESCHEDULING_LABEL] == C.POD_RESCHEDULING_ON
+    else:
+        assert labels[C.FAULT_SCHEDULING_LABEL] == "grace"
+        assert C.POD_RESCHEDULING_LABEL not in labels
+
+
+@pytest.mark.parametrize(
+    "role,engine_key,ft_key",
+    [
+        (C.ROLE_ENCODE, C.MOTOR_ENGINE_ENCODE_CONFIG, C.ENABLE_FAULT_TOLERANCE),
+        (C.ROLE_PREFILL, C.MOTOR_ENGINE_PREFILL_CONFIG, C.ENABLE_FAULT_TOLERANCE),
+        (C.ROLE_DECODE, C.MOTOR_ENGINE_DECODE_CONFIG, C.ENABLE_FAULT_TOLERANCE),
+        (C.ROLE_UNION, C.MOTOR_ENGINE_UNION_CONFIG, C.ENABLE_FAULT_TOLERANCE_KEBAB),
+    ],
+)
+def test_apply_engine_ft_labels_supports_all_engine_roles(role, engine_key, ft_key):
+    user_config = {
+        C.MOTOR_CONTROLLER_CONFIG: {
+            C.FAULT_TOLERANCE_CONFIG: {
+                C.ENABLE_FAULT_TOLERANCE: True,
+                C.ENABLE_DP_SCALE_DOWN: True,
+            }
+        },
+        engine_key: {C.ENGINE_CONFIG: {ft_key: True}},
+    }
+    template = {C.METADATA: {C.LABELS: {C.FAULT_SCHEDULING_LABEL: "grace"}}}
+
+    apply_engine_ft_labels(template, user_config, role)
+
+    assert_engine_ft_labels(template[C.METADATA][C.LABELS], True)
+
+
+@pytest.mark.parametrize(
+    "controller_ft,engine_ft",
+    [
+        ({C.ENABLE_FAULT_TOLERANCE: True, C.ENABLE_DP_SCALE_DOWN: False}, True),
+        ({C.ENABLE_FAULT_TOLERANCE: False, C.ENABLE_DP_SCALE_DOWN: True}, True),
+        ({C.ENABLE_FAULT_TOLERANCE: True, C.ENABLE_DP_SCALE_DOWN: True}, False),
+        (None, True),
+    ],
+)
+def test_apply_engine_ft_labels_requires_both_controller_and_engine_gates(controller_ft, engine_ft):
+    user_config = {
+        C.MOTOR_ENGINE_UNION_CONFIG: {C.ENGINE_CONFIG: {C.ENABLE_FAULT_TOLERANCE: engine_ft}},
+    }
+    if controller_ft is not None:
+        user_config[C.MOTOR_CONTROLLER_CONFIG] = {C.FAULT_TOLERANCE_CONFIG: controller_ft}
+    template = {C.METADATA: {C.LABELS: {C.FAULT_SCHEDULING_LABEL: "grace"}}}
+
+    apply_engine_ft_labels(template, user_config, C.ROLE_UNION)
+
+    assert_engine_ft_labels(template[C.METADATA][C.LABELS], False)
+
+
 def test_validate_pd_hybrid_config_accepts_union_schema():
     user_config = make_pd_hybrid_user_config()
 
@@ -138,6 +206,7 @@ def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
     )
 
     user_config = make_pd_hybrid_user_config()
+    enable_dp_scale_down(user_config, C.MOTOR_ENGINE_UNION_CONFIG)
     input_yaml = DEPLOYER_ROOT / "yaml_template" / "engine_template.yaml"
     output_base = tmp_path / "mindie_server"
     k8s_utils.g_generate_yaml_list = []
@@ -153,6 +222,7 @@ def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
     container = data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV] if C.VALUE in item}
     node_selector = data[C.SPEC][C.TEMPLATE][C.SPEC][C.NODE_SELECTOR]
+    assert_engine_ft_labels(data[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS], True)
     assert env[C.ENV_ROLE] == C.ROLE_UNION
     mounts = {item[C.NAME]: item[C.MOUNT_PATH] for item in container[C.VOLUME_MOUNTS]}
     volumes = {item[C.NAME]: item for item in data[C.SPEC][C.TEMPLATE][C.SPEC][C.VOLUMES]}
@@ -448,6 +518,7 @@ def test_elastic_distributed_engine_deploy_scales_in_hybrid_instances(tmp_path, 
 
 def test_generate_yaml_infer_service_set_configures_union_for_hybrid(tmp_path, monkeypatch):
     user_config = make_pd_hybrid_user_config()
+    enable_dp_scale_down(user_config, C.MOTOR_ENGINE_UNION_CONFIG)
     paths = make_deploy_paths(tmp_path)
     k8s_utils.g_generate_yaml_list = []
     monkeypatch.setattr(k8s_utils, "g_controller_service", "ctrl.pd-hybrid.svc.cluster.local")
@@ -471,10 +542,12 @@ def test_generate_yaml_infer_service_set_configures_union_for_hybrid(tmp_path, m
     container = union_role[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
     env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV] if C.VALUE in item}
     assert env[C.ENV_ROLE] == C.ROLE_UNION
+    assert_engine_ft_labels(union_role[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS], True)
 
 
 def test_generate_yaml_infer_service_set_zeros_union_for_pd_separation(tmp_path, monkeypatch):
     user_config = make_pd_separation_user_config()
+    enable_dp_scale_down(user_config, C.MOTOR_ENGINE_PREFILL_CONFIG)
     paths = make_deploy_paths(tmp_path)
     k8s_utils.g_generate_yaml_list = []
     monkeypatch.setattr(k8s_utils, "g_controller_service", "ctrl.pd-separate.svc.cluster.local")
@@ -495,6 +568,8 @@ def test_generate_yaml_infer_service_set_zeros_union_for_pd_separation(tmp_path,
     assert union_role[C.REPLICAS] == 0
     assert prefill_role[C.REPLICAS] == 1
     assert decode_role[C.REPLICAS] == 1
+    assert_engine_ft_labels(prefill_role[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS], True)
+    assert_engine_ft_labels(decode_role[C.SPEC][C.TEMPLATE][C.METADATA][C.LABELS], False)
 
 
 def test_update_infer_service_replicas_only_updates_union_for_hybrid(tmp_path):

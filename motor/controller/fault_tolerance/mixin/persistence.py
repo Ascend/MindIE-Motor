@@ -19,6 +19,7 @@ import threading
 from motor.common.logger import get_logger
 from motor.common.etcd.persistent_state import PersistentState
 from motor.controller.fault_tolerance.fault_types import InstanceMetadata, NodeMetadata
+from motor.controller.fault_tolerance.dp_scale_down import get_ft_runtime_store
 
 logger = get_logger(__name__)
 
@@ -46,11 +47,12 @@ class _PersistenceMixin:
                 current_time = time.time()
                 next_version = self._get_next_version()
 
-                fault_data = {"nodes": {}, "instances": {}}
+                fault_data = {"nodes": {}, "instances": {}, "ft_runtime": {}}
                 for node_name, node_metadata in self.nodes.items():
                     fault_data["nodes"][node_name] = node_metadata.model_dump(mode="json")
                 for ins_id, ins_metadata in self.instances.items():
                     fault_data["instances"][str(ins_id)] = ins_metadata.model_dump(mode="json")
+                fault_data["ft_runtime"] = get_ft_runtime_store().persistent_data()
                 logger.debug("Persisting fault manager data - full data: %s", fault_data)
 
                 persistent_state = PersistentState(
@@ -142,12 +144,22 @@ class _PersistenceMixin:
                 nodes_data = persistent_state.data.get("nodes", {})
                 for node_name, node_dict in nodes_data.items():
                     self.nodes[node_name] = NodeMetadata.model_validate(node_dict)
-
                 instances_data = persistent_state.data.get("instances", {})
                 for ins_id_str, ins_dict in instances_data.items():
                     ins_metadata = InstanceMetadata.model_validate(ins_dict)
                     self.instances[ins_metadata.instance_id] = ins_metadata
                     logger.debug("Restored instance %s", ins_id_str)
+
+                interrupted = get_ft_runtime_store().restore_persistent_data(
+                    persistent_state.data.get("ft_runtime", {})
+                )
+                for instance_id, fallback in interrupted.items():
+                    metadata = self.instances.get(instance_id)
+                    if metadata is None:
+                        continue
+                    metadata.prev_strategy_failed = True
+                    metadata.prev_strategy_name = "DpScaleDownStrategy"
+                    metadata.prev_strategy_fallback = fallback
 
             logger.info(
                 "Successfully restored fault manager data: %d nodes, %d instances",

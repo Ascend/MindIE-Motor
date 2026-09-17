@@ -206,13 +206,18 @@ motor_controller_config字段配置样例如下所示：
 | coordinator_heartbeat_interval | float | Controller 与 Coordinator 间心跳上报间隔，单位：秒，默认值：10.0。 |
 |<a id="fault_tolerance_config"></a>**fault_tolerance_config字段**|-|-|
 | enable_fault_tolerance | bool | 是否启用 Motor Controller 故障自愈（高级 RAS），默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul>该字段不等价于、也不会自动透传为 vLLM 开发分支的 `--enable-fault-tolerance`。 |
-| strategy_center_check_interval | int | 策略中心轮询间隔，单位：秒，默认值：1。 |
+| strategy_center_check_interval | int | 策略中心轮询间隔，单位：秒，默认值：10。 |
 | configmap_namespace |string|configmap命名空间，默认值："kube-system"。|
 | configmap_prefix |string|configmap前缀，默认值："mindx-dl-deviceinfo-"。|
 | k8s_cert_path |string|安全证书路径，默认为空。|
-| enable_scale_p2d | bool | 是否启用ScaleP2D弹性扩缩容，默认值：false。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
+| enable_scale_p2d | bool | 是否启用ScaleP2D弹性扩缩容，默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
 | enable_token_reinference | bool | 是否启用Token Reinference 故障恢复，默认值：true。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul> |
 | scale_p2d_d_instance_reinit_wait_timeout |int|ScaleP2D执行抢占前，等待D实例自恢复（重初始化）的最长时间，单位：秒，默认值：60。<br>等待期间若D实例恢复为initial/active，则不再执行ScaleP2D；超时后若D实例仍处于inactive等可抢占状态，则继续后续P实例选择流程。|
+| enable_dp_scale_down | bool | Controller 统一控制 DP 域缩容的开关，默认值：false。该开关同时适用于 Prefill 和 Decode 实例，不需要在 `motor_engine_prefill_config`、`motor_engine_decode_config` 中重复配置。既有 Controller 总开关 `enable_fault_tolerance` 默认为 true；若显式关闭，总 FT 流程（包括 DP 缩容）均不执行，但不会阻止 Controller 启动。该开关不会自动启用引擎侧 FT、external-lb、MC2 Mask、EP 或 EPLB。引擎能力不足时，FtGate 拒绝缩容并进入原故障恢复流程。|
+| enable_dp_scale_up | bool | DP 扩容能力开关（当前为暂定名称），默认值：false。缩容成功后，仅当该开关开启且 Pod 内所有 DP rank 均已移除时，Motor 才停止对应 NodeManager，由集群负责回收和补充容量；关闭时保留空 Pod，不影响卡级缩容结果。|
+| dp_scale_down_config.request_timeout_sec | float | Controller 调用 NodeManager FT 接口的超时，单位：秒，取值范围 `(0, 60]`，默认值：11.0。该值须为 NodeManager 到引擎的默认 5 秒请求留出响应余量。|
+| dp_scale_down_config.poll_interval_sec | float | 缩容执行期间查询引擎 FT 状态的间隔，单位：秒，取值范围 `(0, 60]`，默认值：1.0。|
+| dp_scale_down_config.execution_deadline_sec | float | 等待引擎完成缩容恢复的 Motor 侧截止时间，单位：秒，取值范围 `[1, 600]`，默认值：30.0。达到截止时间仍为 recovering 时直接进入原故障恢复流程。|
 | **observability_config字段**|-|-|
 | observability_enable |bool|是否启用可观测性，默认值：false。取值如下：<ul><li>true：启用</li><li>false：不启用</li></ul>|
 | metrics_ttl |int|metrics查询间隔，单位：秒，默认值：5。|
@@ -684,7 +689,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": false,
-      "poll_interval_sec": 5.0,
+      "poll_interval_sec": 1.0,
       "poll_timeout_sec": 5.0,
       "max_poll_failures": 3
     },
@@ -721,7 +726,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
 | endpoint_config.bootstrap_port |int/null | SGLang PD 原生 bootstrap 端口。由所选引擎配置中的 `engine_config.disaggregation_bootstrap_port`（兼容 `disaggregation-bootstrap-port`）派生；vLLM 或未配置时为空。 |
 | fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
-| fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：5.0。|
+| fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：1.0。|
 | fault_tolerance_config.poll_timeout_sec |float|单次轮询的 HTTP 超时，单位：秒，默认值：5.0。|
 | fault_tolerance_config.max_poll_failures |int|连续轮询失败阈值，达到后按 dead 上报，默认值：3。|
 | snapshot_config.enable_snapshot |bool|是否使能容器快照功能总开关，默认值：false。<br>开启后，用户可对实例容器制作快照镜像，并支持由快照恢复的实例向控制面注册。|
@@ -753,6 +758,12 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
 motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离部署场景**，这两个字段分别配置Prefill与Decode引擎。两者结构相同，均需指定engine_type与engine_config；`health_check_config` 用于配置原生 `/health` 超时与模型加载启动窗口。配置示例如下所示。
+
+DP 域缩容不在 P/D 配置中增加 Motor 特性开关。若希望某一侧实例具备缩容能力，只需在该侧
+`engine_config` 中开启 vLLM 原生 FT，并配置 external-lb、MC2 Mask、EP/EPLB 等实际所需能力；
+Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两侧同时开启。P/D 顶层的
+`fault_tolerance_config.enable_fault_tolerance` 只是 NodeManager 引擎状态轮询开关，检测到
+`engine_config.enable_fault_tolerance=true` 时会自动开启，无需客户重复配置。
 
 ```json
 "motor_engine_prefill_config": {
@@ -821,7 +832,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": false,
-      "poll_interval_sec": 5.0,
+      "poll_interval_sec": 1.0,
       "poll_timeout_sec": 5.0,
       "max_poll_failures": 3
     },
@@ -906,7 +917,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
     },
     "fault_tolerance_config": {
       "enable_fault_tolerance": false,
-      "poll_interval_sec": 5.0,
+      "poll_interval_sec": 1.0,
       "poll_timeout_sec": 5.0,
       "max_poll_failures": 3
     },
@@ -944,7 +955,7 @@ motor_engine_prefill_config和motor_engine_decode_config字段用于**PD分离�
 | endpoint_config.service_ports |array | 各端点推理服务端口列表（整数数组）。默认值：`[]` |
 | endpoint_config.bootstrap_port |int/null | SGLang PD 原生 bootstrap 端口。由所选引擎配置中的 `engine_config.disaggregation_bootstrap_port`（兼容 `disaggregation-bootstrap-port`）派生；vLLM 或未配置时为空。 |
 | fault_tolerance_config.enable_fault_tolerance |bool|是否显式开启引擎软件故障轮询，默认值：false。<br>引擎 user config 检测到 FT 开关时自动开启，无需显式配置。|
-| fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：5.0。|
+| fault_tolerance_config.poll_interval_sec |float|轮询引擎 FT 状态的时间间隔，单位：秒，默认值：1.0。|
 | fault_tolerance_config.poll_timeout_sec |float|单次轮询的 HTTP 超时，单位：秒，默认值：5.0。|
 | fault_tolerance_config.max_poll_failures |int|连续轮询失败阈值，达到后按 dead 上报，默认值：3。|
 | snapshot_config.enable_snapshot |bool|是否使能容器快照功能总开关，默认值：false。<br>开启后，用户可对实例容器制作快照镜像，并支持由快照恢复的实例向控制面注册。|

@@ -18,6 +18,7 @@ __all__ = [
     "COMPLETION_PREFIX",
     "COMPLETION_SUFFIX",
     "FT_STATUS_PATH",
+    "FT_APPLY_PATH",
     "ENGINE_STATUS_HEALTHY",
     "ENGINE_STATUS_DEAD",
     "ENGINE_STATUS_UNHEALTHY",
@@ -33,8 +34,9 @@ COMPLETION_PREFIX: Final[str] = "cmpl-"
 # /v1/completions: cmpl-xxx-0
 COMPLETION_SUFFIX: Final[str] = "-0"
 
-# Engine FT API routes (vLLM FaultTolerance framework, vllm-project/vllm#44428).
-FT_STATUS_PATH: Final[str] = "/fault_tolerance/status"
+# Engine FT API routes (vLLM FaultTolerance framework).
+FT_STATUS_PATH: Final[str] = "/v1/fault_tolerance/status"
+FT_APPLY_PATH: Final[str] = "/v1/fault_tolerance/apply"
 
 # Engine FT status vocabulary.
 ENGINE_STATUS_HEALTHY: Final[str] = "healthy"

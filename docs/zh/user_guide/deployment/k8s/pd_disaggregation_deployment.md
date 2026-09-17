@@ -190,7 +190,7 @@ NodeManager 负责原生引擎的就绪探测、进程监管和虚推健康探�
 - **进程存活**：监管原生引擎进程组；主进程或工作进程异常退出时触发实例恢复。
 - **vLLM 虚推**：对 DP0 实例发送轻量级推理请求，并结合 AI Cube 利用率识别静默故障；达到失败阈值后降级状态，但不直接杀进程。
 - **SGLang 健康探测**：使用 SGLang 原生生成式 `GET /health`，不创建 Motor 虚推 monitor。
-- **软件故障**：引擎提供 `/fault_tolerance/status` 时，可由 FaultReporter 补充软件故障上报。
+- **软件故障**：引擎提供 `/fault_tolerance/status` 时，可由 EngineFtManager 补充软件故障上报。
 
   ```json
   "motor_engine_prefill_config": {

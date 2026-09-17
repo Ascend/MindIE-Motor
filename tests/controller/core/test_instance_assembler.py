@@ -13,6 +13,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from motor.common.resources import Instance, InsStatus, ParallelConfig, Endpoint, ReadOnlyInstance
+from motor.common.resources.instance import FtCapabilitySnapshot
 from motor.common.resources.http_msg_spec import RegisterMsg, ReregisterMsg, Ranktable, ServerInfo, DeviceInfo
 from motor.controller.core.instance_assembler import (
     InstanceAssembler,
@@ -181,6 +182,30 @@ def test_build_endpoints_preserves_bootstrap_port(instance_assembler, test_confi
         assert endpoint.bootstrap_port == 9100
 
 
+def test_build_multi_endpoints_slices_ranktable_devices_per_dp(instance_assembler, test_config):
+    """Each DP endpoint owns only its TP/PP device slice, not the whole pod ranktable."""
+    ranktable = build_pod_ranktable(
+        pod_ip=test_config["pod_ip1"],
+        pod_device_num=4,
+        rank_offset=8,
+    )
+    for device, physical_id in zip(ranktable.server_list[0].device, (14, 15, 6, 7), strict=True):
+        device.device_id = str(physical_id)
+    msg = create_register_msg(
+        "decode",
+        test_config["pod_ip1"],
+        test_config,
+        ranktable=ranktable,
+    )
+
+    endpoints = instance_assembler._build_multi_endpoints(msg, 0)
+
+    assert [[device.device_id for device in endpoint.device_infos] for endpoint in endpoints.values()] == [
+        ["14", "15"],
+        ["6", "7"],
+    ]
+
+
 def register_instance_with_pods(assembler: InstanceAssembler, job_name: str, config: dict, pod_count: int = 2) -> bool:
     """Register pods for an instance and return whether assembly is complete"""
     pod_ips = [f"127.0.0.{i + 1}" for i in range(pod_count)]
@@ -299,6 +324,36 @@ def test_register_existing_instance(instance_assembler, test_config):
     assert len(instance_assembler.instances) == 1
     metadata = instance_assembler.instances[job_name]
     assert len(metadata.instance.endpoints) == 2  # Two pods registered
+
+
+def test_register_rejects_inconsistent_ft_capability(instance_assembler, test_config):
+    capability = FtCapabilitySnapshot(
+        enabled=True,
+        scale_down_supported=True,
+        external_lb=True,
+        fused_mc2_enabled=True,
+        eplb_enabled=True,
+        num_redundant_experts=1,
+    )
+    first = create_register_msg(
+        "test_job",
+        test_config["pod_ip1"],
+        test_config,
+        ft_capability=capability,
+    )
+    assert instance_assembler.register(first) == 0
+
+    second = create_register_msg(
+        "test_job",
+        test_config["pod_ip2"],
+        test_config,
+        ft_capability=FtCapabilitySnapshot(),
+    )
+
+    assert instance_assembler.register(second) == -1
+    metadata = instance_assembler.instances["test_job"]
+    assert metadata.instance.ft_capability == capability
+    assert not metadata.instance.has_node_mgr(test_config["pod_ip2"])
 
 
 def test_register_already_assembled_instance(instance_assembler, test_config):

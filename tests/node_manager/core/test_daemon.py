@@ -10,6 +10,7 @@
 
 import os
 import json
+import time
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -108,6 +109,38 @@ def endpoints():
 
 
 class TestDaemon:
+    def test_engine_ft_manager_starts_only_after_engines_are_ready(self, daemon, endpoints):
+        engine = daemon._services[SERVICE_ENGINE]
+        daemon._engine_ft_manager = MagicMock()
+        engine.wait_ready = MagicMock(return_value=True)
+
+        daemon._wait_engines_ready(endpoints, instance_id=7)
+
+        engine.wait_ready.assert_called_once_with(endpoints)
+        daemon._engine_ft_manager.start.assert_called_once_with(endpoints, instance_id=7)
+        assert daemon.engine_ready_event.is_set()
+
+    def test_engine_ft_manager_does_not_start_when_engine_readiness_times_out(self, daemon, endpoints):
+        engine = daemon._services[SERVICE_ENGINE]
+        daemon._engine_ft_manager = MagicMock()
+        engine.wait_ready = MagicMock(return_value=False)
+
+        daemon._wait_engines_ready(endpoints, instance_id=7)
+
+        daemon._engine_ft_manager.start.assert_not_called()
+        # Heartbeat must still be released to handle the failed startup.
+        assert daemon.engine_ready_event.is_set()
+
+    def test_engine_ft_manager_does_not_start_when_engine_readiness_raises(self, daemon, endpoints):
+        engine = daemon._services[SERVICE_ENGINE]
+        daemon._engine_ft_manager = MagicMock()
+        engine.wait_ready = MagicMock(side_effect=RuntimeError("probe failed"))
+
+        daemon._wait_engines_ready(endpoints, instance_id=7)
+
+        daemon._engine_ft_manager.start.assert_not_called()
+        assert daemon.engine_ready_event.is_set()
+
     @pytest.mark.parametrize(
         ("launch_env", "expected_host_ip", "expected_mc_ipv6"),
         [
@@ -425,7 +458,7 @@ def _restart_params():
 @patch("subprocess.Popen")
 def test_restart_engine_relaunches_engines_in_place(mock_popen, daemon, endpoints, capsys):
     """restart_engine only touches the engine service: KV store and monitor
-    thread stay alive, the FaultReporter is paused/resumed for the window.
+    thread stay alive, the EngineFtManager is paused/resumed for the window.
     """
     mock_process = MagicMock(pid=12345)
     mock_process.poll.return_value = None
@@ -436,20 +469,25 @@ def test_restart_engine_relaunches_engines_in_place(mock_popen, daemon, endpoint
     daemon.pull_engine(PDRole.ROLE_P, endpoints, 1, "192.168.1.100")
     assert 12345 in daemon._services["engine"].pid_list()
 
-    fault_reporter = MagicMock()
-    daemon._fault_reporter = fault_reporter
+    engine_ft_manager = MagicMock()
+    daemon._engine_ft_manager = engine_ft_manager
+    engine_service = daemon._services["engine"]
+    engine_service.wait_ready = MagicMock(return_value=True)
     with _patch_restart_params(_restart_params()):
         daemon.restart_engine(1)
+
+    deadline = time.monotonic() + 1
+    while not engine_ft_manager.resume.called and time.monotonic() < deadline:
+        time.sleep(0.01)
 
     kv_service.stop.assert_not_called()
     assert daemon._monitor_thread is not None and daemon._monitor_thread.is_alive()
     assert len(daemon._services["engine"].pid_list()) == len(_restart_params()["endpoints"])
-    fault_reporter.pause.assert_called_once()
-    fault_reporter.resume.assert_called_once()
+    engine_ft_manager.pause.assert_called_once()
+    engine_ft_manager.resume.assert_called_once()
     assert not daemon.is_engine_restart_in_progress()
     # The relaunch separator (with per-container count) hits the container
     # stdout stream so log review can delimit relaunch #N.
-    engine_service = daemon._services["engine"]
     assert engine_service._restart_count == 1
     assert "[ENGINE RELAUNCH #1] instance_id=1" in capsys.readouterr().out
 
@@ -547,6 +585,51 @@ def test_freeze_suspends_counting_and_expires(daemon):
     assert not daemon.is_suicide_frozen()
 
 
+def test_stale_engine_ft_finalize_cannot_release_new_transaction(daemon):
+    daemon.guard_engine_ft_transaction("old", 60)
+    with pytest.raises(RuntimeError, match="another engine FT transaction is active"):
+        daemon.guard_engine_ft_transaction("new", 60)
+    daemon.finalize_engine_ft_transaction("old", [], False)
+    daemon.guard_engine_ft_transaction("new", 60)
+
+    with pytest.raises(RuntimeError, match="stale engine FT transaction finalize"):
+        daemon.finalize_engine_ft_transaction("old", [], False)
+
+    assert daemon.is_suicide_frozen()
+    daemon.finalize_engine_ft_transaction("new", [], False)
+    assert not daemon.is_suicide_frozen()
+
+
+def test_commit_retired_endpoint_updates_monitors_and_filters_pid_death(daemon):
+    reporter = MagicMock()
+    daemon._engine_ft_manager = reporter
+    daemon._instance_id = 7
+    with (
+        patch("motor.node_manager.core.daemon.HeartbeatManager") as heartbeat_cls,
+        patch.object(daemon, "_report_engine_death", return_value=True) as report_death,
+    ):
+        daemon.commit_retired_endpoints([1])
+        daemon._handle_engine_deaths([(101, 1), (102, 0)])
+
+    heartbeat_cls.return_value.retire_endpoints.assert_called_once_with([1])
+    heartbeat_cls.return_value.validate_retire_endpoints.assert_called_once_with([1])
+    reporter.validate_retire_endpoints.assert_called_once_with([1])
+    reporter.retire_endpoints.assert_called_once_with([1])
+    report_death.assert_called_once_with(0, daemon._config.api_config.pod_ip, 7)
+
+
+def test_commit_retired_endpoint_validates_all_monitors_before_mutation(daemon):
+    reporter = MagicMock()
+    daemon._engine_ft_manager = reporter
+    reporter.validate_retire_endpoints.side_effect = ValueError("unknown rank")
+    with patch("motor.node_manager.core.daemon.HeartbeatManager") as heartbeat_cls:
+        with pytest.raises(ValueError, match="unknown rank"):
+            daemon.commit_retired_endpoints([9])
+
+    heartbeat_cls.return_value.retire_endpoints.assert_not_called()
+    reporter.retire_endpoints.assert_not_called()
+
+
 def test_freeze_does_not_shorten_existing_relaunch_window(daemon):
     """A concurrent short death-report freeze must not replace relaunch freeze."""
     with patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0):
@@ -577,6 +660,7 @@ def test_engine_death_reported_and_deduped_by_pid(daemon):
         mock_client_cls.report_software_fault.return_value = True
         daemon._config.fault_tolerance_config.engine_restart_wait_timeout_sec = 60.0
         daemon._config.api_config.pod_ip = "10.0.0.1"
+        daemon._instance_id = 7
 
         daemon._handle_engine_deaths([(12345, 0)])
         daemon._handle_engine_deaths([(12345, 0)])
@@ -589,6 +673,7 @@ def test_engine_death_reported_and_deduped_by_pid(daemon):
         assert fault["engine_status"] == 1
         assert fault["exception_type"] == "EngineDeadError"
         assert fault["pod_ip"] == "10.0.0.1"
+        assert fault["instance_id"] == 7
 
 
 def test_engine_death_report_failure_retried_without_freeze(daemon):

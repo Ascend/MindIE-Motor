@@ -11,6 +11,7 @@
 
 import threading
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 class StrategyBase(ABC):
@@ -22,6 +23,21 @@ class StrategyBase(ABC):
         self._is_finished = False
         self._is_failed = False
         self._lock = threading.Lock()
+        self._controller_config: Any = None
+        self._strategy_context: Any = None
+
+    def bind_config(self, config: Any) -> None:
+        """Bind the Controller configuration owned by the strategy orchestrator."""
+        self._controller_config = config
+
+    def bind_context(self, context: Any) -> None:
+        """Bind the immutable fault context captured by the strategy orchestrator."""
+        self._strategy_context = context
+
+    @property
+    def strategy_context(self) -> Any:
+        """Return the immutable context bound by the strategy orchestrator."""
+        return self._strategy_context
 
     @abstractmethod
     def execute(self, instance_id: int):
@@ -42,8 +58,8 @@ class StrategyBase(ABC):
         """Mark the strategy run as failed (recovery did not complete).
 
         Any recovery strategy that finishes without restoring health calls
-        this; the strategy center then escalates to the fallback strategy
-        (EngineRelaunchStrategy) on the next round.
+        this; the strategy center then advances to the next configured fallback
+        without repeating the same failed strategy.
         """
         with self._lock:
             self._is_failed = True

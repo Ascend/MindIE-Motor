@@ -12,7 +12,10 @@
 
 from motor.common.app.application import Application
 from motor.common.logger import get_logger
-from motor.common.standby.standby_manager import CONTROLLER_REPORT_EVENT_KEY, StandbyManager
+from motor.common.standby.standby_manager import (
+    CONTROLLER_REPORT_EVENT_KEY,
+    StandbyManager,
+)
 from motor.config.controller import ControllerConfig
 from motor.controller.api_server import ControllerAPI
 from motor.controller.core import EventPusher, InstanceAssembler, InstanceManager
@@ -54,7 +57,7 @@ class Controller(Application):
         self.add_module("EventPusher", EventPusher(self.config))
 
         if self.config.fault_tolerance_config.enable_fault_tolerance:
-            from motor.controller.fault_tolerance import FaultManager
+            from motor.controller.fault_tolerance.fault_manager import FaultManager
 
             self.add_module("FaultManager", FaultManager(self.config))
 
@@ -199,7 +202,7 @@ class Controller(Application):
         """Dynamically start FaultManager and attach to InstanceManager."""
         logger.info("Fault tolerance feature enabled, starting FaultManager...")
         try:
-            from motor.controller.fault_tolerance import FaultManager
+            from motor.controller.fault_tolerance.fault_manager import FaultManager
 
             fault_manager = FaultManager(self.config)
             self.add_module("FaultManager", fault_manager)

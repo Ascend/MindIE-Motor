@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -15,4 +14,13 @@ Fault tolerance module - contains fault detection and recovery mechanisms.
 
 __all__ = ["FaultManager"]
 
-from .fault_manager import FaultManager
+
+FaultManager: type
+
+
+def __getattr__(name: str) -> type:
+    if name == "FaultManager":
+        from .fault_manager import FaultManager
+
+        return FaultManager
+    raise AttributeError(name)

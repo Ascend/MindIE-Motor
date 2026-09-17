@@ -516,7 +516,7 @@ flowchart LR
         K8sNode[K8s Node 状态] -->|Watch| RM_Node[ResourceMonitor]
     end
     subgraph SW[软件故障感知]
-        Engine[vLLM Engine] -->|HTTP 轮询<br/>GET /fault_tolerance/status| FR[FaultReporter<br/>NodeManager]
+        Engine[vLLM Engine] -->|HTTP 轮询<br/>GET /fault_tolerance/status| FR[EngineFtManager<br/>NodeManager]
         FR -->|HTTP| API[ControllerAPI<br/>/report_software_fault]
     end
     RM_HW --> FM[FaultManager]
@@ -529,9 +529,9 @@ flowchart LR
 |------|----------|----------|----------|
 | ConfigMap Watch | NPU 卡故障 (`CardUnhealthy`)<br/>卡间网络故障 (`CardNetworkUnhealthy`)<br/>交换机故障 | K8s Watch API，每个 Node 一个 ResourceMonitor | `FaultInfo` → `NodeMetadata.hardware_fault_infos` |
 | Node Watch | 节点重启 / NotReady | K8s Watch API | `NODE_REBOOT` (fault_code: `0x0000001`) → L6 |
-| 软件故障上报 | Engine DEAD/UNHEALTHY | 原生引擎 `/fault_tolerance/status` → NodeManager FaultReporter → HTTP | `FaultInfo` → `NodeMetadata.software_fault_infos` |
+| 软件故障上报 | Engine DEAD/UNHEALTHY | 原生引擎 `/fault_tolerance/status` → NodeManager EngineFtManager → HTTP | `FaultInfo` → `NodeMetadata.software_fault_infos` |
 
-> **原生引擎故障能力边界：** 启用 FaultReporter 时，目标引擎版本必须提供
+> **原生引擎故障能力边界：** 启用 EngineFtManager 时，目标引擎版本必须提供
 > `/fault_tolerance/status`。进程状态、原生 health、请求异常与熔断仍由
 > Node Manager/Coordinator 构成通用故障基线。
 

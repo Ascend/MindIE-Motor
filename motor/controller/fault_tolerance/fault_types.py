@@ -15,6 +15,7 @@ This module defines fault level/fault_type/category enumerations, data models
 fault tolerance management subsystem.
 """
 
+import re
 import threading
 import time
 from enum import Enum
@@ -113,6 +114,7 @@ class FaultInfo(BaseModel):
     exception_message: str | None = Field(default=None, description="Exception message (software only)")
     engine_id: int | None = Field(default=None, description="Engine ID (software only)")
     engine_status: int | None = Field(default=None, description="EngineStatusType value (software only)")
+    instance_id: int | None = Field(default=None, description="Owning instance ID (software only)")
     timestamp: str | None = Field(default=None, description="Fault timestamp")
     additional_info: dict | None = Field(default=None, description="Additional fault info (software only)")
 
@@ -123,6 +125,7 @@ class FaultInfo(BaseModel):
         engine_id: int,
         engine_status: int,
         additional_info: dict | None = None,
+        instance_id: int | None = None,
     ) -> "FaultInfo":
         """Create a software FaultInfo from an exception."""
         fault_level = cls._map_engine_status_to_fault_level(engine_status)
@@ -136,6 +139,7 @@ class FaultInfo(BaseModel):
             exception_message=str(exception),
             engine_id=engine_id,
             engine_status=int(engine_status),
+            instance_id=instance_id,
             timestamp=time.strftime("%H:%M:%S", local_time),
             additional_info=additional_info or {},
         )
@@ -157,6 +161,22 @@ class FaultInfo(BaseModel):
         elif engine_status == 2:
             return int(SpecialFaultCode.ENGINE_UNHEALTHY)
         return 0x0
+
+
+def hardware_fault_storage_key(fault: FaultInfo) -> str:
+    """Return a device-scoped key so equal fault codes on different NPUs do not collide."""
+    return "%x:%s" % (int(fault.fault_code), fault.npu_name or "node")
+
+
+def hardware_fault_identity(node_name: str, fault: FaultInfo) -> str:
+    """Return the cluster-unique identity of one hardware fault observation."""
+    return "%s:%s" % (node_name, hardware_fault_storage_key(fault))
+
+
+def software_fault_storage_key(fault: FaultInfo) -> str:
+    """Return a per-instance DP key so a newer status replaces the prior one."""
+    engine_id = fault.engine_id if fault.engine_id is not None else "unknown"
+    return "%s:%s" % (fault.instance_id, engine_id) if fault.instance_id is not None else str(engine_id)
 
 
 def map_fault_type(fault_type_str: str) -> HardwareFaultType:
@@ -281,11 +301,10 @@ def parse_npu_chip_ids(npu_name: str) -> set[int]:
         token = token.strip()
         if not token or token.startswith("..."):
             continue
-        tail = token.rsplit("-", 1)[-1]
-        digits = "".join(ch for ch in tail if ch.isdigit())
-        if not digits:
+        match = re.fullmatch(r"(?:Ascend\d+|npu)-?(\d+)", token, re.IGNORECASE)
+        if match is None:
             continue
-        chip_ids.add(int(digits))
+        chip_ids.add(int(match.group(1)))
     return chip_ids
 
 
@@ -344,17 +363,21 @@ class NodeMetadata(BaseModel):
     node_name: str = Field(..., description="Kubernetes node name")
     instance_ids: set[int] = Field(default_factory=set, description="Instance IDs running on this node")
     instance_pod_ips: dict[int, str] = Field(
-        default_factory=dict, description="Per-instance pod IP mapping (instance_id -> pod_ip)"
+        default_factory=dict,
+        description="Per-instance pod IP mapping (instance_id -> pod_ip)",
     )
     instance_job_names: dict[int, str] = Field(
-        default_factory=dict, description="Per-instance job name mapping (instance_id -> job_name)"
+        default_factory=dict,
+        description="Per-instance job name mapping (instance_id -> job_name)",
     )
     node_status: NodeStatus = Field(default=NodeStatus.READY, description="Node status")
-    hardware_fault_infos: dict[int, FaultInfo] = Field(
-        default_factory=dict, description="Hardware fault information dictionary keyed by fault_code"
+    hardware_fault_infos: dict[int | str, FaultInfo] = Field(
+        default_factory=dict,
+        description="Hardware faults keyed by fault_code and device identity",
     )
-    software_fault_infos: dict[int, FaultInfo] = Field(
-        default_factory=dict, description="Software fault information dictionary keyed by fault_code"
+    software_fault_infos: dict[int | str, FaultInfo] = Field(
+        default_factory=dict,
+        description="Software faults keyed by fault_code and engine identity",
     )
 
 
@@ -401,17 +424,59 @@ class InstanceMetadata(BaseModel):
     fault_level: FaultLevel = Field(default=FaultLevel.HEALTHY, description="Current instance fault level")
     fault_code: int = Field(default=0x0, description="Fault code that trigger the current strategy")
     strategy_fault_level: FaultLevel = Field(
-        default=FaultLevel.HEALTHY, description="Fault level of the currently running strategy"
+        default=FaultLevel.HEALTHY,
+        description="Fault level of the currently running strategy",
     )
     #: Set when the last strategy finished without restoring health; the
     #: strategy center then escalates to the fallback strategy
     #: (EngineRelaunchStrategy) instead of re-running the same strategy.
     prev_strategy_failed: bool = Field(default=False, description="Last strategy failed to recover")
+    prev_strategy_name: str = Field(default="", description="Last completed recovery strategy")
+    prev_strategy_fallback: str = Field(default="", description="Original fallback after scale-down failure")
+    handled_hardware_faults: set[str] = Field(
+        default_factory=set,
+        description="Hardware fault identities already committed by DP scale-down",
+    )
+    fault_collection_started_at: float | None = Field(
+        default=None,
+        description="Wall-clock time when the current software FT status round started",
+    )
+    hardware_fault_observed_at: float | None = Field(
+        default=None,
+        description="Wall-clock time when actionable hardware evidence opened the recovery session",
+    )
+    software_dead_observed_at: dict[int, float] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="First wall-clock DEAD observation time for each DP rank",
+    )
+    software_unhealthy_observed_at: dict[int, float] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="First wall-clock UNHEALTHY observation time for each DP rank",
+    )
+    recovery_ready: bool = Field(
+        default=True,
+        description="Whether the instance completed readiness baseline collection",
+    )
+    ignored_pre_ready_hardware_faults: set[str] = Field(
+        default_factory=set,
+        description="Hardware fault identities already present before the instance became ready",
+    )
+    recovery_plan_source: str = Field(default="", description="Evidence source frozen for current recovery round")
+    recovery_plan_strategy: str = Field(default="", description="Primary strategy frozen for current recovery round")
+    recovery_plan_fallback: str = Field(default="", description="Fallback frozen for current recovery round")
 
     # Non-serializable fields (excluded from serialization)
     lock: Any = Field(default=None, exclude=True)
     # StrategyBase instance, using Any to avoid requiring arbitrary_types_allowed
     strategy: Any = Field(default=None, exclude=True)
+    strategy_future: Any = Field(default=None, exclude=True)
+    strategy_preempted: bool = Field(
+        default=False,
+        exclude=True,
+        description="Current strategy is stopping before a higher-level strategy starts",
+    )
 
     @model_validator(mode="after")
     def init_lock(self):
@@ -422,4 +487,12 @@ class InstanceMetadata(BaseModel):
 
     def model_dump(self, **kwargs) -> dict:
         """Override model_dump to exclude non-serializable fields"""
-        return super().model_dump(exclude={"lock", "strategy"}, **kwargs)
+        return super().model_dump(
+            exclude={
+                "lock",
+                "strategy",
+                "strategy_future",
+                "strategy_preempted",
+            },
+            **kwargs,
+        )

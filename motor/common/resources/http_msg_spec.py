@@ -14,8 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from motor.common.logger import get_logger
 from motor.common.resources.dispatch import DispatchPlan
-from motor.common.resources.instance import InsStatus, Instance, ParallelConfig, PDRole
 from motor.common.resources.endpoint import Endpoint, DeviceInfo, EndpointStatus
+from motor.common.resources.instance import FtCapabilitySnapshot, InsStatus, Instance, ParallelConfig, PDRole
 from motor.common.utils.net import split_address
 
 logger = get_logger(__name__)
@@ -62,6 +62,7 @@ class RegisterMsg(BaseModel):
         default_factory=list,
         description="Supported Motor dispatch plans for this instance",
     )
+    ft_capability: FtCapabilitySnapshot = Field(default_factory=FtCapabilitySnapshot)
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")
     business_port: list[str] = Field(..., description="Business port for all endpoints managed by this nm")
@@ -111,6 +112,7 @@ class ReregisterMsg(BaseModel):
         default_factory=list,
         description="Supported Motor dispatch plans for this instance",
     )
+    ft_capability: FtCapabilitySnapshot = Field(default_factory=FtCapabilitySnapshot)
     instance_id: int = Field(..., description="Instance id")
     role: str = Field(..., description="Instance role")
     pod_ip: str = Field(..., description="Pod IP address")

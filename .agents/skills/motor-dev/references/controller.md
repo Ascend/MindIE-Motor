@@ -89,6 +89,12 @@ The heartbeat timeout is **not a config item** — it is a hardcoded constant (`
 
 `ACTIVE + INSTANCE_HEARTBEAT_TIMEOUT → INACTIVE` is additionally guarded by a pre-check in `_handle_inactive` (`instance_manager.py`): before isolating the instance, the controller actively probes the node managers via `_check_node_managers_status`. If all node managers are healthy (e.g. the timeout was caused by controller master/standby switching, not by the node), the instance is **not** set to INACTIVE — instead its heartbeat timestamp is refreshed so it is not immediately re-timed-out.
 
+`PartialLossPolicy` reads one DP runtime snapshot for heartbeat validation and legacy-shutdown protection. Active
+scale-down transaction phases suppress the legacy partial-loss shutdown; `SCALED_DOWN_RUNNING` ignores only
+`dead_committed`, so a new survivor loss still enters normal fault handling. `RECONFIGURING` is unprotected.
+The policy is bypassed unless FT and DP scale-down are both enabled. With scale-down off, heartbeats must contain the
+original exact endpoint set; with it on, only committed ranks may be absent. An empty heartbeat is valid only for a
+fully committed local Pod.
 Heartbeat handler return codes:
 
 - `200`: Heartbeat processed, instance status unchanged
@@ -103,6 +109,10 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 - On every state change: `persist_data()` writes a versioned snapshot with `calculate_checksum()` — SHA256 of `str(list(data.items())) + version + timestamp`, **not** a hash of JSON-serialized data (`motor/common/etcd/persistent_state.py`)
 - `_data_version` is a monotonic counter (incremented on every write) to prevent stale writes from overwriting newer data
 - `forced_separated_instances` is **memory-only and not persisted to or restored from ETCD** — after a controller restart the set starts empty, so force-isolation protection does not survive a restart
+
+DP runtime persistence stores only `phase`, `original_dp_ranks`, `dead_committed`, and `fallback_strategy`;
+observation-only updates do not write ETCD. Restored committed topology is republished. An interrupted transaction
+becomes `RECONFIGURING` and resumes its original fallback; Controller never repeats engine apply after restart.
 
 ### FaultManager Internals
 
@@ -124,11 +134,51 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 3. `OriginFaultLevel` is first mapped to `FaultLevel` via `map_fault_level` (`fault_types.py`); the strategy is then selected from `generate_strategy_map()`, keyed by `FaultLevel` (HEALTHY + L1–L6) (`strategy/strategy.py`)
 4. Strategy is executed: isolate instance → notify observers → track recovery
 
+**Engine FT recovery chain:**
+
+- Priority is token reinference, all-UNHEALTHY fast recovery, complete UNHEALTHY+DEAD scale-down, then original
+  whole-instance recovery. All-UNHEALTHY is necessary but not sufficient for `is_applicable()`. Failed fast recovery
+  goes directly to reconfiguration; a running strategy is reaped before a replacement is submitted.
+- Software FT evidence starts collection immediately. A complete snapshot with at least one DEAD and one UNHEALTHY
+  starts scale-down; incomplete evidence waits until its deadline and all-DEAD reconfigures. A mappable L4-L6
+  hardware-first event waits `hardware_ft_correlation_window_sec` for matching engine evidence; a complete engine
+  snapshot remains authoritative after that short window. Already committed
+  hardware ranks are acknowledged, while unmapped or uncorrelated events retain the original recovery path.
+- Fault-level refresh and scale-down planning consume the same instance-scoped evidence snapshot, so device
+  ownership, handled hardware faults and instance-scoped software faults cannot drift between the two paths.
+- DEAD software `engine_id` values are the only apply candidates. Hardware card-to-DP mapping is correlation
+  evidence, not an apply source; engine Mask is observational only. Equal hardware codes remain distinct by card and
+  node identity; unknown device names are not guessed.
+- `FtGate` requires engine FT/scale-down capability, external LB, EPLB, and a positive static redundant-expert
+  count. Fused MC2 is not a Motor gate. Motor owns DP/Pod topology and `dead_committed`; the engine owns live EPLB
+  placement and final expert feasibility.
+- Controller validates topology, guards every NodeManager, then waits until every survivor is clean UNHEALTHY.
+  HEALTHY or `unhealthy+recovering` waits; failed, missing, or malformed status aborts. A newly DEAD survivor joins
+  the same removal set; no survivors means reconfiguration. One transaction-level executor is reused for all
+  NodeManager fan-out phases and closed when the attempt exits.
+- Controller withdraws the current surviving view, sends exactly one `scale_down` apply, and polls. All survivors
+  returning clean HEALTHY commits; terminal status, request/query failure, or deadline aborts without retry. Every
+  guarded exit finalizes once using the same request id.
+- NodeManager grouping includes headless participants for guard/finalize but sends status/apply only to explicit
+  routable survivors. Missing or inconsistent topology fails closed. vLLM status identity uses global DP rank and
+  only `healthy/unhealthy/dead`; other state names are invalid.
+- Successful commit updates `dead_committed` and publishes an ADD containing only survivors. `ServingOverlay`
+  applies that immutable projection to later READY/RESUME/SET events; `serving_published` keeps `can_serve=false`
+  until publication converges. If evidence self-clears while waiting, the runtime returns to the last committed
+  topology and republishes it instead of leaving the instance withdrawn.
+- `enable_fault_tolerance && enable_dp_scale_down` gates all scale-down side paths. `enable_dp_scale_down` and the
+  provisional `enable_dp_scale_up` are Controller-level, role-independent switches; engine-native FT/EPLB settings
+  remain independent. Scale-up alone controls one-shot stop of a fully drained Pod, after which MindCluster owns
+  recycling. Transaction tuning lives under `dp_scale_down_config`.
+- Runtime records follow the logical instance lifecycle. Relaunch preserves committed ranks; whole-instance
+  reconfiguration clears them. A successful round clears stale software evidence before replanning, preventing
+  `WAITING_ENGINE_FAULT` from overwriting `SCALED_DOWN_RUNNING`.
+
 **A2 PD-disagg isolation** (`A2_PD_ISOLATION_FAULT_CODES` in `fault_types.py`; currently `0x81078603` / `CardNetworkUnhealthy` → `PreSeparateNPU`):
 
 - On Atlas `800I_A2`, these codes stay L6 (not downgraded to L2 while business is active). Add a code only when it needs all three: keep L6, NPU attribution, Decode NmSuicide.
 - Node ConfigMap faults are still stored per **node**, but instance isolation uses `pre_separate_fault_affects_instance()` (`fault_types.py`): the named NPU (`Ascend910-N` / `npu-N`) must intersect the instance endpoint `device_id` list. Prefill and Decode sharing a node therefore do not both take L6 when only one role's cards are down. Unknown `npu_name` fails open (still isolate). An instance with an empty `device_id` list fails closed (not treated as owner) so a colocated INITIAL instance is not isolated.
-- L6 Prefill / Decode isolation-set codes / multi-pod union on Atlas `800I_A2` → `NmSuicideStrategy` (`strategy/nm_suicide.py`): POST `/node-manager/stop` on every NodeManager of **that** instance. Timeout / connection refused is treated as already exiting. HTTP 5xx and other dispatch errors `mark_failed` so the strategy center can retry or escalate to EngineRelaunch. A superseded instance id (newer id for the same `job_name`) is skipped so stop is not sent to a replacement Pod IP. Other Prefill L6 (non-isolation codes / non-A2) stays a no-op at the strategy layer.
+- L6 Prefill / Decode isolation-set codes / multi-pod union on Atlas `800I_A2` → `NmSuicideStrategy` (`strategy/nm_suicide.py`): POST `/node-manager/stop` on every NodeManager of **that** instance. Timeout / connection refused is treated as already exiting. HTTP 5xx and other dispatch errors `mark_failed` so the strategy center can escalate to EngineRelaunch when enabled. A superseded instance id (newer id for the same `job_name`) is skipped so stop is not sent to a replacement Pod IP. Other Prefill L6 (non-isolation codes / non-A2) stays a no-op at the strategy layer.
 - Single-pod union keeps the PreSeparateNPU L6→L2 downgrade. Other Decode L6 (not in the isolation set, or not A2) still uses ScaleP2D.
 
 **Fault levels** (`fault_types.py`):
@@ -154,8 +204,15 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 | `motor/controller/core/event_pusher.py` | Pushes instance events to Coordinator via HTTP; Coordinator heartbeat detection + periodic SET sync. `INSTANCE_REMOVED` of a superseded (smaller) instance id does not send DEL when a newer READY instance already occupies the same `job_name`. |
 | `motor/controller/core/recovery_service.py` | Instance recovery orchestration |
 | `motor/controller/fault_tolerance/fault_manager.py` | Hardware fault detection, recovery strategy generation |
-| `motor/controller/fault_tolerance/fault_types.py` | Fault enums (`FaultCategory`, `OriginFaultLevel`, `FaultLevel`, `FaultInfo`) + `map_fault_level` + A2 linkdown NPU attribution (`parse_npu_chip_ids`, `pre_separate_fault_affects_instance`) |
-| `motor/controller/fault_tolerance/strategy/strategy.py` | Strategy map generation from fault levels (L6: A2 isolation Prefill/Decode/multi-pod union→NmSuicide; other Decode L6→ScaleP2D) |
+| `motor/controller/fault_tolerance/fault_types.py` | Fault enums and mapping plus A2 linkdown NPU attribution (`parse_npu_chip_ids`, `pre_separate_fault_affects_instance`) |
+| `motor/common/http/engine_ft_client.py` | Versioned vLLM FT status/apply protocol plus group query/dispatch helpers |
+| `motor/controller/fault_tolerance/dp_scale_down.py` | Instance FT runtime store, atomic transitions and Pod-to-DP topology resolution |
+| `motor/controller/fault_tolerance/pod_lifecycle.py` | One-shot Error-Pod stop dispatch; MindCluster owns subsequent recycling |
+| `motor/controller/fault_tolerance/serving_overlay.py` | Immutable surviving-endpoint projections used for Coordinator DEL/ADD/SET publication |
+| `motor/controller/fault_tolerance/strategy/strategy.py` | Strategy map generation (including A2 isolation Prefill/Decode/multi-pod union→NmSuicide; other Decode L6→ScaleP2D) |
+| `motor/controller/fault_tolerance/strategy/fast_recovery.py` | Implementation-neutral fast-recovery applicability contract and execution placeholder |
+| `motor/controller/fault_tolerance/strategy/dp_scale_down.py` | Cumulative DP scale-down execution |
+| `motor/controller/fault_tolerance/strategy/reconfiguration.py` | Bridge to the original whole-instance isolate-and-stop recovery flow |
 | `motor/controller/fault_tolerance/strategy/nm_suicide.py` | Stop all NodeManagers of A2 isolation Prefill/Decode/multi-pod union L6 (`/node-manager/stop`) |
 | `motor/controller/fault_tolerance/k8s/resource_monitor.py` | Per-node hardware monitoring via k8s Node/ConfigMap watch (NPU faults, network, etc.) |
 | `motor/controller/fault_tolerance/k8s/configmap_parser.py` | Parses Ascend Device Plugin ConfigMap |

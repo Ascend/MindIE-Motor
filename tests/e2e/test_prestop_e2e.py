@@ -490,6 +490,8 @@ class TestEventPusherPrestop:
             config = MagicMock()
             config.event_config.event_consumer_sleep_interval = 0.1
             config.event_config.coordinator_heartbeat_interval = 1.0
+            config.fault_tolerance_config.enable_fault_tolerance = False
+            config.fault_tolerance_config.enable_dp_scale_down = False
             ep = EventPusher(config)
             yield ep
 

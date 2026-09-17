@@ -20,10 +20,10 @@ from motor.common import engine_constants as constants
 logger = get_logger(__name__)
 
 # High-frequency endpoint paths excluded from the vLLM uvicorn access log by default:
-# NodeManager health probes (/health, /snapshot/health) and metrics scraping (/metrics) fire every few
-# seconds and would otherwise flood the api-server log. Per-instance override via
-# engine_config key disable_access_log_for_endpoints.
-DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS = "/health,/metrics,/snapshot/health"
+# NodeManager health/FT probes and metrics scraping fire frequently and would
+# otherwise flood the api-server log. Per-instance override via engine_config
+# key disable_access_log_for_endpoints.
+DEFAULT_ACCESS_LOG_EXCLUDED_ENDPOINTS = "/health,/metrics,/snapshot/health,/v1/fault_tolerance/status"
 
 
 def _add_argument_to_list(arg_list: list, key: str, value: Any):

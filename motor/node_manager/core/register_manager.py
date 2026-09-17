@@ -369,6 +369,7 @@ class RegisterManager(ThreadSafeSingleton):
             model_name = self._config.basic_config.model_name
             engine_type = self._config.basic_config.engine_type
             dispatch_capabilities = self._config.basic_config.dispatch_capabilities
+            ft_capability = self._config.basic_config.ft_capability
             role = self._config.basic_config.role
             pod_ip = self._config.api_config.pod_ip
             business_port = self._config.endpoint_config.service_ports
@@ -384,6 +385,7 @@ class RegisterManager(ThreadSafeSingleton):
             model_name=model_name,
             engine_type=engine_type,
             dispatch_capabilities=dispatch_capabilities,
+            ft_capability=ft_capability,
             role=role,
             pod_ip=pod_ip,
             business_port=business_port,
@@ -415,6 +417,7 @@ class RegisterManager(ThreadSafeSingleton):
             model_name = self._config.basic_config.model_name
             engine_type = self._config.basic_config.engine_type
             dispatch_capabilities = self._config.basic_config.dispatch_capabilities
+            ft_capability = self._config.basic_config.ft_capability
             role = self._config.basic_config.role
             pod_ip = self._config.api_config.pod_ip
             node_manager_port = self._config.api_config.node_manager_port
@@ -428,6 +431,7 @@ class RegisterManager(ThreadSafeSingleton):
             model_name=model_name,
             engine_type=engine_type,
             dispatch_capabilities=dispatch_capabilities,
+            ft_capability=ft_capability,
             role=role,
             pod_ip=pod_ip,
             nm_port=str(node_manager_port),

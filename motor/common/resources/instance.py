@@ -76,6 +76,25 @@ class NodeManagerInfo(BaseModel):
     device_num: int = Field(default=0, description="Number of devices in this node")
 
 
+class FtCapabilitySnapshot(BaseModel):
+    """Deployment-level engine FT capabilities reported by NodeManager."""
+
+    enabled: bool = Field(default=False, description="Whether engine FT is enabled")
+    scale_down_supported: bool = Field(default=False, description="Whether the engine exposes scale_down execution")
+    external_lb: bool = Field(default=False, description="Whether vLLM uses external LB mode")
+    auto_recovery: bool = Field(default=False, description="Whether engine auto recovery is enabled")
+    fused_mc2_enabled: bool = Field(
+        default=False,
+        description="Whether vLLM-Ascend fused MC2 is enabled; reported only and not gated by Motor",
+    )
+    eplb_enabled: bool = Field(default=False, description="Whether vLLM EPLB is enabled")
+    num_redundant_experts: int = Field(
+        default=0,
+        ge=0,
+        description="Static redundant expert count configured for EPLB",
+    )
+
+
 class ParallelConfig(BaseModel):
     dp_size: int = Field(default=1, description="Data parallel size")
     pcp_size: int = Field(default=1, description="Prefill context parallel size")
@@ -84,6 +103,7 @@ class ParallelConfig(BaseModel):
     pp_size: int = Field(default=1, description="Pipeline parallel size")
     world_size: int = Field(default=0, description="World size: dp * pcp_size * tp * pp")
     local_world_size: int = Field(default=0, description="Local world size: pcp * tp * pp (no dp)")
+    dp_master_port: int = Field(default=29500, ge=1, le=65535, description="DP store port")
 
     def __init__(
         self,
@@ -94,6 +114,7 @@ class ParallelConfig(BaseModel):
         pp_size: int = None,
         world_size: int = None,
         local_world_size: int = None,
+        dp_master_port: int = 29500,
         **kwargs,
     ) -> None:
         dp_val = dp_size if dp_size is not None else 1
@@ -108,7 +129,7 @@ class ParallelConfig(BaseModel):
         if local_world_size_val == 0:
             local_world_size_val = pcp_val * tp_val * pp_val
 
-        enable_ep = kwargs.get('enable_ep', False)
+        enable_ep = kwargs.get("enable_ep", False)
         if enable_ep:
             ep_val = world_size_val
         else:
@@ -122,6 +143,7 @@ class ParallelConfig(BaseModel):
             pp_size=pp_val,
             world_size=world_size_val,
             local_world_size=local_world_size_val,
+            dp_master_port=dp_master_port,
         )
         logger.debug(
             "ParallelConfig initialized with dp:%d, pcp:%d, tp:%d, ep:%d, pp:%d, "
@@ -149,6 +171,7 @@ class Instance(BaseModel):
         default_factory=list,
         description="Supported Motor dispatch plans for this instance",
     )
+    ft_capability: FtCapabilitySnapshot = Field(default_factory=FtCapabilitySnapshot)
     id: int = Field(..., description="Instance ID")
     role: str = Field(..., description="Instance role")
     status: InsStatus = Field(default=InsStatus.INITIAL, description="Instance status")
@@ -300,7 +323,11 @@ class Instance(BaseModel):
                     return True
                 return False
 
-    def is_all_endpoints_alive(self, active_timeout: float | None = None) -> bool:
+    def is_all_endpoints_alive(
+        self,
+        active_timeout: float | None = None,
+        ignored_endpoint_ids: set[int] | None = None,
+    ) -> bool:
         timestamp = time.time()
 
         if self.status == InsStatus.ACTIVE:
@@ -308,10 +335,13 @@ class Instance(BaseModel):
         else:
             timeout = CLEAR_INSTANCE_TIMEOUT
 
+        ignored_endpoint_ids = ignored_endpoint_ids or set()
         dead_endpoints: dict[str, list[int]] = {}  # pod_ip -> [endpoint_id]
         with self._lock:
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.id in ignored_endpoint_ids:
+                        continue
                     if not endpoint.is_alive(timestamp, timeout):
                         if endpoint.ip not in dead_endpoints:
                             dead_endpoints[endpoint.ip] = []
@@ -339,17 +369,20 @@ class Instance(BaseModel):
                 return False
             return True
 
-    def is_all_endpoints_ready(self) -> bool:
+    def is_all_endpoints_ready(self, ignored_endpoint_ids: set[int] | None = None) -> bool:
         """Return whether routable endpoints and their headless workers are ready.
 
         Headless PCP workers expose no HTTP readiness endpoint. Their
         ``WAIT2START`` status confirms process liveness without advertising a
         routable service; the non-headless master remains the readiness gate.
         """
+        ignored_endpoint_ids = ignored_endpoint_ids or set()
         with self._lock:
             has_routable_endpoint = False
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.id in ignored_endpoint_ids:
+                        continue
                     if endpoint.headless:
                         if endpoint.status not in (EndpointStatus.NORMAL, EndpointStatus.WAIT2START):
                             return False
@@ -359,7 +392,11 @@ class Instance(BaseModel):
                         return False
             return has_routable_endpoint
 
-    def is_all_endpoints_heartbeat_fresh(self, timeout: float = DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT) -> bool:
+    def is_all_endpoints_heartbeat_fresh(
+        self,
+        timeout: float = DEFAULT_ACTIVE_HEARTBEAT_TIMEOUT,
+        ignored_endpoint_ids: set[int] | None = None,
+    ) -> bool:
         """True when every endpoint's last heartbeat is within ``timeout`` seconds.
 
         Complements ``is_all_endpoints_ready``: the status field alone goes
@@ -368,18 +405,24 @@ class Instance(BaseModel):
         heartbeat while another NodeManager's heartbeats have timed out.
         """
         now = time.time()
+        ignored_endpoint_ids = ignored_endpoint_ids or set()
         with self._lock:
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.id in ignored_endpoint_ids:
+                        continue
                     if not endpoint.is_alive(now, timeout):
                         return False
             return True
 
-    def is_have_one_endpoint_abnormal(self) -> bool:
+    def is_have_one_endpoint_abnormal(self, ignored_endpoint_ids: set[int] | None = None) -> bool:
         abnormal_endpoints: dict[str, list[int]] = {}  # pod_ip -> [endpoint_id]
+        ignored_endpoint_ids = ignored_endpoint_ids or set()
         with self._lock:
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.id in ignored_endpoint_ids:
+                        continue
                     if endpoint.status == EndpointStatus.ABNORMAL:
                         if endpoint.ip not in abnormal_endpoints:
                             abnormal_endpoints[endpoint.ip] = []
@@ -401,21 +444,29 @@ class Instance(BaseModel):
                 return True
             return False
 
-    def is_all_endpoints_paused(self) -> bool:
+    def is_all_endpoints_paused(self, ignored_endpoint_ids: set[int] | None = None) -> bool:
+        ignored_endpoint_ids = ignored_endpoint_ids or set()
         with self._lock:
             if not self.endpoints:
                 return False
+            found = False
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.id in ignored_endpoint_ids:
+                        continue
+                    found = True
                     if endpoint.status != EndpointStatus.PAUSED:
                         return False
-            return True
+            return found
 
-    def is_any_endpoint_paused(self) -> bool:
+    def is_any_endpoint_paused(self, ignored_endpoint_ids: set[int] | None = None) -> bool:
         """Check if at least one endpoint is PAUSED (partial PreStop scenario)."""
+        ignored_endpoint_ids = ignored_endpoint_ids or set()
         with self._lock:
             for pod_endpoints in self.endpoints.values():
                 for endpoint in pod_endpoints.values():
+                    if endpoint.id in ignored_endpoint_ids:
+                        continue
                     if endpoint.status == EndpointStatus.PAUSED:
                         return True
             return False
@@ -424,19 +475,31 @@ class Instance(BaseModel):
         with self._lock:
             return ip in self.endpoints
 
-    def update_heartbeat(self, ip: str, timestamp: float, status: dict[int, EndpointStatus]) -> bool:
+    def update_heartbeat(
+        self,
+        ip: str,
+        timestamp: float,
+        status: dict[int, EndpointStatus],
+        ignored_endpoint_ids: set[int] | None = None,
+    ) -> bool:
         with self._lock:
             if ip in self.endpoints:
-                if len(self.endpoints[ip]) != len(status):
+                ignored_endpoint_ids = ignored_endpoint_ids or set()
+                expected_endpoints = {
+                    endpoint_id: endpoint
+                    for endpoint_id, endpoint in self.endpoints[ip].items()
+                    if endpoint_id not in ignored_endpoint_ids
+                }
+                if set(status) != set(expected_endpoints):
                     logger.error(
-                        "Heartbeat status size %s is not equal to endpoints size %s for pod_ip %s in instance %s",
-                        len(status),
-                        len(self.endpoints[ip]),
+                        "Heartbeat status ids %s do not match expected endpoint ids %s for pod_ip %s in instance %s",
+                        sorted(status),
+                        sorted(expected_endpoints),
                         ip,
                         self.job_name,
                     )
                     return False
-                for endpoint in self.endpoints[ip].values():
+                for endpoint in expected_endpoints.values():
                     endpoint.hb_timestamp = timestamp
                     endpoint.status = status[endpoint.id]
                 logger.debug("Updated heartbeat for pod_ip %s in instance %s", ip, self.job_name)
@@ -561,12 +624,12 @@ class ReadOnlyInstance:
         """Delegate attribute access to the wrapped instance for read-only properties."""
         # Block modification methods
         modification_methods = {
-            'add_node_mgr',
-            'del_node_mgr',
-            'add_endpoints',
-            'del_endpoints',
-            'update_heartbeat',
-            'update_instance_status',
+            "add_node_mgr",
+            "del_node_mgr",
+            "add_endpoints",
+            "del_endpoints",
+            "update_heartbeat",
+            "update_instance_status",
         }
 
         if name in modification_methods:
@@ -642,6 +705,7 @@ class ReadOnlyInstance:
         # Copy status and other attributes
         copied_instance.status = self._instance.status
         copied_instance.parallel_config = copy.deepcopy(self._instance.parallel_config)
+        copied_instance.ft_capability = copy.deepcopy(self._instance.ft_capability)
 
         # Deep copy node managers
         copied_instance.node_managers = copy.deepcopy(self._instance.node_managers)

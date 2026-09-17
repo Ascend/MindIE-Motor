@@ -21,7 +21,7 @@ from motor.config.controller import ControllerConfig
 @pytest.fixture
 def _temp_json_file():
     """Fixture for temporary JSON file that gets cleaned up."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         temp_path = f.name
 
     yield temp_path
@@ -43,9 +43,9 @@ def _temp_dir():
 def test_default_config_initialization():
     """Test default configuration initialization"""
     # Ensure no environment variables interfere with default values
-    original_pod_ip = os.environ.get('POD_IP')
-    if 'POD_IP' in os.environ:
-        del os.environ['POD_IP']
+    original_pod_ip = os.environ.get("POD_IP")
+    if "POD_IP" in os.environ:
+        del os.environ["POD_IP"]
 
     try:
         config = ControllerConfig()
@@ -58,20 +58,20 @@ def test_default_config_initialization():
         assert config.instance_config.instance_manager_check_interval == 1
         assert config.instance_config.instance_heartbeat_timeout == 10
         assert config.instance_config.instance_expired_timeout == 1200
-        assert config.api_config.controller_api_host == '127.0.0.1'
+        assert config.api_config.controller_api_host == "127.0.0.1"
         assert config.api_config.controller_api_port == 1026
         assert config.event_config.event_consumer_sleep_interval == 1.0
         assert config.event_config.coordinator_heartbeat_interval == 10.0
         assert config.mgmt_tls_config.enable_tls is False
-        assert config.mgmt_tls_config.cert_file == 'security/mgmt/cert/server.crt'
-        assert config.mgmt_tls_config.key_file == 'security/mgmt/keys/server.key'
+        assert config.mgmt_tls_config.cert_file == "security/mgmt/cert/server.crt"
+        assert config.mgmt_tls_config.key_file == "security/mgmt/keys/server.key"
         assert config.fault_tolerance_config.enable_fault_tolerance is True
     finally:
         # Restore original environment variable
         if original_pod_ip is not None:
-            os.environ['POD_IP'] = original_pod_ip
-        elif 'POD_IP' in os.environ:
-            del os.environ['POD_IP']
+            os.environ["POD_IP"] = original_pod_ip
+        elif "POD_IP" in os.environ:
+            del os.environ["POD_IP"]
     assert config.fault_tolerance_config.strategy_center_check_interval == 10
 
 
@@ -90,11 +90,31 @@ def test_config_validation_success():
 @pytest.mark.parametrize(
     "param,value,expected_error",
     [
-        ("instance_assemble_timeout", -1, "instance_assemble_timeout must be greater than 0"),
-        ("instance_heartbeat_timeout", 0, "instance_heartbeat_timeout must be greater than 0"),
-        ("instance_assembler_check_interval", -1, "instance_assembler_check_interval must be greater than 0"),
-        ("event_consumer_sleep_interval", 0, "event_consumer_sleep_interval must be greater than 0"),
-        ("coordinator_heartbeat_interval", -1, "coordinator_heartbeat_interval must be greater than 0"),
+        (
+            "instance_assemble_timeout",
+            -1,
+            "instance_assemble_timeout must be greater than 0",
+        ),
+        (
+            "instance_heartbeat_timeout",
+            0,
+            "instance_heartbeat_timeout must be greater than 0",
+        ),
+        (
+            "instance_assembler_check_interval",
+            -1,
+            "instance_assembler_check_interval must be greater than 0",
+        ),
+        (
+            "event_consumer_sleep_interval",
+            0,
+            "event_consumer_sleep_interval must be greater than 0",
+        ),
+        (
+            "coordinator_heartbeat_interval",
+            -1,
+            "coordinator_heartbeat_interval must be greater than 0",
+        ),
         ("controller_api_port", 0, "controller_api_port must be in range 1-65535"),
         ("controller_api_port", 65536, "controller_api_port must be in range 1-65535"),
         ("send_cmd_retry_times", -1, "send_cmd_retry_times cannot be negative"),
@@ -111,7 +131,10 @@ def test_config_validation_errors(param, value, expected_error):
             "send_cmd_retry_times",
         ]:
             setattr(config.instance_config, param, value)
-        elif param in ["event_consumer_sleep_interval", "coordinator_heartbeat_interval"]:
+        elif param in [
+            "event_consumer_sleep_interval",
+            "coordinator_heartbeat_interval",
+        ]:
             setattr(config.event_config, param, value)
         elif param == "controller_api_port":
             setattr(config.api_config, param, value)
@@ -133,15 +156,28 @@ def test_config_validation_multiple_errors():
 def test_from_json_success(_temp_json_file):
     """Test loading configuration from valid JSON file"""
     test_config = {
-        "api_config": {"controller_api_host": "192.168.1.1", "controller_api_port": 9000},
-        "event_config": {"event_consumer_sleep_interval": 2.0, "coordinator_heartbeat_interval": 1.0},
+        "api_config": {
+            "controller_api_host": "192.168.1.1",
+            "controller_api_port": 9000,
+        },
+        "event_config": {
+            "event_consumer_sleep_interval": 2.0,
+            "coordinator_heartbeat_interval": 1.0,
+        },
         "instance_config": {
             "instance_assemble_timeout": 300,
         },
-        "fault_tolerance_config": {"enable_fault_tolerance": False},
+        "fault_tolerance_config": {
+            "enable_fault_tolerance": False,
+            "dp_scale_down_config": {
+                "request_timeout_sec": 7.0,
+                "poll_interval_sec": 2.0,
+                "execution_deadline_sec": 45.0,
+            },
+        },
     }
 
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
@@ -151,37 +187,95 @@ def test_from_json_success(_temp_json_file):
     assert config.event_config.coordinator_heartbeat_interval == 1.0
     assert config.instance_config.instance_assemble_timeout == 300
     assert config.fault_tolerance_config.enable_fault_tolerance is False
+    assert config.fault_tolerance_config.dp_scale_down_config.request_timeout_sec == 7.0
     assert config.config_path == _temp_json_file
     assert config.last_modified is not None
+
+
+def test_from_json_rejects_non_object_dp_scale_down_config(_temp_json_file):
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(
+            {"motor_controller_config": {"fault_tolerance_config": {"dp_scale_down_config": True}}},
+            f,
+        )
+
+    with pytest.raises(ValueError, match="dp_scale_down_config must be an object"):
+        ControllerConfig.from_json(_temp_json_file)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("request_timeout_sec", 0), ("poll_interval_sec", 0), ("execution_deadline_sec", -1)],
+)
+def test_from_json_validates_effective_dp_scale_down_config(_temp_json_file, field, value):
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump({"fault_tolerance_config": {"dp_scale_down_config": {field: value}}}, f)
+
+    with pytest.raises(ValueError, match="dp_scale_down_config"):
+        ControllerConfig.from_json(_temp_json_file)
+
+
+def test_from_json_uses_max_engine_cpu_distributed_timeout(_temp_json_file):
+    """The collection window covers P, D, and mixed-deployment Union."""
+    test_config = {
+        "motor_controller_config": {
+            "fault_tolerance_config": {"cpu_distributed_timeout_seconds": 1},
+        },
+        "motor_engine_prefill_config": {
+            "engine_config": {"cpu-distributed-timeout-seconds": 30},
+        },
+        "motor_engine_decode_config": {
+            "engine_config": {"cpu-distributed-timeout-seconds": 15},
+        },
+        "motor_engine_union_config": {
+            "engine_config": {"cpu-distributed-timeout-seconds": 45},
+        },
+    }
+
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = ControllerConfig.from_json(_temp_json_file)
+
+    assert config.fault_tolerance_config.cpu_distributed_timeout_seconds == 45
+
+
+def test_from_json_defaults_cpu_distributed_timeout_to_sixty_seconds(_temp_json_file):
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump({"motor_controller_config": {}}, f)
+
+    config = ControllerConfig.from_json(_temp_json_file)
+
+    assert config.fault_tolerance_config.cpu_distributed_timeout_seconds == 60
 
 
 def test_from_json_file_not_exists(_temp_dir):
     """Test loading configuration from non-existent JSON file (using default values)"""
     # Ensure no environment variables interfere with default values
-    original_pod_ip = os.environ.get('POD_IP')
-    if 'POD_IP' in os.environ:
-        del os.environ['POD_IP']
+    original_pod_ip = os.environ.get("POD_IP")
+    if "POD_IP" in os.environ:
+        del os.environ["POD_IP"]
 
     try:
         non_existent_path = os.path.join(_temp_dir, "non_existent.json")
         config = ControllerConfig.from_json(non_existent_path)
 
         # Should use default values
-        assert config.api_config.controller_api_host == '127.0.0.1'
+        assert config.api_config.controller_api_host == "127.0.0.1"
         assert config.api_config.controller_api_port == 1026
         assert config.config_path == non_existent_path
         assert config.last_modified is None
     finally:
         # Restore original environment variable
         if original_pod_ip is not None:
-            os.environ['POD_IP'] = original_pod_ip
-        elif 'POD_IP' in os.environ:
-            del os.environ['POD_IP']
+            os.environ["POD_IP"] = original_pod_ip
+        elif "POD_IP" in os.environ:
+            del os.environ["POD_IP"]
 
 
 def test_from_json_invalid_json(_temp_json_file):
     """Test loading configuration from invalid JSON file"""
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         f.write("invalid json content")
 
     # Should use default configuration instead of raising exception
@@ -201,7 +295,7 @@ def test_reload_config_file_not_exists(_temp_dir):
 def test_reload_config_file_not_modified(_temp_json_file):
     """Test reloading unmodified configuration file"""
     test_config = {"controller_api_port": 8000}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
@@ -214,7 +308,7 @@ def test_reload_config_file_modified(_temp_json_file):
     test_config = {"api_config": {"controller_api_port": 8000}}
     modified_config = {"api_config": {"controller_api_port": 9000}}
 
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
@@ -224,7 +318,7 @@ def test_reload_config_file_modified(_temp_json_file):
     time.sleep(0.1)
 
     # Modify file
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(modified_config, f)
 
     # Reload configuration
@@ -236,7 +330,7 @@ def test_reload_config_file_modified(_temp_json_file):
 def test_reload_config_invalid_json(_temp_json_file):
     """Test reloading invalid JSON configuration file"""
     test_config = {"controller_api_port": 8000}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
@@ -244,7 +338,7 @@ def test_reload_config_invalid_json(_temp_json_file):
     time.sleep(0.01)
 
     # Write invalid JSON
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         f.write("invalid json")
 
     # Manually update file modification time
@@ -278,6 +372,7 @@ def test_to_dict():
     assert config_dict["event_config"]["event_consumer_sleep_interval"] == 2.0
     assert config_dict["event_config"]["coordinator_heartbeat_interval"] == 1.5
     assert config_dict["instance_config"]["instance_assemble_timeout"] == 300
+    assert config_dict["fault_tolerance_config"]["dp_scale_down_config"]["request_timeout_sec"] == 11.0
 
     # Internal fields should not be present
     assert "_config_path" not in config_dict
@@ -293,7 +388,7 @@ def test_save_to_json_success(_temp_json_file):
     assert result is True
 
     # Verify file content
-    with open(_temp_json_file, 'r', encoding="utf-8") as f:
+    with open(_temp_json_file, "r", encoding="utf-8") as f:
         saved_config = json.load(f)
     assert saved_config["api_config"]["controller_api_port"] == 9000
 
@@ -310,7 +405,7 @@ def test_save_to_json_write_error(_temp_dir):
     test_path = os.path.join(_temp_dir, "config.json")
     config.config_path = test_path
 
-    with patch('builtins.open', side_effect=PermissionError("Permission denied")):
+    with patch("builtins.open", side_effect=PermissionError("Permission denied")):
         assert config.save_to_json() is False
 
 
@@ -368,9 +463,9 @@ def test_config_boundary_values():
 def test_config_partial_json_loading():
     """Test partial JSON configuration loading with multiple config groups"""
     # Ensure no environment variables interfere with default values
-    original_pod_ip = os.environ.get('POD_IP')
-    if 'POD_IP' in os.environ:
-        del os.environ['POD_IP']
+    original_pod_ip = os.environ.get("POD_IP")
+    if "POD_IP" in os.environ:
+        del os.environ["POD_IP"]
 
     try:
         partial_config = {
@@ -380,7 +475,7 @@ def test_config_partial_json_loading():
             # Other fields use default values
         }
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(partial_config, f)
             temp_path = f.name
 
@@ -390,19 +485,19 @@ def test_config_partial_json_loading():
             assert config.event_config.event_consumer_sleep_interval == 2.5
             assert config.instance_config.instance_assemble_timeout == 300
             # Other fields should be default values
-            assert config.api_config.controller_api_host == '127.0.0.1'
+            assert config.api_config.controller_api_host == "127.0.0.1"
             assert config.event_config.coordinator_heartbeat_interval == 10.0
             assert config.mgmt_tls_config.enable_tls is False
-            assert config.mgmt_tls_config.cert_file == 'security/mgmt/cert/server.crt'
-            assert config.mgmt_tls_config.key_file == 'security/mgmt/keys/server.key'
+            assert config.mgmt_tls_config.cert_file == "security/mgmt/cert/server.crt"
+            assert config.mgmt_tls_config.key_file == "security/mgmt/keys/server.key"
         finally:
             os.unlink(temp_path)
     finally:
         # Restore original environment variable
         if original_pod_ip is not None:
-            os.environ['POD_IP'] = original_pod_ip
-        elif 'POD_IP' in os.environ:
-            del os.environ['POD_IP']
+            os.environ["POD_IP"] = original_pod_ip
+        elif "POD_IP" in os.environ:
+            del os.environ["POD_IP"]
 
 
 def test_config_partial_fields_in_group():
@@ -414,7 +509,7 @@ def test_config_partial_fields_in_group():
         }
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(partial_config, f)
         temp_path = f.name
 
@@ -445,7 +540,7 @@ def test_config_single_group_partial():
         }
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(single_group_config, f)
         temp_path = f.name
 
@@ -455,7 +550,7 @@ def test_config_single_group_partial():
         assert config.mgmt_tls_config.enable_tls is True
         assert config.mgmt_tls_config.cert_file == "/custom/cert.pem"
         # Non-updated field in tls_config should keep default
-        assert config.mgmt_tls_config.key_file == 'security/mgmt/keys/server.key'
+        assert config.mgmt_tls_config.key_file == "security/mgmt/keys/server.key"
         # Other config groups should have default values
         assert config.api_config.controller_api_port == 1026
         assert config.instance_config.instance_assemble_timeout == 600
@@ -467,7 +562,7 @@ def test_config_empty_json():
     """Test loading empty JSON file (should use all defaults)"""
     empty_config = {}
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(empty_config, f)
         temp_path = f.name
 
@@ -490,7 +585,7 @@ def test_config_extra_fields_in_json():
         "another_extra": 123,
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(config_with_extra, f)
         temp_path = f.name
 
@@ -498,15 +593,15 @@ def test_config_extra_fields_in_json():
         config = ControllerConfig.from_json(temp_path)
         assert config.api_config.controller_api_port == 9000
         # Extra fields should be ignored
-        assert not hasattr(config, 'extra_field')
-        assert not hasattr(config, 'another_extra')
+        assert not hasattr(config, "extra_field")
+        assert not hasattr(config, "another_extra")
     finally:
         os.unlink(temp_path)
 
 
 def test_config_reload_preserves_internal_fields():
     """Test that reloading configuration preserves internal fields"""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump({"controller_api_port": 8000}, f)
         temp_path = f.name
 
@@ -519,7 +614,7 @@ def test_config_reload_preserves_internal_fields():
         time.sleep(0.01)
 
         # Modify configuration
-        with open(temp_path, 'w', encoding="utf-8") as f:
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump({"api_config": {"controller_api_port": 9000}}, f)
 
         # Manually update file modification time to ensure it's different
@@ -550,7 +645,7 @@ def test_config_unicode_handling():
     """Test Unicode character handling"""
     unicode_config = {"api_config": {"controller_api_host": "Test Host", "controller_api_port": 8000}}
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
         json.dump(unicode_config, f, ensure_ascii=False)
         temp_path = f.name
 
@@ -572,7 +667,10 @@ def create_test_config(config_path: str, log_level: str = "INFO"):
             "log_date_format": "%Y-%m-%d %H:%M:%S",
         },
         "api_config": {"controller_api_host": "127.0.0.1", "controller_api_port": 8000},
-        "event_config": {"event_consumer_sleep_interval": 1.0, "coordinator_heartbeat_interval": 5.0},
+        "event_config": {
+            "event_consumer_sleep_interval": 1.0,
+            "coordinator_heartbeat_interval": 5.0,
+        },
         "instance_config": {
             "instance_assemble_timeout": 600,
             "instance_assembler_check_interval": 1,
@@ -590,18 +688,18 @@ def create_test_config(config_path: str, log_level: str = "INFO"):
         },
     }
 
-    with open(config_path, 'w', encoding="utf-8") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 
 
 def modify_config_api_port(config_path: str, new_port: int):
     """Modify the API port in the configuration file"""
-    with open(config_path, 'r', encoding="utf-8") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     config["api_config"]["controller_api_port"] = new_port
 
-    with open(config_path, 'w', encoding="utf-8") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 
 
@@ -664,8 +762,8 @@ def test_tls_config_default_values():
     config = ControllerConfig()
 
     assert config.mgmt_tls_config.enable_tls is False
-    assert config.mgmt_tls_config.cert_file == 'security/mgmt/cert/server.crt'
-    assert config.mgmt_tls_config.key_file == 'security/mgmt/keys/server.key'
+    assert config.mgmt_tls_config.cert_file == "security/mgmt/cert/server.crt"
+    assert config.mgmt_tls_config.key_file == "security/mgmt/keys/server.key"
 
 
 def test_tls_config_from_json(_temp_json_file):
@@ -679,7 +777,7 @@ def test_tls_config_from_json(_temp_json_file):
         "api_config": {"controller_api_port": 8443},
     }
 
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
@@ -698,13 +796,13 @@ def test_tls_config_partial_loading(_temp_json_file):
         }
     }
 
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
     assert config.mgmt_tls_config.enable_tls is True
-    assert config.mgmt_tls_config.cert_file == 'security/mgmt/cert/server.crt'
-    assert config.mgmt_tls_config.key_file == 'security/mgmt/keys/server.key'
+    assert config.mgmt_tls_config.cert_file == "security/mgmt/cert/server.crt"
+    assert config.mgmt_tls_config.key_file == "security/mgmt/keys/server.key"
 
 
 def test_from_json_top_level_precision_auto_recovery_enabled(_temp_json_file):
@@ -743,7 +841,7 @@ def test_tls_config_save_to_json(_temp_json_file):
     assert result is True
 
     # Verify file content
-    with open(_temp_json_file, 'r', encoding="utf-8") as f:
+    with open(_temp_json_file, "r", encoding="utf-8") as f:
         saved_config = json.load(f)
 
     # Test grouped structure
@@ -756,13 +854,21 @@ def test_tls_config_save_to_json(_temp_json_file):
 def test_tls_config_reload(_temp_json_file):
     """Test reloading TLS configuration"""
     initial_config = {
-        "mgmt_tls_config": {"enable_tls": False, "cert_file": "/initial/cert.pem", "key_file": "/initial/key.pem"}
+        "mgmt_tls_config": {
+            "enable_tls": False,
+            "cert_file": "/initial/cert.pem",
+            "key_file": "/initial/key.pem",
+        }
     }
     modified_config = {
-        "mgmt_tls_config": {"enable_tls": True, "cert_file": "/modified/cert.pem", "key_file": "/modified/key.pem"}
+        "mgmt_tls_config": {
+            "enable_tls": True,
+            "cert_file": "/modified/cert.pem",
+            "key_file": "/modified/key.pem",
+        }
     }
 
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(initial_config, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
@@ -774,7 +880,7 @@ def test_tls_config_reload(_temp_json_file):
     time.sleep(0.1)
 
     # Modify file
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(modified_config, f)
 
     # Reload configuration
@@ -788,14 +894,14 @@ def test_tls_config_boolean_values(_temp_json_file):
     """Test TLS enable_tls with different boolean representations"""
     # Test with true (lowercase)
     test_config = {"mgmt_tls_config": {"enable_tls": True}}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
     config = ControllerConfig.from_json(_temp_json_file)
     assert config.mgmt_tls_config.enable_tls is True
 
     # Test with false (lowercase)
     test_config = {"mgmt_tls_config": {"enable_tls": False}}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
     config = ControllerConfig.from_json(_temp_json_file)
     assert config.mgmt_tls_config.enable_tls is False
@@ -836,21 +942,65 @@ def test_config_engine_relaunch_defaults():
     assert ft.engine_relaunch_nm_unreachable_threshold == 3
 
 
+def test_config_dp_scale_down_defaults_are_conservative():
+    config = ControllerConfig()
+    ft = config.fault_tolerance_config
+
+    assert ft.enable_dp_scale_down is False
+    assert ft.enable_dp_scale_up is False
+    assert ft.dp_scale_down_config.request_timeout_sec == 11.0
+    assert ft.dp_scale_down_config.poll_interval_sec == 1.0
+    assert ft.dp_scale_down_config.execution_deadline_sec == 30.0
+
+
 @pytest.mark.parametrize(
     "attr,value,expected",
     [
-        ("engine_relaunch_complete_timeout_sec", 30, "engine_relaunch_complete_timeout_sec must be in range 60-3600"),
-        ("engine_relaunch_poll_interval_sec", 0, "engine_relaunch_poll_interval_sec must be in range 1-60"),
-        ("engine_relaunch_dispatch_retries", 11, "engine_relaunch_dispatch_retries must be in range 0-10"),
+        (
+            "engine_relaunch_complete_timeout_sec",
+            30,
+            "engine_relaunch_complete_timeout_sec must be in range 60-3600",
+        ),
+        (
+            "engine_relaunch_poll_interval_sec",
+            0,
+            "engine_relaunch_poll_interval_sec must be in range 1-60",
+        ),
+        (
+            "engine_relaunch_dispatch_retries",
+            11,
+            "engine_relaunch_dispatch_retries must be in range 0-10",
+        ),
         (
             "engine_relaunch_nm_unreachable_threshold",
             0,
             "engine_relaunch_nm_unreachable_threshold must be in range 1-10",
         ),
+        (
+            "dp_scale_down_config.request_timeout_sec",
+            0,
+            "dp_scale_down_config.request_timeout_sec must be in range (0, 60]",
+        ),
+        (
+            "dp_scale_down_config.poll_interval_sec",
+            0,
+            "dp_scale_down_config.poll_interval_sec must be in range (0, 60]",
+        ),
+        (
+            "dp_scale_down_config.execution_deadline_sec",
+            0,
+            "dp_scale_down_config.execution_deadline_sec must be in range 1-600",
+        ),
     ],
 )
-def test_config_engine_relaunch_validation(attr, value, expected):
-    with pytest.raises(ValueError, match=expected):
+def test_fault_recovery_config_validation(attr, value, expected):
+    with pytest.raises(ValueError) as exc_info:
         config = ControllerConfig()
-        setattr(config.fault_tolerance_config, attr, value)
+        target = config.fault_tolerance_config
+        *parents, field_name = attr.split(".")
+        for parent in parents:
+            target = getattr(target, parent)
+        setattr(target, field_name, value)
         config.validate_config()
+
+    assert expected in str(exc_info.value)

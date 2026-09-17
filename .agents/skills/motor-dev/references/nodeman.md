@@ -47,10 +47,10 @@ NodeManager (Application)
 │       (in-progress flag, EngineRestartInProgressError on overlap), resolves
 │       launch params from RegisterManager (EngineRestartParamError on
 │       missing/mismatch), freezes suicide (unfreezes on failure), pauses the
-│       FaultReporter for the relaunch window and resumes after (fresh engines
-│       restart their startup grace)
-│     FaultReporter (owned here, third monitoring source): started in
-│       pull_engine, stopped in stop(), (re)configured in update_config
+│       EngineFtManager for the relaunch window and resumes after
+│     EngineFtManager (owned here, third monitoring source): started in
+│       pull_engine only when explicitly enabled or the current role engine
+│       advertises FT capability; stopped in stop(), (re)configured in update_config
 │
 ├── NativeEngineService
 │     builds LaunchContext, selects Native Engine Backend, delegates lifecycle to ProcessSupervisor
@@ -74,17 +74,47 @@ NodeManager (Application)
 │     No engine-readiness logic: status probing waits for the Daemon's
 │       engine-ready handoff (native /health on business_port), injected at start()
 │
-└── FaultReporter
-      HTTP poll GET {business_port}/fault_tolerance/status per engine
+└── EngineFtManager
+      HTTP poll GET {business_port}/v1/fault_tolerance/status per engine (no legacy-path fallback)
+      selects the entry matching Endpoint.id through query_engine_ft_entry; background reporting
+      and Controller transaction queries share the same global-DP-rank identity contract
+      uses only the current role normalized FT capability; never infers enablement
+      from another engine section in the shared PD user config
       (vLLM FT REST API) → report_software_fault to Controller
       pause()/resume(): suspended by the Daemon across an engine relaunch —
-      resume() clears poll state so re-pulled engines get a fresh startup grace
+      starts only after native engine readiness; resume() clears dedup/failure state
+      guard/finalize callbacks are injected by the owning Daemon; validation and
+      delegation do not introduce a reverse EngineFtManager → Daemon dependency
 ```
 
 `motor/node_manager/core/services/native_engine/` is the native engine service boundary. Its
 engine backends are stateless converters: they turn a validated `LaunchContext` into an immutable
 `LaunchSpec` containing a `CommandSpec` and a `ProbeSpec`. The Coordinator and Controller do not
 depend on these node-local runtime states.
+
+### DP Scale-down Proxy Transaction
+
+Controller is the sole orchestration owner and derives NodeManager's private
+`enable_dp_scale_down_proxy` from the Controller FT/scale-down switches. Engine-native FT and EPLB configuration
+remain independent; customers do not configure another NodeManager switch.
+
+One scale-down attempt uses this NodeManager contract:
+
+1. `guard {request_id, lease_sec}` reaches every NodeManager, including headless-only participants. One request owns
+   the lease (maximum 300 seconds); the same id renews it and another id is rejected until finalize or expiry.
+2. `status` and one `apply` target explicit local routable survivors. Missing, duplicate, unmanaged, retired, or
+   response-id-mismatched endpoints fail closed; `engines[].id` must equal Motor's global `Endpoint.id`. There is no
+   direct Controller-to-engine fallback.
+3. Owner-matched `finalize {request_id, commit}` prevents an old request releasing a new guard. Commit retires local
+   ids from heartbeat, status, fault and PID-death reporting; abort only releases the guard.
+4. Lease expiry restores local suicide arbitration if finalize is lost. A fully drained committed Pod may keep
+   reporting an empty heartbeat when Pod recycling is disabled.
+
+The FT routes are internal state-mutating management APIs. Deployments must restrict them to Controller callers with
+NetworkPolicy, a service mesh, or an equivalent control-plane ACL. `mgmt_tls_config` encrypts the server connection but
+does not by itself authenticate a client. Engine query transport failures return `unknown`; only an engine-reported
+`dead` status is an irreversible removal candidate. Periodic polling requires `max_poll_failures` consecutive transport
+failures before reporting DEAD, and in-place relaunch keeps polling paused until native readiness succeeds.
 
 ### Virtual Inference (虚推)
 
@@ -158,6 +188,13 @@ Lifecycle:
    Loop:
      wait_until_api_ready(timeout=30.0)      # NodeManagerAPI must be serving
      POST /controller/register (with instance metadata, capabilities)
+
+   For vLLM, `NodeManagerConfig` normalizes a deployment-level `FtCapabilitySnapshot` from the selected native
+   engine section and registration/re-registration carries it to Controller. The snapshot contains FT/apply support,
+   external-LB and auto-recovery flags plus the official engine-native `additional_config.enable_fused_mc2`,
+   `enable_eplb`, and `eplb_config.num_redundant_experts` settings. It deliberately excludes EPLB's live expert
+   placement and does not infer a removable-DP budget from the redundant-expert count; Controller rejects
+   inconsistent snapshots from Pods belonging to the same instance.
      → 200: registration accepted, break
      → non-200: retry with exponential backoff (2, 4, 8, 16, 32s, max 5 retries)
      → max retries exceeded: os.kill(SIGTERM) — pod restart by k8s
@@ -411,9 +448,9 @@ barriers heartbeat until the container checkpoint is done. During container snap
 | `motor/node_manager/core/services/memcache/` | Optional KV-store service implementation |
 | `motor/node_manager/core/services/mooncake/` | Mooncake standalone store service (`store_mode="standalone"`: prepare phase writes the store config; the official `mooncake_store_service` subprocess is launched after engines and restarted in place on death) |
 | `motor/node_manager/core/heartbeat_manager.py` | Native state polling, status mapping, heartbeat and suicide threshold |
+| `motor/node_manager/core/engine_ft_manager.py` | Engine FT polling/reporting, active-endpoint validation and NodeManager-owned vLLM FT proxy |
 | `motor/node_manager/core/register_manager.py` | Controller registration, StartCmdMsg validation, ranktable and snapshot metadata/restore helpers |
 | `motor/node_manager/api_client/controller_api_client.py` | Controller register, reregister and heartbeat HTTP client |
-| `motor/node_manager/core/fault_reporter.py` | Optional native engine software-fault polling |
 | `motor/config/node_manager.py` | NodeManager schema, endpoint derivation, ports and vLLM-only snapshot validation |
 
 ## Port and Address Rules

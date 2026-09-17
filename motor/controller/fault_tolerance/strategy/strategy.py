@@ -28,10 +28,12 @@ def level1_strategy(fault_code: int, instance_id: int, config: ControllerConfig)
 
 
 def level2_strategy(fault_code: int, instance_id: int, config: ControllerConfig) -> type[StrategyBase] | None:
-    # A dead engine cannot be recovered in place — run the fallback relaunch
-    # (restart engines, then containers). ENGINE_UNHEALTHY keeps the current
-    # no-op behavior (fast-recovery strategies take it over once merged).
-    if fault_code == int(SpecialFaultCode.ENGINE_DEAD):
+    # FaultManager owns fast-recovery applicability and DP scale-down priority.
+    # The level map returns only the original engine-fault fallback.
+    if fault_code in {
+        int(SpecialFaultCode.ENGINE_DEAD),
+        int(SpecialFaultCode.ENGINE_UNHEALTHY),
+    }:
         if not config.fault_tolerance_config.enable_engine_relaunch:
             return None
         from motor.controller.fault_tolerance.strategy.engine_relaunch import EngineRelaunchStrategy

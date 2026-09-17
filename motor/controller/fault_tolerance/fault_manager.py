@@ -7,31 +7,56 @@
 # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
-import threading
 import concurrent.futures
+import threading
+import time
+from dataclasses import dataclass
+
 from motor.config.controller import ControllerConfig
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
-from motor.common.resources import ReadOnlyInstance
+from motor.common.resources import InsStatus, Instance, ReadOnlyInstance
 from motor.common.etcd.etcd_client import EtcdClient
 from motor.controller.core import Observer, ObserverEvent, InstanceManager
 from motor.controller.fault_tolerance.strategy import generate_strategy_map
 from motor.controller.fault_tolerance.k8s.resource_monitor import ResourceMonitor
 from motor.controller.fault_tolerance.k8s.k8s_client import K8sClient
+from motor.controller.fault_tolerance.dp_scale_down import (
+    FaultNormalizer,
+    FtPhase,
+    ScaleDownContext,
+    get_ft_runtime_store,
+)
 from motor.controller.fault_tolerance.fault_types import (
     FaultCategory,
     FaultInfo,
     FaultLevel,
+    hardware_fault_identity,
     InstanceMetadata,
     NodeMetadata,
     OriginFaultLevel,
     pre_separate_fault_affects_instance,
+    software_fault_storage_key,
 )
 from motor.controller.fault_tolerance.mixin.persistence import _PersistenceMixin
-from motor.controller.fault_tolerance.mixin.resource_manager import _ResourceManagerMixin
+from motor.controller.fault_tolerance.mixin.resource_manager import (
+    _ResourceManagerMixin,
+)
+from motor.controller.fault_tolerance.recovery_planner import build_recovery_plan
+from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
 
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class _InstanceFaultSnapshot:
+    """One filtered view of the fault evidence currently owned by an instance."""
+
+    instance: Instance | ReadOnlyInstance | None
+    nodes: tuple[NodeMetadata, ...]
+    hardware_faults: tuple[tuple[str, str, NodeMetadata, FaultInfo], ...]
+    software_faults: tuple[FaultInfo, ...]
 
 
 class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton, Observer):
@@ -92,12 +117,19 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
         with self.config_lock:
             self.etcd_client = EtcdClient(etcd_config=self.etcd_config, tls_config=self.etcd_tls_config)
+        # DP scale-down runtime persistence follows the same switch as the
+        # existing Controller/FaultManager persistence.  In standalone mode
+        # this keeps scale-down entirely in memory and avoids requiring etcd.
+        with self.config_lock:
+            enable_persistence = self.etcd_config.enable_etcd_persistence
+        get_ft_runtime_store().set_persist_callback(self.persist_data if enable_persistence else None)
 
         self.stop_event = threading.Event()
 
         # Condition variable to wake the strategy center thread on-demand
         # instead of busy-waiting on a fixed sleep interval.
         self.work_condition = threading.Condition()
+        self._strategy_finished_event = threading.Event()
 
         # For dual handle function trigger, we use a thread pool executor to handle it.
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
@@ -116,7 +148,9 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             self.stop_event.clear()
 
         self.ft_strategy_center_thread = threading.Thread(
-            target=self._ft_strategy_center, daemon=True, name="FaultToleranceStrategyCenter"
+            target=self._ft_strategy_center,
+            daemon=True,
+            name="FaultToleranceStrategyCenter",
         )
 
         # Try to restore data from ETCD, if failed, it will start with empty state.
@@ -167,6 +201,9 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
             # Update ETCD client with new configuration
             self.etcd_client = EtcdClient(etcd_config=self.etcd_config, tls_config=self.etcd_tls_config)
+            get_ft_runtime_store().set_persist_callback(
+                self.persist_data if self.etcd_config.enable_etcd_persistence else None
+            )
 
             # Check if ConfigMap prefix or namespace configuration changed
             new_configmap_prefix = config.fault_tolerance_config.configmap_prefix
@@ -176,19 +213,28 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             if self.configmap_prefix != new_configmap_prefix:
                 self.configmap_prefix = new_configmap_prefix
                 config_changed = True
-                logger.info("ConfigMap prefix configuration updated to: %s", new_configmap_prefix)
+                logger.info(
+                    "ConfigMap prefix configuration updated to: %s",
+                    new_configmap_prefix,
+                )
 
             if self.configmap_namespace != new_configmap_namespace:
                 self.configmap_namespace = new_configmap_namespace
                 config_changed = True
-                logger.info("ConfigMap namespace configuration updated to: %s", new_configmap_namespace)
+                logger.info(
+                    "ConfigMap namespace configuration updated to: %s",
+                    new_configmap_namespace,
+                )
 
             if config_changed:
                 # Stop all existing node-specific Resource monitors due to configuration change
                 with self.resource_monitors_lock:
                     for node_name, monitor in self.resource_monitors.items():
                         monitor.stop_monitoring()
-                        logger.info("Stopped Resource monitor for node %s due to configuration change", node_name)
+                        logger.info(
+                            "Stopped Resource monitor for node %s due to configuration change",
+                            node_name,
+                        )
                     self.resource_monitors.clear()
 
                 # Restart Resource monitors for all existing nodes with new configuration
@@ -197,7 +243,10 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     node_names = {node.node_name for node in self.nodes.values()}
                     for node_name in node_names:
                         self._create_resource_monitor_for_node(node_name)
-                        logger.info("Restarted Resource monitor for node %s with new configuration", node_name)
+                        logger.info(
+                            "Restarted Resource monitor for node %s with new configuration",
+                            node_name,
+                        )
 
                 logger.info("Resource configuration updated - all monitors restarted with new config")
 
@@ -209,30 +258,38 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         INSTANCE_INITIAL: records job_name mapping and syncs the instance's nodes
         (routing to _sync_instance_nodes which handles both new and existing instances).
 
-        INSTANCE_REMOVED: removes InstanceMetadata but preserves nodes in self.nodes
-        so their fault history survives potential transfer to another instance.
+        INSTANCE_READY: arms recovery and retires older same-job FT runtimes.
+
+        INSTANCE_REMOVED: removes InstanceMetadata and its FT runtime, but preserves
+        nodes in self.nodes so their fault history survives potential transfer.
         """
         logger.info("FaultManager update instance %s with event: %s.", instance.job_name, event)
 
         if event == ObserverEvent.INSTANCE_INITIAL:
             with self.lock:
                 if instance.id in self.instances:
-                    logger.debug("Instance %d already exists in fault manager, skipping add operation.", instance.id)
+                    logger.debug(
+                        "Instance %d already exists in fault manager, skipping add operation.",
+                        instance.id,
+                    )
                     return
 
             self._sync_instance_nodes(instance)
+        elif event == ObserverEvent.INSTANCE_READY:
+            self._mark_instance_recovery_ready(instance.id)
+            self._remove_superseded_ft_runtimes(instance)
         elif event == ObserverEvent.INSTANCE_SEPARATED:
             self._refresh_instance_fault_level(instance.id)
         elif event == ObserverEvent.INSTANCE_REMOVED:
             with self.lock:
-                if instance.id not in self.instances:
-                    return
-                self.instances.pop(instance.id, None)
+                removed = self.instances.pop(instance.id, None)
+            if removed is not None:
                 logger.info(
                     "Removed instance %d (%s) from fault manager, nodes preserved for potential transfer",
                     instance.id,
                     instance.job_name,
                 )
+            get_ft_runtime_store().remove(instance.id)
 
         # Wake the strategy center — instance lifecycle changed
         with self.work_condition:
@@ -248,6 +305,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         for instance in instances:
             logger.debug("Processing instance %s (id: %d)", instance.job_name, instance.id)
             self._sync_instance_nodes(instance)
+            if getattr(instance, "status", None) == InsStatus.ACTIVE:
+                self._mark_instance_recovery_ready(instance.id)
 
     def get_node_fault_levels(self, instance_id: int) -> dict[str, FaultLevel]:
         """Return the highest fault level per node for a given instance.
@@ -273,14 +332,18 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     default=FaultLevel.HEALTHY,
                 )
                 sw_max = max(
-                    (f.fault_level for f in node_metadata.software_fault_infos.values()),
+                    (
+                        f.fault_level
+                        for f in node_metadata.software_fault_infos.values()
+                        if f.instance_id in (None, instance_id)
+                    ),
                     default=FaultLevel.HEALTHY,
                 )
                 result[node_name] = max(hw_max, sw_max)
 
             return result
 
-    def report_software_fault(self, fault_info: FaultInfo, pod_ip: str = "") -> None:
+    def report_software_fault(self, fault_info: FaultInfo, pod_ip: str = "", instance_id: int | None = None) -> None:
         """Report a software fault reported by a NodeManager at node granularity.
 
         Stores the fault on the NodeMetadata identified by pod_ip.
@@ -290,30 +353,71 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             pod_ip: Pod IP of the reporting NodeManager.
         """
         if fault_info.fault_category != FaultCategory.SOFTWARE:
-            logger.warning("report_software_fault called with non-software fault: %s", fault_info.fault_category)
+            logger.warning(
+                "report_software_fault called with non-software fault: %s",
+                fault_info.fault_category,
+            )
             return
 
         affected_instance_ids: list[int] = []
+        collection_started = False
         with self.lock:
             node_metadata = None
             if pod_ip:
                 for n in self.nodes.values():
-                    if pod_ip in n.instance_pod_ips.values():
+                    if instance_id is not None:
+                        matches = n.instance_pod_ips.get(instance_id) == pod_ip
+                    else:
+                        matches = pod_ip in n.instance_pod_ips.values()
+                    if matches:
                         node_metadata = n
                         break
 
             if node_metadata is not None:
-                node_metadata.software_fault_infos[int(fault_info.fault_code)] = fault_info
-                # Find which instance(s) this pod_ip belongs to
-                for ins_id, ip in node_metadata.instance_pod_ips.items():
-                    if ip == pod_ip:
-                        affected_instance_ids.append(ins_id)
+                if instance_id is not None:
+                    if instance_id not in node_metadata.instance_ids:
+                        logger.warning(
+                            "Software fault instance %d is not registered on node %s",
+                            instance_id,
+                            node_metadata.node_name,
+                        )
+                        return
+                    fault_info.instance_id = instance_id
+                    affected_instance_ids.append(instance_id)
+                    instance_metadata = self.instances.get(instance_id)
+                    if instance_metadata is not None and fault_info.engine_status in (1, 2):
+                        now = time.time()
+                        if instance_metadata.fault_collection_started_at is None:
+                            instance_metadata.fault_collection_started_at = now
+                            collection_started = True
+                        if isinstance(fault_info.engine_id, int):
+                            observed_at = (
+                                instance_metadata.software_dead_observed_at
+                                if fault_info.engine_status == 1
+                                else instance_metadata.software_unhealthy_observed_at
+                            )
+                            observed_at.setdefault(fault_info.engine_id, now)
+                else:
+                    # Backward compatibility for old NodeManagers. This is
+                    # ambiguous when multiple instances share a pod IP.
+                    for ins_id, ip in node_metadata.instance_pod_ips.items():
+                        if ip == pod_ip:
+                            affected_instance_ids.append(ins_id)
+                node_metadata.software_fault_infos[software_fault_storage_key(fault_info)] = fault_info
+                engine_status_name = {
+                    0: "HEALTHY",
+                    1: "DEAD",
+                    2: "UNHEALTHY",
+                }.get(fault_info.engine_status, "UNKNOWN")
                 logger.info(
-                    "Reported software fault for node %s (instances %s): type=%s, engine_status=%s, fault_level=%s",
+                    "Reported software fault for node %s (instances %s): "
+                    "dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
                     node_metadata.node_name,
                     affected_instance_ids,
+                    fault_info.engine_id,
                     fault_info.exception_type,
                     fault_info.engine_status,
+                    engine_status_name,
                     fault_info.fault_level.name,
                 )
             else:
@@ -323,12 +427,162 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 )
                 return
 
-        for instance_id in affected_instance_ids:
-            self._refresh_instance_fault_level(instance_id)
+        for affected_instance_id in affected_instance_ids:
+            self._refresh_instance_fault_level(affected_instance_id)
+
+        if collection_started:
+            with self.config_lock:
+                timeout = self.config.fault_tolerance_config.cpu_distributed_timeout_seconds
+            timer = threading.Timer(timeout, self._on_fault_collection_deadline)
+            timer.daemon = True
+            timer.start()
 
         # Wake the strategy center — fault data changed
         with self.work_condition:
             self.work_condition.notify_all()
+
+    def _on_fault_collection_deadline(self) -> None:
+        """Wake strategy evaluation when an incomplete FT status round expires."""
+        with self.work_condition:
+            self.work_condition.notify_all()
+
+    def _record_hardware_fault_event(self, instance_id: int, fault_keys: set[str]) -> None:
+        """Open the hardware-first correlation window for an instance.
+
+        Repeated ConfigMap watch events must not extend the window.  An active
+        recovery round therefore records only the first actionable hardware
+        observation and uses a one-shot wake-up for its deadline.
+        """
+        now = time.time()
+        with self.lock:
+            metadata = self.instances.get(instance_id)
+        if metadata is None:
+            return
+        with metadata.lock:
+            if not metadata.recovery_ready:
+                new_baseline = fault_keys - metadata.ignored_pre_ready_hardware_faults
+                metadata.ignored_pre_ready_hardware_faults.update(fault_keys)
+                if new_baseline:
+                    logger.info(
+                        "Instance %d recorded %d pre-ready hardware fault(s) as baseline",
+                        instance_id,
+                        len(new_baseline),
+                    )
+                return
+            new_faults = fault_keys - metadata.ignored_pre_ready_hardware_faults - metadata.handled_hardware_faults
+            if not new_faults:
+                return
+            if metadata.hardware_fault_observed_at is not None:
+                return
+            metadata.hardware_fault_observed_at = now
+        with self.config_lock:
+            timeout = self.config.fault_tolerance_config.hardware_ft_correlation_window_sec
+        logger.info(
+            "Instance %d opened %.1fs hardware/FT correlation window",
+            instance_id,
+            timeout,
+        )
+        timer = threading.Timer(timeout, self._on_fault_collection_deadline)
+        timer.daemon = True
+        timer.start()
+
+    def _mark_instance_recovery_ready(self, instance_id: int) -> None:
+        """Arm recovery after snapshotting hardware faults present at readiness."""
+        with self.lock:
+            metadata = self.instances.get(instance_id)
+            if metadata is None:
+                return
+            with self.config_lock:
+                enable_dp_scale_down = self.config.fault_tolerance_config.enable_dp_scale_down
+            baseline = (
+                {
+                    hardware_fault_identity(node.node_name, fault)
+                    for node in self.nodes.values()
+                    if instance_id in node.instance_ids
+                    for fault in node.hardware_fault_infos.values()
+                    if fault.fault_level >= FaultLevel.L4
+                }
+                if enable_dp_scale_down
+                else set()
+            )
+            for node in self.nodes.values():
+                if instance_id not in node.instance_ids:
+                    continue
+                stale_keys = [
+                    key for key, fault in node.software_fault_infos.items() if fault.instance_id in (None, instance_id)
+                ]
+                for key in stale_keys:
+                    del node.software_fault_infos[key]
+        with metadata.lock:
+            metadata.ignored_pre_ready_hardware_faults.update(baseline)
+            metadata.fault_collection_started_at = None
+            metadata.hardware_fault_observed_at = None
+            metadata.software_dead_observed_at.clear()
+            metadata.software_unhealthy_observed_at.clear()
+            metadata.recovery_ready = True
+        logger.info(
+            "Instance %d recovery armed at READY with %d pre-existing hardware fault(s) ignored",
+            instance_id,
+            len(metadata.ignored_pre_ready_hardware_faults),
+        )
+        self._refresh_instance_fault_level(instance_id)
+
+    @staticmethod
+    def _remove_superseded_ft_runtimes(instance: ReadOnlyInstance) -> None:
+        """Retire previous runtime records after the replacement instance is ready."""
+        same_job_instances = [
+            candidate for candidate in InstanceManager().get_instances() if candidate.job_name == instance.job_name
+        ]
+        if not same_job_instances or max(candidate.id for candidate in same_job_instances) != instance.id:
+            return
+        store = get_ft_runtime_store()
+        for candidate in same_job_instances:
+            if candidate.id != instance.id and store.remove(candidate.id):
+                logger.info(
+                    "Removed superseded FT runtime %d after replacement instance %d became ready",
+                    candidate.id,
+                    instance.id,
+                )
+
+    def _collect_instance_faults(self, instance_id: int) -> _InstanceFaultSnapshot | None:
+        """Collect instance-scoped fault evidence using one ownership filter."""
+        instance = InstanceManager().get_instance(instance_id)
+        with self.lock:
+            metadata = self.instances.get(instance_id)
+            if metadata is None:
+                return None
+            nodes = tuple(
+                node
+                for node in self.nodes.values()
+                if instance_id in node.instance_ids and (node.hardware_fault_infos or node.software_fault_infos)
+            )
+            hardware_faults = tuple(
+                (
+                    hardware_fault_identity(node.node_name, fault),
+                    node.instance_pod_ips.get(instance_id, ""),
+                    node,
+                    fault,
+                )
+                for node in nodes
+                for fault in node.hardware_fault_infos.values()
+                if FaultNormalizer.hardware_fault_affects_instance(
+                    instance,
+                    node.instance_pod_ips.get(instance_id, ""),
+                    fault,
+                )
+            )
+            software_faults = tuple(
+                fault
+                for node in nodes
+                for fault in node.software_fault_infos.values()
+                if fault.instance_id in (None, instance_id)
+            )
+        return _InstanceFaultSnapshot(
+            instance=instance,
+            nodes=nodes,
+            hardware_faults=hardware_faults,
+            software_faults=software_faults,
+        )
 
     def _refresh_instance_fault_level(self, instance_id: int) -> None:
         """Re-evaluate the fault level of an instance from all its nodes' faults.
@@ -348,17 +602,37 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             if instance_metadata is None:
                 logger.warning("Instance %d not found, skipping fault level refresh", instance_id)
                 return
+        with instance_metadata.lock:
+            if not instance_metadata.recovery_ready:
+                logger.debug("Instance %d is not ready; fault recovery remains disarmed", instance_id)
+                return
 
-        # Find all nodes belonging to this instance that have any faults
-        instance_nodes = []
-        with self.lock:
-            for node_metadata in self.nodes.values():
-                if instance_id in node_metadata.instance_ids:
-                    has_faults = (
-                        len(node_metadata.hardware_fault_infos) > 0 or len(node_metadata.software_fault_infos) > 0
-                    )
-                    if has_faults:
-                        instance_nodes.append(node_metadata)
+        snapshot = self._collect_instance_faults(instance_id)
+        if snapshot is None:
+            return
+        instance = snapshot.instance
+        instance_nodes = snapshot.nodes
+        active_hardware_faults = {fault_key for fault_key, _, _, _ in snapshot.hardware_faults}
+        with instance_metadata.lock:
+            instance_metadata.handled_hardware_faults.intersection_update(active_hardware_faults)
+            instance_metadata.ignored_pre_ready_hardware_faults.intersection_update(active_hardware_faults)
+            handled_hardware_faults = set(instance_metadata.handled_hardware_faults)
+            ignored_hardware_faults = set(instance_metadata.ignored_pre_ready_hardware_faults)
+
+        with self.config_lock:
+            enable_dp_scale_down = self.config.fault_tolerance_config.enable_dp_scale_down
+        hardware_scale_down_candidate = False
+        if enable_dp_scale_down:
+            if instance is not None:
+                hardware_context = [
+                    (fault_key, pod_ip, fault)
+                    for fault_key, pod_ip, _, fault in snapshot.hardware_faults
+                    if fault.fault_level >= FaultLevel.L4
+                    and fault_key not in handled_hardware_faults
+                    and fault_key not in ignored_hardware_faults
+                ]
+                hardware_candidates, _ = FaultNormalizer.hardware_dp_ranks(instance, hardware_context)
+                hardware_scale_down_candidate = bool(hardware_candidates)
 
         # Re-evaluate PreSeparateNPU fault levels on every node before
         # computing the instance's overall fault level.  This catches the
@@ -382,7 +656,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     if fault_info.fault_level != FaultLevel.L2:
                         logger.info(
                             "Re-evaluated PreSeparateNPU 0x%x → L2 on node %s (active instances present)",
-                            code,
+                            fault_info.fault_code,
                             node_metadata.node_name,
                         )
                         fault_info.fault_level = FaultLevel.L2
@@ -390,7 +664,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     if fault_info.fault_level != FaultLevel.L6:
                         logger.info(
                             "Re-evaluated PreSeparateNPU 0x%x → L6 on node %s (no active instances)",
-                            code,
+                            fault_info.fault_code,
                             node_metadata.node_name,
                         )
                         fault_info.fault_level = FaultLevel.L6
@@ -420,16 +694,16 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
             # PreSeparateNPU L6 on a vacated node is node-only (do not ScaleP2D).
             # A2 linkdown is further filtered to instances that own the named NPU.
-            instance = InstanceManager().get_instance(instance_id)
             hardware_type = self._hardware_type()
 
             all_hw_faults = [
-                fi
-                for node in instance_nodes
-                for fi in node.hardware_fault_infos.values()
-                if pre_separate_fault_affects_instance(fi, node, instance, hardware_type)
+                fault
+                for fault_key, _, node, fault in snapshot.hardware_faults
+                if pre_separate_fault_affects_instance(fault, node, instance, hardware_type)
+                and fault_key not in handled_hardware_faults
+                and fault_key not in ignored_hardware_faults
             ]
-            all_sw_faults = [fi for node in instance_nodes for fi in node.software_fault_infos.values()]
+            all_sw_faults = list(snapshot.software_faults)
 
             highest_hw_fault = max(all_hw_faults, key=lambda f: f.fault_level, default=None)
             highest_sw_fault = max(all_sw_faults, key=lambda f: f.fault_level, default=None)
@@ -450,6 +724,10 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
             if target is None:
                 # No faults, instance is healthy
+                instance_metadata.fault_collection_started_at = None
+                instance_metadata.hardware_fault_observed_at = None
+                instance_metadata.software_dead_observed_at.clear()
+                instance_metadata.software_unhealthy_observed_at.clear()
                 if instance_metadata.fault_level != FaultLevel.HEALTHY:
                     instance_metadata.fault_level = FaultLevel.HEALTHY
                     instance_metadata.fault_code = 0x0
@@ -472,7 +750,10 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 )
 
             if instance_metadata.fault_level > FaultLevel.L2:
-                InstanceManager().separate_instance(instance_id)
+                if target.fault_category == FaultCategory.HARDWARE and hardware_scale_down_candidate:
+                    logger.info("Deferring instance %d isolation to hardware DP scale-down", instance_id)
+                else:
+                    InstanceManager().separate_instance(instance_id)
             else:
                 if InstanceManager().is_instance_separated(instance_id):
                     InstanceManager().recover_instance(instance_id)
@@ -502,9 +783,132 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             with self.config_lock:
                 check_interval = self.strategy_center_check_interval
             with self.work_condition:
-                self.work_condition.wait(timeout=check_interval)
+                if not self._strategy_finished_event.is_set():
+                    self.work_condition.wait(timeout=check_interval)
+                self._strategy_finished_event.clear()
 
         logger.info("Fault tolerance strategy center stopped")
+
+    def _build_scale_down_context(
+        self,
+        instance_id: int,
+    ) -> ScaleDownContext:
+        """Freeze the authoritative fault candidates before a strategy starts."""
+        snapshot = self._collect_instance_faults(instance_id)
+        if snapshot is None or snapshot.instance is None:
+            return ScaleDownContext()
+        instance = snapshot.instance
+        with self.lock:
+            metadata = self.instances.get(instance_id)
+        if metadata is not None:
+            with metadata.lock:
+                handled_hardware_faults = set(metadata.handled_hardware_faults)
+                ignored_hardware_faults = set(metadata.ignored_pre_ready_hardware_faults)
+                started_at = metadata.fault_collection_started_at
+                hardware_started_at = metadata.hardware_fault_observed_at
+                dead_observed_at = dict(metadata.software_dead_observed_at)
+                unhealthy_observed_at = dict(metadata.software_unhealthy_observed_at)
+        else:
+            handled_hardware_faults = set()
+            ignored_hardware_faults = set()
+            started_at = None
+            hardware_started_at = None
+            dead_observed_at = {}
+            unhealthy_observed_at = {}
+        hardware_faults = [
+            (fault_key, pod_ip, fault.model_copy(deep=True))
+            for fault_key, pod_ip, _, fault in snapshot.hardware_faults
+            if fault.fault_level >= FaultLevel.L2
+            and fault_key not in handled_hardware_faults
+            and fault_key not in ignored_hardware_faults
+        ]
+        software_faults = [fault.model_copy(deep=True) for fault in snapshot.software_faults]
+
+        registered_ranks = {endpoint.id for endpoint in instance.get_all_endpoints(include_headless=False)}
+        runtime = get_ft_runtime_store().get(instance_id)
+        committed_ranks = set(runtime["dead_committed"]) if runtime is not None else set()
+        active_ranks = registered_ranks - committed_ranks
+        dead_ranks = FaultNormalizer.software_dp_ranks(software_faults) & active_ranks
+        unhealthy_ranks = {
+            fault.engine_id
+            for fault in software_faults
+            if fault.engine_status == 2 and isinstance(fault.engine_id, int)
+        } & active_ranks
+        collection_timed_out = started_at is not None and (
+            time.time() - started_at >= self.config.fault_tolerance_config.cpu_distributed_timeout_seconds
+        )
+        # L2 hardware evidence remains observational. Actionable hardware
+        # evidence is correlated per fault so a card already removed by a
+        # prior round can be acknowledged without affecting active ranks.
+        actionable_hardware_faults = [item for item in hardware_faults if item[2].fault_level >= FaultLevel.L4]
+        hardware_candidates: set[int] = set()
+        mapped_fault_keys: set[str] = set()
+        already_removed_fault_keys: set[str] = set()
+        has_unmapped_hardware = False
+        for hardware_fault in actionable_hardware_faults:
+            candidates, keys = FaultNormalizer.hardware_dp_ranks(instance, [hardware_fault])
+            if candidates and candidates <= committed_ranks:
+                already_removed_fault_keys.update(keys)
+                continue
+            active_candidates = candidates - committed_ranks
+            hardware_candidates.update(active_candidates)
+            mapped_fault_keys.update(keys)
+            has_unmapped_hardware = has_unmapped_hardware or not candidates
+
+        engine_fault_observed = bool(dead_ranks or unhealthy_ranks)
+        all_dp_unhealthy = bool(active_ranks) and not dead_ranks and active_ranks <= unhealthy_ranks
+        collection_complete = (
+            bool(dead_ranks) and bool(unhealthy_ranks) and active_ranks <= dead_ranks | unhealthy_ranks
+        )
+        hardware_fault_observed = bool(hardware_candidates or has_unmapped_hardware)
+        hardware_first = (
+            hardware_fault_observed
+            and hardware_started_at is not None
+            and (started_at is None or hardware_started_at < started_at)
+        )
+        with self.config_lock:
+            hardware_window = self.config.fault_tolerance_config.hardware_ft_correlation_window_sec
+        hardware_dead_observed = bool(hardware_candidates) and hardware_candidates <= dead_ranks
+        timely_dead_ranks = {
+            rank
+            for rank, observed_at in dead_observed_at.items()
+            if hardware_started_at is not None and observed_at - hardware_started_at <= hardware_window
+        }
+        timely_unhealthy_ranks = {
+            rank
+            for rank, observed_at in unhealthy_observed_at.items()
+            if hardware_started_at is not None and observed_at - hardware_started_at <= hardware_window
+        }
+        hardware_ft_observed = bool(
+            hardware_first
+            and (
+                (all_dp_unhealthy and active_ranks <= timely_unhealthy_ranks)
+                or (collection_complete and hardware_dead_observed and hardware_candidates <= timely_dead_ranks)
+            )
+        )
+        hardware_wait_timed_out = bool(
+            hardware_first
+            and not hardware_ft_observed
+            and hardware_started_at is not None
+            and time.time() - hardware_started_at >= hardware_window
+        )
+        return ScaleDownContext(
+            pending_removed_ranks=tuple(sorted(dead_ranks)),
+            source="hardware" if hardware_first else "software",
+            fault_keys=tuple(sorted(mapped_fault_keys)),
+            all_dp_unhealthy=all_dp_unhealthy,
+            collection_complete=collection_complete,
+            collection_timed_out=collection_timed_out,
+            engine_fault_observed=engine_fault_observed,
+            all_dp_removed=bool(active_ranks) and active_ranks <= dead_ranks,
+            hardware_fault_observed=hardware_fault_observed,
+            hardware_wait_timed_out=hardware_wait_timed_out,
+            hardware_affected_ranks=tuple(sorted(hardware_candidates)),
+            hardware_ft_observed=hardware_ft_observed,
+            already_removed_fault_keys=tuple(sorted(already_removed_fault_keys)),
+            engine_recovery_eligible=instance.status == InsStatus.ACTIVE,
+            hardware_mapping_complete=not has_unmapped_hardware,
+        )
 
     def _is_superseded_instance(self, ins_id: int) -> bool:
         """True when assembler already created a newer instance id for the same job."""
@@ -519,10 +923,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         """
         Generate and manage the recovery strategy for an instance based on fault level.
 
-        Strategy switch rules (by fault_level comparison, not just strategy class):
-        1. new_level > current_level: UPGRADE — stop current strategy, start new one.
-        2. new_level == current_level: SAME — keep current strategy (avoid intra-level churn).
-        3. new_level < current_level: DOWNGRADE — ignore, keep higher-priority strategy.
+        One strategy is allowed per recovery round. Evidence arriving while it
+        runs is retained and evaluated only after the round completes.
 
         When a strategy finishes:
         - Clear all software faults for the instance (symptoms resolved by recovery).
@@ -537,123 +939,221 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 logger.warning("Instance %d not found in instances dict", ins_id)
                 return
 
-        superseded = self._is_superseded_instance(ins_id)
+        # Reap the previous round before looking at fault evidence. Otherwise
+        # its still-latched software faults can plan a new WAITING state and
+        # overwrite a scale-down that has already committed successfully.
+        if self._complete_finished_strategy(ins_id, ins_metadata):
+            return
 
+        superseded = self._is_superseded_instance(ins_id)
+        plan_started = False
+        with ins_metadata.lock:
+            has_fault = ins_metadata.fault_level != FaultLevel.HEALTHY
+        scale_down_context = ScaleDownContext()
+        if has_fault and not superseded:
+            scale_down_context = self._build_scale_down_context(ins_id)
+            if scale_down_context.already_removed_fault_keys:
+                with ins_metadata.lock:
+                    ins_metadata.handled_hardware_faults.update(scale_down_context.already_removed_fault_keys)
+                if not (scale_down_context.hardware_fault_observed or scale_down_context.engine_fault_observed):
+                    self._refresh_instance_fault_level(ins_id)
+                    return
+
+        if not has_fault and not superseded:
+            runtime = get_ft_runtime_store().get(ins_id)
+            if runtime is not None and runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value:
+                restored = get_ft_runtime_store().resume_after_fault_clear(ins_id)
+                instance = InstanceManager().get_instance(ins_id)
+                if restored is not None and instance is not None and ServingOverlay.publish(instance):
+                    get_ft_runtime_store().mark_serving_published({ins_id})
+                return
         with ins_metadata.lock:
             fault_level = ins_metadata.fault_level
             fault_code = ins_metadata.fault_code
             current_strategy = ins_metadata.strategy
-            current_level = ins_metadata.strategy_fault_level
-            current_cls_name = current_strategy.__class__.__name__ if current_strategy else None
+            strategy_context: object = scale_down_context
 
-            # Escalation chain: when the previous strategy finished without
-            # restoring health, run the fallback (EngineRelaunchStrategy —
-            # restart engines, then containers) instead of re-running the
-            # same strategy in a loop. Honours the enable_engine_relaunch
-            # switch like the level2_strategy hook: disabling it restores the
-            # legacy behavior (heartbeat suicide -> k8s pod restart only).
+            # Do not preempt an active recovery round. Newly arriving evidence
+            # remains recorded and is planned in the next round after success.
+            if current_strategy is not None:
+                return
+
             if superseded:
                 # Assembler already created a newer id for this job_name; do not
                 # stop the replacement's NodeManagers via the stale instance.
-                if current_strategy is None:
-                    logger.debug(
-                        "Skip strategy for superseded instance %d (job already has a newer instance)",
-                        ins_id,
-                    )
+                logger.debug(
+                    "Skip strategy for superseded instance %d (job already has a newer instance)",
+                    ins_id,
+                )
                 new_strategy_cls = None
-            elif (
-                fault_level != FaultLevel.HEALTHY
-                and ins_metadata.prev_strategy_failed
-                and self.config.fault_tolerance_config.enable_engine_relaunch
-            ):
-                from motor.controller.fault_tolerance.strategy import EngineRelaunchStrategy
+            elif fault_level != FaultLevel.HEALTHY and ins_metadata.prev_strategy_failed:
+                # Engine FT and relaunch are single-attempt recovery stages;
+                # failure advances to whole-instance reconfiguration. Other
+                # baseline strategies retain master's optional relaunch stage.
+                if ins_metadata.prev_strategy_name == "InstanceReconfigurationStrategy":
+                    new_strategy_cls = None
+                elif ins_metadata.prev_strategy_name in {
+                    "DpScaleDownStrategy",
+                    "EngineFastRecoveryStrategy",
+                    "EngineRelaunchStrategy",
+                }:
+                    from motor.controller.fault_tolerance.strategy import InstanceReconfigurationStrategy
 
-                new_strategy_cls = EngineRelaunchStrategy
-            else:
-                new_strategy_cls = (
+                    new_strategy_cls = InstanceReconfigurationStrategy
+                elif self.config.fault_tolerance_config.enable_engine_relaunch:
+                    from motor.controller.fault_tolerance.strategy import EngineRelaunchStrategy
+
+                    new_strategy_cls = EngineRelaunchStrategy
+                else:
+                    new_strategy_cls = None
+            elif fault_level != FaultLevel.HEALTHY:
+                generated_strategy_cls = (
                     self.strategies[fault_level](fault_code, ins_id, self.config)
                     if fault_level != FaultLevel.HEALTHY
                     else None
                 )
+                plan = build_recovery_plan(
+                    ins_id,
+                    self.config,
+                    scale_down_context,
+                    generated_strategy_cls,
+                    fault_level,
+                    fault_code,
+                )
+                new_strategy_cls, strategy_context = plan.strategy, plan.context
+                if new_strategy_cls is None and plan.evidence.engine_fault_observed:
+                    get_ft_runtime_store().transition(ins_id, phase=FtPhase.WAITING_ENGINE_FAULT)
+                plan_log = logger.info if new_strategy_cls is not None else logger.debug
+                plan_log(
+                    "Instance %d recovery plan: source=%s, strategy=%s, fallback=%s, "
+                    "removed_ranks=%s, all_unhealthy=%s, collection_complete=%s, "
+                    "collection_timed_out=%s, hardware_wait_timed_out=%s",
+                    ins_id,
+                    plan.source.value,
+                    new_strategy_cls.__name__ if new_strategy_cls else "WAIT",
+                    plan.fallback.__name__ if plan.fallback else "NONE",
+                    plan.evidence.pending_removed_ranks,
+                    plan.evidence.all_dp_unhealthy,
+                    plan.evidence.collection_complete,
+                    plan.evidence.collection_timed_out,
+                    plan.evidence.hardware_wait_timed_out,
+                )
+            else:
+                new_strategy_cls = None
 
             if new_strategy_cls is not None:
-                should_switch = False
-                if current_strategy is None:
-                    should_switch = True
-                elif fault_level > current_level:
-                    current_strategy.stop()
-                    ins_metadata.strategy = None
-                    should_switch = True
-                elif fault_level < current_level:
-                    logger.debug(
-                        "Instance %d: downgrade %s->%s ignored, keeping %s",
-                        ins_id,
-                        current_level.name,
-                        fault_level.name,
-                        current_cls_name,
-                    )
-                # else same level: no switch, no log
+                new_strategy = new_strategy_cls()
+                new_strategy.bind_config(self.config)
+                new_strategy.bind_context(strategy_context)
+                logger.info(
+                    "Instance %d: strategy %s, level=%s, code=0x%08x",
+                    ins_id,
+                    new_strategy_cls.__name__,
+                    fault_level.name,
+                    fault_code,
+                )
+                future = self.executor.submit(new_strategy.execute, ins_id)
+                future.add_done_callback(self._on_strategy_finished)
+                ins_metadata.strategy = new_strategy
+                ins_metadata.strategy_future = future
+                ins_metadata.strategy_fault_level = fault_level
+                if not ins_metadata.prev_strategy_failed:
+                    ins_metadata.recovery_plan_source = scale_down_context.source
+                    ins_metadata.recovery_plan_strategy = new_strategy_cls.__name__
+                    ins_metadata.recovery_plan_fallback = "InstanceReconfigurationStrategy"
+                plan_started = True
 
-                if should_switch:
-                    new_strategy = new_strategy_cls()
-                    logger.info(
-                        "Instance %d: strategy %s%s, level=%s, code=0x%08x",
-                        ins_id,
-                        "switch " if current_cls_name else "",
-                        "%s->%s" % (current_cls_name, new_strategy_cls.__name__)
-                        if current_cls_name
-                        else new_strategy_cls.__name__,
-                        fault_level.name,
-                        fault_code,
-                    )
-                    self.executor.submit(new_strategy.execute, ins_id)
-                    ins_metadata.strategy = new_strategy
-                    ins_metadata.strategy_fault_level = fault_level
-
-            # Check if the current strategy is finished
-            need_post_completion = False
-            if ins_metadata.strategy is not None:
-                if ins_metadata.strategy.is_finished():
-                    logger.info(
-                        "Instance %d: strategy %s finished, level=%s, clearing faults",
-                        ins_id,
-                        ins_metadata.strategy.__class__.__name__,
-                        ins_metadata.strategy_fault_level.name,
-                    )
-                    # Escalation bookkeeping: a failed strategy leaves the
-                    # software faults in place (so the fault level stays) and
-                    # marks the instance for the fallback strategy; a
-                    # successful one clears the marker.
-                    ins_metadata.prev_strategy_failed = ins_metadata.strategy.is_failed()
-                    ins_metadata.strategy = None
-                    ins_metadata.strategy_fault_level = FaultLevel.HEALTHY
-                    need_post_completion = True
-                else:
-                    ins_metadata.fault_level = fault_level
-                    ins_metadata.fault_code = fault_code
-
-        # Post-completion actions outside ins_metadata.lock to avoid deadlock:
-        # _clear_software_faults acquires self.lock, persist_data acquires self.lock,
-        # _refresh_instance_fault_level acquires self.lock then ins_metadata.lock
-        if need_post_completion:
-            self._clear_software_faults(ins_id)
+        if plan_started:
             with self.config_lock:
                 enable_persistence = self.etcd_config.enable_etcd_persistence
             if enable_persistence and not self.persist_data():
-                logger.debug(
-                    "Failed to persist fault manager data after strategy completion for instance %d",
-                    ins_id,
+                logger.debug("Failed to persist recovery plan for instance %d", ins_id)
+
+    def _complete_finished_strategy(self, ins_id: int, ins_metadata: InstanceMetadata) -> bool:
+        """Finish one returned strategy before evaluating the next recovery round."""
+        clear_software_faults = False
+        with ins_metadata.lock:
+            strategy = ins_metadata.strategy
+            future = ins_metadata.strategy_future
+            if strategy is None or not strategy.is_finished() or (future is not None and not future.done()):
+                return False
+            logger.info(
+                "Instance %d: strategy %s finished, level=%s",
+                ins_id,
+                strategy.__class__.__name__,
+                ins_metadata.strategy_fault_level.name,
+            )
+            completed_context = strategy.strategy_context
+            if ins_metadata.strategy_preempted:
+                ins_metadata.strategy_preempted = False
+            else:
+                ins_metadata.prev_strategy_failed = strategy.is_failed()
+                ins_metadata.prev_strategy_name = strategy.__class__.__name__
+                ins_metadata.prev_strategy_fallback = (
+                    completed_context.fallback_strategy
+                    if ins_metadata.prev_strategy_failed and isinstance(completed_context, ScaleDownContext)
+                    else (
+                        ins_metadata.recovery_plan_fallback
+                        if ins_metadata.prev_strategy_failed
+                        and ins_metadata.prev_strategy_name == "EngineFastRecoveryStrategy"
+                        else ""
+                    )
                 )
-            self._refresh_instance_fault_level(ins_id)
+                if (
+                    not ins_metadata.prev_strategy_failed
+                    and isinstance(completed_context, ScaleDownContext)
+                    and completed_context.fault_keys
+                ):
+                    ins_metadata.handled_hardware_faults.update(completed_context.fault_keys)
+                clear_software_faults = not ins_metadata.prev_strategy_failed
+                if clear_software_faults:
+                    ins_metadata.recovery_plan_source = ""
+                    ins_metadata.recovery_plan_strategy = ""
+                    ins_metadata.recovery_plan_fallback = ""
+            ins_metadata.strategy = None
+            ins_metadata.strategy_future = None
+            ins_metadata.strategy_fault_level = FaultLevel.HEALTHY
+
+        # These operations acquire FaultManager locks and must stay outside
+        # InstanceMetadata.lock.
+        if clear_software_faults:
+            self._clear_software_faults(ins_id)
+        with self.config_lock:
+            enable_persistence = self.etcd_config.enable_etcd_persistence
+        if enable_persistence and not self.persist_data():
+            logger.debug(
+                "Failed to persist fault manager data after strategy completion for instance %d",
+                ins_id,
+            )
+        self._refresh_instance_fault_level(ins_id)
+        return True
+
+    def _on_strategy_finished(self, _future: concurrent.futures.Future) -> None:
+        """Wake the strategy center as soon as an asynchronous strategy returns."""
+        self._strategy_finished_event.set()
+        with self.work_condition:
+            self.work_condition.notify_all()
 
     def _clear_software_faults(self, instance_id: int) -> None:
         """Clear all software faults from nodes of an instance after strategy completion."""
         cleared = 0
         with self.lock:
+            metadata = self.instances.get(instance_id)
+            if metadata is not None:
+                metadata.fault_collection_started_at = None
+                metadata.hardware_fault_observed_at = None
+                metadata.software_dead_observed_at.clear()
+                metadata.software_unhealthy_observed_at.clear()
             for node_metadata in self.nodes.values():
                 if instance_id in node_metadata.instance_ids and node_metadata.software_fault_infos:
-                    cleared += len(node_metadata.software_fault_infos)
-                    node_metadata.software_fault_infos.clear()
+                    keys = [
+                        key
+                        for key, fault in node_metadata.software_fault_infos.items()
+                        if fault.instance_id in (None, instance_id)
+                    ]
+                    for key in keys:
+                        del node_metadata.software_fault_infos[key]
+                    cleared += len(keys)
         if cleared > 0:
             logger.info(
                 "Cleared %d software faults for instance %d after strategy completion",

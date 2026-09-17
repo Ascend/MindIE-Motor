@@ -160,6 +160,70 @@ class NodeManagerApiClient:
         return response
 
     @classmethod
+    def query_engine_ft_entries(
+        cls, node_mgr: NodeManagerInfo, endpoint_ids: list[int], timeout: float
+    ) -> dict[int, dict[str, Any]]:
+        data = {"endpoint_ids": endpoint_ids}
+        response = cls._post_ft(node_mgr, "/node-manager/fault-tolerance/status", data, timeout)
+        return {int(endpoint_id): value for endpoint_id, value in response.items()}
+
+    @classmethod
+    def apply_engine_ft_instructions(
+        cls,
+        node_mgr: NodeManagerInfo,
+        endpoint_ids: list[int],
+        instruction: str,
+        params: dict,
+        request_id: str,
+        timeout: float,
+    ) -> dict:
+        return cls._post_ft(
+            node_mgr,
+            "/node-manager/fault-tolerance/apply",
+            {
+                "endpoint_ids": endpoint_ids,
+                "instruction": instruction,
+                "params": params,
+                "request_id": request_id,
+            },
+            timeout,
+        )
+
+    @classmethod
+    def finalize_engine_ft(
+        cls,
+        node_mgr: NodeManagerInfo,
+        request_id: str,
+        retired_endpoint_ids: list[int],
+        commit: bool,
+        timeout: float,
+    ) -> dict:
+        return cls._post_ft(
+            node_mgr,
+            "/node-manager/fault-tolerance/finalize",
+            {
+                "request_id": request_id,
+                "retired_endpoint_ids": retired_endpoint_ids,
+                "commit": commit,
+            },
+            timeout,
+        )
+
+    @classmethod
+    def guard_engine_ft(cls, node_mgr: NodeManagerInfo, request_id: str, lease_sec: float, timeout: float) -> dict:
+        data = {"request_id": request_id, "lease_sec": lease_sec}
+        return cls._post_ft(node_mgr, "/node-manager/fault-tolerance/guard", data, timeout)
+
+    @classmethod
+    def _post_ft(cls, node_mgr: NodeManagerInfo, path: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
+        """Post one NodeManager FT request and always close its client."""
+        client = SafeHTTPSClient(**cls._generate_client_args(node_mgr), timeout=timeout)
+        try:
+            return client.post(path, data=data)
+        finally:
+            client.close()
+
+    @classmethod
     def _generate_client_args(cls, node_mgr: NodeManagerInfo) -> dict[str, str]:
         client_ars = {
             "address": format_address(node_mgr.pod_ip, node_mgr.port),

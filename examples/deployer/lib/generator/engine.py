@@ -129,6 +129,52 @@ def is_hybrid_deploy(deploy_config):
     return C.HYBRID_INSTANCES_NUM in deploy_config
 
 
+def _node_type_to_role(node_type):
+    return {
+        C.NODE_TYPE_E: C.ROLE_ENCODE,
+        C.NODE_TYPE_P: C.ROLE_PREFILL,
+        C.NODE_TYPE_D: C.ROLE_DECODE,
+        C.NODE_TYPE_U: C.ROLE_UNION,
+    }.get(node_type)
+
+
+def _is_controller_dp_scale_down_enabled(user_config):
+    controller_config = user_config.get(C.MOTOR_CONTROLLER_CONFIG) or {}
+    ft_config = controller_config.get(C.FAULT_TOLERANCE_CONFIG) or {}
+    if not isinstance(ft_config, dict):
+        return False
+    return ft_config.get(C.ENABLE_FAULT_TOLERANCE, True) in (True, 1) and ft_config.get(
+        C.ENABLE_DP_SCALE_DOWN, False
+    ) in (True, 1)
+
+
+def _is_engine_ft_enabled(user_config, role):
+    engine_key = {
+        C.ROLE_ENCODE: C.MOTOR_ENGINE_ENCODE_CONFIG,
+        C.ROLE_PREFILL: C.MOTOR_ENGINE_PREFILL_CONFIG,
+        C.ROLE_DECODE: C.MOTOR_ENGINE_DECODE_CONFIG,
+        C.ROLE_UNION: C.MOTOR_ENGINE_UNION_CONFIG,
+    }.get(role)
+    if not engine_key:
+        return False
+    engine_section = user_config.get(engine_key) or {}
+    native_engine_config = engine_section.get(C.ENGINE_CONFIG)
+    if not isinstance(native_engine_config, dict):
+        return False
+    return any(
+        native_engine_config.get(key) in (True, 1) for key in (C.ENABLE_FAULT_TOLERANCE, C.ENABLE_FAULT_TOLERANCE_KEBAB)
+    )
+
+
+def apply_engine_ft_labels(template, user_config, role):
+    """Let MindCluster reschedule a failed FT engine Pod instead of failing the whole instance."""
+    if not (_is_controller_dp_scale_down_enabled(user_config) and _is_engine_ft_enabled(user_config, role)):
+        return
+    labels = template.setdefault(C.METADATA, {}).setdefault(C.LABELS, {})
+    labels[C.FAULT_SCHEDULING_LABEL] = C.FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED
+    labels[C.POD_RESCHEDULING_LABEL] = C.POD_RESCHEDULING_ON
+
+
 def build_engine_env_items(role, deploy_config, job_name, include_kv_store=False):
     env_items = [
         {C.NAME: C.ENV_ROLE, C.VALUE: role},
@@ -323,6 +369,7 @@ def modify_engine_yaml(deployment_data, user_config, index, node_type):
     container[C.IMAGE] = deploy_config[C.IMAGE_NAME]
     job_name = f"{deploy_config[C.CONFIG_JOB_ID]}-{node_type}{index}-{generate_unique_id()}"
     set_engine_metadata(deployment_data, deploy_config, index, node_type, job_name)
+    apply_engine_ft_labels(deployment_data[C.SPEC][C.TEMPLATE], user_config, _node_type_to_role(node_type))
     container[C.NAME] = k8s_utils.g_engine_base_name
     if C.ENV not in container:
         container[C.ENV] = []

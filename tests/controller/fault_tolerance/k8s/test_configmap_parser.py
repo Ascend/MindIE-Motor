@@ -18,6 +18,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from motor.controller.fault_tolerance.k8s.configmap_parser import (
     is_configmap_valid,
     _parse_json_string,
@@ -405,52 +407,26 @@ def test_process_switch_info_with_malformed_hex_code():
     assert result[0].fault_code == 0x2001  # Default fault code
 
 
-def test_process_manually_separate_npu_empty():
-    """Test processing empty manual separation config"""
-    result = process_manually_separate_npu("")
-    assert not result
-    result = process_manually_separate_npu("   ")
-    assert not result
-
-
-def test_process_manually_separate_npu_valid():
-    """Test processing valid manual separation config"""
-    config = "Ascend910-0,Ascend910-2,Ascend910-5"
-    result = process_manually_separate_npu(config)
-    expected = [0, 2, 5]
-    assert result == expected
-
-
-def test_process_manually_separate_npu_with_whitespace():
-    """Test processing config with whitespace"""
-    config = " Ascend910-0 , Ascend910-2 , Ascend910-5 "
-    result = process_manually_separate_npu(config)
-    expected = [0, 2, 5]
-    assert result == expected
-
-
-def test_process_manually_separate_npu_invalid_format():
-    """Test processing config with invalid NPU name format"""
-    config = "Ascend910-0,InvalidName,Ascend910-2"
-    result = process_manually_separate_npu(config)
-    expected = [0, 2]  # Invalid name should be skipped
-    assert result == expected
-
-
-def test_process_manually_separate_npu_invalid_rank_number():
-    """Test processing config with invalid rank number"""
-    config = "Ascend910-abc,Ascend910-1"
-    result = process_manually_separate_npu(config)
-    expected = [1]  # Invalid rank should be skipped
-    assert result == expected
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        ("", []),
+        ("   ", []),
+        ("Ascend910-0,Ascend910-2,Ascend910-5", [0, 2, 5]),
+        (" Ascend910-0 , Ascend910-2 , Ascend910-5 ", [0, 2, 5]),
+        ("Ascend910-0,InvalidName,Ascend910-2", [0, 2]),
+        ("Ascend910-abc,Ascend910-1", [1]),
+        ("npu-0,npu-2,npu-5", [0, 2, 5]),
+        ("Ascend910-0,npu-3,Ascend910-7", [0, 3, 7]),
+    ],
+)
+def test_process_manually_separate_npu(config, expected):
+    assert process_manually_separate_npu(config) == expected
 
 
 def test_process_manually_separate_npu_exception_handling():
-    """Test exception handling in manual NPU separation processing"""
     with patch("motor.controller.fault_tolerance.k8s.configmap_parser.logger") as mock_logger:
-        # Force an exception by passing None
-        result = process_manually_separate_npu(None)
-        assert not result
+        assert process_manually_separate_npu(None) == []
         mock_logger.error.assert_called()
 
 
@@ -459,23 +435,18 @@ def test_process_manually_separate_npu_exception_handling():
 # =============================================================================
 
 
-def test_map_fault_level_sub_health_fault():
-    """SubHealthFault should statically map to L1 (informational)."""
-    assert map_fault_level(OriginFaultLevel.SUB_HEALTH_FAULT) == FaultLevel.L1
-
-
-def test_map_fault_level_pre_separate_npu_static():
-    """PreSeparateNPU statically maps to L6 — runtime downgrade to L2 is
-    handled by FaultManager._handle_fault_info_update, not by the parser.
-    """
-    assert map_fault_level(OriginFaultLevel.PRE_SEPARATE_NPU) == FaultLevel.L6
-
-
-def test_map_fault_level_manually_separate_npu_static():
-    """ManuallySeparateNPU statically maps to L6 — no runtime downgrade.
-    Unlike PreSeparateNPU, ManuallySeparateNPU is never downgraded to L2.
-    """
-    assert map_fault_level(OriginFaultLevel.MANUALLY_SEPARATE_NPU) == FaultLevel.L6
+@pytest.mark.parametrize(
+    "origin,expected",
+    [
+        (OriginFaultLevel.SUB_HEALTH_FAULT, FaultLevel.L1),
+        (OriginFaultLevel.PRE_SEPARATE_NPU, FaultLevel.L6),
+        (OriginFaultLevel.MANUALLY_SEPARATE_NPU, FaultLevel.L6),
+        ("NonExistentFaultLevel", FaultLevel.HEALTHY),
+        ("", FaultLevel.HEALTHY),
+    ],
+)
+def test_map_fault_level(origin, expected):
+    assert map_fault_level(origin) == expected
 
 
 def test_process_device_info_with_sub_health_fault_level():
@@ -576,46 +547,26 @@ def test_process_switch_info_with_sub_health_fault_level():
     assert result[0].origin_fault_level == OriginFaultLevel.SUB_HEALTH_FAULT
 
 
-def test_map_fault_level_unknown_string_returns_healthy():
-    """Unrecognized fault level string should default to HEALTHY (0)."""
-    assert map_fault_level("NonExistentFaultLevel") == FaultLevel.HEALTHY
-    assert map_fault_level("") == FaultLevel.HEALTHY
-
-
 # =============================================================================
 # 7. Comma-separated fault code parsing tests
 # =============================================================================
 
 
-def test_parse_device_fault_code_single_hex():
-    """Single hex fault code should be parsed as-is."""
-    assert _parse_device_fault_code("0x1001") == 0x1001
-    assert _parse_device_fault_code("80F38003") == 0x80F38003
-    assert _parse_device_fault_code("110001024") == 0x110001024
-
-
-def test_parse_device_fault_code_comma_separated():
-    """Comma-separated fault codes — first valid one wins."""
-    # "8F180E00,110001024" → parse "8F180E00" first, return it
-    assert _parse_device_fault_code("8F180E00,110001024") == 0x8F180E00
-    # "110001024" alone
-    assert _parse_device_fault_code("110001024") == 0x110001024
-
-
-def test_parse_device_fault_code_comma_separated_with_spaces():
-    """Comma-separated codes with whitespace around them."""
-    assert _parse_device_fault_code("8F180E00 , 110001024") == 0x8F180E00
-
-
-def test_parse_device_fault_code_all_invalid():
-    """If all codes in the comma list are invalid, return default."""
-    assert _parse_device_fault_code("not_hex,also_bad") == 0x1001
-
-
-def test_parse_device_fault_code_empty_and_none():
-    """Empty or None input returns default fault code."""
-    assert _parse_device_fault_code("") == 0x1001
-    assert _parse_device_fault_code(None) == 0x1001
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("0x1001", 0x1001),
+        ("80F38003", 0x80F38003),
+        ("110001024", 0x110001024),
+        ("8F180E00,110001024", 0x8F180E00),
+        ("8F180E00 , 110001024", 0x8F180E00),
+        ("not_hex,also_bad", 0x1001),
+        ("", 0x1001),
+        (None, 0x1001),
+    ],
+)
+def test_parse_device_fault_code(value, expected):
+    assert _parse_device_fault_code(value) == expected
 
 
 # =============================================================================
@@ -950,77 +901,48 @@ def test_process_device_info_network_unhealthy_comma_separated():
 
 
 # =============================================================================
-# 10. _normalize_fault_level_string tests (MindCluster 26.0.0+ SwitchInfoCfg values)
+# 10. Fault-level normalization tests
 # =============================================================================
 
 
-def test_normalize_fault_level_string_standard_values():
-    """Standard OriginFaultLevel values should pass through unchanged."""
-    assert _normalize_fault_level_string("NotHandleFault") == "NotHandleFault"
-    assert _normalize_fault_level_string("SubHealthFault") == "SubHealthFault"
-    assert _normalize_fault_level_string("RestartRequest") == "RestartRequest"
-    assert _normalize_fault_level_string("RestartBusiness") == "RestartBusiness"
-    assert _normalize_fault_level_string("FreeRestartNPU") == "FreeRestartNPU"
-    assert _normalize_fault_level_string("RestartNPU") == "RestartNPU"
-    assert _normalize_fault_level_string("SeparateNPU") == "SeparateNPU"
-    assert _normalize_fault_level_string("PreSeparateNPU") == "PreSeparateNPU"
-
-
-def test_normalize_fault_level_string_shortened_switch_values():
-    """MindCluster 26.0.0+ SwitchInfoCfg shortened values."""
-    # NotHandle → NotHandleFault (L1)
-    assert _normalize_fault_level_string("NotHandle") == "NotHandleFault"
-    # Separate → SeparateNPU (L6)
-    assert _normalize_fault_level_string("Separate") == "SeparateNPU"
-
-
-def test_normalize_fault_level_string_empty_and_unknown():
-    """Empty or unknown values fall back to NotHandleFault."""
-    assert _normalize_fault_level_string("") == "NotHandleFault"
-    assert _normalize_fault_level_string("UnknownLevel") == "NotHandleFault"
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("NotHandleFault", "NotHandleFault"),
+        ("SubHealthFault", "SubHealthFault"),
+        ("RestartRequest", "RestartRequest"),
+        ("RestartBusiness", "RestartBusiness"),
+        ("FreeRestartNPU", "FreeRestartNPU"),
+        ("RestartNPU", "RestartNPU"),
+        ("SeparateNPU", "SeparateNPU"),
+        ("PreSeparateNPU", "PreSeparateNPU"),
+        ("NotHandle", "NotHandleFault"),
+        ("Separate", "SeparateNPU"),
+        ("", "NotHandleFault"),
+        ("UnknownLevel", "NotHandleFault"),
+    ],
+)
+def test_normalize_fault_level_string(value, expected):
+    assert _normalize_fault_level_string(value) == expected
 
 
 # =============================================================================
-# 11. _parse_switch_fault_key — new key format (MindCluster 26.0.0+)
+# 11. Switch fault-key parsing tests
 # =============================================================================
 
 
-def test_parse_switch_fault_key_old_bracket_format():
-    """Old format: [0x2001,info]_1_2."""
-    code, chip, port = _parse_switch_fault_key("[0x2001,info]_1_2")
-    assert code == 0x2001
-    assert chip == 1
-    assert port == 2
-
-
-def test_parse_switch_fault_key_new_plain_format():
-    """New format (MindCluster 26.0.0+): 0x2001_1_2."""
-    code, chip, port = _parse_switch_fault_key("0x2001_1_2")
-    assert code == 0x2001
-    assert chip == 1
-    assert port == 2
-
-
-def test_parse_switch_fault_key_new_format_non_hex_code():
-    """New format with non-0x-prefixed hex code."""
-    code, chip, port = _parse_switch_fault_key("80F38003_3_5")
-    assert code == 0x80F38003
-    assert chip == 3
-    assert port == 5
-
-
-def test_parse_switch_fault_key_new_format_invalid_code():
-    """New format with invalid hex falls back to default."""
-    code, chip, port = _parse_switch_fault_key("not_hex_1_2")
-    assert code == 0x2001  # default
-
-
-def test_parse_switch_fault_key_no_underscores():
-    """Malformed key with no underscores returns defaults."""
-    code, chip, port = _parse_switch_fault_key("nounderscores")
-    assert code == 0x2001
-    assert chip == 0
-    assert port == 0
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("[0x2001,info]_1_2", (0x2001, 1, 2)),
+        ("0x2001_1_2", (0x2001, 1, 2)),
+        ("80F38003_3_5", (0x80F38003, 3, 5)),
+        ("not_hex_1_2", (0x2001, 0, 1)),
+        ("nounderscores", (0x2001, 0, 0)),
+    ],
+)
+def test_parse_switch_fault_key(value, expected):
+    assert _parse_switch_fault_key(value) == expected
 
 
 # =============================================================================
@@ -1028,39 +950,23 @@ def test_parse_switch_fault_key_no_underscores():
 # =============================================================================
 
 
-def test_process_switch_info_new_fault_level_not_handle():
-    """SwitchInfoCfg with FaultLevel='NotHandle' should map to L1."""
-    switch_info_dict = {
-        "FaultLevel": "NotHandle",
-        "UpdateTime": 1234567890,
-        "FaultTimeAndLevelMap": {
-            "0x2001_1_2": {"fault_time": 1234567890, "fault_level": "NotHandle"},
-        },
-    }
-    switch_info_json = json.dumps(switch_info_dict)
-    result = process_switch_info(switch_info_json)
-
+@pytest.mark.parametrize(
+    "level,key,expected_code,expected_level,expected_origin",
+    [
+        ("NotHandle", "0x2001_1_2", 0x2001, FaultLevel.L1, OriginFaultLevel.NOT_HANDLE_FAULT),
+        ("Separate", "0xA001_0_3", 0xA001, FaultLevel.L6, OriginFaultLevel.SEPARATE_NPU),
+    ],
+)
+def test_process_switch_info_new_fault_level(level, key, expected_code, expected_level, expected_origin):
+    result = process_switch_info(
+        json.dumps({"FaultTimeAndLevelMap": {key: {"fault_time": 1234567890, "fault_level": level}}})
+    )
     assert len(result) == 1
-    assert result[0].fault_code == 0x2001
-    assert result[0].fault_level == FaultLevel.L1  # NotHandle → NotHandleFault → L1
-    assert result[0].origin_fault_level == OriginFaultLevel.NOT_HANDLE_FAULT
-
-
-def test_process_switch_info_new_fault_level_separate():
-    """SwitchInfoCfg with FaultLevel='Separate' should map to L6."""
-    switch_info_dict = {
-        "FaultLevel": "Separate",
-        "FaultTimeAndLevelMap": {
-            "0xA001_0_3": {"fault_time": 1234567890, "fault_level": "Separate"},
-        },
-    }
-    switch_info_json = json.dumps(switch_info_dict)
-    result = process_switch_info(switch_info_json)
-
-    assert len(result) == 1
-    assert result[0].fault_code == 0xA001
-    assert result[0].fault_level == FaultLevel.L6  # Separate → SeparateNPU → L6
-    assert result[0].origin_fault_level == OriginFaultLevel.SEPARATE_NPU
+    assert (result[0].fault_code, result[0].fault_level, result[0].origin_fault_level) == (
+        expected_code,
+        expected_level,
+        expected_origin,
+    )
 
 
 def test_process_switch_info_new_key_format():
@@ -1097,29 +1003,3 @@ def test_process_switch_info_mixed_old_and_new_key_formats():
     result = process_switch_info(switch_info_json)
 
     assert len(result) == 2
-
-
-# =============================================================================
-# 13. process_manually_separate_npu — npu-N format (Atlas 950)
-# =============================================================================
-
-
-def test_process_manually_separate_npu_npu_format():
-    """Atlas 950 uses 'npu-0,npu-1' format instead of 'Ascend910-0'."""
-    config = "npu-0,npu-2,npu-5"
-    result = process_manually_separate_npu(config)
-    assert result == [0, 2, 5]
-
-
-def test_process_manually_separate_npu_mixed_old_new_format():
-    """Mixed Ascend910-N and npu-N format should both parse."""
-    config = "Ascend910-0,npu-3,Ascend910-7"
-    result = process_manually_separate_npu(config)
-    assert result == [0, 3, 7]
-
-
-def test_process_manually_separate_npu_ascend_format_still_works():
-    """Old Ascend910-N format must still work."""
-    config = "Ascend910-0,Ascend910-2,Ascend910-5"
-    result = process_manually_separate_npu(config)
-    assert result == [0, 2, 5]

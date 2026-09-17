@@ -52,6 +52,16 @@ def test_to_instance_dispatch_capabilities_is_independent_copy():
     assert read_only.to_instance().dispatch_capabilities == ["concurrent_engine_sync"]
 
 
+def test_to_instance_preserves_independent_ft_capability_copy():
+    instance = _instance()
+    instance.ft_capability.enabled = True
+
+    copied = ReadOnlyInstance(instance).to_instance()
+
+    assert copied.ft_capability == instance.ft_capability
+    assert copied.ft_capability is not instance.ft_capability
+
+
 def test_deepcopy_preserves_dispatch_fields():
     read_only = ReadOnlyInstance(_instance())
 
