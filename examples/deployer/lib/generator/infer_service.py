@@ -25,6 +25,7 @@ from lib.utils import (
     obtain_engine_e_instance_total,
     apply_volcano_queue_annotations,
     get_config_key,
+    resolve_workload_image,
 )
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import (
@@ -110,7 +111,7 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     if not containers:
         return None
     container = containers[0]
-    container[C.IMAGE] = deploy_config[C.IMAGE_NAME]
+    container[C.IMAGE] = resolve_workload_image(user_config, cfg)
     job_id = deploy_config[C.CONFIG_JOB_ID]
     uuid_spec = generate_unique_id()
     job_name = f"{job_id}-{role_name}-{uuid_spec}"
@@ -186,20 +187,21 @@ def _configure_coordinator_role(infer_doc, user_config):
     configure_render_sidecar(pod_spec, user_config)
 
 
-def _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name=None):
+def _apply_infer_node_selector_and_sp_block(user_config, pod_spec, template, pods_key, npu_key, role_name=None):
+    deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     hardware_type = deploy_config.get(C.HARDWARE_TYPE, C.HARDWARE_TYPE_800I_A2)
     pod_spec[C.NODE_SELECTOR] = pod_spec.get(C.NODE_SELECTOR, {})
     apply_node_selector_by_hardware(pod_spec, hardware_type)
     if role_name:
         node_type = {C.ROLE_PREFILL: C.NODE_TYPE_P, C.ROLE_DECODE: C.NODE_TYPE_D}.get(role_name)
         if node_type:
-            apply_pd_heterogeneous_node_selector(pod_spec, deploy_config, node_type)
+            apply_pd_heterogeneous_node_selector(pod_spec, user_config, node_type)
 
-    if hardware_type in C.HARDWARE_TYPE_A3 or hardware_type in C.HARDWARE_TYPE_950I_A5:
+    if hardware_type in C.HARDWARE_TYPE_A3 or hardware_type in C.HARDWARE_TYPE_A5:
         # CRD uses StatefulSet; MindCluster sp-block differs from Deployment (see engine.py multi_deployment)
         sp_block_num = int(deploy_config.get(pods_key, 1)) * int(deploy_config.get(npu_key, 1))
         apply_sp_block_annotation(template.setdefault(C.METADATA, {}), sp_block_num, hardware_type)
-    if hardware_type in C.HARDWARE_TYPE_950I_A5:
+    if hardware_type in C.HARDWARE_TYPE_A5:
         apply_a5_workload(template, deploy_config)
 
 
@@ -340,7 +342,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     if not containers:
         return
     container = containers[0]
-    container[C.IMAGE] = deploy_config[C.IMAGE_NAME]
+    container[C.IMAGE] = resolve_workload_image(user_config, user_config.get(get_config_key(role_name), {}))
     container[C.NAME] = infer_name
     job_id = deploy_config[C.CONFIG_JOB_ID]
     job_name_base = f"{job_id}-{infer_name}"
@@ -355,7 +357,7 @@ def _configure_engine_role(infer_doc, user_config, infer_name, role_name):
     apply_storage_volumes(pod_spec, container, user_config)
     apply_dshm_size(pod_spec, user_config)
     apply_a5_engine_pod_config(pod_spec, container, deploy_config)
-    _apply_infer_node_selector_and_sp_block(deploy_config, pod_spec, template, pods_key, npu_key, role_name)
+    _apply_infer_node_selector_and_sp_block(user_config, pod_spec, template, pods_key, npu_key, role_name)
     apply_engine_node_selector_overrides(pod_spec, deploy_config, prefix)
     k8s_utils.apply_additional_labels_annotations(role, user_config.get(get_config_key(role_name), {}))
     _apply_scaling_policy(role, user_config, role_name, infer_name)
@@ -432,7 +434,7 @@ def _configure_kv_conductor_role(infer_doc, user_config):
     apply_node_selector_override(pod_spec, deploy_config, C.KV_CONDUCTOR_NODE_SELECTOR)
     containers = pod_spec.get(C.CONTAINERS, [])
     if containers:
-        containers[0][C.IMAGE] = deploy_config[C.IMAGE_NAME]
+        containers[0][C.IMAGE] = resolve_workload_image(user_config, user_config.get(C.KV_CONDUCTOR_CONFIG))
     if not k8s_utils.g_kv_conductor_enabled:
         role[C.REPLICAS] = 0
         workload_spec[C.REPLICAS] = 1

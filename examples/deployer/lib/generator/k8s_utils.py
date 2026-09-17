@@ -343,30 +343,34 @@ def _resolve_accelerator_type_from_nodes(nodes, hardware_type):
 
 
 def get_accelerator_type_from_cluster(hardware_type):
-    """Resolve accelerator-type node label value from cluster nodes via kubectl."""
+    """Resolve accelerator-type node label value from cluster nodes via kubectl.
+
+    Only A2/A3 need this label: both use accelerator=huawei-Ascend910, so
+    accelerator-type is the only thing that keeps the two product forms apart.
+    A5 nodes are selected by accelerator / huawei.com/npu.chip.name only and
+    have no accelerator-type, hence must never reach this function.
+    """
     if hardware_type in _g_accelerator_type_cache:
         return _g_accelerator_type_cache[hardware_type]
 
-    if hardware_type in C.HARDWARE_TYPE_950I_A5:
-        label_selector = f"{C.ACCELERATOR}={C.ACCELERATOR_A5},{C.ACCELERATOR_TYPE}={hardware_type}"
-        nodes = _get_cluster_nodes(label_selector)
-        if not nodes:
-            raise RuntimeError(f"No node in cluster matches {label_selector} for hardware_type={hardware_type}")
-        accelerator_type = hardware_type
-    elif hardware_type in C.HARDWARE_TYPE_A2 or hardware_type in C.HARDWARE_TYPE_A3:
-        nodes = _get_cluster_nodes(f"{C.ACCELERATOR}={C.ACCELERATOR_910}")
-        if not nodes:
-            raise RuntimeError(
-                f"No node in cluster with label {C.ACCELERATOR}={C.ACCELERATOR_910} for hardware_type={hardware_type}"
-            )
-        accelerator_type = _resolve_accelerator_type_from_nodes(nodes, hardware_type)
-    else:
+    if hardware_type in C.HARDWARE_TYPE_A5:
+        raise ValueError(
+            f"hardware_type '{hardware_type}' does not use {C.ACCELERATOR_TYPE}; it is resolved for A2/A3 only"
+        )
+    if hardware_type not in C.HARDWARE_TYPE_A2 and hardware_type not in C.HARDWARE_TYPE_A3:
         known = [
             *sorted(C.HARDWARE_TYPE_A2),
             *sorted(C.HARDWARE_TYPE_A3),
-            *C.HARDWARE_TYPE_950I_A5,
+            *sorted(C.HARDWARE_TYPE_A5),
         ]
         raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
+
+    nodes = _get_cluster_nodes(f"{C.ACCELERATOR}={C.ACCELERATOR_910}")
+    if not nodes:
+        raise RuntimeError(
+            f"No node in cluster with label {C.ACCELERATOR}={C.ACCELERATOR_910} for hardware_type={hardware_type}"
+        )
+    accelerator_type = _resolve_accelerator_type_from_nodes(nodes, hardware_type)
 
     logger.info(
         "Resolved %s=%s from cluster for hardware_type=%s",

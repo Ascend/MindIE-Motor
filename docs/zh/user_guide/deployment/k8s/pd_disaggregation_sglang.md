@@ -321,12 +321,10 @@ examples/
     └── sglang/
         ├── user_config.json          # 通用模板
         ├── env.json
-        ├── user_config_pd_hetero.json
         ├── models/
-        │   ├── glm5.1/A3/            # GLM 5.1 A3 参考典配
-        │   ├── glm5.2/A3/            # GLM 5.2 A3 参考典配
-        │   └── qwen_8b/A3/           # Qwen3 8b A3 参考典配
-        └── pd_hybrid/                # 混部相关示例
+        │   └── glm5.1/A3/            # GLM 5.1 A3 参考典配
+        └── pd_hybrid/
+            └── deepseek_v4_flash/A3/ # deepseek-v4-flash A3 混部参考典配
 ```
 
 - 部署工具说明见 `examples/deployer/README.md`。

@@ -8,7 +8,7 @@
 #     python deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A3
 #   PD 分离: 同目录放置 run_dp_template_prefill.sh / run_dp_template_decode.sh 后执行
 #     python deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
-#   硬件类型: A2 / A3 / A5（A5 按每节点 8 卡，输出 hardware_type=850-Atlas-8p-8）
+#   硬件类型: A2 / A3 / A5（A5 按每节点 8 卡，输出 hardware_type=Ascend950）
 #   可选: --weight-path <路径>  --image-name <镜像>
 #   输出: output_config/user_config.json、output_config/env.json
 #
@@ -231,7 +231,7 @@ HARDWARE_PRESETS: dict[str, dict[str, Any]] = {
         "job_id": "mindie-motor",
     },
     "A5": {
-        "hardware_type": "850-Atlas-8p-8",
+        "hardware_type": "Ascend950",
         "cards_per_node": 8,
         "image_name": "<请手动填写镜像名称>",
         "weight_mount_path": "/mnt/weight/",
@@ -500,7 +500,7 @@ def normalize_hardware_type(value: str) -> str:
         return "800I_A2"
     if text in {"A3", "800I_A3"}:
         return "800I_A3"
-    if text in {"A5", "850_ATLAS_8P_8"}:
+    if text in {"A5", "ASCEND950", "850_ATLAS_8P_8"}:
         return "A5"
     if text in HARDWARE_PRESETS:
         return text
@@ -1637,7 +1637,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--hardware-type",
         required=True,
-        help="硬件类型: A2、A3 或 A5（A5 按每节点 8 卡，输出 hardware_type=850-Atlas-8p-8）",
+        help="硬件类型: A2、A3 或 A5（A5 按每节点 8 卡，输出 hardware_type=Ascend950）",
     )
     parser.add_argument(
         "--weight-path",

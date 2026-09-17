@@ -163,6 +163,74 @@
      --controller-ip <controller管理服务所在服务器的 IP地址>
    ```
 
+## PR / DT 异构部署（Ascend950）
+
+Ascend950 机器分为 PR、DT 两类：PR 使用白鹭内存，DT 使用 HBM。HBM 带宽更大、性能更好，更适合 Decode；Prefill 可部署在 PR 上。**PR + DT 混合组网**时，需要把 Prefill 容器放到 PR 机器、Decode 容器放到 DT 机器。全 PR 或全 DT 组网按上文普通流程部署即可，无需本节。
+
+>[!NOTE]说明
+> Docker 部署没有调度器，异构完全由「在哪台机器上执行哪条命令」决定，即与上文「容器数量规划」中按服务器分批部署是同一件事。K8s 专用的 `npu_chip_name` 字段（`motor_engine_prefill_config` / `motor_engine_decode_config` 各一份）**在 Docker 部署下不生效**（不会被读取，也不会告警），无需填写。
+
+1. **配置硬件类型**
+
+   `hardware_type` 统一填写 `Ascend950`，PR、DT 机器**共用一份**相同的 `user_config.json`，因此上文「同步启动脚本配置」中「一台服务器对应一份相同脚本」的做法在异构组网下依然成立。
+
+   ```json
+   {
+     "motor_deploy_config": {
+       "hardware_type": "Ascend950",
+       ...
+     }
+   }
+   ```
+
+2. **按机器形态分配角色**
+
+   按「容器数量规划」确定实例名称后，再把容器分配到对应形态的机器上：
+
+   | 机器形态 | `--role` | `--instance-name` | `--container-name`（示例） |
+   | :--- | :--- | :--- | :--- |
+   | PR | `prefill` | `p0`、`p1`、… | `motor-p0` |
+   | DT | `decode` | `d0`、`d1`、… | `motor-d0-0` |
+
+   在 **PR 机器**上执行 Prefill 的启动命令：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-p0 --devices 0 \
+     --role prefill --instance-name p0 \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+   在 **DT 机器**上执行 Decode 的启动命令：
+
+   ```bash
+   python3 docker_deploy.py --config_dir ../infer_engines/vllm \
+     --container-name motor-d0-0 --devices 0 \
+     --role decode --instance-name d0 \
+     --pod-ip <本机 IP地址> --nic-name <本机主网卡名称> \
+     --coordinator-ip <coordinator管理服务所在服务器的 IP地址> \
+     --controller-ip <controller管理服务所在服务器的 IP地址>
+   ```
+
+   管理面（`coordinator,controller`）与 kv_store 不与卡类型绑定，按下文「启动服务」正常部署即可。
+
+3. **确认机器形态**
+
+   部署前须逐台确认服务器的形态（PR / DT），再按形态分配容器：
+
+   - 以机房 / 资产管理信息为准；K8s 场景下对应节点标签 `huawei.com/npu.chip.name`，取值为 `Ascend950PR`（PR）或 `Ascend950DT`（DT）。
+   - 容器内已挂载 `npu-smi`，可用 `npu-smi info` 查看本机 NPU 情况。
+
+>[!NOTE]注意
+>
+> - **不做机型校验**：Docker 部署不会校验角色与机器形态是否匹配——把 Prefill 容器放到 DT 机器上不会报错（启动前只校验挂载的卡数），需人工保证。
+> - **单容器部署不支持异构**：单容器模式下 Prefill 与 Decode 在同一个容器、同一台机器上，无法分别落到 PR / DT。异构组网请使用本文的多容器部署。
+> - **组件级 `image_name` 不生效**：`motor_engine_prefill_config`、`motor_engine_decode_config` 等组件配置中的 `image_name` 仅在 K8s 部署生效，Docker 部署的容器镜像统一取 `motor_deploy_config.image_name`。PR / DT 确需使用不同镜像时，须在各机器上分别准备并指向不同的 `--config_dir`（配置其余部分保持一致）。
+> - **A5 硬件类型取值已收敛**：`850-Atlas-8p-8`、`950-SuperPod-Atlas-8`、`350-Atlas-16` 等旧取值不再支持，`hardware_type` 请填 `Ascend950`，否则启动时报 `Unknown hardware_type`。
+> - 容器重建、换机或手工增减实例时，请保持角色与机器形态的对应关系（Prefill → PR，Decode → DT）。
+
 ## 启动服务
 
 一个完整的推理服务需要至少一个管理面容器以及多个推理容器。开启 KV 池化时，还需要一个 **kv_store** 容器。推理容器的数量、名称及所在服务器见上文「容器数量规划」，请按规划在对应服务器上分别执行。服务部署流程如下：

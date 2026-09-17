@@ -333,11 +333,11 @@ class DockerDeployParams:
 
 
 def _known_hardware_types() -> list[str]:
-    return [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
+    return [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *sorted(C.HARDWARE_TYPE_A5)]
 
 
 def _is_a5(hardware_type: str) -> bool:
-    if hardware_type in C.HARDWARE_TYPE_950I_A5:
+    if hardware_type in C.HARDWARE_TYPE_A5:
         return True
     if hardware_type in C.HARDWARE_TYPE_A2 or hardware_type in C.HARDWARE_TYPE_A3:
         return False

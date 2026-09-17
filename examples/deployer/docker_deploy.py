@@ -523,7 +523,7 @@ def enter_docker_run_template(role: str | None, hardware_type: str | None = None
         return C.ENTER_DOCKER_RUN_KVS
     if D.npu_docker_card_count(hardware_type) == 16:
         return C.ENTER_DOCKER_RUN_A3
-    if hardware_type in C.HARDWARE_TYPE_950I_A5:
+    if hardware_type in C.HARDWARE_TYPE_A5:
         return C.ENTER_DOCKER_RUN_A5
     return C.ENTER_DOCKER_RUN_A2
 

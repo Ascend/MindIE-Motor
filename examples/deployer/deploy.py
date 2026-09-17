@@ -229,7 +229,7 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
         logger.info("dry-run: skip set_env_to_shell")
 
     if deploy_mode_arg != C.DEPLOY_MODE_SINGLE_CONTAINER and not dry_run:
-        validate_node_selectors(deploy_config)
+        validate_node_selectors(user_config)
 
     k8s_utils.g_generate_yaml_list = []
     paths = get_deploy_paths()

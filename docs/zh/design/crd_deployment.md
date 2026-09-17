@@ -39,13 +39,13 @@ deploy.py 的 `generate_yaml_infer_service_set` 根据 user_config 对模板进�
 - **replicas**：每 role 有两处 replicas
   - `role.replicas`：实例数目（controller/coordinator 固定为 1；prefill 为 `p_instances_num`；decode 为 `d_instances_num`；PD 混部时 union 为 `hybrid_instances_num`，prefill/decode 置 0）
   - `role.spec.replicas`：对应 multi_yaml 下每个 Deployment 的 pod 数（controller/coordinator 主备时为 2；prefill 为 `single_p_instance_pod_num`；decode 为 `single_d_instance_pod_num`；union 为 `single_hybrid_instance_pod_num`）
-- **image**：取自 `motor_deploy_config.image_name`
+- **image**：Controller / Coordinator / Prefill / Decode 优先用各自配置里的 `image_name`；不填则回落到 `motor_deploy_config.image_name`
 - **InferServiceSet metadata.name**：用于 prefill/decode 的 app label、container name、JOB_NAME 基、服务域名构建等
 - **role.services**：不添加 metadata，由 CRD controller 按命名规则创建 K8s Service
 - **env**：ROLE、JOB_NAME、CONTROLLER_SERVICE、COORDINATOR_SERVICE 等
   - prefill/decode 的 **JOB_NAME**：deploy.py 设置初值为 `{namespace}-{InferServiceSet.metadata.name}`；pod 启动后 CRD 会注入 `INFER_SERVICE_INDEX`、`INSTANCE_INDEX`，boot.sh 中会据此刷新为 `{namespace}-{InferServiceSet_name}-{INFER_SERVICE_INDEX}-p/d{INSTANCE_INDEX}`
 - **NPU 资源**：根据 `p_pod_npu_num`、`d_pod_npu_num` 配置
-- **nodeSelector**：根据 `hardware_type`（800I_A2 / 800I_A3）
+- **nodeSelector**：A2/A3 为 `accelerator: huawei-Ascend910` + `accelerator-type`（A2、A3 的 accelerator 相同，须用 accelerator-type 区分，取值由集群节点标签解析）；A5（`Ascend950`）为 `accelerator: huawei-npu`，不带 accelerator-type，可选 `huawei.com/npu.chip.name`
 - **RBAC**：ServiceAccount 的 `metadata.namespace`、ClusterRoleBinding 的 `metadata.namespace` 及 `subjects[].namespace` 更新为部署 namespace
 
 ### ConfigMap 策略

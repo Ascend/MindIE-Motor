@@ -34,9 +34,9 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | single_d_instance_pod_num | int | 单个D实例对应的Pod数，取值范围：大于等于1 |
 | p_pod_npu_num | int | 单个P实例Pod占用的NPU卡数，每个Pod最大为16卡 |
 | d_pod_npu_num | int | 单个D实例Pod占用的NPU卡数，每个Pod最大为16卡 |
-| image_name | string | 推理镜像名（需包含MindIE Motor与vLLM等运行环境） |
+| image_name | string | 默认推理镜像（需包含MindIE Motor与vLLM等运行环境）。Controller / Coordinator / Prefill / Decode 未单独配置 `image_name` 时使用此值。 |
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，例如"mindie-motor" |
-| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2 推理服务器：800I_A2</li><li>Atlas 800I A3 超节点服务器：800I_A3</li><li>Atlas 850 Server：850-Atlas-8p-8</li><li>Atlas 850 Server 超节点服务器：850-SuperPod-Atlas-8</li></ul>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 A2 型号（如 800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策 |
+| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2 推理服务器：`800I_A2`</li><li>Atlas 800I A3 超节点服务器：`800I_A3`</li><li>A5（Ascend950）：`Ascend950`（PR / DT 机型均填此值）</li></ul> A2/A3 的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（A2、A3 的 accelerator 相同，须用 accelerator-type 区分产品形态）；A5 为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 A2 型号（如 800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 路径需与此挂载路径一致，例如 `"/mnt/weight/"`。使用标准 deployer 时，该路径会同时挂载到 P/D（或 Union）引擎和 Coordinator；开启 `context_budget_mode: "on"` 后，Coordinator 也必须能够读取 `engine_config.model` 中的 tokenizer 文件。该字段使用 `hostPath`，因此 Coordinator 可能调度到的节点均需存在该路径，或通过 `coordinator_node_selector` 限制其调度范围。 |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类 |
 
@@ -242,6 +242,7 @@ motor_controller_config字段配置样例如下所示：
 | bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | additional_annotations | object | 可选；Controller工作负载及其Pod模板的自定义Annotations |
 | additional_labels | object | 可选；Controller工作负载及其Pod模板的自定义Labels。 |
+| image_name | string | 可选；Controller 容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署不支持按组件指定镜像，统一使用 `motor_deploy_config.image_name`。 |
 
 ## motor_coordinator_config
 
@@ -620,6 +621,7 @@ motor_coordinator_config字段配置样例如下所示：
 | max_requests | int | 集群全局最大并发请求数，由 user_config 配置 |
 | additional_annotations | object | 可选；Coordinator工作负载及其Pod模板的自定义Annotations。 |
 | additional_labels | object | 可选；Coordinator工作负载及其Pod模板的自定义Labels。 |
+| image_name | string | 可选；Coordinator 容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
 
 ## motor_engine_union_config
 
@@ -717,6 +719,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | engine_type | string | 引擎类型，如 `vllm` |
 | additional_annotations | object | 可选；Union Engine工作负载及其Pod模板的自定义Annotations。 |
 | additional_labels | object | 可选；Union Engine工作负载及其Pod模板的自定义Labels。 |
+| image_name | string | 可选；Union 引擎容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip） |
@@ -946,6 +949,9 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | engine_type | string | 引擎类型，如 `vllm` |
 | additional_annotations | object | 可选；Prefill/Decode Engine工作负载及其Pod模板的自定义Annotations。 |
 | additional_labels | object | 可选；Prefill/Decode Engine工作负载及其Pod模板的自定义Labels。 |
+| image_name | string | 可选；Prefill/Decode 引擎容器镜像。不填则使用 `motor_deploy_config.image_name`。**仅 Kubernetes 部署生效**；Docker 部署统一使用 `motor_deploy_config.image_name`。 |
+| npu_chip_name | string | 仅 `motor_engine_prefill_config`。可选；填写后在 Prefill `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950PR`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效（Docker 无调度器，由人工按机器形态分配容器，见 [Docker多容器PD分离部署](../deployment/docker/multi_container.md)）。见 [PD 分离服务部署](../deployment/k8s/pd_disaggregation_deployment.md)。 |
+| npu_chip_name | string | 仅 `motor_engine_decode_config`。可选；填写后在 Decode `nodeSelector` 增加 `huawei.com/npu.chip.name`，例如 `Ascend950DT`。不填不加该条。**仅 Kubernetes 部署生效**，Docker 部署下不生效。 |
 | **engine_config字段** | - | `engine_config` 直接映射所选引擎的原生启动参数；请参阅对应 vLLM/SGLang 版本的官方参数文档。 |
 | **motor_nodemanger_config字段** |-|-|
 | api_config.pod_ip |string | Pod IP（由环境或部署注入）。默认值：`127.0.0.1`（或 Env.pod_ip） |

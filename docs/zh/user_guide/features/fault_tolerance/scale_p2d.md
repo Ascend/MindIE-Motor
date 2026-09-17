@@ -23,6 +23,7 @@
 - Prefill 实例故障
 - 故障级别 ≤ L3 且未升级到 L4+
 - `enable_scale_p2d == false`
+- Ascend950 **PR + DT 异构组网**（Prefill 只能调度到 PR、Decode 只能调度到 DT）。ScaleP2D 停掉 P 后释放的是 PR 节点，D 无法调度到这些节点上恢复。详见 [PD 分离服务部署](../../deployment/k8s/pd_disaggregation_deployment.md) 中「PD 异构（PR / DT）调度」。
 
 ## 触发条件
 

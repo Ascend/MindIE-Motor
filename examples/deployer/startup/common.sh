@@ -281,7 +281,7 @@ is_a5_hardware() {
     local hw_type
     hw_type="$(_motor_deploy_hardware_type)"
     case "$hw_type" in
-        350-Atlas-8|350-Atlas-16|350-Atlas-4p-8|350-Atlas-4p-16|850-Atlas-8p-8|850-SuperPod-Atlas-8|950-SuperPod-Atlas-8)
+        Ascend950)
             return 0
             ;;
         *)

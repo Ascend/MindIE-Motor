@@ -28,21 +28,12 @@ D_POD_NPU_NUM = "d_pod_npu_num"
 ASCEND_910_NPU_NUM = "huawei.com/Ascend910"
 ASCEND_950_NPU_NUM = "huawei.com/npu"
 RING_CONTROLLER_ATLAS_LABEL = "ring-controller.atlas"
-INFERSERVICE_ID_LABEL = "inferserviceid"
 FAULT_SCHEDULING_LABEL = "fault-scheduling"
 FAULT_SCHEDULING_EXTERNAL_FORCE_POD_FAILED = "external-force-pod-failed"
 POD_RESCHEDULING_LABEL = "pod-rescheduling"
 POD_RESCHEDULING_ON = "on"
 HUAWEI_SCHEDULE_POLICY_ANNOTATION = "huawei.com/schedule_policy"
-A5_SCHEDULE_POLICY_BY_ACCELERATOR_TYPE = {
-    "350-Atlas-8": "chip1-node8",
-    "350-Atlas-16": "chip1-node16",
-    "350-Atlas-4p-8": "chip4-node8",
-    "350-Atlas-4p-16": "chip4-node16",
-    "850-Atlas-8p-8": "chip8-node8",
-    "850-SuperPod-Atlas-8": "chip8-node8-sp",
-    "950-SuperPod-Atlas-8": "chip8-node8-ra64-sp",
-}
+A5_SCHEDULE_POLICY = "chip8-node8"
 A5_HOST_PATH_VOLUMES = [
     {"name": "host-lib64", "path": "/usr/lib64"},
     {"name": "hixlep", "path": "/etc/hixlep"},
@@ -156,29 +147,17 @@ HARDWARE_TYPE_800T_A3 = "800T_A3"
 # Group by chip generation — both 800I and 800T variants share the same accelerator labels
 HARDWARE_TYPE_A2 = {HARDWARE_TYPE_800I_A2, HARDWARE_TYPE_800T_A2}
 HARDWARE_TYPE_A3 = {HARDWARE_TYPE_800I_A3, HARDWARE_TYPE_800T_A3}
-HARDWARE_TYPE_950I_A5 = [
-    "350-Atlas-8",
-    "350-Atlas-16",
-    "350-Atlas-4p-8",
-    "350-Atlas-4p-16",
-    "850-Atlas-8p-8",
-    "850-SuperPod-Atlas-8",
-    "950-SuperPod-Atlas-8",
-]
+HARDWARE_TYPE_ASCEND950 = "Ascend950"
+HARDWARE_TYPE_A5 = {HARDWARE_TYPE_ASCEND950}
 ACCELERATOR_A5 = "huawei-npu"
 ACCELERATOR_910 = "huawei-Ascend910"
 ACCELERATOR_TYPE = "accelerator-type"
 ACCELERATOR = "accelerator"
 ACCELERATOR_TYPE_910B = "module-910b-8"
 ACCELERATOR_TYPE_A3 = "module-a3-16"
-
-ENABLE_PD_HETEROGENEOUS = "enable_pd_heterogeneous"
-PD_HETEROGENEOUS_LABEL_KEY = "pd_heterogeneous_label_key"
-PD_HETEROGENEOUS_PREFILL_LABEL_VALUE = "pd_heterogeneous_prefill_label_value"
-PD_HETEROGENEOUS_DECODE_LABEL_VALUE = "pd_heterogeneous_decode_label_value"
-DEFAULT_PD_HETEROGENEOUS_LABEL_KEY = "card_type"
-DEFAULT_PD_HETEROGENEOUS_PREFILL_VALUE = "Ascend950PR"
-DEFAULT_PD_HETEROGENEOUS_DECODE_VALUE = "Ascend950DT"
+NPU_CHIP_NAME_LABEL = "huawei.com/npu.chip.name"
+# User config field (one per engine section) that selects the chip name for PD heterogeneous scheduling.
+NPU_CHIP_NAME_KEY = "npu_chip_name"
 
 CONTAINERS = "containers"
 IMAGE = "image"

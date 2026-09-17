@@ -17,6 +17,7 @@ from lib.utils import (
     load_yaml,
     logger,
     modify_log_mount,
+    resolve_workload_image,
     write_yaml,
 )
 from lib.generator import k8s_utils
@@ -47,7 +48,7 @@ def modify_controller_deployment(deployment_data, user_config):
     deployment_data[C.METADATA][C.NAMESPACE] = namespace
 
     container = deployment_data[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
-    container[C.IMAGE] = deploy_config[C.IMAGE_NAME]
+    container[C.IMAGE] = resolve_workload_image(user_config, user_config.get(C.MOTOR_CONTROLLER_CONFIG))
 
     if C.ENV not in container:
         container[C.ENV] = []

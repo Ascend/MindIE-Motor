@@ -108,13 +108,18 @@ def test_get_accelerator_type_from_cluster_raises_when_no_matching_generation(mo
         k8s_utils.get_accelerator_type_from_cluster(C.HARDWARE_TYPE_800I_A3)
 
 
-def test_get_accelerator_type_from_cluster_a5_uses_hardware_type(monkeypatch):
+def test_get_accelerator_type_from_cluster_rejects_a5(monkeypatch):
+    """A5 selects nodes by accelerator / chip name only, so it must not get an accelerator-type."""
     k8s_utils._g_accelerator_type_cache.clear()
-    a5_type = C.HARDWARE_TYPE_950I_A5[0]
-    monkeypatch.setattr(
-        k8s_utils,
-        "run_cmd_get_output",
-        lambda _args: json.dumps(_nodes_json({C.ACCELERATOR_TYPE: a5_type})),
-    )
+    call_count = {"n": 0}
 
-    assert k8s_utils.get_accelerator_type_from_cluster(a5_type) == a5_type
+    def fake_run(_args):
+        call_count["n"] += 1
+        return json.dumps(_nodes_json({C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_910B}))
+
+    monkeypatch.setattr(k8s_utils, "run_cmd_get_output", fake_run)
+
+    with pytest.raises(ValueError, match=C.ACCELERATOR_TYPE):
+        k8s_utils.get_accelerator_type_from_cluster(C.HARDWARE_TYPE_ASCEND950)
+    assert call_count["n"] == 0
+    assert C.HARDWARE_TYPE_ASCEND950 not in k8s_utils._g_accelerator_type_cache

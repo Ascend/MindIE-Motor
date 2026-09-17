@@ -13,7 +13,7 @@ import shutil
 import subprocess
 
 import lib.constant as C
-from lib.utils import logger, load_yaml
+from lib.utils import logger, load_yaml, get_pd_heterogeneous_chip_name
 from lib.generator.infer_service import get_infer_role, _find_infer_service_set_doc
 from lib.generator.k8s_utils import get_accelerator_type_from_cluster, get_deploy_mode_from_config
 from lib.update_config_whitelist import collect_changed_paths
@@ -190,36 +190,20 @@ def validate_pd_hybrid_infer_service_template(user_config, infer_service_templat
         raise ValueError("PD hybrid with infer_service_set requires a 'union' role in infer_service_template.yaml.")
 
 
-def _get_pd_heterogeneous_config(deploy_config):
-    """Extract PD heterogeneous config from deploy_config, returns None if disabled."""
-    if deploy_config.get(C.ENABLE_PD_HETEROGENEOUS) is not True:
-        return None
-    label_key = deploy_config.get(C.PD_HETEROGENEOUS_LABEL_KEY, C.DEFAULT_PD_HETEROGENEOUS_LABEL_KEY)
-    prefill_value = deploy_config.get(C.PD_HETEROGENEOUS_PREFILL_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_PREFILL_VALUE)
-    decode_value = deploy_config.get(C.PD_HETEROGENEOUS_DECODE_LABEL_VALUE, C.DEFAULT_PD_HETEROGENEOUS_DECODE_VALUE)
-    return {
-        "label_key": label_key,
-        "prefill_value": prefill_value,
-        "decode_value": decode_value,
-    }
-
-
 def _get_hardware_node_labels(hardware_type):
     """Extract nodeSelector labels determined by hardware_type.
 
     Returns dict of label key-value pairs. Raises ValueError for unknown types.
     """
     if hardware_type in C.HARDWARE_TYPE_A2 or hardware_type in C.HARDWARE_TYPE_A3:
+        # A2/A3 share "accelerator", so accelerator-type is required too.
         return {
             C.ACCELERATOR: C.ACCELERATOR_910,
             C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(hardware_type),
         }
-    if hardware_type in C.HARDWARE_TYPE_950I_A5:
-        return {
-            C.ACCELERATOR: C.ACCELERATOR_A5,
-            C.ACCELERATOR_TYPE: get_accelerator_type_from_cluster(hardware_type),
-        }
-    known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *C.HARDWARE_TYPE_950I_A5]
+    if hardware_type in C.HARDWARE_TYPE_A5:
+        return {C.ACCELERATOR: C.ACCELERATOR_A5}
+    known = [*sorted(C.HARDWARE_TYPE_A2), *sorted(C.HARDWARE_TYPE_A3), *sorted(C.HARDWARE_TYPE_A5)]
     raise ValueError(f"Unknown hardware_type '{hardware_type}'. Supported values: {known}")
 
 
@@ -261,26 +245,31 @@ def _validate_node_labels_exist(labels, node_desc):
     logger.info(f"Node selector validated for {node_desc}: {labels} -> {len(nodes)} node(s) found")
 
 
-def validate_node_selectors(deploy_config):
+def validate_node_selectors(user_config):
     """Validate that cluster nodes exist for every nodeSelector combination to be used.
 
-    Always validates base hardware labels (accelerator-type, accelerator).
-    When PD heterogeneous deployment is enabled, additionally validates the
-    combined prefill/decode labels per node type.
+    Always validates base hardware labels (accelerator).
+    When Prefill/Decode chip names are set, additionally validates those labels.
     """
+    deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     hardware_type = deploy_config.get(C.HARDWARE_TYPE)
     base_labels = _get_hardware_node_labels(hardware_type)
+    prefill_chip = get_pd_heterogeneous_chip_name(user_config, C.NODE_TYPE_P)
+    decode_chip = get_pd_heterogeneous_chip_name(user_config, C.NODE_TYPE_D)
 
-    pd_config = _get_pd_heterogeneous_config(deploy_config)
-
-    if pd_config is not None:
-        label_key = pd_config["label_key"]
-        prefill_labels = {**base_labels, label_key: pd_config["prefill_value"]}
-        decode_labels = {**base_labels, label_key: pd_config["decode_value"]}
+    if prefill_chip or decode_chip:
+        prefill_labels = {**base_labels}
+        if prefill_chip:
+            prefill_labels[C.NPU_CHIP_NAME_LABEL] = prefill_chip
+        decode_labels = {**base_labels}
+        if decode_chip:
+            decode_labels[C.NPU_CHIP_NAME_LABEL] = decode_chip
         _validate_node_labels_exist(prefill_labels, "prefill(P)")
         _validate_node_labels_exist(decode_labels, "decode(D)")
         logger.info(
-            f"PD heterogeneous node selectors validated: prefill -> {prefill_labels}, decode -> {decode_labels}"
+            "PD heterogeneous node selectors validated: prefill -> %s, decode -> %s",
+            prefill_labels,
+            decode_labels,
         )
-    else:
-        _validate_node_labels_exist(base_labels, "engine")
+        return
+    _validate_node_labels_exist(base_labels, "engine")

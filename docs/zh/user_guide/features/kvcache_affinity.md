@@ -193,6 +193,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | **conductor_service** | string | hostname / IP | kv-conductor 服务地址；空则禁用。部署时也可由环境变量注入 |
 | **engine_type** | string | 如 `vLLM` | 注册时上报的引擎类型，默认 `vLLM` |
 | **model_path** | string | 路径 / 名称 | 注册时的 `modelname` |
+| **image_name** | string | 镜像名 | 仅部署期使用：kv-conductor Pod 的容器镜像（K8s 部署）。不填则使用 `motor_deploy_config.image_name` |
 | **endpoint** | string | `tcp://*:<port>` | 默认端口模式：`*` 替换为 endpoint IP，端口加 `dp_rank`；注册时写入 `medium_endpoints.npu`。**自动从引擎 `kv-events-config.endpoint` 推导，无需配置** |
 | **replay_endpoint** | string | `tcp://*:<port>` | Per-DP replay 端口，conductor 重启恢复时回放缓冲的 KV 事件（可选）。**自动从引擎 `kv-events-config.replay_endpoint` 推导，无需配置** |
 | **npu_endpoint** | string | `tcp://*:<port>` | Per-DP HBM（NPU）端口模式的显式覆盖项。**一般无需配置**（见下方端口推导说明），仅在需要覆盖自动推导的默认端口时使用 |

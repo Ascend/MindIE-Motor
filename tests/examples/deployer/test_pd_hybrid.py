@@ -197,14 +197,6 @@ def test_validate_pd_hybrid_config_rejects_mixed_schema(mutate):
 
 
 def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
-    cluster_accelerator_type = "module-a3-16"
-    k8s_utils._g_accelerator_type_cache.clear()
-    monkeypatch.setattr(
-        k8s_utils,
-        "get_accelerator_type_from_cluster",
-        lambda _hardware_type: cluster_accelerator_type,
-    )
-
     user_config = make_pd_hybrid_user_config()
     enable_dp_scale_down(user_config, C.MOTOR_ENGINE_UNION_CONFIG)
     input_yaml = DEPLOYER_ROOT / "yaml_template" / "engine_template.yaml"
@@ -232,8 +224,8 @@ def test_generate_yaml_engine_creates_hybrid_workload(tmp_path, monkeypatch):
     assert data[C.SPEC][C.REPLICAS] == 1
     assert container[C.RESOURCES][C.REQUESTS][C.ASCEND_910_NPU_NUM] == 4
     assert container[C.RESOURCES][C.LIMITS][C.ASCEND_910_NPU_NUM] == 4
-    assert node_selector[C.ACCELERATOR_TYPE] == cluster_accelerator_type
-    assert node_selector[C.ACCELERATOR_TYPE] != C.ACCELERATOR_TYPE_910B
+    # A2/A3 share "accelerator", so accelerator-type stays (stub value from conftest)
+    assert node_selector == {C.ACCELERATOR: C.ACCELERATOR_910, C.ACCELERATOR_TYPE: C.ACCELERATOR_TYPE_A3}
 
 
 def test_deploy_services_dry_run_uses_infer_service_set_for_hybrid(tmp_path, monkeypatch):

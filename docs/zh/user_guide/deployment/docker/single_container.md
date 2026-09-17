@@ -2,6 +2,9 @@
 
 本文档指导用户**基于Docker在单机上完成推理服务的部署**，一台服务器、一个容器内完成整个PD分离的部署，适用于小模型（权重小于100GB）场景，不依赖 K8s。大模型或多机部署可参见 [多容器部署指导](multi_container.md)。KV 池化需要单独的 kv_store 容器，请使用多容器部署并参见 [开启 KV 池化](multi_container.md#开启-kv-池化可选)。
 
+>[!NOTE]说明
+> 单容器部署中 Prefill 与 Decode 在同一个容器、同一台机器上，**不支持 Ascend950 PR / DT 异构部署**。PR + DT 混合组网请使用 [多容器部署指导](multi_container.md) 中的「PR / DT 异构部署」章节。
+
 ## 部署流程示意图
 
 ![部署流程示意图](../../../imgs/docker_deploy_flow.png)

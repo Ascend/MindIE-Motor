@@ -312,6 +312,32 @@ def apply_controller_observability_node_port(service_data, deploy_config):
     apply_service_node_port(service_data, deploy_config, C.CONTROLLER_OBSERVABILITY_NODE_PORT)
 
 
+def resolve_workload_image(user_config, component_config=None):
+    """Use component image_name when set, otherwise motor_deploy_config.image_name."""
+    if isinstance(component_config, dict):
+        override = str(component_config.get(C.IMAGE_NAME) or "").strip()
+        if override:
+            return override
+    return user_config[C.MOTOR_DEPLOY_CONFIG][C.IMAGE_NAME]
+
+
+def get_pd_heterogeneous_chip_name(user_config, node_type):
+    field_map = {
+        C.NODE_TYPE_P: (C.MOTOR_ENGINE_PREFILL_CONFIG, C.NPU_CHIP_NAME_KEY),
+        C.NODE_TYPE_D: (C.MOTOR_ENGINE_DECODE_CONFIG, C.NPU_CHIP_NAME_KEY),
+    }
+    if node_type not in field_map:
+        return None
+    section_key, field = field_map[node_type]
+    section = user_config.get(section_key) or {}
+    if not isinstance(section, dict):
+        return None
+    value = section.get(field)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
 def apply_node_selector_override(pod_spec, deploy_config, selector_key):
     selector = deploy_config.get(selector_key, {})
     if not selector:

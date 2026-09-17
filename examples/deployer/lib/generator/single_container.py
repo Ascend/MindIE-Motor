@@ -92,7 +92,7 @@ def generate_yaml_single_container(input_yaml, output_file, user_config):
     elif hardware_type in C.HARDWARE_TYPE_A3:
         apply_node_selector_by_hardware(pod_spec, hardware_type)
         k8s_utils.apply_sp_block_annotation(deployment_data[C.SPEC][C.TEMPLATE][C.METADATA], npu_num, hardware_type)
-    elif hardware_type in C.HARDWARE_TYPE_950I_A5:
+    elif hardware_type in C.HARDWARE_TYPE_A5:
         apply_node_selector_by_hardware(pod_spec, hardware_type)
         apply_a5_engine_pod_config(pod_spec, container, deploy_config)
         apply_a5_workload(deployment_data, deploy_config)

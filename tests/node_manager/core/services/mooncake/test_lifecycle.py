@@ -24,7 +24,7 @@ from motor.node_manager.core.services.mooncake.lifecycle import (
     _BOOTSTRAP_ASCEND_800I,
 )
 
-_850_HW = HardwareType.TYPE_950_SUPERPOD_ATLAS_8.value
+_850_HW = HardwareType.TYPE_ASCEND950.value
 _800I_HW = HardwareType.TYPE_800I_A2.value
 
 _MODULE = "motor.node_manager.core.services.mooncake.lifecycle"

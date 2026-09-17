@@ -9,7 +9,7 @@
     "d_pod_npu_num": 8,
     "image_name": "<请按实际情况填写镜像名称>",
     "job_id": "mindie-motor",
-    "hardware_type": "850-Atlas-8p-8",
+    "hardware_type": "Ascend950",
     "weight_mount_path": "<请按实际情况填写模型权重文件的访问路径>"
   },
   "motor_controller_config": {},

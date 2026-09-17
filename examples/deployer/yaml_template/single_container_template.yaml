@@ -23,7 +23,6 @@ spec:
       schedulerName: volcano
       nodeSelector:
         accelerator: huawei-Ascend910
-        accelerator-type: module-910b-8
       terminationGracePeriodSeconds: 10
       automountServiceAccountToken: false
       securityContext:

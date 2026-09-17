@@ -90,21 +90,14 @@ logger = get_logger(__name__)
 class HardwareType(str, Enum):
     TYPE_800I_A2 = "800I-A2"
     TYPE_800I_A3 = "800I-A3"
-    # A5 系列
-    TYPE_350_ATLAS_8 = "350-Atlas-8"
-    TYPE_350_ATLAS_16 = "350-Atlas-16"
-    TYPE_350_ATLAS_4P_8 = "350-Atlas-4p-8"
-    TYPE_350_ATLAS_4P_16 = "350-Atlas-4p-16"
-    TYPE_850_ATLAS_8P_8 = "850-Atlas-8p-8"
-    TYPE_850_SUPERPOD_ATLAS_8 = "850-SuperPod-Atlas-8"
-    TYPE_950_SUPERPOD_ATLAS_8 = "950-SuperPod-Atlas-8"
+    TYPE_ASCEND950 = "Ascend950"
 
     def __repr__(self) -> str:
         return str.__repr__(self.value)
 
     @classmethod
     def is_a5(cls, hardware_type: str) -> bool:
-        return hardware_type in {member.value for member in cls if member not in (cls.TYPE_800I_A2, cls.TYPE_800I_A3)}
+        return hardware_type == cls.TYPE_ASCEND950.value
 
 
 @dataclass
