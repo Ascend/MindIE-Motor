@@ -863,6 +863,8 @@ class TestPDHybridTracer:
 
         attribute_keys = [key for key, _ in attribute_calls]
         assert "TTFT(ms)" in attribute_keys
+        assert "TPOT(ms)" in attribute_keys
+        assert "TTOT(ms)" not in attribute_keys
         assert "TOKEN_COUNT" in attribute_keys
 
     @pytest.mark.asyncio

@@ -13,7 +13,6 @@ import dataclasses
 import threading
 import time
 from collections.abc import Mapping
-from typing import Optional
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
@@ -191,9 +190,9 @@ class TraceObj:
     error_message: str = ""
     meta_error_message: str = ""
 
-    parent_context: Optional[context_api.Context] = None
-    span: Optional[trace_api.Span] = None
-    meta_span: Optional[trace_api.Span] = None
+    parent_context: context_api.Context | None = None
+    span: trace_api.Span | None = None
+    meta_span: trace_api.Span | None = None
     trace_headers: Mapping[str, str] = dataclasses.field(default_factory=dict)
     meta_trace_headers: Mapping[str, str] = dataclasses.field(default_factory=dict)
 
@@ -220,7 +219,7 @@ class TraceObj:
         """
         Sets an attribute on the trace span if the trace object and span are available.
         TTFT is only computed when time_first_token was set (e.g. first token received).
-        TTOT (time to output token) is per-token average; when count_token is 0, TTOT is not computed.
+        TPOT (time per output token) is the per-token average; when count_token is 0, TPOT is not computed.
         """
         time_end = time.time_ns()
         if self.time_first_token > 0:
@@ -229,14 +228,14 @@ class TraceObj:
         else:
             ttft_str = "N/A"
         if self.count_token > 0:
-            ttot = (time_end - self.time_first_token) / (self.count_token * 1_000_000)
-            ttot_str = f"{ttot}"
+            tpot = (time_end - self.time_first_token) / (self.count_token * 1_000_000)
+            tpot_str = f"{tpot}"
         else:
-            ttot_str = "N/A"
+            tpot_str = "N/A"
         self.set_trace_attribute("TTFT(ms)", ttft_str)
-        self.set_trace_attribute("TTOT(ms)", ttot_str)
+        self.set_trace_attribute("TPOT(ms)", tpot_str)
         self.set_trace_attribute("TOKEN_COUNT", f"{self.count_token}")
-        return f"Tracer: TTFT: {ttft_str}ms, TTOT: {ttot_str}ms, count_token: {self.count_token}"
+        return f"Tracer: TTFT: {ttft_str}ms, TPOT: {tpot_str}ms, count_token: {self.count_token}"
 
     def set_trace_prompt(self, req_data: dict, is_meta: bool = False) -> None:
         """
@@ -299,7 +298,7 @@ class TraceObj:
         tmp_span.set_attribute(key, value)
 
     def add_trace_event(
-        self, name: str, attributes: types.Attributes = None, timestamp: Optional[int] = None, is_meta: bool = False
+        self, name: str, attributes: types.Attributes = None, timestamp: int | None = None, is_meta: bool = False
     ) -> None:
         """
         Adds an event to the trace span if the trace object and span are available.
