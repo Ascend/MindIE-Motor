@@ -1,0 +1,3120 @@
+From a9e119b5078be7ca06a1b17b7d064261462ad0ed Mon Sep 17 00:00:00 2001
+From: xavier_zw <xavier.zengwei@huawei.com>
+Date: Wed, 9 Sep 2026 16:31:45 +0800
+Subject: [PATCH] feat: add agent hint for vllm-ascend 0.26.0rc1
+
+---
+ setup.py                                      |    1 +
+ vllm_ascend/__init__.py                       |   10 +
+ vllm_ascend/core/agent_hint/__init__.py       |   26 +
+ vllm_ascend/core/agent_hint/backend.py        |   43 +
+ .../agent_hint/free_kv_cache_block_queue.py   |  513 ++++++
+ vllm_ascend/core/agent_hint/manager.py        |   98 ++
+ vllm_ascend/core/agent_hint/params.py         |  153 ++
+ .../core/agent_hint/session_aware_manager.py  | 1419 +++++++++++++++++
+ .../session_aware_pooling_manager.py          |  445 ++++++
+ .../core/agent_hint/session_event_listener.py |   90 ++
+ .../core/single_type_kv_cache_manager.py      |    9 +-
+ .../ascend_store/ascend_store_connector.py    |    8 +-
+ .../kv_pool/ascend_store/pool_scheduler.py    |   49 +-
+ .../platform/patch_kv_delivery_preemption.py  |    5 +-
+ 14 files changed, 2861 insertions(+), 8 deletions(-)
+ create mode 100644 vllm_ascend/core/agent_hint/__init__.py
+ create mode 100644 vllm_ascend/core/agent_hint/backend.py
+ create mode 100644 vllm_ascend/core/agent_hint/free_kv_cache_block_queue.py
+ create mode 100644 vllm_ascend/core/agent_hint/manager.py
+ create mode 100644 vllm_ascend/core/agent_hint/params.py
+ create mode 100644 vllm_ascend/core/agent_hint/session_aware_manager.py
+ create mode 100644 vllm_ascend/core/agent_hint/session_aware_pooling_manager.py
+ create mode 100644 vllm_ascend/core/agent_hint/session_event_listener.py
+
+diff --git a/setup.py b/setup.py
+index d9c4dd5a3..b2a8d4e09 100644
+--- a/setup.py
++++ b/setup.py
+@@ -544,6 +544,7 @@ setup(
+         "vllm.platform_plugins": ["ascend = vllm_ascend:register"],
+         "vllm.general_plugins": [
+             "ascend_kv_connector = vllm_ascend:register_connector",
++            "ascend_agent_hint = vllm_ascend:register_agent_hint",
+             "ascend_model_loader = vllm_ascend:register_model_loader",
+             "ascend_service_profiling = vllm_ascend:register_service_profiling",
+             "ascend_model = vllm_ascend:register_model",
+diff --git a/vllm_ascend/__init__.py b/vllm_ascend/__init__.py
+index 636c72909..2842c14f5 100644
+--- a/vllm_ascend/__init__.py
++++ b/vllm_ascend/__init__.py
+@@ -51,6 +51,16 @@ def register_connector():
+     register_engine()
+ 
+ 
++def register_agent_hint():
++    _ensure_global_patch()
++ 
++    from vllm.v1.core.agent_hint_manager import register_agent_hint_backend
++ 
++    from vllm_ascend.core.agent_hint import ASCEND_AGENT_HINT_BACKEND
++ 
++    register_agent_hint_backend("ascend", ASCEND_AGENT_HINT_BACKEND)
++
++
+ def register_model_loader():
+     _ensure_global_patch()
+ 
+diff --git a/vllm_ascend/core/agent_hint/__init__.py b/vllm_ascend/core/agent_hint/__init__.py
+new file mode 100644
+index 000000000..7d765341a
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/__init__.py
+@@ -0,0 +1,26 @@
++#
++# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++"""Ascend implementation of vLLM agent-hint cache management."""
++ 
++from vllm_ascend.core.agent_hint.backend import (
++    ASCEND_AGENT_HINT_BACKEND,
++    AscendAgentHintBackend,
++)
++from vllm_ascend.core.agent_hint.free_kv_cache_block_queue import (
++    AgentHintFreeKVCacheBlockQueue,
++)
++from vllm_ascend.core.agent_hint.manager import AscendAgentHintManager
++ 
++__all__ = [
++    "ASCEND_AGENT_HINT_BACKEND",
++    "AgentHintFreeKVCacheBlockQueue",
++    "AscendAgentHintBackend",
++    "AscendAgentHintManager",
++]
+\ No newline at end of file
+diff --git a/vllm_ascend/core/agent_hint/backend.py b/vllm_ascend/core/agent_hint/backend.py
+new file mode 100644
+index 000000000..f9eb78a18
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/backend.py
+@@ -0,0 +1,43 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Unified Ascend Agent Hint backend."""
++
++from vllm.v1.core.agent_hint_manager import (
++    AgentHintBackend,
++    AgentHintManager,
++    AgentHintManagerContext,
++)
++from vllm.v1.core.kv_cache_utils import FreeKVCacheBlockQueue, KVCacheBlock
++
++from vllm_ascend.core.agent_hint.free_kv_cache_block_queue import (
++    AgentHintFreeKVCacheBlockQueue,
++    AgentHintKVCacheBlock,
++)
++from vllm_ascend.core.agent_hint.manager import AscendAgentHintManager
++
++
++class AscendAgentHintBackend(AgentHintBackend):
++    """Provide the Ascend Manager and three-zone free-block queue."""
++
++    def is_supported(self) -> bool:
++        from vllm.platforms import current_platform
++
++        return type(current_platform).__module__.startswith("vllm_ascend.")
++
++    def create_agent_hint_manager(self, context: AgentHintManagerContext) -> AgentHintManager:
++        connector = context.connector
++        if connector is not None and not type(connector).__module__.startswith("vllm_ascend."):
++            return AgentHintManager()
++        return AscendAgentHintManager(context)
++
++    def create_kv_cache_block(self, block_id: int) -> KVCacheBlock:
++        return AgentHintKVCacheBlock(block_id)
++
++    def create_free_kv_cache_block_queue(
++        self,
++        blocks: list[KVCacheBlock],
++    ) -> FreeKVCacheBlockQueue:
++        return AgentHintFreeKVCacheBlockQueue(blocks)
++
++
++ASCEND_AGENT_HINT_BACKEND = AscendAgentHintBackend()
+diff --git a/vllm_ascend/core/agent_hint/free_kv_cache_block_queue.py b/vllm_ascend/core/agent_hint/free_kv_cache_block_queue.py
+new file mode 100644
+index 000000000..99fee4eec
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/free_kv_cache_block_queue.py
+@@ -0,0 +1,513 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Ascend Agent Hint free-block eviction policy."""
++
++import time
++from dataclasses import dataclass
++
++from vllm.logger import logger
++from vllm.v1.core.kv_cache_utils import (
++    FreeKVCacheBlockQueue,
++    KVCacheBlock,
++)
++
++
++@dataclass(slots=True)
++class AgentHintKVCacheBlock(KVCacheBlock):
++    _session_ref_cnt: int = 0
++    _ttl_expire_at: float = 0.0
++    _is_offload_block: bool = False
++
++    @property
++    def num_session_refs(self) -> int:
++        return self._session_ref_cnt
++
++    @property
++    def ttl_expire_at(self) -> float:
++        return self._ttl_expire_at
++
++    @property
++    def is_ephemeral(self) -> bool:
++        return self._ttl_expire_at > 0 and time.monotonic() < self._ttl_expire_at
++
++    @property
++    def is_offload_block(self) -> bool:
++        return self._is_offload_block
++
++    def set_session_state(
++        self,
++        *,
++        session_ref_cnt: int | None = None,
++        ttl_expire_at: float | None = None,
++        is_offload_block: bool | None = None,
++    ) -> None:
++        if session_ref_cnt is not None:
++            self._session_ref_cnt = session_ref_cnt
++        if ttl_expire_at is not None:
++            self._ttl_expire_at = ttl_expire_at
++        if is_offload_block is not None:
++            self._is_offload_block = is_offload_block
++
++    def reset_session_state(self) -> None:
++        self._session_ref_cnt = 0
++        self._ttl_expire_at = 0.0
++        self._is_offload_block = False
++
++
++class AgentHintFreeKVCacheBlockQueue(FreeKVCacheBlockQueue):
++    """This class organizes a list of KVCacheBlock objects to a doubly linked
++    list of free blocks. We implement this class instead of using Python
++    builtin deque to support removing a block in the middle of the queue
++    in O(1) time. To close the performance gap to the builtin deque which is
++    implemented in C++, this class does not allocate any Python objects when
++    manipulating the linked list. Instead, this class manipulates the
++    prev_free_block and next_free_block attributes of the given blocks.
++
++    The queue is ordered by block ID in the beginning. When a block is allocated
++    and then freed, it will be appended back with the eviction order:
++    1. The least recent used block is at the front (LRU).
++    2. If two blocks have the same last accessed time (allocated by the
++       same sequence), the one with more hash tokens (the tail of a block
++       chain) is at the front.
++    Note that we maintain this order by reversing the block order when free
++    blocks of a request. This operation is outside of this class.
++
++    Args:
++        blocks: A list of KVCacheBlock objects.
++    """
++
++    def __init__(self, blocks: list[KVCacheBlock]) -> None:
++        super().__init__(blocks)
++
++        # A zone: allocatable blocks without session refs.
++        # B zone: allocatable blocks with session refs.
++        # C zone: deadline-protected blocks.
++        # Assume all the blocks are in the A zone at first.
++        self.zone1_end: KVCacheBlock | None = blocks[-1] if blocks else None
++        self.zone2_end: KVCacheBlock | None = None
++
++    def lazy_scan_zone_c(self, check_ttl: bool) -> None:
++        """Promote blocks whose TTL has expired from zone C."""
++        if check_ttl:
++            # Scan C once and promote blocks whose deadline has expired.
++            if self.zone2_end is not None:
++                curr_block = self.zone2_end.next_free_block
++            elif self.zone1_end is not None:
++                curr_block = self.zone1_end.next_free_block
++            else:
++                curr_block = self.fake_free_list_head.next_free_block
++
++            while curr_block is not self.fake_free_list_tail:
++                if curr_block is None or curr_block.next_free_block is None:
++                    raise RuntimeError("Invalid block found in popleft() which doesn't have a valid next_free_block")
++
++                next_block = curr_block.next_free_block
++
++                if curr_block.ttl_expire_at > 0 and time.monotonic() >= curr_block.ttl_expire_at:
++                    curr_block.set_session_state(ttl_expire_at=0.0)
++                    if curr_block.num_session_refs > 0:
++                        self.promote_to_zone_b(curr_block)
++                    else:
++                        self.promote_to_zone_a(curr_block)
++
++                curr_block = next_block
++
++    def popleft(self, check_ttl: bool = True) -> KVCacheBlock:
++        """Pop from zone A first, then zone B, and reduce num_free_blocks by 1.
++        Zone C is a soft-protection tier used only after zones A and B.
++
++        Returns:
++            The first free block.
++        """
++        if (
++            self.fake_free_list_head.next_free_block is self.fake_free_list_tail
++            or self.fake_free_list_head.next_free_block is None
++        ):
++            assert self.num_free_blocks == 0, (
++                f"num_free_blocks ({self.num_free_blocks}) is out of sync with the free list."
++            )
++            raise ValueError("No free blocks available")
++
++        self.lazy_scan_zone_c(check_ttl)
++
++        first_block: KVCacheBlock = self.fake_free_list_head.next_free_block
++
++        if first_block.next_free_block is None:
++            # This should not happen if the block is from the free list.
++            # It indicates a bug in the caller's logic.
++            raise RuntimeError("Invalid block found in popleft() which doesn't have a valid next_free_block")
++
++        if first_block is self.zone1_end:
++            self.zone1_end = None
++        if first_block is self.zone2_end:
++            self.zone2_end = None
++
++        # Connect fake_head and the next block of first_block (i.e. second block
++        # or fake tail).
++        self.fake_free_list_head.next_free_block = first_block.next_free_block
++        first_block.next_free_block.prev_free_block = self.fake_free_list_head
++
++        # Remove the block from the linked list.
++        first_block.prev_free_block = first_block.next_free_block = None
++
++        self.num_free_blocks -= 1
++        return first_block
++
++    def popleft_n(self, n: int) -> list[KVCacheBlock]:
++        """Pop the first n allocatable free blocks and reduce num_free_blocks by n.
++
++        Args:
++            n: The number of blocks to pop.
++
++        Returns:
++            A list of n free blocks.
++        """
++        if n == 0:
++            return []
++        assert self.num_free_blocks >= n
++
++        only_zone_a = (
++            self.zone2_end is None
++            and self.zone1_end is not None
++            and self.zone1_end is self.fake_free_list_tail.prev_free_block
++        )
++
++        if not only_zone_a:
++            ret = [self.popleft(check_ttl=True)]
++            for _ in range(1, n):
++                ret.append(self.popleft(check_ttl=False))
++            return ret
++
++        # only zone A，no need to check_ttl。
++        self.num_free_blocks -= n
++
++        curr_block = self.fake_free_list_head.next_free_block
++        # Pop n blocks from the head of the list
++        ret = []
++
++        for _ in range(n):
++            assert curr_block is not None
++            ret.append(curr_block)
++            last_block = curr_block
++            curr_block = curr_block.next_free_block
++            # Reset prev_free_block and next_free_block of all popped blocks
++            last_block.prev_free_block = None
++            last_block.next_free_block = None
++
++        if curr_block is not None:
++            # The queue is not empty, connect the fake head to
++            # the new first block.
++            self.fake_free_list_head.next_free_block = curr_block
++            curr_block.prev_free_block = self.fake_free_list_head
++
++        if self.num_free_blocks == 0:
++            self.zone1_end = None
++
++        return ret
++
++    def remove(self, block: KVCacheBlock) -> None:
++        """Remove a block in the free list and reduce num_free_blocks by 1.
++
++        Args:
++            block: The block to remove.
++        """
++        if block.prev_free_block is None or block.next_free_block is None:
++            # This should not happen if the block is from the free list.
++            # It indicates a bug in the caller's logic.
++            raise RuntimeError(f"remove() called on an invalid block: {block}")
++
++        prev_block = block.prev_free_block
++        next_block = block.next_free_block
++
++        if block is self.zone1_end:
++            self.zone1_end = prev_block if prev_block is not self.fake_free_list_head else None
++
++        if block is self.zone2_end:
++            self.zone2_end = (
++                prev_block
++                if (prev_block is not self.fake_free_list_head and prev_block is not self.zone1_end)
++                else None
++            )
++
++        # Link the previous block to the next block.
++        prev_block.next_free_block = next_block
++        # Link the next block to the previous block.
++        next_block.prev_free_block = prev_block
++
++        # Remove the block from the linked list.
++        block.prev_free_block = block.next_free_block = None
++        self.num_free_blocks -= 1
++
++    def append(self, block: KVCacheBlock) -> None:
++        """Put a block back into the free list and increase
++        num_free_blocks by 1.
++
++        Zone A:
++            Blocks without session references.
++
++        Zone B:
++            Blocks with session references, ordered by num_session_refs ascending.
++
++        Zone C:
++            deadline-protected blocks, ordered by _ttl_expire_at ascending.
++        """
++        if self.fake_free_list_tail.prev_free_block is None:
++            raise RuntimeError("prev_free_block of fake_free_list_tail should always exist")
++
++        if block.is_ephemeral:
++            logger.debug(
++                "append: Appending deadline-protected block id %s to zone C.",
++                block.block_id,
++            )
++
++            # C 区位于 A/B 区之后, 按 _ttl_expire_at 升序排列: 小的靠前, 大的靠后
++            prev_block = self.zone2_end or self.zone1_end or self.fake_free_list_head
++            curr_block = prev_block.next_free_block
++
++            while curr_block is not self.fake_free_list_tail:
++                if curr_block is None:
++                    raise RuntimeError("Invalid zone C boundary")
++
++                # 插入到第一个过期时间更大的 block 前面。
++                # 使用 >，使相同 TTL 的 block 保持 FIFO 顺序。
++                if curr_block.ttl_expire_at > block.ttl_expire_at:
++                    break
++
++                prev_block = curr_block
++                curr_block = curr_block.next_free_block
++
++        elif block.num_session_refs > 0 or block.is_offload_block:
++            logger.debug("append: Appending block id %s to zone B.", block.block_id)
++
++            # B 区按照 session 引用数量升序排列, 引用少的靠前，引用多的靠后
++            prev_block = self.zone1_end or self.fake_free_list_head
++
++            if self.zone2_end is not None:
++                while prev_block is not self.zone2_end:
++                    curr_block = prev_block.next_free_block
++
++                    if curr_block is None or curr_block is self.fake_free_list_tail:
++                        raise RuntimeError("Invalid zone B boundary")
++
++                    if curr_block.num_session_refs > block.num_session_refs:
++                        break
++
++                    prev_block = curr_block
++
++            # 只有插入到 B 区末尾时才更新 zone2_end。
++            if self.zone2_end is None or prev_block is self.zone2_end:
++                self.zone2_end = block
++
++        else:
++            logger.debug("append: Appending block id %s to zone A.", block.block_id)
++
++            # A 区保持 FIFO 顺序。
++            prev_block = self.zone1_end or self.fake_free_list_head
++            self.zone1_end = block
++
++        next_block = prev_block.next_free_block
++        if next_block is None:
++            raise RuntimeError(f"Invalid insertion position for block {block.block_id}")
++
++        # Connect the new block after prev_block.
++        prev_block.next_free_block = block
++        block.prev_free_block = prev_block
++
++        # Connect the next block after the new block.
++        block.next_free_block = next_block
++        next_block.prev_free_block = block
++
++        self.num_free_blocks += 1
++
++    def append_n(self, blocks: list[KVCacheBlock]) -> None:
++        """Put a list of blocks back into the free list
++
++        Args:
++            blocks: The blocks to append.
++        """
++        if len(blocks) == 0:
++            return
++
++        last_block = self.fake_free_list_tail.prev_free_block
++        assert last_block is not None, "prev_free_block of fake_free_list_tail should always exist"
++
++        only_zone_a_or_empty = self.num_free_blocks == 0 or self.zone1_end is last_block
++
++        blocks_only_zone_a = all(not block.is_ephemeral and block.num_session_refs == 0 for block in blocks)
++
++        if not only_zone_a_or_empty or not blocks_only_zone_a:
++            for block in blocks:
++                self.append(block)
++            return
++
++        # Add inter-connections between consecutive blocks
++        for block in blocks:
++            block.prev_free_block = last_block
++            last_block.next_free_block = block
++            last_block = block
++
++        # Connect the last block of <blocks> to the fake tail
++        last_block.next_free_block = self.fake_free_list_tail
++        self.fake_free_list_tail.prev_free_block = last_block
++
++        self.num_free_blocks += len(blocks)
++
++        self.zone1_end = last_block
++
++    def promote_to_zone_a(self, block: KVCacheBlock) -> None:
++        """Move an existing free block to the tail of zone A."""
++        if block.prev_free_block is None or block.next_free_block is None:
++            raise RuntimeError(f"promote_to_zone_a() called on invalid block: {block}")
++
++        if block is self.zone1_end:
++            return
++
++        # Remove without changing num_free_blocks.
++        prev_block = block.prev_free_block
++        next_block = block.next_free_block
++
++        if block is self.zone2_end:
++            self.zone2_end = (
++                prev_block
++                if (prev_block is not self.fake_free_list_head and prev_block is not self.zone1_end)
++                else None
++            )
++
++        prev_block.next_free_block = next_block
++        next_block.prev_free_block = prev_block
++
++        # Insert into A tail.
++        prev_block = self.zone1_end or self.fake_free_list_head
++        next_block = prev_block.next_free_block
++        assert next_block is not None
++
++        prev_block.next_free_block = block
++        block.prev_free_block = prev_block
++        block.next_free_block = next_block
++        next_block.prev_free_block = block
++        self.zone1_end = block
++
++    def promote_to_zone_b(self, block: KVCacheBlock) -> None:
++        """Move an existing free block into zone B.
++
++        Zone B is ordered by session reference count in ascending order.
++        """
++        if block.prev_free_block is None or block.next_free_block is None:
++            raise RuntimeError(f"promote_to_zone_b() called on invalid block: {block}")
++
++        # Remove without changing num_free_blocks.
++        old_prev = block.prev_free_block
++        old_next = block.next_free_block
++
++        # block 原来是 A 区最后一个节点。
++        if block is self.zone1_end:
++            self.zone1_end = old_prev if old_prev is not self.fake_free_list_head else None
++
++        # block 原来是 B 区最后一个节点。
++        if block is self.zone2_end:
++            self.zone2_end = (
++                old_prev if (old_prev is not self.fake_free_list_head and old_prev is not self.zone1_end) else None
++            )
++
++        old_prev.next_free_block = old_next
++        old_next.prev_free_block = old_prev
++
++        # 在 B 区内按照 session 引用数量升序寻找插入位置。
++        prev_block = self.zone1_end or self.fake_free_list_head
++
++        if self.zone2_end is not None:
++            while prev_block is not self.zone2_end:
++                curr_block = prev_block.next_free_block
++
++                if curr_block is None or curr_block is self.fake_free_list_tail:
++                    raise RuntimeError("Invalid zone B boundary")
++
++                if curr_block.num_session_refs > block.num_session_refs:
++                    break
++
++                prev_block = curr_block
++
++        next_block = prev_block.next_free_block
++        if next_block is None:
++            raise RuntimeError(f"Invalid zone B insertion position for block {block.block_id}")
++
++        prev_block.next_free_block = block
++        block.prev_free_block = prev_block
++
++        block.next_free_block = next_block
++        next_block.prev_free_block = block
++
++        # B 区为空，或者插入在原 B 区末尾时，更新尾节点。
++        if self.zone2_end is None or prev_block is self.zone2_end:
++            self.zone2_end = block
++
++    def promote_to_zone_c(self, block: KVCacheBlock) -> None:
++        """Move an existing free block into zone C.
++
++        Zone C is ordered by _ttl_expire_at ascending, so blocks
++        with a larger TTL are placed closer to the end.
++        """
++        if block.prev_free_block is None or block.next_free_block is None:
++            raise RuntimeError(f"promote_to_zone_c() called on invalid block: {block}")
++
++        # 先从原位置摘除，但不修改 num_free_blocks。
++        old_prev = block.prev_free_block
++        old_next = block.next_free_block
++
++        # block 原来是 A 区最后一个节点。
++        if block is self.zone1_end:
++            self.zone1_end = old_prev if old_prev is not self.fake_free_list_head else None
++
++        # block 原来是 B 区最后一个节点。
++        if block is self.zone2_end:
++            self.zone2_end = (
++                old_prev if (old_prev is not self.fake_free_list_head and old_prev is not self.zone1_end) else None
++            )
++
++        old_prev.next_free_block = old_next
++        old_next.prev_free_block = old_prev
++
++        block.prev_free_block = None
++        block.next_free_block = None
++
++        # C 区从 A/B 区之后开始，一直到 fake tail。
++        prev_block = self.zone2_end or self.zone1_end or self.fake_free_list_head
++        curr_block = prev_block.next_free_block
++
++        # 按 _ttl_expire_at 升序寻找插入位置。
++        while curr_block is not self.fake_free_list_tail:
++            if curr_block is None:
++                raise RuntimeError("Invalid zone C boundary")
++
++            # 插入到第一个过期时间更大的 block 前面, 相同过期时间保持 FIFO 顺序
++            if curr_block.ttl_expire_at > block.ttl_expire_at:
++                break
++
++            prev_block = curr_block
++            curr_block = curr_block.next_free_block
++
++        next_block = prev_block.next_free_block
++        if next_block is None:
++            raise RuntimeError(f"Invalid zone C insertion position for block {block.block_id}")
++
++        prev_block.next_free_block = block
++        block.prev_free_block = prev_block
++
++        block.next_free_block = next_block
++        next_block.prev_free_block = block
++
++    def on_block_meta_changed(self, block: KVCacheBlock) -> None:
++        """block metadata（_session_ref_cnt 或 _ttl_expire_at）变化后重新评估分区"""
++        if block.ref_cnt > 0 or block.is_null:
++            return  # block 被活跃请求使用，不在 free queue 中
++
++        if block.is_ephemeral:
++            # C区：ephemeral 保护中，不可分配
++            self.promote_to_zone_c(block)
++        elif block.num_session_refs > 0 or block.is_offload_block:
++            # B区：无 ephemeral 保护但有 session 引用
++            self.promote_to_zone_b(block)
++        else:
++            # A区：无保护、无引用，优先分配
++            self.promote_to_zone_a(block)
+diff --git a/vllm_ascend/core/agent_hint/manager.py b/vllm_ascend/core/agent_hint/manager.py
+new file mode 100644
+index 000000000..ffba7aa0d
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/manager.py
+@@ -0,0 +1,98 @@
++#
++# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++"""Scheduler-side composition of Ascend session-aware cache managers."""
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING
++
++from vllm.v1.core.agent_hint_manager import (
++    AgentHintManager,
++    AgentHintManagerContext,
++)
++
++from vllm_ascend.core.agent_hint.params import get_agent_hint_params
++from vllm_ascend.core.agent_hint.session_aware_manager import (
++    SessionAwareManager,
++)
++from vllm_ascend.core.agent_hint.session_aware_pooling_manager import (
++    SessionAwarePoolingManager,
++)
++
++if TYPE_CHECKING:
++    from vllm.v1.request import Request
++
++
++class AscendAgentHintManager(AgentHintManager):
++    """Owns the Ascend session, TTL, offload and prefetch policies."""
++
++    def __init__(self, context: AgentHintManagerContext) -> None:
++        self._session_manager = SessionAwareManager(context.kv_cache_manager)
++        self._pooling_manager: SessionAwarePoolingManager | None = None
++
++        if context.connector is not None:
++            self._pooling_manager = SessionAwarePoolingManager(
++                sam=self._session_manager,
++                add_request=context.add_request,
++                connector=context.connector,
++            )
++            self._pooling_manager.block_size = context.hash_block_size
++            self._pooling_manager.start()
++
++        context.kv_cache_manager.register_session_event_callbacks(
++            on_blocks_allocated=(self._session_manager.on_blocks_allocated_for_request),
++            on_block_cache_hit=(self._session_manager.on_block_cache_hit_for_request),
++        )
++
++    def is_kvc_management_request(self, request: Request) -> bool:
++        hint = get_agent_hint_params(request)
++        return bool(hint and hint.context_management and hint.context_management.manage_request)
++
++    def register_kvc_management_request(self, request: Request) -> dict | None:
++        hint = get_agent_hint_params(request)
++        if hint is None or hint.context_management is None:
++            return None
++        edit_results = self._session_manager.register_agent_hint(
++            request.request_id,
++            hint.session_id,
++            hint.context_management,
++        )
++        return {
++            "session_id": hint.session_id,
++            "edit_results": edit_results,
++        }
++
++    def on_request_added(self, request: Request) -> None:
++        hint = get_agent_hint_params(request)
++        self._session_manager.register_agent_hint(
++            request.request_id,
++            hint.session_id if hint else None,
++            hint.context_management if hint else None,
++        )
++
++    def on_request_scheduled(self, request: Request) -> None:
++        hint = get_agent_hint_params(request)
++        if hint is not None and hint.session_id:
++            self._session_manager.register_session_block_hash(hint.session_id, request.block_hashes)
++
++    def on_step(self, num_unfinished_requests: int) -> None:
++        self._session_manager.tick()
++        if self._pooling_manager is not None:
++            self._pooling_manager.process_prefetch_req(num_unfinished_requests=num_unfinished_requests)
++
++    def on_request_finished(self, request: Request) -> None:
++        self._session_manager.on_request_completed(request.request_id)
++
++    def has_pending_work(self) -> bool:
++        return bool(self._pooling_manager and self._pooling_manager.prefetch_waiting_queue)
++
++    def shutdown(self) -> None:
++        if self._pooling_manager is not None:
++            self._pooling_manager.stop()
+diff --git a/vllm_ascend/core/agent_hint/params.py b/vllm_ascend/core/agent_hint/params.py
+new file mode 100644
+index 000000000..b76094d15
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/params.py
+@@ -0,0 +1,153 @@
++import time
++from dataclasses import dataclass
++from typing import Any, Literal
++from collections.abc import Mapping
++
++
++@dataclass
++class ContextManagementEditsParams:  # 上下文编辑
++    type: Literal["offload", "prefetch", "evict"] = "offload"
++    start: int | None = None  # 起始 message index（pymotor 侧语义）
++    end: int | None = None  # 结束 message index（pymotor 侧语义）
++    target: Literal["session", "messages", "tools"] = "messages"
++    block_start: int | None = None  # pymotor 转换的起始 block index
++    block_end: int | None = None  # pymotor 转换的结束 block index
++
++
++@dataclass
++class ContextManagementParams:
++    manage_request: bool | None = False  # 仅kvc管理请求，出现该字段表示请求本身内容并不会被执行
++    edits: list[ContextManagementEditsParams] | None = None
++
++
++@dataclass
++class CacheControlParams:
++    type: Literal["ephemeral"] = "ephemeral"  # 仅支持 ephemeral
++    ttl: float = 300.0  # 缓存保留时间（秒），默认5min，最大1h
++    msg_offset: int | None = None
++    block_offset: int | None = None
++    token_offset: int | None = None
++
++
++@dataclass
++class AgentHintParams:
++    """Ascend 侧解析后的 agent_hint 强类型表示。
++
++    HTTP/引擎层 ``agent_hint`` 现在统一为 ``dict`` 透传；本类仅作为
++    ascend 内部使用的强类型视图，由 ``convert_agent_hint_dict`` 从 dict
++    构造。
++    """
++    session_id: str | None = None
++    parent_session_id: str | None = None
++    cache_control: CacheControlParams | None = None
++    context_management: ContextManagementParams | None = None
++    latency_control: dict | None = None
++    priority_control: dict | None = None
++
++
++def _to_mapping(obj: Any) -> Mapping:
++    """Coerce a pydantic model / mapping / arbitrary object into a mapping."""
++    if hasattr(obj, "model_dump"):
++        return obj.model_dump()
++    if isinstance(obj, Mapping):
++        return obj
++    return dict(obj)
++
++
++# Sentinel used to distinguish "not yet cached" from "cached None".
++_AGENT_HINT_NOT_COMPUTED: Any = object()
++
++
++def convert_agent_hint_dict(agent_hint: Any) -> AgentHintParams | None:
++    """把 ``EngineCoreRequest`` / ``Request`` 透传的 opaque ``agent_hint``
++    (dict 或 pydantic 模型) 解析为 ascend 内部使用的强类型
++    ``AgentHintParams``。
++
++    ``agent_hint`` 为 ``None`` 时返回 ``None``。
++    """
++    t0 = int(time.time() * 1_000_000)
++    if agent_hint is None:
++        return None
++
++    # 已经是 ascend 侧的强类型 dataclass，直接返回。
++    if isinstance(agent_hint, AgentHintParams):
++        return agent_hint
++
++    ah = _to_mapping(agent_hint)
++
++    cache_control = ah.get("cache_control")
++    if cache_control is not None and not isinstance(
++        cache_control, CacheControlParams
++    ):
++        cc = _to_mapping(cache_control)
++        cache_control = CacheControlParams(
++            type=cc.get("type", "ephemeral"),
++            ttl=cc.get("ttl", 300.0),
++            msg_offset=cc.get("msg_offset"),
++            block_offset=cc.get("block_offset"),
++            token_offset=cc.get("token_offset"),
++        )
++
++    context_management = ah.get("context_management")
++    if context_management is not None and not isinstance(
++        context_management, ContextManagementParams
++    ):
++        cm = _to_mapping(context_management)
++        raw_edits = cm.get("edits") or []
++        edits: list[ContextManagementEditsParams] = []
++        for raw_edit in raw_edits:
++            if isinstance(raw_edit, ContextManagementEditsParams):
++                edits.append(raw_edit)
++                continue
++            e = _to_mapping(raw_edit)
++            edits.append(
++                ContextManagementEditsParams(
++                    type=e.get("type", "offload"),
++                    start=e.get("start", 0),
++                    end=e.get("end", 0),
++                    target=e.get("target", "messages"),
++                    block_start=e.get("block_start"),
++                    block_end=e.get("block_end"),
++                )
++            )
++        context_management = ContextManagementParams(
++            manage_request=cm.get("manage_request", False),
++            edits=edits,
++        )
++
++    t1 = int(time.time() * 1_000_000)
++
++    print(f'===== convert_agent_hint_dict: {(t1 - t0)} us')
++
++    return AgentHintParams(
++        session_id=ah.get("session_id"),
++        parent_session_id=ah.get("parent_session_id"),
++        cache_control=cache_control,
++        context_management=context_management,
++        latency_control=ah.get("latency_control"),
++        priority_control=ah.get("priority_control"),
++    )
++
++
++def get_agent_hint_params(request: Any) -> AgentHintParams | None:
++    """返回 request 对应的 ``AgentHintParams``，结果缓存到 request 上。
++
++    同一个 request 在生命周期内可能被多次查询（如 on_blocks_allocated、
++    on_block_cache_hit、register_kvc_management_request 等）。每次都调用
++    ``convert_agent_hint_dict`` 会有重复开销，因此将首次解析的结果存到
++    ``request._agent_hint_params`` 上，后续直接复用。
++
++    ``agent_hint`` 为 ``None`` 时缓存并返回 ``None``。
++    """
++    cached = getattr(request, "_agent_hint_params", _AGENT_HINT_NOT_COMPUTED)
++    if cached is not _AGENT_HINT_NOT_COMPUTED:
++        return cached  # type: ignore[return-value]
++
++    params = convert_agent_hint_dict(getattr(request, "agent_hint", None))
++    try:
++        request._agent_hint_params = params  # type: ignore[attr-defined]
++    except Exception:
++        # request 对象可能禁止动态设置属性（如带 __slots__ 的类），此时
++        # 退化为每次重新解析。
++        return params
++    return params
+diff --git a/vllm_ascend/core/agent_hint/session_aware_manager.py b/vllm_ascend/core/agent_hint/session_aware_manager.py
+new file mode 100644
+index 000000000..d9c43c999
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/session_aware_manager.py
+@@ -0,0 +1,1419 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# ruff: noqa: E501, G004
++from __future__ import annotations
++
++import time
++from dataclasses import dataclass, field
++from typing import Any, Callable
++
++from vllm.logger import logger
++from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
++from vllm.v1.core.kv_cache_utils import (
++    BlockHash,
++    BlockHashListWithBlockSize,
++    BlockHashWithGroupId,
++    KVCacheBlock,
++    get_block_hash,
++)
++from vllm_ascend.core.agent_hint.params import (
++    CacheControlParams,
++    ContextManagementEditsParams,
++    ContextManagementParams,
++    get_agent_hint_params,
++)
++from vllm.v1.request import Request
++
++from vllm_ascend.core.agent_hint.session_event_listener import SessionEventListener
++
++
++@dataclass
++class SessionBlockRecord:
++    """单个 session 对单个 block 的引用记录（仅在 SAM 内部维护）"""
++
++    session_id: str
++    block_id: int
++    is_ephemeral: bool = False  # 是否受 cache_control ephemeral 保护
++    ttl_expire_at: float = 0.0  # ephemeral block 的 TTL 过期时间，0 表示无限制
++    created_at: float = 0.0  # 记录创建时间
++    block_hash: BlockHashWithGroupId | None = None  # 记录创建时的 block hash，便于调试
++
++
++@dataclass
++class SessionInfo:
++    """Session 注册信息"""
++
++    session_id: str
++    parent_session_id: str | None = None
++    children: set[str] = field(default_factory=set)
++    request_ids: set[str] = field(default_factory=set)  # 关联的请求 ID
++    created_at: float = 0.0
++
++
++@dataclass
++class EphemeralRange:
++    """Ephemeral 保护范围"""
++
++    block_offset: int  # ephemeral 保护的起始 block index
++    ttl: float  # TTL 时长（秒）
++
++
++@dataclass
++class EditResponse:
++    """session controller针对单个edit返回结构体"""
++
++    session_id: str  # session id
++    type: str  # op类型
++    op_status: bool  # 执行状态
++    expected_op_block_num: int = 0  # 预期编辑block数
++    actual_op_block_num: int = 0  # 实际编辑block数
++    fail_reason: str = ""  # （可选）执行失败原因
++
++
++class SessionAwareManager:
++    """Session-Aware Manager — 管理 session 生命周期与 block 映射"""
++
++    # TODO：是否已实现分配的时候有ttl才保护
++    # TODO：没空间是C区可开放，远程保持访问、保护
++    def __init__(self, kv_cache_manager: KVCacheManager):
++        self.kv_cache_manager = kv_cache_manager
++        self.num_kv_cache_groups = kv_cache_manager.num_kv_cache_groups
++        self.block_size = tuple(sprc.block_size for sprc in self.kv_cache_manager.coordinator.single_type_managers)
++        self.hash_block_size = self.kv_cache_manager.block_pool.hash_block_size
++
++        # Session注册表(session间的层级关系): session_id → SessionInfo
++        self._sessions: dict[str, SessionInfo] = {}
++        # session_id → {block_id → SessionBlockRecord}
++        self._session_blocks: list[dict[str, dict[int, SessionBlockRecord]]] = [
++            {} for _ in range(self.num_kv_cache_groups)
++        ]
++        # 反向索引：block_id → {session_id → SessionBlockRecord}
++        self._block_sessions: list[dict[int, dict[str, SessionBlockRecord]]] = [
++            {} for _ in range(self.num_kv_cache_groups)
++        ]
++        # 只维护当前"请求"的hash表
++        self._session_block_hash: dict[str, list[BlockHash]] = {}
++
++        # TTL 管理器（定时轮）
++        self._ttl_manager = TTLManager(on_expired=self._on_ttl_expired, notify_func=self._notify_event)
++
++        # Session 控制器
++        self._session_controller = SessionController(
++            execute_offload=self._execute_offload,
++            execute_prefetch=self._execute_prefetch,
++            execute_evict=self._execute_evict,
++            get_global_block_id_by_session=self._get_session_global_block_ids,
++            get_block_hashes_by_session=self._get_session_block_hash,
++        )
++
++        # 事件监听器列表
++        self._event_listeners: list[SessionEventListener] = []
++
++    def tick(self) -> None:
++        self._ttl_manager.tick()
++
++    def on_request_completed(self, request_id: str) -> None:
++        self._session_controller.on_request_completed(request_id)
++
++    def on_blocks_allocated_for_request(
++        self, request: Request, blocks: KVCacheBlocks, cached_blocks_len_before: tuple[int, ...] | None = None
++    ) -> None:
++        # 解析引擎层透传的 opaque dict 为 ascend 强类型视图
++        # 结果已缓存到 request._agent_hint_params，避免每个 block 都重新解析。
++        hint = get_agent_hint_params(request)
++        # 如果 request 没有 session_id，则不进行 session 相关的处理
++        # 但是清理所有 block 的 session 引用和 TTL，避免残留
++        if not hint or hint.session_id is None:
++            for group_id, block_ids in enumerate(blocks.get_block_ids()):
++                for block_id in block_ids:
++                    block = self._get_block(block_id)
++
++                    # block本身清理的session_ref_cnt和ttl_expire_at
++                    self._reset_block_state(block)
++
++                    # 清理TTLManager中这个物理 block 的所有旧 session 引用
++                    self._clear_old_block_sessions_ttl(block_id)
++
++                    # 清理SAM中这个物理 block 的所有旧 session 引用。
++                    self._clear_block_session_refs(block_id)
++            return
++
++        is_prefill = request.num_output_tokens == 0
++        logger.info(
++            f"on_blocks_allocated_for_request, request_id = {request.request_id}, "
++            f"session_id = {hint.session_id if hint else None}, "
++            f"block_ids = {blocks.get_block_ids()}, request.num_output_tokens: {request.num_output_tokens}"
++        )
++
++        self._on_blocks_allocated(
++            session_id=hint.session_id,
++            parent_session_id=hint.parent_session_id,
++            blocks=blocks,
++            ephemeral_range=compute_ephemeral_range(hint.cache_control),
++            cached_blocks_len_before=cached_blocks_len_before,
++            is_prefill=is_prefill,
++        )
++
++    def on_block_cache_hit_for_request(self, request: Request, blocks: KVCacheBlocks) -> None:
++        hint = get_agent_hint_params(request)
++        if hint is None or hint.session_id is None:
++            return
++
++        logger.info(
++            f"on_block_cache_hit_for_request, request_id = {request.request_id}, "
++            f"session_id = {hint.session_id if hint else None}, "
++            f"block_ids = {blocks.get_block_ids()}"
++        )
++
++        self._on_blocks_cache_hit(
++            session_id=hint.session_id,
++            parent_session_id=hint.parent_session_id,
++            blocks=blocks,
++            ephemeral_range=compute_ephemeral_range(hint.cache_control),
++        )
++
++    def _on_blocks_allocated(
++        self,
++        session_id: str | None,
++        parent_session_id: str | None,
++        blocks: KVCacheBlocks,
++        ephemeral_range: EphemeralRange | None = None,
++        cached_blocks_len_before: tuple[int, ...] | None = None,
++        is_prefill: bool = True,
++    ) -> None:
++        """记录本轮刚刚变为完整状态的 cached blocks。"""
++
++        self._ensure_session_registered(session_id, parent_session_id)
++
++        now = time.monotonic()
++        newly_protected_hashes: list[tuple(int, list[BlockHash])] = []
++        newly_protected_ttl: float = 0.0
++        protected_block_hashes: list[BlockHash] = []
++
++        for group_id, block_ids in enumerate(blocks.get_block_ids()):
++            logger.info(f"on_blocks_allocated, block_ids={block_ids}")
++            cached_blocks_len = cached_blocks_len_before[group_id] if cached_blocks_len_before else 0
++
++            for ind, block_id in enumerate(block_ids):
++                block = self._get_block(block_id)
++
++                # block本身清理的session_ref_cnt和ttl_expire_at
++                self._reset_block_state(block)
++
++                # 清理TTLManager中这个物理 block 的所有旧 session 引用
++                self._clear_old_block_sessions_ttl(block_id)
++
++                # 清理SAM中这个物理 block 的所有旧 session 引用。
++                self._clear_block_session_refs(block_id)
++
++                # allocate_slots理论上只传 newly-cached blocks，保留检查用于防御异常情况。
++                if block.block_hash is None:
++                    logger.debug("Newly cached block %s has no block hash", block_id)
++                    continue
++
++                # SessionBlockRecord所需参数计算
++                is_ephemeral = (
++                    ephemeral_range is not None
++                    and ephemeral_range.ttl > 0
++                    and self.block_size[group_id] // self.hash_block_size * (cached_blocks_len + ind)
++                    <= ephemeral_range.block_offset
++                    and is_prefill
++                )
++
++                ttl_expire_at = now + ephemeral_range.ttl if is_ephemeral and ephemeral_range is not None else 0.0
++
++                record = SessionBlockRecord(
++                    session_id=session_id,
++                    block_id=block_id,
++                    is_ephemeral=is_ephemeral,
++                    ttl_expire_at=ttl_expire_at,
++                    created_at=now,
++                    block_hash=block.block_hash,
++                )
++                self._add_session_block_ref(record, group_id)
++
++                if is_ephemeral:
++                    newly_protected_hashes.append((block_id, block.block_hash))
++                    newly_protected_ttl = ttl_expire_at
++
++                # get_new_blocks，已经把物理 block 的 session_ref_cnt 清零。
++                # 使用真实 metadata 做校准，可以兼容异常重复回调：
++                current_ref_count = block.num_session_refs
++                self._update_block_meta(
++                    block_id,
++                    delta_ref=1 - current_ref_count,
++                    ttl_expire_at=ttl_expire_at,
++                )
++
++        if ephemeral_range:
++            scale_factor = max(self.block_size) // self.hash_block_size
++            session_block_hash = self._session_block_hash.get(session_id)
++            block_end = (ephemeral_range.block_offset + scale_factor) // scale_factor * scale_factor
++            if ephemeral_range.block_offset + 1 > len(session_block_hash):
++                logger.warning(f"ephemeral range exceed session block hash. session id:{session_id}")
++                block_end = len(session_block_hash)
++
++            if newly_protected_hashes and session_block_hash:
++                protected_block_hashes = session_block_hash[0:block_end]
++
++        self._ttl_manager.register(
++            block_infos=newly_protected_hashes,
++            session_id=session_id,
++            expire_at=newly_protected_ttl,
++            protected_block_hashes=protected_block_hashes,
++        )
++
++    def _on_blocks_cache_hit(
++        self,
++        session_id: str | None,
++        parent_session_id: str | None,
++        blocks: KVCacheBlocks,
++        ephemeral_range: EphemeralRange | None = None,
++    ) -> None:
++        """prefix cache 命中时通知 SAM"""
++
++        self._ensure_session_registered(session_id, parent_session_id)
++
++        # 最新request的ttl时间
++        now = time.monotonic()
++        newly_protected_hashes: list[tuple(int, list[BlockHash])] = []
++        newly_protected_ttl: float = 0.0
++        protected_block_hashes: list[BlockHash] = []
++
++        for group_id, block_ids in enumerate(blocks.get_block_ids()):
++            for ind, block_id in enumerate(block_ids):
++                # cache hit 的 block 应当已经完整且具有 hash。
++                block = self._get_block(block_id)
++                if block.block_hash is None:
++                    logger.warning("Cache-hit block %s has no block hash; ", block_id)
++                    break
++
++                # 命中后SessionBlockRecord要刷新的参数
++                is_ephemeral = (
++                    ephemeral_range is not None
++                    and ephemeral_range.ttl > 0
++                    and self.block_size[group_id] // self.hash_block_size * ind <= ephemeral_range.block_offset
++                )
++                requested_expire_at = now + ephemeral_range.ttl if is_ephemeral and ephemeral_range is not None else 0.0
++
++                # 检查 session 是否已注册对 block 的引用
++                is_registered = self._is_session_block_registered(session_id, block_id, group_id)
++
++                # 如果已注册，刷新 TTL
++                if is_registered:
++                    record = self._session_blocks[group_id][session_id][block_id]
++
++                    # 刷新TTL, session引用中的刷新为本次的；block本身的刷新为最长的那个
++                    if is_ephemeral:
++                        new_expire_at = max(record.ttl_expire_at, requested_expire_at)
++
++                        record.is_ephemeral = True
++                        record.ttl_expire_at = new_expire_at
++
++                        # 刷新双向索引，确保两边引用同一个最新 record。
++                        self._add_session_block_ref(record, group_id)
++
++                        # self._ttl_manager.update(block_id, session_id, new_expire_at)
++                        newly_protected_hashes.append((block_id, block.block_hash))
++                        newly_protected_ttl = new_expire_at
++
++                        # 一个 block 可能被多个 session 引用，block metadata 应使用
++                        # 所有 session 记录中最晚的过期时间。
++                        block_expire_at = max(
++                            item.ttl_expire_at for item in self._block_sessions[group_id][block_id].values()
++                        )
++                        self._update_block_meta(
++                            block_id,
++                            ttl_expire_at=block_expire_at,
++                        )
++                # 未注册则创建新的引用记录
++                else:
++                    record = SessionBlockRecord(
++                        session_id=session_id,
++                        block_id=block_id,
++                        is_ephemeral=is_ephemeral,
++                        ttl_expire_at=requested_expire_at,
++                        created_at=now,
++                        block_hash=block.block_hash,
++                    )
++                    self._add_session_block_ref(record, group_id)
++
++                    if is_ephemeral:
++                        newly_protected_hashes.append((block_id, block.block_hash))
++                        newly_protected_ttl = requested_expire_at
++
++                        block_expire_at = max(
++                            item.ttl_expire_at for item in self._block_sessions[group_id][block_id].values()
++                        )
++                    else:
++                        # None 表示不覆盖其他 session 已经设置的 block TTL。
++                        block_expire_at = None
++
++                    self._update_block_meta(
++                        block_id,
++                        delta_ref=+1,
++                        ttl_expire_at=block_expire_at,
++                    )
++        if ephemeral_range:
++            scale_factor = max(self.block_size) // self.hash_block_size
++            session_block_hash = self._session_block_hash.get(session_id)
++            block_end = (ephemeral_range.block_offset + scale_factor) // scale_factor * scale_factor
++            if ephemeral_range.block_offset + 1 > len(session_block_hash):
++                logger.warning(f"ephemeral range exceed session block hash. session id:{session_id}")
++                block_end = len(session_block_hash)
++
++            if newly_protected_hashes and session_block_hash:
++                protected_block_hashes = session_block_hash[0:block_end]
++
++        self._ttl_manager.register(
++            newly_protected_hashes, session_id, newly_protected_ttl, protected_block_hashes=protected_block_hashes
++        )
++
++    def _on_ttl_expired(self, block_id: int, session_id: str) -> None:
++        """ephemeral block TTL 到期回调"""
++        logger.info(f"working on _on_ttl_expired in SAM for block {block_id} and session id {session_id}")
++
++        group_id = -1
++        for group_idx in range(self.num_kv_cache_groups):
++            if block_id in self._block_sessions[group_idx]:
++                group_id = group_idx
++                break
++
++        if group_id == -1:
++            logger.warning(f"can not find block_id: {block_id} in all groups")
++            return
++
++        record = self._block_sessions[group_id].get(block_id, {}).get(session_id)
++        if record is None or not record.is_ephemeral:
++            return
++
++        # 移除 SAM 内部记录
++        self._remove_session_block_ref(session_id, block_id, group_id)
++
++        # 统一接口：清除 TTL + 减少 session 引用
++        # 这会导致 block 的 is_ephemeral() 返回 False
++        # 且 _session_ref_cnt 减 1
++        # FreeKVCacheBlockQueue.on_block_meta_changed 自动重评估分区
++        self._update_block_meta(
++            block_id,
++            delta_ref=-1,
++            ttl_expire_at=0.0,
++        )
++
++    def _ensure_session_registered(self, session_id: str, parent_session_id: str) -> None:
++        """确保 session 已注册（SAM 内部）"""
++        if session_id not in self._sessions:
++            self._sessions[session_id] = SessionInfo(
++                session_id=session_id,
++                parent_session_id=parent_session_id,
++                created_at=time.monotonic(),
++            )
++            # 如果有父 session，更新父 session 的 children, children不能是自己
++            if parent_session_id and parent_session_id in self._sessions and parent_session_id != session_id:
++                self._sessions[parent_session_id].children.add(session_id)
++
++    def _clear_block_session_refs(self, block_id: int) -> None:
++        """清除指定 block 的所有 session 引用（SAM 内部）"""
++        for group_id in range(len(self._block_sessions)):
++            if block_id in self._block_sessions[group_id]:
++                for session_id in list(self._block_sessions[group_id][block_id].keys()):
++                    self._remove_session_block_ref(session_id, block_id, group_id)
++
++    def _add_session_block_ref(self, record: SessionBlockRecord, group_id: int) -> None:
++        """添加 session 对 block 的引用（SAM 内部）"""
++        self._session_blocks[group_id].setdefault(record.session_id, {})[record.block_id] = record
++        self._block_sessions[group_id].setdefault(record.block_id, {})[record.session_id] = record
++
++    def _is_session_block_registered(self, session_id: str, block_id: int, group_id: int) -> bool:
++        """检查 session 是否已注册对 block 的引用（SAM 内部）"""
++        return session_id in self._session_blocks[group_id] and block_id in self._session_blocks[group_id][session_id]
++
++    def _remove_session_block_ref(self, session_id: str, block_id: int, group_id: int) -> None:
++        """移除 session 对 block 的引用（SAM 内部）"""
++        if session_id in self._session_blocks[group_id]:
++            self._session_blocks[group_id][session_id].pop(block_id, None)
++            if not self._session_blocks[group_id][session_id]:
++                del self._session_blocks[group_id][session_id]
++        if block_id in self._block_sessions[group_id]:
++            self._block_sessions[group_id][block_id].pop(session_id, None)
++            if not self._block_sessions[group_id][block_id]:
++                del self._block_sessions[group_id][block_id]
++
++    def _free_session(self, session_id: str) -> list:
++        """清理指定 session 的所有 block 引用"""
++        block_hashes = []
++
++        for group_id in range(self.num_kv_cache_groups - 1, -1, -1):
++            block_ids = []
++            if session_id in self._session_blocks[group_id]:
++                for block_id in list(self._session_blocks[group_id][session_id].keys())[::-1]:
++                    cur_block_session = self._block_sessions[group_id].get(block_id, {})
++                    record = cur_block_session.get(session_id)
++                    if record and record.is_ephemeral:
++                        self._ttl_manager.remove(block_id, session_id)
++
++                    self._remove_session_block_ref(session_id, block_id, group_id)
++
++                    remaining_records = self._block_sessions[group_id].get(block_id, {}).values()
++                    latest_ttl_expire_at = max(
++                        (remaining_record.ttl_expire_at for remaining_record in remaining_records),
++                        default=0.0,
++                    )
++
++                    self._update_block_meta(block_id, delta_ref=-1, ttl_expire_at=latest_ttl_expire_at)
++
++                    block_ids.append(block_id)
++            logger.info(f"free: session id:{session_id}, group_id:{group_id}, block id:{block_ids}")
++
++        if session_id in self._session_block_hash:
++            block_hashes = self._session_block_hash[session_id]
++            del self._session_block_hash[session_id]
++
++        # 移除 session 注册信息
++        if session_id in self._sessions:
++            parent_session_id = self._sessions[session_id].parent_session_id
++            if parent_session_id and parent_session_id in self._sessions:
++                self._sessions[parent_session_id].children.discard(session_id)
++            del self._sessions[session_id]
++
++        return block_hashes
++
++    def _free_session_tree(self, session_id: str) -> list:
++        """递归清理session及其所有子session"""
++        session_info = self._sessions.get(session_id)
++        if session_info is None:
++            return []
++
++        block_hashes_all = []
++        for child_sid in list(self._sessions[session_id].children):
++            block_hashes_all.extend(self._free_session_tree(child_sid))
++
++        block_hashes_all.extend(self._free_session(session_id))
++
++        logger.debug(
++            f"Free session tree for session {session_id}: "
++            f"current session_to_blocks: {self._session_blocks}, "
++            f"session_info: {self._sessions}, "
++        )
++
++        return block_hashes_all
++
++    def _execute_offload(
++        self,
++        session_id: str,
++        block_start: int,
++        block_end: int,
++        block_ids_all_group: tuple[list[int], ...],
++        is_session: bool,
++    ) -> int:
++        """卸载指定范围的 block — 减少 session 引用 + 清除当前session的TTL（通知TTLManager）"""
++        affected_block_hashes: list[BlockHash] = []
++
++        for group_id in range(self.num_kv_cache_groups - 1, -1, -1):
++            assert self.block_size[group_id] % self.hash_block_size == 0, (
++                f"block_size {self.block_size[group_id]} is not a multiple of {self.hash_block_size}"
++            )
++
++            block_ids = block_ids_all_group[group_id]
++
++            for block_id in block_ids[::-1]:
++                cur_block_session = self._block_sessions[group_id].get(block_id, {})
++                record = cur_block_session.get(session_id)
++                if len(cur_block_session) == 0 or record is None:
++                    continue
++
++                if record.is_ephemeral:
++                    self._ttl_manager.remove(block_id=block_id, session_id=session_id, is_notify_spm=False)
++
++                self._remove_session_block_ref(session_id, block_id, group_id)
++
++                remaining_records = self._block_sessions[group_id].get(block_id, {}).values()
++                latest_ttl_expire_at = max(
++                    (remaining_record.ttl_expire_at for remaining_record in remaining_records),
++                    default=0.0,
++                )
++                self._update_block_meta(
++                    block_id,
++                    delta_ref=-1,
++                    ttl_expire_at=latest_ttl_expire_at,
++                    is_offload_block=True,
++                )
++
++        block_start_e, block_end_e = self._expand_session_block_range(session_id, block_start, block_end)
++        affected_block_hashes.extend(self._session_block_hash.get(session_id, [])[block_start_e:block_end_e])
++        res = len(affected_block_hashes)
++
++        self._ttl_manager.register(
++            block_infos=[],
++            session_id=session_id,
++            expire_at=time.monotonic() + 3600,
++            protected_block_hashes=affected_block_hashes,
++        )
++
++        return res
++
++    def _execute_prefetch(self, session_id: str, block_hashes: list[BlockHash], is_session: bool = False) -> int:
++        """通知 SPM 创建远端预取任务。"""
++        # logger.info(f"block_hashes {block_hashes}")
++        self._notify_event(
++            "context_management_prefetch",
++            session_id=session_id,
++            block_hashes=block_hashes,
++        )
++        # TODO: 后续返回当前session及其子session的block hash
++        return len(block_hashes)
++
++    def _execute_evict(
++        self,
++        session_id: str,
++        block_start: int,
++        block_end: int,
++        block_ids_all_group: tuple[list[int], ...],
++        is_session: bool,
++    ) -> int:
++        """驱逐指定范围的 block — 减少引用 + 清除当前session的TTL
++        清除本地引用，并通知 SPM 停止对应远端 PoolKey 的 Keep-Alive
++        """
++        res = 0
++        if not is_session:
++            affected_block_hashes: list[BlockHash] = []
++
++            for group_id in range(self.num_kv_cache_groups - 1, -1, -1):
++                assert self.block_size[group_id] % self.hash_block_size == 0, (
++                    f"block_size {self.block_size[group_id]} is not a multiple of {self.hash_block_size}"
++                )
++
++                block_ids = block_ids_all_group[group_id]
++
++                for block_id in block_ids[::-1]:
++                    cur_block_session = self._block_sessions[group_id].get(block_id, {})
++                    record = cur_block_session.get(session_id)
++                    if len(cur_block_session) == 0 or record is None:
++                        continue
++
++                    self._remove_session_block_ref(session_id, block_id, group_id)
++
++                    remaining_records = self._block_sessions[group_id].get(block_id, {}).values()
++                    latest_ttl_expire_at = max(
++                        (remaining_record.ttl_expire_at for remaining_record in remaining_records),
++                        default=0.0,
++                    )
++                    self._update_block_meta(
++                        block_id,
++                        delta_ref=-1,
++                        ttl_expire_at=latest_ttl_expire_at,
++                    )
++
++            block_start_e, block_end_e = self._expand_session_block_range(session_id, block_start, block_end)
++            affected_block_hashes.extend(self._session_block_hash.get(session_id, [])[block_start_e:block_end_e])
++
++        else:
++            affected_block_hashes = self._free_session_tree(session_id)
++
++        self._ttl_manager.remove(block_id=-1, session_id=session_id)
++        res = len(affected_block_hashes)
++        return res
++
++    def _get_session_global_block_ids(
++        self,
++        session_id: str,
++        block_start: int,
++        block_end: int,
++    ) -> tuple[list[int], ...]:
++        """将基础 hash block 范围映射为各 KV cache group 的物理 block id。
++
++        当某个 KV cache group 的 block size 大于 hash_block_size 时，只要
++        物理 block 与指定逻辑范围有重叠，就返回该物理 block。
++        """
++        result: tuple[list[int], ...] = tuple([] for _ in range(self.num_kv_cache_groups))
++
++        base_block_hashes = self._session_block_hash.get(session_id)
++        if not base_block_hashes:
++            logger.warning(f"There is no hash for the session_id:{session_id} in the _session_block_hash.")
++            return result
++
++        base_block_count = len(base_block_hashes)
++
++        if block_end == -1:
++            block_end = base_block_count
++
++        # 防止负数下标被 Python 当成从末尾索引。
++        if block_start < 0 or block_end < 0:
++            logger.warning(
++                "Invalid block range for session %s: [%s, %s)",
++                session_id,
++                block_start,
++                block_end,
++            )
++            return result
++
++        block_end = min(block_end, base_block_count)
++
++        if block_start >= block_end:
++            return result
++
++        for group_id in range(self.num_kv_cache_groups):
++            # 获取该 session_id 第 group_id 的 block_ids(即blocks)
++            session_blocks = self._session_blocks[group_id].get(session_id)
++            # 该group的block_size可能比较大，还没满，继续下一个group
++            if not session_blocks:
++                continue
++
++            group_block_size = self.block_size[group_id]
++            assert group_block_size % self.hash_block_size == 0, (
++                f"block_size {group_block_size} is not a multiple of {self.hash_block_size}"
++            )
++
++            # 将基础 block hash 转换成对应block size的BlockHash
++            scale_factor = group_block_size // self.hash_block_size
++            if scale_factor == 1:
++                group_block_hashes = base_block_hashes
++            else:
++                group_block_hashes = BlockHashListWithBlockSize(
++                    base_block_hashes,
++                    self.hash_block_size,
++                    group_block_size,
++                )
++
++            # 逻辑范围 [block_start, block_end) 与物理 block 有重叠即选中。
++            group_block_start = block_start // scale_factor
++            group_block_end = (block_end + scale_factor - 1) // scale_factor
++            group_block_end = min(group_block_end, len(group_block_hashes))
++
++            if group_block_start >= group_block_end:
++                continue
++
++            # 每个 group 建立 [hash: block_id] 映射
++            hash_block: dict[BlockHash, int] = {}
++
++            for block_id in session_blocks:
++                block_hash_with_group_id = session_blocks[block_id].block_hash
++
++                # 未填满或尚未进入 prefix cache 的 block 可能没有 hash。
++                if block_hash_with_group_id is None:
++                    logger.debug(
++                        "Skip unhashed block %s for session %s, group %s",
++                        block_id,
++                        session_id,
++                        group_id,
++                    )
++                    continue
++
++                physical_hash = get_block_hash(block_hash_with_group_id)
++
++                # 理论上同一 group 的相同完整 hash 应映射到同一缓存内容。
++                # 保留第一次记录，避免覆盖造成结果不稳定。
++                hash_block.setdefault(physical_hash, block_id)
++
++            for group_index in range(group_block_start, group_block_end):
++                target_hash = group_block_hashes[group_index]
++                block_id = hash_block.get(target_hash)
++
++                if block_id is None:
++                    logger.debug(
++                        f"block not found, target block hash:{target_hash}, block index:{group_index * scale_factor}"
++                    )
++                    continue
++
++                result[group_id].append(block_id)
++
++        return result
++
++    def _get_session_block_hash(self, session_id: str, block_start: int, block_end: int) -> list[BlockHash]:
++        if session_id in self._session_block_hash:
++            block_hash_len = len(self._session_block_hash[session_id])
++            assert block_start >= 0 and block_end <= block_hash_len
++            if block_end == -1:
++                block_end = block_hash_len
++            return self._session_block_hash[session_id][block_start:block_end]
++        else:
++            return []
++
++    def add_event_listener(self, listener: SessionEventListener):
++        """注册事件监听器（SPM 调用）"""
++        self._event_listeners.append(listener)
++
++    def _notify_event(self, event_type: str, **kwargs):
++        """通知所有监听器"""
++        ret = 0
++        for listener in tuple(self._event_listeners):
++            handler = getattr(listener, f"on_{event_type}", None)
++            if handler is None:
++                continue
++
++            try:
++                ret = handler(**kwargs)
++            except Exception:
++                logger.exception(
++                    "Session event listener %r failed while handling %s",
++                    listener,
++                    event_type,
++                )
++        return ret
++
++    def register_agent_hint(
++        self,
++        request_id: str,
++        session_id: str | None,
++        context_management: ContextManagementParams | None,
++    ) -> list[Any] | None:
++        """register context management to session controller"""
++        logger.info(f"register context management with req id {request_id} session id {session_id}")
++        return self._session_controller.process_request_edits(request_id, session_id, context_management)
++
++    def register_session_block_hash(self, session_id: str, block_hashes: list[BlockHash]) -> None:
++        """register session block hash to session aware manager"""
++        self._session_block_hash[session_id] = block_hashes
++
++    def _get_block(self, block_id: int) -> KVCacheBlock:
++        return self.kv_cache_manager.block_pool.blocks[block_id]
++
++    def _reset_block_state(self, block: KVCacheBlock) -> None:
++        """
++        Reset the session state of a block, clearing its session
++        reference count and TTL expiration time.
++        """
++        block.reset_session_state()
++
++    def _update_block_meta(
++        self,
++        block_id: int,
++        delta_ref: int = 0,
++        ttl_expire_at: float | None = None,
++        is_offload_block: bool | None = None,
++    ) -> None:
++        """Update Agent Hint metadata and re-evaluate the free queue zone."""
++        block_pool = self.kv_cache_manager.block_pool
++        block = block_pool.blocks[block_id]
++        session_ref_cnt = (
++            max(0, block.num_session_refs + delta_ref) if delta_ref != 0 else None
++        )
++        block.set_session_state(
++            session_ref_cnt=session_ref_cnt,
++            ttl_expire_at=ttl_expire_at,
++            is_offload_block=is_offload_block,
++        )
++        if block.ref_cnt == 0 and not block.is_null:
++            block_pool.free_block_queue.on_block_meta_changed(block)
++
++    def _expand_session_block_range(
++        self,
++        session_id: str,
++        block_start: int,
++        block_end: int,
++    ) -> tuple[int, int]:
++        """扩展左闭右开区间，使其包含所有 group 涉及的完整 block。
++
++        输入和输出均为 hash_block_size 粒度，区间语义均为
++        [block_start, block_end)。
++        """
++        assert block_start >= 0
++        assert block_end >= block_start
++
++        # 空区间没有涉及任何物理 block。
++        if block_start == block_end:
++            return block_start, block_end
++
++        base_block_hashes = self._session_block_hash.get(session_id)
++        if not base_block_hashes:
++            logger.warning(f"There is no hash for the session_id:{session_id} in the _session_block_hash.")
++            return 0, 0
++
++        base_block_count = len(base_block_hashes)
++
++        expanded_start = block_start
++        expanded_end = block_end
++
++        for group_block_size in self.block_size:
++            assert group_block_size % self.hash_block_size == 0
++
++            scale_factor = group_block_size // self.hash_block_size
++
++            # 包含 block_start 的物理 block 起点。
++            group_block_start = (block_start // scale_factor) * scale_factor
++
++            # 包含 block_end 前一个位置的物理 block 的右边界。
++            group_block_end = (block_end + scale_factor - 1) // scale_factor * scale_factor
++
++            expanded_start = min(expanded_start, group_block_start)
++            expanded_end = max(expanded_end, group_block_end)
++
++        expanded_end = min(expanded_end, base_block_count)
++        return expanded_start, expanded_end
++
++    def _clear_old_block_sessions_ttl(self, block_id: int) -> None:
++        # 清理TTLManager中这个物理 block 的所有旧 session 引用
++        for group_id in range(len(self._block_sessions)):
++            old_session_ids = list(self._block_sessions[group_id].get(block_id, {}).keys())
++            for old_session_id in old_session_ids:
++                record = self._block_sessions[group_id][block_id].get(old_session_id)
++                if record and record.is_ephemeral:
++                    self._ttl_manager.remove(block_id, old_session_id)
++
++
++@dataclass
++class TTLBlockEntry:
++    block_id: int
++    session_id: str
++    ttl_expire_at: float
++    block_hashes: list[BlockHash]
++    update_SPM_only: bool = False
++
++
++class TTLTimerWheel:
++    """Best-effort timer wheel for TTL-protected free KV cache blocks.
++
++    This class does not mutate the free-block queue. It only tracks when a
++    block may become eligible for promotion out of zone C. Callers should
++    validate that returned blocks are still in the free queue, then call
++    FreeKVCacheBlockQueue.promote_to_zone_a/b() as appropriate.
++    """
++
++    def __init__(self, tick_count: int = 60):
++        """Initialize the timer wheel.
++
++        Parameters
++        ----------
++        tick_count : int
++            Number of slots in the wheel. Each slot corresponds to one
++            time unit (second). A block whose TTL expires at time T is
++            placed in slot ``int(T) % tick_count``. The wheel wraps
++            around, so tick_count also determines the maximum TTL
++            range that can be uniquely tracked.
++        """
++        self.slots: list[list[TTLBlockEntry]] = [[] for _ in range(tick_count)]
++        self.current_slot = 0
++        self.tick_count = tick_count
++
++        logger.info(f"Initialized TTLTimerWheel with {tick_count} slots.")
++
++    def insert(self, block: TTLBlockEntry, expire_at: float) -> None:
++        """Insert a block into the wheel at the slot corresponding to
++        its expiration time.
++
++        Parameters
++        ----------
++        block : TTLBlockEntry
++            The block entry to track.
++        expire_at : float
++            Absolute timestamp (e.g. time.monotonic()) at which the
++            block's TTL expires. The block is placed in slot
++            ``int(expire_at) % tick_count``.
++        """
++        tick_index = int(expire_at) % self.tick_count
++        self.slots[tick_index].append(block)
++
++        logger.debug(
++            f"Inserting block {block.block_id} into TTLTimerWheel, "
++            f"block.session_id={block.session_id},"
++            f"block.ttl_expire_at={block.ttl_expire_at:.2f}, "
++        )
++
++    def remove(self, block: TTLBlockEntry) -> None:
++        """Remove a block from the wheel.
++
++        Uses the block's ``ttl_expire_at`` to locate its slot.
++        If the block has already been collected by ``advance()``
++        (i.e. its TTL already expired), it won't be found in the
++        wheel and a warning is logged instead of raising an error.
++
++        Parameters
++        ----------
++        block : TTLBlockEntry
++            The block entry to remove. Must be the same object that
++            was passed to ``insert()`` (uses list.remove identity
++            check).
++        """
++        tick_index = int(block.ttl_expire_at) % self.tick_count
++        slot = self.slots[tick_index]
++        try:
++            slot.remove(block)
++        except ValueError:
++            logger.warning(
++                "Block %d not found in slot %d (expire_at=%.2f), may have already expired.",
++                block.block_id,
++                tick_index,
++                block.ttl_expire_at,
++            )
++            return
++
++        logger.debug(
++            "Removed block %d from TTLTimerWheel slot %d, session_id=%s, expire_at=%.2f.",
++            block.block_id,
++            tick_index,
++            block.session_id,
++            block.ttl_expire_at,
++        )
++
++    def advance(self, now: float) -> list[TTLBlockEntry]:
++        """Advance the wheel to the current time and return all blocks
++        whose TTL has expired.
++
++        Moves ``current_slot`` forward to ``int(now) % tick_count``,
++        collecting and clearing every slot along the way. The returned
++        blocks are those whose TTL deadline falls in the time range
++        between the previous position and the current time.
++
++        Important: this method only **identifies** expired blocks; it
++        does not mutate the free-block queue or change block zones.
++        Callers should validate that returned blocks are still in the
++        free queue, then apply the appropriate zone transition.
++
++        Parameters
++        ----------
++        now : float
++            Current time, typically ``time.monotonic()``.
++
++        Returns
++        -------
++        list[TTLBlockEntry]
++            All blocks that expired between the previous wheel
++            position and ``now``.
++        """
++        expired = []
++        target_slot = int(now) % self.tick_count
++        while self.current_slot != target_slot:
++            expired.extend(self.slots[self.current_slot])
++            self.slots[self.current_slot].clear()
++            self.current_slot = (self.current_slot + 1) % self.tick_count
++        if len(expired) > 0:
++            logger.debug(
++                f"Advancing TTLTimerWheel to time {now:.2f}, "
++                f"(current_slot={self.current_slot})."
++                f" Expired blocks: {[block.block_id for block in expired]}."
++            )
++
++        return expired
++
++
++class TTLManager:
++    """Session block 的 TTL 管理器。
++
++    为 session 中受 TTL 保护的 block 提供过期跟踪。每个 block 以
++    ``(block_id, session_id)`` 为键，绑定一个绝对过期时间
++    ``ttl_expire_at``。内部使用 TTLTimerWheel 做 best-effort 的
++    过期发现，配合 ``_entries`` 字典做精确校验。
++
++    核心流程：
++      1. **register** — 将 block 注册到 timer wheel，同时通知 SPM
++         该 block 处于 TTL 保护状态（"session_blocks_protected"）。
++         若同一 key 已存在且新过期时间更晚，则更新；否则保留旧值。
++      2. **tick** — 推进 timer wheel，收集已过期 entry。timer wheel
++         按 slot 收集，同一 slot 内可能包含尚未真正过期的 entry
++         （best-effort），因此 ``tick`` 会二次校验
++         ``now >= entry.ttl_expire_at``，仅对确认过期的 entry 执行
++         清理并回调 ``on_expired(block_id, session_id)``。
++      3. **remove** — 显式移除某个 block 的 TTL 跟踪（如 session
++         被主动释放），同时通知 SPM TTL 已失效
++         （"session_ttl_expired"）。
++
++    与 SPM 的交互：
++      - register 时通过 ``_spm_notify_func("session_blocks_protected", ...)``
++        通知 SPM block 处于 TTL 保护，避免 SPM 过早回收。
++      - 过期或 remove 时通过 ``_spm_notify_func("session_ttl_expired", ...)``
++        通知 SPM TTL 已失效，SPM 可据此决定是否回收该 session 的 block。
++    """
++
++    def __init__(
++        self,
++        on_expired: Callable[[int, str], None],
++        notify_func: Callable[..., None],
++    ):
++        """
++        Parameters
++        ----------
++        on_expired : Callable[[int, str], None]
++            Block 过期时的回调，签名为 ``on_expired(block_id, session_id)``。
++            调用方在此回调里执行实际的 block 释放 / zone 转换。
++        notify_func : Callable[..., None]
++            SPM 通知函数，用于向 SessionAwarePoolingManager 发送事件。
++            register 时发送 "session_blocks_protected"，过期/remove 时
++            发送 "session_ttl_expired"，使 SPM 感知 block 的 TTL 状态变化。
++        """
++        self._on_expired = on_expired
++        self._spm_notify_func = notify_func
++        self._entries: dict[tuple[int, str], TTLBlockEntry] = {}
++        self._timer_wheel = TTLTimerWheel(tick_count=3600)
++
++        logger.info("TTLManager initialized with on_expired=%s", getattr(on_expired, "__name__", repr(on_expired)))
++
++    def register(
++        self,
++        block_infos: list[tuple(int, list[BlockHash])],
++        session_id: str,
++        expire_at: float,
++        protected_block_hashes: list[BlockHash] = None,
++    ) -> None:
++        """注册或更新一个 block 的 TTL。
++
++        如果 ``(block_id, session_id)`` 已存在：
++          - 当新的 ``expire_at`` 比旧的更晚时，先从 timer wheel 移除旧
++            entry，更新 expire_at 后重新插入；
++          - 否则忽略（保留更晚的过期时间）。
++        如果不存在：创建新的 TTLBlockEntry 并插入 timer wheel。
++        """
++        protected_hash_len = 0
++        if protected_block_hashes is not None and len(protected_block_hashes) > 0:
++            block_infos.append((0, protected_block_hashes))
++            protected_hash_len = len(protected_block_hashes)
++        else:
++            return
++
++        logger.debug(f"TTL Manager: working to register {len(block_infos)} blocks into timer wheel")
++        for block_info in block_infos:
++            key = (block_info[0], session_id)
++            if key in self._entries:
++                old_entry = self._entries[key]
++                if expire_at > old_entry.ttl_expire_at:
++                    self._timer_wheel.remove(old_entry)
++                    old_entry.ttl_expire_at = expire_at
++                    old_entry.block_hashes = block_info[1]
++                    self._timer_wheel.insert(old_entry, expire_at)
++
++            else:
++                entry = TTLBlockEntry(
++                    block_id=block_info[0], session_id=session_id, ttl_expire_at=expire_at, block_hashes=block_info[1]
++                )
++                self._entries[key] = entry
++                self._timer_wheel.insert(entry, expire_at)
++        logger.info(
++            f"Register session id {session_id} with ttl {expire_at} and protected hash length {protected_hash_len} in TTL Manager"
++        )
++
++        protected_key = (0, session_id)
++        if protected_key in self._entries:
++            entry = self._entries[protected_key]
++            self._spm_notify_func("session_blocks_protected", session_id=session_id, block_hashes=entry.block_hashes)
++
++    def remove(self, block_id: int, session_id: str, is_notify_spm: bool = True) -> None:
++        """显式移除一个 block 的 TTL 跟踪。
++
++        同时从 ``_entries`` 和 timer wheel 中删除。如果不存在则静默忽略。
++        """
++        block_id = block_id if block_id > 0 else 0
++        key = (block_id, session_id)
++        if key in self._entries:
++            entry = self._entries.pop(key)
++            self._timer_wheel.remove(entry)
++            if block_id == 0:
++                remove_hashes = set()
++                remove_hashes.update(entry.block_hashes)
++                self._spm_notify_func("session_ttl_expired", session_id=session_id, block_hashes=list(remove_hashes))
++        else:
++            logger.warning(f"Could not find block_id {block_id} and session id {session_id} in TTL Manager")
++
++    def tick(self, now: float | None = None) -> None:
++        """推进 timer wheel，处理所有已过期的 entry。
++
++        对每个由 timer wheel 收集到的过期 entry，先校验 ``now >= expire_at``
++        （timer wheel 是 best-effort，slot 里可能含尚未真正过期的 entry），
++        然后从 ``_entries`` 移除并调用 ``on_expired`` 回调。
++
++        Parameters
++        ----------
++        now : float, optional
++            当前时间戳，默认 ``time.monotonic()``。
++        """
++        now = now if now is not None else time.monotonic()
++        expired_entries = self._timer_wheel.advance(now)
++        for entry in expired_entries:
++            if now >= entry.ttl_expire_at:
++                self._entries.pop((entry.block_id, entry.session_id), None)
++                if entry.block_id == 0:
++                    self._spm_notify_func(
++                        "session_ttl_expired", session_id=entry.session_id, block_hashes=entry.block_hashes
++                    )
++                else:
++                    self._on_expired(entry.block_id, entry.session_id)
++
++
++def example_expired_callback(block_id: int, session_id: str) -> None:
++    logger.info(f"block_id {block_id} and session_id {session_id} is processing on TTL expiration")
++
++
++class SessionController:
++    # TODO: 考虑预取请求有content / session已被清理，重新计算hash
++    """Context management edits 执行器。
++
++    处理请求携带的 context_management.edits，根据
++    manage_request 标志决定是立即执行还是在请求完成后执行。
++    通过注册回调执行实际的 block 操作，不感知具体的
++    offload/prefetch/evict 实现。
++
++    Required callbacks
++    ------------------
++    execute_offload  (block_ids: list[int], session_id: str) -> None
++        执行 offload 操作。
++    execute_prefetch (block_ids: list[int], session_id: str) -> None
++        执行 prefetch 操作。
++    execute_evict   (block_ids: list[int], session_id: str) -> None
++        执行 evict 操作。
++    """
++
++    _REQUIRED_CALLBACKS: list[str] = [
++        "execute_offload",
++        "execute_prefetch",
++        "execute_evict",
++        "get_global_block_id_by_session",
++        "get_block_hashes_by_session",
++    ]
++
++    def __init__(
++        self,
++        callbacks: dict[str, Callable[..., Any]] | None = None,
++        **kw_callbacks: Callable[..., Any],
++    ):
++        """
++        Parameters
++        ----------
++        callbacks : dict[str, Callable], optional
++            A mapping of {name: fn} to register in bulk.
++        **kw_callbacks
++            Same as *callbacks* but passed as keyword arguments.
++        """
++        self._registry: dict[str, Callable[..., Any]] = {}
++
++        if callbacks:
++            self._registry.update(callbacks)
++        if kw_callbacks:
++            self._registry.update(kw_callbacks)
++
++        missing = [name for name in self._REQUIRED_CALLBACKS if name not in self._registry]
++        if missing:
++            raise ValueError(
++                f"Missing required callbacks: {missing}. Provide them via `callbacks` dict or keyword arguments."
++            )
++
++        # request_id → [(edit, session_id), ...]
++        self._pending_edits: dict[str, list[tuple[ContextManagementEditsParams, str]]] = {}
++
++        logger.info("SessionController initialized with callbacks: %s", list(self._registry))
++
++    # ------------------------------------------------------------------
++    #  Registry management
++    # ------------------------------------------------------------------
++
++    def register(self, name: str, fn: Callable[..., Any]) -> None:
++        """Register (or overwrite) a callback by *name*."""
++        self._registry[name] = fn
++        logger.debug("Registered callback: %s", name)
++
++    def unregister(self, name: str) -> None:
++        """Remove a callback.  Required callbacks cannot be removed."""
++        if name in self._REQUIRED_CALLBACKS:
++            raise ValueError(f"Cannot unregister required callback '{name}'.")
++        self._registry.pop(name, None)
++        logger.debug("Unregistered callback: %s", name)
++
++    # ------------------------------------------------------------------
++    #  Public API
++    # ------------------------------------------------------------------
++
++    def process_request_edits(
++        self,
++        request_id: str,
++        session_id: str | None,
++        context_management: ContextManagementParams | None,
++    ) -> list[EditResponse] | None:
++        """处理请求携带的 context_management edits。
++
++        Parameters
++        ----------
++        request_id : str
++            请求唯一标识。
++        session_id : str | None
++            请求所属的 session。为 None 时直接忽略 edits。
++        context_management : ContextManagementParams | None
++            请求中的 context_management 字段。
++        """
++        if context_management is None or context_management.edits is None:
++            return
++
++        if session_id is None:
++            logger.warning("request %s has context_management.edits but no session_id, skipping.", request_id)
++            return
++
++        if context_management.manage_request:
++            # 管理请求：不执行请求本身，直接执行所有 edits
++            logger.info(
++                "Processing manage_request edits for request %s, session %s, %d edits.",
++                request_id,
++                session_id,
++                len(context_management.edits),
++            )
++            edit_results = []
++            for edit in context_management.edits:
++                edit_results.append(self._execute_single_edit(edit, session_id))
++                if edit_results[-1].op_status:
++                    logger.info(
++                        f"Context management result: session {session_id} type {edit.type} "
++                        f"status {edit_results[-1].op_status} "
++                        f"block start {edit.block_start} block end (not included) {edit.block_end} "
++                        f"actual_op_block_num {edit_results[-1].actual_op_block_num}"
++                    )
++                else:
++                    logger.info(
++                        f"Context management result: session {session_id} type {edit.type} "
++                        f"status {edit_results[-1].op_status} "
++                        f"block start {edit.block_start} block end (not included) {edit.block_end} "
++                        f"reason {edit_results[-1].fail_reason}"
++                    )
++            return edit_results
++        else:
++            # 普通请求：记录 edits，在请求完成后执行
++            logger.info(
++                "Deferring %d edits for request %s, session %s. Prefetch will not be performed after request finish",
++                len(context_management.edits),
++                request_id,
++                session_id,
++            )
++            self._pending_edits[request_id] = [
++                (edit, session_id) for edit in context_management.edits if edit.type != "prefetch"
++            ]
++
++    def on_request_completed(self, request_id: str) -> None:
++        """请求完成后执行其挂起的 edits。"""
++        pending = self._pending_edits.pop(request_id, None)
++        if pending is None:
++            return
++
++        logger.info("Executing %d deferred edits for completed request %s.", len(pending), request_id)
++        for edit, session_id in pending:
++            result = self._execute_single_edit(edit, session_id)
++            if result.op_status:
++                logger.info(
++                    f"Context management result: session {session_id} type {edit.type} "
++                    f"status {result.op_status} "
++                    f"block start {edit.block_start} block end (not included) {edit.block_end} "
++                    f"actual_op_block_num {result.actual_op_block_num}"
++                )
++            else:
++                logger.info(
++                    f"Context management result: session {session_id} type {edit.type} "
++                    f"status {result.op_status} "
++                    f"block start {edit.block_start} block end (not included) {edit.block_end} "
++                    f"reason {result.fail_reason}"
++                )
++
++    # ------------------------------------------------------------------
++    #  Internal
++    # ------------------------------------------------------------------
++    def _execute_single_edit(
++        self,
++        edit: ContextManagementEditsParams,
++        session_id: str,
++    ) -> EditResponse:
++        """执行单个 edit，通过注册的回调执行实际操作。"""
++        # block_start / block_end 由 pymotor 从 message index 转换而来
++        # 返回格式：EditResponse,记录op操作，session id，状态及详细信息
++        if edit.target != "session" and (edit.block_start is None or edit.block_end is None):
++            logger.info("Edit type=%s has no block_start/block_end, skipping. edit=%s", edit.type, edit)
++            return EditResponse(
++                session_id=session_id,
++                type=edit.type,
++                op_status=False,
++                fail_reason=f"invalid block start {edit.block_start} or block end {edit.block_end}",
++            )
++
++        logger.info(
++            f"Executing edit type={edit.type} for session {session_id}"
++            f"(block_start={edit.block_start}, block_end={edit.block_end})."
++        )
++
++        callback_name = f"execute_{edit.type}"
++        fn = self._registry.get(callback_name)
++        if fn is None:
++            logger.warning("No callback registered for edit type: %s, skipping.", edit.type)
++            return EditResponse(
++                session_id=session_id, type=edit.type, op_status=False, fail_reason=f"invalid edit type {edit.type}"
++            )
++
++        actual_process_blocks = 0
++        op_result = True
++        fail_reason = ""
++        is_session_op = edit.target == "session"
++
++        # TODO: 获取当前session 基础hash总长度
++        total_block_length = len(self._registry.get("get_block_hashes_by_session")(session_id, 0, -1))
++        logger.info(f"Process session {session_id} with block hash lengh {total_block_length}")
++        op_result, fail_reason = self.process_edit_index(edit, total_block_length, session_id)
++
++        if op_result:
++            get_block_info_fn = None
++            if edit.type == "prefetch":
++                callback_name = "get_block_hashes_by_session"
++                get_block_info_fn = self._registry.get(callback_name)
++            else:
++                callback_name = "get_global_block_id_by_session"
++                get_block_info_fn = self._registry.get(callback_name)
++            if get_block_info_fn is not None:
++                process_session_block_info = get_block_info_fn(session_id, edit.block_start, edit.block_end)
++                process_num = 0
++                for info in process_session_block_info:
++                    process_num += len(info)
++                logger.info(f"session {session_id} session hash or block id count {process_num}")
++                if edit.type == "prefetch":
++                    actual_process_blocks = fn(session_id, process_session_block_info, is_session_op)
++                else:
++                    actual_process_blocks = fn(
++                        session_id, edit.block_start, edit.block_end, process_session_block_info, is_session_op
++                    )
++
++        return EditResponse(
++            session_id=session_id,
++            type=edit.type,
++            op_status=op_result,
++            expected_op_block_num=edit.block_end - edit.block_start,
++            actual_op_block_num=actual_process_blocks,
++            fail_reason=fail_reason,
++        )
++
++    def process_edit_index(
++        self, edit: ContextManagementEditsParams, candidate_list_length: int, session_id: str
++    ) -> tuple[bool, str]:
++        if edit.block_start is None:
++            edit.block_start = 0
++
++        if edit.block_end is None:
++            edit.block_end = candidate_list_length
++        else:
++            # 左闭右闭
++            edit.block_end += 1
++
++        if candidate_list_length == 0:
++            edit.block_start = edit.block_end = 0
++            fail_reason = f"session_id {session_id} has {candidate_list_length} hash/block in SAM, fail to perform edit {edit.type}"
++            logger.warning(
++                f"Could not find session {session_id} with block ref record in SAM, failed to perform context management edit"
++            )
++            return (False, fail_reason)
++
++        if edit.block_end < edit.block_start:
++            fail_reason = f"block start {edit.block_start} is larger or equal to block end {edit.block_end}"
++            edit.block_start = edit.block_end = 0
++            return (False, fail_reason)
++
++        if edit.block_start > candidate_list_length:
++            logger.warning(
++                f"edit index out of range: block end {edit.block_end} or block start {edit.block_start} "
++                f"is out of index, the total kv length is {candidate_list_length}, fail to perform edit {edit.type}"
++            )
++            fail_reason = (
++                f"block start {edit.block_start} or block end {edit.block_end} out of range {candidate_list_length}"
++            )
++            edit.block_start = edit.block_end = 0
++            return (False, fail_reason)
++
++        return (True, "")
++
++
++def compute_ephemeral_range(
++    cache_control: CacheControlParams,
++) -> EphemeralRange | None:
++    if cache_control is None:
++        return None
++    block_offset = cache_control.block_offset or 0  # 默认所有 block 都受保护
++    return EphemeralRange(
++        block_offset=block_offset,
++        ttl=cache_control.ttl,
++    )
+diff --git a/vllm_ascend/core/agent_hint/session_aware_pooling_manager.py b/vllm_ascend/core/agent_hint/session_aware_pooling_manager.py
+new file mode 100644
+index 000000000..5d7871991
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/session_aware_pooling_manager.py
+@@ -0,0 +1,445 @@
++# ruff: noqa: E501, G004
++import threading
++import time
++import traceback
++from dataclasses import dataclass
++from typing import Callable
++
++from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1
++from vllm.logger import logger
++from vllm.sampling_params import SamplingParams
++from vllm.v1.core.kv_cache_utils import BlockHash
++from vllm_ascend.core.agent_hint.params import get_agent_hint_params
++from vllm.v1.request import Request
++
++from vllm_ascend.core.agent_hint.session_aware_manager import SessionAwareManager
++from vllm_ascend.core.agent_hint.session_event_listener import SessionEventListener
++
++
++@dataclass
++class SPMConfig:
++    """SPM 配置"""
++
++    # Keep-Alive 配置
++    enable_keep_alive: bool = True  # 是否启用 Keep-Alive
++    keep_alive_interval: int = 60  # Keep-Alive 刷新间隔（秒）
++    max_keys_per_cycle: int = 1024  # 每轮最多刷新的 key 数
++
++    # 预取配置
++    enable_prefetch: bool = True  # 是否启用主动预取
++    prefetch_max_queue_size: int = 16  # 预取队列最大长度
++    prefetch_block_reserve: int = 8  # 为预取保留的空闲 block 数量
++
++
++@dataclass
++class PrefetchRequest:
++    """预取请求描述"""
++
++    session_id: str
++    request_id: str  # 关联的请求 ID
++    block_hashes: list[BlockHash]  # 需要预取的 block hash 列表
++    token_len: int  # 需要预取的 token 数量
++    created_at: float  # 创建时间
++    dest_block_ids: tuple[list[int], ...] | list[int] | list[list[int]] | None  # 待搬入block ids
++    priority: int = 0  # 优先级（0=最高，由 manage_request 触发）
++
++
++class SessionKeyTracker:
++    """跟踪每个 session 写入远端存储的 PoolKey"""
++
++    def __init__(self):
++        self._session_hashes: dict[str, list[BlockHash]] = {}
++        self._lock = threading.Lock()
++
++    def get_dicts(self) -> dict[str, list[BlockHash]]:
++        with self._lock:
++            return dict(self._session_hashes)
++
++    def add_hashes(
++        self,
++        session_id: str,
++        block_hashes: list[BlockHash],
++    ) -> None:
++        if block_hashes is None or len(block_hashes) == 0:
++            logger.warning(f"SessionKeyTracker.add_hashes: invalid block_hashes: {block_hashes}")
++            return
++        with self._lock:
++            self._session_hashes[session_id] = block_hashes
++            logger.debug(f"SessionKeyTracker.add_hashes: session_id: {session_id}, block_hashes saved: {block_hashes}")
++
++    def remove_hashes(
++        self,
++        session_id,
++        block_hashes: list[BlockHash],
++    ) -> int:
++        removed_nums = 0
++        with self._lock:
++            # 异常处理
++            if session_id is None:
++                logger.warning("SessionKeyTracker.remove_hash: session_id cannot be None")
++                return removed_nums
++            if block_hashes is None:
++                logger.warning(f"SessionKeyTracker.remove_hash: invalid block_hashes {block_hashes}")
++                return removed_nums
++            list_hashes = self._session_hashes.get(session_id, [])
++            if not set(block_hashes).issubset(set(list_hashes)):
++                logger.debug(
++                    f"SessionKeyTracker.remove_hash: invalid block_hashes {block_hashes} or invalid session_id: {session_id}"
++                )
++                return removed_nums
++
++            list_hashes = self._session_hashes.pop(session_id, [])
++            removed_nums = len(list_hashes)
++            logger.debug(
++                f"SessionKeyTracker.remove_hash: session_id: {session_id}, block_hashes removed: {list_hashes}"
++            )
++        return removed_nums
++
++
++class KVCacheKeepAliveThread(threading.Thread):
++    """周期性刷新活跃 session 的远端 KV cache LRU 位置"""
++
++    def __init__(
++        self,
++        connector: KVConnectorBase_V1,
++        session_key_tracker: SessionKeyTracker,
++        interval: int = 60,  # 刷新间隔（秒）
++        block_size: int = 0,
++    ):
++        super().__init__(daemon=True, name="KVCacheKeepAliveThread")
++        self.connector = connector
++        self.tracker = session_key_tracker
++        self.interval = interval
++        self._stopped = threading.Event()
++        self.block_size = block_size
++
++    def run(self):
++        # TODO: max keys改为chunk发送
++        while not self._stopped.wait(self.interval):
++            try:
++                dict_hashes = self.tracker.get_dicts()
++                if not dict_hashes:
++                    continue
++                hints_block_nums = 0
++                all_block_nums = 0
++                for session_id, hashes in dict_hashes.items():
++                    nums = len(hashes)
++                    all_block_nums = all_block_nums + nums
++                    token_len = self.block_size * nums
++                    res = self.connector.look_up_keys(token_len, hashes)
++                    hints_block_nums = hints_block_nums + res // self.block_size
++                logger.info(
++                    f"KVCacheKeepAliveThread: all blockes numbers: {all_block_nums}, hints block numbers: {hints_block_nums}"
++                )
++            except Exception as e:
++                logger.error("Keep-alive thread error: %s", e)
++
++    def stop(self):
++        self._stopped.set()
++
++
++class SessionAwarePoolingManager(SessionEventListener):
++    """Session-Aware Pooling Manager — 池化场景下的 session 感知管理
++
++    实现 SessionEventListener 协议，注册为 SAM 的事件监听器。
++    持有 SessionKeyTracker 和 KVCacheKeepAliveThread。
++    """
++
++    # TODO：获取block hash，及其他meta信息计算 pool key
++    # TODO：SAM定期向SPM写入需要保护的hash，暴露增加、删除
++    # TODO：检查ttl接口是否正确
++    def __init__(
++        self,
++        sam: SessionAwareManager,
++        add_request: Callable[[Request], None],
++        connector: KVConnectorBase_V1 | None = None,
++        config: SPMConfig | None = None,
++    ):
++        self.sam = sam
++        self._add_request = add_request
++        self.connector = connector
++        self.config = config or SPMConfig()
++
++        # SessionKeyTracker — PoolKey 跟踪
++        self.key_tracker = SessionKeyTracker()
++
++        # Keep-Alive 线程
++        self.keep_alive_thread: KVCacheKeepAliveThread | None = None
++
++        # 预取队列
++        self.prefetch_waiting_queue: list[PrefetchRequest] = []
++
++        # 进行预取中的队列
++        self.prefetch_running_queue: list[Request] = []
++
++        # 注册为 SAM 事件监听器
++        sam.add_event_listener(self)
++
++        self.block_size = 0
++
++    def start(self) -> None:
++        """启动 Keep-Alive 线程"""
++        if self.config.enable_keep_alive and self.connector is not None:
++            # TODO: 修改线程入口
++            self.keep_alive_thread = KVCacheKeepAliveThread(
++                connector=self.connector,
++                session_key_tracker=self.key_tracker,
++                interval=self.config.keep_alive_interval,
++                block_size=self.block_size,
++            )
++            self.keep_alive_thread.start()
++            logger.info("Keep-alive thread start.")
++
++    def stop(self) -> None:
++        """停止 Keep-Alive 线程"""
++        if self.keep_alive_thread is not None:
++            self.keep_alive_thread.stop()
++            logger.info("Keep-alive thread stop.")
++
++    # --- SessionEventListener 实现 ---
++
++    # 可以通过ascend的pool_worker的回调函数来调用key_tracker.add_keys
++    def on_session_blocks_protected(
++        self,
++        session_id,
++        block_hashes: list[BlockHash],
++    ) -> None:
++        """block 保护"""
++        self.key_tracker.add_hashes(session_id, block_hashes)
++
++    def on_session_blocks_removed(
++        self,
++        session_id,
++        block_hashes: list[BlockHash],
++    ) -> int:
++        """block 移除"""
++        return self.key_tracker.remove_hashes(session_id, block_hashes)
++
++    # --- 调度循环集成 ---
++    def _lookup_remote_cache(self, block_hashes: list[BlockHash], token_len: int) -> int:
++        res = self.connector.connector_scheduler.client.lookup(
++            token_len=token_len,
++            block_hashes=block_hashes,
++            kv_cache_group_ids=self.connector.connector_scheduler.kv_cache_group_ids,
++        )
++        return res
++
++    def _submit_prefetch_to_scheduler(self, prefetch_req, matched_tokens):
++        # 从 SAM 获取 session 已有的 block 和对应的 Request 对象
++        # request = self.sam.get_request_by_session(prefetch_req.session_id)
++        # if request is None:
++        #     logger.warning("Session %s has no active request, skipping prefetch", prefetch_req.session_id)
++        #     return
++
++        # 获取 session 已有的 block_ids（通过 KVCacheManager）
++        # block_ids = self.sam.get_session_block_ids(prefetch_req.session_id)
++        block_ids = prefetch_req.dest_block_ids
++        if not block_ids:
++            hint = get_agent_hint_params(prefetch_req)
++            logger.warning(
++                "Session %s has no allocated blocks, skipping prefetch",
++                hint.session_id if hint else None,
++            )
++            return
++
++        # 通过 KVPoolScheduler 注入 prefetch metadata
++        self.connector.connector_scheduler.add_prefetch_request(prefetch_req, matched_tokens)
++
++    def _get_block_pool_keys(self, block_id: int) -> list[str]:
++        """通过 block_id 查找对应的 PoolKey（需要从 KVCacheManager 获取 block_hash）"""
++        # block_id → block_hash → PoolKey
++        # 这需要在 block 分配时建立映射，或通过 block_pool.blocks[block_id]._block_hash 间接获取
++        # 实现时需要与 KVCacheManager/AscendStoreConnector 协调
++        return []
++
++    def on_session_blocks_allocated(
++        self,
++        session_id: str | None = None,
++        # block_ids: list[int] = None,
++        # pool_keys: list[str] = None,       # 远端 PoolKey 列表（来自 AscendStoreConnector）
++        block_hashes: list[BlockHash] = None,  # 对应的 block hash
++    ) -> None:
++        return
++
++    def on_session_cache_hit(
++        self,
++        session_id: str | None = None,
++        block_id: int | None = None,
++        block_hash: BlockHash | None = None,
++    ) -> None:
++        return
++
++    def on_session_ttl_expired(
++        self,
++        session_id: str | None = None,
++        block_hashes: list[BlockHash] | None = None,
++    ) -> int:
++        return self.on_session_blocks_removed(session_id, block_hashes)
++
++    def on_context_management_prefetch(
++        self,
++        session_id: str | None = None,
++        logical_block_start: int | None = None,
++        logical_block_end: int = None,
++        block_ids: list[int] | None = None,
++        block_hashes: list[BlockHash] = None,
++    ) -> bool:
++        """prefetch 操作时创建预取请求"""
++        if not self.config.enable_prefetch:
++            return True
++        if block_hashes is None:
++            logger.warning("block_hashes can not be None")
++            return True
++        token_len = len(block_hashes) * self.block_size
++        logger.debug(
++            f"calling cb func on_context_management_prefetch with session {session_id} block_hashes {block_hashes} "
++            f"token_len {token_len}"
++        )
++        logger.debug(f"SessionAwarePoolingManager.on_context_management_prefetch: token_len: {token_len}")
++        logger.debug(f"SessionAwarePoolingManager.on_context_management_prefetch: block_hashes: {block_hashes}")
++        logger.debug(
++            f"SessionAwarePoolingManager.on_context_management_prefetch: block_hashes_len: {len(block_hashes)}"
++        )
++        request = PrefetchRequest(
++            session_id=session_id,
++            request_id=f"__prefetch_{session_id}_{time.monotonic():.0f}",
++            block_hashes=block_hashes,
++            token_len=token_len,
++            priority=0,
++            created_at=time.monotonic(),
++            dest_block_ids=None,
++        )
++        if len(self.prefetch_waiting_queue) < self.config.prefetch_max_queue_size:
++            self.prefetch_waiting_queue.append(request)
++            logger.debug(
++                f"SessionAwarePoolingManager.on_context_management_prefetch: prefetch_waiting_queue added PrefetchRequest: {PrefetchRequest}"
++            )
++            return True
++        else:
++            logger.warning(
++                f"prefetch queue is reaching the max queue size {self.config.prefetch_max_queue_size} "
++                f"and failed to add to the queue"
++            )
++            return False
++
++    def on_context_management_evict(
++        self,
++        session_id: str | None = None,
++        block_hashes: list[BlockHash] = None,
++    ) -> int:
++        return self.on_session_blocks_removed(session_id, block_hashes)
++
++    def process_prefetch_req(self, num_unfinished_requests: int):
++        # 处理上一轮次prefetch
++        for i in range(0, len(self.prefetch_running_queue)):
++            free_prefetch_running_req = self.prefetch_running_queue[i]
++            free_hint = get_agent_hint_params(free_prefetch_running_req)
++            logger.info(
++                f"free prefetch request {free_prefetch_running_req.request_id} and session id {free_hint.session_id if free_hint else None}"
++            )
++            self.sam.kv_cache_manager.free(free_prefetch_running_req)
++        self.prefetch_running_queue = []
++
++        # 处理当前轮次prefetch请求
++        process_prefetch_count = 0
++        hash_block_size = self.block_size
++        for i in range(0, len(self.prefetch_waiting_queue)):
++            try:
++                tmp_prefetch_req = self.prefetch_waiting_queue[i]
++                process_prefetch_count += 1
++
++                local_hit_block_hashes = []
++                local_computed_tokens = 0
++                local_computed_block_num = 0
++
++                local_hit_req = Request(
++                    request_id=tmp_prefetch_req.request_id,
++                    agent_hint={"session_id": tmp_prefetch_req.session_id},
++                    prompt_token_ids=[0] * (tmp_prefetch_req.token_len + 1),
++                    sampling_params=SamplingParams.from_optional(),
++                    pooling_params=None,
++                    is_prefetch_req=True,
++                )
++                # 检查当前预取请求HBM命中情况
++                local_hit_req.block_hashes = tmp_prefetch_req.block_hashes
++                local_blocks, local_computed_tokens, _ = self.sam.kv_cache_manager.get_computed_blocks(local_hit_req)
++
++                # 获取本地命中block hash
++                if local_computed_tokens > 0:
++                    local_computed_block_num = int(local_computed_tokens / hash_block_size)
++                    local_hit_block_hashes = tmp_prefetch_req.block_hashes[:local_computed_block_num]
++                logger.info(
++                    f"prefetch req: local hit tokens num {local_computed_tokens} of total {tmp_prefetch_req.token_len}, block num is {local_computed_block_num}"
++                )
++
++                exist_external_block_hash = []
++                total_external_matched_tokens = 0
++                external_matched_block_num = 0
++
++                if local_computed_tokens != tmp_prefetch_req.token_len:
++                    # 查询远端剩余hash存活情况
++                    matched_tokens = self._lookup_remote_cache(
++                        block_hashes=tmp_prefetch_req.block_hashes,
++                        token_len=hash_block_size * len(tmp_prefetch_req.block_hashes),
++                    )
++
++                    if matched_tokens > local_computed_tokens:
++                        total_external_matched_tokens = matched_tokens - local_computed_tokens
++                        external_matched_block_num = int(matched_tokens / hash_block_size)
++                        exist_external_block_hash = tmp_prefetch_req.block_hashes[
++                            local_computed_block_num:external_matched_block_num
++                        ]
++                logger.info(
++                    f"processing prefetch request {tmp_prefetch_req.request_id} session_id {tmp_prefetch_req.session_id} "
++                    f"total_external_matched_tokens {total_external_matched_tokens} local_computed_tokens {local_computed_tokens}"
++                )
++
++                if total_external_matched_tokens + local_computed_tokens > 0:
++                    # HBM/远端有命中，尝试分配KV
++                    tmp_req = Request(
++                        request_id=tmp_prefetch_req.request_id,
++                        agent_hint={"session_id": tmp_prefetch_req.session_id},
++                        prompt_token_ids=[0] * (total_external_matched_tokens + local_computed_tokens),
++                        sampling_params=SamplingParams.from_optional(),
++                        pooling_params=None,
++                        is_prefetch_req=True,
++                    )
++                    local_hit_block_hashes.extend(exist_external_block_hash)
++                    total_hit_block_hashes = local_hit_block_hashes
++                    tmp_req.block_hashes = total_hit_block_hashes
++
++                    new_blocks = self.sam.kv_cache_manager.allocate_slots(
++                        tmp_req,
++                        num_new_tokens=max(total_external_matched_tokens, 1),
++                        num_new_computed_tokens=local_computed_tokens,
++                        new_computed_blocks=local_blocks,
++                    )
++                    if new_blocks:
++                        tmp_prefetch_req.dest_block_ids = self.sam.kv_cache_manager.get_blocks(
++                            tmp_prefetch_req.request_id
++                        ).get_block_ids()
++                        tmp_prefetch_req.token_len = len(total_hit_block_hashes) * hash_block_size
++                        tmp_prefetch_req.vllm_cache_tokens = local_computed_tokens
++                    else:
++                        break
++                    logger.debug(f"new_blocks is {new_blocks} ids {tmp_prefetch_req.dest_block_ids}")
++                    if total_external_matched_tokens > 0:
++                        self._submit_prefetch_to_scheduler(tmp_prefetch_req, total_external_matched_tokens)
++                    self.prefetch_running_queue.append(tmp_req)
++            except Exception as e:
++                logger.error("Prefetch failed for request %s: %s", tmp_prefetch_req.request_id, e)
++                traceback.print_exc()
++        # update prefetch queue
++        self.prefetch_waiting_queue = self.prefetch_waiting_queue[process_prefetch_count:]
++        if num_unfinished_requests == 0 and len(self.prefetch_running_queue) > 0:
++            company_req = Request(
++                request_id="prefetch_company_request",
++                prompt_token_ids=[0] * 1,
++                sampling_params=SamplingParams.from_optional(max_tokens=1),
++                pooling_params=None,
++                is_prefetch_req=True,
++            )
++            self._add_request(company_req)
++            logger.info(
++                f"adding company req for unfinish req {num_unfinished_requests} and prefetch count {len(self.prefetch_running_queue)}"
++            )
+diff --git a/vllm_ascend/core/agent_hint/session_event_listener.py b/vllm_ascend/core/agent_hint/session_event_listener.py
+new file mode 100644
+index 000000000..0e6259468
+--- /dev/null
++++ b/vllm_ascend/core/agent_hint/session_event_listener.py
+@@ -0,0 +1,90 @@
++from typing import Protocol
++
++from vllm.v1.core.kv_cache_utils import BlockHash
++
++
++class SessionEventListener(Protocol):
++    """SPM 实现此协议，监听 SAM 的 session 生命周期事件"""
++
++    def on_session_registered(self, session_id: str, parent_session_id: str | None) -> None: ...
++
++    def on_session_blocks_protected(
++        self,
++        block_hashes: list[BlockHash],
++    ) -> None: ...
++
++    def on_session_blocks_removed(
++        self,
++        block_hashes: list[BlockHash],
++    ) -> int: ...
++
++    # def on_session_cache_hit(
++    #     self,
++    #     block_hashes: list[BlockHash],
++    # ) -> None: ...
++
++    # def on_session_ttl_expired(self, block_hashs: list[BlockHash]) -> None: ...
++
++    def on_session_freed(self, session_id: str) -> None: ...
++
++    # def on_context_management_evict(
++    #     self,
++    #     block_hashes: list[BlockHash],
++    # ) -> None: ...
++
++    def on_context_management_offload(self, session_id: str, block_ids: list[int]) -> None: ...
++
++    # def on_context_management_prefetch(
++    #     self,
++    #     session_id: str,
++    #     block_hashes: list[BlockHash],
++    # ) -> bool: ...
++
++    def on_check_matched_token(
++        self,
++        session_id: str,
++        check_matched_start: int,
++        check_matched_end: int,
++    ) -> int:
++        ...
++
++        #############################################################################
++
++    def on_session_blocks_allocated(
++        self,
++        session_id: str | None,
++        block_ids: list[int],
++        pool_keys: list[str],  # 远端 PoolKey 列表（来自 AscendStoreConnector）
++        block_hashes: list[BlockHash],  # 对应的 block hash
++    ) -> None: ...
++
++    def on_session_cache_hit(
++        self,
++        session_id: str | None = None,
++        block_id: int | None = None,
++        # pool_key: str | None,      # cache hit 的 block 对应的远端 PoolKey（可能无）
++        block_hash: BlockHash | None = None,
++    ) -> None: ...
++
++    def on_context_management_prefetch(
++        self,
++        session_id: str | None = None,
++        logical_block_start: int | None = None,
++        logical_block_end: int | None = None,
++        block_ids: list[int] | None = None,
++        block_hashes: list[BlockHash] = None,
++    ) -> bool: ...
++
++    def on_context_management_evict(
++        self,
++        session_id: str | None = None,
++        block_ids: list[int] = None,
++        block_hashes: list[BlockHash] = None,
++    ) -> int: ...
++
++    def on_session_ttl_expired(
++        self,
++        session_id: str | None = None,
++        block_ids: list[int] = None,
++        block_hash: BlockHash | None = None,
++    ) -> int: ...
+diff --git a/vllm_ascend/core/single_type_kv_cache_manager.py b/vllm_ascend/core/single_type_kv_cache_manager.py
+index 1eb12113c..0391a433c 100644
+--- a/vllm_ascend/core/single_type_kv_cache_manager.py
++++ b/vllm_ascend/core/single_type_kv_cache_manager.py
+@@ -187,7 +187,7 @@ class CompressAttentionManager(FullAttentionManager):
+         retention_interval: int | None = None,
+         *,
+         alignment_tokens: int | None = None,
+-    ) -> None:
++    ) -> tuple[list[KVCacheBlock], int]:
+         """
+         Cache the blocks for the request.
+ 
+@@ -204,7 +204,7 @@ class CompressAttentionManager(FullAttentionManager):
+         num_full_blocks = num_tokens // (self.block_size * self.compress_ratio)
+ 
+         if num_cached_blocks >= num_full_blocks:
+-            return
++            return [], num_cached_blocks
+ 
+         self.block_pool.cache_full_blocks(
+             request=request,
+@@ -216,6 +216,11 @@ class CompressAttentionManager(FullAttentionManager):
+         )
+         self.num_cached_block[request.request_id] = num_full_blocks
+ 
++        newly_cached_blocks = self.req_to_blocks[request.request_id][
++            num_cached_blocks:num_full_blocks
++        ]
++        return newly_cached_blocks, num_cached_blocks
++
+     @classmethod
+     def find_longest_cache_hit(
+         cls,
+diff --git a/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py b/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py
+index 88be3d156..15ba90a4e 100644
+--- a/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py
++++ b/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py
+@@ -130,6 +130,7 @@ class AscendStoreConnector(KVConnectorBase_V1, SupportsHMA):
+             assert self.connector_worker is not None
+             if not self.use_layerwise and vllm_config.parallel_config.rank == 0:
+                 self.lookup_server = LookupKeyServer(self.connector_worker, vllm_config)
++                self.spm_lookup_server = LookupKeyServer(self.connector_worker, vllm_config, rpc_port_bias=1)
+ 
+     ############################################################
+     # Scheduler Side Methods
+@@ -303,6 +304,10 @@ class AscendStoreConnector(KVConnectorBase_V1, SupportsHMA):
+     def build_connector_worker_meta(self) -> AscendStoreKVConnectorWorkerMetadata | None:
+         assert self.connector_worker is not None
+         return self.connector_worker.build_connector_worker_meta()
++    
++    def look_up_keys(self, token_len: int, block_hashes_list: list[BlockHash]) -> None:
++        look_up_result = self.connector_scheduler.client_spm.lookup(token_len, block_hashes_list, self.connector_scheduler.kv_cache_group_ids)
++        return look_up_result
+ 
+ 
+ class LookupKeyServer:
+@@ -310,10 +315,11 @@ class LookupKeyServer:
+         self,
+         pool_worker: KVPoolWorker,
+         vllm_config: "VllmConfig",
++        rpc_port_bias: int = 0,
+     ):
+         self.decoder = MsgpackDecoder()
+         self.ctx = zmq.Context()  # type: ignore[attr-defined]
+-        socket_path = get_zmq_rpc_path_lookup(vllm_config)
++        socket_path = get_zmq_rpc_path_lookup(vllm_config, rpc_port_bias)
+         self.socket = make_zmq_socket(
+             self.ctx,
+             socket_path,
+diff --git a/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py b/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py
+index 83203ee6b..74b903f63 100644
+--- a/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py
++++ b/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py
+@@ -24,6 +24,10 @@ from vllm.v1.outputs import KVConnectorOutput
+ from vllm.v1.request import Request
+ from vllm.v1.serial_utils import MsgpackEncoder
+ 
++from vllm_ascend.core.agent_hint.session_aware_pooling_manager import (
++    PrefetchRequest,
++)
++
+ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend import (
+     backend_map,
+ )
+@@ -142,6 +146,7 @@ class KVPoolScheduler:
+             )
+         self._unfinished_requests: dict[str, tuple[Request, list[list[int]]]] = {}
+         self._unfinished_request_ids: set[str] = set()
++        self._prefetch_req_metas: list[ReqMeta] = []
+         self._loading_req_ids: set[str] = set()
+         self._delayed_free_req_ids: set[str] = set()
+ 
+@@ -223,6 +228,7 @@ class KVPoolScheduler:
+         self.keys_per_block_hash = keys_per_block_hash
+ 
+         self.client: LookupKeyClient | None = None
++        self.client_spm: LookupKeyClient | None = None
+ 
+     def _get_or_create_request_tracker(self, req_id: str) -> RequestTracker:
+         tracker = self._request_trackers.get(req_id)
+@@ -567,6 +573,8 @@ class KVPoolScheduler:
+                     return 0, False
+                 if self.client is None:
+                     self.client = LookupKeyClient(self.vllm_config)
++                if self.client_spm is None:
++                    self.client_spm = LookupKeyClient(self.vllm_config, rpc_port_bias=1)
+                 num_external_hit_tokens = self.client.lookup(
+                     token_len,
+                     request.block_hashes,
+@@ -956,6 +964,34 @@ class KVPoolScheduler:
+             hash_block_size=self.hash_block_size,
+         )
+ 
++    def add_prefetch_request(self, prefetch_req: PrefetchRequest, matched_tokens: int) -> None:
++        """由 SPM 调用，添加 prefetch 请求的元数据"""
++        block_ids = prefetch_req.dest_block_ids
++        load_spec = LoadSpec(
++            vllm_cached_tokens=prefetch_req.vllm_cache_tokens,
++            kvpool_cached_tokens=matched_tokens,
++            can_load=True,
++            token_len=prefetch_req.token_len,
++        )
++        num_tokens_to_compute = prefetch_req.token_len
++        request_tracker = RequestTracker(
++            req_id=prefetch_req.request_id,
++            token_len=num_tokens_to_compute,
++            allocated_block_ids_by_group=normalize_block_ids_by_group(block_ids),
++            num_saved_tokens=0,
++        )
++        req_meta = ReqMeta.from_request_tracker(
++            request_tracker,
++            self.cache_transfer_granularity,
++            load_spec=load_spec,
++            skip_save=True,  # prefetch 不保存
++            block_hashes=prefetch_req.block_hashes,
++            discard_partial_chunks=self._discard_partial_chunks,
++            kv_cache_group_families=self.kv_cache_group_families,
++        )
++        if req_meta is not None:
++            self._prefetch_req_metas.append(req_meta)
++
+     def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
+         """Attach the connector metadata to the request object.
+ 
+@@ -1030,6 +1066,11 @@ class KVPoolScheduler:
+                     self.touch_sending_mamba_blocks(req_meta)
+                     meta.add_request(req_meta)
+ 
++        # 追加 prefetch 请求
++        for prefetch_meta in self._prefetch_req_metas:
++            meta.add_request(prefetch_meta)
++        self._prefetch_req_metas.clear()
++
+         return meta
+ 
+     def get_sending_event_id(self):
+@@ -1154,16 +1195,17 @@ class KVPoolScheduler:
+ 
+ 
+ class LookupKeyClient:
+-    def __init__(self, vllm_config: "VllmConfig"):
++    def __init__(self, vllm_config: "VllmConfig", rpc_port_bias: int = 0):
+         self.encoder = MsgpackEncoder()
+         self.ctx = zmq.Context()  # type: ignore[attr-defined]
+-        socket_path = get_zmq_rpc_path_lookup(vllm_config)
++        socket_path = get_zmq_rpc_path_lookup(vllm_config, rpc_port_bias)
+         self.socket = make_zmq_socket(
+             self.ctx,
+             socket_path,
+             zmq.REQ,  # type: ignore[attr-defined]
+             bind=False,
+         )
++        self.rpc_port_bias = rpc_port_bias
+ 
+     def lookup(
+         self,
+@@ -1191,7 +1233,7 @@ class LookupKeyClient:
+         self.socket.close(linger=0)
+ 
+ 
+-def get_zmq_rpc_path_lookup(vllm_config: "VllmConfig") -> str:
++def get_zmq_rpc_path_lookup(vllm_config: "VllmConfig", rpc_port_bias: int = 0) -> str:
+     dp_rank = vllm_config.parallel_config.data_parallel_rank
+     base_url = envs.VLLM_RPC_BASE_PATH
+     # Default to 0 if not configured
+@@ -1205,5 +1247,6 @@ def get_zmq_rpc_path_lookup(vllm_config: "VllmConfig") -> str:
+             logger.warning(
+                 "It is recommended to use the lookup_rpc_port, as the mooncake_rpc_port will be removed in the future."
+             )
++    rpc_port = int(rpc_port) + rpc_port_bias
+     logger.debug("Base URL: %s, RPC Port: %s", base_url, rpc_port)
+     return f"ipc://{base_url}/lookup_rpc_port_{rpc_port}_dp_rank{dp_rank}"
+diff --git a/vllm_ascend/patch/platform/patch_kv_delivery_preemption.py b/vllm_ascend/patch/platform/patch_kv_delivery_preemption.py
+index e348910d9..ec651d3e5 100644
+--- a/vllm_ascend/patch/platform/patch_kv_delivery_preemption.py
++++ b/vllm_ascend/patch/platform/patch_kv_delivery_preemption.py
+@@ -125,9 +125,10 @@ class KVDeliveryScheduler(Scheduler):
+ 
+         # First, schedule the RUNNING requests.
+         req_index = 0
++        self.agent_hint_manager.on_step(self.get_num_unfinished_requests())
+         while req_index < len(self.running) and token_budget > 0:
+             request = self.running[req_index]
+-
++            self.agent_hint_manager.on_request_scheduled(request)
+             if (
+                 request.num_output_placeholders > 0
+                 # This is (num_computed_tokens + 1) - (num_output_placeholders - 1).
+@@ -327,7 +328,7 @@ class KVDeliveryScheduler(Scheduler):
+ 
+                 request = request_queue.peek_request()
+                 request_id = request.request_id
+-
++                self.agent_hint_manager.on_request_scheduled(request)
+                 # try to promote blocked statuses while traversing skipped queue.
+                 if self._is_blocked_waiting_status(request.status) and not self._try_promote_blocked_waiting_request(
+                     request
+-- 
+2.52.0.windows.1
+
