@@ -56,6 +56,7 @@ KEY_STEPS = {
     'Loading model weights': 80,
     'Graph capturing finished': 90,
     'EndpointStatus.INITIAL to EndpointStatus.NORMAL': 100,
+    'EndpointStatus.WAIT2START to EndpointStatus.NORMAL': 100,
 }
 
 
