@@ -8,7 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-"""Shared non-streaming response assembly for token-only vLLM requests."""
+"""Shared response assembly and error mapping for token-only vLLM requests."""
 
 from http import HTTPStatus
 from typing import Any
@@ -18,12 +18,23 @@ from fastapi import HTTPException
 from motor.coordinator.render.api_spec import get_render_api_spec
 from motor.coordinator.render.models import TokenizedRequest
 from motor.coordinator.render.vllm_render_client import (
-    RenderInvalidResponseError,
+    RenderClientError,
+    RenderRequestError,
     RenderTimeoutError,
-    RenderUnavailableError,
     RenderUnsupportedError,
     VLLMRenderClient,
 )
+
+
+def derender_http_exception(error: RenderClientError) -> HTTPException:
+    """Map a Render-side response failure without entering engine retry logic."""
+    if isinstance(error, RenderRequestError):
+        return HTTPException(status_code=error.status_code, detail=error.detail)
+    if isinstance(error, RenderTimeoutError):
+        return HTTPException(status_code=HTTPStatus.GATEWAY_TIMEOUT, detail=str(error))
+    if isinstance(error, RenderUnsupportedError):
+        return HTTPException(status_code=HTTPStatus.NOT_IMPLEMENTED, detail=str(error))
+    return HTTPException(status_code=HTTPStatus.BAD_GATEWAY, detail=str(error))
 
 
 async def derender_response(
@@ -61,12 +72,8 @@ async def derender_response(
 
     try:
         response = await render_client.derender(api, payload)
-    except RenderTimeoutError as error:
-        raise HTTPException(status_code=HTTPStatus.GATEWAY_TIMEOUT, detail=str(error)) from error
-    except RenderUnsupportedError as error:
-        raise HTTPException(status_code=HTTPStatus.NOT_IMPLEMENTED, detail=str(error)) from error
-    except (RenderUnavailableError, RenderInvalidResponseError) as error:
-        raise HTTPException(status_code=HTTPStatus.BAD_GATEWAY, detail=str(error)) from error
+    except RenderClientError as error:
+        raise derender_http_exception(error) from error
 
     response["id"] = request_id
     response["prompt_token_ids"] = response_prompt_token_ids

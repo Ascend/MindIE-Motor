@@ -53,3 +53,17 @@ class TokenizedRequest(BaseModel):
         if self.engine_prompt_token_ids is not None:
             return self.engine_prompt_token_ids
         return self.prompt_token_ids
+
+
+class DerenderedStreamChunk(BaseModel):
+    """One normalized streaming Derender result with client-carried state."""
+
+    chunk: dict[str, Any]
+    stream_state: dict[str, Any]
+
+    @field_validator("chunk")
+    @classmethod
+    def validate_chunk(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value.get("choices"), list):
+            raise ValueError("chunk must contain choices")
+        return value

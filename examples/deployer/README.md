@@ -203,37 +203,42 @@ vLLM Render 通过 `user_config.json` 中的 `motor_coordinator_config.render_co
 {
   "motor_coordinator_config": {
     "render_config": {
-      "enabled": true,
+      "enable": true,
       "endpoint": {
         "host": "127.0.0.1",
         "port": 8100
       },
       "timeout_ms": 5000,
+      "renderer_num_workers": 4,
       "image_name": "vllm-render-cpu:v0.25.0-arm64"
     }
   }
 }
 ```
 
-Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`image_name` 指定独立 CPU 镜像；为空时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。
+Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`renderer_num_workers`
+控制 Render worker 数量，默认值为 `4`；`image_name` 指定独立 CPU 镜像，为空时复用服务镜像、只读挂载 Ascend
+驱动库且不申请 NPU。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
 
 使用限制：
 
-- Render 镜像需同时提供 Render 和 Derender 接口，建议vllm版本 >= 0.24.0。
-- 非流式 Chat Completions 和 Completions 请求支持完整 Token In/Token Out 链路。
-- Render tokenization 失败会回退本地 tokenizer；Derender 失败直接返回客户端。
+- Render 镜像需同时提供 Render 和 Derender 接口。非流式请求要求 vLLM >= 0.24.0，流式请求要求 vLLM >= 0.27.0。
+- 非流式 Chat Completions 和 Completions 支持完整 Token In/Token Out；流式 Chat Completions 及 Handoff、Union 下的单/多 prompt Completions 支持完整链路。
+- 单 prompt 重调度继续使用 token-only replay；多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 沿用原有边界。
+- Render 不可用、超时或接口不支持时回退本地 tokenizer；请求校验错误（400/422，以及带结构化错误响应的 404）和 Derender 失败直接返回客户端。
+- 流式 Derender 按 chunk 无状态调用；长 prompt 或高并发场景需评估 Sidecar 的 CPU 与通信开销。
 
-数据混淆权重可通过 `motor_coordinator_config.token_obfuscation_config.enabled=true` 开启 token 混淆。
+数据混淆权重可通过 `motor_coordinator_config.token_obfuscation_config.enable=true` 开启 token 混淆。
 `vocab_size` 与 `token_white_list` 都没有内置默认值：`vocab_size` 未配置时由 Coordinator 从被服务权重目录的
 `config.json` 自动读取（多模态取 `text_config.vocab_size`，可用 `model_path` 指定目录），显式配置优先；
 `token_white_list` 必须按离线权重混淆参数显式配置（Qwen3-32B /
 Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../../docs/zh/user_guide/features/data_obfuscation.md)，也可从混淆权重目录的
 `obf_config.json` 中抄录）；`seed_content` 默认留空，开启时必须通过受控配置显式注入。
 Seed 可用于还原词表置换，必须与混淆权重同权限保管，禁止提交到代码仓库或写入日志。
-开启后仅支持非流式 vLLM Render token-only 链路；Render、混淆或 token-only endpoint 失败时请求直接失败，
+开启后支持流式和非流式 vLLM Render token-only 链路；Render、混淆或 token-only endpoint 失败时请求直接失败，
 不回退原生 OpenAI 路径。
 
-多模态数据混淆权重还可通过 `motor_coordinator_config.token_obfuscation_config.image_config.enabled=true`
+多模态数据混淆权重还可通过 `motor_coordinator_config.token_obfuscation_config.image_config.enable=true`
 开启图像混淆：Coordinator 在 Render 返回后，对 `features.kwargs_data` 中每个模态的张量载荷调用 SDK 的
 `image_render_obf`，将混淆后的绑定重新编码后转发给引擎（与 token 混淆共用 `seed_content`，要求 render 已开启）。
 几何参数（`patch_size` / `merge_size` / `longest_edge` / `shortest_edge` / `temporal_patch_size`）**可不配置**：

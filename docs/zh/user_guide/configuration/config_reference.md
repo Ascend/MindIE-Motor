@@ -291,7 +291,7 @@ motor_coordinator_config字段配置样例如下所示：
   },
   "context_budget_mode": "off",
   "render_config": {
-    "enabled": false,
+    "enable": false,
     "endpoint": {
       "host": "127.0.0.1",
       "port": 8100
@@ -300,12 +300,12 @@ motor_coordinator_config字段配置样例如下所示：
     "image_name": ""
   },
   "token_obfuscation_config": {
-    "enabled": false,
+    "enable": false,
     "vocab_size": 151936,
     "token_white_list": [151643, 151644, 151645, 151646, 151647, 151648, 151649, 151650, 151651, 151652, 151653, 151654, 151655, 151656, 151657, 151658, 151659, 151660, 151661, 151662, 151663, 151664, 151665, 151666, 151667, 151668, 198, 2610, 525, 264, 10950, 17847, 13, 872, 77091, 8948, 271],
     "seed_content": "",
     "image_config": {
-      "enabled": false,
+      "enable": false,
       "model_path": "",
       "patch_size": 0,
       "merge_size": 0,
@@ -463,18 +463,18 @@ motor_coordinator_config字段配置样例如下所示：
 |--------|------|------------------|
 | context_budget_mode | string | 请求路由前使用模型 tokenizer 计算 prompt token 数，并将实际生效的 `max_tokens` / `max_completion_tokens` 裁剪到模型剩余上下文。适用于 `load_balance`、`round_robin`、`kv_cache_affinity`。可选值：`off`（默认）或 `on`；开启 `on` 时，P/D 引擎配置必须提供 `model` 与 `max_model_len`。 |
 | **render_config字段** |-|-|
-| enabled | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；不支持的请求或调用失败会自动回退本地 tokenizer。 |
+| enable | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；Render 不可用、超时或接口不支持时回退本地 tokenizer，请求校验错误（400/422，以及带结构化错误响应的 404）直接返回客户端。启用 KV Cache 亲和性调度时建议同时开启。 |
 | endpoint | object | Render Sidecar 地址。`host` 默认值为 `127.0.0.1`，Sidecar 部署仅支持本机地址；`port` 默认值为 `8100`。 |
 | timeout_ms | int | Render、Derender 与健康检查的 HTTP 超时时间，单位：毫秒。默认值：`5000`。 |
 | image_name | string | Render Sidecar 镜像。配置后使用该独立镜像；为空时复用 `motor_deploy_config.image_name`。默认值为空。 |
 | **token_obfuscation_config字段** |-|-|
-| enabled | bool | 是否启用与数据混淆权重配套的 token 混淆。默认值：`false`。开启后仅支持非流式 vLLM Render token-only 请求，任何混淆或 Render 失败都会拒绝请求，不回退原生 OpenAI 推理。 |
+| enable | bool | 是否启用与数据混淆权重配套的 token 混淆。默认值：`false`。开启后支持流式和非流式 vLLM Render token-only 请求，任何混淆或 Render 失败都会拒绝请求，不回退原生 OpenAI 推理。 |
 | model_path | string | 可选，显式指定被服务的权重目录（用于从其中读取 `vocab_size`）。默认值为空，此时使用 `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`（多模型共存时必须显式指定）。 |
 | vocab_size | int | 混淆词表大小。**默认值：`0`（未配置）**，未配置时从权重目录 `config.json` 读取（多模态模型取 `text_config.vocab_size`，纯文本模型取顶层 `vocab_size`），显式配置始终优先。必须与权重混淆参数一致（Qwen3-32B / Qwen3-VL 为 `151936`）。 |
 | token_white_list | list[int] | 不参与置换的 token ID（特殊 token 等）。默认值为空，启用 token 混淆时必须显式配置，且必须与权重混淆参数一致；Qwen3-32B / Qwen3-VL 验证权重使用的 37 个白名单 token 见 [数据混淆推理（PMCC）](../features/data_obfuscation.md#使用样例)。该参数**无法从模型目录推导**，只能由权重混淆方提供。 |
 | seed_content | string | 数据混淆因子。默认值为空；启用 token 混淆时必须显式配置。该值可还原词表置换，必须与混淆权重同权限保管，通过受控配置注入，禁止提交到代码仓库或写入日志。 |
 | **token_obfuscation_config.image_config字段** |-|-|
-| enabled | bool | 是否对 Render 返回的多模态图像张量做数据混淆（与数据混淆权重的视觉部分配套）。默认值：`false`。开启后 Coordinator 对 `features.kwargs_data` 中每个模态的张量载荷调用 SDK 的 `image_render_obf`，再把混淆后的载荷转发给引擎；Render 未启用或 SDK 抛错时请求失败（fail closed），不会把明文张量送进引擎。混淆结果的正确性（置换内容与载荷格式）由 SDK 保证，Coordinator 不做解析与结构校验。**要求 `render_config.enabled=true`**，与 `token_obfuscation_config.enabled` 相互独立，共用同一个 `seed_content`。 |
+| enable | bool | 是否对 Render 返回的多模态图像张量做数据混淆（与数据混淆权重的视觉部分配套）。默认值：`false`。开启后 Coordinator 对 `features.kwargs_data` 中每个模态的张量载荷调用 SDK 的 `image_render_obf`，再把混淆后的载荷转发给引擎；Render 未启用或 SDK 抛错时请求失败（fail closed），不会把明文张量送进引擎。混淆结果的正确性（置换内容与载荷格式）由 SDK 保证，Coordinator 不做解析与结构校验。**要求 `render_config.enable=true`**，与 `token_obfuscation_config.enable` 相互独立，共用同一个 `seed_content`。 |
 | model_path | string | 可选，显式指定被服务的权重目录（用于从其中读取几何参数）。默认值为空，此时使用 `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`（多模型共存时必须显式指定）。 |
 | patch_size | int | 视觉 patch 边长。**默认值：`0`（未配置）**，未配置时从权重目录的 `preprocessor_config.json` 读取，显式配置始终优先。必须与权重混淆时使用的 `patch_size` 一致（Qwen3-VL 为 `16`）。 |
 | merge_size | int | patch 合并倍数。**默认值：`0`（未配置）**，未配置时从权重目录读取，显式配置优先。与图像处理器的 `merge_size` 一致（Qwen3-VL 为 `2`）。 |

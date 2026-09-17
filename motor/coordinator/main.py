@@ -30,7 +30,7 @@ async def main() -> None:
 
         config = CoordinatorConfig.from_json()
         obfuscation_config = config.token_obfuscation_config
-        if obfuscation_config.enabled or obfuscation_config.image_config.enabled:
+        if obfuscation_config.enable or obfuscation_config.image_config.enable:
             configure_obfuscation_library_path()
         reconfigure_logging(config.logging_config)
         run_port_setup_or_exit(apply_coordinator_ports, config)

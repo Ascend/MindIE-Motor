@@ -13,6 +13,8 @@
 import time
 from typing import Any, Protocol
 
+from fastapi import HTTPException
+
 from motor.common.logger import get_logger
 from motor.config.coordinator import CONTEXT_BUDGET_OFF, CONTEXT_BUDGET_ON, RenderConfig
 from motor.coordinator.render.api_spec import RenderApiSpec, get_render_api_spec
@@ -21,6 +23,7 @@ from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
 from motor.coordinator.render.token_obfuscation_service import TokenObfuscationError, TokenObfuscationService
 from motor.coordinator.render.vllm_render_client import (
     RenderClientError,
+    RenderRequestError,
     RenderUnavailableError,
     VLLMRenderClient,
 )
@@ -90,7 +93,7 @@ class TokenizationService:
         """Prefer Render and fall back without making token metadata mandatory."""
         spec = get_render_api_spec(api)
         render_reason = ""
-        if self._config.enabled and spec is not None:
+        if self._config.enable and spec is not None:
             start = time.perf_counter()
             try:
                 if self._render_client is None:
@@ -114,6 +117,8 @@ class TokenizationService:
                 )
 
                 return result
+            except RenderRequestError as e:
+                raise HTTPException(status_code=e.status_code, detail=e.detail) from e
             except RenderClientError as e:
                 latency_ms = (time.perf_counter() - start) * 1000
                 render_reason = str(e)

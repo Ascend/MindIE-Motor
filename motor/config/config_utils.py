@@ -54,7 +54,7 @@ MODEL_PATH = "model_path"
 CONTEXT_BUDGET_MODE = "context_budget_mode"
 CONTEXT_BUDGET_ON = "on"
 RENDER_CONFIG = "render_config"
-ENABLED = "enabled"
+ENABLE = "enable"
 SSL_ENABLE = "ssl_enable"
 SSL_CA_CERTS = "ssl_ca_certs"
 SSL_CERTFILE = "ssl_certfile"
@@ -296,7 +296,7 @@ def _is_render_enabled(user_config_data: dict[str, Any]) -> bool:
     if not isinstance(coordinator_config, dict):
         return False
     render_config = coordinator_config.get(RENDER_CONFIG)
-    return isinstance(render_config, dict) and render_config.get(ENABLED) is True
+    return isinstance(render_config, dict) and render_config.get(ENABLE) is True
 
 
 def _select_kv_event_engine_section(user_config_data: dict[str, Any]) -> dict[str, Any] | None:

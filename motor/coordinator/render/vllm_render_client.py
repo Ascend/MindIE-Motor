@@ -20,15 +20,17 @@ from pydantic import ValidationError
 from motor.common.utils.net import format_address
 from motor.config.coordinator import RenderConfig
 from motor.coordinator.render.api_spec import get_render_api_spec
-from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
+from motor.coordinator.render.models import DerenderedStreamChunk, TokenizedRequest, TokenizerSource
 
 _UNSUPPORTED_STATUS_CODES = {
-    HTTPStatus.BAD_REQUEST,
     HTTPStatus.NOT_FOUND,
     HTTPStatus.METHOD_NOT_ALLOWED,
     HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-    HTTPStatus.UNPROCESSABLE_ENTITY,
     HTTPStatus.NOT_IMPLEMENTED,
+}
+_REQUEST_ERROR_STATUS_CODES = {
+    HTTPStatus.BAD_REQUEST,
+    HTTPStatus.UNPROCESSABLE_ENTITY,
 }
 _CIRCUIT_COOLDOWN_SECONDS = 5.0
 
@@ -47,6 +49,15 @@ class RenderTimeoutError(RenderUnavailableError):
 
 class RenderUnsupportedError(RenderClientError):
     """Render cannot process the request API or payload."""
+
+
+class RenderRequestError(RenderClientError):
+    """Render rejected an invalid client request."""
+
+    def __init__(self, operation: str, status_code: int, detail: Any = None) -> None:
+        self.status_code = status_code
+        self.detail = detail if detail is not None else f"{operation} returned HTTP {status_code}"
+        super().__init__(f"{operation} returned HTTP {status_code}")
 
 
 class RenderInvalidResponseError(RenderClientError):
@@ -118,6 +129,30 @@ class VLLMRenderClient:
             raise RenderInvalidResponseError("Derender response contains invalid choices")
         return payload
 
+    async def derender_stream_chunk(
+        self,
+        api: str,
+        request_data: dict[str, Any],
+    ) -> DerenderedStreamChunk:
+        """Derender one in-flight Generate stream chunk and return its next state."""
+        spec = get_render_api_spec(api)
+        if spec is None:
+            raise RenderUnsupportedError(f"unsupported Derender API: {api}")
+        try:
+            payload = await self._post_json_unchecked(
+                spec.derender_path,
+                request_data,
+                "Streaming Derender",
+                update_circuit=False,
+            )
+        except RenderUnavailableError:
+            self._open_circuit()
+            raise
+        try:
+            return DerenderedStreamChunk.model_validate(payload)
+        except ValidationError as error:
+            raise RenderInvalidResponseError("Streaming Derender response is invalid") from error
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -140,34 +175,59 @@ class VLLMRenderClient:
         path: str,
         request_data: dict[str, Any],
         operation: str,
+        *,
+        update_circuit: bool = True,
     ) -> Any:
         try:
             response = await self._client.post(path, json=request_data, timeout=self._timeout)
         except httpx.TimeoutException as e:
-            self._open_circuit()
+            if update_circuit:
+                self._open_circuit()
             raise RenderTimeoutError(f"{operation} request timed out") from e
         except httpx.RequestError as e:
-            self._open_circuit()
+            if update_circuit:
+                self._open_circuit()
             raise RenderUnavailableError(f"{operation} request failed: {type(e).__name__}") from e
 
         if not response.is_success:
+            detail, structured_error = self._parse_error_response(response)
+            if response.status_code in _REQUEST_ERROR_STATUS_CODES or (
+                response.status_code == HTTPStatus.NOT_FOUND and structured_error
+            ):
+                raise RenderRequestError(operation, response.status_code, detail)
             error_type = (
                 RenderUnsupportedError if response.status_code in _UNSUPPORTED_STATUS_CODES else RenderUnavailableError
             )
-            if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            if update_circuit and response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 self._open_circuit()
             raise error_type(f"{operation} returned HTTP {response.status_code}")
 
         try:
             payload = response.json()
         except ValueError as e:
-            self._open_circuit()
+            if update_circuit:
+                self._open_circuit()
             raise RenderInvalidResponseError(f"{operation} response is not valid JSON") from e
         if not isinstance(payload, (dict, list)):
-            self._open_circuit()
+            if update_circuit:
+                self._open_circuit()
             raise RenderInvalidResponseError(f"{operation} response must be a JSON object or array")
-        self._close_circuit()
+        if update_circuit:
+            self._close_circuit()
         return payload
+
+    @staticmethod
+    def _parse_error_response(response: httpx.Response) -> tuple[Any, bool]:
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text, False
+        if not isinstance(payload, dict):
+            return payload, False
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return error, True
+        return payload.get("detail", payload), False
 
     def _enter_circuit(self, operation: str) -> bool:
         if self._circuit_open_until <= 0:

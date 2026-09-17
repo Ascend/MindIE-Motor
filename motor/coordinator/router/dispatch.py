@@ -344,11 +344,6 @@ async def handle_request(
     image_obfuscation_service = getattr(raw_request.app.state, "image_obfuscation_service", None)
     req_info._token_obfuscation_service = obfuscation_service
     if is_obfuscation_enabled(obfuscation_service, image_obfuscation_service):
-        if req_info.req_data.get("stream", False):
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Token-obfuscated inference currently supports non-streaming requests only",
-            )
         # Routes without a Render contract have no obfuscation either: tokenization would silently use
         # the local tokenizer and forward plaintext prompts/images to the obfuscated engine.
         if get_render_api_spec(req_info.effective_entry_api()) is None:

@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass
 
 import httpx
-from fastapi import status
+from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse, Response
 
 
@@ -85,6 +85,8 @@ def is_cb_reportable_failure(error: BaseException) -> bool:
     """
     if isinstance(error, UpstreamHTTPError):
         return error.status_code >= 500
+    if isinstance(error, HTTPException):
+        return False
     return True
 
 

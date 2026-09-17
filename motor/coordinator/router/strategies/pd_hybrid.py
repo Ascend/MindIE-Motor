@@ -23,25 +23,31 @@ from motor.common.http.http_client import HTTPClientPool
 from motor.common.http.security_utils import sanitize_error_message
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import ReqState
+from motor.coordinator.render.models import TokenizedRequest
+from motor.coordinator.render.streaming_response import StreamingRenderSession
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 from motor.coordinator.router.token_only import (
+    build_response_ready_callbacks,
+    build_streaming_render_session,
     build_token_only_batch,
     finish_token_only_response,
     gather_generate_responses,
     is_token_only_unsupported,
-    select_token_only_requests,
+    merge_token_only_streams,
     token_only_request_id,
+    token_only_requests_for_attempt,
 )
 from motor.coordinator.router.adapters.pd_protocol import (
     EngineEndpointMetadata,
     EngineLegSpec,
     EnginePhase,
     EngineRequest,
+    GenerationConstraint,
     LegContext,
     VllmProtocolAdapter,
 )
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
-from motor.coordinator.router.rescheduler.rescheduler import Rescheduler
+from motor.coordinator.router.rescheduler.rescheduler import Rescheduler, RetryRequestPlan
 import motor.coordinator.router.adapters as adapters
 from motor.coordinator.router.adapters.completion_to_chat import adapt_completion_nonstream_to_chat
 from motor.common.resources.instance import PDRole
@@ -73,11 +79,18 @@ class PDHybridRouter(BaseRouter):
         self._scheduled_resource: ScheduledResource | None = None
         self._cb_iid: int | None = None
         self._render_client: VLLMRenderClient | None = None
+        self._streaming_render_session: StreamingRenderSession | None = None
+        self._active_retry_plan: RetryRequestPlan | None = None
         self.rescheduler = Rescheduler(
             self.config.exception_config.reschedule_enabled,
             self.req_info,
             self.logger,
         )
+
+    def _get_streaming_render_session(self) -> StreamingRenderSession | None:
+        if self._streaming_render_session is None:
+            self._streaming_render_session = build_streaming_render_session(self.req_info, self._render_client)
+        return self._streaming_render_session
 
     def _decode_colocation_enabled(self) -> bool:
         scheduler_config = getattr(self.config, "scheduler_config", None)
@@ -319,16 +332,59 @@ class PDHybridRouter(BaseRouter):
             attempt, max_retry, manage_request_context=manage_request_context
         ) as client:
             resource = self._scheduled_resource
-            await self._claim_precision_sample(resource, req_data, sampling_state)
-            async for chunk in self.forward_stream_request(
-                api,
-                req_data,
-                client,
-                self.config.exception_config.first_token_timeout,
-                on_response_ready=ready_cb,
-            ):
-                chunk = self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
-                if reschedule_enabled:
+            tokenized_inputs = self._tokenized_hybrid_inputs(allow_streaming=True)
+            tokenized_requests = self._tokenized_hybrid_requests(
+                attempt,
+                allow_streaming=True,
+                tokenized_inputs=tokenized_inputs,
+            )
+            if tokenized_requests:
+                await self._claim_precision_sample_tokenized(resource, tokenized_requests, sampling_state)
+            else:
+                await self._claim_precision_sample(resource, req_data, sampling_state)
+
+            if tokenized_requests:
+                if self._render_client is None:
+                    raise RuntimeError("Derender client is not configured")
+                ready_callbacks = build_response_ready_callbacks(len(tokenized_requests), ready_cb)
+                streams = [
+                    self.forward_stream_request(
+                        request.api,
+                        request.body,
+                        client,
+                        self.config.exception_config.first_token_timeout,
+                        on_response_ready=ready_callbacks[index],
+                    )
+                    for index, request in enumerate(tokenized_requests)
+                ]
+
+                def before_derender(index: int, chunk: bytes) -> bytes:
+                    if index == 0:
+                        return self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+                    return chunk
+
+                response_stream = merge_token_only_streams(
+                    self.req_info,
+                    self._render_client,
+                    streams,
+                    tokenized_requests=tokenized_inputs,
+                    session=self._get_streaming_render_session(),
+                    emit_prompt_token_ids=not bool(self.req_info.prompt_token_ids),
+                    before_derender=before_derender,
+                )
+            else:
+                response_stream = self.forward_stream_request(
+                    api,
+                    req_data,
+                    client,
+                    self.config.exception_config.first_token_timeout,
+                    on_response_ready=ready_cb,
+                )
+
+            async for chunk in response_stream:
+                if not tokenized_requests:
+                    chunk = self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+                if reschedule_enabled and len(tokenized_requests) <= 1:
                     # Cache prompt/output token ids so a node-fault reschedule can
                     # continue generation from where the failed leg stopped.
                     yield self.rescheduler.process_stream_chunk(chunk, stream_adapter_state=stream_adapter_state)
@@ -363,12 +419,23 @@ class PDHybridRouter(BaseRouter):
                 attempt_api = api
                 if not self._stream_commit_controller.commit_sealed:
                     self._stream_commit_controller.begin_attempt(attempt + 1)
+                render_session = self._get_streaming_render_session()
+                if render_session is not None:
+                    render_session.begin_attempt()
+                render_attempt_visible = False
+                render_attempt_succeeded = False
                 try:
+                    self._active_retry_plan = None
                     if attempt > 0:
                         self.rescheduler.is_rescheduling = True
                         self.rescheduler.retry_count = attempt
                         if reschedule_enabled:
-                            attempt_req, attempt_api = self.rescheduler.prepare_retry_request(attempt_req)
+                            self._active_retry_plan = self.rescheduler.build_retry_plan(attempt_req)
+                            if self._active_retry_plan is not None:
+                                attempt_req, attempt_api = self.rescheduler.apply_retry_plan(
+                                    attempt_req,
+                                    self._active_retry_plan,
+                                )
                         self.logger.warning("Rescheduling stream[%d/%d] to a new hybrid instance", attempt, max_retry)
                     if reschedule_enabled:
                         attempt_req["return_token_ids"] = True
@@ -384,7 +451,9 @@ class PDHybridRouter(BaseRouter):
                         )
                     ) as attempt_stream:
                         async for chunk in attempt_stream:
+                            render_attempt_visible = True
                             yield chunk
+                    render_attempt_succeeded = True
                     await self._report_cb("success")
                     return
                 except asyncio.CancelledError as e:
@@ -473,16 +542,41 @@ class PDHybridRouter(BaseRouter):
 
                     if is_cb_reportable_failure(e):
                         await self._report_cb("failure")
+                finally:
+                    if render_session is not None:
+                        render_session.finish_attempt(render_attempt_succeeded or render_attempt_visible)
                 wait_time = self.config.exception_config.retry_delay * (2**attempt)
                 self.logger.info("Retrying streaming request in %.2f seconds...", wait_time)
                 await asyncio.sleep(wait_time)
 
-    def _tokenized_hybrid_requests(self, attempt: int) -> list[EngineRequest]:
+    def _tokenized_hybrid_inputs(
+        self,
+        *,
+        allow_streaming: bool = False,
+    ) -> list[TokenizedRequest]:
         resource = self._scheduled_resource
         if resource is None or str(getattr(resource.instance, "engine_type", "")).strip().lower() != "vllm":
             return []
-        tokenized_requests = select_token_only_requests(self.req_info, self._render_client)
-        if not tokenized_requests:
+        return token_only_requests_for_attempt(
+            self.req_info,
+            self._render_client,
+            allow_streaming=allow_streaming,
+            retry_plan=self._active_retry_plan if allow_streaming else None,
+        )
+
+    def _tokenized_hybrid_requests(
+        self,
+        attempt: int,
+        *,
+        allow_streaming: bool = False,
+        tokenized_inputs: list[TokenizedRequest] | None = None,
+    ) -> list[EngineRequest]:
+        resource = self._scheduled_resource
+        if resource is None:
+            return []
+        if tokenized_inputs is None:
+            tokenized_inputs = self._tokenized_hybrid_inputs(allow_streaming=allow_streaming)
+        if not tokenized_inputs:
             return []
 
         adapter = VllmProtocolAdapter()
@@ -504,9 +598,10 @@ class PDHybridRouter(BaseRouter):
                     ),
                 ),
                 phase=EnginePhase.DECODE,
+                generation=GenerationConstraint(stream=allow_streaming),
             )
 
-        return build_token_only_batch(adapter, tokenized_requests, leg_factory)
+        return build_token_only_batch(adapter, tokenized_inputs, leg_factory)
 
     async def _generate_post(self, req_data: dict[str, Any], *, manage_request_context: bool = True) -> JSONResponse:
         """
@@ -666,6 +761,9 @@ class PDHybridRouter(BaseRouter):
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}")
                     trace_obj.set_trace_error_message(f"Non-streaming request failed: {e}", is_meta=True)
                     trace_obj.set_trace_prompt(req_data)
+                    if isinstance(e, HTTPException):
+                        self.req_info.update_state(ReqState.EXCEPTION)
+                        raise
                     if isinstance(e, (UpstreamHTTPError, httpx.RequestError)) and not is_retryable_upstream_error(e):
                         self.req_info.update_state(ReqState.EXCEPTION)
                         raise
@@ -690,6 +788,8 @@ class PDHybridRouter(BaseRouter):
         mark_unified_ready: Callable[[], None] | None = None,
         api: str | None = None,
         is_resume: bool = False,
+        retry_plan: RetryRequestPlan | None = None,
+        render_session: StreamingRenderSession | None = None,
     ) -> AsyncGenerator[str, None]:
         """Run one hybrid stream attempt inside an already-managed outer request context.
 
@@ -703,6 +803,8 @@ class PDHybridRouter(BaseRouter):
         with self._trace_span("PDHybrid_Stream_Fallback", True):
             await self.do_encode()
             self.is_meta = False
+            self._active_retry_plan = retry_plan
+            self._streaming_render_session = render_session
             self.logger.warning("Running stream fallback to hybrid mode in existing request context")
             stream_adapter_state: dict[str, Any] = {}
             request_data = req_data.copy()
@@ -712,6 +814,10 @@ class PDHybridRouter(BaseRouter):
                 self.rescheduler.is_rescheduling = True
                 self.rescheduler.retry_count = max(attempt_id - 1, 1)
             on_ready = mark_unified_ready if mark_unified_ready is not None else (lambda: None)
+            if render_session is not None:
+                render_session.begin_attempt()
+            render_attempt_visible = False
+            render_attempt_succeeded = False
             try:
                 async with aclosing(
                     self._stream_inference_attempt(
@@ -726,7 +832,9 @@ class PDHybridRouter(BaseRouter):
                     )
                 ) as attempt_stream:
                     async for chunk in attempt_stream:
+                        render_attempt_visible = True
                         yield chunk
+                render_attempt_succeeded = True
                 await self._report_cb("success")
             except Exception as e:
                 trace_obj.set_trace_error_message(f"Hybrid stream fallback failed: {e}")
@@ -734,6 +842,9 @@ class PDHybridRouter(BaseRouter):
                 if is_cb_reportable_failure(e):
                     await self._report_cb("failure")
                 raise
+            finally:
+                if render_session is not None:
+                    render_session.finish_attempt(render_attempt_succeeded or render_attempt_visible)
 
     @staticmethod
     def _generate_streaming_error_chunk(error: Exception) -> bytes:

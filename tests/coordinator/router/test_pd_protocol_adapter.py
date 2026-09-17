@@ -441,6 +441,10 @@ def test_trim_vllm_engine_request_id_strips_openai_prefixes():
 
     assert trim_vllm_engine_request_id("chatcmpl-abc") == "abc"
     assert trim_vllm_engine_request_id("cmpl-abc-0") == "abc"
+    assert trim_vllm_engine_request_id("cmpl-abc-1") == "abc"
+    assert trim_vllm_engine_request_id("cmpl-abc-12") == "abc"
+    assert trim_vllm_engine_request_id("generate-tokens-abc#p0") == "abc#p0"
+    assert trim_vllm_engine_request_id("generate-tokens-chatcmpl-abc") == "abc"
     assert trim_vllm_engine_request_id("raw-id") == "raw-id"
 
 

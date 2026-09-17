@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import aclosing
 from copy import deepcopy
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -22,6 +23,11 @@ from motor.common.logger import get_logger
 from motor.coordinator.render.api_spec import get_render_api_spec
 from motor.coordinator.render.models import TokenizedRequest, TokenizerSource
 from motor.coordinator.render.response import derender_response
+from motor.coordinator.render.streaming_response import (
+    StreamingDerenderProcessor,
+    StreamingRenderSession,
+    merge_derender_streams,
+)
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 from motor.coordinator.router.adapters.pd_protocol import (
     EngineLegSpec,
@@ -37,6 +43,7 @@ from motor.coordinator.router.upstream_error import UpstreamHTTPError
 
 if TYPE_CHECKING:
     from motor.coordinator.models.request import RequestInfo
+    from motor.coordinator.router.rescheduler.rescheduler import RetryRequestPlan
 
 logger = get_logger(__name__)
 
@@ -68,6 +75,74 @@ def select_token_only_requests(
     return requests
 
 
+def token_only_requests_for_attempt(
+    req_info: RequestInfo,
+    render_client: VLLMRenderClient | None,
+    *,
+    allow_streaming: bool = False,
+    retry_plan: RetryRequestPlan | None = None,
+    require_render_client: bool = True,
+) -> list[TokenizedRequest]:
+    """Return original Render tokens or one replay prompt for the active attempt."""
+    requests = select_token_only_requests(
+        req_info,
+        render_client,
+        allow_streaming=allow_streaming,
+        require_render_client=require_render_client,
+    )
+    if retry_plan is None or not requests:
+        return requests
+    if len(requests) != 1:
+        return []
+
+    metadata = deepcopy(requests[0].metadata)
+    sampling_params = metadata.get("sampling_params")
+    if isinstance(sampling_params, dict) and "max_tokens" in sampling_params:
+        try:
+            sampling_params["max_tokens"] = max(
+                1,
+                int(sampling_params["max_tokens"]) - retry_plan.cached_output_tokens,
+            )
+        except (TypeError, ValueError):
+            pass
+    replay_prompt_token_ids = list(retry_plan.prompt_token_ids)
+    obfuscation_service = req_info._token_obfuscation_service
+    engine_prompt_token_ids = (
+        obfuscation_service.obfuscate(replay_prompt_token_ids) if obfuscation_service is not None else None
+    )
+    return [
+        TokenizedRequest(
+            prompt_token_ids=replay_prompt_token_ids,
+            engine_prompt_token_ids=engine_prompt_token_ids,
+            tokenizer_source=requests[0].tokenizer_source,
+            metadata=metadata,
+        )
+    ]
+
+
+def build_streaming_render_session(
+    req_info: RequestInfo,
+    render_client: VLLMRenderClient | None,
+) -> StreamingRenderSession | None:
+    """Create the request-scoped Derender state holder after Render tokenization."""
+    requests = select_token_only_requests(req_info, render_client, allow_streaming=True)
+    if not requests or render_client is None:
+        return None
+    try:
+        choices_per_prompt = int(req_info.req_data.get("n", 1))
+    except (TypeError, ValueError):
+        choices_per_prompt = 1
+    return StreamingRenderSession(
+        render_client,
+        api=req_info.effective_entry_api(),
+        request_id=req_info.req_id,
+        request_data=req_info.req_data,
+        tokenized_requests=requests,
+        choices_per_prompt=max(choices_per_prompt, 1),
+        obfuscation_service=req_info._token_obfuscation_service,
+    )
+
+
 def active_token_only_request(
     requests: Sequence[TokenizedRequest],
     prompt_index: int | None = None,
@@ -76,6 +151,76 @@ def active_token_only_request(
     if prompt_index is not None:
         return requests[prompt_index] if 0 <= prompt_index < len(requests) else None
     return requests[0] if len(requests) == 1 else None
+
+
+def build_streaming_derender_processor(
+    req_info: RequestInfo,
+    render_client: VLLMRenderClient | None,
+    session: StreamingRenderSession | None = None,
+) -> StreamingDerenderProcessor | None:
+    """Return the request-scoped processor for one Render-tokenized stream."""
+    if session is not None:
+        return session.processor()
+    session = build_streaming_render_session(req_info, render_client)
+    return session.processor() if session is not None else None
+
+
+async def merge_token_only_streams(
+    req_info: RequestInfo,
+    render_client: VLLMRenderClient,
+    engine_streams: Sequence[AsyncIterator[bytes]],
+    *,
+    session: StreamingRenderSession,
+    tokenized_requests: Sequence[TokenizedRequest] | None = None,
+    emit_prompt_token_ids: bool = True,
+    before_derender: Callable[[int, bytes], bytes] | None = None,
+) -> AsyncIterator[bytes]:
+    """Derender and merge one streaming Generate request per rendered prompt."""
+    if tokenized_requests is None:
+        tokenized_requests = select_token_only_requests(req_info, render_client, allow_streaming=True)
+    if len(tokenized_requests) != len(engine_streams):
+        raise RuntimeError("Token-only stream count does not match Render prompt count")
+    merged = merge_derender_streams(
+        engine_streams,
+        session.processors,
+        api=req_info.effective_entry_api(),
+        request_id=req_info.req_id,
+        model=req_info.req_data.get("model"),
+        prompt_token_ids=[item.prompt_token_ids for item in tokenized_requests],
+        emit_prompt_token_ids=emit_prompt_token_ids,
+        before_derender=before_derender,
+    )
+    async with aclosing(merged):
+        async for chunk in merged:
+            yield chunk
+    logger.info(
+        "token-only generate and derender success request_id=%s prompt_count=%d stream=true",
+        req_info.req_id,
+        len(tokenized_requests),
+    )
+
+
+def build_response_ready_callbacks(
+    stream_count: int,
+    on_all_ready: Callable[[], None],
+) -> list[Callable[[], None]]:
+    """Return idempotent callbacks that commit only after every stream is ready."""
+    if stream_count <= 0:
+        raise ValueError("stream_count must be positive")
+    ready: set[int] = set()
+    notified = False
+
+    def callback_for(index: int) -> Callable[[], None]:
+        def mark_ready() -> None:
+            nonlocal notified
+            ready.add(index)
+            if len(ready) == stream_count and not notified:
+                notified = True
+                on_all_ready()
+
+        return mark_ready
+
+    return [callback_for(index) for index in range(stream_count)]
 
 
 def token_only_request_id(
@@ -128,6 +273,8 @@ def build_trigger_token_only_decode_request(
     tokenized: TokenizedRequest,
     context: LegContext,
     metaserver_url: str,
+    *,
+    stream: bool = False,
 ) -> EngineRequest:
     """Translate Trigger decode state into the shared token-only engine contract."""
     return adapter.build_tokenized_request(
@@ -136,6 +283,7 @@ def build_trigger_token_only_decode_request(
         EngineLegSpec(
             context=context,
             phase=EnginePhase.DECODE,
+            generation=GenerationConstraint(stream=stream),
             kv_transfer=KVTransferDescriptor(
                 {
                     "do_remote_decode": False,
@@ -241,7 +389,7 @@ async def finish_token_only_response(
         generate_responses=validated,
     )
     logger.info(
-        "token-only generate and derender success request_id=%s prompt_count=%d output_count=%d",
+        "token-only generate and derender success request_id=%s prompt_count=%d output_count=%d stream=false",
         req_info.req_id,
         len(req_info.tokenized_requests),
         sum(len(item.get("choices") or []) for item in validated),

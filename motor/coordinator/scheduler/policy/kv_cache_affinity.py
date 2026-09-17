@@ -661,7 +661,7 @@ class TokenizerManager(ThreadSafeSingleton):
             kv_config = getattr(config, "prefill_kv_event_config", None)
         scheduler_type = getattr(scheduler_config, "scheduler_type", None) if scheduler_config else None
         scheduler_value = getattr(scheduler_type, "value", scheduler_type)
-        render_enabled = bool(getattr(getattr(config, "render_config", None), "enabled", False))
+        render_enabled = bool(getattr(getattr(config, "render_config", None), "enable", False))
         eager_load = bool(
             (kv_config and getattr(kv_config, "conductor_service", ""))
             or scheduler_value == "kv_cache_affinity"

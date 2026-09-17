@@ -33,11 +33,15 @@ CoordinatorDaemon (parent process, async main loop)
 
 ### vLLM Render Tokenization
 
-With `render_config.enabled=true`, each inference worker prefers the local vLLM Render sidecar before context-budget
+With `render_config.enable=true`, each inference worker prefers the local vLLM Render sidecar before context-budget
 adaptation and routing. Normalized token IDs are stored in `RequestInfo`, so scheduling and P/D routing remain
-independent of the tokenizer source. Render health does not gate Coordinator startup.
+independent of the tokenizer source. Render health does not gate Coordinator startup; sidecar availability is
+reported after Coordinator becomes ready. When using `scheduler_type=kv_cache_affinity`, enabling Render is
+recommended so routing and inference reuse the same prompt IDs.
 
-Invalid responses and Render failures fall back to `TokenizerManager`. Transient failures open a five-second circuit.
+Render unavailability, timeout, or unsupported endpoints fall back to `TokenizerManager`; request-validation errors
+(400/422, or 404 with a structured error response) are returned directly. Transient failures open a five-second
+circuit.
 With Render enabled, context budget reuses Render token IDs and keeps the local tokenizer lazy until fallback; KV
 affinity/Conductor still load it eagerly. Failed local loads have a 30-second retry cooldown.
 
@@ -46,15 +50,21 @@ strategies translate their scheduling result into an `EngineLegSpec` containing 
 leg context, and optional KV transfer parameters. `VllmProtocolAdapter.build_tokenized_request()` is the single
 token-only request builder; Trigger keeps compatibility wrappers that only translate metaserver callback parameters.
 
-Non-streaming vLLM Chat and Completion requests tokenized by Render use `/inference/v1/generate` across HANDOFF,
-TRIGGER, and Union/PDHybrid, then Derender into the client response. Completion batches preserve prompt order under
-one scheduling allocation. Streaming Chat and single-prompt Completion may use token-only Prefill; batched streaming
-Completion, SGLang, and locally tokenized requests keep the existing path.
+vLLM Chat and Completion requests tokenized by Render use `/inference/v1/generate` across HANDOFF, TRIGGER, and
+Union/PDHybrid. Non-streaming responses are Derendered once; streaming responses keep request-scoped Derender state per
+prompt/choice. Streaming Derender is stateless per chunk, so long prompts and high concurrency add Sidecar CPU and
+transport cost. Handoff and Union support concurrent multi-prompt fan-out/merge and cancel sibling streams on failure.
 
-With `token_obfuscation_config.enabled=true`, each Worker initializes one `ai-asset-obfuscate` data permutation.
+Single-prompt rescheduling remains token-only: committed output IDs are replayed through Prefill and Decode, while
+Derender resumes from the last client-visible state. Multi-prompt requests support whole-request retry before visible
+output, but not per-prompt replay afterward. Trigger multi-prompt streaming Completion, SGLang, and locally tokenized
+requests keep the existing path. Streaming Derender requires vLLM 0.27.0 or later.
+
+With `token_obfuscation_config.enable=true`, each Worker initializes one `ai-asset-obfuscate` data permutation.
 Render token IDs remain the semantic IDs used by Derender, while `engine_prompt_token_ids` are the physical IDs sent
 to vLLM and KV Conductor. GenerateResponse token IDs are deobfuscated immediately before Derender. The protected path
-is fail-closed: it accepts only non-streaming Render token-only requests and disables native OpenAI fallback. The
+is fail-closed: it accepts Render token-only requests and disables native OpenAI fallback. Streaming output token IDs
+are deobfuscated before each Derender call, and replay prompts are obfuscated again before engine rescheduling. The
 permutation seed has no default and must be supplied through controlled configuration when obfuscation is enabled;
 store it with the same access controls as the obfuscated weights and never commit or log it. Every obfuscation
 parameter is model-specific (`vocab_size` / `token_white_list` for tokens; `patch_size` / `merge_size` /
@@ -66,14 +76,14 @@ explicitly configured value always wins and `model_path` on either config pins t
 sections' `engine_config.model`). `token_white_list` and `seed_content` can never be derived and are always
 required — validation fails closed when a parameter is unset and no unambiguous model directory is available.
 
-With `token_obfuscation_config.image_config.enabled=true`, the Coordinator additionally obfuscates the Render
+With `token_obfuscation_config.image_config.enable=true`, the Coordinator additionally obfuscates the Render
 payload: `TokenizationService._obfuscate_images` walks every `TokenizedRequest.metadata["features"]["kwargs_data"]`
 modality and calls `ImageObfuscationService.obfuscate_render_features`, which delegates to the SDK's
 `ImageDataAssetObfuscation.image_render_obf` (the SDK owns the Render payload format and the patch layout, so the
 Coordinator needs neither the msgpack codec nor the model flatten order). `null` entries are Render cache hits and
 stay untouched; every modality is validated (same length, nulls preserved, non-empty strings) and only committed
 after all modalities pass, so a partially obfuscated payload can never reach the engine. Any SDK failure or shape
-violation fails the request closed. The mode requires `render_config.enabled=true` and shares `seed_content` with
+violation fails the request closed. The mode requires `render_config.enable=true` and shares `seed_content` with
 token obfuscation. Geometry (`patch_size`/`merge_size`/`longest_edge`/`shortest_edge`/`temporal_patch_size`) is
 resolved at startup by `resolve_image_obfuscation_config`: an explicitly configured value always wins, every field
 left at `0` is read from the served weights directory (`preprocessor_config.json`, both the current
@@ -81,6 +91,9 @@ left at `0` is read from the served weights directory (`preprocessor_config.json
 `image_config.model_path` when set, otherwise from `CoordinatorConfig.engine_model_paths` (collected by
 `resolve_engine_model_paths` from `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`). Without
 either source the unset fields must be configured explicitly, otherwise startup fails closed.
+Derender failures are response-layer errors: request validation preserves HTTP 400/422 and its detail, timeout maps
+to 504, unsupported capability maps to 501, and other availability or response failures map to 502. They do not retry
+Prefill/Decode or count against an engine circuit breaker.
 
 The deployer adds the sidecar to Coordinator Pods in all supported deployment modes. `render_config.image_name`
 selects a CPU image; otherwise the service image and read-only Ascend driver libraries are reused without requesting

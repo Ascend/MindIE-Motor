@@ -121,16 +121,15 @@ def test_dispatch_keeps_semantic_and_engine_token_views_separate(dispatch_reques
     assert captured["routed"]._token_obfuscation_service is obfuscation_service
 
 
-def test_dispatch_rejects_streaming_for_obfuscated_inference(dispatch_request):
-    """Streaming stays rejected for obfuscated inference."""
+def test_dispatch_allows_streaming_for_obfuscated_inference(dispatch_request):
     captured = dispatch_request(
         [_tokenized([10, 20])],
         {"model": "model", "prompt": "hello", "stream": True},
         obfuscation_service=MagicMock(),
-        expect_status=HTTPStatus.NOT_IMPLEMENTED,
     )
 
-    assert "non-streaming" in captured["response"].json()["detail"]
+    assert captured["routed"].req_data["stream"] is True
+    assert captured["routed"]._token_obfuscation_service is not None
 
 
 def test_dispatch_rejects_render_less_api_for_obfuscated_inference(dispatch_request):
@@ -159,16 +158,14 @@ def test_dispatch_rejects_render_less_api_for_image_only_obfuscation(dispatch_re
     assert "v1/responses" in captured["response"].json()["detail"]
 
 
-def test_dispatch_rejects_streaming_for_image_only_obfuscation(dispatch_request):
-    """Image-only obfuscation rejects streaming before reaching the local tokenizer."""
+def test_dispatch_allows_streaming_for_image_only_obfuscation(dispatch_request):
     captured = dispatch_request(
         [_tokenized([10, 20])],
         {"model": "model", "prompt": "hello", "stream": True},
         image_obfuscation_service=MagicMock(),
-        expect_status=HTTPStatus.NOT_IMPLEMENTED,
     )
 
-    assert "non-streaming" in captured["response"].json()["detail"]
+    assert captured["routed"].req_data["stream"] is True
 
 
 def test_dispatch_allows_render_less_api_without_obfuscation(dispatch_request):

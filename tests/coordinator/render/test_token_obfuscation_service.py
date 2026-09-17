@@ -99,7 +99,7 @@ def test_resolve_vocab_size_from_multimodal_model_dir(tmp_path) -> None:
     _write_model_config(tmp_path / "model-obf", {"text_config": {"vocab_size": 151936}})
 
     resolved, source = resolve_token_obfuscation_config(
-        TokenObfuscationConfig(enabled=True), [str(tmp_path / "model-obf")]
+        TokenObfuscationConfig(enable=True), [str(tmp_path / "model-obf")]
     )
 
     assert resolved.vocab_size == 151936
@@ -110,7 +110,7 @@ def test_resolve_vocab_size_from_text_model_dir(tmp_path) -> None:
     """Text models keep vocab_size at the top level."""
     _write_model_config(tmp_path / "model-obf", {"vocab_size": 128256})
 
-    resolved, _ = resolve_token_obfuscation_config(TokenObfuscationConfig(enabled=True), [str(tmp_path / "model-obf")])
+    resolved, _ = resolve_token_obfuscation_config(TokenObfuscationConfig(enable=True), [str(tmp_path / "model-obf")])
 
     assert resolved.vocab_size == 128256
 
@@ -118,7 +118,7 @@ def test_resolve_vocab_size_from_text_model_dir(tmp_path) -> None:
 def test_resolve_vocab_size_keeps_explicit_value(tmp_path) -> None:
     """An explicitly configured vocab_size wins and no file is read."""
     resolved, source = resolve_token_obfuscation_config(
-        TokenObfuscationConfig(enabled=True, vocab_size=151936), ["/does/not/exist"]
+        TokenObfuscationConfig(enable=True, vocab_size=151936), ["/does/not/exist"]
     )
 
     assert resolved.vocab_size == 151936
@@ -129,7 +129,7 @@ def test_resolve_vocab_size_skips_unusable_candidate(tmp_path) -> None:
     _write_model_config(tmp_path / "good", {"text_config": {"vocab_size": 151936}})
 
     resolved, _ = resolve_token_obfuscation_config(
-        TokenObfuscationConfig(enabled=True), [str(tmp_path / "bad"), str(tmp_path / "good")]
+        TokenObfuscationConfig(enable=True), [str(tmp_path / "bad"), str(tmp_path / "good")]
     )
 
     assert resolved.vocab_size == 151936
@@ -141,7 +141,7 @@ def test_resolve_vocab_size_rejects_out_of_range_white_list(tmp_path) -> None:
 
     with pytest.raises(TokenObfuscationError, match="within the resolved vocab_size 128"):
         resolve_token_obfuscation_config(
-            TokenObfuscationConfig(enabled=True, token_white_list=[1, 200]),
+            TokenObfuscationConfig(enable=True, token_white_list=[1, 200]),
             [str(tmp_path / "model-obf")],
         )
 
@@ -149,11 +149,11 @@ def test_resolve_vocab_size_rejects_out_of_range_white_list(tmp_path) -> None:
 def test_resolve_vocab_size_fails_closed(tmp_path) -> None:
     """Missing model directory, unreadable file and missing vocab_size must all fail closed."""
     with pytest.raises(TokenObfuscationError, match="no served model directory is available"):
-        resolve_token_obfuscation_config(TokenObfuscationConfig(enabled=True), [])
+        resolve_token_obfuscation_config(TokenObfuscationConfig(enable=True), [])
 
     with pytest.raises(TokenObfuscationError, match="failed to resolve token obfuscation vocab_size"):
-        resolve_token_obfuscation_config(TokenObfuscationConfig(enabled=True), [str(tmp_path / "missing")])
+        resolve_token_obfuscation_config(TokenObfuscationConfig(enable=True), [str(tmp_path / "missing")])
 
     _write_model_config(tmp_path / "model-obf", {"text_config": {}})
     with pytest.raises(TokenObfuscationError, match="failed to resolve token obfuscation vocab_size"):
-        resolve_token_obfuscation_config(TokenObfuscationConfig(enabled=True), [str(tmp_path / "model-obf")])
+        resolve_token_obfuscation_config(TokenObfuscationConfig(enable=True), [str(tmp_path / "model-obf")])

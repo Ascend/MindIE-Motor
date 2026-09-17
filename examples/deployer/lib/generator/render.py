@@ -19,6 +19,23 @@ ASCEND_DRIVER_VOLUME_NAME = "ascend-driver-lib64"
 ASCEND_DRIVER_PATH = "/usr/local/Ascend/driver/lib64"
 LOCAL_RENDER_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DEFAULT_RENDERER_NUM_WORKERS = 4
+RENDER_CACHE_ROOT = "/tmp/vllm-render-cache"  # nosec B108 - container-local cache
+CPU_RENDER_LAUNCHER = "from vllm.entrypoints.cli.main import main; main()"
+CPU_RENDER_SITECUSTOMIZE = """\
+import importlib.util
+
+_find_spec = importlib.util.find_spec
+importlib.util.find_spec = lambda name, *args, **kwargs: (
+    None if name in {"triton", "pytorch-triton-xpu"} else _find_spec(name, *args, **kwargs)
+)
+import vllm.triton_utils
+importlib.util.find_spec = _find_spec
+
+from vllm import platforms
+from vllm.platforms.cpu import CpuPlatform
+
+platforms.current_platform = CpuPlatform()
+"""
 
 
 def _normalize_served_model_names(value: Any) -> list[str]:
@@ -102,7 +119,7 @@ def _build_render_command(
         "--renderer-num-workers",
         str(renderer_num_workers),
         "--disable-access-log-for-endpoints",
-        "/health",
+        "/health,/v1/chat/completions/derender,/v1/completions/derender",
     ]
     if use_cpu_image:
         return ["vllm"], render_args[1:]
@@ -111,9 +128,19 @@ def _build_render_command(
 source /usr/local/Ascend/ascend-toolkit/set_env.sh 2>/dev/null || true
 source /usr/local/Ascend/nnal/atb/set_env.sh 2>/dev/null || true
 export LD_LIBRARY_PATH="/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:${LD_LIBRARY_PATH:-}"
-exec "$@"
+bootstrap_root="${VLLM_CACHE_ROOT}/bootstrap"
+mkdir -p "${bootstrap_root}"
+printf '%s' "$2" > "${bootstrap_root}/sitecustomize.py"
+export PYTHONPATH="${bootstrap_root}:${PYTHONPATH:-}"
+exec python3 -c "$1" "${@:3}"
 """
-    return ["/bin/bash", "-c"], [startup_script, "render-entrypoint", *render_args]
+    return ["/bin/bash", "-c"], [
+        startup_script,
+        "render-entrypoint",
+        CPU_RENDER_LAUNCHER,
+        CPU_RENDER_SITECUSTOMIZE,
+        *render_args[1:],
+    ]
 
 
 def _build_render_container(
@@ -125,18 +152,29 @@ def _build_render_container(
     renderer_num_workers: int,
 ) -> dict[str, Any]:
     command, args = _build_render_command(use_cpu_image, model, served_model_names, port, renderer_num_workers)
+    env = [
+        {C.NAME: "HF_HUB_OFFLINE", C.VALUE: "1"},
+        {C.NAME: "TRANSFORMERS_OFFLINE", C.VALUE: "1"},
+        {C.NAME: "VLLM_LOGGING_LEVEL", C.VALUE: "INFO"},
+        {C.NAME: "OMP_NUM_THREADS", C.VALUE: "4"},
+    ]
+    if not use_cpu_image:
+        env.extend(
+            [
+                {C.NAME: "VLLM_PLUGINS", C.VALUE: ""},
+                {C.NAME: "TORCH_DEVICE_BACKEND_AUTOLOAD", C.VALUE: "0"},
+                {C.NAME: "VLLM_CACHE_ROOT", C.VALUE: RENDER_CACHE_ROOT},
+                {C.NAME: "TRITON_CACHE_DIR", C.VALUE: f"{RENDER_CACHE_ROOT}/triton"},
+            ]
+        )
+
     return {
         C.NAME: RENDER_CONTAINER_NAME,
         C.IMAGE: image,
         "imagePullPolicy": "IfNotPresent",
         "command": command,
         "args": args,
-        C.ENV: [
-            {C.NAME: "HF_HUB_OFFLINE", C.VALUE: "1"},
-            {C.NAME: "TRANSFORMERS_OFFLINE", C.VALUE: "1"},
-            {C.NAME: "VLLM_LOGGING_LEVEL", C.VALUE: "INFO"},
-            {C.NAME: "OMP_NUM_THREADS", C.VALUE: "4"},
-        ],
+        C.ENV: env,
         C.PORTS: [{C.NAME: "render", "containerPort": port, "protocol": "TCP"}],
         "startupProbe": {
             "httpGet": {C.PATH: "/health", C.PORT: "render"},
@@ -177,7 +215,7 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
     ]
 
     render_config = user_config.get(C.MOTOR_COORDINATOR_CONFIG, {}).get(C.RENDER_CONFIG, {})
-    if not render_config.get("enabled", False):
+    if not render_config.get("enable", False):
         return
 
     endpoint = render_config.get("endpoint", {})
@@ -197,11 +235,9 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
     use_cpu_image = bool(image_name)
     image = image_name if use_cpu_image else deploy_config[C.IMAGE_NAME]
 
-    coordinator_config = user_config.get(C.MOTOR_COORDINATOR_CONFIG, {})
-    inference_workers_config = coordinator_config.get("inference_workers_config", {})
-    renderer_num_workers = inference_workers_config.get("num_workers", DEFAULT_RENDERER_NUM_WORKERS)
+    renderer_num_workers = render_config.get("renderer_num_workers", DEFAULT_RENDERER_NUM_WORKERS)
     if not isinstance(renderer_num_workers, int) or isinstance(renderer_num_workers, bool) or renderer_num_workers <= 0:
-        raise ValueError("inference_workers_config.num_workers must be a positive integer")
+        raise ValueError("render_config.renderer_num_workers must be a positive integer")
 
     model, served_model_names = resolve_render_model(user_config)
     container = _build_render_container(

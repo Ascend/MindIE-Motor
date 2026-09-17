@@ -40,6 +40,8 @@ from motor.coordinator.scheduler.scheduler import Scheduler
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
+
+from motor.coordinator.render.models import DerenderedStreamChunk
 from motor.coordinator.router.upstream_error import UpstreamHTTPError
 import motor.coordinator.router.dispatch as router
 from motor.common.logger import get_logger
@@ -56,6 +58,51 @@ app = FastAPI()
 _config = CoordinatorConfig()
 _scheduler = Scheduler(instance_provider=InstanceManager(_config), config=_config)
 _request_manager = RequestManager(_config)
+
+
+@pytest.mark.asyncio
+async def test_stream_fallback_reuses_render_replay_context(monkeypatch):
+    config = CoordinatorConfig()
+    req_info = RequestInfo(
+        req_id="hybrid-render-replay",
+        req_data={"model": "model", "prompt": "hello", "stream": True},
+        req_len=5,
+        api="v1/completions",
+    )
+    hybrid = PDHybridRouter(
+        req_info,
+        config,
+        scheduler=MagicMock(),
+        request_manager=RequestManager(config),
+    )
+    retry_plan = MagicMock()
+    render_session = MagicMock()
+    observed = {}
+
+    async def _stream_attempt(*_args, **_kwargs):
+        observed["retry_plan"] = hybrid._active_retry_plan
+        observed["render_session"] = hybrid._streaming_render_session
+        yield b"chunk"
+
+    monkeypatch.setattr(hybrid, "do_encode", AsyncMock())
+    monkeypatch.setattr(hybrid, "_stream_inference_attempt", _stream_attempt)
+    monkeypatch.setattr(hybrid, "_report_cb", AsyncMock())
+
+    chunks = [
+        chunk
+        async for chunk in hybrid.stream_fallback_from_existing_context(
+            req_data=req_info.req_data,
+            attempt_id=2,
+            is_resume=True,
+            retry_plan=retry_plan,
+            render_session=render_session,
+        )
+    ]
+
+    assert chunks == [b"chunk"]
+    assert observed == {"retry_plan": retry_plan, "render_session": render_session}
+    render_session.begin_attempt.assert_called_once_with()
+    render_session.finish_attempt.assert_called_once_with(True)
 
 
 @pytest.mark.asyncio
@@ -552,6 +599,55 @@ class TestRouterPDHybrid:
         derender = render_client.derender.await_args.args[1]
         assert (derender["generate_response"], derender["prompt_tokens"]) == (generate_response, 2)
         assert payload["choices"][0]["message"]["content"] == "token-only"
+
+    @pytest.mark.asyncio
+    async def test_pd_hybrid_stream_completion_batch_uses_token_only_union(
+        self,
+        monkeypatch: MonkeyPatch,
+        setup_pd_hybrid,
+    ):
+        requests = []
+
+        async def mock_forward_stream(self, api, req_data, client, timeout, *, on_response_ready=None):
+            del self, client, timeout
+            requests.append((api, req_data))
+            if on_response_ready is not None:
+                on_response_ready()
+            yield b'data: {"choices":[{"index":0,"token_ids":[30],"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward_stream)
+        req_data = {
+            "model": "test-model",
+            "prompt": ["first", "second"],
+            "stream": True,
+            "max_tokens": 8,
+        }
+        req_info = make_render_request_info(
+            "rid-stream-token-only-hybrid",
+            req_data,
+            "v1/completions",
+            [[10], [20]],
+            req_len=99,
+        )
+        render_client = AsyncMock()
+        render_client.derender_stream_chunk.side_effect = [
+            DerenderedStreamChunk(
+                chunk={"choices": [{"index": 0, "text": "first-result"}]},
+                stream_state={"step": 1},
+            ),
+            DerenderedStreamChunk(
+                chunk={"choices": [{"index": 0, "text": "second-result"}]},
+                stream_state={"step": 1},
+            ),
+        ]
+        response = await self._render_router(req_info, render_client).handle_request()
+        _ = [chunk async for chunk in response.body_iterator]
+
+        assert [api for api, _ in requests] == ["inference/v1/generate"] * 2
+        assert [body["token_ids"] for _, body in requests] == [[10], [20]]
+        assert render_client.derender_stream_chunk.await_count == 2
+        assert req_info.prompt_token_ids == []
 
     @pytest.mark.asyncio
     async def test_pd_hybrid_fallback_to_prefill_when_hybrid_pool_empty(self, monkeypatch: MonkeyPatch, caplog):
@@ -1131,6 +1227,71 @@ class TestPDHybridCancelReschedule:
         assert "error" not in body
         # Internal token id fields must not leak to the client.
         assert "token_ids" not in body
+
+    @pytest.mark.asyncio
+    async def test_stream_render_reschedule_stays_token_only_and_reuses_derender_state(
+        self,
+        monkeypatch: MonkeyPatch,
+        hybrid_pool,
+    ):
+        config = _make_cancel_test_config(monkeypatch, transport_max_retry=2, reschedule_enabled=True)
+        calls: list[tuple[str, dict]] = []
+
+        async def mock_forward(self, api, req_data, client, timeout, *, on_response_ready=None):
+            del self, client, timeout
+            calls.append((api, req_data.copy()))
+            if on_response_ready is not None:
+                on_response_ready()
+            if len(calls) == 1:
+                yield b'data: {"choices":[{"index":0,"token_ids":[10]}]}\n\n'
+                raise asyncio.CancelledError(f"{cancel_error.NODE_FAULT}: http://127.0.0.1:8000")
+            yield b'data: {"choices":[{"index":0,"token_ids":[11],"finish_reason":"stop"}]}\n\n'
+
+        monkeypatch.setattr(PDHybridRouter, "forward_stream_request", mock_forward)
+        req_data = {
+            "model": "test-model",
+            "prompt": "Hello",
+            "stream": True,
+            "max_tokens": 50,
+        }
+        req_info = make_render_request_info(
+            "render-reschedule-id",
+            req_data,
+            "v1/completions",
+            [1, 2],
+            req_len=99,
+        )
+        render_client = AsyncMock()
+        render_client.derender_stream_chunk.side_effect = [
+            DerenderedStreamChunk(
+                chunk={"choices": [{"index": 0, "text": "A"}]},
+                stream_state={"step": 1},
+            ),
+            DerenderedStreamChunk(
+                chunk={"choices": [{"index": 0, "text": "B", "finish_reason": "stop"}]},
+                stream_state={"step": 2},
+            ),
+        ]
+        router_obj = PDHybridRouter(
+            req_info,
+            config,
+            scheduler=Scheduler(instance_provider=InstanceManager(config), config=config),
+            request_manager=RequestManager(config),
+        )
+        router_obj.set_render_client(render_client)
+
+        response = await router_obj.handle_request()
+        body = await self._consume_stream(response)
+
+        assert [api for api, _ in calls] == ["inference/v1/generate"] * 2
+        assert [request["token_ids"] for _, request in calls] == [[1, 2], [1, 2, 10]]
+        assert calls[1][1]["sampling_params"]["max_tokens"] == 49
+        first_derender, retry_derender = render_client.derender_stream_chunk.await_args_list
+        assert first_derender.args[1]["stream_state"] is None
+        assert retry_derender.args[1]["stream_state"] == {"step": 1}
+        assert retry_derender.args[1]["prompt_token_ids"] == [1, 2]
+        assert body.count('"text":"A"') == 1
+        assert body.count('"text":"B"') == 1
 
     @pytest.mark.asyncio
     async def test_stream_client_disconnect_does_not_retry(self, monkeypatch: MonkeyPatch, hybrid_pool):

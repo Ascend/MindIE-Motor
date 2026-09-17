@@ -386,8 +386,8 @@ class InferenceServer(BaseCoordinatorServer):
         try:
             obfuscation_config = self.coordinator_config.token_obfuscation_config
             render_config = self.coordinator_config.render_config
-            if render_config.enabled:
-                if obfuscation_config.enabled:
+            if render_config.enable:
+                if obfuscation_config.enable:
                     token_config, vocab_source = resolve_token_obfuscation_config(
                         obfuscation_config,
                         self.coordinator_config.engine_model_paths,
@@ -395,7 +395,7 @@ class InferenceServer(BaseCoordinatorServer):
                     app.state.token_obfuscation_service = TokenObfuscationService(token_config)
                     logger.info("Token data obfuscation is enabled vocab_size_source=%s", vocab_source)
                 image_obfuscation_service = None
-                if obfuscation_config.image_config.enabled:
+                if obfuscation_config.image_config.enable:
                     image_config, geometry_source = resolve_image_obfuscation_config(
                         obfuscation_config.image_config,
                         self.coordinator_config.engine_model_paths,
@@ -410,10 +410,6 @@ class InferenceServer(BaseCoordinatorServer):
                     )
                 app.state.image_obfuscation_service = image_obfuscation_service
                 render_client = VLLMRenderClient(render_config)
-                if await render_client.health():
-                    logger.info("vLLM Render sidecar is available")
-                else:
-                    logger.warning("vLLM Render sidecar is unavailable; Coordinator will use tokenizer fallback")
                 app.state.tokenization_service = TokenizationService(
                     render_config,
                     render_client=render_client,

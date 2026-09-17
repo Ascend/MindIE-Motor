@@ -30,7 +30,7 @@ def anyio_backend():
 def make_server():
     def build(render_enabled=False):
         config = CoordinatorConfig()
-        config.render_config.enabled = render_enabled
+        config.render_config.enable = render_enabled
         config.context_budget_mode = "on"
         config.aigw_model = {"p_max_seqlen": 2048, "d_max_seqlen": 1024}
         server = InferenceServer(config, request_manager=RequestManager(config))
@@ -60,13 +60,13 @@ def lifespan_dependencies():
         )
 
 
-async def test_render_health_failure_does_not_block_inference_lifespan(make_server, lifespan_dependencies):
+async def test_inference_lifespan_does_not_probe_render_health(make_server, lifespan_dependencies):
     server = make_server(render_enabled=True)
     deps = lifespan_dependencies
 
     async with server._lifespan(server.app):
         assert server.app.state.tokenization_service is deps.tokenization_service
-        deps.render_client.health.assert_awaited_once()
+        deps.render_client.health.assert_not_awaited()
 
     deps.render_client.aclose.assert_awaited_once()
     server._scheduler_connection.disconnect.assert_awaited_once()

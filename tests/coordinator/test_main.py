@@ -213,8 +213,8 @@ async def test_main_daemon_flow():
         mock_config.logging_config.log_level = "INFO"
         mock_config.logging_config.log_file = None
         # Default deployment: neither obfuscation switch is on, so the SDK bootstrap must not run.
-        mock_config.token_obfuscation_config.enabled = False
-        mock_config.token_obfuscation_config.image_config.enabled = False
+        mock_config.token_obfuscation_config.enable = False
+        mock_config.token_obfuscation_config.image_config.enable = False
         mock_from_json.return_value = mock_config
 
         mock_daemon_instance = MagicMock()
@@ -247,8 +247,8 @@ async def test_main_bootstraps_obfuscation_library_when_enabled():
         mock_config.get_config_summary.return_value = "Config summary"
         mock_config.logging_config.log_level = "INFO"
         mock_config.logging_config.log_file = None
-        mock_config.token_obfuscation_config.enabled = False
-        mock_config.token_obfuscation_config.image_config.enabled = True
+        mock_config.token_obfuscation_config.enable = False
+        mock_config.token_obfuscation_config.image_config.enable = True
         mock_from_json.return_value = mock_config
 
         mock_daemon_instance = MagicMock()

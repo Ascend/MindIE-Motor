@@ -15,8 +15,16 @@ import pytest
 import lib.constant as C
 from lib.generator import k8s_utils
 from lib.generator.coordinator import generate_yaml_coordinator
-from lib.generator.infer_service import _find_infer_service_set_doc, generate_yaml_infer_service_set, get_infer_role
-from lib.generator.render import ASCEND_DRIVER_VOLUME_NAME, RENDER_CONTAINER_NAME, configure_render_sidecar
+from lib.generator.infer_service import (
+    _find_infer_service_set_doc,
+    generate_yaml_infer_service_set,
+    get_infer_role,
+)
+from lib.generator.render import (
+    ASCEND_DRIVER_VOLUME_NAME,
+    RENDER_CONTAINER_NAME,
+    configure_render_sidecar,
+)
 from lib.generator.single_container import generate_yaml_single_container
 from lib.utils import load_yaml
 
@@ -24,7 +32,11 @@ DEPLOYER_ROOT = Path(__file__).resolve().parents[3] / "examples" / "deployer"
 DEPLOYMENT_MODES = [
     ("multi", "coordinator_template.yaml", generate_yaml_coordinator),
     ("infer-service", "infer_service_template.yaml", generate_yaml_infer_service_set),
-    ("single-container", "single_container_template.yaml", generate_yaml_single_container),
+    (
+        "single-container",
+        "single_container_template.yaml",
+        generate_yaml_single_container,
+    ),
 ]
 
 
@@ -52,7 +64,7 @@ def _user_config(use_cpu_image=True):
         },
         C.MOTOR_COORDINATOR_CONFIG: {
             C.RENDER_CONFIG: {
-                "enabled": True,
+                "enable": True,
                 "endpoint": {"host": "127.0.0.1", "port": 8110},
                 **({C.IMAGE_NAME: "vllm-render-cpu:test"} if use_cpu_image else {}),
             }
@@ -94,12 +106,14 @@ def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     assert container[C.PORTS][0]["containerPort"] == 8110
     assert _render_arg(container, "--renderer-num-workers") == "4"
     assert C.ASCEND_910_NPU_NUM not in container[C.RESOURCES][C.REQUESTS]
+    assert container["command"] == ["vllm"]
+    assert "VLLM_PLUGINS" not in {item[C.NAME] for item in container[C.ENV]}
     assert ASCEND_DRIVER_VOLUME_NAME not in {item[C.NAME] for item in pod_spec[C.VOLUMES]}
 
 
-def test_render_workers_follow_coordinator_inference_workers_config():
+def test_render_workers_use_render_config_override():
     config = _user_config()
-    config[C.MOTOR_COORDINATOR_CONFIG]["inference_workers_config"] = {"num_workers": 7}
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["renderer_num_workers"] = 7
     pod_spec = _pod_spec()
 
     configure_render_sidecar(pod_spec, config)
@@ -108,17 +122,17 @@ def test_render_workers_follow_coordinator_inference_workers_config():
 
 
 @pytest.mark.parametrize("num_workers", [0, True, "4"])
-def test_render_rejects_invalid_inference_worker_count(num_workers):
+def test_render_rejects_invalid_renderer_worker_count(num_workers):
     config = _user_config()
-    config[C.MOTOR_COORDINATOR_CONFIG]["inference_workers_config"] = {"num_workers": num_workers}
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["renderer_num_workers"] = num_workers
 
-    with pytest.raises(ValueError, match="num_workers"):
+    with pytest.raises(ValueError, match="renderer_num_workers"):
         configure_render_sidecar(_pod_spec(), config)
 
 
 def test_disabled_render_removes_stale_sidecar_and_driver_mount():
     config = _user_config()
-    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["enabled"] = False
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["enable"] = False
     pod_spec = _pod_spec(stale_sidecar=True)
 
     configure_render_sidecar(pod_spec, config)
@@ -134,6 +148,17 @@ def test_ascend_render_inherits_service_image_and_mounts_driver_without_requesti
     container = _render_container(pod_spec)
     assert container[C.IMAGE] == "mindie-npu:test"
     assert C.ASCEND_910_NPU_NUM not in container[C.RESOURCES][C.REQUESTS]
+    assert container["command"] == ["/bin/bash", "-c"]
+    assert "sitecustomize.py" in container["args"][0]
+    assert "PYTHONPATH" in container["args"][0]
+    assert "CpuPlatform" in container["args"][3]
+    assert "vllm.triton_utils" in container["args"][3]
+    assert container["args"][4:6] == ["launch", "render"]
+    env = {item[C.NAME]: item[C.VALUE] for item in container[C.ENV]}
+    assert env["VLLM_PLUGINS"] == ""
+    assert env["TORCH_DEVICE_BACKEND_AUTOLOAD"] == "0"
+    assert env["VLLM_CACHE_ROOT"] == "/tmp/vllm-render-cache"
+    assert env["TRITON_CACHE_DIR"] == "/tmp/vllm-render-cache/triton"
     assert ASCEND_DRIVER_VOLUME_NAME in {item[C.NAME] for item in pod_spec[C.VOLUMES]}
     assert ASCEND_DRIVER_VOLUME_NAME in {item[C.NAME] for item in container[C.VOLUME_MOUNTS]}
 
@@ -155,7 +180,11 @@ def test_render_rejects_mismatched_prefill_and_decode_models():
 
 @pytest.mark.parametrize(("mode", "template", "generator"), DEPLOYMENT_MODES)
 def test_deployment_mode_adds_render_to_coordinator_pod(tmp_path, monkeypatch, mode, template, generator):
-    for setting in ("g_kv_store_enabled", "g_kv_conductor_enabled", "g_mf_store_enabled"):
+    for setting in (
+        "g_kv_store_enabled",
+        "g_kv_conductor_enabled",
+        "g_mf_store_enabled",
+    ):
         monkeypatch.setattr(k8s_utils, setting, False)
     output = tmp_path / f"{mode}.yaml"
     generator(str(DEPLOYER_ROOT / "yaml_template" / template), str(output), _user_config())

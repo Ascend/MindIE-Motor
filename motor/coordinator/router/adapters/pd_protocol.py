@@ -18,9 +18,10 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Protocol
 
-from motor.common.constants import CHAT_COMPLETION_PREFIX, COMPLETION_PREFIX, COMPLETION_SUFFIX
+from motor.common.constants import CHAT_COMPLETION_PREFIX, COMPLETION_PREFIX
 
 NATIVE_GENERATE_API = "inference/v1/generate"
+VLLM_GENERATE_REQUEST_PREFIX = "generate-tokens-"
 
 
 class CoordinationMode(str, Enum):
@@ -32,10 +33,14 @@ class CoordinationMode(str, Enum):
 def trim_vllm_engine_request_id(request_id: str) -> str:
     """Strip vLLM/OpenAI prefixes so Coordinator can look up the original req_id."""
     value = str(request_id or "").strip()
+    value = value.removeprefix(VLLM_GENERATE_REQUEST_PREFIX)
     if value.startswith(CHAT_COMPLETION_PREFIX):
         return value.removeprefix(CHAT_COMPLETION_PREFIX)
-    if value.startswith(COMPLETION_PREFIX) and value.endswith(COMPLETION_SUFFIX):
-        return value.removeprefix(COMPLETION_PREFIX).removesuffix(COMPLETION_SUFFIX)
+    if value.startswith(COMPLETION_PREFIX):
+        completion_id = value.removeprefix(COMPLETION_PREFIX)
+        original_request_id, separator, completion_index = completion_id.rpartition("-")
+        if separator and completion_index.isdigit():
+            return original_request_id
     return value
 
 
@@ -70,6 +75,7 @@ class EnginePhase(str, Enum):
 class GenerationConstraint:
     max_tokens: int | None = None
     min_tokens: int | None = None
+    stream: bool = False
 
 
 @dataclass(frozen=True)
@@ -183,6 +189,7 @@ class VllmProtocolAdapter:
             kv_transfer_params=leg.kv_transfer.params if leg.kv_transfer is not None else None,
             max_tokens=leg.generation.max_tokens,
             min_tokens=leg.generation.min_tokens,
+            stream=leg.generation.stream,
         )
 
     def _build_tokenized_generate_request(
@@ -195,6 +202,7 @@ class VllmProtocolAdapter:
         kv_transfer_params: Mapping[str, Any] | None = None,
         max_tokens: int | None = None,
         min_tokens: int | None = None,
+        stream: bool = False,
     ) -> EngineRequest:
         body = deepcopy(dict(metadata))
         sampling_params = body.get("sampling_params")
@@ -221,7 +229,7 @@ class VllmProtocolAdapter:
         body["sampling_params"] = sampling_params
         body["request_id"] = context.engine_request_id
         body["token_ids"] = list(prompt_token_ids)
-        body["stream"] = False
+        body["stream"] = stream
         return EngineRequest(api=NATIVE_GENERATE_API, body=body)
 
     def _with_kv_transfer_params(

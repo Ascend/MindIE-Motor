@@ -688,9 +688,10 @@ class RenderEndpointConfig:
 class RenderConfig:
     """Coordinator frontend tokenization through a vLLM Render sidecar."""
 
-    enabled: bool = False
+    enable: bool = False
     endpoint: RenderEndpointConfig = field(default_factory=RenderEndpointConfig)
     timeout_ms: int = 5000
+    renderer_num_workers: int = 4
     image_name: str = ""
 
 
@@ -714,7 +715,7 @@ class ImageObfuscationConfig:
     feature guide.
     """
 
-    enabled: bool = False
+    enable: bool = False
     model_path: str = ""
     patch_size: int = 0
     merge_size: int = 0
@@ -736,7 +737,7 @@ class TokenObfuscationConfig:
     engine sections. See the data-obfuscation feature guide.
     """
 
-    enabled: bool = False
+    enable: bool = False
     model_path: str = ""
     vocab_size: int = 0
     token_white_list: list[int] = field(default_factory=list)
@@ -849,7 +850,7 @@ class CoordinatorConfig:
                         setattr(obj, key, enum_value)
 
             scheduler_handlers = {
-                'scheduler_type': lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
+                "scheduler_type": lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
             }
 
             exception_config_data = cfg.get("exception_config", {})
@@ -1031,21 +1032,27 @@ class CoordinatorConfig:
         self._validate_ip_or_hostname(self.render_config.endpoint.host, "render_config.endpoint.host")
         self._validate_port_range(self.render_config.endpoint.port, "render_config.endpoint.port")
         self._validate_positive_number(self.render_config.timeout_ms, "render_config.timeout_ms")
+        if not isinstance(self.render_config.renderer_num_workers, int) or isinstance(
+            self.render_config.renderer_num_workers, bool
+        ):
+            self._errors.append("render_config.renderer_num_workers must be an integer")
+        elif self.render_config.renderer_num_workers <= 0:
+            self._errors.append("render_config.renderer_num_workers must be greater than 0")
         if not isinstance(self.render_config.image_name, str):
             self._errors.append("render_config.image_name must be a string")
         elif self.render_config.image_name and not self.render_config.image_name.strip():
             self._errors.append("render_config.image_name cannot contain only whitespace")
 
         obfuscation = self.token_obfuscation_config
-        if not isinstance(obfuscation.enabled, bool):
-            self._errors.append("token_obfuscation_config.enabled must be a bool")
-        if obfuscation.enabled and not self.render_config.enabled:
-            self._errors.append("token_obfuscation_config requires render_config.enabled=true")
+        if not isinstance(obfuscation.enable, bool):
+            self._errors.append("token_obfuscation_config.enable must be a bool")
+        if obfuscation.enable and not self.render_config.enable:
+            self._errors.append("token_obfuscation_config requires render_config.enable=true")
         if not isinstance(obfuscation.vocab_size, int) or isinstance(obfuscation.vocab_size, bool):
             self._errors.append("token_obfuscation_config.vocab_size must be an integer")
         elif obfuscation.vocab_size < 0:
             self._errors.append("token_obfuscation_config.vocab_size must not be negative")
-        elif obfuscation.enabled and obfuscation.vocab_size == 0:
+        elif obfuscation.enable and obfuscation.vocab_size == 0:
             # Unset vocab_size is read from the served model directory (config.json).
             reason = self._obfuscation_model_path_issue(obfuscation.model_path)
             if reason:
@@ -1058,7 +1065,7 @@ class CoordinatorConfig:
             not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0 for token_id in white_list
         ):
             self._errors.append("token_obfuscation_config.token_white_list must contain non-negative integer token ids")
-        elif obfuscation.enabled and not white_list:
+        elif obfuscation.enable and not white_list:
             self._errors.append(
                 "token_obfuscation_config.token_white_list must be explicitly configured when obfuscation is enabled"
             )
@@ -1068,16 +1075,16 @@ class CoordinatorConfig:
             )
         if not isinstance(obfuscation.seed_content, str):
             self._errors.append("token_obfuscation_config.seed_content must be a string")
-        elif (obfuscation.enabled or obfuscation.image_config.enabled) and not obfuscation.seed_content:
+        elif (obfuscation.enable or obfuscation.image_config.enable) and not obfuscation.seed_content:
             self._errors.append(
                 "token_obfuscation_config.seed_content must be explicitly configured when obfuscation is enabled"
             )
 
         image = obfuscation.image_config
-        if not isinstance(image.enabled, bool):
-            self._errors.append("token_obfuscation_config.image_config.enabled must be a bool")
-        if image.enabled and not self.render_config.enabled:
-            self._errors.append("token_obfuscation_config.image_config requires render_config.enabled=true")
+        if not isinstance(image.enable, bool):
+            self._errors.append("token_obfuscation_config.image_config.enable must be a bool")
+        if image.enable and not self.render_config.enable:
+            self._errors.append("token_obfuscation_config.image_config requires render_config.enable=true")
         unset_geometry = []
         for field_name in IMAGE_OBFUSCATION_GEOMETRY_FIELDS:
             value = getattr(image, field_name)
@@ -1088,7 +1095,7 @@ class CoordinatorConfig:
                 self._errors.append(f"{field_path} must not be negative")
             elif value == 0:
                 unset_geometry.append(field_name)
-        if image.enabled and unset_geometry:
+        if image.enable and unset_geometry:
             # Unset fields are read from the served weights directory; without one they must be given.
             reason = self._obfuscation_model_path_issue(image.model_path)
             if reason:
@@ -1097,7 +1104,7 @@ class CoordinatorConfig:
                     f"({', '.join(unset_geometry)}) or a readable served model directory: {reason}"
                 )
         if (
-            image.enabled
+            image.enable
             and image.longest_edge > 0
             and image.shortest_edge > 0
             and image.longest_edge < image.shortest_edge
@@ -1308,10 +1315,10 @@ class CoordinatorConfig:
         config_dict.pop("engine_model_paths", None)
 
         # Convert enums to their string values for JSON serialization
-        if 'scheduler_config' in config_dict:
-            scheduler_config = config_dict['scheduler_config']
-            if 'scheduler_type' in scheduler_config and isinstance(scheduler_config['scheduler_type'], SchedulerType):
-                scheduler_config['scheduler_type'] = scheduler_config['scheduler_type'].value
+        if "scheduler_config" in config_dict:
+            scheduler_config = config_dict["scheduler_config"]
+            if "scheduler_type" in scheduler_config and isinstance(scheduler_config["scheduler_type"], SchedulerType):
+                scheduler_config["scheduler_type"] = scheduler_config["scheduler_type"].value
         # Convert sets to lists for JSON serialization
         if "api_key_config" in config_dict:
             api_key_config = config_dict["api_key_config"]

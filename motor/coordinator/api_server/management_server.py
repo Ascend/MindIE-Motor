@@ -48,10 +48,12 @@ from motor.coordinator.domain.probe import (
     ReadinessResult,
     RoleShmDaemonLivenessProvider,
 )
+from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 
 logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
 _READINESS_REMAINS_READY_KEY = "coordinator.readiness.remains_ready"
+_RENDER_HEALTH_RETRY_SECONDS = 5.0
 
 # Readiness 503: result -> HTTP detail.
 _READINESS_503: dict[ReadinessResult, str] = {
@@ -218,6 +220,7 @@ class ManagementServer(BaseCoordinatorServer):
         self._refresh_lock = asyncio.Lock()
         self._re_register_task: asyncio.Task | None = None
         self._re_register_executor: ThreadPoolExecutor | None = None
+        self._render_health_task: asyncio.Task | None = None
         self._register_routes()
 
     @property
@@ -252,6 +255,7 @@ class ManagementServer(BaseCoordinatorServer):
             logger.error("Management server startup failed: %s", e)
             raise
         finally:
+            await self._stop_render_health_observer()
             await self._stop_re_register_task()
             logger.info("Management server is shutting down...")
             await self._stop_control_plane()
@@ -309,6 +313,42 @@ class ManagementServer(BaseCoordinatorServer):
         if self._re_register_executor is not None:
             self._re_register_executor.shutdown(wait=False)
             self._re_register_executor = None
+
+    def _start_render_health_observer(self) -> None:
+        """Observe sidecar startup once Coordinator scheduling is ready."""
+        if not self.coordinator_config.render_config.enable or self._render_health_task is not None:
+            return
+        self._render_health_task = asyncio.create_task(
+            self._observe_render_health(),
+            name="render-health-observer",
+        )
+
+    async def _stop_render_health_observer(self) -> None:
+        """Stop the Render startup observer during Mgmt shutdown."""
+        task = self._render_health_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._render_health_task = None
+
+    async def _observe_render_health(self) -> None:
+        """Log the first unavailable state and the eventual ready state."""
+        client = VLLMRenderClient(self.coordinator_config.render_config)
+        unavailable_logged = False
+        try:
+            while True:
+                if await client.health():
+                    logger.info("vLLM Render sidecar is ready")
+                    return
+                if not unavailable_logged:
+                    logger.warning("vLLM Render sidecar is unavailable; Coordinator will use tokenizer fallback")
+                    unavailable_logged = True
+                await asyncio.sleep(_RENDER_HEALTH_RETRY_SECONDS)
+        finally:
+            await client.aclose()
 
     async def _re_register_loop(self, interval: int) -> None:
         """Periodically re-register KV instances to Conductor."""
@@ -448,6 +488,7 @@ class ManagementServer(BaseCoordinatorServer):
                         out.result.value,
                         instances_status,
                     )
+                    self._start_render_health_observer()
                 else:
                     logger.debug(
                         "[Readiness] Coordinator remains ready. result=%s instances_status=%s",

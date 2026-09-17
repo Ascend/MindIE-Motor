@@ -45,7 +45,7 @@ def _features(items=None, modality="image"):
 
 
 def _service(backend: FakeVisionObfuscator) -> ImageObfuscationService:
-    return ImageObfuscationService(ImageObfuscationConfig(enabled=True), "seed-content", backend)
+    return ImageObfuscationService(ImageObfuscationConfig(enable=True), "seed-content", backend)
 
 
 def test_obfuscates_kwargs_data_and_keeps_shape() -> None:
@@ -116,7 +116,7 @@ def test_rejected_seed_fails_closed() -> None:
 def test_image_config_has_no_preset_geometry() -> None:
     """Vision geometry is model-specific, so it must not be preset in code."""
     image_config = TokenObfuscationConfig().image_config
-    assert image_config.enabled is False
+    assert image_config.enable is False
     assert (image_config.patch_size, image_config.merge_size, image_config.temporal_patch_size) == (0, 0, 0)
     assert (image_config.shortest_edge, image_config.longest_edge) == (0, 0)
 
@@ -141,7 +141,7 @@ def test_resolve_geometry_from_model_dir_when_unset(tmp_path) -> None:
     _write_preprocessor_config(tmp_path / "model-obf", QWEN3_VL_PREPROCESSOR)
 
     resolved, source = resolve_image_obfuscation_config(
-        ImageObfuscationConfig(enabled=True), [str(tmp_path / "model-obf")]
+        ImageObfuscationConfig(enable=True), [str(tmp_path / "model-obf")]
     )
 
     assert (resolved.patch_size, resolved.temporal_patch_size) == (16, 2)
@@ -154,7 +154,7 @@ def test_resolve_geometry_keeps_explicit_values(tmp_path) -> None:
     _write_preprocessor_config(tmp_path / "model-obf", QWEN3_VL_PREPROCESSOR)
 
     resolved, _ = resolve_image_obfuscation_config(
-        ImageObfuscationConfig(enabled=True, patch_size=8, temporal_patch_size=1),
+        ImageObfuscationConfig(enable=True, patch_size=8, temporal_patch_size=1),
         [str(tmp_path / "model-obf")],
     )
 
@@ -169,7 +169,7 @@ def test_resolve_geometry_supports_legacy_pixel_bounds(tmp_path) -> None:
         {"patch_size": 14, "temporal_patch_size": 2, "merge_size": 2, "min_pixels": 3136, "max_pixels": 12845056},
     )
 
-    resolved, _ = resolve_image_obfuscation_config(ImageObfuscationConfig(enabled=True), [str(tmp_path / "qwen2-vl")])
+    resolved, _ = resolve_image_obfuscation_config(ImageObfuscationConfig(enable=True), [str(tmp_path / "qwen2-vl")])
 
     assert (resolved.patch_size, resolved.shortest_edge, resolved.longest_edge) == (14, 3136, 12845056)
 
@@ -179,7 +179,7 @@ def test_resolve_geometry_prefers_explicit_model_path(tmp_path) -> None:
     _write_preprocessor_config(tmp_path / "pinned", QWEN3_VL_PREPROCESSOR)
 
     resolved, source = resolve_image_obfuscation_config(
-        ImageObfuscationConfig(enabled=True, model_path=str(tmp_path / "pinned")),
+        ImageObfuscationConfig(enable=True, model_path=str(tmp_path / "pinned")),
         ["/does/not/exist"],
     )
 
@@ -193,14 +193,14 @@ def test_resolve_geometry_rejects_inverted_bounds_after_resolution(tmp_path) -> 
 
     with pytest.raises(ImageObfuscationError, match="greater than or equal to shortest_edge"):
         resolve_image_obfuscation_config(
-            ImageObfuscationConfig(enabled=True, longest_edge=1024),
+            ImageObfuscationConfig(enable=True, longest_edge=1024),
             [str(tmp_path / "model-obf")],
         )
 
 
 def test_resolve_geometry_fails_closed_without_model_dir() -> None:
     with pytest.raises(ImageObfuscationError, match="no served model directory is available"):
-        resolve_image_obfuscation_config(ImageObfuscationConfig(enabled=True), [])
+        resolve_image_obfuscation_config(ImageObfuscationConfig(enable=True), [])
 
 
 def test_resolve_geometry_skips_unusable_candidate(tmp_path) -> None:
@@ -208,7 +208,7 @@ def test_resolve_geometry_skips_unusable_candidate(tmp_path) -> None:
     _write_preprocessor_config(tmp_path / "good", QWEN3_VL_PREPROCESSOR)
 
     resolved, _ = resolve_image_obfuscation_config(
-        ImageObfuscationConfig(enabled=True), [str(tmp_path / "bad"), str(tmp_path / "good")]
+        ImageObfuscationConfig(enable=True), [str(tmp_path / "bad"), str(tmp_path / "good")]
     )
 
     assert resolved.patch_size == 16
@@ -217,11 +217,11 @@ def test_resolve_geometry_skips_unusable_candidate(tmp_path) -> None:
 def test_resolve_geometry_fails_closed_on_unusable_model_dir(tmp_path) -> None:
     """Unreadable or incomplete model directories must fail closed with a clear error."""
     with pytest.raises(ImageObfuscationError, match="failed to resolve image obfuscation geometry"):
-        resolve_image_obfuscation_config(ImageObfuscationConfig(enabled=True), [str(tmp_path / "missing")])
+        resolve_image_obfuscation_config(ImageObfuscationConfig(enable=True), [str(tmp_path / "missing")])
 
     _write_preprocessor_config(tmp_path / "partial", {"patch_size": 16})
     with pytest.raises(ImageObfuscationError, match="is missing"):
-        resolve_image_obfuscation_config(ImageObfuscationConfig(enabled=True), [str(tmp_path / "partial")])
+        resolve_image_obfuscation_config(ImageObfuscationConfig(enable=True), [str(tmp_path / "partial")])
 
 
 def test_sdk_result_is_committed_verbatim() -> None:

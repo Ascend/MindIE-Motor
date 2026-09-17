@@ -49,7 +49,7 @@ flowchart LR
 | 功能 | 说明 |
 |------|------|
 | 双向 token 置换 | 请求侧 `data_1d_obf`、响应侧 `data_1d_deobf`，同一进程内一套 seed，客户端无感知 |
-| 多模态张量混淆 | `image_config.enabled` 后对 Render 返回的 `features.kwargs_data` 按模态做 patch 置换；Motor 不需要 msgpack 编解码与模型 flatten 顺序知识 |
+| 多模态张量混淆 | `image_config.enable` 后对 Render 返回的 `features.kwargs_data` 按模态做 patch 置换；Motor 不需要 msgpack 编解码与模型 flatten 顺序知识 |
 | 文本 / 视觉共用 seed | `image_config` 嵌套在 `token_obfuscation_config` 下，与 token 混淆共用同一个 `seed_content`，避免多 seed 管理 |
 | fail closed | SDK 缺失、接口调用异常时直接拒绝请求（HTTP 503），不回退明文链路；置换结果与载荷格式由 SDK 负责，Coordinator 不解析也不校验其返回内容 |
 | 与 KV 亲和性调度对齐 | 前缀哈希使用受保护（物理）token ID，混淆场景下仍可命中 KV Cache |
@@ -58,10 +58,10 @@ flowchart LR
 ### 约束与限制
 
 - **硬件**：Atlas 800I A2 推理服务器已实测（`hardware_type=800I_A2`）；Atlas 800 A3 等基于 vLLM Render 链路的机型理论上兼容，需按本文档验证。
-- **部署场景**：需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署；`render_config.enabled=true` 是本特性的硬前提。
+- **部署场景**：需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署；`render_config.enable=true` 是本特性的硬前提。
 - **引擎**：仅支持 **vLLM**（依赖其 Render token-only 接口）。SGLang 当前为 POC 支持，未覆盖本特性的 Render 链路，暂不支持。
 - **特性互斥**：
-  - **不支持流式请求**：任一混淆开关开启（`enabled` 或 `image_config.enabled`）后 `stream=true` 直接返回 HTTP 501。
+  - **流式请求**：支持流式 Token In、token-only Generate 和 Derender；流式 Derender 要求 vLLM >= 0.27.0。
   - **仅支持 `/v1/chat/completions` 与 `/v1/completions`**：Render 没有为其他 API 登记契约，
     任一混淆开关开启时 `/v1/responses`、`/v1/messages` 等路径直接返回 HTTP 501，不会退回本地 tokenizer
     把明文 prompt 发给混淆权重引擎。
@@ -91,7 +91,7 @@ flowchart LR
 
 1. 已使用 MindIE Motor 完成基础推理服务部署（PD 分离），服务运行正常。参考 [PD 分离部署](pd_disaggregation.md)。
 2. 镜像/环境内的 vLLM 提供 Render token-only 接口（Coordinator 通过 `render_config.endpoint` 访问），
-   且 `render_config.enabled=true`。
+   且 `render_config.enable=true`。
 3. 已安装 `ai-asset-obfuscate` 并保证其原生库可加载：
 
    ```bash
@@ -168,8 +168,8 @@ EOF
 
 ### 使用场景
 
-- **场景一：纯文本数据混淆**。仅开启 `token_obfuscation_config.enabled`，适用于对话/补全等纯文本请求。
-- **场景二：多模态（图像）数据混淆**。在场景一基础上开启 `token_obfuscation_config.image_config.enabled`，
+- **场景一：纯文本数据混淆**。仅开启 `token_obfuscation_config.enable`，适用于对话/补全等纯文本请求。
+- **场景二：多模态（图像）数据混淆**。在场景一基础上开启 `token_obfuscation_config.image_config.enable`，
   适用于带图请求（Qwen3-VL 等视觉语言模型）。文本 token 混淆照旧全量生效，图像张量混淆为**追加**的一层。
 
 ### 使用样例
@@ -194,20 +194,20 @@ EOF
          "num_workers": 1
        },
        "render_config": {
-         "enabled": true,
+         "enable": true,
          "endpoint": { "host": "127.0.0.1", "port": 8100 },
          "timeout_ms": 30000,
          "image_name": ""
        },
        "token_obfuscation_config": {
-         "enabled": true,
+         "enable": true,
          "token_white_list": [151643, 151644, 151645, 151646, 151647, 151648, 151649, 151650, 151651,
                            151652, 151653, 151654, 151655, 151656, 151657, 151658, 151659, 151660,
                            151661, 151662, 151663, 151664, 151665, 151666, 151667, 151668, 198, 2610,
                            525, 264, 10950, 17847, 13, 872, 77091, 8948, 271],
          "seed_content": "<与离线权重一致的 seed>",
          "image_config": {
-           "enabled": true
+           "enable": true
          }
        }
      }
@@ -218,14 +218,14 @@ EOF
 
    | 参数 | 说明 |
    |------|------|
-   | `render_config.enabled` | 必须为 `true`；本特性的 token 与图像置换都发生在 Render 返回的载荷上 |
+   | `render_config.enable` | 必须为 `true`；本特性的 token 与图像置换都发生在 Render 返回的载荷上 |
    | `render_config.timeout_ms` | Render 处理超时。多模态首图需要加载图像处理器，实测冷启动约 22 s，建议不小于 30000 |
-   | `token_obfuscation_config.enabled` | 开启 token 置换；必须显式配置非空 `seed_content` |
+   | `token_obfuscation_config.enable` | 开启 token 置换；必须显式配置非空 `seed_content` |
    | `token_obfuscation_config.model_path` | 可选，显式指定权重目录（用于读取 `vocab_size`）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
    | `token_obfuscation_config.vocab_size` | 混淆词表大小。**可不配置**：未设置时从被服务权重目录的 `config.json` 自动读取（多模态取 `text_config.vocab_size`），显式配置优先。需与离线权重混淆参数一致（Qwen3-32B / Qwen3-VL 为 `151936`） |
    | `token_obfuscation_config.token_white_list` | **无内置默认值，开启时必须显式配置**。不参与置换的 token ID（特殊 token 及部分常用 token），必须与离线权重混淆时使用的清单完全一致；Qwen3-32B / Qwen3-VL 验证权重使用下方 37 个 token。该参数**无法从模型目录推导**，只能由权重混淆方提供 |
    | `token_obfuscation_config.seed_content` | 与离线权重同一 seed；可通过环境变量或受控配置注入，禁止入库 |
-   | `token_obfuscation_config.image_config.enabled` | 开启图像张量置换；要求 `render_config.enabled=true`，与 `enabled` 相互独立 |
+   | `token_obfuscation_config.image_config.enable` | 开启图像张量置换；要求 `render_config.enable=true`，与 `token_obfuscation_config.enable` 相互独立 |
    | `image_config.patch_size` / `merge_size` / `temporal_patch_size` | **可不配置**：未设置时从被服务权重目录的 `preprocessor_config.json` 自动读取，显式配置优先。必须与权重混淆及图像处理器一致（Qwen3-VL 为 16 / 2 / 2，Qwen2-VL 为 14 / 2 / 2） |
    | `image_config.longest_edge` / `shortest_edge` | **可不配置**：同上，对应 `size.longest_edge` / `size.shortest_edge`（旧版处理器为 `max_pixels` / `min_pixels`）。Qwen3-VL 为 16777216 / 65536 |
    | `image_config.model_path` | 可选，显式指定权重目录（用于读取几何）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
@@ -331,7 +331,7 @@ EOF
 
 ### 问题一：请求返回 503，detail 为 `failed to obfuscate Render image items: AttributeError: ... has no attribute 'image_render_obf'`
 
-**问题描述**：开启 `image_config.enabled` 后，所有带图请求返回 503，Coordinator 日志出现上述信息。
+**问题描述**：开启 `image_config.enable` 后，所有带图请求返回 503，Coordinator 日志出现上述信息。
 
 **原因分析**：环境中的 `ai-asset-obfuscate` 版本不支持 Render 载荷置换接口（旧版本只有 `image_tensor_obf`）。
 
@@ -373,8 +373,8 @@ EOF
 1. 确认已安装：`python -c "import ai_asset_obfuscate"`；
 2. 确认 `LD_LIBRARY_PATH` 含 `<site-packages>/ai_asset_obfuscate/libs`，且该设置在 python 进程启动前生效
    （容器内由启动脚本导出，例如 OpenSSL 的 `libcrypto.so` / `libssl.so` 符号链接需存在）；
-3. 确认 `token_obfuscation_config.image_config.enabled=true` 时 `render_config.enabled=true`，否则配置校验会直接失败：
-   `token_obfuscation_config.image_config requires render_config.enabled=true`。
+3. 确认 `token_obfuscation_config.image_config.enable=true` 时 `render_config.enable=true`，否则配置校验会直接失败：
+   `token_obfuscation_config.image_config requires render_config.enable=true`。
 
 ### 问题五：模型输出乱码 / 答非所问
 
@@ -397,7 +397,7 @@ EOF
    from motor.config.coordinator import TokenObfuscationConfig
    from motor.coordinator.render.token_obfuscation_service import TokenObfuscationService
 
-   cfg = TokenObfuscationConfig(enabled=True, seed_content="<seed>", token_white_list=[...])
+   cfg = TokenObfuscationConfig(enable=True, seed_content="<seed>", token_white_list=[...])
    service = TokenObfuscationService(cfg)
    print(service.obfuscate(cfg.token_white_list) == cfg.token_white_list)  # 应为 True
    EOF
@@ -416,7 +416,7 @@ EOF
 
 1. 调大 `render_config.timeout_ms`（避免冷启动超时）；
 2. 预热一次带图请求（或引入固定的预热流程）后再接入压测；
-3. 纯文本场景关闭 `image_config.enabled`。
+3. 纯文本场景关闭 `image_config.enable`。
 
 <a id="faq-geometry-mismatch"></a>
 

@@ -15,9 +15,10 @@ import httpx
 import pytest
 
 from motor.config.coordinator import RenderConfig
-from motor.coordinator.render.models import TokenizerSource
+from motor.coordinator.render.models import DerenderedStreamChunk, TokenizerSource
 from motor.coordinator.render.vllm_render_client import (
     RenderInvalidResponseError,
+    RenderRequestError,
     RenderTimeoutError,
     RenderUnavailableError,
     RenderUnsupportedError,
@@ -34,7 +35,7 @@ async def _client(handler):
         transport=httpx.MockTransport(handler),
         base_url="http://render",
     ) as http_client:
-        yield VLLMRenderClient(RenderConfig(enabled=True, timeout_ms=50), http_client)
+        yield VLLMRenderClient(RenderConfig(enable=True, timeout_ms=50), http_client)
 
 
 async def _static_render(response, data=None):
@@ -171,19 +172,42 @@ async def test_render_circuit_skips_requests_until_cooldown_expires(monkeypatch)
     assert calls == 2
 
 
-async def test_render_request_error_does_not_open_circuit():
+@pytest.mark.parametrize(
+    ("status_code", "response_data", "expected_detail"),
+    [
+        (400, {"detail": "invalid-400"}, "invalid-400"),
+        (422, {"detail": "invalid-422"}, "invalid-422"),
+        (
+            404,
+            {"error": {"message": "The model `missing` does not exist.", "type": "NotFoundError", "code": 404}},
+            {"message": "The model `missing` does not exist.", "type": "NotFoundError", "code": 404},
+        ),
+    ],
+)
+async def test_render_request_error_does_not_open_circuit(status_code, response_data, expected_detail):
     calls = 0
 
     async def handler(request):
         nonlocal calls
         calls += 1
-        return httpx.Response(422, request=request)
+        return httpx.Response(status_code, json=response_data, request=request)
 
     async with _client(handler) as render_client:
         for _ in range(2):
-            with pytest.raises(RenderUnsupportedError, match="422"):
+            with pytest.raises(RenderRequestError, match=str(status_code)) as exc_info:
                 await render_client.render(*RENDER_ARGS)
+            assert exc_info.value.status_code == status_code
+            assert exc_info.value.detail == expected_detail
     assert calls == 2
+
+
+async def test_render_missing_endpoint_remains_unsupported():
+    async def handler(request):
+        return httpx.Response(404, json={"detail": "Not Found"}, request=request)
+
+    async with _client(handler) as render_client:
+        with pytest.raises(RenderUnsupportedError, match="404"):
+            await render_client.render(*RENDER_ARGS)
 
 
 @pytest.mark.parametrize(
@@ -246,6 +270,52 @@ async def test_derender_maps_openai_path_and_returns_response(api, expected_path
     async with _client(handler) as client:
         response = await client.derender(api, request_data)
     assert response == response_data
+
+
+async def test_streaming_derender_bypasses_open_circuit_for_inflight_request():
+    request_data = {
+        "stream": True,
+        "model": "test-model",
+        "generate_chunk": {"choices": [{"index": 0, "token_ids": [30]}]},
+        "stream_state": None,
+        "prompt_tokens": 2,
+        "chat_request": {"model": "test-model", "messages": []},
+    }
+
+    async def handler(request):
+        assert request.url.path == "/v1/chat/completions/derender"
+        assert json.loads(request.content) == request_data
+        return httpx.Response(
+            200,
+            json={
+                "chunk": {"choices": [{"index": 0, "delta": {"content": "ok"}}]},
+                "stream_state": {"step": 1},
+            },
+            request=request,
+        )
+
+    async with _client(handler) as client:
+        client._circuit_open_until = float("inf")
+        response = await client.derender_stream_chunk("v1/chat/completions", request_data)
+        assert client._circuit_open_until == float("inf")
+
+    assert response == DerenderedStreamChunk(
+        chunk={"choices": [{"index": 0, "delta": {"content": "ok"}}]},
+        stream_state={"step": 1},
+    )
+
+
+@pytest.mark.parametrize("failure", ["timeout", "server_error"])
+async def test_streaming_derender_failure_opens_circuit(failure):
+    async def handler(request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(500, request=request)
+
+    async with _client(handler) as client:
+        with pytest.raises(RenderUnavailableError):
+            await client.derender_stream_chunk("v1/chat/completions", {"model": "test-model"})
+        assert client._circuit_open_until > 0
 
 
 async def test_derender_rejects_invalid_response():

@@ -658,7 +658,7 @@ class TestRouterNativeTrigger:
         attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
         router._bind_trigger_attempt(attempt)
 
-        raw_request = _metaserver_raw_request({"request_id": req_info.req_id}, "99")
+        raw_request = _metaserver_raw_request({"request_id": f"generate-tokens-{req_info.req_id}"}, "99")
         with pytest.raises(HTTPException) as exc_info:
             await handle_metaserver_request(
                 raw_request,

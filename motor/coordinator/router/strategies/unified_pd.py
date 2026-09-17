@@ -34,19 +34,25 @@ from motor.coordinator.domain import (
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo, ReqState
 from motor.coordinator.render.models import TokenizedRequest
+from motor.coordinator.render.streaming_response import StreamingDerenderProcessor, StreamingRenderSession
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 from motor.coordinator.router.token_only import (
     active_token_only_request,
     build_token_only_batch,
+    build_response_ready_callbacks,
+    build_streaming_derender_processor,
+    build_streaming_render_session,
     build_trigger_token_only_decode_request,
     build_trigger_token_only_prefill_request,
     finish_token_only_response,
     gather_generate_responses,
     is_token_only_unsupported,
+    merge_token_only_streams,
     require_kv_transfer,
     run_token_only_or_fallback,
     select_token_only_requests,
     token_only_request_id,
+    token_only_requests_for_attempt,
 )
 from motor.coordinator.router.dispatch_session import (
     AttemptContext,
@@ -76,6 +82,7 @@ from motor.coordinator.router.adapters.pd_protocol import (
     GenerationConstraint,
     KVTransferDescriptor,
     LegContext,
+    NATIVE_GENERATE_API,
     PDProtocolAdapter,
     PrefillMetadata,
     VllmProtocolAdapter,
@@ -178,6 +185,7 @@ class UnifiedPDRouter(BaseRouter):
         self._hybrid_stream_fallback_attempted = False  # A request is only allowed to fallback once.
         self._pd_uses_trigger: bool | None = None
         self._render_client: VLLMRenderClient | None = None
+        self._streaming_render_session: StreamingRenderSession | None = None
         # Task -> its bookkeeping record (dedup key, logging context, computed work item).
         self._release_records: dict[asyncio.Task[bool], _ReleaseTaskRecord] = {}
         # Dedup reverse index: release key -> the single in-flight task for that key.
@@ -186,6 +194,11 @@ class UnifiedPDRouter(BaseRouter):
     def set_render_client(self, render_client: VLLMRenderClient | None) -> None:
         """Attach the request worker's shared Render/Derender client."""
         self._render_client = render_client
+
+    def _get_streaming_render_session(self) -> StreamingRenderSession | None:
+        if self._streaming_render_session is None:
+            self._streaming_render_session = build_streaming_render_session(self.req_info, self._render_client)
+        return self._streaming_render_session
 
     def _capture_prompt_tokens_details(self, body: dict[str, Any]) -> None:
         candidates = [body]
@@ -334,7 +347,7 @@ class UnifiedPDRouter(BaseRouter):
         return self.rescheduler.can_resume_after_visible_output(self.req_info.req_data)
 
     def _build_hybrid_fallback_router(self) -> PDHybridRouter:
-        return PDHybridRouter(
+        hybrid = PDHybridRouter(
             self.req_info,
             self.config,
             scheduler=self._scheduler,
@@ -342,6 +355,8 @@ class UnifiedPDRouter(BaseRouter):
             workload_action_handler=self._workload_action_handler,
             sampling_manager=self._sampling_manager,
         )
+        hybrid.set_render_client(self._render_client)
+        return hybrid
 
     async def _hybrid_fallback_feasible(self) -> bool:
         """True when decode pool is exhausted (no unblocked D) but a hybrid candidate exists.
@@ -431,6 +446,7 @@ class UnifiedPDRouter(BaseRouter):
                 req_data=self.req_info.req_data.copy(),
                 attempt_id=fallback_attempt_id,
                 mark_unified_ready=_mark_unified_ready,
+                render_session=self._get_streaming_render_session(),
             )
         ) as fallback_stream:
             async for chunk in fallback_stream:
@@ -474,6 +490,8 @@ class UnifiedPDRouter(BaseRouter):
                 attempt_id=fallback_attempt_id,
                 api=replay_api,
                 is_resume=True,
+                retry_plan=retry_plan,
+                render_session=self._get_streaming_render_session(),
             )
         ) as fallback_stream:
             async for chunk in fallback_stream:
@@ -489,6 +507,10 @@ class UnifiedPDRouter(BaseRouter):
                 for attempt_index in range(max_retry):
                     attempt: AttemptContext | None = None
                     cleanup_reason = AttemptStopReason.OTHER
+                    render_session = self._get_streaming_render_session()
+                    if render_session is not None:
+                        render_session.begin_attempt()
+                    render_attempt_visible = False
                     try:
                         self._active_retry_plan = None
                         if attempt_index > 0:
@@ -512,6 +534,7 @@ class UnifiedPDRouter(BaseRouter):
                         attempt.transition(AttemptState.DISPATCHING)
                         async with aclosing(self._run_stream_attempt(attempt, coordination_mode)) as attempt_stream:
                             async for chunk in attempt_stream:
+                                render_attempt_visible = True
                                 attempt.transition(AttemptState.FIRST_VISIBLE)
                                 yield chunk
                         await self._release_attempt(attempt, wait=False)
@@ -524,12 +547,18 @@ class UnifiedPDRouter(BaseRouter):
                                 attempt.attempt_seq,
                             )
                         attempt.transition(AttemptState.DONE)
+                        if render_session is not None:
+                            render_session.finish_attempt(True)
                         self.logger.info(trace_obj.set_end_and_ttft_tpot())
                         return
                     except GeneratorExit:
                         cleanup_reason = AttemptStopReason.CLIENT_DISCONNECT
+                        if render_session is not None:
+                            render_session.finish_attempt(render_attempt_visible)
                         raise
                     except (asyncio.CancelledError, Exception) as e:
+                        if render_session is not None:
+                            render_session.finish_attempt(render_attempt_visible)
                         error, retry = await self._process_response_error(
                             attempt,
                             attempt_index,
@@ -816,10 +845,11 @@ class UnifiedPDRouter(BaseRouter):
         allow_streaming: bool = False,
         require_render_client: bool = True,
     ) -> TokenizedRequest | None:
-        requests = select_token_only_requests(
+        requests = token_only_requests_for_attempt(
             self.req_info,
             self._render_client,
             allow_streaming=allow_streaming,
+            retry_plan=self._active_retry_plan if allow_streaming else None,
             require_render_client=require_render_client,
         )
         return active_token_only_request(requests, self.req_info._trigger_batch_index) if requests else None
@@ -828,7 +858,8 @@ class UnifiedPDRouter(BaseRouter):
         self,
         attempt: AttemptContext,
     ) -> EngineRequest | None:
-        tokenized = self._select_active_token_only_request()
+        stream = bool(self.req_info.req_data.get("stream", False))
+        tokenized = self._select_active_token_only_request(allow_streaming=stream)
         if tokenized is None:
             return None
         adapter = self._require_adapter_for_attempt(attempt)
@@ -846,6 +877,7 @@ class UnifiedPDRouter(BaseRouter):
             tokenized,
             context,
             self._trigger_metaserver_url(attempt),
+            stream=stream,
         )
 
     def _tokenized_trigger_prefill_request(
@@ -952,6 +984,15 @@ class UnifiedPDRouter(BaseRouter):
     ) -> AsyncGenerator[str, None]:
         queue = asyncio.Queue(maxsize=1)
         terminal = asyncio.get_running_loop().create_future()
+        stream_derender = (
+            build_streaming_derender_processor(
+                self.req_info,
+                self._render_client,
+                self._get_streaming_render_session(),
+            )
+            if d_api.strip("/") == NATIVE_GENERATE_API
+            else None
+        )
         self._start_stream_decode_task(
             attempt,
             queue,
@@ -966,6 +1007,7 @@ class UnifiedPDRouter(BaseRouter):
                 queue,
                 terminal,
                 stream_adapter_state,
+                stream_derender=stream_derender,
                 sampling_state=sampling_state,
                 prefill_task=prefill_task,
                 release_prefill_on_stream=release_prefill_on_stream,
@@ -973,6 +1015,11 @@ class UnifiedPDRouter(BaseRouter):
         ) as queue_stream:
             async for chunk in queue_stream:
                 yield chunk
+        if stream_derender is not None:
+            self.logger.info(
+                "token-only generate and derender success request_id=%s prompt_count=1 stream=true",
+                self.req_info.req_id,
+            )
 
     def _start_stream_decode_task(
         self,
@@ -1021,6 +1068,7 @@ class UnifiedPDRouter(BaseRouter):
         terminal: asyncio.Future,
         stream_adapter_state: dict,
         *,
+        stream_derender: StreamingDerenderProcessor | None = None,
         sampling_state: dict | None = None,
         prefill_task: asyncio.Task | None = None,
         release_prefill_on_stream: bool = False,
@@ -1087,6 +1135,8 @@ class UnifiedPDRouter(BaseRouter):
                         release_prefill_on_stream = False
                     if sampling_state is not None:
                         value = self._collect_logprobs_from_stream_chunk(value, sampling_state)
+                    if stream_derender is not None:
+                        value = await stream_derender.process(value)
                     if self.config.exception_config.reschedule_enabled:
                         # process_stream_chunk already merges prompt_tokens_details into any usage
                         # block while it parses, so the standalone merge would only re-parse every
@@ -1144,7 +1194,10 @@ class UnifiedPDRouter(BaseRouter):
         stream_adapter_state = {}
         sampling_state = self._init_sampling_state()
         d_req, d_api = await self._trigger_decode_request_for_attempt(attempt, sampling_state)
-        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=None)
+        tokenized_decode = self._tokenized_trigger_decode_request_for_attempt(attempt)
+        if tokenized_decode is not None:
+            d_req, d_api = tokenized_decode.body, tokenized_decode.api
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=tokenized_decode)
         async with self._client_for(attempt.decode_resource) as d_client:
             async with aclosing(
                 self._run_stream_decode_phase(
@@ -1350,9 +1403,10 @@ class UnifiedPDRouter(BaseRouter):
                     self._record_prefill_complete(body)
                     if used_token_only:
                         self.logger.info(
-                            "token-only prefill success request_id=%s prompt_length=%d coordination_mode=trigger",
+                            "token-only prefill success request_id=%s prompt_length=%d stream=%s",
                             self.req_info.req_id,
                             len(self.req_info.token_ids or []),
+                            str(bool(self.req_info.req_data.get("stream", False))).lower(),
                         )
                     await self._scheduler.report_cb_event(p_instance_id, "success")
                     if not self.req_info._trigger_batch_active:
@@ -1558,8 +1612,10 @@ class UnifiedPDRouter(BaseRouter):
         self,
         attempt: AttemptContext,
         prefill_result: PrefillMetadata,
+        *,
+        allow_streaming: bool = False,
     ) -> EngineRequest | None:
-        tokenized = self._select_active_token_only_request()
+        tokenized = self._select_active_token_only_request(allow_streaming=allow_streaming)
         if tokenized is None:
             return None
         adapter = self._require_adapter_for_attempt(attempt)
@@ -1572,12 +1628,18 @@ class UnifiedPDRouter(BaseRouter):
             EngineLegSpec(
                 context=context,
                 phase=EnginePhase.DECODE,
+                generation=GenerationConstraint(stream=allow_streaming),
                 kv_transfer=require_kv_transfer(prefill_result.handoff_ticket, phase=EnginePhase.DECODE),
             ),
         )
 
     async def _run_handoff_stream_attempt(self, attempt: AttemptContext) -> AsyncGenerator[str, None]:
         attempt.transition(AttemptState.ACTIVE)
+        completion_requests = self._tokenized_stream_completion_requests(attempt)
+        if completion_requests:
+            async for chunk in self._run_handoff_completion_stream(attempt, completion_requests):
+                yield chunk
+            return
         stream_adapter_state = {}
         sampling_state = self._init_sampling_state()
         async with self._client_for(attempt.prefill_resource) as p_client:
@@ -1595,7 +1657,14 @@ class UnifiedPDRouter(BaseRouter):
             sampling_state,
             prefill_result=prefill_result,
         )
-        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=None)
+        tokenized_decode = self._tokenized_handoff_decode_request(
+            attempt,
+            prefill_result,
+            allow_streaming=True,
+        )
+        if tokenized_decode is not None:
+            d_req, d_api = tokenized_decode.body, tokenized_decode.api
+        await self._claim_decode_precision_sample(attempt, d_req, sampling_state, tokenized_decode=tokenized_decode)
         async with self._client_for(attempt.decode_resource) as d_client:
             if late_decode:
                 # Client is now in the pool; the canceller can bind to it.
@@ -1613,6 +1682,16 @@ class UnifiedPDRouter(BaseRouter):
                 async for chunk in decode_stream:
                     yield chunk
 
+    def _tokenized_stream_completion_requests(self, _attempt: AttemptContext) -> list[TokenizedRequest]:
+        if self.req_info.effective_entry_api().strip("/") != "v1/completions":
+            return []
+        return token_only_requests_for_attempt(
+            self.req_info,
+            self._render_client,
+            allow_streaming=True,
+            retry_plan=self._active_retry_plan,
+        )
+
     def _tokenized_completion_batch(self) -> list[TokenizedRequest]:
         requests = select_token_only_requests(self.req_info, self._render_client)
         return requests if len(requests) > 1 else []
@@ -1623,6 +1702,7 @@ class UnifiedPDRouter(BaseRouter):
         tokenized_requests: list[TokenizedRequest],
         *,
         prefill_results: list[PrefillMetadata] | None = None,
+        stream: bool = False,
     ) -> list[EngineRequest]:
         adapter = self._require_adapter_for_attempt(attempt)
         if not isinstance(adapter, VllmProtocolAdapter):
@@ -1654,6 +1734,7 @@ class UnifiedPDRouter(BaseRouter):
             return EngineLegSpec(
                 context=context,
                 phase=EnginePhase.DECODE,
+                generation=GenerationConstraint(stream=stream),
                 kv_transfer=require_kv_transfer(ticket, phase=EnginePhase.DECODE),
             )
 
@@ -1739,6 +1820,113 @@ class UnifiedPDRouter(BaseRouter):
         await self._release_attempt(attempt, wait=False)
         await self._drain_release_tasks()
         return body
+
+    async def _run_handoff_completion_stream(
+        self,
+        attempt: AttemptContext,
+        tokenized_requests: list[TokenizedRequest],
+    ) -> AsyncGenerator[str, None]:
+        adapter = self._require_adapter_for_attempt(attempt)
+        sampling_state = self._init_sampling_state()
+        prefill_requests = self._build_handoff_batch_requests(attempt, tokenized_requests)
+        p_instance_id = attempt.prefill_resource.instance.id
+        async with self._client_for(attempt.prefill_resource) as p_client:
+
+            async def send_prefill(request: EngineRequest) -> dict[str, Any]:
+                response = await self.forward_request(
+                    request.api,
+                    request.body,
+                    p_client,
+                    self.config.exception_config.first_token_timeout,
+                )
+                return response.json()
+
+            attempt.mark_dispatched(PDRole.ROLE_P.value)
+            prefill_bodies = await gather_generate_responses(prefill_requests, send_prefill)
+            prefill_results = [adapter.parse_prefill_response(body) for body in prefill_bodies]
+            if len(prefill_results) == 1 and prefill_results[0].usage is not None:
+                self._capture_prompt_tokens_details({"usage": prefill_results[0].usage})
+            self.req_info.update_state(ReqState.PREFILL_END)
+            if self._stream_commit_controller is not None:
+                self._stream_commit_controller.mark_ready("prefill", attempt.attempt_seq)
+            attempt.mark_completed(PDRole.ROLE_P.value)
+            await self._scheduler.report_cb_event(p_instance_id, "success")
+
+        self._submit_release_attempt_resource_background(
+            attempt.prefill_resource,
+            attempt.attempt_seq,
+            WorkloadAction.RELEASE_TOKENS,
+            attempt,
+        )
+        late_decode = await self._ensure_handoff_decode_resource(attempt)
+        decode_requests = self._build_handoff_batch_requests(
+            attempt,
+            tokenized_requests,
+            prefill_results=prefill_results,
+            stream=True,
+        )
+        sampled_index = 0
+        if await self._claim_precision_sample_tokenized(
+            attempt.decode_resource,
+            [decode_requests[sampled_index]],
+            sampling_state,
+        ):
+            sampling_state["tokenized_sample_index"] = sampled_index
+            sampling_state["info"]["cached_prompt_token_ids"] = list(tokenized_requests[sampled_index].prompt_token_ids)
+        d_instance_id = attempt.decode_resource.instance.id
+        stream_adapter_state: dict[str, Any] = {}
+        if self._render_client is None:
+            raise RuntimeError("Derender client is not configured")
+        async with self._client_for(attempt.decode_resource) as d_client:
+            if late_decode:
+                attempt.register_decode_canceller()
+            ready_callbacks = build_response_ready_callbacks(
+                len(decode_requests),
+                lambda: self._stream_commit_controller.mark_ready("decode", attempt.attempt_seq),
+            )
+            streams = [
+                self.forward_stream_request(
+                    request.api,
+                    request.body,
+                    d_client,
+                    self.config.exception_config.infer_timeout,
+                    on_response_ready=ready_callbacks[index],
+                )
+                for index, request in enumerate(decode_requests)
+            ]
+
+            def before_derender(index: int, chunk: bytes) -> bytes:
+                if index == sampled_index:
+                    return self._collect_logprobs_from_stream_chunk(chunk, sampling_state)
+                return chunk
+
+            attempt.mark_dispatched(PDRole.ROLE_D.value)
+            async for chunk in merge_token_only_streams(
+                self.req_info,
+                self._render_client,
+                streams,
+                tokenized_requests=tokenized_requests,
+                session=self._get_streaming_render_session(),
+                emit_prompt_token_ids=not bool(self.req_info.prompt_token_ids),
+                before_derender=before_derender,
+            ):
+                if self.config.exception_config.reschedule_enabled and len(tokenized_requests) == 1:
+                    chunk = self.rescheduler.process_stream_chunk(
+                        chunk,
+                        stream_adapter_state=stream_adapter_state,
+                    )
+                else:
+                    chunk = self._merge_prompt_tokens_details_into_stream_chunk(chunk)
+                    chunk = strip_stream_chunk_bytes_for_client(
+                        chunk,
+                        client_return_token_ids=self.req_info.client_expects_token_ids,
+                    )
+                yield self._strip_native_internal_fields_from_stream_chunk(chunk, attempt)
+            attempt.mark_completed(PDRole.ROLE_D.value)
+            await self._scheduler.report_cb_event(d_instance_id, "success")
+
+        self.req_info.update_state(ReqState.DECODE_END)
+        await self._maybe_submit_sample(attempt, sampling_state)
 
     async def _run_handoff_nonstream_attempt(self, attempt: AttemptContext) -> dict[str, Any]:
         attempt.transition(AttemptState.ACTIVE)
@@ -2047,9 +2235,10 @@ class UnifiedPDRouter(BaseRouter):
             self._capture_prompt_tokens_details({"usage": prefill_metadata.usage})
         if used_token_only:
             self.logger.info(
-                "token-only prefill success request_id=%s prompt_length=%d",
+                "token-only prefill success request_id=%s prompt_length=%d stream=%s",
                 self.req_info.req_id,
                 len(self.req_info.token_ids or []),
+                str(bool(self.req_info.req_data.get("stream", False))).lower(),
             )
         self.req_info.update_state(ReqState.PREFILL_END)
         if self._stream_commit_controller is not None:

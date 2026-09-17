@@ -199,22 +199,23 @@
       }
     },
     "render_config": {
-      "enabled": false,
+      "enable": false,
       "endpoint": {
         "host": "127.0.0.1",
         "port": 8100
       },
       "timeout_ms": 5000,
+      "renderer_num_workers": 4,
       "image_name": ""
     },
     "token_obfuscation_config": {
-      "enabled": false,
+      "enable": false,
       "model_path": "",
       "vocab_size": 0,
       "token_white_list": [],
       "seed_content": "",
       "image_config": {
-        "enabled": false,
+        "enable": false,
         "model_path": "",
         "patch_size": 0,
         "merge_size": 0,

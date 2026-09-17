@@ -54,7 +54,7 @@ def test_controller_integration_enabled_is_ignored_when_present(tmp_path):
 @pytest.fixture
 def _temp_json_file():
     """Fixture for temporary JSON file that gets cleaned up."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.coordinator.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".coordinator.json", delete=False) as f:
         _fpath = f.name
 
     yield _fpath
@@ -156,7 +156,7 @@ def test_default_config_initialization():
     assert config.rate_limit_config.enable_rate_limit is False
     assert config.api_config.coordinator_api_infer_port == 1025
     assert config.api_config.coordinator_api_mgmt_port == 1026
-    assert config.token_obfuscation_config.enabled is False
+    assert config.token_obfuscation_config.enable is False
     assert config.token_obfuscation_config.vocab_size == 0
     assert config.token_obfuscation_config.seed_content == ""
     assert config.token_obfuscation_config.token_white_list == []
@@ -165,8 +165,8 @@ def test_default_config_initialization():
 def test_token_obfuscation_requires_vocab_size_or_model_dir() -> None:
     """Unset vocab_size is read from config.json; without a model directory it must be given."""
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.token_white_list = [151643]
 
@@ -176,8 +176,8 @@ def test_token_obfuscation_requires_vocab_size_or_model_dir() -> None:
 
 def test_token_obfuscation_vocab_size_optional_with_model_dir() -> None:
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.token_white_list = [151643]
     config.engine_model_paths = ["/data/weights/model-obf"]
@@ -187,8 +187,8 @@ def test_token_obfuscation_vocab_size_optional_with_model_dir() -> None:
 
 def test_token_obfuscation_vocab_size_rejects_multiple_model_dirs() -> None:
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.token_white_list = [151643]
     config.engine_model_paths = ["/data/weights/a-obf", "/data/weights/b-obf"]
@@ -203,8 +203,8 @@ def test_token_obfuscation_vocab_size_rejects_multiple_model_dirs() -> None:
 def test_token_obfuscation_requires_explicit_white_list() -> None:
     """The white list is model-specific, so it must not be preset in code."""
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.vocab_size = 151936
 
@@ -217,8 +217,8 @@ def test_token_obfuscation_requires_explicit_white_list() -> None:
 
 def test_token_obfuscation_rejects_white_list_out_of_vocab() -> None:
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     config.token_obfuscation_config.vocab_size = 100
     config.token_obfuscation_config.token_white_list = [99]
@@ -231,16 +231,16 @@ def test_token_obfuscation_rejects_white_list_out_of_vocab() -> None:
 
 def test_token_obfuscation_requires_render() -> None:
     config = CoordinatorConfig()
-    config.token_obfuscation_config.enabled = True
+    config.token_obfuscation_config.enable = True
 
-    with pytest.raises(ValueError, match="requires render_config.enabled=true"):
+    with pytest.raises(ValueError, match="requires render_config.enable=true"):
         config.validate_config()
 
 
 def test_token_obfuscation_requires_explicit_seed() -> None:
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.enable = True
 
     with pytest.raises(ValueError, match="seed_content must be explicitly configured"):
         config.validate_config()
@@ -249,17 +249,17 @@ def test_token_obfuscation_requires_explicit_seed() -> None:
 def test_image_obfuscation_requires_render() -> None:
     """Image permutation runs on the Render payload, so Render must be enabled."""
     config = CoordinatorConfig()
-    config.token_obfuscation_config.image_config.enabled = True
+    config.token_obfuscation_config.image_config.enable = True
 
-    with pytest.raises(ValueError, match="image_config requires render_config.enabled=true"):
+    with pytest.raises(ValueError, match="image_config requires render_config.enable=true"):
         config.validate_config()
 
 
 def test_image_obfuscation_requires_explicit_seed() -> None:
     """Image client permutes the same seed, so an empty seed must be rejected too."""
     config = CoordinatorConfig()
-    config.render_config.enabled = True
-    config.token_obfuscation_config.image_config.enabled = True
+    config.render_config.enable = True
+    config.token_obfuscation_config.image_config.enable = True
 
     with pytest.raises(ValueError, match="seed_content must be explicitly configured"):
         config.validate_config()
@@ -268,9 +268,9 @@ def test_image_obfuscation_requires_explicit_seed() -> None:
 def test_image_obfuscation_requires_geometry_or_model_dir() -> None:
     """Unset geometry is read from the served weights directory; without one it must be given."""
     config = CoordinatorConfig()
-    config.render_config.enabled = True
+    config.render_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
-    config.token_obfuscation_config.image_config.enabled = True
+    config.token_obfuscation_config.image_config.enable = True
 
     with pytest.raises(ValueError, match=r"image_config requires explicit geometry \(patch_size"):
         config.validate_config()
@@ -279,9 +279,9 @@ def test_image_obfuscation_requires_geometry_or_model_dir() -> None:
 def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
     """A served model directory makes the geometry optional (resolved from the model files)."""
     config = CoordinatorConfig()
-    config.render_config.enabled = True
+    config.render_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
-    config.token_obfuscation_config.image_config.enabled = True
+    config.token_obfuscation_config.image_config.enable = True
     config.engine_model_paths = ["/data/weights/model-obf"]
 
     config.validate_config()
@@ -289,9 +289,9 @@ def test_image_obfuscation_geometry_optional_with_model_dir() -> None:
 
 def test_image_obfuscation_model_path_makes_geometry_optional() -> None:
     config = CoordinatorConfig()
-    config.render_config.enabled = True
+    config.render_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
-    config.token_obfuscation_config.image_config.enabled = True
+    config.token_obfuscation_config.image_config.enable = True
     config.token_obfuscation_config.image_config.model_path = "/data/weights/model-obf"
 
     config.validate_config()
@@ -300,10 +300,10 @@ def test_image_obfuscation_model_path_makes_geometry_optional() -> None:
 def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
     """Explicitly configured fields stay untouched, so no model directory is required."""
     config = CoordinatorConfig()
-    config.render_config.enabled = True
+    config.render_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     image_config = config.token_obfuscation_config.image_config
-    image_config.enabled = True
+    image_config.enable = True
     image_config.patch_size = 16
     image_config.merge_size = 2
     image_config.temporal_patch_size = 2
@@ -315,10 +315,10 @@ def test_image_obfuscation_explicit_geometry_wins_over_model_dir() -> None:
 
 def test_image_obfuscation_rejects_inverted_edge_range() -> None:
     config = CoordinatorConfig()
-    config.render_config.enabled = True
+    config.render_config.enable = True
     config.token_obfuscation_config.seed_content = "seed"
     image_config = config.token_obfuscation_config.image_config
-    image_config.enabled = True
+    image_config.enable = True
     image_config.patch_size = 16
     image_config.merge_size = 2
     image_config.temporal_patch_size = 2
@@ -369,7 +369,7 @@ def test_from_json_success(_temp_json_file):
         },
     }
 
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -391,7 +391,7 @@ def test_from_json_migrates_deprecated_recompute_config(_temp_json_file, caplog)
             "recompute_max_retry": 9,
         }
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -409,7 +409,7 @@ def test_new_reschedule_config_takes_precedence_over_deprecated_alias(_temp_json
             "reschedule_config": {"enable": True},
         }
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(test_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -441,7 +441,7 @@ def test_from_json_maps_hybrid_instances(_temp_json_file):
             "engine_config": {"max_model_len": 2048},
         },
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -578,7 +578,7 @@ def test_from_json_maps_pd_fallback_switch_from_scheduler_config(_temp_json_file
             }
         },
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -588,7 +588,7 @@ def test_from_json_maps_pd_fallback_switch_from_scheduler_config(_temp_json_file
 
 def test_from_json_with_invalid_json(_temp_json_file):
     """Test loading configuration from invalid JSON file"""
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         f.write("invalid json content")
 
     # Should use default configuration instead of raising exception
@@ -978,37 +978,37 @@ def test_to_dict():
 
     # Check that all config sections are present
     expected_keys = [
-        'logging_config',
-        'prometheus_metrics_config',
-        'exception_config',
-        'scheduler_config',
-        'inference_workers_config',
-        'infer_tls_config',
-        'mgmt_tls_config',
-        'etcd_tls_config',
-        'timeout_config',
-        'api_key_config',
-        'mgmt_api_key_config',
-        'rate_limit_config',
-        'standby_config',
-        'etcd_config',
-        'aigw_model',
-        'api_config',
+        "logging_config",
+        "prometheus_metrics_config",
+        "exception_config",
+        "scheduler_config",
+        "inference_workers_config",
+        "infer_tls_config",
+        "mgmt_tls_config",
+        "etcd_tls_config",
+        "timeout_config",
+        "api_key_config",
+        "mgmt_api_key_config",
+        "rate_limit_config",
+        "standby_config",
+        "etcd_config",
+        "aigw_model",
+        "api_config",
     ]
 
     for key in expected_keys:
         assert key in config_dict
 
     # Check that internal fields are not present
-    assert 'config_path' not in config_dict
-    assert 'last_modified' not in config_dict
+    assert "config_path" not in config_dict
+    assert "last_modified" not in config_dict
 
     # Check enum serialization
-    assert 'deploy_mode' not in config_dict['scheduler_config']
-    assert config_dict['scheduler_config']['scheduler_type'] == 'load_balance'
-    assert config_dict['exception_config']['reschedule_config']['enable'] is False
-    assert 'recompute_enabled' not in config_dict['exception_config']
-    assert 'recompute_max_retry' not in config_dict['exception_config']
+    assert "deploy_mode" not in config_dict["scheduler_config"]
+    assert config_dict["scheduler_config"]["scheduler_type"] == "load_balance"
+    assert config_dict["exception_config"]["reschedule_config"]["enable"] is False
+    assert "recompute_enabled" not in config_dict["exception_config"]
+    assert "recompute_max_retry" not in config_dict["exception_config"]
 
 
 def test_save_to_json(_temp_json_file):
@@ -1021,12 +1021,12 @@ def test_save_to_json(_temp_json_file):
     assert success is True
 
     # Verify saved content
-    with open(_temp_json_file, 'r', encoding="utf-8") as f:
+    with open(_temp_json_file, "r", encoding="utf-8") as f:
         saved_data = json.load(f)
 
-    assert saved_data['logging_config']['log_level'] == 'DEBUG'
-    assert saved_data['exception_config']['max_retry'] == 10
-    assert 'deploy_mode' not in saved_data['scheduler_config']
+    assert saved_data["logging_config"]["log_level"] == "DEBUG"
+    assert saved_data["exception_config"]["max_retry"] == 10
+    assert "deploy_mode" not in saved_data["scheduler_config"]
 
 
 def test_save_to_json_invalid_path():
@@ -1080,7 +1080,7 @@ def test_config_summary_includes_hybrid_fields(_temp_json_file):
             "engine_config": {"max_model_len": 2048},
         },
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1120,7 +1120,7 @@ def test_config_summary_pd_disaggregation_fields(_temp_json_file):
             "engine_config": {"max_model_len": 2048},
         },
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1150,7 +1150,7 @@ def test_reload_config(_temp_json_file):
     """Test configuration reload functionality"""
     # Create initial config
     initial_config = {"exception_config": {"max_retry": 5}}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(initial_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1158,7 +1158,7 @@ def test_reload_config(_temp_json_file):
 
     # Modify config file
     updated_config = {"exception_config": {"max_retry": 10}}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(updated_config, f)
 
     # Force update file modification time
@@ -1174,7 +1174,7 @@ def test_reload_config(_temp_json_file):
 def test_reload_config_file_not_modified(_temp_json_file):
     """Test reload when config file is not modified"""
     initial_config = {"exception_config": {"max_retry": 5}}
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(initial_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1214,7 +1214,7 @@ def test_from_json_maps_union_kv_events_to_prefill_kv_event_config(_temp_json_fi
         },
         "kv_conductor_config": {"http_server_port": 14444},
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1254,7 +1254,7 @@ def test_from_json_prefill_kv_event_prefers_prefill_over_union(_temp_json_file):
         },
         "kv_conductor_config": {"http_server_port": 13333},
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1277,7 +1277,7 @@ def test_from_json_union_without_kv_events_skips_auto_merge(_temp_json_file):
             },
         },
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1302,7 +1302,7 @@ def test_from_json_maps_prefill_kv_events_regression(_temp_json_file):
         },
         "kv_conductor_config": {"http_server_port": 15555},
     }
-    with open(_temp_json_file, 'w', encoding="utf-8") as f:
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump(user_config, f)
 
     config = CoordinatorConfig.from_json(_temp_json_file)
@@ -1450,9 +1450,10 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
     user_config = {
         "motor_coordinator_config": {
             "render_config": {
-                "enabled": True,
+                "enable": True,
                 "endpoint": {"host": "127.0.0.1", "port": 8200},
                 "timeout_ms": 1500,
+                "renderer_num_workers": 7,
                 "image_name": "vllm-render-cpu:test",
             },
         },
@@ -1470,7 +1471,8 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
 
     config = CoordinatorConfig.from_json(_temp_json_file)
 
-    assert config.render_config.enabled is True
+    assert config.render_config.enable is True
+    assert config.render_config.renderer_num_workers == 7
     assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/qwen"
 
 
@@ -1479,6 +1481,15 @@ def test_invalid_render_timeout_is_rejected():
     config.render_config.timeout_ms = 0
 
     with pytest.raises(ValueError, match="render_config.timeout_ms"):
+        config.validate_config()
+
+
+@pytest.mark.parametrize("num_workers", [0, True, "4"])
+def test_invalid_render_worker_count_is_rejected(num_workers):
+    config = CoordinatorConfig()
+    config.render_config.renderer_num_workers = num_workers
+
+    with pytest.raises(ValueError, match="render_config.renderer_num_workers"):
         config.validate_config()
 
 

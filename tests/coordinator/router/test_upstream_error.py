@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+from fastapi import HTTPException
 from motor.config.coordinator import CoordinatorConfig, ExceptionConfig
 from motor.coordinator.domain.request_manager import RequestManager
 from motor.coordinator.models.request import RequestInfo
@@ -248,12 +249,14 @@ def _make_error(status_code: int, body: bytes = b"") -> UpstreamHTTPError:
 # ---------------------------------------------------------------------------
 
 
-def test_cb_not_reportable_for_4xx():
-    """4xx errors are client errors (e.g. input too long, bad params); the instance
-    must not be penalised. Native engines return request-validation failures as 4xx.
+def test_cb_not_reportable_for_non_engine_http_errors():
+    """Client and coordinator response errors must not penalize the instance.
+
+    Native engines return request-validation failures as 4xx.
     """
     assert not is_cb_reportable_failure(_make_error(400))
     assert not is_cb_reportable_failure(_make_error(422))
+    assert not is_cb_reportable_failure(HTTPException(status_code=502, detail="Derender unavailable"))
 
 
 def test_cb_reportable_for_5xx():

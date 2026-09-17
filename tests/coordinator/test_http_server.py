@@ -357,11 +357,18 @@ class TestCoordinatorServer:
 
     def test_readiness_endpoints_fail_when_instance_manager_ready(self):
         """Test readiness when instance manager reports ready (default mock)."""
+        start_render_health = MagicMock()
+        self.coordinator_server._mgmt._start_render_health_observer = start_render_health
+
         response = self.mgmt_client.get("/readiness")
+        repeated_response = self.mgmt_client.get("/readiness")
+
         assert response.status_code == 200
         data = response.json()
         assert data["message"] == "Coordinator is ok"
         assert data["ready"] is True
+        assert repeated_response.status_code == 200
+        start_render_health.assert_called_once_with()
 
     def test_readiness_endpoints_fail_when_enable_standby_is_master_but_instance_not_ready(self):
         """Test readiness when standby is master but instance manager not ready."""
@@ -2192,6 +2199,34 @@ class TestFastAPIMiddlewareAdvanced:
         # Second request may be rate limited
         response4 = client.get("/test")
         assert response4.status_code in [200, 429], "Second request may be rate limited"
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+async def test_render_health_observer_retries_until_ready():
+    config = CoordinatorConfig()
+    config.render_config.enable = True
+    server = object.__new__(ManagementServer)
+    server.coordinator_config = config
+    server._render_health_task = None
+
+    render_client = MagicMock()
+    render_client.health = AsyncMock(side_effect=[False, True])
+    render_client.aclose = AsyncMock()
+
+    with (
+        patch("motor.coordinator.api_server.management_server.VLLMRenderClient", return_value=render_client),
+        patch("motor.coordinator.api_server.management_server._RENDER_HEALTH_RETRY_SECONDS", 0),
+    ):
+        server._start_render_health_observer()
+        task = server._render_health_task
+        assert task is not None
+        await task
+        server._start_render_health_observer()
+
+    assert server._render_health_task is task
+    assert render_client.health.await_count == 2
+    render_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
