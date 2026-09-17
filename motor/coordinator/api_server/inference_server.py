@@ -11,8 +11,8 @@
 """
 Inference plane: Worker subprocess only; provides /v1/completions, /v1/chat/completions,
 /v1/responses, /v1/messages, /v1/messages/count_tokens, /v1/models, etc.
-Dedicated per-worker metaserver (POST /v1/metaserver) is served on worker_metaserver_port
-when inference_workers_config.worker_metaserver_base_port > 0.
+Dedicated per-worker metaserver (POST /v1/metaserver, GET /metrics) is served on
+worker_metaserver_port when inference_workers_config.worker_metaserver_base_port > 0.
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 
 from motor.common.resources.instance import PDRole
 from motor.common.logger import get_logger
@@ -44,6 +45,7 @@ from motor.coordinator.router.dispatch import handle_metaserver_request, handle_
 from motor.coordinator.render.tokenization_service import TokenizationService
 from motor.coordinator.render.vllm_render_client import VLLMRenderClient
 from motor.coordinator.scheduler.policy.kv_cache_affinity import TokenizerManager
+from motor.coordinator.scheduler.policy.metrics import get_policy_metrics
 from motor.coordinator.tracer.tracing import TracerManager
 from motor.coordinator.domain.agent_hint import agent_hint_implies_manage_request
 
@@ -262,7 +264,7 @@ class InferenceServer(BaseCoordinatorServer):
         return self._inference_app
 
     def create_metaserver_app(self) -> FastAPI:
-        """Dedicated per-worker app for Decode layerwise callbacks. No API key / TLS."""
+        """Dedicated per-worker app for Decode layerwise callbacks and policy metrics. No API key / TLS."""
         app = FastAPI(title="Inference Worker Metaserver")
 
         @app.post("/v1/metaserver")
@@ -272,6 +274,13 @@ class InferenceServer(BaseCoordinatorServer):
                 self.coordinator_config,
                 scheduler=self._get_scheduler_client(),
                 request_manager=self._request_manager,
+            )
+
+        @app.get("/metrics")
+        async def policy_metrics():
+            return PlainTextResponse(
+                get_policy_metrics().render_prometheus(),
+                media_type="text/plain; version=0.0.4; charset=utf-8",
             )
 
         return app

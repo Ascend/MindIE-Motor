@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from copy import deepcopy
 
-from motor.common.resources.instance import PDRole
+from motor.common.resources.instance import Instance, PDRole
 from motor.config.coordinator import (
     CoordinatorConfig,
     CONTEXT_BUDGET_ON,
@@ -1093,13 +1093,12 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
 
 
 class TestKvAffinityFallbackConsolidation(unittest.TestCase):
-    """Consolidated kv_cache_affinity -> load_balance -> round_robin fallback chain (#5)."""
+    """KVA list helper uses PolicyExecutor.rank(); it must not call the legacy KVA selector."""
 
-    _AFFINITY = (
-        "motor.coordinator.scheduler.runtime.scheduler_client."
+    _LEGACY_SELECT = (
+        "motor.coordinator.scheduler.policy.kv_cache_affinity."
         "KvCacheAffinityPolicy.select_endpoint_candidates_from_list"
     )
-    _RR = "motor.coordinator.scheduler.runtime.scheduler_client.RoundRobinPolicy.select_instance_from_list"
 
     @staticmethod
     def _make_client():
@@ -1110,112 +1109,85 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
 
         return AsyncSchedulerClient(SchedulerClientConfig(scheduler_type="kv_cache_affinity"))
 
-    def test_invalid_mode_warns_and_falls_back_to_unified(self):
-        """An invalid kv_affinity.mode logs a warning and falls back to unified (not silent)."""
+    @staticmethod
+    def _make_instance(instance_id: int, endpoint_id: int, role: PDRole, active_tokens: float = 1.0) -> Instance:
+        endpoint = Endpoint(
+            id=endpoint_id,
+            ip="10.0.0.1",
+            business_port="8000",
+            workload=Workload(active_tokens=active_tokens),
+        )
+        return Instance(
+            job_name=f"job-{instance_id}",
+            model_name="test",
+            id=instance_id,
+            role=role.value,
+            endpoints={"pod": {endpoint_id: endpoint}},
+        )
+
+    def test_invalid_mode_falls_back_to_unified(self):
+        """An invalid kv_affinity.mode falls back to unified."""
         from motor.coordinator.scheduler.runtime.scheduler_client import (
             AsyncSchedulerClient,
             SchedulerClientConfig,
         )
-        from motor.config.coordinator import KV_AFFINITY_MODE_UNIFIED
+        from motor.config.coordinator import KV_AFFINITY_MODE_UNIFIED, KvAffinityConfig
 
-        from motor.config.coordinator import KvAffinityConfig
-
-        with patch("motor.coordinator.scheduler.runtime.scheduler_client.logger.warning") as warn:
-            client = AsyncSchedulerClient(
-                SchedulerClientConfig(
-                    scheduler_type="kv_cache_affinity",
-                    kv_affinity=KvAffinityConfig(mode="bogus"),
-                )
+        client = AsyncSchedulerClient(
+            SchedulerClientConfig(
+                scheduler_type="kv_cache_affinity",
+                kv_affinity=KvAffinityConfig(mode="bogus"),
             )
+        )
         self.assertEqual(client._kv_affinity_mode, KV_AFFINITY_MODE_UNIFIED)
-        self.assertTrue(
-            any("kv_affinity.mode" in str(c.args[0]) for c in warn.call_args_list),
-            "expected a warning mentioning kv_affinity.mode",
-        )
 
-    def test_prefill_affinity_hit_uses_affinity(self):
-        """ROLE_P with a conductor match returns the ranked affinity candidates, no fallback."""
-        from motor.coordinator.scheduler.runtime.zmq_protocol import (
-            CANDIDATE_POLICY_KV_CACHE_AFFINITY,
-        )
+    def test_list_helper_uses_rank_not_legacy_selector(self):
+        """List helper ranks via PolicyExecutor and never calls the legacy KVA selector."""
+        from motor.coordinator.scheduler.policy.api import CandidateId, KvMatch
+        from motor.coordinator.scheduler.runtime.zmq_protocol import CANDIDATE_POLICY_KV_CACHE_AFFINITY
 
         client = self._make_client()
-        inst, ep = Mock(), Mock()
-        req = Mock()
-        req.req_data = {"prompt": "x"}
-        ranked = [(inst, ep, 0.0)]
-        with patch(self._AFFINITY, return_value=ranked):
-            cands, policy = client._select_endpoint_candidates_from_list_with_policy(
-                [Mock()], PDRole.ROLE_P, req, top_k=1
+        req = RequestInfo(req_id="req-kva", req_data={"prompt": "x"}, req_len=1, api="completions")
+        inst_low = self._make_instance(1, 10, PDRole.ROLE_P, active_tokens=1.0)
+        inst_hit = self._make_instance(2, 20, PDRole.ROLE_P, active_tokens=8.0)
+        inst_decode = self._make_instance(3, 30, PDRole.ROLE_D, active_tokens=2.0)
+        inst_union = self._make_instance(4, 40, PDRole.ROLE_U, active_tokens=2.0)
+
+        def fake_kv(_token_ids, _instances, candidate_ids):
+            matches = {
+                cid: KvMatch(
+                    matched_tokens=16 if cid == CandidateId(2, 20) else 0,
+                    prefill_cost=1.0 if cid == CandidateId(2, 20) else 9.0,
+                    hit_ratio=0.9 if cid == CandidateId(2, 20) else 0.0,
+                )
+                for cid in candidate_ids
+            }
+            return matches, True
+
+        client._kv_provider.build = Mock(side_effect=fake_kv)
+        with patch(self._LEGACY_SELECT) as legacy:
+            empty, empty_policy = client._select_endpoint_candidates_from_list_with_policy(
+                [], PDRole.ROLE_P, req, top_k=1
             )
-        self.assertEqual(policy, CANDIDATE_POLICY_KV_CACHE_AFFINITY)
-        self.assertEqual(cands, ranked)
-
-    def test_prefill_affinity_miss_falls_back_to_load_balance(self):
-        """ROLE_P with no conductor match falls through to the single load_balance fallback."""
-        from motor.coordinator.scheduler.runtime.zmq_protocol import CANDIDATE_POLICY_LOAD_BALANCE
-
-        client = self._make_client()
-        inst, ep = Mock(), Mock()
-        req = Mock()
-        req.req_data = {"prompt": "x"}
-        with (
-            patch(self._AFFINITY, return_value=None),
-            patch.object(
-                client,
-                "_select_endpoint_candidates_by_load_balance",
-                return_value=[(inst, ep, 1.0)],
-            ) as lb,
-        ):
-            cands, policy = client._select_endpoint_candidates_from_list_with_policy(
-                [Mock()], PDRole.ROLE_P, req, top_k=1
+            hit, hit_policy = client._select_endpoint_candidates_from_list_with_policy(
+                [inst_low, inst_hit], PDRole.ROLE_P, req, top_k=1
             )
-        self.assertEqual(policy, CANDIDATE_POLICY_LOAD_BALANCE)
-        self.assertEqual(cands, [(inst, ep, 1.0)])
-        lb.assert_called_once()
-
-    def test_non_prefill_role_uses_load_balance_without_affinity(self):
-        """Non-prefill roles never consult conductor affinity; they use the same fallback path."""
-        from motor.coordinator.scheduler.runtime.zmq_protocol import CANDIDATE_POLICY_LOAD_BALANCE
-
-        client = self._make_client()
-        inst, ep = Mock(), Mock()
-        req = Mock()
-        req.req_data = {}
-        with (
-            patch(self._AFFINITY) as affinity,
-            patch.object(
-                client,
-                "_select_endpoint_candidates_by_load_balance",
-                return_value=[(inst, ep, 2.0)],
-            ),
-        ):
-            cands, policy = client._select_endpoint_candidates_from_list_with_policy(
-                [Mock()], PDRole.ROLE_D, req, top_k=1
+            decode, decode_policy = client._select_endpoint_candidates_from_list_with_policy(
+                [inst_decode], PDRole.ROLE_D, req, top_k=1
             )
-        affinity.assert_not_called()
-        self.assertEqual(policy, CANDIDATE_POLICY_LOAD_BALANCE)
-        self.assertEqual(cands, [(inst, ep, 2.0)])
-
-    def test_load_balance_empty_falls_back_to_round_robin(self):
-        """When load_balance yields nothing, the chain ends at round_robin (unchanged behavior)."""
-        from motor.coordinator.scheduler.runtime.zmq_protocol import CANDIDATE_POLICY_ROUND_ROBIN
-
-        client = self._make_client()
-        inst, ep = Mock(), Mock()
-        req = Mock()
-        req.req_data = {"prompt": "x"}
-        with (
-            patch(self._AFFINITY, return_value=None),
-            patch.object(client, "_select_endpoint_candidates_by_load_balance", return_value=[]),
-            patch(self._RR, return_value=(inst, 1)),
-            patch.object(client, "_select_endpoint_for_instance", return_value=(inst, ep)),
-        ):
-            cands, policy = client._select_endpoint_candidates_from_list_with_policy(
-                [Mock()], PDRole.ROLE_P, req, top_k=1
+            union, union_policy = client._select_endpoint_candidates_from_list_with_policy(
+                [inst_union], PDRole.ROLE_U, req, top_k=1
             )
-        self.assertEqual(policy, CANDIDATE_POLICY_ROUND_ROBIN)
-        self.assertEqual(cands, [(inst, ep, 0.0)])
+        legacy.assert_not_called()
+        self.assertEqual(empty_policy, CANDIDATE_POLICY_KV_CACHE_AFFINITY)
+        self.assertEqual(empty, [])
+        self.assertEqual(hit_policy, CANDIDATE_POLICY_KV_CACHE_AFFINITY)
+        self.assertEqual([(inst.id, ep.id) for inst, ep, _ in hit], [(2, 20)])
+        self.assertEqual(decode_policy, CANDIDATE_POLICY_KV_CACHE_AFFINITY)
+        self.assertEqual([(inst.id, ep.id) for inst, ep, _ in decode], [(3, 30)])
+        self.assertEqual(union_policy, CANDIDATE_POLICY_KV_CACHE_AFFINITY)
+        self.assertEqual([(inst.id, ep.id) for inst, ep, _ in union], [(4, 40)])
+        self.assertEqual(client._kv_provider.build.call_count, 2)
 
 
 class TestTokenizerManagerFunction(unittest.TestCase):

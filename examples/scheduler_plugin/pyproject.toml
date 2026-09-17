@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acme-motor-policies"
+version = "0.1.0"
+description = "Sample scheduling policies for MindIE Motor API v1"
+requires-python = ">=3.10"
+
+[project.entry-points."mindie_motor.scheduling_policies"]
+"acme.weighted_tokens" = "acme_motor_policies.weighted:WeightedPolicy"
+
+[tool.setuptools.packages.find]
+where = ["src"]

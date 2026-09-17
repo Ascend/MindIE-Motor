@@ -52,7 +52,7 @@ Render 产生的非流式 Chat Completions 和 Completions 请求支持完整 To
 
 - `standby_config.enable_master_standby`：是否走主备与 Infer 启停分支。
 - `scheduler_config`：`scheduler_type` 等。推理 Router 由当前实例角色与 `dispatch_capabilities` 动态选择，不再读取 `deploy_mode`（见 [PD 分离](../../design/pd_disaggregation.md)）。
-- `inference_workers_config.worker_metaserver_base_port`：vLLM layerwise/trigger 时每 Worker 独立 metaserver 端口；默认 `12000`，设为 `0` 关闭。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`。端口冲突时推理口继续，Trigger 返回 503。
+- `inference_workers_config.worker_metaserver_base_port`：vLLM layerwise/trigger 时每 Worker 独立 metaserver 端口；默认 `12000`，设为 `0` 关闭。监听 `POST /v1/metaserver` 与 `GET /metrics`（策略插件 `motor_policy_*`）。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`。端口冲突时推理口继续，Trigger 返回 503。
 - `api_config`：推理端口、管理端口等（与 `interface_description.md` 一致处为准）。
 
 ## 使用样例

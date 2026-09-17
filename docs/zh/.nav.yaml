@@ -74,6 +74,7 @@ nav:
       - CRD 部署设计: design/crd_deployment.md
       - Metrics 可观测性: design/metrics.md
       - 熔断设计: design/circuit_breaker_design.md
+      - Coordinator 调度策略插件: design/scheduler_policy_plugin.md
   - 开发者指南:
       - 概述: developer_guide/README.md
       - 本地构建文档: developer_guide/build_docs.md

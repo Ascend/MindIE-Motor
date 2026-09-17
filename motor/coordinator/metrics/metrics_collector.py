@@ -33,6 +33,7 @@ from motor.coordinator.metrics.metric_types import (
 from motor.coordinator.metrics.aggregation_engine import SemanticAggregationEngine
 from motor.coordinator.metrics.metric_registry import MetricRegistry
 from motor.coordinator.metrics.metric_computer import MotorMetricComputer, get_inherited_metric_names
+from motor.coordinator.scheduler.policy.metrics import append_policy_metrics
 
 logger = get_logger(__name__)
 
@@ -363,7 +364,7 @@ class MetricsCollector(ThreadSafeSingleton):
             if metrics and not metrics.endswith("\n"):
                 metrics += "\n"
             metrics += pool_text
-        return metrics
+        return append_policy_metrics(metrics)
 
     @staticmethod
     def _normalize_metrics_format(metrics_format: str | None) -> str:

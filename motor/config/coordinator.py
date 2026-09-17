@@ -14,9 +14,9 @@ import re
 import ipaddress
 import tempfile
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, ClassVar, Optional
 from enum import Enum
-from dataclasses import dataclass, field, asdict, is_dataclass
+from dataclasses import dataclass, field, fields, asdict, is_dataclass
 
 from motor.common.logger import get_logger
 from motor.common.utils.env import Env
@@ -368,6 +368,42 @@ class KvAffinityConfig:
 
 
 @dataclass
+class PolicyPluginConfig:
+    """Scheduling policy name, options, and runtime fallback.
+
+    Empty ``name`` means Worker uses ``scheduler_type``. In-tree names are created
+    by the built-in factory and are never discovered via Entry Points. Any other
+    name is loaded from group ``mindie_motor.scheduling_policies``.
+    """
+
+    IN_TREE_NAMES: ClassVar[frozenset[str]] = frozenset({"load_balance", "round_robin", "kv_cache_affinity"})
+    RESERVED_NAMES: ClassVar[frozenset[str]] = IN_TREE_NAMES
+    FALLBACK_NAMES: ClassVar[frozenset[str]] = frozenset({"load_balance", "round_robin"})
+
+    name: str = ""
+    options: dict[str, Any] = field(default_factory=dict)
+    fallback: str = "load_balance"
+
+
+def _set_policy_plugin_field(obj, key: str, value: Any) -> None:
+    if value is None:
+        setattr(obj, key, None)
+        return
+    if not isinstance(value, dict):
+        setattr(obj, key, value)
+        return
+    plugin = getattr(obj, key, None) or PolicyPluginConfig()
+    known = {item.name for item in fields(plugin)}
+    unknown = sorted(str(field_key) for field_key in value if field_key not in known)
+    if unknown:
+        logger.warning("Unknown policy_plugin key(s) ignored: %s", ",".join(unknown))
+    for field_key, field_value in value.items():
+        if field_key in known:
+            setattr(plugin, field_key, field_value)
+    setattr(obj, key, plugin)
+
+
+@dataclass
 class ProgressTTLConfig:
     """Coordinator-side Program admission settings.
 
@@ -417,6 +453,8 @@ class SchedulerConfig:
     progress_ttl: ProgressTTLConfig = field(default_factory=ProgressTTLConfig)
     # KV event registration config for kv-conductor.
     kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
+    # Optional external scheduling policy plugin (Entry Point name).
+    policy_plugin: PolicyPluginConfig | None = None
 
 
 @dataclass
@@ -787,6 +825,7 @@ class CoordinatorConfig:
 
             scheduler_handlers = {
                 'scheduler_type': lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
+                'policy_plugin': _set_policy_plugin_field,
             }
 
             exception_config_data = cfg.get("exception_config", {})
@@ -992,6 +1031,16 @@ class CoordinatorConfig:
         )
         if affinity.mode not in KV_AFFINITY_MODES:
             self._errors.append(f"kv_affinity.mode must be one of {KV_AFFINITY_MODES}, got {affinity.mode!r}")
+        plugin = self.scheduler_config.policy_plugin
+        if plugin is not None and (plugin.name or "").strip():
+            fallback = (plugin.fallback or "load_balance").strip()
+            if fallback not in PolicyPluginConfig.FALLBACK_NAMES:
+                self._errors.append(
+                    "scheduler_config.policy_plugin.fallback must be one of %s, got %r"
+                    % (sorted(PolicyPluginConfig.FALLBACK_NAMES), fallback)
+                )
+            if plugin.options is not None and not isinstance(plugin.options, dict):
+                self._errors.append("scheduler_config.policy_plugin.options must be a JSON object")
         progress_ttl = self.scheduler_config.progress_ttl
         if not isinstance(progress_ttl.enabled, bool):
             self._errors.append("progress_ttl.enabled must be a boolean")

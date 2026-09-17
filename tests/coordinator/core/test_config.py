@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from motor.config.coordinator import CoordinatorConfig
+from motor.config.coordinator import CoordinatorConfig, PolicyPluginConfig
 
 
 def test_standalone_coordinator_config_needs_no_engine_or_controller_sections(tmp_path):
@@ -1275,4 +1275,70 @@ def test_invalid_render_timeout_is_rejected():
     config.render_config.timeout_ms = 0
 
     with pytest.raises(ValueError, match="render_config.timeout_ms"):
+        config.validate_config()
+
+
+def test_policy_plugin_config_from_json(_temp_json_file):
+    user_config = {
+        "motor_coordinator_config": {
+            "scheduler_config": {
+                "scheduler_type": "load_balance",
+                "policy_plugin": {
+                    "name": "acme.weighted_tokens",
+                    "options": {"load_weight": 1.0},
+                    "fallback": "round_robin",
+                },
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    plugin = config.scheduler_config.policy_plugin
+    assert plugin is not None
+    assert plugin.name == "acme.weighted_tokens"
+    assert plugin.options == {"load_weight": 1.0}
+    assert plugin.fallback == "round_robin"
+
+
+@pytest.mark.parametrize("name", ["load_balance", "round_robin", "kv_cache_affinity"])
+def test_policy_plugin_in_tree_name_is_accepted(name: str):
+    config = CoordinatorConfig()
+    config.scheduler_config.policy_plugin = PolicyPluginConfig(name=name)
+    config.validate_config()
+
+
+def test_policy_plugin_unknown_keys_are_ignored_with_warning(_temp_json_file, caplog):
+    user_config = {
+        "motor_coordinator_config": {
+            "scheduler_config": {
+                "scheduler_type": "load_balance",
+                "policy_plugin": {
+                    "name": "acme.weighted_tokens",
+                    "fallbacks": "round_robin",
+                    "unknown_key": {"load_weight": 1.0},
+                },
+            },
+        },
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(user_config, f)
+
+    with caplog.at_level("WARNING"):
+        config = CoordinatorConfig.from_json(_temp_json_file)
+    plugin = config.scheduler_config.policy_plugin
+    assert plugin is not None
+    assert plugin.name == "acme.weighted_tokens"
+    assert plugin.fallback == "load_balance"
+    assert plugin.options == {}
+    assert "fallbacks" in caplog.text
+    assert "unknown_key" in caplog.text
+
+
+def test_policy_plugin_invalid_fallback_rejected():
+    config = CoordinatorConfig()
+    config.scheduler_config.policy_plugin = PolicyPluginConfig(name="acme.test", fallback="kv_cache_affinity")
+
+    with pytest.raises(ValueError, match="fallback"):
         config.validate_config()

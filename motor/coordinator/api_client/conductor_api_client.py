@@ -23,8 +23,10 @@ from motor.config.coordinator import CoordinatorConfig
 
 TENANT_ID = "default"
 logger = get_logger(__name__)
-# Roles whose KV events should be registered with the conductor.
-_KVA_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
+# Roles whose KV events are registered with the conductor. Decode / encode
+# instances never appear in /query, so scheduling must not pay that RPC either.
+KVA_ELIGIBLE_ROLES = frozenset({PDRole.ROLE_P, PDRole.ROLE_U})
+_KVA_ROLES = KVA_ELIGIBLE_ROLES
 
 # Canonical store_backend names. Input config is matched case-insensitively
 # (same as kv-conductor's StoreBackend::parse).
