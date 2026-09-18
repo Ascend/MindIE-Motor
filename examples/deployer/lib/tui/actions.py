@@ -563,6 +563,7 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             from lib.utils import read_json
             from lib.config_validator import resolve_config_paths, validate_pd_hybrid_config
             from lib.config_validator import validate_pd_hybrid_infer_service_template
+            from lib.container_snapshot import resolve_infer_service_template, validate_container_snapshot_config
             from lib.generator.engine import validate_instance_nums
             from lib.generator.k8s_utils import set_user_config_path
 
@@ -571,13 +572,16 @@ class _DeployActionsMixin:  # pylint: disable=no-member,attribute-defined-outsid
             os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
 
             user_config = read_json(user_config_path)
+            validate_container_snapshot_config(user_config)
 
             if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
                 from lib.utils import get_deploy_paths
 
                 validate_pd_hybrid_config(user_config)
                 paths = get_deploy_paths()
-                validate_pd_hybrid_infer_service_template(user_config, paths["infer_service_input_yaml"])
+                validate_pd_hybrid_infer_service_template(
+                    user_config, resolve_infer_service_template(paths, user_config)
+                )
             validate_instance_nums(user_config)
 
             # Deploy
