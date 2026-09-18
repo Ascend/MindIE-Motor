@@ -83,6 +83,7 @@
 > [!NOTE] 说明
 > 首次制作基准快照时，实例仍需完成冷启动及 Device suspend。只有基准快照可用后，后续实例才能通过快照恢复启动。
 
+<!-- -->
 > [!WARNING] 警告
 > 快照缓存与制作快照时使用的模型和并行配置绑定。更换模型，或修改 DP、TP 等并行配置后，如果需要重新制作快照，必须先删除 `host_snapshot_image_path` 下以当前 namespace 命名的原有快照缓存，再重新拉起服务并制作新快照。否则服务会命中旧缓存，并使用旧模型或旧并行配置对应的快照启动。`device_snapshot_weight_path` 下不再使用的旧快照权重可同步清理。
 
@@ -213,9 +214,9 @@
 
 1. 检查日志中是否包含以下内容：
 
-```text
-[snapshot] Node manager is restored from host side snapshot, registering...
-```
+   ```text
+   [snapshot] Node manager is restored from host side snapshot, registering...
+   ```
 
    可以通过以下命令查询：
 
