@@ -173,7 +173,7 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
 ```
 
 > `kv_affinity` 子参数（`mode` / `load_weight` / `overlap_credit` / `prefill_load_scale` /
-> `w_npu` / `w_cpu` / `w_disk` 等）均有默认值，**示例中无需配置**；需要调整评分行为时按
+> `w_npu` / `w_cpu` / `w_disk` / `hit_rate_threshold` 等）均有默认值，**示例中无需配置**；需要调整评分行为时按
 > [参数说明](#scheduler_config调度器亲和性参数)覆盖即可。
 
 PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/pd_aggregation_deployment.md)。
@@ -231,6 +231,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | **kv_affinity.w_npu** | float | `[0, +∞)` | 互斥 NPU 命中块权重。默认 `1.0` |
 | **kv_affinity.w_cpu** | float | `[0, +∞)` | 互斥 CPU 命中块权重。默认 `1.0` |
 | **kv_affinity.w_disk** | float | `[0, +∞)` | 互斥 Disk 命中块权重。默认 `0.0`（默认不计 Disk） |
+| **kv_affinity.hit_rate_threshold** | float | `[0, 1]` | 亲和性命中率门槛。默认 `0` 表示不启用（始终按亲和评分）。`(0, 1]` 时，各 endpoint 最大加权前缀命中率 `max(matched_tokens)/prompt_tokens` **大于**该阈值才走亲和调度，否则回退 `load_balance` |
 
 ### `kv-events-config`（引擎侧 KV 事件发布配置）
 
@@ -273,7 +274,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 1. **KV Cache 事件发布**：P 实例完成 prefill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 block hashes、token IDs、parent hash 等）。
 2. **Conductor 索引**：kv-conductor 作为 ZMQ SUB **主动 connect 到各 P 节点绑定的事件端点**（连接方向 conductor → P，事件数据流 P → conductor），根据 token IDs 重算 XXH3 内容哈希，构建 HBM RadixTree + CPU/Disk continuation-edge 索引。
-3. **亲和性调度决策**：Coordinator（`scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度，再按评分策略选择最优 Worker。
+3. **亲和性调度决策**：Coordinator（`scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度。若配置了 `hit_rate_threshold > 0` 且最大命中率未超过该阈值，则回退负载均衡；否则再按评分策略选择最优 Worker。
 
 ### Conductor 查询结果
 
@@ -308,8 +309,8 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 | 介质 | 匹配方式 |
 |------|----------|
 | HBM（NPU） | RadixTree 最长连续前缀（从 root 走到第一个缺失） |
-| CPU | continuation-edge 连续边匹配：从 HBM 断点续查；root 链（首块副本）无条件走，更长副本不被上游较短命中掩盖 |
-| Disk | continuation-edge：从 `max(HBM, CPU)` 断点续查；root 链同 CPU 层无条件走 |
+| CPU | continuation-edge 连续边匹配：从 HBM 断点续查（仅同一 `(instance_id, dp_rank)`）；root 链（首块副本）无条件走，更长副本不被上游较短命中掩盖 |
+| Disk | continuation-edge：从 `max(HBM, CPU)` 断点续查（同样按 `(instance_id, dp_rank)` 对齐）；root 链同 CPU 层无条件走 |
 
 ### 调度评分模型
 
@@ -334,6 +335,16 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 - `load_weight = 0` → 纯亲和性（最长前缀优先）
 - 无缓存前缀但负载显著更低的 endpoint 仍可能胜出，避免热点前缀聚集
 
+**命中率门槛**（`hit_rate_threshold`，在评分之前）：
+
+```text
+hit_rate = max(matched_tokens) / isl     # 所有 endpoint 的最大加权前缀命中率
+if hit_rate_threshold > 0 and hit_rate <= hit_rate_threshold:
+    回退 load_balance
+```
+
+默认 `0` 关闭门槛，行为与改前一致。
+
 **`load_gated`**：
 
 1. 按 `load_cost` 升序保留最低的 N 个 endpoint（`N = kv_affinity.load_gate_topn`，≤0 时为 2）
@@ -355,6 +366,7 @@ score = prefill_load_scale × prefill_cost + load_weight × load_cost
 | 纯吞吐优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 0`（纯亲和性，不感知负载） |
 | 负载均衡优先 | `kv_affinity.mode: unified`，`kv_affinity.load_weight: 2.0`（负载权重更高） |
 | 延迟敏感（保守） | `kv_affinity.mode: load_gated`，`kv_affinity.load_gate_topn: 3`（只在低负载中选最优前缀） |
+| 低命中不走亲和 | `kv_affinity.hit_rate_threshold: 0.3`（最大前缀命中率 > 30% 才亲和，否则负载均衡） |
 | DeepSeek V4 | `kv_conductor_config.block_size` 对齐主组 MLA 事件（常见 512；以日志为准），不必改引擎 `--block-size` |
 | `http_server_port` | 确保不与集群其他服务端口冲突，默认 `13333` |
 

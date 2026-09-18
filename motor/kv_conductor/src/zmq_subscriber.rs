@@ -547,6 +547,7 @@ pub fn replay_events(
     _block_size: u32,
     indexer: &Indexer,
     backend_id: &str,
+    event_source: EventSource,
     match_mode: MatchMode,
     hbm_ip_index: &Option<HbmIpIndex>,
 ) {
@@ -604,7 +605,30 @@ pub fn replay_events(
 
         let payload_bytes: &[u8] = &payload_msg;
 
-        // Same order as subscriber_loop: vLLM first, then Mooncake.
+        // Pool replay uses the same wire-format dispatch as live pool ingestion.
+        // Untagged pool maps must not be accepted as unknown vLLM events.
+        if event_source == EventSource::Pool {
+            let mut parse_errors = 0;
+            process_payload(
+                payload_bytes,
+                indexer,
+                model_name,
+                tenant_id,
+                backend_id,
+                _block_size,
+                0,
+                &[],
+                event_source,
+                match_mode,
+                hbm_ip_index,
+                &mut batch_count,
+                &mut event_count,
+                &mut parse_errors,
+            );
+            continue;
+        }
+
+        // Engine replay: vLLM first, then the legacy pool batch fallback.
         if let Some((vllm_events, bdp)) = events::parse_vllm_batch(payload_bytes) {
             batch_count += 1;
             for vllm_event in &vllm_events {

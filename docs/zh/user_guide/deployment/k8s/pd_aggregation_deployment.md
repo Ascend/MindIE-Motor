@@ -164,6 +164,7 @@ PD 混部场景不再需要配置 Coordinator 调度模式。Coordinator 会根�
 | scheduler_config.kv_affinity.prefill_load_scale | float | unified 模式下 prefill 成本权重，默认 `1.0` |
 | scheduler_config.kv_affinity.load_gate_topn | int | load_gated 模式下保留的最小负载 endpoint 数量；`0` 时回退为 `2` |
 | scheduler_config.kv_affinity.w_npu / w_cpu / w_disk | float | 互斥介质命中块权重，默认 `1.0` / `1.0` / `0.0` |
+| scheduler_config.kv_affinity.hit_rate_threshold | float | 亲和性命中率门槛，`[0, 1]`。默认 `0` 关闭；大于 0 时最大前缀命中率须高于该阈值才走亲和，否则回退负载均衡 |
 
 ### motor_engine_union_config（混部引擎）
 

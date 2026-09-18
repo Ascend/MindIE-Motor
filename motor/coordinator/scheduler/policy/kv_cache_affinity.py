@@ -129,16 +129,20 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         w_npu: float = 1.0,
         w_cpu: float = 1.0,
         w_disk: float = 0.0,
+        hit_rate_threshold: float = 0.0,
         top_k: int = 1,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Rank prefill (instance, endpoint) candidates by KV-cache prefix affinity, best first.
 
         Returns up to ``top_k`` ``(instance, endpoint, score)`` tuples ordered best-first (lower
-        score = better), or ``None`` to let the caller fall back. The worker proposes this ranked
-        set to the scheduler; the scheduler may re-pick among them by its authoritative (fresh)
-        workload ledger -- so spreading a burst across the top candidates is the scheduler's job,
-        not a client-local in-flight overlay.
+        score = better), or ``None`` / ``[]`` to let the caller fall back. ``None`` means the
+        conductor result is unusable; ``[]`` means affinity declined the request (hit rate at or
+        below ``hit_rate_threshold``) and the caller should use load_balance without treating it
+        as a conductor failure. The worker proposes this ranked set to the scheduler; the
+        scheduler may re-pick among them by its authoritative (fresh) workload ledger -- so
+        spreading a burst across the top candidates is the scheduler's job, not a client-local
+        in-flight overlay.
 
         Two modes, chosen explicitly by ``mode``:
 
@@ -170,8 +174,13 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         :param w_npu: weight for exclusive NPU matched blocks (default 1.0).
         :param w_cpu: weight for exclusive CPU matched blocks (default 1.0).
         :param w_disk: weight for exclusive Disk matched blocks (default 0.0).
+        :param hit_rate_threshold: require ``max(matched_tokens) / prompt_tokens`` strictly
+            greater than this value before keeping affinity routing. ``0`` (default) disables
+            the gate. Values in ``(0, 1]`` fall back to load_balance when the best prefix hit
+            rate is at or below the threshold.
         :param top_k: maximum number of ranked candidates to return (>=1).
-        :returns: best-first ``[(instance, endpoint, score), ...]`` or ``None`` to fall back.
+        :returns: best-first ``[(instance, endpoint, score), ...]``, ``[]`` to fall back to
+            load_balance after a low hit rate, or ``None`` when the conductor result is missing.
         """
         encoded_ids = KvCacheAffinityPolicy._ensure_token_ids(req_info)
 
@@ -207,6 +216,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
                 w_cpu=w_cpu,
                 w_disk=w_disk,
                 block_size=block_size,
+                hit_rate_threshold=hit_rate_threshold,
             )
 
         # "unified" (default); unknown modes fall through here too.
@@ -223,6 +233,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             w_cpu=w_cpu,
             w_disk=w_disk,
             block_size=block_size,
+            hit_rate_threshold=hit_rate_threshold,
         )
 
     @staticmethod
@@ -237,6 +248,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         w_npu: float = 1.0,
         w_cpu: float = 1.0,
         w_disk: float = 0.0,
+        hit_rate_threshold: float = 0.0,
     ) -> tuple[Instance, Endpoint] | None:
         """
         Single-result convenience wrapper over :meth:`select_endpoint_candidates_from_list`.
@@ -255,6 +267,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             w_npu=w_npu,
             w_cpu=w_cpu,
             w_disk=w_disk,
+            hit_rate_threshold=hit_rate_threshold,
             top_k=1,
         )
         if not ranked:
@@ -436,6 +449,37 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         return candidates, any_instance
 
     @staticmethod
+    def _hit_rate_below_threshold(
+        raw: list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]],
+        isl: int,
+        hit_rate_threshold: float,
+    ) -> bool:
+        """True when affinity should yield to load_balance because prefix hit rate is too low.
+
+        ``hit_rate_threshold <= 0`` disables the gate. Otherwise the best endpoint's
+        tier-weighted ``matched_tokens / prompt_tokens`` must be strictly greater than
+        the threshold; equal or lower values fall back.
+        """
+        if hit_rate_threshold <= 0.0:
+            return False
+        if isl <= 0 or not raw:
+            logger.debug(
+                "kv_cache_affinity: empty prompt or candidates; hit_rate_threshold=%.4f, falling back to load_balance",
+                hit_rate_threshold,
+            )
+            return True
+        max_matched = max(matched_tokens for (_load, matched_tokens, _prefill, _inst, _ep, _tier) in raw)
+        hit_rate = max_matched / float(isl)
+        if hit_rate > hit_rate_threshold:
+            return False
+        logger.debug(
+            "kv_cache_affinity: max hit_rate=%.4f <= threshold=%.4f; falling back to load_balance",
+            hit_rate,
+            hit_rate_threshold,
+        )
+        return True
+
+    @staticmethod
     def _stash_affinity_debug(
         req_info: RequestInfo | None,
         raw: list[tuple[float, int, float, Instance, Endpoint, tuple[int, int, int] | None]],
@@ -487,6 +531,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         w_cpu: float = 1.0,
         w_disk: float = 0.0,
         block_size: int = 0,
+        hit_rate_threshold: float = 0.0,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Unified cost: score every reported endpoint by affinity-discounted prefill
@@ -511,6 +556,8 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         if not raw:
             logger.warning("kv_cache_affinity(load-aware): no endpoint selected")
             return None
+        if KvCacheAffinityPolicy._hit_rate_below_threshold(raw, isl, hit_rate_threshold):
+            return []
 
         # Each candidate: (score, instance, endpoint, matched_tokens); lower score is better.
         candidates = [
@@ -559,6 +606,7 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         w_cpu: float = 1.0,
         w_disk: float = 0.0,
         block_size: int = 0,
+        hit_rate_threshold: float = 0.0,
     ) -> list[tuple[Instance, Endpoint, float]] | None:
         """
         Two-stage "load first, affinity second" ranking: keep only the ``load_gate_topn``
@@ -584,6 +632,8 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
         if not raw:
             logger.warning("kv_cache_affinity(load-gated): no endpoint selected")
             return None
+        if KvCacheAffinityPolicy._hit_rate_below_threshold(raw, isl, hit_rate_threshold):
+            return []
 
         # Candidate is (load_cost, matched_tokens, prefill_cost, instance, endpoint).
         # Stage 1: keep the N least-loaded endpoints.

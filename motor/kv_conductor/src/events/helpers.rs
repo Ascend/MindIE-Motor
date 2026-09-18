@@ -28,10 +28,10 @@ pub(super) fn resolve_medium(
 
 /// Build the list of `WorkerKey` targets for an event.
 ///
-/// - `MatchMode::None` (YuanRong): one worker per medium, using `backend_id`
+/// - `MatchMode::None` (YuanRong NPU): one worker per medium, using `backend_id`
 ///   directly as the instance identity.
-/// - Other modes (Mooncake/Memcache): delegates to `MatchMode::resolve_workers`
-///   which fans out via `hbm_ip_index`.
+/// - Other modes (Mooncake/Memcache/YuanRong CPU-Disk): delegates to
+///   `MatchMode::resolve_workers` which fans out via `hbm_ip_index`.
 pub(super) fn resolve_workers(
     match_mode: MatchMode,
     hbm_ip_index: &Option<HbmIpIndex>,

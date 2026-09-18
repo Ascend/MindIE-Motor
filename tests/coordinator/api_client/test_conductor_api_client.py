@@ -67,6 +67,8 @@ def _mock_config(**overrides) -> Mock:
     reg = KvConductorConfig(
         store_backend=overrides.get("store_backend", "Mooncake"),
         npu_endpoint=overrides.get("npu_endpoint", "tcp://*:5557"),
+        cpu_endpoint=overrides.get("cpu_endpoint", ""),
+        disk_endpoint=overrides.get("disk_endpoint", ""),
         endpoint=overrides.get("endpoint", "tcp://*:5557"),
         replay_endpoint=overrides.get("replay_endpoint", ""),
         engine_type=overrides.get("engine_type", "vLLM"),
@@ -187,6 +189,23 @@ class TestBuildRegisterPayload:
         # Fallback endpoint fills gpu, cpu, disk
         meps = payload["medium_endpoints"]
         assert "npu" in meps
+
+    def test_yuanrong_payload_is_npu_only(self):
+        """YuanRong DP payload omits CPU/Disk (those are registered per node)."""
+        cfg = _mock_config(
+            store_backend="YuanRong",
+            npu_endpoint="tcp://*:15557",
+            cpu_endpoint="tcp://*:15558",
+            disk_endpoint="tcp://*:15558",
+            endpoint="",
+        )
+        inst = _make_instance(inst_id=4, role=PDRole.ROLE_P)
+        ep = _make_endpoint(ep_id=0, ip="10.0.0.1")
+
+        with patch.object(ConductorApiClient, "coordinator_config", cfg):
+            payload = ConductorApiClient._build_register_payload(inst, ep)
+
+        assert payload["medium_endpoints"] == {"npu": "tcp://10.0.0.1:15557"}
 
     def test_replay_endpoint_malformed_skipped(self):
         """replay_endpoint without '*:' → replay_endpoint absent in payload."""
@@ -702,6 +721,9 @@ def _setup_reg_config(
         query_encoding=query_encoding,
     )
     sched = SchedulerConfig(kv_conductor_config=reg)
+    ConductorApiClient._pool_registered = False
+    ConductorApiClient._yuanrong_nodes_registered = set()
+    ConductorApiClient._yuanrong_node_refs = {}
     return patch.object(
         ConductorApiClient,
         "coordinator_config",
@@ -719,8 +741,8 @@ def _setup_reg_config(
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_yuanrong_registration_dispatches_per_dp(mock_http):
-    """YuanRong: per-DP multi-port, not pool."""
+def test_yuanrong_registration_npu_per_dp_cpu_disk_per_node(mock_http):
+    """YuanRong: NPU per DP; CPU/Disk once per node (no dp_rank port offset)."""
     mock_client = Mock()
     mock_client.post.return_value = {"status": "ok"}
     mock_http.return_value.__enter__.return_value = mock_client
@@ -734,13 +756,21 @@ def test_yuanrong_registration_dispatches_per_dp(mock_http):
         ConductorApiClient.register_kv_instance([instance])
 
     calls = mock_client.post.call_args_list
-    assert len(calls) == 1  # one DP = one call
-    payload = calls[0][0][1]
-    assert "medium_endpoints" in payload
-    assert payload["store_backend"] == "YuanRong"
-    assert "npu" in str(payload["medium_endpoints"])
-    assert "cpu" in str(payload["medium_endpoints"])
-    assert "disk" in str(payload["medium_endpoints"])
+    assert len(calls) == 2  # NPU DP + node CPU/Disk
+    payloads = [c[0][1] for c in calls]
+    npu_payload = next(p for p in payloads if "npu" in p.get("medium_endpoints", {}))
+    pool_payload = next(p for p in payloads if "pool" in p.get("instance_id", ""))
+
+    assert npu_payload["store_backend"] == "YuanRong"
+    assert npu_payload["medium_endpoints"] == {"npu": "tcp://127.0.0.1:15557"}
+    assert "cpu" not in npu_payload["medium_endpoints"]
+    # The instance_id carries the model too: kv-conductor keys registrations by
+    # (instance_id, dp_rank) and tears down the whole key on re-registration, so
+    # an ip-only id would let a second model evict the first model's pool.
+    assert pool_payload["instance_id"] == "yuanrong-pool-127.0.0.1-test-model"
+    assert pool_payload["medium_endpoints"]["cpu"] == "tcp://127.0.0.1:15558"
+    assert pool_payload["medium_endpoints"]["disk"] == "tcp://127.0.0.1:15558"
+    assert pool_payload["dp_rank"] == 0
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
@@ -817,7 +847,7 @@ def test_memcache_store_backend_matches_case_insensitively(mock_http):
 
     kv-conductor's StoreBackend::parse is case-insensitive; the Python
     client must accept the same spellings (e.g. "memcache") instead of
-    silently falling back to per_dp mode.
+    silently falling back to per_node mode.
     """
     mock_client = Mock()
     mock_client.post.return_value = {"status": "ok"}
@@ -901,7 +931,7 @@ def test_replay_endpoint_included_in_registration(mock_http):
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
 def test_endpoint_url_resolves_ip_and_dp_rank(mock_http):
-    """Pattern 'tcp://*:15557' + IP 10.0.0.1 + dp_rank 2 → 'tcp://10.0.0.1:15559'."""
+    """NPU uses dp_rank port offset; YuanRong CPU/Disk use the node base port."""
     mock_client = Mock()
     mock_client.post.return_value = {"status": "ok"}
     mock_http.return_value.__enter__.return_value = mock_client
@@ -909,22 +939,59 @@ def test_endpoint_url_resolves_ip_and_dp_rank(mock_http):
     instance = _make_mock_instance(1)
     instance.endpoints["pod-0"][0].ip = "10.0.0.1"
     instance.endpoints["pod-0"][0].id = 2  # dp_rank=2
+    instance.get_all_endpoints.return_value = (instance.endpoints["pod-0"][0],)
 
     with _setup_reg_config(
         "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
     ):
         ConductorApiClient.register_kv_instance([instance])
 
-    payload = mock_client.post.call_args_list[0][0][1]
-    meps = payload["medium_endpoints"]
-    assert meps["npu"] == "tcp://10.0.0.1:15559"  # 15557 + 2
-    assert meps["cpu"] == "tcp://10.0.0.1:15560"  # 15558 + 2
-    assert payload["dp_rank"] == 2
+    payloads = [c[0][1] for c in mock_client.post.call_args_list]
+    npu_payload = next(p for p in payloads if "npu" in p.get("medium_endpoints", {}))
+    pool_payload = next(p for p in payloads if "pool" in p.get("instance_id", ""))
+    assert npu_payload["medium_endpoints"]["npu"] == "tcp://10.0.0.1:15559"  # 15557 + 2
+    assert npu_payload["dp_rank"] == 2
+    assert pool_payload["medium_endpoints"]["cpu"] == "tcp://10.0.0.1:15558"
+    assert pool_payload["medium_endpoints"]["disk"] == "tcp://10.0.0.1:15558"
+    assert pool_payload["instance_id"] == "yuanrong-pool-10.0.0.1-test-model"
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
-def test_unknown_backend_falls_back_to_per_dp(mock_http):
-    """Unknown backend → per_dp mode (treats as YuanRong)."""
+def test_yuanrong_cpu_disk_registered_once_per_node(mock_http):
+    """Two DPs on the same node share one CPU/Disk registration."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    ep0 = Mock()
+    ep0.id = 0
+    ep0.ip = "10.0.0.1"
+    ep1 = Mock()
+    ep1.id = 1
+    ep1.ip = "10.0.0.1"
+    instance = Mock()
+    instance.id = 1
+    instance.model_name = "test-model"
+    instance.role = "prefill"
+    instance.endpoints = {"pod-0": {0: ep0, 1: ep1}}
+    instance.get_all_endpoints.return_value = (ep0, ep1)
+
+    with _setup_reg_config(
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+    ):
+        ConductorApiClient.register_kv_instance([instance])
+
+    payloads = [c[0][1] for c in mock_client.post.call_args_list]
+    npu_payloads = [p for p in payloads if "npu" in p.get("medium_endpoints", {})]
+    pool_payloads = [p for p in payloads if "pool" in p.get("instance_id", "")]
+    assert len(npu_payloads) == 2
+    assert len(pool_payloads) == 1
+    assert {p["dp_rank"] for p in npu_payloads} == {0, 1}
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_unknown_backend_falls_back_to_per_node(mock_http):
+    """Unknown backend → per_node mode (treats as YuanRong)."""
     mock_client = Mock()
     mock_client.post.return_value = {"status": "ok"}
     mock_http.return_value.__enter__.return_value = mock_client
@@ -938,3 +1005,140 @@ def test_unknown_backend_falls_back_to_per_dp(mock_http):
     payload = mock_client.post.call_args_list[0][0][1]
     assert "medium_endpoints" in payload  # YuanRong-style
     assert "pool" not in payload.get("instance_id", "")  # NOT pool registration
+
+
+# ── YuanRong node pool lifecycle ─────────────────────────────────────
+
+
+def _make_node_instance(instance_id, ip, dp_ranks, model_name="test-model"):
+    """Mock instance whose DPs all sit on one node IP."""
+    eps = []
+    for dp_rank in dp_ranks:
+        ep = Mock()
+        ep.id = dp_rank
+        ep.ip = ip
+        eps.append(ep)
+    instance = Mock()
+    instance.id = instance_id
+    instance.model_name = model_name
+    instance.role = "prefill"
+    instance.endpoints = {"pod-0": {ep.id: ep for ep in eps}}
+    instance.get_all_endpoints.return_value = tuple(eps)
+    return instance
+
+
+def _pool_payloads(mock_client, path="/register"):
+    """Node-pool payloads sent to `path` (DP payloads excluded)."""
+    return [
+        c[0][1] for c in mock_client.post.call_args_list if c[0][0] == path and "pool" in c[0][1].get("instance_id", "")
+    ]
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_yuanrong_node_pool_unregistered_with_last_dp(mock_http):
+    """The per-node CPU/Disk pool outlives the DPs until the last one leaves."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    # Two engine instances share node 10.0.0.1; each contributes one DP.
+    inst_a = _make_node_instance(1, "10.0.0.1", [0])
+    inst_b = _make_node_instance(2, "10.0.0.1", [0])
+
+    with _setup_reg_config(
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+    ):
+        ConductorApiClient.register_kv_instance([inst_a, inst_b])
+        assert len(_pool_payloads(mock_client)) == 1  # one pool for the node
+        mock_client.post.reset_mock()
+
+        # First DP leaves: the pool is still serving the second one.
+        ConductorApiClient.unregister_kv_instance([inst_a])
+        assert len(mock_client.post.call_args_list) == 1  # the DP alone
+        assert not _pool_payloads(mock_client, "/unregister"), "pool torn down while a DP is still registered"
+
+        # Last DP leaves: the pool goes with it.
+        ConductorApiClient.unregister_kv_instance([inst_b])
+        pool_unregisters = _pool_payloads(mock_client, "/unregister")
+        assert len(pool_unregisters) == 1
+        assert pool_unregisters[0]["instance_id"] == "yuanrong-pool-10.0.0.1-test-model"
+        assert pool_unregisters[0]["dp_rank"] == 0
+
+    # Cache cleared, so the node can be registered again later.
+    assert ConductorApiClient._yuanrong_nodes_registered == set()
+    assert ConductorApiClient._yuanrong_node_refs == {}
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_yuanrong_node_pool_is_per_model(mock_http):
+    """Two models on one node get distinct pool ids instead of evicting each other."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    inst_a = _make_node_instance(1, "10.0.0.1", [0], model_name="model-a")
+    inst_b = _make_node_instance(2, "10.0.0.1", [0], model_name="model-b")
+
+    with _setup_reg_config(
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+    ):
+        ConductorApiClient.register_kv_instance([inst_a, inst_b])
+
+    assert sorted(p["instance_id"] for p in _pool_payloads(mock_client)) == [
+        "yuanrong-pool-10.0.0.1-model-a",
+        "yuanrong-pool-10.0.0.1-model-b",
+    ]
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_re_register_restores_node_pool_after_conductor_restart(mock_http):
+    """A conductor that lost its state gets the node pool back.
+
+    The HBM DP is restored by the (instance_id, dp_rank) comparison; the pool
+    has no such entry, so it is only rebuilt because the local cache is
+    re-synced against GET /workers.
+    """
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    instance = _make_node_instance(1, "10.0.0.1", [0])
+    with _setup_reg_config(
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+    ):
+        ConductorApiClient.register_kv_instance([instance])
+        assert ConductorApiClient._yuanrong_nodes_registered  # cached as registered
+        mock_client.post.reset_mock()
+
+        with patch.object(ConductorApiClient, "get_registered_services", return_value=[]):
+            ConductorApiClient.re_register_kv_instances([instance])
+
+    pools = _pool_payloads(mock_client)
+    assert len(pools) == 1
+    assert pools[0]["instance_id"] == "yuanrong-pool-10.0.0.1-test-model"
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_re_register_node_pool_only_leaves_live_dps_alone(mock_http):
+    """Pool missing while its DPs are still registered → restore the pool only."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    instance = _make_node_instance(1, "10.0.0.1", [0, 1])
+    with _setup_reg_config(
+        "YuanRong", npu_endpoint="tcp://*:15557", cpu_endpoint="tcp://*:15558", disk_endpoint="tcp://*:15558"
+    ):
+        ConductorApiClient.register_kv_instance([instance])
+        mock_client.post.reset_mock()
+
+        # The conductor still holds both DPs but no longer the pool entry.
+        workers = [{"instance_id": "vllm-prefill-1", "endpoints": {"0": {}, "1": {}}}]
+        with patch.object(ConductorApiClient, "get_registered_services", return_value=workers):
+            ConductorApiClient.re_register_kv_instances([instance])
+
+    # Both DPs are registered, so only the pool is re-sent — and only once for
+    # the whole node rather than once per DP.
+    payloads = [c[0][1] for c in mock_client.post.call_args_list]
+    assert len(payloads) == 1
+    assert payloads[0]["instance_id"] == "yuanrong-pool-10.0.0.1-test-model"

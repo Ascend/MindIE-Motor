@@ -268,11 +268,14 @@ class KvConductorConfig:
 
     - Mooncake / Memcache: register the pool once (``pool_endpoint``) +
       per-DP HBM via ``npu_endpoint``.
-    - YuanRong: per-DP multi-port via ``npu/cpu/disk_endpoint`` patterns.
+    - YuanRong: per-DP NPU via ``npu_endpoint`` (port + ``dp_rank``);
+      CPU/Disk once per node via ``cpu_endpoint`` / ``disk_endpoint``
+      (base port, no ``dp_rank`` offset).
 
-    Endpoint patterns use ``*`` as IP placeholder and add ``dp_rank``
-    to the port, e.g. ``"tcp://*:15557"`` resolves to
-    ``tcp://<endpoint_ip>:<15557 + dp_rank>``.
+    Endpoint patterns use ``*`` as IP placeholder. NPU (and Mooncake/Memcache
+    HBM) add ``dp_rank`` to the port, e.g. ``"tcp://*:15557"`` resolves to
+    ``tcp://<endpoint_ip>:<15557 + dp_rank>``. YuanRong CPU/Disk use the
+    base port on the node IP (no ``dp_rank`` offset).
 
     This config replaces the legacy ``prefill_kv_event_config`` —
     connection info (``conductor_service``, ``http_server_port``) and
@@ -371,6 +374,10 @@ class KvAffinityConfig:
     w_npu: float = 1.0
     w_cpu: float = 1.0
     w_disk: float = 0.0
+    # Minimum prefix hit rate required to keep affinity routing. 0 disables the gate
+    # (always score by affinity). Values in (0, 1] require
+    # max(matched_tokens) / prompt_tokens > threshold; otherwise fall back to load_balance.
+    hit_rate_threshold: float = 0.0
 
 
 @dataclass
@@ -1156,6 +1163,17 @@ class CoordinatorConfig:
             allow_zero=True,
         )
         self._validate_positive_number(
+            affinity.hit_rate_threshold,
+            "kv_affinity.hit_rate_threshold",
+            allow_zero=True,
+        )
+        if (
+            isinstance(affinity.hit_rate_threshold, (int, float))
+            and not isinstance(affinity.hit_rate_threshold, bool)
+            and affinity.hit_rate_threshold > 1.0
+        ):
+            self._errors.append(f"kv_affinity.hit_rate_threshold must be in [0, 1], got {affinity.hit_rate_threshold}")
+        self._validate_positive_number(
             self.scheduler_config.dp_stats_window,
             "scheduler_config.dp_stats_window",
             allow_zero=True,
@@ -1389,6 +1407,7 @@ class CoordinatorConfig:
             f"    ├─ KV Affinity W NPU:          {self.scheduler_config.kv_affinity.w_npu}\n"
             f"    ├─ KV Affinity W CPU:          {self.scheduler_config.kv_affinity.w_cpu}\n"
             f"    ├─ KV Affinity W Disk:         {self.scheduler_config.kv_affinity.w_disk}\n"
+            f"    ├─ KV Affinity Hit Rate:       {self.scheduler_config.kv_affinity.hit_rate_threshold}\n"
             f"    ├─ DP Stats Window:            {self.scheduler_config.dp_stats_window}s\n"
             f"    └─ Context Budget Mode:        {self.context_budget_mode}\n"
             "\n"

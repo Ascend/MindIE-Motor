@@ -158,8 +158,8 @@ Engine Worker           Pool Master               KV Conductor
 
 - **索引结构**：`LowerTierIndexer`，按 `(parent_seq_hash, tokens_hash)` 记录 continuation edge
 - **匹配语义**：
-  - CPU：从 HBM 断点续查；root 链（首块副本）无条件走——更长副本不会被上游较短命中掩盖
-  - Disk：从 `max(HBM, CPU)` 断点续查（CPU 更长时优先接 CPU）；root 链同 CPU 层无条件走
+  - CPU：从 HBM 断点续查（仅同一 `(instance_id, dp_rank)`）；root 链（首块副本）无条件走——更长副本不会被上游较短命中掩盖
+  - Disk：从 `max(HBM, CPU)` 断点续查（同样按 `(instance_id, dp_rank)` 对齐；CPU 更长时优先接 CPU）；root 链同 CPU 层无条件走
 - **连续匹配**：走到第一个缺失边即停；同一 worker 多条候选链（root + 断点）取绝对终点最远者
 - **content 保留**：pool 确认后始终保留 `(tokens_hash, parent_hash)`（无需配置），跨 tier 移除存活，CPU 已驱逐后、保留窗口（300s TTL）内仍可解析 Disk store；窗口关闭自动清除，内存有界（条目为 tier 数据拷贝 + 短暂迁移残留）。未确认的 offload **无 TTL、无硬容量上限**，随未确认块增长，仅在匹配成功或引擎驱逐时清除
 
@@ -169,7 +169,7 @@ Engine Worker           Pool Master               KV Conductor
 |------|----------|-------------|
 | Mooncake | 中心化 master，一个 ZMQ PUB | IP 匹配 → 节点上所有 DP |
 | Memcache | 中心化 master，一个 ZMQ PUB | 同 Mooncake |
-| YuanRong | 每节点多端口 ZMQ PUB | Port 匹配 → 精确 DP |
+| YuanRong | 每节点 CPU/Disk PUB + 每 DP NPU | NPU：精确 DP；CPU/Disk：IP 匹配 → 节点上所有 DP |
 
 ### 查询
 

@@ -16,17 +16,19 @@
 //! |-----------|------------------|----------------------|-------------------------------------------------|
 //! | Mooncake  | Centralized      | IP → all DPs on node | One pool subscriber, events carry backend_id=IP |
 //! | Memcache  | Centralized      | IP → all DPs on node | Same as Mooncake                                |
-//! | YuanRong  | Per-node ports   | None (port = DP)     | Per-DP multi-port subscribers                   |
+//! | YuanRong  | Per-node CPU/Disk| IP → all DPs on node | NPU per DP; CPU/Disk one PUB per node           |
 //!
 //! The `StoreBackend` enum acts as a lightweight factory: it drives
 //! registration behaviour (whether to index HBM IPs) and event-processing
 //! behaviour (which `MatchMode` the pool subscriber uses).
 //!
-//! Note: For both Mooncake and Memcache, KV events do not carry an exact
-//! dp_rank — instead every DP on the target node records the event's hash.
-//! This avoids the overhead of per-DP event routing.
+//! Note: For Mooncake, Memcache, and YuanRong CPU/Disk, KV events do not
+//! carry an exact dp_rank — instead every DP on the target node records the
+//! event's hash. YuanRong NPU remains per-DP (`MatchMode::None`).
 
-use crate::protocols::{HbmIpIndex, WorkerKey};
+use std::collections::HashMap;
+
+use crate::protocols::{HbmIpIndex, StorageMedium, WorkerKey};
 
 // ---------------------------------------------------------------------------
 // StoreBackend
@@ -43,8 +45,9 @@ pub enum StoreBackend {
     /// node IP but do **not** carry an exact `dp_rank`; every DP on the
     /// target node records the event hash.
     Memcache,
-    /// YuanRong: each node has independent ZMQ PUB ports per storage medium.
-    /// HBM, DDR and SSD events arrive on separate ports tied to a specific DP.
+    /// YuanRong: NPU events are per-DP (`MatchMode::None`). CPU and Disk are
+    /// published once per node and auto-attached to every HBM-registered DP
+    /// on that node (`MatchMode::IpOnly`).
     YuanRong,
     /// Catch-all for unknown / future backends.  Treated as YuanRong.
     Unknown,
@@ -64,7 +67,10 @@ impl StoreBackend {
     /// Whether HBM registrations for this backend should be indexed
     /// in `hbm_ip_index` so pool subscribers can look them up.
     pub fn index_hbm_ip(&self) -> bool {
-        matches!(self, Self::Mooncake | Self::Memcache)
+        matches!(
+            self,
+            Self::Mooncake | Self::Memcache | Self::YuanRong | Self::Unknown
+        )
     }
 
     /// Whether a pool registration (legacy `endpoint` only, no
@@ -74,7 +80,36 @@ impl StoreBackend {
         matches!(self, Self::Mooncake | Self::Memcache)
     }
 
-    /// The matching strategy for pool-subscriber event processing.
+    /// YuanRong CPU/Disk are per-node: a registration whose `medium_endpoints`
+    /// contain only cpu/disk (no NPU) is a node-level pool subscriber.
+    pub fn is_node_pool_registration(&self, medium_endpoints: &HashMap<String, String>) -> bool {
+        if !matches!(self, Self::YuanRong | Self::Unknown) {
+            return false;
+        }
+        if medium_endpoints.is_empty() {
+            return false;
+        }
+        let mut has_lower_tier = false;
+        for key in medium_endpoints.keys() {
+            if StorageMedium::is_hbm_key(key) {
+                return false;
+            }
+            if matches!(
+                StorageMedium::parse(key),
+                StorageMedium::Cpu | StorageMedium::Disk
+            ) {
+                has_lower_tier = true;
+            }
+        }
+        has_lower_tier
+    }
+
+    /// The matching strategy implied by this backend alone.
+    ///
+    /// Callers that create a ZMQ producer (subscriber or replay) must use
+    /// `subscriber_match()` in `registry.rs` instead: the strategy follows the
+    /// *registration shape*, not the backend.  A YuanRong node pool is
+    /// `IpOnly` even though this method maps `YuanRong` to `None`.
     pub fn match_mode(&self) -> MatchMode {
         match self {
             Self::Mooncake => MatchMode::IpOnly,
@@ -91,7 +126,7 @@ impl StoreBackend {
 /// How a pool subscriber resolves events into target `WorkerKey`s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatchMode {
-    /// No auto-attach — the subscriber is tied to a fixed dp_rank (YuanRong).
+    /// No auto-attach — the subscriber is tied to a fixed dp_rank (YuanRong NPU).
     None,
     /// Match by IP only.  An event with `backend_id=<ip>` is applied to
     /// **every** HBM-registered DP whose NPU endpoint IP matches.
@@ -123,7 +158,8 @@ impl MatchMode {
             None => return Vec::new(),
         };
         let idx = index.read();
-        let dps = match idx.get(lookup_ip) {
+        let lookup = lookup_ip_from_backend_id(lookup_ip);
+        let dps = match idx.get(lookup.as_str()) {
             Some(dps) => dps,
             None => return Vec::new(),
         };
@@ -150,6 +186,25 @@ impl MatchMode {
     }
 }
 
+/// Normalize a pool `backend_id` to the node IP used in `hbm_ip_index`.
+///
+/// Accepts `tcp://10.0.0.1:5558`, `10.0.0.1:5558`, `[::1]:5558`, or a bare IP.
+pub(crate) fn lookup_ip_from_backend_id(s: &str) -> String {
+    let rest = s.strip_prefix("tcp://").unwrap_or(s);
+    if let Some(inner) = rest.strip_prefix('[') {
+        if let Some(end) = inner.find(']') {
+            return inner[..end].to_string();
+        }
+    }
+    // IPv4 / hostname with a numeric port. Skip IPv6 (contains extra ':').
+    if let Some((host, port)) = rest.rsplit_once(':') {
+        if !host.is_empty() && !host.contains(':') && port.bytes().all(|b| b.is_ascii_digit()) {
+            return host.to_string();
+        }
+    }
+    rest.to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -157,10 +212,7 @@ impl MatchMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::Arc;
-
-    use crate::protocols::StorageMedium;
 
     fn make_ip_index(entries: Vec<(&str, Vec<(&str, u32)>)>) -> HbmIpIndex {
         let map: HashMap<String, Vec<(String, u32)>> = entries
@@ -195,8 +247,8 @@ mod tests {
     fn test_store_backend_index_hbm_ip() {
         assert!(StoreBackend::Mooncake.index_hbm_ip());
         assert!(StoreBackend::Memcache.index_hbm_ip());
-        assert!(!StoreBackend::YuanRong.index_hbm_ip());
-        assert!(!StoreBackend::Unknown.index_hbm_ip());
+        assert!(StoreBackend::YuanRong.index_hbm_ip());
+        assert!(StoreBackend::Unknown.index_hbm_ip());
     }
 
     #[test]
@@ -213,6 +265,32 @@ mod tests {
         assert_eq!(StoreBackend::Memcache.match_mode(), MatchMode::IpOnly);
         assert_eq!(StoreBackend::YuanRong.match_mode(), MatchMode::None);
         assert_eq!(StoreBackend::Unknown.match_mode(), MatchMode::None);
+    }
+
+    #[test]
+    fn test_yuanrong_cpu_disk_only_is_node_pool() {
+        let mut eps = HashMap::new();
+        eps.insert("cpu".into(), "tcp://10.0.0.1:15558".into());
+        eps.insert("disk".into(), "tcp://10.0.0.1:15558".into());
+        assert!(StoreBackend::YuanRong.is_node_pool_registration(&eps));
+        assert!(StoreBackend::Unknown.is_node_pool_registration(&eps));
+        assert!(!StoreBackend::Mooncake.is_node_pool_registration(&eps));
+    }
+
+    #[test]
+    fn test_yuanrong_mixed_npu_cpu_is_not_node_pool() {
+        let mut eps = HashMap::new();
+        eps.insert("npu".into(), "tcp://10.0.0.1:15557".into());
+        eps.insert("cpu".into(), "tcp://10.0.0.1:15558".into());
+        assert!(!StoreBackend::YuanRong.is_node_pool_registration(&eps));
+    }
+
+    #[test]
+    fn test_lookup_ip_from_backend_id_strips_port() {
+        assert_eq!(lookup_ip_from_backend_id("10.0.0.1"), "10.0.0.1");
+        assert_eq!(lookup_ip_from_backend_id("10.0.0.1:5558"), "10.0.0.1");
+        assert_eq!(lookup_ip_from_backend_id("tcp://10.0.0.1:5558"), "10.0.0.1");
+        assert_eq!(lookup_ip_from_backend_id("tcp://[::1]:5558"), "::1");
     }
 
     // ── MatchMode::resolve_workers ────────────────────────────────────

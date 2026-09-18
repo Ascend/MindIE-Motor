@@ -657,6 +657,138 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result[1].id, 0)  # endpoint with the longer cached prefix
 
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_hit_rate_threshold_zero_keeps_affinity_on_low_match(self, mock_tokenizer_manager, mock_query_conductor):
+        """Default threshold 0 disables the gate: a low prefix hit still uses affinity ranking."""
+        ep_a = _make_endpoint(0, active_tokens=50.0)
+        ep_b = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_a, 1: ep_b}}
+        mock_instance.get_all_endpoints.return_value = (ep_a, ep_b)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-inst": {"DP": {"0": 100, "1": 50}}}}
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(
+            instances, mock_req_info, load_weight=0.0, hit_rate_threshold=0.0
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1].id, 0)
+
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_hit_rate_above_threshold_keeps_affinity(self, mock_tokenizer_manager, mock_query_conductor):
+        """Best prefix hit rate above the threshold keeps affinity and prefers the longer match."""
+        ep_a = _make_endpoint(0, active_tokens=50.0)
+        ep_b = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_a, 1: ep_b}}
+        mock_instance.get_all_endpoints.return_value = (ep_a, ep_b)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-inst": {"DP": {"0": 800, "1": 100}}}}
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(
+            instances, mock_req_info, load_weight=0.0, hit_rate_threshold=0.5
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1].id, 0)
+
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_hit_rate_at_or_below_threshold_falls_back(self, mock_tokenizer_manager, mock_query_conductor):
+        """Equal or lower than the threshold declines affinity so the caller can use load_balance."""
+        ep_a = _make_endpoint(0, active_tokens=10.0)
+        ep_b = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_a, 1: ep_b}}
+        mock_instance.get_all_endpoints.return_value = (ep_a, ep_b)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-inst": {"DP": {"0": 500, "1": 100}}}}
+
+        ranked = KvCacheAffinityPolicy.select_endpoint_candidates_from_list(
+            instances, mock_req_info, load_weight=0.0, hit_rate_threshold=0.5, top_k=2
+        )
+        self.assertEqual(ranked, [])
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(
+            instances, mock_req_info, load_weight=0.0, hit_rate_threshold=0.5
+        )
+        self.assertIsNone(result)
+
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_hit_rate_threshold_uses_best_endpoint_not_the_worst(self, mock_tokenizer_manager, mock_query_conductor):
+        """The gate compares the cluster-best hit rate, not every endpoint individually."""
+        ep_a = _make_endpoint(0, active_tokens=50.0)
+        ep_b = _make_endpoint(1, active_tokens=50.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep_a, 1: ep_b}}
+        mock_instance.get_all_endpoints.return_value = (ep_a, ep_b)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-inst": {"DP": {"0": 800, "1": 50}}}}
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list(
+            instances, mock_req_info, load_weight=0.0, hit_rate_threshold=0.5
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1].id, 0)
+
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
+    @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
+    def test_load_gated_hit_rate_below_threshold_falls_back(self, mock_tokenizer_manager, mock_query_conductor):
+        """load_gated uses the same hit-rate gate before the two-stage ranking."""
+        from motor.config.coordinator import KV_AFFINITY_MODE_LOAD_GATED
+
+        ep = _make_endpoint(0, active_tokens=10.0)
+        mock_instance = Mock()
+        mock_instance.id = "inst"
+        mock_instance.endpoints = {"group": {0: ep}}
+        mock_instance.get_all_endpoints.return_value = (ep,)
+        instances = [mock_instance]
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+        mock_query_conductor.return_value = {TENANT_ID: {"vllm-prefill-inst": {"DP": {"0": 100}}}}
+
+        ranked = KvCacheAffinityPolicy.select_endpoint_candidates_from_list(
+            instances,
+            mock_req_info,
+            mode=KV_AFFINITY_MODE_LOAD_GATED,
+            hit_rate_threshold=0.5,
+        )
+        self.assertEqual(ranked, [])
+
     def test_select_instance(self):
         """Test _select_instance function"""
         result = self.policy._select_instance()
@@ -1292,6 +1424,64 @@ class TestKvAffinityFallbackConsolidation(unittest.TestCase):
         self.assertEqual(policy, CANDIDATE_POLICY_LOAD_BALANCE)
         self.assertEqual(cands, [(inst, ep, 1.0)])
         lb.assert_called_once()
+
+    def test_prefill_low_hit_rate_falls_back_to_load_balance_without_conductor_warning(self):
+        """Affinity declining on hit_rate_threshold returns [] and falls back without a conductor warning."""
+        from motor.coordinator.scheduler.runtime.zmq_protocol import CANDIDATE_POLICY_LOAD_BALANCE
+
+        client = self._make_client()
+        inst, ep = Mock(), Mock()
+        req = Mock()
+        req.req_data = {"prompt": "x"}
+        with (
+            patch(self._AFFINITY, return_value=[]),
+            patch.object(
+                client,
+                "_select_endpoint_candidates_by_load_balance",
+                return_value=[(inst, ep, 1.0)],
+            ) as lb,
+            patch("motor.coordinator.scheduler.runtime.scheduler_client.logger.warning") as warn,
+        ):
+            cands, policy = client._select_endpoint_candidates_from_list_with_policy(
+                [Mock()], PDRole.ROLE_P, req, top_k=1
+            )
+        self.assertEqual(policy, CANDIDATE_POLICY_LOAD_BALANCE)
+        self.assertEqual(cands, [(inst, ep, 1.0)])
+        lb.assert_called_once()
+        self.assertFalse(
+            any("no conductor match" in str(call.args[0]) for call in warn.call_args_list),
+            "low hit-rate fallback must not be logged as a conductor failure",
+        )
+
+    def test_client_clamps_hit_rate_threshold(self):
+        """Scheduler client stores kv_affinity.hit_rate_threshold clamped to [0, 1]."""
+        from motor.coordinator.scheduler.runtime.scheduler_client import (
+            AsyncSchedulerClient,
+            SchedulerClientConfig,
+        )
+        from motor.config.coordinator import KvAffinityConfig
+
+        client = AsyncSchedulerClient(
+            SchedulerClientConfig(
+                scheduler_type="kv_cache_affinity",
+                kv_affinity=KvAffinityConfig(hit_rate_threshold=0.35),
+            )
+        )
+        self.assertEqual(client._kv_affinity_hit_rate_threshold, 0.35)
+
+        clamped = AsyncSchedulerClient(
+            SchedulerClientConfig(
+                scheduler_type="kv_cache_affinity",
+                kv_affinity=KvAffinityConfig(hit_rate_threshold=1.5),
+            )
+        )
+        self.assertEqual(clamped._kv_affinity_hit_rate_threshold, 1.0)
+
+        req = Mock()
+        req.req_data = {"prompt": "x"}
+        with patch(self._AFFINITY, return_value=[(Mock(), Mock(), 0.0)]) as affinity:
+            client._select_endpoint_candidates_from_list_with_policy([Mock()], PDRole.ROLE_P, req, top_k=1)
+        self.assertEqual(affinity.call_args.kwargs["hit_rate_threshold"], 0.35)
 
     def test_non_prefill_role_uses_load_balance_without_affinity(self):
         """Non-prefill roles never consult conductor affinity; they use the same fallback path."""

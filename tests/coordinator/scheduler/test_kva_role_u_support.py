@@ -143,18 +143,16 @@ def test_register_kv_instance_supports_role_u() -> None:
     with (
         patch.object(ConductorApiClient, "_kv_reg", return_value=_mock_enabled_kv_reg()),
         patch.object(ConductorApiClient, "_register_hbm_dp") as mock_hbm_dp,
-        patch.object(ConductorApiClient, "_register_yuanrong_dp") as mock_yuanrong_dp,
+        patch.object(ConductorApiClient, "_register_yuanrong_node"),
         patch.object(ConductorApiClient, "_register_pool"),
     ):
         ConductorApiClient.register_kv_instance(instances)
 
-    # Depending on backend mode, either _register_hbm_dp or _register_yuanrong_dp
-    # is called for each KVA-eligible instance endpoint.
-    # Signature: _register_*_dp(cls, reg, store_backend, instance, endpoint)
+    # NPU/HBM is registered per KVA-eligible instance endpoint.
+    # Signature: _register_hbm_dp(cls, reg, store_backend, instance, endpoint)
     # call.args excludes cls, so instance is at index 2.
-    registered_method = mock_hbm_dp if mock_hbm_dp.call_count else mock_yuanrong_dp
-    assert registered_method.call_count == 2
-    called_roles = {call.args[2].role for call in registered_method.call_args_list}
+    assert mock_hbm_dp.call_count == 2
+    called_roles = {call.args[2].role for call in mock_hbm_dp.call_args_list}
     assert called_roles == {PDRole.ROLE_P, PDRole.ROLE_U}
 
 

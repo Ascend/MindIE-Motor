@@ -16,6 +16,11 @@
 //! already-indexed lower tier (two-phase match, pool-first arrivals wait
 //! in `pending_pool`).
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 use serde::Deserialize;
 
 use crate::backend::MatchMode;
@@ -25,6 +30,82 @@ use crate::protocols::*;
 
 use super::flex_hash::FlexHash;
 use super::helpers::{resolve_medium, resolve_workers};
+
+/// Minimum interval between repeated unresolved-target WARN lines for the
+/// same `(event_backend_id, subscriber_backend_id)` key.
+const UNRESOLVED_POOL_WARN_INTERVAL: Duration = Duration::from_secs(30);
+
+struct UnresolvedPoolWarnState {
+    last_warn: Instant,
+    /// Events dropped since the last WARN (excluding the one that triggers
+    /// the next WARN).
+    suppressed: u64,
+}
+
+type UnresolvedPoolKey = (String, String);
+type UnresolvedPoolWarnMap = Mutex<HashMap<UnresolvedPoolKey, UnresolvedPoolWarnState>>;
+
+fn unresolved_pool_warn_map() -> &'static UnresolvedPoolWarnMap {
+    static MAP: OnceLock<UnresolvedPoolWarnMap> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Emit a rate-limited WARN when a pool event resolves to no worker.
+///
+/// A pool subscriber whose node IP is absent from `hbm_ip_index` (HBM DPs not
+/// registered yet, or an event `backend_id` naming a different IP) drops every
+/// event it receives; without rate limiting that floods logs.  Warn on the
+/// first occurrence of each key, then at most once per
+/// [`UNRESOLVED_POOL_WARN_INTERVAL`], including how many events were
+/// suppressed in between.
+fn warn_unresolved_pool_event(
+    event_backend_id: &str,
+    subscriber_backend_id: &str,
+    event_type: &str,
+) {
+    let key = (
+        event_backend_id.to_string(),
+        subscriber_backend_id.to_string(),
+    );
+    let now = Instant::now();
+    let suppressed_to_report = {
+        let mut map = unresolved_pool_warn_map().lock();
+        match map.get_mut(&key) {
+            Some(state) => {
+                if now.duration_since(state.last_warn) >= UNRESOLVED_POOL_WARN_INTERVAL {
+                    let suppressed = state.suppressed;
+                    state.last_warn = now;
+                    state.suppressed = 0;
+                    Some(suppressed)
+                } else {
+                    state.suppressed = state.suppressed.saturating_add(1);
+                    None
+                }
+            }
+            None => {
+                map.insert(
+                    key,
+                    UnresolvedPoolWarnState {
+                        last_warn: now,
+                        suppressed: 0,
+                    },
+                );
+                Some(0)
+            }
+        }
+    };
+
+    if let Some(suppressed) = suppressed_to_report {
+        tracing::warn!(
+            event_backend_id,
+            subscriber_backend_id,
+            event_type,
+            suppressed,
+            reason = "no_target_worker",
+            "kv_event dropped; check hbm_ip_index for this node IP"
+        );
+    }
+}
 
 /// Memcache KvEvent batch — wire format `{"events": [PoolEvent, ...]}`.
 ///
@@ -115,13 +196,13 @@ pub(crate) fn apply_pool_event(
     // ── Resolve target workers (shared by all event types) ────────────
     let target_media = resolve_medium(pool_event.medium.as_deref(), default_media);
 
-    // For MatchMode::None (YuanRong), use the subscriber's backend_id which IS
-    // the engine instance_id from registration.  The event's backend_id may be
-    // the pool daemon's IP:port — using it directly would create a different
+    // For MatchMode::None (YuanRong NPU), use the subscriber's backend_id which
+    // IS the engine instance_id from registration.  The event's backend_id may
+    // be the pool daemon's IP:port — using it directly would create a different
     // instance_id than the HBM blocks, breaking cross-media block aggregation.
-    // For pool backends (Mooncake/Memcache), the event's backend_id is the node
-    // IP, needed by resolve_workers for hbm_ip_index lookup.
-    let event_be_id = pool_event.backend_id.as_deref().unwrap_or(backend_id);
+    // For pool backends (Mooncake/Memcache/YuanRong CPU-Disk), the event's
+    // backend_id is the node IP, needed by resolve_workers for hbm_ip_index.
+    let event_be_id: &str = pool_event.backend_id.as_deref().unwrap_or(backend_id);
     let be_id: &str = if match_mode == MatchMode::None {
         backend_id
     } else {
@@ -133,7 +214,22 @@ pub(crate) fn apply_pool_event(
 
     let entry = indexer.get_or_create(mn, tid);
 
-    let target_workers = resolve_workers(match_mode, hbm_ip_index, be_id, dp_rank, &target_media);
+    let mut target_workers =
+        resolve_workers(match_mode, hbm_ip_index, be_id, dp_rank, &target_media);
+    // YuanRong node-pool events may carry IP:port (or omit backend_id). If the
+    // event id misses the HBM IP index, retry with the subscriber's node IP.
+    if target_workers.is_empty() && match_mode != MatchMode::None && be_id != backend_id {
+        target_workers =
+            resolve_workers(match_mode, hbm_ip_index, backend_id, dp_rank, &target_media);
+    }
+    // No target worker means the node IP is absent from `hbm_ip_index` (HBM DPs
+    // not registered yet, or the event's `backend_id` names a different IP), so
+    // every event of this pool is dropped.  Without this line the only symptom
+    // is a permanently zero CPU/Disk hit rate.
+    if target_workers.is_empty() {
+        warn_unresolved_pool_event(be_id, backend_id, event_type);
+        return Ok(());
+    }
 
     // ── Cleared events: no seq_hashes needed ──────────────────────────
     if is_cleared {

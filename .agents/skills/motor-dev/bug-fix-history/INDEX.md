@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-09-16 | kv_conductor | 节点 pool replay 身份和格式分流不一致导致事件丢失 | [node-pool-replay-identity.md](kv_conductor/node-pool-replay-identity.md) | YuanRong, replay, backend_id, IpOnly, EventSource |
 | 2026-09-08 | deployer | Slurm 各容器生成不同 service_id | [slurm-service-id-per-task.md](deployer/slurm-service-id-per-task.md) | Slurm, service_id, set_env_docker, tzdata, Apptainer |
 | 2026-08-21 | kv_conductor | MultiConnector 顶层配置下引擎 offload 事件被静默丢弃 | `kv_conductor/multi-connector-kv-events-dropped.md` | MultiConnector、offload 事件丢失、两阶段匹配、kv_transfer_config |
 | 2026-08-24 | coordinator | 实例注册接受 ID 碰撞和不完整引擎就绪 | [instance-registration-validation.md](coordinator/instance-registration-validation.md) | CRC32 collision, instance ID, Endpoint extra fields, empty models |
@@ -57,6 +58,7 @@
 | 2026-09-04 | coordinator | SHM CAS 分配成功后被取消，active_tokens 永久泄漏 | [workload-ledger-orphan-leak.md](coordinator/workload-ledger-orphan-leak.md) | active_tokens leak, CancelledError, cas_add rollback, pop_residual_workloads |
 | 2026-09-09 | kv_conductor | map 格式 BlockStored 无法解析 | `kv_conductor/map-block-stored.md` | BlockStored, msgspec, map, deserialize_any |
 | 2026-09-09 | kv_conductor | CPU/Disk 订阅器误按 vLLM 事件解析 | `kv_conductor/event-source-routing.md` | ZmqSubscriber, EventSource, PoolEvent, CPU, Disk |
+| 2026-09-16 | kv_conductor | HBM→CPU 续查未按 (instance_id, dp_rank) 对齐导致跨 DP 虚高 cpu_blocks | `kv_conductor/hbm-cpu-continuation-same-dp.md` | lower_tier_lookup, continuation, instance_id, dp_rank, IpOnly, cpu_blocks |
 | 2026-09-15 | controller | DP 缩容等待状态和瞬时故障导致路由冻结或误缩容 | [dp-scale-down-state-safety.md](controller/dp-scale-down-state-safety.md) | DP scale-down, WAITING_ENGINE_FAULT, false DEAD, engine relaunch, serving overlay |
 | 2026-09-15 | node_manager | NodeManager FT 代理契约漂移导致请求失败或退役状态不一致 | [ft-proxy-contract-drift.md](node_manager/ft-proxy-contract-drift.md) | NodeManager, FT proxy, retry, retired endpoint, HTTP 400 |
 | 2026-09-09 | coordinator | PD 分离请求在 Decode 才因 Prefill 改写字段被拒绝 | [pd-stream-options-late-rejection.md](coordinator/pd-stream-options-late-rejection.md) | coordinator, PD separation, stream_options, min_tokens, Decode HTTP-400, KV cache expiry |

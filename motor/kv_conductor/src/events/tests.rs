@@ -983,6 +983,65 @@ fn test_memcache_batch_parse_and_apply_ip_only() {
 }
 
 #[test]
+fn test_pool_event_before_hbm_registration_is_dropped_then_routed() {
+    use crate::indexer::Indexer;
+    use crate::protocols::HbmIpIndex;
+
+    let indexer = Indexer::new();
+    // HBM DPs are registered after the pool subscriber comes up — the node IP
+    // is not in the index yet.
+    let ip_index = HbmIpIndex::default();
+
+    let token_ids = vec![1i64, 2, 3, 4];
+    let block_size = 4u32;
+    let hash = compute_block_hash_for_seq(&token_ids, block_size)[0].0;
+    let packed = rmp_serde::to_vec(&memcache_wire_batch(hash)).unwrap();
+    let parsed: MemcacheEventBatch = from_slice(&packed).unwrap();
+    let event = &parsed.events[0];
+
+    let apply = |index: &HbmIpIndex| {
+        apply_pool_event(
+            &indexer,
+            event,
+            "test-model",
+            "default",
+            "memcache-pool", // subscriber's own backend_id: not an IP either
+            0,
+            &[StorageMedium::Cpu],
+            MatchMode::IpOnly,
+            &Some(index.clone()),
+        )
+        .unwrap();
+    };
+
+    let entry = indexer.get_or_create("test-model", "default");
+
+    // Neither the event's backend_id nor the subscriber's resolves to a worker,
+    // so the event is dropped (and reported via warn_unresolved_pool_event).
+    apply(&ip_index);
+    assert!(
+        entry.offload_pool_state.read().pending_pool.is_empty(),
+        "an event that resolves to no worker must not be queued"
+    );
+
+    // Same event once the node's HBM DP has registered.
+    ip_index
+        .write()
+        .entry("10.244.0.5".to_string())
+        .or_default()
+        .push(("vllm-prefill-1".to_string(), 0));
+    apply(&ip_index);
+    assert!(
+        entry
+            .offload_pool_state
+            .read()
+            .pending_pool
+            .contains_key(&hash),
+        "the event must be routed once the node IP is registered"
+    );
+}
+
+#[test]
 fn test_pool_backend_remove_evicts_cache() {
     use crate::indexer::Indexer;
 

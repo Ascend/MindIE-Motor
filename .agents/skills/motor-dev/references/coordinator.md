@@ -216,12 +216,14 @@ kv-conductor binaries.<br>
 
 **Factory registration** (`factory.py`): `SchedulingPolicyFactory` maps policy name → class. New policies register here.
 
-The policy is selected by `SchedulerType` (`config/coordinator.py`): `LOAD_BALANCE` / `ROUND_ROBIN` / `KV_CACHE_AFFINITY` (default). For `scheduler_type=kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:
+The policy is selected by `SchedulerType` (`config/coordinator.py`): `LOAD_BALANCE` (default) / `ROUND_ROBIN` / `KV_CACHE_AFFINITY`. For `scheduler_type=kv_cache_affinity`, a sub-mode is chosen by `kv_affinity.mode`:
 
 - `unified` (default) — single score fusing affinity and live load; pick the minimum
 - `load_gated` — keep the N least-loaded endpoints, then pick the longest cached prefix
 
-Tunables live under `CoordinatorConfig.scheduler_config.kv_affinity`: `mode`, `load_weight`, `overlap_credit`, `prefill_load_scale`, `load_gate_topn`, `w_npu`, `w_cpu`, `w_disk`.
+Tunables live under `CoordinatorConfig.scheduler_config.kv_affinity`: `mode`, `load_weight`, `overlap_credit`, `prefill_load_scale`, `load_gate_topn`, `w_npu`, `w_cpu`, `w_disk`, `hit_rate_threshold`.
+
+`hit_rate_threshold` (default `0`, range `[0, 1]`) is a pre-ranking gate: `0` keeps current affinity scoring. Values in `(0, 1]` require the best endpoint's weighted prefix hit rate `max(matched_tokens) / prompt_tokens` to be **strictly greater** than the threshold; otherwise `KvCacheAffinityPolicy` returns `[]` and the scheduler falls back to `load_balance` without treating it as a conductor failure.
 
 Worker-local successful SHM CAS allocations feed `DpStatsLogger` for every scheduling policy.
 `scheduler_config.dp_stats_window` is the emit interval (default 60 seconds; 0 disables).

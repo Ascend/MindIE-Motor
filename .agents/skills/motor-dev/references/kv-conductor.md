@@ -41,8 +41,8 @@ Replaces Mooncake conductor for MindIE Motor. Design priorities:
 │                               │                       │ │
 │                               │  Per Entry:           │ │
 │                               │   - hbm_tree (Radix)  │ │
-│                               │   - cpu_blocks (Flat) │ │
-│                               │   - disk_blocks (Flat)│ │
+│                               │   - cpu_tiers (edges) │ │
+│                               │   - disk_tiers (edges)│ │
 │                               │   - offload_pool_state│ │
 │                               └───────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
@@ -92,7 +92,8 @@ Crate root: `motor/kv_conductor/` (paths below are relative to it).
 | `src/lib.rs` | Module declarations + re-exports |
 | `src/server.rs` | HTTP routes, `AppState { registry }`, middleware, JSON/msgpack content negotiation on query endpoints |
 | `src/registry.rs` | WorkerRegistry: register/unregister/query dispatch, ZMQ lifecycle, re-registration, replay gating |
-| `src/indexer/` | Indexer (DashMap), IndexerEntry (hbm_tree + cpu/disk flat + offload cache), query, two-phase matching (`mod.rs`, `tests.rs`) |
+| `src/indexer/` | Indexer (DashMap), IndexerEntry (hbm_tree + cpu/disk continuation index + offload cache), query, two-phase matching (`mod.rs`, `tests.rs`) |
+| `src/lower_tier.rs` | `LowerTierIndexer` continuation-edge graph; breakpoint resume + unfiltered root walk |
 | `src/concurrent_tree.rs` | ConcurrentRadixTree (`Arc<RwLock<Block>>`), find_matches/apply_store/remove_worker |
 | `src/backend.rs` | StoreBackend enum + MatchMode, IP→DP resolution |
 | `src/zmq_subscriber.rs` | ZMQ SUB socket I/O, 3-format payload dispatch, reconnect loop, replay DEALER→ROUTER |
@@ -179,16 +180,25 @@ Each `Block` node:
 
 **Memory reclamation:** When the last worker is removed from a block, `drop_worker()` clears `self.children` so the subtree is dropped. Orphan nodes (from worker disconnection) are cleaned up by `sweep_stale_nodes()` triggered every 1000 HBM removals.
 
-### CPU/Disk: FxHashMap (Flat)
+### CPU/Disk: LowerTierIndexer (Continuation Edges)
 
-**Why flat:** Pool blocks (CPU/Disk) are isolated single blocks — there is no chain relationship between consecutive blocks. The only question is "does any worker have this block cached?" A flat `tokens_hash → {workers}` map suffices and avoids tree overhead.
+Pool blocks are stored as `(parent_seq, tokens_hash) → child` edges, not a
+flat `tokens_hash → workers` map. Query walks those edges so a hit is a
+contiguous prefix, matching vLLM NPU → CPU → Disk lookup.
 
 ```rust
-cpu_blocks:  Arc<RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>>
-disk_blocks: Arc<RwLock<FxHashMap<LocalBlockHash, FxHashSet<WorkerKey>>>>
+cpu_tiers:  Arc<LowerTierIndexer>
+disk_tiers: Arc<LowerTierIndexer>
 ```
 
-**Parallel optimization:** When query hashes exceed `FLAT_PAR_THRESHOLD` (4096), CPU and Disk lookups run in parallel via `rayon::join`.
+- **Root walk:** every worker that owns the first edge `(None, H0)` is walked
+  from the start (longer replicas are not hidden by a shorter upstream hit).
+- **Breakpoint resume:** HBM (then CPU) `TierBreakpoint`s continue into the
+  next tier **only** when `WorkerKey.(instance_id, dp_rank)` matches. Do not
+  compare full `WorkerKey` — HBM vs CPU/Disk differ in `medium`/`backend_id`.
+  IpOnly fans the same CPU/Disk edges onto every DP on the node; without this
+  filter another DP would resume at a foreign `npu_end` and exclusive
+  `cpu_blocks = cpu_end - 0` would swallow that NPU prefix.
 
 ### Scoring Model
 
@@ -212,7 +222,10 @@ affinity_matched = round((npu×w_npu + cpu×w_cpu + disk×w_disk) × block_size)
 ```
 
 Defaults in `SchedulerConfig.kv_affinity`: `w_npu=1.0`, `w_cpu=1.0`,
-`w_disk=0.0` (non-negative).
+`w_disk=0.0` (non-negative). `hit_rate_threshold` (default `0`) is applied
+by Coordinator after this weighting: if the best `affinity_matched / isl`
+is not strictly greater than the threshold, routing falls back to
+`load_balance`.
 
 ---
 
@@ -255,7 +268,7 @@ Legacy arrays use `rmpv::Value` + tag-based dispatch + type-pattern parsing.
    - Update reverse lookup: `seq_hash → tree_node`
 5. **Non-HBM (CPU/Disk) events:**
    - Compute `tokens_hash` and cache `(block_hash, tokens_hash)` in `offload_pool_state.offload`
-   - Check `pending_pool` for matching pool events → if found, insert into flat store under pool worker key
+   - Check `pending_pool` for matching pool events → if found, insert into lower-tier index under pool worker key
    - If not found, keep in `offload` waiting for pool confirmation
 
 ### Pool Backend Events (Mooncake/Memcache/YuanRong)
@@ -285,11 +298,11 @@ struct PoolEvent {
 1. Parse event_type → stored / removed / cleared
 2. Collect and deduplicate `seq_hashes` from both `seq_hashes` and `block_hashes` fields
 3. Resolve target workers via `MatchMode`:
-   - **IpOnly** (Mooncake/Memcache): lookup all DPs on the node IP → fan out to all
-   - **None** (YuanRong): use subscriber's fixed `backend_id` (port = DP)
+   - **IpOnly** (Mooncake/Memcache/YuanRong CPU-Disk): lookup all DPs on the node IP → fan out to all
+   - **None** (YuanRong NPU): use subscriber's fixed `backend_id` (port = DP)
 4. For each `(worker, seq_hash)`:
    - Check `offload_pool_state.offload` for `block_hash → tokens_hash`
-   - If found → insert into flat store (CPU or Disk) under pool worker key
+   - If found → insert into LowerTierIndexer (CPU or Disk) under pool worker key
    - If not found → queue in `offload_pool_state.pending_pool` waiting for offload event
 
 ### Bidirectional Two-Phase Matching
@@ -315,7 +328,7 @@ Because pool and engine offload events arrive from **different ZMQ subscribers**
                                   ▼
                    ┌──────────────────────────┐
                    │  Insert into radix tree  │
-                   │  / CPU-Disk flat store   │
+                   │  / CPU-Disk LowerTier    │
                    │  under pool worker key   │
                    └──────────────────────────┘
 
@@ -346,15 +359,20 @@ Three pool backends supported, each with different event broadcast semantics:
 |------|------|-----------|-------------|
 | Mooncake | Centralized master, one ZMQ PUB | `endpoint` (pool) + `medium_endpoints` (HBM) | `IpOnly` — `backend_id`=IP → all DPs on node | Yes |
 | Memcache | Centralized master, one ZMQ PUB | Same as Mooncake | `IpOnly` — same as Mooncake | Yes |
-| YuanRong | Per-node multi-port ZMQ PUB | `medium_endpoints` only (multi-port) | `None` — port = DP | No |
+| YuanRong | Per-node CPU/Disk PUB + per-DP NPU | `medium_endpoints` NPU per DP; CPU/Disk once per node | NPU `None`; CPU/Disk `IpOnly` | Yes |
 
 ### Mooncake/Memcache (`IpOnly`)
 
 Pool events from the central master carry `backend_id` (node IP). The conductor resolves this IP against `hbm_ip_index` — a map of `node_ip → [(instance_id, dp_rank)]` built during HBM registration. The event hash is recorded for **every** HBM-registered DP on that node. KV events do not carry an exact `dp_rank` — this avoids per-DP event routing overhead.
 
-### YuanRong (`None`)
+### YuanRong (NPU `None`, CPU/Disk `IpOnly`)
 
-Each node has independent ZMQ PUB ports per storage medium. HBM, CPU and Disk events arrive on separate ports tied to specific DPs. The subscriber's `backend_id` (engine instance_id) is used for `WorkerKey` construction instead of the event's `backend_id`. Deduplication: when `cpu` and `disk` point to the same port, only one ZMQ SUB connection is created.
+NPU events still arrive on a per-DP ZMQ PUB port; the subscriber is tied to that
+`dp_rank` (`MatchMode::None`). CPU and Disk are published once per node. A
+cpu/disk-only `/register` (no NPU keys) is treated as a node-level pool
+subscriber (`MatchMode::IpOnly`): the node's HBM-registered DPs are looked up
+in `hbm_ip_index` and the event is recorded for every DP on that IP. Deduplication:
+when `cpu` and `disk` point to the same port, only one ZMQ SUB connection is created.
 
 ---
 
@@ -390,13 +408,13 @@ When a `/register` payload includes a `replay_endpoint` (and the instance is not
 2. ROUTER replies `[b"", seq: u64 BE, msgpack_payload]` per buffered batch
 3. End-of-stream: `seq == u64::MAX` (0xFFFFFFFFFFFFFFFF)
 
-Replay runs synchronously in a `spawn_blocking` task (blocking ZMQ I/O off the tokio runtime); each replayed batch is dispatched through the same vLLM-first, then Pool format order as the live subscriber. While `replay_in_progress > 0`, **queries are rejected** to avoid returning incomplete results during the prefix-tree rebuild. If the same worker re-registers later (`instance_exists`), replay is skipped — the tree already holds its data.
+Replay runs synchronously in a `spawn_blocking` task (blocking ZMQ I/O off the tokio runtime). Registration resolves the routing identity, matching mode, and HBM IP index once for both live ingestion and replay: YuanRong node pools use the node IP extracted from their CPU/Disk endpoint, including when events omit `backend_id`; engine registrations retain their instance ID. Pool replay uses the live pool wire-format dispatcher, bypassing vLLM parsing so untagged pool maps cannot be swallowed as unknown engine events. Engine replay tries vLLM batches followed by the legacy pool batch fallback. If the same instance re-registers later (`instance_exists`), replay is skipped. Replay runs asynchronously relative to queries; there is no query readiness gate around it.
 
 ### Re-registration
 
 Re-registering an existing `(instance_id, dp_rank)` stops the old ZMQ subscribers and:
 
-- If the backend type changed → drops the radix-tree / flat-store data for the old registration (`remove_worker_all_media`) and clears its HBM IP index entries
+- If the backend type changed → drops the radix-tree / lower-tier data for the old registration (`remove_worker_all_media`) and clears its HBM IP index entries
 - If the backend is unchanged → preserves tree data and only updates endpoint info
 
 This lets clients fix misconfigured endpoints by simply re-registering, without a restart or explicit unregister.
@@ -418,16 +436,19 @@ Indexer.query(model, tenant, token_ids, block_size)
   │   → [LocalBlockHash(0xA), LocalBlockHash(0xB), ...]
   │   (XXH3, seed 1337; rayon parallel for >2048 hashes)
   │
-  ├─ hbm_tree.find_matches(hashes)
+  ├─ hbm_tree.find_matches_detailed(hashes)
   │   Traverse root → children[0xA] → children[0xB] → ...
   │   At each level: intersect active worker set with child's workers.
   │   Workers that drop out get their match depth recorded.
   │   → {WorkerKey(w1): depth=3, WorkerKey(w2): depth=1}
+  │   Collect TierBreakpoint {instance_id, dp_rank, end_pos, last_seq}
   │
-  ├─ CPU flat lookup (sequential or parallel based on FLAT_PAR_THRESHOLD)
-  │   For each hash: if cpu_blocks[hash] → add score per worker
+  ├─ CPU lower_tier_lookup(hbm_breaks)
+  │   Root walk for every owner of edge (None, H0).
+  │   Breakpoint resume only when (instance_id, dp_rank) matches.
   │
-  ├─ Disk flat lookup (same pattern)
+  ├─ Disk lower_tier_lookup(merge(hbm_breaks, cpu_breaks) per DP)
+  │   Same root + filtered resume as CPU.
   │
   └─ Score aggregation (build_response):
       per-DP exclusive *_blocks (NPU > CPU > Disk)

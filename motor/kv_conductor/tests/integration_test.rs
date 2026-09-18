@@ -475,6 +475,80 @@ async fn test_yuanrong_multi_port_registration() {
     assert_eq!(meps["disk"], "tcp://10.0.2.1:15558");
 }
 
+#[tokio::test]
+async fn test_yuanrong_node_pool_cpu_disk_separate_from_hbm() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+
+    // Per-DP NPU (indexed in hbm_ip_index for node-pool auto-attach).
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&json!({
+            "instance_id": "vllm-prefill-0",
+            "medium_endpoints": {"npu": "tcp://10.0.2.1:15557"},
+            "type": "vLLM",
+            "store_backend": "YuanRong",
+            "modelname": "yuanrong-model",
+            "block_size": 128,
+            "dp_rank": 0
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&json!({
+            "instance_id": "vllm-prefill-0",
+            "medium_endpoints": {"npu": "tcp://10.0.2.1:15558"},
+            "type": "vLLM",
+            "store_backend": "YuanRong",
+            "modelname": "yuanrong-model",
+            "block_size": 128,
+            "dp_rank": 1
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Per-node CPU/Disk pool (no NPU keys → IpOnly subscriber).
+    let resp = client
+        .post(format!("{}/register", base_url))
+        .json(&json!({
+            "instance_id": "yuanrong-pool-10.0.2.1",
+            "medium_endpoints": {
+                "cpu": "tcp://10.0.2.1:25558",
+                "disk": "tcp://10.0.2.1:25558"
+            },
+            "type": "vLLM",
+            "store_backend": "YuanRong",
+            "modelname": "yuanrong-model",
+            "block_size": 128,
+            "dp_rank": 0
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let resp = client
+        .get(format!("{}/workers", base_url))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let workers = body["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 2); // one HBM instance (2 DPs) + one node pool
+    let ids: Vec<&str> = workers
+        .iter()
+        .map(|w| w["instance_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"vllm-prefill-0"));
+    assert!(ids.contains(&"yuanrong-pool-10.0.2.1"));
+}
+
 // ── Mooncake: duplicate HBM registration (same instance, same dp) ───
 
 #[tokio::test]

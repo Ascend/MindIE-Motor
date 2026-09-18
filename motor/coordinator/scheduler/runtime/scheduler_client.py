@@ -668,6 +668,7 @@ class AsyncSchedulerClient:
         self._kv_affinity_w_npu = max(0.0, float(affinity.w_npu))
         self._kv_affinity_w_cpu = max(0.0, float(affinity.w_cpu))
         self._kv_affinity_w_disk = max(0.0, float(affinity.w_disk))
+        self._kv_affinity_hit_rate_threshold = min(1.0, max(0.0, float(affinity.hit_rate_threshold)))
 
         self._dp_stats = DpStatsLogger(window_sec=config.dp_stats_window)
         self._log_dp_stats = bool(config.log_dp_stats)
@@ -1787,11 +1788,13 @@ class AsyncSchedulerClient:
                     w_npu=self._kv_affinity_w_npu,
                     w_cpu=self._kv_affinity_w_cpu,
                     w_disk=self._kv_affinity_w_disk,
+                    hit_rate_threshold=self._kv_affinity_hit_rate_threshold,
                     top_k=max(1, top_k),
                 )
                 if ranked:
                     return ranked, CANDIDATE_POLICY_KV_CACHE_AFFINITY
-                logger.warning("kv_cache_affinity unavailable (no conductor match), falling back to load_balance")
+                if ranked is None:
+                    logger.warning("kv_cache_affinity unavailable (no conductor match), falling back to load_balance")
             candidates = self._select_endpoint_candidates_by_load_balance(instances, role, top_k)
             if candidates:
                 return candidates, CANDIDATE_POLICY_LOAD_BALANCE

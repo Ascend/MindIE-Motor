@@ -327,7 +327,8 @@ motor_coordinator_config字段配置样例如下所示：
       "load_gate_topn": 0,
       "w_npu": 1.0,
       "w_cpu": 1.0,
-      "w_disk": 0.0
+      "w_disk": 0.0,
+      "hit_rate_threshold": 0.0
     }
   },
   "inference_workers_config": {
@@ -526,6 +527,7 @@ motor_coordinator_config字段配置样例如下所示：
 | w_npu | float | 互斥 NPU 命中块权重。默认值：`1.0` |
 | w_cpu | float | 互斥 CPU 命中块权重。默认值：`1.0` |
 | w_disk | float | 互斥 Disk 命中块权重。默认值：`0.0` |
+| hit_rate_threshold | float | 亲和性命中率门槛，取值 `[0, 1]`。默认 `0` 关闭（始终按亲和评分）。大于 0 时，最大加权前缀命中率必须 **大于** 该阈值才走亲和调度，否则回退 `load_balance` |
 | **inference_workers_config字段** |-|-|
 | num_workers | int | Coordinator中业务面worker个数，默认值：4。 |
 | worker_metaserver_base_port | int | vLLM layerwise/trigger PD 时每个 Inference Worker 的 metaserver 起始端口。默认值：`12000`。Worker `i` 监听 `base+i`，仅暴露 `POST /v1/metaserver`。设为 `0` 关闭。须保证 `base+num_workers-1 <= 65535`。同一集群不可混部 handoff 与 trigger。监听地址优先 `POD_IP`，否则用 `coordinator_api_host`（不绑 loopback）。`coordinator_api_host=0.0.0.0`/`::` 仍可启动；走 Trigger 时须有 `POD_IP` 或可达的 `coordinator_api_host`，否则该请求返回 503。端口占用或 metaserver 启动失败时推理口继续服务，该 Worker 的 Trigger 请求返回 503。 |

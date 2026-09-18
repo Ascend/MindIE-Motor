@@ -88,6 +88,26 @@ fn remove_hbm_ip_index_entries(
     }
 }
 
+/// Matching strategy and IP-index requirement for the ZMQ producers of a
+/// registration.
+///
+/// Pool registrations (the Mooncake/Memcache cluster pool, and the YuanRong
+/// node-level CPU/Disk pool) fan events out by node IP via `hbm_ip_index`;
+/// engine/HBM registrations are tied to a single `(instance_id, dp_rank)`.
+///
+/// The live subscriber and `replay_events` must agree on both values for the
+/// same registration — replay previously derived them from
+/// `StoreBackend::match_mode()`, which keys on the backend rather than on the
+/// registration shape and therefore returned `None` (no fan-out) for a
+/// YuanRong node pool.
+fn subscriber_match(is_pool: bool) -> (MatchMode, bool) {
+    if is_pool {
+        (MatchMode::IpOnly, true)
+    } else {
+        (MatchMode::None, false)
+    }
+}
+
 /// Information about a registered endpoint for a worker.
 #[derive(Debug, Clone, Serialize)]
 pub struct EndpointInfo {
@@ -198,7 +218,8 @@ impl WorkerRegistry {
 
         let sb = StoreBackend::parse(&req.store_backend);
         let is_pool =
-            sb.is_pool_auto_attach() && req.medium_endpoints.is_empty() && req.endpoint.is_some();
+            (sb.is_pool_auto_attach() && req.medium_endpoints.is_empty() && req.endpoint.is_some())
+                || sb.is_node_pool_registration(&req.medium_endpoints);
 
         // Detect whether this instance_id already exists (for replay gating).
         let instance_exists = {
@@ -276,20 +297,29 @@ impl WorkerRegistry {
             );
         }
 
+        // Resolve routing once so live ingestion and replay use the same identity.
+        // YuanRong node-pool subscribers must look up hbm_ip_index by node
+        // IP even when pool events omit `backend_id` or send `IP:port`.
+        let backend_id = if is_pool && sb.is_node_pool_registration(&req.medium_endpoints) {
+            req.medium_endpoints
+                .values()
+                .next()
+                .map(|url| crate::backend::lookup_ip_from_backend_id(url))
+                .filter(|ip| !ip.is_empty())
+                .unwrap_or_else(|| req.instance_id.clone())
+        } else {
+            req.instance_id.clone()
+        };
+        let (match_mode, use_ip_index) = subscriber_match(is_pool);
+        let ip_index = if use_ip_index {
+            Some(Arc::clone(&self.hbm_ip_index))
+        } else {
+            None
+        };
+
         // Pre-create ZMQ subscribers before acquiring write lock.
         let subscribers: Vec<(String, crate::zmq_subscriber::ZmqSubscriber)> = {
             let mut subs = Vec::with_capacity(endpoint_media.len());
-            let backend_id = req.instance_id.clone();
-            let match_mode = if is_pool {
-                sb.match_mode()
-            } else {
-                MatchMode::None
-            };
-            let ip_index = if is_pool {
-                Some(Arc::clone(&self.hbm_ip_index))
-            } else {
-                None
-            };
             for (ep_url, default_media) in &endpoint_media {
                 // Engine publishers expose HBM/NPU events; CPU and Disk
                 // endpoints are pool publishers and use PoolEvent wire data.
@@ -367,13 +397,8 @@ impl WorkerRegistry {
                 let tenant_id = req.tenant_id.clone();
                 let block_size = req.block_size;
                 let indexer = Arc::clone(&self.indexer);
-                let instance_id = req.instance_id.clone();
-                let match_mode = sb.match_mode();
-                let ip_index = if sb.index_hbm_ip() {
-                    Some(Arc::clone(&self.hbm_ip_index))
-                } else {
-                    None
-                };
+                let replay_backend_id = backend_id.clone();
+                let ip_index = ip_index.clone();
 
                 // Offload blocking ZMQ I/O to a dedicated thread so the
                 // tokio runtime worker is not starved during replay.
@@ -384,7 +409,12 @@ impl WorkerRegistry {
                         &tenant_id,
                         block_size,
                         &indexer,
-                        &instance_id,
+                        &replay_backend_id,
+                        if is_pool {
+                            crate::zmq_subscriber::EventSource::Pool
+                        } else {
+                            crate::zmq_subscriber::EventSource::Engine
+                        },
                         match_mode,
                         &ip_index,
                     );
@@ -628,6 +658,103 @@ use serde::Serialize;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_node_pool_replay_without_backend_id_clears_node_dps() {
+        let registry = WorkerRegistry::new();
+        let entry = registry.indexer.get_or_create("model", "default");
+        for dp_rank in [0, 1] {
+            let request: RegisterRequest = serde_json::from_value(serde_json::json!({
+                "instance_id": "engine", "dp_rank": dp_rank, "type": "vLLM",
+                "store_backend": "YuanRong", "modelname": "model", "block_size": 4,
+                "medium_endpoints": {"npu": format!("tcp://127.0.0.1:{}", 15557 + dp_rank)}
+            }))
+            .unwrap();
+            registry.register(&request).await.unwrap();
+            entry
+                .apply_event(
+                    &WorkerKey {
+                        instance_id: "engine".into(),
+                        backend_id: "engine".into(),
+                        dp_rank,
+                        medium: StorageMedium::Cpu,
+                    },
+                    &KvCacheEventData::Stored(KvCacheStoreData {
+                        parent_hash: None,
+                        start_position: None,
+                        blocks: vec![KvCacheStoredBlockData {
+                            block_hash: 100,
+                            tokens_hash: 42,
+                        }],
+                    }),
+                )
+                .unwrap();
+        }
+        assert!(registry
+            .indexer
+            .query_by_hash("model", "default", &[LocalBlockHash(42)])
+            .unwrap()
+            .tenants["default"]
+            .contains_key("engine"));
+
+        // A real replay ROUTER exercises registration -> replay -> pool routing.
+        let context = zmq::Context::new();
+        let router = context.socket(zmq::ROUTER).unwrap();
+        router.set_rcvtimeo(5000).unwrap();
+        router.set_sndtimeo(5000).unwrap();
+        router.set_linger(0).unwrap();
+        router.bind("tcp://127.0.0.1:*").unwrap();
+        let replay_endpoint = router.get_last_endpoint().unwrap().unwrap();
+        let publisher = tokio::task::spawn_blocking(move || {
+            let request = router.recv_multipart(0).unwrap();
+            let payload = rmp_serde::to_vec(&(
+                0i64,
+                vec![serde_json::json!({
+                    "event_type": "cleared", "medium": "cpu"
+                })],
+                0u32,
+            ))
+            .unwrap();
+            for (seq, payload) in [(0u64, payload), (u64::MAX, Vec::new())] {
+                router
+                    .send_multipart(
+                        [
+                            request[0].as_slice(),
+                            &[],
+                            &seq.to_be_bytes(),
+                            payload.as_slice(),
+                        ],
+                        0,
+                    )
+                    .unwrap();
+            }
+        });
+        let request: RegisterRequest = serde_json::from_value(serde_json::json!({
+            "instance_id": "yuanrong-pool-127.0.0.1-model", "dp_rank": 0,
+            "type": "vLLM", "store_backend": "YuanRong", "modelname": "model",
+            "block_size": 4, "medium_endpoints": {"cpu": "tcp://127.0.0.1:25558"},
+            "replay_endpoint": replay_endpoint
+        }))
+        .unwrap();
+        registry.register(&request).await.unwrap();
+        publisher.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match registry
+                    .indexer
+                    .query_by_hash("model", "default", &[LocalBlockHash(42)])
+                {
+                    Err(KvConductorError::NoWorkers { .. }) => break,
+                    Ok(response) if !response.tenants["default"].contains_key("engine") => break,
+                    Ok(_) => {}
+                    Err(error) => panic!("unexpected query failure: {error}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("pool replay must clear CPU blocks on every DP on the node");
+    }
 
     #[test]
     fn test_extract_ip_ipv4() {

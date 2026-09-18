@@ -165,7 +165,8 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
   query: [H0, H1, H2, H3, H4]
   HBM tree returns: W1 depth=2, last_seq=seq200
 
-  Candidate a) breakpoint resume from (seq200, H2):
+  Candidate a) breakpoint resume from (seq200, H2) on the same
+  (instance_id, dp_rank) as the HBM worker:
     edge(seq200, H2) -> seq300  OK
     edge(seq300, H3) -> seq400  OK
     edge(seq400, H4) -> ???     MISSING -> stop
@@ -194,13 +195,13 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
         ┌───────────┐  ┌───────────┐  ┌───────────┐
         │  Mooncake │  │  Memcache │  │  YuanRong │
         │           │  │           │  │           │
-        │  Central  │  │  Central  │  │   Per-DP  │
-        │    Pool   │  │    Pool   │  │   Ports   │
+        │  Central  │  │  Central  │  │ Per-node  │
+        │    Pool   │  │    Pool   │  │ CPU/Disk  │
         └─────┬─────┘  └─────┬─────┘  └─────┬─────┘
               ▼              ▼              ▼
         ┌───────────┐  ┌───────────┐  ┌───────────┐
-        │   IpOnly  │  │   IpOnly  │  │    None   │
-        │  IP->DPs  │  │  IP->DPs  │  │ port = DP │
+        │   IpOnly  │  │   IpOnly  │  │ NPU None  │
+        │  IP->DPs  │  │  IP->DPs  │  │ CPU IpOnly│
         └───────────┘  └───────────┘  └───────────┘
 ```
 
@@ -209,7 +210,7 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
 - HBM 事件来自引擎 Worker，**不经过 Pool**。Worker 身份 = `(instance_id, dp_rank)`，后端无关。
 - CPU/Disk 事件来自 Pool Master/Daemon，携带 `backend_id`（节点 IP 或端口）。
   - Mooncake/Memcache：`backend_id` = 节点 IP → 通过 `hbm_ip_index` 关联到该节点所有 DP
-  - YuanRong：每个 DP 独立端口，`backend_id` = 端口号 → 精确匹配 DP
+  - YuanRong：NPU 每 DP 独立端口；CPU/Disk 每节点一个 PUB，`backend_id` = 节点 IP → `hbm_ip_index` 扇出到该节点所有 DP
 
 **MatchMode 策略**：
 
@@ -217,9 +218,10 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
 |---------|-----------|-------------------|-------------------|
 | Mooncake | `IpOnly` | 节点 IP（如 `10.0.0.1`） | `hbm_ip_index[IP]` → 该节点所有 DP |
 | Memcache | `IpOnly` | 节点 IP | 同 Mooncake |
-| YuanRong | `None` | 端口号（如 `15558`） | ZMQ 订阅端口 → 唯一 DP |
+| YuanRong NPU | `None` | 订阅者 `instance_id` | ZMQ 订阅端口 → 唯一 DP |
+| YuanRong CPU/Disk | `IpOnly` | 节点 IP | `hbm_ip_index[IP]` → 该节点所有 DP |
 
-注意：`MatchMode::None`（YuanRong）下，事件内的 `backend_id` 会被**忽略**，改用订阅者
+注意：`MatchMode::None`（YuanRong NPU）下，事件内的 `backend_id` 会被**忽略**，改用订阅者
 注册时的 backend_id（即引擎 `instance_id`）——否则 pool daemon 的 IP:port 会产生与 HBM
 块不同的实例标识，破坏跨介质聚合。枚举另有 `IpAndDpRank`（按 IP + DP 精确匹配），
 当前后端未选用，保留作扩展。
@@ -232,9 +234,8 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
     Pool: endpoint="tcp://master:5557"               -> one global ZMQ SUB
 
   YuanRong registration:
-    HBM:  medium_endpoints={"npu": "tcp://IP:15557"}
-    CPU:  medium_endpoints={"cpu": "tcp://IP:15558"}  -> per-endpoint ZMQ SUB
-    Disk: medium_endpoints={"disk": "tcp://IP:15558"} -> dedupe if shared port
+    HBM:  medium_endpoints={"npu": "tcp://IP:15557+dp"}  -> per-DP ZMQ SUB + hbm_ip_index
+    CPU/Disk: medium_endpoints={"cpu": "tcp://IP:15558", "disk": "..."}  -> once per node, IpOnly
 ```
 
 ### 注册、重注册与注销生命周期
@@ -337,7 +338,9 @@ CPU/DISK 不使用完整 RadixTree，而是轻量的 **continuation-edge 图**�
   │                                                          │
   │  Continuation sources:                                   │
   │    a) breakpoint resume: edge(seq300, H3) -> ...         │
-  │       (only when end_pos < N)                            │
+  │       only workers with the same (instance_id, dp_rank)  │
+  │       (medium/backend_id differ across tiers; IpOnly     │
+  │        replicas must not inherit another DP's npu_end)   │
   │    b) root walk: always (report first-block              │
   │       replicas; longer replicas not masked by            │
   │       shorter upstream hits)                             │

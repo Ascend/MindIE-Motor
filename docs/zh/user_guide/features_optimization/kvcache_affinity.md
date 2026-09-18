@@ -76,8 +76,8 @@ POST/query返回示例如下所示：
 | 介质 | 匹配方式 |
 |------|----------|
 | HBM（NPU） | RadixTree最长连续前缀（从root走到第一个缺失） |
-| CPU | continuation-edge连续边匹配：从HBM断点续查；root链（首块副本）无条件走，更长副本不被上游较短命中掩盖 |
-| Disk | continuation-edge：从max(HBM, CPU)断点续查；root链同CPU层无条件走 |
+| CPU | continuation-edge连续边匹配：从HBM断点续查（仅同一 `(instance_id, dp_rank)`）；root链（首块副本）无条件走，更长副本不被上游较短命中掩盖 |
+| Disk | continuation-edge：从max(HBM, CPU)断点续查（同样按 `(instance_id, dp_rank)` 对齐）；root链同CPU层无条件走 |
 
 **调度评分模型**
 
@@ -100,6 +100,11 @@ load_cost        = endpoint 实时 workload
 
   - load_weight = 0 时为纯亲和性（最长前缀优先）。
   - 无缓存前缀但负载显著更低的endpoint仍可能胜出，避免热点前缀聚集。
+
+- 命中率门槛（`hit_rate_threshold`）：
+
+  - 默认 `0` 关闭，始终按亲和评分。
+  - 大于 0 时：`hit_rate = max(matched_tokens) / isl`，仅当 `hit_rate > hit_rate_threshold` 才走亲和，否则回退负载均衡。
 
 - load_gated：
 
@@ -304,6 +309,7 @@ load_cost        = endpoint 实时 workload
     | kv_affinity.w_npu | float | `[0, +∞)` | 选填 | `1.0` | 互斥 NPU 命中块权重 |
     | kv_affinity.w_cpu | float | `[0, +∞)` | 选填 | `1.0` | 互斥 CPU 命中块权重 |
     | kv_affinity.w_disk | float | `[0, +∞)` | 选填 | `0.0` | 互斥 Disk 命中块权重（默认不计 Disk） |
+    | kv_affinity.hit_rate_threshold | float | `[0, 1]` | 选填 | `0` | 亲和性命中率门槛。`0` 关闭；大于 0 时最大加权前缀命中率须高于该阈值才走亲和，否则回退负载均衡 |
 
     **kv-events-config**
 
@@ -425,6 +431,7 @@ hash_block_size = 512
 | 纯吞吐优先 | `kv_affinity.mode` / `kv_affinity.load_weight` | `unified` / `0` | 纯亲和性，不感知负载 |
 | 负载均衡优先 | `kv_affinity.mode` / `kv_affinity.load_weight` | `unified` / `2.0` | 负载权重更高 |
 | 延迟敏感（保守） | `kv_affinity.mode` / `kv_affinity.load_gate_topn` | `load_gated` / `3` | 只在低负载中选最优前缀 |
+| 低命中不走亲和 | `kv_affinity.hit_rate_threshold` | `0.3` | 最大前缀命中率 > 30% 才亲和，否则负载均衡 |
 | DeepSeek V4 | `kv_conductor_config.block_size` | `512` | 引擎 `--block-size` 同步设为 512 |
 | 端口冲突规避 | `kv_conductor_config.http_server_port` | 默认 `13333` | 确保不与集群其他服务端口冲突 |
 

@@ -195,7 +195,8 @@
         "load_gate_topn": 0,
         "w_npu": 1.0,
         "w_cpu": 1.0,
-        "w_disk": 0.0
+        "w_disk": 0.0,
+        "hit_rate_threshold": 0.0
       }
     },
     "render_config": {

@@ -212,6 +212,90 @@ fn test_cpu_continuation_from_hbm_breakpoint() {
 }
 
 #[test]
+fn test_hbm_cpu_continuation_requires_same_instance_and_dp() {
+    // IpOnly fans the same CPU tail onto every DP on the node. Resuming from
+    // another DP's HBM breakpoint would start at that DP's npu_end, so
+    // exclusive cpu_blocks = cpu_end - 0 would swallow the foreign NPU prefix.
+    let indexer = Indexer::new();
+    let entry = indexer.get_or_create("model-cross-dp", "t1");
+
+    let tokens: Vec<i64> = (0..12).collect();
+    let hashes = compute_block_hash_for_seq(&tokens, 4);
+    assert_eq!(hashes.len(), 3);
+
+    let wk_npu = WorkerKey {
+        instance_id: "inst-a".into(),
+        backend_id: "inst-a".into(),
+        dp_rank: 0,
+        medium: StorageMedium::Npu,
+    };
+    entry
+        .apply_event(
+            &wk_npu,
+            &KvCacheEventData::Stored(KvCacheStoreData {
+                parent_hash: None,
+                start_position: None,
+                blocks: vec![
+                    KvCacheStoredBlockData {
+                        block_hash: 100,
+                        tokens_hash: hashes[0].0,
+                    },
+                    KvCacheStoredBlockData {
+                        block_hash: 200,
+                        tokens_hash: hashes[1].0,
+                    },
+                ],
+            }),
+        )
+        .unwrap();
+
+    let cpu_tail = KvCacheEventData::Stored(KvCacheStoreData {
+        parent_hash: Some(200),
+        start_position: None,
+        blocks: vec![KvCacheStoredBlockData {
+            block_hash: 300,
+            tokens_hash: hashes[2].0,
+        }],
+    });
+    for (instance_id, dp_rank) in [("inst-a", 0), ("inst-a", 1), ("inst-b", 0)] {
+        let wk_cpu = WorkerKey {
+            instance_id: instance_id.into(),
+            backend_id: "pool-cpu".into(),
+            dp_rank,
+            medium: StorageMedium::Cpu,
+        };
+        entry.apply_event(&wk_cpu, &cpu_tail).unwrap();
+    }
+
+    let resp = indexer.query("model-cross-dp", "t1", &tokens, 4).unwrap();
+    let tenant = &resp.tenants["t1"];
+    let dp0 = &tenant["inst-a"].dp["0"];
+    assert_eq!(dp0.npu_blocks, 2);
+    assert_eq!(dp0.cpu_blocks, 1);
+    assert_eq!(dp0.matched_tokens, 3 * 4);
+
+    let other_dp_cpu = tenant["inst-a"]
+        .dp
+        .get("1")
+        .map(|d| d.cpu_blocks)
+        .unwrap_or(0);
+    assert_eq!(
+        other_dp_cpu, 0,
+        "DP1 must not resume from DP0 HBM into exclusive cpu_blocks"
+    );
+
+    let other_inst_cpu = tenant
+        .get("inst-b")
+        .and_then(|imd| imd.dp.get("0"))
+        .map(|d| d.cpu_blocks)
+        .unwrap_or(0);
+    assert_eq!(
+        other_inst_cpu, 0,
+        "another instance must not resume from inst-a HBM"
+    );
+}
+
+#[test]
 fn test_cpu_replica_reported_when_hbm_hits_same_dp() {
     let indexer = Indexer::new();
     let entry = indexer.get_or_create("model-d", "t1");

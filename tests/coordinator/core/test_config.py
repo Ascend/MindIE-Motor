@@ -1328,6 +1328,7 @@ def test_from_json_loads_nested_kv_affinity(_temp_json_file):
                 "w_npu": 1.0,
                 "w_cpu": 0.5,
                 "w_disk": 0.25,
+                "hit_rate_threshold": 0.3,
             },
         }
     }
@@ -1344,6 +1345,7 @@ def test_from_json_loads_nested_kv_affinity(_temp_json_file):
     assert affinity.w_npu == 1.0
     assert affinity.w_cpu == 0.5
     assert affinity.w_disk == 0.25
+    assert affinity.hit_rate_threshold == 0.3
 
 
 def test_from_json_migrates_legacy_flat_kv_affinity_keys(_temp_json_file, caplog):
@@ -1386,6 +1388,24 @@ def test_from_json_nested_kv_affinity_wins_over_legacy_flat(_temp_json_file):
     affinity = config.scheduler_config.kv_affinity
     assert affinity.mode == "unified"
     assert affinity.load_weight == 1.5
+
+
+def test_kv_affinity_hit_rate_threshold_default_and_validation():
+    """hit_rate_threshold defaults to 0 and must stay in [0, 1]."""
+    config = CoordinatorConfig()
+    assert config.scheduler_config.kv_affinity.hit_rate_threshold == 0.0
+    config.validate_config()
+
+    config.scheduler_config.kv_affinity.hit_rate_threshold = 1.0
+    config.validate_config()
+
+    config.scheduler_config.kv_affinity.hit_rate_threshold = -0.1
+    with pytest.raises(ValueError, match="kv_affinity.hit_rate_threshold cannot be negative"):
+        config.validate_config()
+
+    config.scheduler_config.kv_affinity.hit_rate_threshold = 1.1
+    with pytest.raises(ValueError, match="kv_affinity.hit_rate_threshold must be in \\[0, 1\\]"):
+        config.validate_config()
 
 
 def test_invalid_context_budget_mode_is_rejected():

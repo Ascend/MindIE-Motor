@@ -89,6 +89,19 @@ struct TierBreakpoint {
     last_seq: SequenceBlockHash,
 }
 
+impl TierBreakpoint {
+    /// Continue only onto the same engine DP.
+    ///
+    /// HBM vs CPU/Disk differ in `medium` / `backend_id`, so identity is
+    /// `(instance_id, dp_rank)`. IpOnly replicas share the same CPU/Disk
+    /// edges across ranks; without this check another DP would resume at
+    /// this breakpoint and inflate exclusive `cpu_blocks` /
+    /// `disk_blocks` via absolute `end_pos`.
+    fn same_engine_dp(&self, worker: &WorkerKey) -> bool {
+        worker.instance_id == self.instance_id && worker.dp_rank == self.dp_rank
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Two-phase offload/pool matching protocol
 // ---------------------------------------------------------------------------
@@ -301,9 +314,10 @@ impl IndexerEntry {
             })
             .collect();
 
-        // 2) CPU: continue from HBM breakpoints; root walk runs for every
-        //    worker owning the first edge so longer lower-tier replicas are
-        //    never hidden by a shorter upstream hit.
+        // 2) CPU: continue from HBM breakpoints on the same
+        //    (instance_id, dp_rank); root walk runs for every worker owning
+        //    the first edge so longer lower-tier replicas are never hidden
+        //    by a shorter upstream hit.
         let cpu_hits = self.lower_tier_lookup(
             block_hashes,
             &hbm_breaks,
@@ -392,8 +406,9 @@ impl IndexerEntry {
     /// - Root walks run for **every** worker owning the first edge so a
     ///   longer replica on this tier is never hidden by an upstream
     ///   (possibly shorter) hit.
-    /// - Continuation starts from each upstream ``TierBreakpoint``; a worker
-    ///   may hold several candidates (root + breakpoints), and the one with
+    /// - Continuation starts from each upstream ``TierBreakpoint``, but only
+    ///   for workers on the same ``(instance_id, dp_rank)``. A worker may
+    ///   hold several candidates (root + breakpoints), and the one with
     ///   the farthest absolute end wins inside
     ///   [`LowerTierIndexer::query_contiguous_hits`].
     fn lower_tier_lookup(
@@ -421,12 +436,16 @@ impl IndexerEntry {
         }
 
         // Continue from each upstream breakpoint (candidate list — the walk
-        // keeps the farthest end per worker).
+        // keeps the farthest end per worker). Only the same engine DP may
+        // inherit the breakpoint; root walks stay unfiltered.
         for b in upstream_breaks {
             if b.end_pos >= block_hashes.len() {
                 continue;
             }
             for w in tiers.edge_owners(Some(b.last_seq), block_hashes[b.end_pos]) {
+                if !b.same_engine_dp(&w) {
+                    continue;
+                }
                 continuations
                     .entry(w)
                     .or_default()

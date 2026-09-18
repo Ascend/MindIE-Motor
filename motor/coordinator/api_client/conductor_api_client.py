@@ -63,6 +63,11 @@ class ConductorApiClient:
 
     # Pool registration is once-per-cluster; HBM DP registrations are per-instance.
     _pool_registered: bool = False
+    # YuanRong CPU/Disk PUB is per node (not per DP). Keyed by "ip\\0model".
+    _yuanrong_nodes_registered: set[str] = set()
+    # DPs still accounted for by each node pool, keyed like above.  The pool is
+    # unregistered only once the last DP on the node goes away.
+    _yuanrong_node_refs: dict[str, set[tuple[str, int]]] = {}
 
     # ── Config ────────────────────────────────────────────────────────
 
@@ -84,13 +89,14 @@ class ConductorApiClient:
 
     @classmethod
     def _resolve_backend_mode(cls) -> str:
+        """Return ``pool`` (cluster CPU/Disk) or ``per_node`` (YuanRong node CPU/Disk)."""
         sb = cls._resolve_store_backend()
         if sb in ("Mooncake", "Memcache"):
             return "pool"
         if sb in ("YuanRong", ""):
-            return "per_dp"
-        logger.warning("Unknown store_backend=%s, falling back to per_dp", sb)
-        return "per_dp"
+            return "per_node"
+        logger.warning("Unknown store_backend=%s, falling back to per_node", sb)
+        return "per_node"
 
     @classmethod
     def register_kv_instance(cls, instances: list[Instance]) -> None:
@@ -105,17 +111,13 @@ class ConductorApiClient:
 
         if mode == "pool":
             cls._register_pool(reg, sb)
-            for instance in instances:
-                if instance.role not in _KVA_ROLES:
-                    continue
-                for ep in instance.get_all_endpoints():
-                    cls._register_hbm_dp(reg, sb, instance, ep)
-        else:
-            for instance in instances:
-                if instance.role not in _KVA_ROLES:
-                    continue
-                for ep in instance.get_all_endpoints():
-                    cls._register_yuanrong_dp(reg, sb, instance, ep)
+        for instance in instances:
+            if instance.role not in _KVA_ROLES:
+                continue
+            for ep in instance.get_all_endpoints():
+                cls._register_hbm_dp(reg, sb, instance, ep)
+                if mode == "per_node":
+                    cls._register_yuanrong_node(reg, sb, instance, ep)
 
     @classmethod
     def unregister_kv_instance(cls, instances: list[Instance]) -> None:
@@ -124,12 +126,16 @@ class ConductorApiClient:
             logger.debug("conductor_service is empty; skip KV conductor instance unregistration")
             return
         logger.info("unregister_kv_instance started.")
+        mode = cls._resolve_backend_mode()
+        sb = cls._resolve_store_backend()
 
         for instance in instances:
             if instance.role not in _KVA_ROLES:
                 continue
             for ep in instance.get_all_endpoints():
                 cls.unregister_post(instance, ep)
+                if mode == "per_node":
+                    cls._unregister_yuanrong_node(cls._kv_reg(), sb, instance, ep)
 
     # ── Pool registration (Mooncake / Memcache) ──────────────────────
 
@@ -186,11 +192,11 @@ class ConductorApiClient:
         except Exception as e:
             logger.error("Pool registration failed for %s: %s", store_backend, e)
 
-    # ── HBM per-DP (Mooncake / Memcache) ─────────────────────────────
+    # ── HBM per-DP (Mooncake / Memcache / YuanRong) ─────────────────────────────
 
     @classmethod
     def _register_hbm_dp(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
-        """Register a single DP's HBM endpoint for pool-backend auto-attach."""
+        """Register a single DP's NPU/HBM endpoint (all backends)."""
         instance_id = conductor_instance_id(instance)
         npu_url = cls._resolve_endpoint_url(
             reg.npu_endpoint or reg.xpu_endpoint or reg.endpoint,
@@ -220,8 +226,9 @@ class ConductorApiClient:
                 client.post("/register", register_data)
                 mode = "ZMQ+HTTP" if npu_url else "HTTP-only"
                 logger.info(
-                    "HBM DP registered (%s): instance=%s dp=%d replay=%s",
+                    "HBM DP registered (%s): backend=%s instance=%s dp=%d replay=%s",
                     mode,
+                    store_backend,
                     instance_id,
                     endpoint.id,
                     replay_url or "none",
@@ -229,45 +236,134 @@ class ConductorApiClient:
         except Exception as e:
             logger.error("HBM DP registration failed for %s dp=%d: %s", instance_id, endpoint.id, e)
 
-    # ── YuanRong per-DP multi-port ────────────────────────────────────
+    # ── YuanRong: CPU/Disk per-node ───────────────────────────────────
+
+    @staticmethod
+    def _node_pool_key(ip: str, model_name: str) -> str:
+        """Dedup key of the per-node CPU/Disk pool registration."""
+        return f"{ip}\0{model_name}"
 
     @classmethod
-    def _register_yuanrong_dp(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
-        """Register a single DP with multi-port endpoints for YuanRong."""
-        instance_id = conductor_instance_id(instance)
-        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
-        has_endpoints = any(v != "" for v in medium_endpoints.values())
+    def _node_pool_instance_id(cls, store_backend: str, ip: str, model_name: str) -> str:
+        """Conductor instance_id of the node pool, mirroring :meth:`_node_pool_key`.
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
+        The model is part of the id because kv-conductor identifies a
+        registration by ``(instance_id, dp_rank)`` and tears down every
+        subscriber under that key before rebuilding it.  An ip-only id would
+        make the second model on a node evict the first model's subscription.
+        """
+        return f"{store_backend.lower()}-pool-{ip}-{model_name}"
+
+    @staticmethod
+    def _split_node_pool_key(node_key: str) -> tuple[str, str]:
+        """Inverse of :meth:`_node_pool_key` — returns ``(ip, model_name)``."""
+        ip, _, model_name = node_key.partition("\0")
+        return ip, model_name
+
+    @classmethod
+    def _register_yuanrong_node(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+        """Register YuanRong CPU/Disk PUB once per (node IP, model).
+
+        Shared by every DP on the node; the node pool is registered by whichever
+        DP gets there first.  Whether the conductor actually still holds the
+        registration is tracked by :attr:`_yuanrong_nodes_registered`, which
+        :meth:`re_register_kv_instances` re-syncs against ``GET /workers``.
+        """
+        node_key = cls._node_pool_key(endpoint.ip, instance.model_name)
+        # Record the reference before the dedup check so that every DP on the
+        # node is accounted for, including the ones that skip the POST below.
+        cls._yuanrong_node_refs.setdefault(node_key, set()).add((conductor_instance_id(instance), endpoint.id))
+        if node_key in cls._yuanrong_nodes_registered:
+            return
+
+        cpu_url = cls._resolve_endpoint_url(reg.cpu_endpoint, endpoint.ip, 0)
+        disk_url = cls._resolve_endpoint_url(reg.disk_endpoint, endpoint.ip, 0)
+        fallback = cls._resolve_endpoint_url(reg.endpoint, endpoint.ip, 0)
+        medium_endpoints = {
+            k: v
+            for k, v in {
+                "cpu": cpu_url or fallback or "",
+                "disk": disk_url or fallback or "",
+            }.items()
+            if v
+        }
+        if not medium_endpoints:
+            return
+
         register_data: dict = {
-            "instance_id": instance_id,
+            "instance_id": cls._node_pool_instance_id(store_backend, endpoint.ip, instance.model_name),
             "type": reg.engine_type,
             "store_backend": store_backend,
             "modelname": instance.model_name,
             "block_size": reg.block_size,
-            "dp_rank": endpoint.id,
+            "dp_rank": 0,
+            "medium_endpoints": medium_endpoints,
         }
-        if has_endpoints:
-            register_data["medium_endpoints"] = {k: v for k, v in medium_endpoints.items() if v}
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
-        if replay_url:
-            register_data["replay_endpoint"] = replay_url
 
         client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
         try:
             with SafeHTTPSClient(timeout=15, **client_args) as client:
                 client.post("/register", register_data)
-                mode = "ZMQ+HTTP" if has_endpoints else "HTTP-only"
+                cls._yuanrong_nodes_registered.add(node_key)
                 logger.info(
-                    "YuanRong DP registered (%s): instance=%s dp=%d replay=%s",
-                    mode,
-                    instance_id,
-                    endpoint.id,
-                    replay_url or "none",
+                    "YuanRong node pool registered: backend=%s ip=%s cpu=%s disk=%s",
+                    store_backend,
+                    endpoint.ip,
+                    medium_endpoints.get("cpu", ""),
+                    medium_endpoints.get("disk", ""),
                 )
         except Exception as e:
-            logger.error("YuanRong DP registration failed for %s dp=%d: %s", instance_id, endpoint.id, e)
+            logger.error("YuanRong node pool registration failed for ip=%s: %s", endpoint.ip, e)
+
+    @classmethod
+    def _unregister_yuanrong_node(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+        """Drop one DP's reference to the node pool, unregistering it when it is the last.
+
+        The CPU/Disk PUB serves the whole node, so a single DP leaving must not
+        tear it down.  Without the final unregister the conductor keeps the
+        instance and its ZMQ SUB forever (reconnecting against a PUB that no
+        longer exists), and ``GET /workers`` keeps advertising a dead pool.
+        """
+        node_key = cls._node_pool_key(endpoint.ip, instance.model_name)
+        refs = cls._yuanrong_node_refs.get(node_key)
+        if refs is None:
+            return
+        refs.discard((conductor_instance_id(instance), endpoint.id))
+        if refs:
+            return
+        cls._yuanrong_node_refs.pop(node_key, None)
+        if node_key not in cls._yuanrong_nodes_registered:
+            return
+        # Forget the node before the POST: if the conductor is unreachable the
+        # registration is left behind, and keeping the key cached would make a
+        # later re-registration of this node a no-op.
+        cls._yuanrong_nodes_registered.discard(node_key)
+
+        register_data: dict = {
+            "type": reg.engine_type,
+            "modelname": instance.model_name,
+            "block_size": reg.block_size,
+            "instance_id": cls._node_pool_instance_id(store_backend, endpoint.ip, instance.model_name),
+            "dp_rank": 0,
+        }
+        if TENANT_ID != "default":
+            register_data["tenant_id"] = TENANT_ID
+
+        client_args = {"address": format_address(reg.conductor_service, reg.http_server_port)}
+        try:
+            with SafeHTTPSClient(timeout=15, **client_args) as client:
+                client.post("/unregister", register_data)
+                logger.info(
+                    "YuanRong node pool unregistered: backend=%s ip=%s model=%s",
+                    store_backend,
+                    endpoint.ip,
+                    instance.model_name,
+                )
+        except Exception as e:
+            logger.error("YuanRong node pool unregistration failed for ip=%s: %s", endpoint.ip, e)
+        logger.info("unregister_data : %s", register_data)
 
     # ── Shared helpers ────────────────────────────────────────────────
 
@@ -301,6 +397,11 @@ class ConductorApiClient:
         reg = cls._kv_reg()
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
+
+        if cls._resolve_backend_mode() == "per_node":
+            cls._register_hbm_dp(reg, sb, instance, endpoint)
+            cls._register_yuanrong_node(reg, sb, instance, endpoint)
+            return
 
         medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
         if all(v == "" for v in medium_endpoints.values()):
@@ -497,8 +598,10 @@ class ConductorApiClient:
         sb = cls._resolve_store_backend()
 
         medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
-        # Keep only non-empty endpoints
+        # Keep only non-empty endpoints. YuanRong CPU/Disk are per-node, not per-DP.
         filtered = {k: v for k, v in medium_endpoints.items() if v}
+        if cls._resolve_backend_mode() == "per_node":
+            filtered = {k: v for k, v in filtered.items() if k == "npu"}
         if not filtered:
             return {}
 
@@ -595,6 +698,29 @@ class ConductorApiClient:
         return keys
 
     @classmethod
+    def _resync_yuanrong_nodes(cls, store_backend: str, registered: set[tuple[str, int]]) -> None:
+        """Forget node pools the conductor no longer holds.
+
+        :attr:`_yuanrong_nodes_registered` exists so the CPU/Disk PUB is
+        registered once per node rather than once per DP, but it must not
+        outlive the conductor's own state: after a conductor restart the cache
+        still says "registered" while ``GET /workers`` has nothing, and the pool
+        would never be rebuilt.
+        """
+        stale = {
+            node_key
+            for node_key in cls._yuanrong_nodes_registered
+            if (cls._node_pool_instance_id(store_backend, *cls._split_node_pool_key(node_key)), 0) not in registered
+        }
+        if not stale:
+            return
+        logger.info(
+            "YuanRong node pools missing in conductor, will re-register: %s",
+            sorted(cls._split_node_pool_key(node_key) for node_key in stale),
+        )
+        cls._yuanrong_nodes_registered -= stale
+
+    @classmethod
     def re_register_kv_instances(cls, instances: list[Instance]) -> None:
         """Re-register any KVA-eligible instances that are missing from the conductor.
 
@@ -615,6 +741,14 @@ class ConductorApiClient:
             if isinstance(worker, dict):
                 registered_dps |= cls._normalize_service_key(worker)
 
+        # Node pools are per node, not per DP, so they are invisible to the
+        # (instance_id, dp_rank) comparison below — re-sync the local cache with
+        # what the conductor really holds before deciding what to re-register.
+        mode = cls._resolve_backend_mode()
+        sb = cls._resolve_store_backend()
+        if mode == "per_node":
+            cls._resync_yuanrong_nodes(sb, registered_dps)
+
         for instance in instances:
             if instance.role not in _KVA_ROLES:
                 continue
@@ -629,8 +763,25 @@ class ConductorApiClient:
                     continue
 
                 instance_id = conductor_instance_id(instance)
-                if (instance_id, ep.id) in registered_dps:
+                dp_registered = (instance_id, ep.id) in registered_dps
+                # The cache was just reconciled with the conductor, so a missing
+                # key here really means the pool is gone.
+                node_key = cls._node_pool_key(ep.ip, instance.model_name)
+                pool_missing = mode == "per_node" and node_key not in cls._yuanrong_nodes_registered
+                if dp_registered and not pool_missing:
                     continue  # already registered
+
+                if dp_registered:
+                    # Only the node pool is gone.  Go through the pool
+                    # registration directly: register_post would also rebuild
+                    # the HBM subscribers of the DPs that are still registered.
+                    logger.info(
+                        "node pool missing in conductor, re-registering ip=%s model=%s",
+                        ep.ip,
+                        instance.model_name,
+                    )
+                    cls._register_yuanrong_node(cls._kv_reg(), sb, instance, ep)
+                    continue
 
                 logger.info(
                     "service missing in conductor, re-registering instance=%s dp_rank=%s",
