@@ -539,7 +539,7 @@ index b77d014102..25dc238acf 100644
                  # try to promote blocked statuses while traversing skipped queue.
                  if self._is_blocked_waiting_status(
                      request.status
-@@ -954,7 +983,11 @@ class Scheduler(SchedulerInterface):
+@@ -954,7 +983,12 @@ class Scheduler(SchedulerInterface):
                      if request.has_encoder_inputs:
                          self.encoder_cache_manager.free(request)
                      break
@@ -820,7 +820,7 @@ index 10a6329f5a..4c28e9cf5a 100644
  
  logger = init_logger(__name__)
  
-@@ -367,6 +369,22 @@ class InputProcessor:
+@@ -367,6 +369,27 @@ class InputProcessor:
                      )
                  )
  
@@ -957,4 +957,3 @@ index 9e71591d36..28fc943fa2 100644
      def append_output_token_ids(
 -- 
 2.52.0.windows.1
-

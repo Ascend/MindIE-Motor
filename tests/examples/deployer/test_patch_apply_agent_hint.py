@@ -143,11 +143,33 @@ def test_main_applies_both_sides_and_registers_entry_point(monkeypatch):
 
 
 def test_is_patched_validates_marker_and_syntax(tmp_path):
-    target = tmp_path / "backend.py"
-    target.write_text("ASCEND_AGENT_HINT_BACKEND = None\n", encoding="utf-8")
-    assert applier.is_patched(str(target), "ASCEND_AGENT_HINT_BACKEND") is True
-    assert applier.is_patched(str(target), "absent-marker") is False
-    assert applier.is_patched(str(tmp_path / "missing.py"), "ASCEND_AGENT_HINT_BACKEND") is False
+    target = tmp_path / "vllm_ascend" / "core" / "agent_hint"
+    target.mkdir(parents=True)
+    (target / "backend.py").write_text("ASCEND_AGENT_HINT_BACKEND = None\n", encoding="utf-8")
+    rel_path = "vllm_ascend/core/agent_hint/backend.py"
+    assert applier.is_patched(str(tmp_path), ((rel_path, "ASCEND_AGENT_HINT_BACKEND"),)) is True
+    assert applier.is_patched(str(tmp_path), ((rel_path, "absent-marker"),)) is False
+    assert applier.is_patched(str(tmp_path), (("vllm_ascend/missing.py", "ASCEND_AGENT_HINT_BACKEND"),)) is False
+
+
+def test_is_patched_rejects_partially_applied_tree(tmp_path):
+    """The agent_hint_manager.py module alone must not mark the vLLM patch as applied.
+
+    A malformed hunk aborts ``patch`` after the new module is created but before
+    the scheduler hooks land; treating that tree as patched shipped an image
+    whose EngineCore died with AttributeError on the first request.
+    """
+    core = tmp_path / "vllm" / "v1" / "core"
+    core.mkdir(parents=True)
+    (core / "agent_hint_manager.py").write_text("def create_agent_hint_manager(): ...\n", encoding="utf-8")
+    (core / "sched").mkdir()
+    (core / "sched" / "scheduler.py").write_text("class Scheduler: pass\n", encoding="utf-8")
+    assert applier.is_patched(str(tmp_path), applier.VLLM_MARKERS) is False
+    assert applier.missing_markers(str(tmp_path), applier.VLLM_MARKERS) == [
+        "vllm/v1/core/sched/scheduler.py",
+        "vllm/v1/engine/input_processor.py",
+        "vllm/v1/request.py",
+    ]
 
 
 def test_register_in_file_inserts_after_section_and_is_idempotent(tmp_path):

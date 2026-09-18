@@ -57,6 +57,23 @@ except ImportError:  # noqa: PERF203
 VLLM_TARGET_VERSION = "0.26.0"
 VLLM_ASCEND_TARGET_PREFIX = "0.26.0rc1"
 
+# Files that must carry their hook once the patch is applied. The new
+# agent_hint_manager.py module alone is not enough: ``patch`` stops at the
+# first malformed hunk, so an interrupted run leaves that module in place while
+# the scheduler that consumes it stays unpatched, and the runtime then fails
+# with "'AsyncScheduler' object has no attribute 'agent_hint_manager'".
+VLLM_MARKERS = (
+    ("vllm/v1/core/agent_hint_manager.py", "create_agent_hint_manager"),
+    ("vllm/v1/core/sched/scheduler.py", "self.agent_hint_manager = create_agent_hint_manager"),
+    ("vllm/v1/engine/input_processor.py", "agent_hint=agent_hint"),
+    ("vllm/v1/request.py", "self.agent_hint = agent_hint"),
+)
+
+VLLM_ASCEND_MARKERS = (
+    ("vllm_ascend/core/agent_hint/backend.py", "ASCEND_AGENT_HINT_BACKEND"),
+    ("vllm_ascend/patch/platform/patch_kv_delivery_preemption.py", "self.agent_hint_manager.on_step"),
+)
+
 ENTRY_POINT_SECTION = "[vllm.general_plugins]"
 ENTRY_POINT_LINE = "ascend_agent_hint = vllm_ascend:register_agent_hint"
 
@@ -96,17 +113,45 @@ def ascend_patch_supported() -> bool:
     return True
 
 
-def is_patched(path: str, marker: str) -> bool:
-    """Return True if the target file already carries the marker and stays valid Python."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
+def missing_markers(root: str, markers: tuple[tuple[str, str], ...]) -> list[str]:
+    """Return marker files that are absent, lack the marker, or carry invalid Python.
+
+    Mirrors the checks in ``is_patched`` so the failure log never reports an
+    empty "still unpatched" list while ``is_patched`` returns False.
+    """
+    missing = []
+    for rel_path, marker in markers:
+        try:
+            with open(os.path.join(root, rel_path), encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            missing.append(rel_path)
+            continue
+        if marker not in content:
+            missing.append(rel_path)
+            continue
+        try:
+            ast.parse(content)
+        except SyntaxError:
+            missing.append(rel_path)
+    return missing
+
+
+def is_patched(root: str, markers: tuple[tuple[str, str], ...]) -> bool:
+    """Return True only when every marker is present and each file stays valid Python."""
+    for rel_path, marker in markers:
+        try:
+            with open(os.path.join(root, rel_path), encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return False
         if marker not in content:
             return False
-        ast.parse(content)
-        return True
-    except (OSError, SyntaxError):
-        return False
+        try:
+            ast.parse(content)
+        except SyntaxError:
+            return False
+    return True
 
 
 def _normalize_patch(text: str, strip_setup_py: bool) -> str:
@@ -128,14 +173,20 @@ def _normalize_patch(text: str, strip_setup_py: bool) -> str:
     return "".join(kept)
 
 
-def apply_patch(pkg_name: str, root: str, patch_path: str, marker_path: str, marker: str, strip_setup_py: bool) -> bool:
-    """Apply one agent-hint patch under ``root``; idempotent via ``marker``."""
+def apply_patch(
+    pkg_name: str,
+    root: str,
+    patch_path: str,
+    markers: tuple[tuple[str, str], ...],
+    strip_setup_py: bool,
+) -> bool:
+    """Apply one agent-hint patch under ``root``; idempotent via every ``markers`` entry."""
     patch_bin = shutil.which("patch")
     if not patch_bin:
         logger.error("patch command not found in PATH")
         return False
-    if is_patched(marker_path, marker):
-        logger.info("Already patched: %s", marker_path)
+    if is_patched(root, markers):
+        logger.info("Already patched: %s", os.path.join(root, markers[0][0]))
         return True
     try:
         raw = pathlib.Path(patch_path).read_text(encoding="utf-8")
@@ -148,20 +199,24 @@ def apply_patch(pkg_name: str, root: str, patch_path: str, marker_path: str, mar
         tmp_path = tmp.name
     try:
         result = subprocess.run(
-            [patch_bin, "-p1", "--ignore-whitespace", "-d", root, "-i", tmp_path],
+            # --forward skips hunks that are already applied, so a tree left
+            # half-patched by an earlier run is completed instead of reverted.
+            [patch_bin, "-p1", "--forward", "--ignore-whitespace", "-d", root, "-i", tmp_path],
             capture_output=True,
             text=True,
             check=False,
         )
     finally:
         os.unlink(tmp_path)
-    if result.returncode == 0:
+    if is_patched(root, markers):
         logger.info("%s agent-hint patch applied", pkg_name)
         return True
-    if is_patched(marker_path, marker):
-        logger.info("Already patched: %s", marker_path)
-        return True
-    logger.error("Failed to apply %s agent-hint patch\n%s", pkg_name, result.stderr.strip())
+    logger.error(
+        "Failed to apply %s agent-hint patch; still unpatched: %s\n%s",
+        pkg_name,
+        ", ".join(missing_markers(root, markers)),
+        result.stderr.strip(),
+    )
     return False
 
 
@@ -223,13 +278,11 @@ def main() -> int:
         logger.info("Skip vllm agent-hint patch: vllm is not installed")
     else:
         vllm_root = os.path.dirname(vllm.__path__[0])
-        vllm_marker = os.path.join(vllm.__path__[0], "v1", "core", "agent_hint_manager.py")
         if not apply_patch(
             "vllm",
             vllm_root,
             os.path.join(patch_dir, "vllm_agent_hint.patch"),
-            vllm_marker,
-            "create_agent_hint_manager",
+            VLLM_MARKERS,
             strip_setup_py=False,
         ):
             # vllm_ascend.register_agent_hint imports
@@ -239,13 +292,11 @@ def main() -> int:
             return 1
 
     ascend_root = os.path.dirname(vllm_ascend.__path__[0])
-    ascend_marker = os.path.join(vllm_ascend.__path__[0], "core", "agent_hint", "backend.py")
     applied = apply_patch(
         "vllm_ascend",
         ascend_root,
         os.path.join(patch_dir, "vllm_ascend_agent_hint.patch"),
-        ascend_marker,
-        "ASCEND_AGENT_HINT_BACKEND",
+        VLLM_ASCEND_MARKERS,
         strip_setup_py=True,
     )
     if not applied or not register_entry_point():
