@@ -129,7 +129,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
 #### 场景二：standalone 模式配置
 
-下方示例 `connectors[0]` 为标准 attention 配置，混合 attention 须换为 `MooncakeHybridConnector`，详情请参见 [选型说明](../README.md)。
+下方示例 `connectors[0]` 为标准 attention 配置，混合 attention 须换为 `MooncakeHybridConnector`，详情请参见 [选型说明](../../../features/kv_cache_store/README.md)。
 
 1. 在 user_config.json 配置文件中配置 kv_cache_store_config 字段。
 

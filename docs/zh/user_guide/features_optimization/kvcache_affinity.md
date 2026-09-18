@@ -132,7 +132,7 @@ load_cost        = endpoint 实时 workload
 
 **依据原文上下文内容重组，请进行人工校验。**
 
-引擎的 `kv-transfer-config`（PD 传输）属于 PD 分离基础配置，非亲和性子系统引入；KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，请参考《[KV Cache Store](kv_cache_store/README.md)》。
+引擎的 `kv-transfer-config`（PD 传输）属于 PD 分离基础配置，非亲和性子系统引入；KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，请参考[KV Cache Store](../features/kv_cache_store/README.md)。
 
 #### PD分离/混部服务部署
 
