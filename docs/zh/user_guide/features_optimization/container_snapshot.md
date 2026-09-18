@@ -129,22 +129,71 @@
 
 ## 验证特性
 
-实例从快照创建后，查看实例日志，检查是否包含以下内容：
+### 验证容器快照是否制作完成
+
+在配置的 `host_snapshot_image_path` 下，进入以当前服务 namespace 命名的目录，检查每个实例的子目录中是否生成 `snapshot_status.json` 文件。目录结构如下：
+
+```text
+<host_snapshot_image_path>/<namespace>/<instance-name>/snapshot_status.json
+```
+
+例如，`host_snapshot_image_path` 配置为 `/path/to/host-snapshot`、namespace 为 `mindie-motor`、实例名称为 `vllm-0-decode` 时，对应文件为：
+
+```text
+/path/to/host-snapshot/mindie-motor/vllm-0-decode/snapshot_status.json
+```
+
+当前服务的每个实例目录下均生成 `snapshot_status.json`，表示容器快照制作完成。如果部分实例缺少该文件，请检查对应实例和 MindCluster infer-operator 的日志。
+
+### 验证实例是否从快照恢复成功
+
+实例从快照创建后，查看实例日志，并依次检查 Host 侧容器恢复和 Device 侧恢复结果。
+
+1. 检查日志中是否包含以下内容：
 
 ```text
 [snapshot] Node manager is restored from host side snapshot, registering...
 ```
 
-可以通过以下命令查询 Kubernetes 实例日志：
+   可以通过以下命令查询：
 
-```bash
-kubectl logs -n <namespace> <instance-pod> | grep -i "restored from host side snapshot"
+   ```bash
+   kubectl logs -n <namespace> <instance-pod> | grep -i "restored from host side snapshot"
+   ```
+
+   日志中存在该内容，表示 Node Manager 已识别到当前容器由 Host 快照 restore。
+
+2. 检查实例日志中以下内容的数量：
+
+   ```text
+   It took <time> seconds to resume.
+   ```
+
+   可以通过以下命令统计：
+
+   ```bash
+   kubectl logs -n <namespace> <instance-pod> | grep -c "It took .* seconds to resume"
+   ```
+
+   日志数量应等于该实例的 DP 数。Host 侧容器恢复日志存在，且 Device 侧打印了 DP 数量的 resume 成功日志，表示实例已从快照恢复成功。
+
+首次启用且没有快照缓存时，实例会执行冷启动并制作基准快照，因此不会打印上述恢复日志。如果确认当前 namespace 已有快照缓存，但日志中仍未出现该内容，请检查 `host_snapshot_image_path` 下的快照名称是否与当前 namespace 一致、文件内容是否完整、MindCluster 的 infer-operator 组件是否正常运行，以及目标节点是否能够访问该快照。
+
+### 验证实例是否重新就绪
+
+查看 Coordinator 日志，检查是否包含当前实例加入可用实例池的日志：
+
+```text
+Added instance ID <instance-id> (role: <role>, job_name: <job-name>) with <endpoint-num> endpoints to available pool successfully
 ```
 
-- 日志中存在该内容，表示 Node Manager 已识别到当前容器由 Host 快照恢复，实例本次通过快照启动。
-- 日志中不存在该内容，表示实例本次未从快照恢复。首次启用且没有快照缓存时，实例会执行冷启动并制作基准快照，因此不会打印该恢复日志。
+可以通过以下命令查询：
 
-如果确认当前 namespace 已有快照缓存，但日志中仍未出现该内容，请检查 `host_snapshot_image_path` 下的快照名称是否与当前 namespace 一致、文件内容是否完整、MindCluster 的 infer-operator 组件是否正常运行，以及目标节点是否能够访问该快照。
+```bash
+kubectl logs -n <namespace> <coordinator-pod> | grep "Added instance ID"
+```
+
+日志中存在当前实例 `job_name` 对应的记录，表示该实例已经重新加入 Coordinator 的可用实例池并恢复就绪。
 
 ## 常见问题
 
