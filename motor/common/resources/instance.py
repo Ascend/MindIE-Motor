@@ -486,9 +486,9 @@ class Instance(BaseModel):
             if ip in self.endpoints:
                 ignored_endpoint_ids = ignored_endpoint_ids or set()
                 expected_endpoints = {
-                    endpoint_id: endpoint
-                    for endpoint_id, endpoint in self.endpoints[ip].items()
-                    if endpoint_id not in ignored_endpoint_ids
+                    endpoint.id: endpoint
+                    for endpoint in self.endpoints[ip].values()
+                    if endpoint.id not in ignored_endpoint_ids
                 }
                 if set(status) != set(expected_endpoints):
                     logger.error(

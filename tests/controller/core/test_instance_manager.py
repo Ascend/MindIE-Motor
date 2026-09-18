@@ -540,6 +540,24 @@ def test_heartbeat_subset_requires_committed_scale_down_rank(instance_manager, s
         store.clear()
 
 
+def test_heartbeat_matches_global_endpoint_id_when_pod_keys_restart_at_zero(instance_manager):
+    instance = Instance(id=302, job_name='cross-pod-heartbeat', model_name='model', role='decode')
+    first_pod_ip = '192.0.2.30'
+    second_pod_ip = '192.0.2.31'
+    instance.add_endpoints(first_pod_ip, {0: Endpoint(id=0, ip=first_pod_ip, business_port='8000')})
+    instance.add_endpoints(second_pod_ip, {0: Endpoint(id=1, ip=second_pod_ip, business_port='8000')})
+    instance_manager.add_instance(instance)
+    instance_manager.enable_dp_scale_down = False
+    heartbeat = HeartbeatMsg(
+        job_name=instance.job_name,
+        ins_id=instance.id,
+        ip=second_pod_ip,
+        status={1: EndpointStatus.NORMAL},
+    )
+
+    assert instance_manager.handle_heartbeat(heartbeat) == (True, 200)
+
+
 def test_scaled_down_state_transition_ignores_committed_abnormal_rank():
     manager = create_instance_manager_with_config()
     manager.enable_dp_scale_down = True
