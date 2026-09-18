@@ -331,6 +331,19 @@ class HeartbeatManager(ThreadSafeSingleton):
         daemon = Daemon()
         for item in endpoints_snapshot:
             original_status = item.status
+
+            if is_restored_from_host_side_snapshot() and item.ip != self._config.api_config.pod_ip:
+                # If snapshot restored and continued from stale endpoints_snapshot query loop, keep original status
+                logger.debug(
+                    "[snapshot] Node manager is restored and continued from stale endpoints_snapshot query loop, "
+                    "keeping stale status: %s, old endpoint ip=%s, new endpoint ip=%s",
+                    item.status,
+                    item.ip,
+                    self._config.api_config.pod_ip,
+                )
+                updated_endpoints.append(item)
+                continue
+
             try:
                 runtime_state = daemon.get_engine_runtime_state(item, instance_id_at_start)
             except Exception as e:
@@ -349,7 +362,7 @@ class HeartbeatManager(ThreadSafeSingleton):
             }.get(runtime_state)
 
             if is_restored_from_host_side_snapshot() and item.ip != self._config.api_config.pod_ip:
-                # If restored from host side snapshot and not started after restore(pod_ip do not refresh yet), keep original status
+                # If snapshot restored and continued from stale endpoints_snapshot query loop, keep original status
                 logger.info(
                     "[snapshot] Node manager is restored from host side snapshot and not started after restore, "
                     "keeping stale status: %s, old endpoint ip=%s, new endpoint ip=%s",
