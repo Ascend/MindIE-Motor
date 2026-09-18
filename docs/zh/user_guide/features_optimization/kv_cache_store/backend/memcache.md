@@ -2,20 +2,14 @@
 
 ## 特性介绍
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 MemCache为MindIE Motor默认池化后端，基于 [memcache_hybrid](https://gitcode.com/Ascend/memcache) 提供高效KV池化能力，已预装在MindIE Motor镜像中，无需额外安装。通过池化机制实现KV缓存跨请求复用，提升缓存命中率，降低推理TTFT，减少重复计算，提升推理吞吐。
 
 ### 工作原理
-
-**依据原文上下文内容重组，请进行人工校验。**
 
 MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池化内存，支持同进程（inprocess）和独立进程（standalone）两种部署模式。LocalService 将 KV Cache 数据在 DRAM 中统一管理，多个推理引擎节点可共享同一池化后端。通过 MetaService 广播 KV 块元数据事件（STORED / REMOVED / CLEARED），Motor 的 kv-conductor 基于 `backend_id` 计算 KV 亲和度，实现缓存感知 prefill 调度，将请求优先路由到已缓存前缀的节点。
 此外，MemCache 支持通过 UBSIO 引擎接入本地 NVMe SSD 作为第三级缓存（HBM → DRAM → SSD），将冷 KV Cache 自动下沉到 SSD，仅保留热数据在内存中。
 
 ### 核心功能
-
-**依据原文上下文内容重组，请进行人工校验。**
 
 - LocalService 部署模式：支持inprocess（同进程，vLLM 内集成）和standalone（独立进程，NodeManager 自动拉起）两种模式，可根据硬件场景和隔离需求灵活选择。
 - KV events 广播（缓存感知调度）：MetaService 在 KV 块元数据写入/删除后通过 ZMQ PUB 广播事件，kv-conductor 订阅后计算 KV 亲和度，实现基于缓存的请求路由，提升 prefill 效率。
@@ -24,15 +18,13 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
 ### 约束与限制
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 | 约束维度 | 要求 |
 |----------|------|
 | 硬件 | 支持 Atlas 800I A2 推理服务器、Atlas 850 超节点服务器、Atlas 800I A3 超节点服务器。 |
 | 部署场景 | 仅支持 PD 分离部署场景。 |
 | 引擎 | 仅支持 vLLM 推理引擎。 |
-| 特性互斥 | **内容缺失，需要人工补齐。** |
-| 软件依赖 | memcache_hybrid 需为包含 KvEvent 功能（**memcache PR #334 起**？**给出具体版本？**）的版本；使用 `MultiConnector` 时需应用 `vllm_ascend_multi_connector_kv_events.patch` 补丁。 |
+| 特性互斥 | <ul><li>请勿将 `"backend"` 配置为 `"ucm"`，UCM 不通过 `AscendStoreConnector` 的 backend 机制接入。</li><li>`AscendStoreConnector` 与 `kv_cache_store_config` 必须配置一致，且均为 `"memcache"`。</li><li>`MooncakeConnectorV1` / `MooncakeHybridConnector` 等属于 P/D 实时传输层，与 MemCache 池化后端不是同一层配置，切勿混淆。</li></ul> |
+| 软件依赖 | 基础能力开箱即用，无需额外安装（memcache_hybrid 已预装）。开启 KV events 时，memcache_hybrid 版本需包含 KvEvent 功能（**MemCache Hybrid v1.2.0 及以后版本**，对应 memcache PR #334）；若使用 `MultiConnector`，则需应用 `vllm_ascend_multi_connector_kv_events.patch` 补丁。 |
 | 其他限制 | SSD 三级缓存尚不成熟，暂不推荐在生产环境中使用；分区操作为高危操作，选错磁盘将造成不可逆的数据丢失，需在所有启用SSD缓存的节点上执行。 |
 
 ## 特性使用
@@ -42,8 +34,6 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 已安装并部署MindIE Motor环境，MemCache已预装在MindIE Motor镜像中。
 
 ### 使用样例
-
-**依据原文上下文内容重组，请进行人工校验。**
 
 以下步骤展示如何配置和使用MemCache后端。
 
@@ -102,7 +92,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
         >[!NOTE] 说明
         >MultiConnector 补丁（必装）：vLLM 上游未实现 MultiConnector.get_kv_connector_kv_cache_events()（TODO），kv_transfer_config.kv_connector 使用 MultiConnector 时 worker 侧 AscendStoreConnector 收集的 KV 事件会被静默丢弃，导致引擎 offload 事件到不了 kv-conductor、两阶段匹配永远缺引擎侧。vllm-ascend 已将 MultiConnector 注册替换为 AscendMultiConnector，部署时应用 examples/deployer/patch/vllm_ascend_multi_connector_kv_events.patch（为 AscendMultiConnector 补充子 connector 事件代理，一个补丁适配 v0.20.2 ~ v0.26.0）。已同步建议上游 vLLM 合入。
-        **前提**：memcache_hybrid 需为包含 KvEvent 功能（memcache PR #334 起）的版本，否则 MetaConfig 不识别 kv_events_* 字段。
+        **前提**：memcache_hybrid 需为包含 KvEvent 功能的版本（**MemCache Hybrid v1.2.0 及以后版本**，对应 memcache PR #334），否则 MetaConfig 不识别 kv_events_* 字段。
 
 5. （可选，不推荐生产）启用 SSD 三级缓存。
 
@@ -124,8 +114,6 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
 ### 验证特性
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 通过以下方式验证 MemCache 后端是否配置成功：
 
 1. **检查配置加载日志**：在 Motor 启动日志中搜索 `"backend"` 相关输出，确认 backend 为 `"memcache"` 且配置项已正确加载。
@@ -143,8 +131,6 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 - SSD 缓存启用后，`ubsio.disk.path` 配置的磁盘分区可正常读写，无 IO 错误。
 
 ## 常见问题
-
-**依据原文上下文内容重组，请进行人工校验。**
 
 ### 启用 KV events 后，kv-conductor 日志中未出现订阅成功信息
 
