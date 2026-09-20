@@ -75,6 +75,12 @@ class ControllerApiClient:
     nodemanager_config = NodeManagerConfig.from_json()
 
     @staticmethod
+    def reset_heartbeat_client() -> None:
+        """Discard the heartbeat connection restored from a snapshot."""
+        with _HEARTBEAT_REQUEST_LOCK:
+            _reset_heartbeat_client()
+
+    @staticmethod
     def register(register_msg: RegisterMsg) -> bool:
         client_args = {}
         try:

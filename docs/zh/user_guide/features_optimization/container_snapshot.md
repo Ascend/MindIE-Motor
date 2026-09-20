@@ -145,6 +145,7 @@
    | `model_load_path` | 快照恢复 | 是 | 运行时模型权重的加载路径，必须指向容器内的宿主机挂载目录。 |
    | `job_name` | 快照恢复 | 是 | 恢复后的推理实例唯一标识。Node Manager 使用该字段更新任务名。 |
    | `namespace` | 快照恢复 | 按需 | 使用集群内 Controller DNS 时填写 Kubernetes namespace；其他网络模式可以省略。 |
+   | `controller_ip` | 快照恢复 | 按需 | 使用 IP 与 Controller 通信时填写恢复后 Controller 的 IPv4 或 IPv6 地址；使用集群内 Controller DNS 时可以省略。 |
    | `data_parallel_master_ip` | 快照恢复 | 否 | Data Parallel Master 的 IP 地址。未配置时，由 Node Manager 写入 Controller 下发的地址。 |
    | `checkpoint` | 快照制作 | 是 | Host 侧 checkpoint 完成后设置为 `"done"`，用于通知推理引擎解除 Device 锁定。 |
 
@@ -217,7 +218,7 @@
    }
    ```
 
-   使用集群内 Controller DNS 时必须配置 `namespace`；`data_parallel_master_ip` 可以省略，由 Node Manager 在收到 Controller 下发的地址后写入。
+   `namespace` 和 `controller_ip` 根据 Controller 通信方式选择配置：使用集群内 Controller DNS 时配置 `namespace`；使用 IP 通信时，将上述示例中的 `namespace` 替换为 `"controller_ip": "<controller-ip>"`。`data_parallel_master_ip` 可以省略，由 Node Manager 在收到 Controller 下发的地址后写入。
 
 8. 容器恢复后，查询 Node Manager 状态：
 

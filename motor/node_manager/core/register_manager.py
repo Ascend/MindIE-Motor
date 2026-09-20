@@ -17,6 +17,7 @@ import shutil
 from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.http_msg_spec import Ranktable, RegisterMsg, StartCmdMsg, ReregisterMsg
 from motor.common.utils.env import Env
+from motor.common.utils.net import normalize_ip_address
 from motor.common.logger import get_logger
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.utils.snapshot_utils import (
@@ -146,6 +147,25 @@ class RegisterManager(ThreadSafeSingleton):
             if controller_host.endswith(".svc.cluster.local"):
                 raise
 
+        restored_controller_ip = None
+        try:
+            restored_controller_ip = load_snapshot_metadata(snapshot_metadata_path, "controller_ip")
+        except Exception:
+            controller_host = (
+                ControllerApiClient.controller_config.api_config.controller_api_dns or Env.controller_service or ""
+            )
+            try:
+                normalize_ip_address(controller_host)
+            except ValueError:
+                restored_controller_ip = None
+            else:
+                raise
+        else:
+            try:
+                restored_controller_ip = normalize_ip_address(restored_controller_ip)
+            except ValueError as e:
+                raise ValueError("Snapshot metadata field 'controller_ip' must be a valid IPv4 or IPv6 address") from e
+
         with self.config_lock:
             # Refresh job_name
             self._config.basic_config.job_name = restored_job_name
@@ -165,6 +185,11 @@ class RegisterManager(ThreadSafeSingleton):
                         "[snapshot] Refreshed controller_api_dns after restore: %s",
                         ControllerApiClient.controller_config.api_config.controller_api_dns,
                     )
+
+            if restored_controller_ip is not None:
+                ControllerApiClient.controller_config.api_config.controller_api_dns = restored_controller_ip
+                ControllerApiClient.reset_heartbeat_client()
+                logger.info("[snapshot] Refreshed controller_api_dns after restore: %s", restored_controller_ip)
 
     def engine_resume_prepare(self, start_msg: StartCmdMsg) -> None:
         """Append data_parallel_master_ip to snapshot metadata for engine resume after restore from host side snapshot"""

@@ -20,6 +20,7 @@ os.environ["ROLE"] = "both"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from motor.node_manager.core.register_manager import RegisterManager
+from motor.node_manager.api_client import controller_api_client
 from motor.node_manager.api_client.controller_api_client import ControllerApiClient
 from motor.config.node_manager import NodeManagerConfig
 from motor.common.resources.http_msg_spec import StartCmdMsg, RegisterMsg, ReregisterMsg
@@ -27,6 +28,15 @@ from motor.common.resources.endpoint import Endpoint
 from motor.common.resources.instance import FtCapabilitySnapshot, ParallelConfig, PDRole
 
 from tests.node_manager.conftest import apply_node_manager_test_config, create_config_mock
+
+
+def snapshot_metadata_loader(values):
+    def load(_path, field):
+        if field not in values:
+            raise ValueError("missing snapshot metadata field")
+        return values[field]
+
+    return load
 
 
 @pytest.fixture(name="register_manager")
@@ -574,6 +584,96 @@ class TestSnapshotSupport:
         assert (
             ControllerApiClient.controller_config.api_config.controller_api_dns == "controller.new-ns.svc.cluster.local"
         )
+
+    @pytest.mark.parametrize(
+        "controller_ip,expected_controller_ip",
+        [("192.168.1.2", "192.168.1.2"), ("[2001:db8::2]", "2001:db8::2")],
+    )
+    @patch("motor.node_manager.core.register_manager.get_pod_ip", return_value="10.1.2.3")
+    @patch("motor.node_manager.core.register_manager.load_snapshot_metadata")
+    @patch("motor.node_manager.core.register_manager.os.path.exists", return_value=True)
+    def test_register_prepare_after_restore_refreshes_controller_ip_and_connection(
+        self,
+        _mock_exists,
+        mock_load,
+        _mock_get_pod_ip,
+        register_manager,
+        controller_ip,
+        expected_controller_ip,
+    ):
+        register_manager._config.snapshot_config.enable_snapshot = True
+        register_manager._config.snapshot_config.snapshot_metadata_path = "/snapshot/snapshot_metadata.json"
+
+        mock_controller_config = MagicMock()
+        mock_controller_config.api_config.controller_api_dns = "192.168.1.1"
+        mock_load.side_effect = snapshot_metadata_loader(
+            {
+                "job_name": "restored-job",
+                "controller_ip": controller_ip,
+            }
+        )
+        stale_client = MagicMock()
+
+        with (
+            patch.object(ControllerApiClient, "controller_config", mock_controller_config),
+            patch.object(controller_api_client, "_HEARTBEAT_CLIENT", stale_client),
+        ):
+            register_manager.register_prepare_after_restore()
+
+            assert controller_api_client._HEARTBEAT_CLIENT is None
+
+        stale_client.close.assert_called_once_with()
+        assert mock_controller_config.api_config.controller_api_dns == expected_controller_ip
+
+    @pytest.mark.parametrize("controller_ip", ["", "invalid-address"])
+    @patch("motor.node_manager.core.register_manager.load_snapshot_metadata")
+    @patch("motor.node_manager.core.register_manager.os.path.exists", return_value=True)
+    def test_register_prepare_after_restore_rejects_invalid_controller_ip(
+        self, _mock_exists, mock_load, register_manager, controller_ip
+    ):
+        register_manager._config.snapshot_config.enable_snapshot = True
+        register_manager._config.snapshot_config.snapshot_metadata_path = "/snapshot/snapshot_metadata.json"
+
+        mock_controller_config = MagicMock()
+        mock_controller_config.api_config.controller_api_dns = "192.168.1.1"
+        mock_load.side_effect = snapshot_metadata_loader(
+            {
+                "job_name": "restored-job",
+                "controller_ip": controller_ip,
+            }
+        )
+
+        with (
+            patch.object(ControllerApiClient, "controller_config", mock_controller_config),
+            pytest.raises(ValueError, match="must be a valid IPv4 or IPv6 address"),
+        ):
+            register_manager.register_prepare_after_restore()
+
+    @patch("motor.node_manager.core.register_manager.load_snapshot_metadata")
+    @patch("motor.node_manager.core.register_manager.os.path.exists", return_value=True)
+    def test_register_prepare_after_restore_requires_controller_ip_for_ip_communication(
+        self, _mock_exists, mock_load, register_manager
+    ):
+        register_manager._config.snapshot_config.enable_snapshot = True
+        register_manager._config.snapshot_config.snapshot_metadata_path = "/snapshot/snapshot_metadata.json"
+
+        mock_controller_config = MagicMock()
+        mock_controller_config.api_config.controller_api_dns = "192.168.1.1"
+        mock_load.side_effect = snapshot_metadata_loader({"job_name": "restored-job"})
+
+        with (
+            patch.object(ControllerApiClient, "controller_config", mock_controller_config),
+            pytest.raises(ValueError),
+        ):
+            register_manager.register_prepare_after_restore()
+
+    @patch.object(ControllerApiClient, "reset_heartbeat_client")
+    def test_register_prepare_after_restore_skipped_when_snapshot_disabled(self, mock_reset, register_manager):
+        register_manager._config.snapshot_config.enable_snapshot = False
+
+        register_manager.register_prepare_after_restore()
+
+        mock_reset.assert_not_called()
 
     @patch("motor.node_manager.core.register_manager.update_snapshot_metadata")
     @patch("motor.node_manager.core.register_manager.load_snapshot_metadata")
