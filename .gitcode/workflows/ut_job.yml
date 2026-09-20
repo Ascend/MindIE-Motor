@@ -18,7 +18,7 @@ jobs:
     name: Test
     select: selected_by_default
     needs: [ ]
-    runs-on: [ 'dedicate-hosted', '${{ inputs.runs_on_arch }}', '2xlarge' ]
+    runs-on: [ self-hosted, ipv4, arm, cpu=30 ]
     container:
       image: ${{ inputs.CP_DOCKER_IMG }}
     steps:
@@ -32,35 +32,42 @@ jobs:
         run: |-
           WORKSPACE=${{atomgit.workspace}}
           arch=`uname -m`
+          endpoint='obs.cn-north-4.myhuaweicloud.com'
+          obs_base_path="obs://mindie-pr/monitor/ascend/MindIE-SD"
           python_3rdparty_path=/opt/buildtools/python-3.11.4/lib/python3.11/site-packages
-          source /usr/local/Ascend/ascend-toolkit/set_env.sh
           export PYTHONPATH=${python_3rdparty_path}:$PYTHONPATH
-          cd ${WORKSPACE}/build
-          sh build.sh
+          export PATH=/opt/buildtools/python-3.11.4/bin:$PATH
 
-          if [ ${arch} == aarch64 -a -f ${WORKSPACE}/tests/run_UT_test.sh ]; then
-              pip list| grep torch
-              wget -q https://repo.huaweicloud.com/ascend/repos/pypi/triton-ascend/triton_ascend-3.2.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
-              pip3 install triton_ascend-3.2.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
-              pip3 install -r ${WORKSPACE}/requirements.txt
-              pip3 install coverage
+          pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple -r requirements.txt
 
-              source /usr/local/Ascend/nnal/atb/set_env.sh
-              export PYTORCH_NPU_INSTALL_PATH=${python_3rdparty_path}/torch_npu
-              export LD_LIBRARY_PATH=${python_3rdparty_path}/torch_npu/lib:$LD_LIBRARY_PATH
-              export LD_LIBRARY_PATH=${python_3rdparty_path}/torch/lib:$LD_LIBRARY_PATH
-              export LD_LIBRARY_PATH=${python_3rdparty_path}/torch.libs:$LD_LIBRARY_PATH
-              export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/libgomp.so.1:$LD_LIBRARY_PATH
-              export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/$(uname -i)-linux/devlib:$LD_LIBRARY_PATH
-              export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/$(uname -i)-linux/lib64:$LD_LIBRARY_PATH
+          cd ${WORKSPACE}
+          relative_path=${{ inputs.pr_id }}/$(uname -i)
+          obs_path_no_prefix="${obs_base_path#obs://}"
+          bucket="${obs_path_no_prefix%%/*}"
+          rest_path="${obs_path_no_prefix#*/}"
+          whl_name="motor-0.1.0-py3-none-any.whl"
+          https_url="https://${bucket}.${endpoint}/${rest_path}/${relative_path}/${whl_name}"
 
-              cd ${WORKSPACE}/tests
-              sed -i '$d' run_UT_test.sh
-              bash tests/run_tests.sh 2>&1 |tee build.log
-              if  cat build.log|grep OK ; then
-                  echo dt success
-              else
-                  echo dt failed
-                  exit 1
-              fi
+          mkdir -p ./dist
+          set +e
+          wget --no-check-certificate -q -O "./dist/${whl_name}" "${https_url}"
+          wget_ret=$?
+          set -e
+
+          if [ ${wget_ret} -ne 0 ]; then
+              echo "==== wget failed(code:${wget_ret}), trigger build.sh local compile"
+              sh build.sh
+          fi
+          ls ./dist/
+
+          cd ${WORKSPACE}/tests
+          bash run_tests.sh
+          exit_status=$?
+
+          set -e
+          if [ "${exit_status}" -eq 0 ]; then
+              echo "UT passed"
+          else
+              echo "UT failed, test script return code: ${exit_status}"
+              exit ${exit_status}
           fi
