@@ -28,6 +28,11 @@ def _strip_brackets(host: str) -> str:
     return host
 
 
+def normalize_ip_address(address: str) -> str:
+    """Validate and normalize an IPv4 or IPv6 literal."""
+    return str(ipaddress.ip_address(_strip_brackets(address.strip())))
+
+
 def _is_ipv6_literal(host: str) -> bool:
     try:
         return isinstance(ipaddress.ip_address(_strip_brackets(host)), ipaddress.IPv6Address)

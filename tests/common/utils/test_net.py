@@ -16,8 +16,28 @@ from motor.common.utils.net import (
     detect_family,
     format_address,
     format_host,
+    normalize_ip_address,
     split_address,
 )
+
+
+class TestNormalizeIPAddress:
+    @pytest.mark.parametrize(
+        "address,expected",
+        [
+            ("127.0.0.1", "127.0.0.1"),
+            (" 127.0.0.1 ", "127.0.0.1"),
+            ("2001:db8::1", "2001:db8::1"),
+            ("[2001:db8::1]", "2001:db8::1"),
+        ],
+    )
+    def test_normalize(self, address, expected):
+        assert normalize_ip_address(address) == expected
+
+    @pytest.mark.parametrize("address", ["", "controller.example.com"])
+    def test_reject_non_ip(self, address):
+        with pytest.raises(ValueError):
+            normalize_ip_address(address)
 
 
 class TestDetectFamily:

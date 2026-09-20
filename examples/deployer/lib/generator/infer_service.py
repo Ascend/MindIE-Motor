@@ -58,6 +58,7 @@ from lib.generator.kv_cache_store import (
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
 from lib.generator.kv_conductor import normalize_kv_conductor_config
 from lib.generator.render import configure_render_sidecar
+from lib.container_snapshot import configure_container_snapshot
 
 
 def get_infer_role(infer_service_set, role_name):
@@ -513,6 +514,7 @@ def generate_yaml_infer_service_set(input_yaml, output_file, user_config):
         _zero_engine_role_replicas(infer_doc, user_config, C.ROLE_UNION)
     _configure_kv_store_role(infer_doc, user_config)
     _configure_kv_conductor_role(infer_doc, user_config)
+    configure_container_snapshot(infer_doc, user_config)
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     write_yaml(all_docs, output_file, False)
     k8s_utils.g_generate_yaml_list.append(output_file)

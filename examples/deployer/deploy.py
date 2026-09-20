@@ -58,6 +58,7 @@ from lib.config_validator import (
     validate_node_selectors,
     validate_reserved_labels,
 )
+from lib.container_snapshot import resolve_infer_service_template, validate_container_snapshot_config
 
 
 def handle_update_config(user_config):
@@ -128,7 +129,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
         logger.info("instance num update end.")
         return
     if deploy_mode_arg == C.DEPLOY_MODE_INFER_SERVICE_SET:
-        infer_input = paths["infer_service_input_yaml"]
+        infer_input = resolve_infer_service_template(paths, user_config)
         infer_output = paths["infer_service_output_yaml"]
         if os.path.exists(infer_output):
             update_infer_service_replicas_only(infer_output, deploy_config, user_config)
@@ -182,7 +183,7 @@ def deploy_services_multi_yaml(paths, user_config, dry_run=False):
 def deploy_services_infer_service_set(paths, user_config, dry_run=False):
     deploy_config = user_config[C.MOTOR_DEPLOY_CONFIG]
     init_service_domain_name(paths, deploy_config, user_config, skip_kv_store=True)
-    infer_input = paths["infer_service_input_yaml"]
+    infer_input = resolve_infer_service_template(paths, user_config)
     if not os.path.exists(infer_input):
         raise FileNotFoundError(
             f"InferServiceSet template yaml not found: {infer_input}. "
@@ -455,10 +456,11 @@ def main():
     os.makedirs(C.OUTPUT_ROOT_PATH, exist_ok=True)
     user_config = read_json(user_config_path)
     validate_reserved_labels(user_config)
+    validate_container_snapshot_config(user_config)
     if C.HYBRID_INSTANCES_NUM in user_config.get(C.MOTOR_DEPLOY_CONFIG, {}):
         validate_pd_hybrid_config(user_config)
         paths = get_deploy_paths()
-        validate_pd_hybrid_infer_service_template(user_config, paths["infer_service_input_yaml"])
+        validate_pd_hybrid_infer_service_template(user_config, resolve_infer_service_template(paths, user_config))
     validate_instance_nums(user_config)
 
     if args.update_config:

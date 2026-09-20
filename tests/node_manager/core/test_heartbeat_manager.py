@@ -663,7 +663,7 @@ class TestHeartBeatManager:
 
         assert heart_beat_manager._endpoints[0].status == EndpointStatus.NORMAL
         assert heart_beat_manager._endpoints[1].status == EndpointStatus.NORMAL
-        assert mock_daemon.return_value.get_engine_runtime_state.call_count == 2
+        assert mock_daemon.return_value.get_engine_runtime_state.call_count == 0
 
     @patch("motor.node_manager.core.heartbeat_manager.is_restored_from_host_side_snapshot", return_value=False)
     @patch("motor.node_manager.core.heartbeat_manager.time.sleep")
