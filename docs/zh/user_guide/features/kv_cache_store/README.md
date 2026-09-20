@@ -257,6 +257,10 @@ P/D传输Connector选型如下表所示：
     - `output_yamls/` 下会生成各服务的 YAML 文件。
     - 使用 `AscendStoreConnector` 时，deployer 根据 `kv_cache_store_config.backend` 拉起对应服务：Mooncake 使用 `mooncake_master`，MemCache 使用 MetaService，并按配置准备 LocalService。
 
+    **部署注意**
+
+    - **Mooncake 无探针**：`mooncake_master` 不提供 `/livez`。kv-store 的 startup / liveness / readiness 仅对 MemCache MetaService 做 HTTP 探活；`backend` 为 `mooncake`（或其它非 memcache 后端）时，探针会跳过 HTTP 请求并直接成功。因此 Mooncake 的 kv-store Pod Ready **不代表** `mooncake_master` 已就绪，不能用 kubelet 探针判断 Mooncake 健康状态。
+
 #### 使用 UCMConnector 部署样例
 
 **操作步骤**
@@ -298,6 +302,9 @@ P/D传输Connector选型如下表所示：
    ```
 
    预期输出中包含状态为 `Running` 且已就绪的 `kv-store` Pod。
+
+   > [!NOTE] 说明
+   > Mooncake 后端时，kv-store Pod Ready 不能证明 `mooncake_master` 已就绪（无 `/livez` 探针）。请结合 master 日志或 `:50090/metrics` 确认，详见上文「部署注意」。
 
 2. 确认 P/D 引擎 Pod 正常启动，日志中不包含 KV 传输相关错误。
 
@@ -428,3 +435,17 @@ UCM 样例中仍存在 `backend: "mooncake"` 配置。
 **解决步骤**
 
 使用混合attention模型时，将 `connectors[0]` 配置为`MooncakeHybridConnector`。
+
+### 开启 MemCache 池化后，长序列请求把 Decode 实例打挂，报错 shm_crash
+
+**问题描述**
+
+开启 MemCache 池化后，短请求可正常推理；长序列请求会把 Decode 实例打挂，日志出现 `shm_crash`。
+
+**原因分析**
+
+引擎 Pod 的 `/dev/shm` 默认仅为 `4Gi`。MemCache 池化在长序列场景下需要更大的共享内存，容量不足时 Decode 侧会因 shm 不足崩溃。
+
+**解决步骤**
+
+在 `user_config.json` 的 `motor_deploy_config` 中配置 `"dshm_size": "32Gi"`（或按现场负载继续增大）后重新部署。压测验证：128 条请求（80k-1k）在 `32Gi` 下服务仍可正常运行。

@@ -56,15 +56,24 @@ DEFAULT_PORTS = {
     'controller': 1026,
     'coordinator': 1026,
     'node_manager': 1026,
+    'kv_store': 50090,
 }
 
 API_KEYS = {
     "controller": "controller_api_port",
     "coordinator": "coordinator_api_mgmt_port",
     "node_manager": "node_manager_port",
+    "kv_store": "metrics_port",
 }
 
 ENGINE_ROLES = ("union", "prefill", "decode")
+KV_STORE_ROLE = "kv_store"
+
+KV_STORE_PROBE_URLS = {
+    'startup': '/livez',
+    'readiness': '/livez',
+    'liveness': '/livez',
+}
 
 ROLE_CONFIG_PATHS = {
     "controller": ConfigKey.MOTOR_CONTROLLER.value,
@@ -72,6 +81,7 @@ ROLE_CONFIG_PATHS = {
     "union": ConfigKey.MOTOR_NODEMANAGER_UNION.value,
     "prefill": ConfigKey.MOTOR_NODEMANAGER_PREFILL.value,
     "decode": ConfigKey.MOTOR_NODEMANAGER_DECODE.value,
+    "kv_store": ConfigKey.MOTOR_KV_STORE.value,
 }
 
 # HTTP request timeout
@@ -179,6 +189,8 @@ def get_config(role):
 
 
 def get_probe_url(role, probe_type):
+    if role == KV_STORE_ROLE:
+        return KV_STORE_PROBE_URLS[probe_type]
     if role == 'node_manager' or role in ENGINE_ROLES:
         return NODE_MANAGER_PROBE_URLS[probe_type]
     return PROBE_URLS[probe_type]
@@ -235,7 +247,7 @@ def main():
     Main probe function.
     Usage: python probe.py <role> <probe_type>
     Where:
-        role: 'controller', 'coordinator', 'prefill', 'decode', or 'union'
+        role: 'controller', 'coordinator', 'prefill', 'decode', 'union', or 'kv_store'
         probe_type: 'startup', 'readiness', or 'liveness'
     """
     if len(sys.argv) != 3:
@@ -272,7 +284,14 @@ def main():
     if role in ENGINE_ROLES:
         role = 'node_manager'
 
-    port_key = f'api_config.{API_KEYS[role]}'
+    if role != KV_STORE_ROLE:
+        port_key = f'api_config.{API_KEYS[role]}'
+    else:
+        backend = os.environ.get('KV_STORE_BACKEND', '')
+        if backend and backend != 'memcache':
+            logger.info("kv_store backend=%s has no /livez, skip HTTP probe", backend)
+            sys.exit(0)
+        port_key = API_KEYS[role]
 
     port = get_val_by_key_path(config, port_key)
     if not isinstance(port, int) or port < 1024 or port > 65535:

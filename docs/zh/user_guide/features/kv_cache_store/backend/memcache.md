@@ -181,3 +181,19 @@ vLLM 上游未实现 `MultiConnector.get_kv_connector_kv_cache_events()`，导�
 1. 使用 `lsblk` 确认目标磁盘为裸盘（无分区、无挂载）。
 2. 按部署模式规划分区数：`standalone` 为 1，`inprocess` 为 `endpoints × local_world_size`。
 3. 重新执行分区脚本，确保使用正确的磁盘设备。
+
+### 开启 MemCache 池化后，长序列请求把 Decode 实例打挂，报错 shm_crash
+
+**问题描述**
+
+开启 MemCache 池化后，短请求可正常推理；长序列请求会把 Decode 实例打挂，日志出现 `shm_crash`。
+
+**原因分析**
+
+引擎 Pod 的 `/dev/shm` 默认仅为 `4Gi`。MemCache 池化在长序列场景下需要更大的共享内存，容量不足时 Decode 侧会因 shm 不足崩溃。
+
+**解决步骤**
+
+1. 在 `user_config.json` 的 `motor_deploy_config` 中配置 `"dshm_size": "32Gi"`（或按现场负载继续增大）。
+2. 重新部署使 `dshm` emptyDir `sizeLimit`（Docker 部署时为 `--shm-size`）生效。
+3. 压测验证：128 条请求（80k-1k）在 `32Gi` 下服务仍可正常运行。

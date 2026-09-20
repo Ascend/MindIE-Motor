@@ -872,6 +872,24 @@ spec:
               - name: ROLE
                 value: kv_store
               command: ["/bin/bash", "-c", "source /mnt/configmap/boot.sh;"]
+              startupProbe:
+                exec:
+                  command: ["bash", "-c", "$CONFIGMAP_PATH/probe.sh startup"]
+                failureThreshold: 30
+                periodSeconds: 10
+                timeoutSeconds: 3
+              livenessProbe:
+                exec:
+                  command: ["bash", "-c", "$CONFIGMAP_PATH/probe.sh liveness"]
+                periodSeconds: 10
+                timeoutSeconds: 3
+                failureThreshold: 3
+              readinessProbe:
+                exec:
+                  command: ["bash", "-c", "$CONFIGMAP_PATH/probe.sh readiness"]
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 2
               resources:
                 requests:
                   memory: "2Gi"
