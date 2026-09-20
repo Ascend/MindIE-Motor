@@ -119,9 +119,9 @@ def test_snapshot_template_renders_paths_and_a3_device(tmp_path):
             C.PATH: "/shared/snapshot-weights",
             C.STORAGE_TYPE: "DirectoryOrCreate",
         }
-        assert mounts[C.LQDCMI_PCIDEV][C.MOUNT_PATH] == C.LQDCMI_PCIDEV_PATH
+        assert mounts[C.LQDCMI_PCIDEV][C.MOUNT_PATH] == "/dev/lqdcmi_pcidev"
         assert volumes[C.LQDCMI_PCIDEV][C.HOST_PATH] == {
-            C.PATH: C.LQDCMI_PCIDEV_PATH,
+            C.PATH: "/dev/lqdcmi_pcidev",
             C.STORAGE_TYPE: "CharDevice",
         }
 

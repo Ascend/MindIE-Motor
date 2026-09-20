@@ -18,8 +18,8 @@
 | 硬件 | 支持 A3 和 A2。A2 容器快照只能在相同芯片代际的机器间共享，例如在 910B2 机器上制作的快照只能恢复到 910B2 机器。 |
 | 自动管理模式 | 仅支持使用 containerd 容器运行时的默认 K8s + MindCluster CRD 部署模式。 |
 | 推理引擎 | 必须支持 Device 快照保存与恢复，并提供 suspend 和 resume 接口，目前仅支持vLLM。 |
-| 配置更新 | 启用容器快照后不支持配置热更新。 |
-| 操作系统 | 支持 openEuler 24.03 及之后版本和 HCE 3.0，需预装 CRIU 3.19。 |
+| 特性互斥 | 启用容器快照后不支持Node Manager配置热更新。 |
+| 操作系统 | 支持 openEuler 24.03 及之后版本和 HCE 3.0，需预装openEuler定制版 CRIU 3.19。 |
 | 存储 | 容器 Host 快照镜像保存目录不能挂载到容器内。运行时模型权重目录必须挂载到容器内，并在制作和恢复阶段保持可访问。 |
 
 ## 特性使用
@@ -28,11 +28,51 @@
 
 启用容器快照前，请完成以下准备：
 
-1. 确认节点操作系统满足要求，并执行以下命令确认 CRIU 版本为 3.19：
+1. 确认节点操作系统满足要求，并在节点上通过源码安装 openEuler 定制版 CRIU 3.19。
 
-   ```bash
-   criu --version
-   ```
+   1. 安装编译依赖：
+
+      ```bash
+      dnf --setopt=sslverify=false install -y \
+          libcap-devel \
+          libnet-devel \
+          libnl3-devel \
+          libselinux-devel \
+          protobuf-c-devel \
+          protobuf-devel \
+          python3-devel \
+          python3-protobuf \
+          python3-wheel \
+          xmlto
+      ```
+
+   2. 下载 openEuler 定制版 CRIU 3.19 源码并完成编译安装：
+
+      ```bash
+      git clone https://atomgit.com/src-openeuler/criu.git
+      cd criu
+      git checkout openEuler-24.03-LTS-SP4
+      mkdir -p /root/rpmbuild/SOURCES/
+      cd ..
+      cp -r criu/* /root/rpmbuild/SOURCES/
+      cd /root/rpmbuild/SOURCES/
+      rpmbuild -bp criu.spec
+      cd /root/rpmbuild/BUILD/criu-3.19
+      vi criu/include/pipes.h # 单个容器内DP数较大时，制作快照时会发生pipe OOM, 需要修改增大pipes.h中的宏NR_PIPES_WITH_DATA至2048
+      make GRUS=1 -j
+      make npu_plugin -j
+      cp /root/rpmbuild/BUILD/criu-3.19/criu/criu /usr/sbin/
+      mkdir -p /usr/lib/criu/
+      cp /root/rpmbuild/BUILD/criu-3.19/plugins/npu/npu_plugin.so /usr/lib/criu/
+      ```
+
+   3. 查看 CRIU 版本，确认安装成功：
+
+      ```bash
+      criu --version
+      ```
+
+      当命令输出的版本号为 `3.19` 时，表示安装成功。
 
 2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见《[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md)》。
 3. 准备保存容器 Host 快照镜像和运行时模型权重所需的宿主机存储目录。需要跨节点恢复时，请确保目标节点能够访问这些目录。
@@ -89,7 +129,7 @@
 
 #### 其他部署模式
 
-其他部署模式不会自动生成部署模板，也不负责执行 checkpoint、restore 或管理快照文件。用户需要自行完成以下操作。
+其他部署模式不会自动生成部署yaml模板，也不负责自动执行 checkpoint、restore 或管理快照文件。用户需要自行完成以下操作。
 
 1. 创建快照元数据文件，并将其挂载到实例容器内。该文件必须是合法的 JSON 对象，初始内容可以为空：
 

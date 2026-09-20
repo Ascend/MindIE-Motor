@@ -266,7 +266,7 @@ SNAPSHOT_WEIGHT = "snapshot-weight"
 SNAPSHOT_MNT = "mnt"
 SNAPSHOT_HOST_DIR_ENV = "host_snapshot_dir_path"
 LQDCMI_PCIDEV = "lqdcmi-pcidev"
-LQDCMI_PCIDEV_PATH = "/dev/lqdcmi__pcidev"
+LQDCMI_PCIDEV_PATH = "/dev/lqdcmi_pcidev"
 JOB_NAME = "job-name"
 
 # Engine pod storage: a dynamically-provisioned PVC (motor_deploy_config.storage) mounted into
