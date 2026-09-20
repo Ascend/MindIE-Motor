@@ -445,7 +445,7 @@ spec:
         template:
           metadata:
             labels:
-              fault-scheduling: grace
+              fault-scheduling: 'external-force'
               fault-retry-times: "10000"
               app: mindie-server
               ring-controller.atlas: ascend-910b
@@ -574,7 +574,7 @@ spec:
         template:
           metadata:
             labels:
-              fault-scheduling: grace
+              fault-scheduling: 'external-force'
               fault-retry-times: "10000"
               app: mindie-server
               ring-controller.atlas: ascend-910b
@@ -702,7 +702,7 @@ spec:
         template:
           metadata:
             labels:
-              fault-scheduling: grace
+              fault-scheduling: 'external-force'
               fault-retry-times: "10000"
               app: mindie-server
               ring-controller.atlas: ascend-910b
