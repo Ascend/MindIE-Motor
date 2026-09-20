@@ -76,7 +76,20 @@
 
 2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见《[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md)》。
 3. 准备保存容器 Host 快照镜像和运行时模型权重所需的宿主机存储目录。需要跨节点恢复时，请确保目标节点能够访问这些目录。
-4. 使用其他部署模式时，需自行准备 Host 侧 CRIU 工具、快照元数据文件及相应的容器挂载。
+4. 使用其他部署模式时，需由部署平台或用户准备 Host 侧 CRIU 工具，例如GRUS、快照元数据文件及相应的容器挂载。
+
+### 使用场景
+
+**场景一：默认 K8s + MindCluster 部署模式**
+
+- 适用场景：使用 containerd 和 MindCluster CRD 的标准 K8s 部署，需要缩短实例创建或重调度耗时。
+- 特点：通过 `deploy.py` 启用容器快照后，部署环境自动完成快照配置、基准快照制作、缓存检测和快照恢复。
+- 收益：首次冷启动并生成基准快照后，后续实例可直接从已有快照缓存恢复，减少模型权重加载和运行环境初始化耗时。
+
+**场景二：其他部署模式**
+
+- 适用场景：未使用默认 K8s + MindCluster 部署流程，但部署平台具备 Host 和 Device 侧快照能力，例如通过 ModelArts 平台部署 Motor。
+- 特点：Motor 不提供非默认部署模式的容器快照自动管理能力，部署平台需自行集成快照元数据管理、容器挂载、快照文件维护以及 checkpoint 和 restore 流程。
 
 ### 使用样例
 
@@ -106,14 +119,12 @@
 - 配置快照标签、Readiness Probe、所需的挂载项。
 - 校验 `host_snapshot_image_path` 与 `mnt_mount_path` 不存在路径交集。
 
-快照元数据由部署环境管理，`snapshot_metadata_path` 无需配置。
-
-##### 快照缓存与启动规则
+快照元数据由部署环境管理，`snapshot_metadata_path` 无需配置。启用容器快照后，部署环境按照以下规则保存和使用快照缓存：
 
 - 容器 Host 快照镜像保存在 `host_snapshot_image_path` 下，并以当前服务的 namespace 命名。
 - Device 快照权重保存在 `device_snapshot_weight_path` 下，并以模型权重名称、DP 数和 TP 数组合命名。
 
-启用容器快照后，实例创建流程取决于当前服务是否已有快照缓存：
+实例创建流程取决于当前服务是否已有快照缓存：
 
 - 没有快照缓存：实例首先执行冷启动；到达快照稳态点后，部署环境制作并保存基准快照。
 - 已有快照缓存：实例跳过完整的冷启动流程，直接加载容器 Host 快照镜像和对应的 Device 快照权重恢复启动。
@@ -129,7 +140,7 @@
 
 #### 其他部署模式
 
-其他部署模式不会自动生成部署yaml模板，也不负责自动执行 checkpoint、restore 或管理快照文件。用户需要自行完成以下操作。
+其他部署模式不会通过 `deploy.py` 自动生成部署 YAML 模板，也不会由该脚本执行 checkpoint、restore 或管理快照文件。部署平台需集成以下流程；部署平台未提供自动管理能力时，由用户自行完成，以下基于使用GRUS工具演示。
 
 1. 创建快照元数据文件，并将其挂载到实例容器内。该文件必须是合法的 JSON 对象，初始内容可以为空：
 
