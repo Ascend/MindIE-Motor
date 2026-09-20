@@ -115,7 +115,7 @@
 
 通过 `deploy.py` 启动服务时，Motor 会完成以下配置：
 
-- 自动选择容器快照专用部署模板，并生成最终的 `infer_service.yaml`。
+- 基于通用部署模板渲染容器快照所需配置，并生成最终的 `infer_service.yaml`。
 - 配置快照标签、Readiness Probe、所需的挂载项。
 - 校验 `host_snapshot_image_path` 与 `mnt_mount_path` 不存在路径交集。
 

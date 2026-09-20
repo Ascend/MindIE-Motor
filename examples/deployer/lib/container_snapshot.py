@@ -9,12 +9,26 @@
 # See the Mulan PSL v2 for more details.
 
 import os
+from copy import deepcopy
 
 import lib.constant as C
 
 
 _SNAPSHOT_ENGINE_ROLES = (C.ROLE_PREFILL, C.ROLE_DECODE, C.ROLE_UNION)
 _REQUIRED_PATH_KEYS = (C.HOST_SNAPSHOT_IMAGE_PATH, C.SNAPSHOT_MNT_PATH, C.DEVICE_SNAPSHOT_WEIGHT_PATH)
+_SNAPSHOT_LABEL = "infer.huawei.com/container-snapshot"
+_SNAPSHOT_FAULT_SCHEDULING = "external-force"
+_SNAPSHOT_EXCLUDED_VOLUME_NAMES = frozenset(("data", "dshm", "coredump", "plog-path", "cache-path"))
+_SNAPSHOT_READINESS_PROBE = {
+    "exec": {"command": ["bash", "-c", "$CONFIGMAP_PATH/probe.sh readiness"]},
+    "periodSeconds": 5,
+    "timeoutSeconds": 4,
+    "failureThreshold": 12,
+}
+_SNAPSHOT_HOST_TOOLS = (
+    ("dcmi", "/usr/local/dcmi"),
+    ("npu-smi", "/usr/local/bin/npu-smi"),
+)
 
 
 def _normalized_absolute_path(config: dict, key: str) -> str:
@@ -67,69 +81,128 @@ def validate_container_snapshot_config(user_config: dict) -> dict:
 
 
 def resolve_infer_service_template(paths: dict, user_config: dict) -> str:
-    """Select the snapshot-specific InferServiceSet template when the feature is enabled."""
-    snapshot_config = validate_container_snapshot_config(user_config)
-    if snapshot_config:
-        return paths["container_snapshot_infer_service_input_yaml"]
+    """Validate snapshot config and use the common InferServiceSet template."""
+    validate_container_snapshot_config(user_config)
     return paths["infer_service_input_yaml"]
 
 
-def _set_named_item(items: list, name: str, key: str, value: object) -> None:
-    for item in items:
+def _replace_named_item(items: list[dict], name: str, values: dict, required: bool = False) -> None:
+    replacement = {C.NAME: name, **values}
+    for index, item in enumerate(items):
         if item.get(C.NAME) == name:
-            item[key] = value
+            items[index] = replacement
             return
-    raise ValueError(f"Container snapshot template is missing '{name}' in {key} configuration.")
+    if required:
+        raise ValueError(f"Container snapshot base template is missing required item '{name}'.")
+    items.append(replacement)
+
+
+def _remove_named_items(items: list[dict], names: frozenset[str]) -> None:
+    items[:] = [item for item in items if item.get(C.NAME) not in names]
+
+
+def _configure_snapshot_metadata(role: dict) -> None:
+    role.setdefault(C.METADATA, {}).setdefault(C.LABELS, {})[_SNAPSHOT_LABEL] = "true"
+    pod_template = role[C.SPEC][C.TEMPLATE]
+    pod_labels = pod_template.setdefault(C.METADATA, {}).setdefault(C.LABELS, {})
+    pod_labels[C.FAULT_SCHEDULING_LABEL] = _SNAPSHOT_FAULT_SCHEDULING
+
+
+def _configure_snapshot_runtime(container: dict, snapshot_config: dict) -> None:
+    container["readinessProbe"] = deepcopy(_SNAPSHOT_READINESS_PROBE)
+    env = container.setdefault(C.ENV, [])
+    _replace_named_item(env, "CRIU_LOG_LEVEL", {C.VALUE: "3"})
+    _replace_named_item(
+        env,
+        C.SNAPSHOT_HOST_DIR_ENV,
+        {C.VALUE: snapshot_config[C.HOST_SNAPSHOT_IMAGE_PATH]},
+    )
+
+
+def _set_host_path_mount(
+    container: dict,
+    pod_spec: dict,
+    name: str,
+    mount_path: str,
+    host_path: str,
+    *,
+    host_path_type: str | None = None,
+    mount_propagation: str | None = None,
+    required: bool = False,
+) -> None:
+    mount = {C.MOUNT_PATH: mount_path}
+    if mount_propagation is not None:
+        mount["mountPropagation"] = mount_propagation
+    volume_host_path = {C.PATH: host_path}
+    if host_path_type is not None:
+        volume_host_path[C.STORAGE_TYPE] = host_path_type
+    _replace_named_item(container.setdefault(C.VOLUME_MOUNTS, []), name, mount, required=required)
+    _replace_named_item(pod_spec.setdefault(C.VOLUMES, []), name, {C.HOST_PATH: volume_host_path}, required=required)
+
+
+def _remove_snapshot_incompatible_storage(container: dict, pod_spec: dict) -> None:
+    _remove_named_items(container.setdefault(C.VOLUME_MOUNTS, []), _SNAPSHOT_EXCLUDED_VOLUME_NAMES)
+    _remove_named_items(pod_spec.setdefault(C.VOLUMES, []), _SNAPSHOT_EXCLUDED_VOLUME_NAMES)
+
+
+def _configure_snapshot_storage(
+    container: dict,
+    pod_spec: dict,
+    snapshot_config: dict,
+    hardware_type: str,
+) -> None:
+    _remove_snapshot_incompatible_storage(container, pod_spec)
+    _set_host_path_mount(
+        container,
+        pod_spec,
+        C.SNAPSHOT_MNT,
+        snapshot_config[C.SNAPSHOT_MNT_PATH],
+        snapshot_config[C.SNAPSHOT_MNT_PATH],
+        required=True,
+    )
+    _set_host_path_mount(
+        container,
+        pod_spec,
+        C.SNAPSHOT_WEIGHT,
+        "/snapshot/weight",
+        snapshot_config[C.DEVICE_SNAPSHOT_WEIGHT_PATH],
+        host_path_type="DirectoryOrCreate",
+    )
+    _set_host_path_mount(
+        container,
+        pod_spec,
+        "ascend-driver",
+        "/usr/local/Ascend/driver",
+        "/usr/local/Ascend/driver",
+        mount_propagation="HostToContainer",
+        required=True,
+    )
+    for name, path in _SNAPSHOT_HOST_TOOLS:
+        _set_host_path_mount(container, pod_spec, name, path, path)
+    if hardware_type in C.HARDWARE_TYPE_A3:
+        _set_host_path_mount(
+            container,
+            pod_spec,
+            C.LQDCMI_PCIDEV,
+            C.LQDCMI_PCIDEV_PATH,
+            C.LQDCMI_PCIDEV_PATH,
+            host_path_type="CharDevice",
+        )
 
 
 def _configure_snapshot_role(role: dict, snapshot_config: dict, hardware_type: str) -> None:
+    _configure_snapshot_metadata(role)
     pod_spec = role[C.SPEC][C.TEMPLATE][C.SPEC]
     containers = pod_spec.get(C.CONTAINERS, [])
     if not containers:
         raise ValueError(f"Container snapshot role '{role.get(C.NAME)}' has no container.")
     container = containers[0]
-
-    _set_named_item(
-        container.get(C.ENV, []),
-        C.SNAPSHOT_HOST_DIR_ENV,
-        C.VALUE,
-        snapshot_config[C.HOST_SNAPSHOT_IMAGE_PATH],
-    )
-    _set_named_item(
-        container.get(C.VOLUME_MOUNTS, []),
-        C.SNAPSHOT_MNT,
-        C.MOUNT_PATH,
-        snapshot_config[C.SNAPSHOT_MNT_PATH],
-    )
-    _set_named_item(
-        pod_spec.get(C.VOLUMES, []),
-        C.SNAPSHOT_MNT,
-        C.HOST_PATH,
-        {C.PATH: snapshot_config[C.SNAPSHOT_MNT_PATH]},
-    )
-    _set_named_item(
-        pod_spec.get(C.VOLUMES, []),
-        C.SNAPSHOT_WEIGHT,
-        C.HOST_PATH,
-        {C.PATH: snapshot_config[C.DEVICE_SNAPSHOT_WEIGHT_PATH], C.STORAGE_TYPE: "DirectoryOrCreate"},
-    )
-
-    if hardware_type in C.HARDWARE_TYPE_A3:
-        mounts = container.setdefault(C.VOLUME_MOUNTS, [])
-        volumes = pod_spec.setdefault(C.VOLUMES, [])
-        if not any(item.get(C.NAME) == C.LQDCMI_PCIDEV for item in mounts):
-            mounts.append({C.NAME: C.LQDCMI_PCIDEV, C.MOUNT_PATH: C.LQDCMI_PCIDEV_PATH})
-        if not any(item.get(C.NAME) == C.LQDCMI_PCIDEV for item in volumes):
-            volumes.append(
-                {
-                    C.NAME: C.LQDCMI_PCIDEV,
-                    C.HOST_PATH: {C.PATH: C.LQDCMI_PCIDEV_PATH, C.STORAGE_TYPE: "CharDevice"},
-                }
-            )
+    _configure_snapshot_runtime(container, snapshot_config)
+    _configure_snapshot_storage(container, pod_spec, snapshot_config, hardware_type)
 
 
 def configure_container_snapshot(infer_doc: dict, user_config: dict) -> None:
-    """Render snapshot paths and A3-only device mounts into all snapshot engine roles."""
+    """Render snapshot-specific deltas into the common InferServiceSet template."""
     snapshot_config = validate_container_snapshot_config(user_config)
     if not snapshot_config:
         return
