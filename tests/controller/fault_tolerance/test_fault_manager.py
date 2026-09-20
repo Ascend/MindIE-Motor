@@ -117,6 +117,17 @@ FAULT_CM_SWITCH_L2_0x5678 = FI(
 )
 
 
+def _reportable_instance(pod_ip: str, nm_port: str = "1026", engine_ids: tuple[int, ...] = ()) -> MagicMock:
+    """Mock instance that passes software-fault reporter identity validation."""
+    instance = MagicMock()
+    instance.get_node_managers.return_value = [NodeManagerInfo(pod_ip=pod_ip, port=nm_port)]
+    instance.has_node_mgr.side_effect = lambda ip: ip == pod_ip
+    instance.get_all_endpoints.side_effect = lambda include_headless=False: [
+        MagicMock(id=engine_id) for engine_id in engine_ids
+    ]
+    return instance
+
+
 def _assert_instance_fault(instance, *, fault_level, fault_code):
     assert instance.fault_level == fault_level
     assert instance.fault_code == fault_code
@@ -1200,21 +1211,31 @@ def test_software_faults_are_isolated_between_instances_sharing_pod_ip(fault_man
     node = manager.nodes["node_0"]
     node.instance_ids = {1, 2}
     node.instance_pod_ips = {1: "127.0.0.1", 2: "127.0.0.1"}
+    # Same pod, different NodeManager processes (e.g. single-container P+D).
+    instance1 = _reportable_instance("127.0.0.1", nm_port="1026", engine_ids=(0,))
+    instance2 = _reportable_instance("127.0.0.1", nm_port="1027", engine_ids=(1,))
 
     prefill_fault = FaultInfo.from_exception(
         RuntimeError("prefill unhealthy"), engine_id=0, engine_status=2, instance_id=1
     )
     decode_fault = FaultInfo.from_exception(RuntimeError("decode dead"), engine_id=1, engine_status=1, instance_id=2)
-    manager.report_software_fault(prefill_fault, pod_ip="127.0.0.1", instance_id=1)
-    manager.report_software_fault(decode_fault, pod_ip="127.0.0.1", instance_id=2)
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.side_effect = lambda iid: {1: instance1, 2: instance2}[iid]
+        assert manager.report_software_fault(
+            prefill_fault, pod_ip="127.0.0.1", instance_id=1, node_manager_port="1026"
+        ).accepted
+        assert manager.report_software_fault(
+            decode_fault, pod_ip="127.0.0.1", instance_id=2, node_manager_port="1027"
+        ).accepted
 
     manager._clear_software_faults(1)
 
+    assert manager.instances[1].software_fault_infos == {}
+    assert len(manager.instances[2].software_fault_infos) == 1
     with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
         instance_manager_cls.return_value.get_instance.return_value = _hardware_dp_instance()
         context = manager._build_scale_down_context(2)
     assert context.pending_removed_ranks == (1,)
-    assert all(fault.instance_id == 2 for fault in node.software_fault_infos.values())
 
 
 def test_card_fault_is_isolated_to_device_owner_in_mixed_deployment(fault_manager):
@@ -1279,14 +1300,26 @@ def test_card_fault_is_isolated_to_device_owner_in_mixed_deployment(fault_manage
 def test_report_software_fault_logs_dp_rank_and_status(fault_manager_with_instances, engine_status, status_name):
     manager = fault_manager_with_instances
     fault = FaultInfo.from_exception(RuntimeError("engine fault"), engine_id=3, engine_status=engine_status)
+    instance = _reportable_instance("192.168.1.1", engine_ids=(3,))
 
-    with patch("motor.controller.fault_tolerance.fault_manager.logger") as mock_logger:
-        manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1)
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch("motor.controller.fault_tolerance.fault_manager.logger") as mock_logger,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        result = manager.report_software_fault(
+            fault,
+            pod_ip="192.168.1.1",
+            instance_id=1,
+            node_manager_port="1026",
+        )
 
+    assert result.accepted
+    assert list(manager.instances[1].software_fault_infos) == ["192.168.1.1:1026:3"]
     mock_logger.info.assert_any_call(
-        "Reported software fault for node %s (instances %s): dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
-        "node_0",
-        [1],
+        "Reported software fault for instance %d (key=%s): dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
+        1,
+        "192.168.1.1:1026:3",
         3,
         "RuntimeError",
         engine_status,
@@ -1296,17 +1329,52 @@ def test_report_software_fault_logs_dp_rank_and_status(fault_manager_with_instan
 
 
 def test_new_dp_status_replaces_previous_status_in_collection_round(fault_manager_with_instances):
+    """A newer status for the same reporter+engine replaces the prior one,
+    regardless of fault code: DEAD and UNHEALTHY must never coexist.
+    """
     manager = fault_manager_with_instances
     unhealthy = FaultInfo.from_exception(RuntimeError("unhealthy"), 0, 2, instance_id=1)
     dead = FaultInfo.from_exception(RuntimeError("dead"), 0, 1, instance_id=1)
+    instance = _reportable_instance("192.168.1.1", engine_ids=(0,))
 
-    manager.report_software_fault(unhealthy, pod_ip="192.168.1.1", instance_id=1)
-    manager.report_software_fault(dead, pod_ip="192.168.1.1", instance_id=1)
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        assert manager.report_software_fault(unhealthy, pod_ip="192.168.1.1", instance_id=1).accepted
+        # UNHEALTHY -> DEAD replaces the entry and clears the unhealthy timestamp.
+        assert manager.report_software_fault(dead, pod_ip="192.168.1.1", instance_id=1).accepted
+        faults = list(manager.instances[1].software_fault_infos.values())
+        assert [f.engine_status for f in faults] == [1]
+        assert list(manager.instances[1].software_dead_observed_at) == [0]
+        assert manager.instances[1].software_unhealthy_observed_at == {}
 
-    faults = list(manager.nodes["node_0"].software_fault_infos.values())
-    assert len(faults) == 1
-    assert faults[0].engine_id == 0
-    assert faults[0].engine_status == 1
+        # DEAD -> UNHEALTHY replaces the entry and clears the dead timestamp.
+        unhealthy_again = FaultInfo.from_exception(RuntimeError("recovered to unhealthy"), 0, 2, instance_id=1)
+        assert manager.report_software_fault(unhealthy_again, pod_ip="192.168.1.1", instance_id=1).accepted
+
+    faults = list(manager.instances[1].software_fault_infos.values())
+    assert [f.engine_status for f in faults] == [2]
+    assert manager.instances[1].software_dead_observed_at == {}
+    assert 0 in manager.instances[1].software_unhealthy_observed_at
+
+
+def test_report_software_fault_rejects_unowned_endpoint_zero(fault_manager_with_instances):
+    """Endpoint zero is a valid global DP rank and must be ownership-checked."""
+    manager = fault_manager_with_instances
+    instance = _reportable_instance("192.168.1.1", engine_ids=(1,))
+    fault = FaultInfo.from_exception(RuntimeError("engine zero died"), engine_id=0, engine_status=1)
+
+    with patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls:
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        result = manager.report_software_fault(
+            fault,
+            pod_ip="192.168.1.1",
+            instance_id=1,
+            node_manager_port="1026",
+        )
+
+    assert not result.accepted
+    assert result.reason == "engine_id not registered on instance"
+    assert manager.instances[1].software_fault_infos == {}
 
 
 def test_refresh_instance_fault_level_multiple_nodes(fault_manager_with_instances):
@@ -2303,6 +2371,56 @@ def _hardware_dp_instance() -> Instance:
     return instance
 
 
+def _single_dp_instance() -> Instance:
+    instance = Instance(
+        job_name="decode-single",
+        model_name="model",
+        id=1,
+        role="decode",
+        parallel_config=ParallelConfig(dp_size=1),
+    )
+    instance.add_endpoints(
+        "192.168.1.1",
+        {
+            0: Endpoint(
+                id=0,
+                ip="192.168.1.1",
+                business_port="8000",
+                device_infos=[DeviceInfo(device_id="0", rank_id="0")],
+            )
+        },
+    )
+    instance.status = InsStatus.ACTIVE
+    return instance
+
+
+def test_active_single_dp_engine_dead_prefers_relaunch_over_reconfiguration(fault_manager_with_instances):
+    """A docker-only instance must not turn one dead engine into a stop request."""
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.config.fault_tolerance_config.enable_engine_relaunch = True
+    metadata = manager.instances[1]
+    metadata.fault_level = FaultLevel.L2
+    metadata.fault_code = int(SpecialFaultCode.ENGINE_DEAD)
+    manager.nodes["node_0"].software_fault_infos = {
+        "1:1000001:0": FaultInfo.from_exception(
+            RuntimeError("engine died"), engine_id=0, engine_status=1, instance_id=1
+        )
+    }
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = _single_dp_instance()
+    instance_manager.get_instance_by_job_name.return_value = instance_manager.get_instance.return_value
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        manager._process_instance_strategy(1)
+
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, EngineRelaunchStrategy)
+
+
 def test_higher_hardware_fault_uses_scale_down_despite_engine_unhealthy(fault_manager_with_instances):
     manager = fault_manager_with_instances
     manager.config.fault_tolerance_config.enable_dp_scale_down = True
@@ -2925,7 +3043,9 @@ def test_non_a2_linkdown_cannot_block_engine_dead_relaunch(fault_manager):
 
     fault_manager.config.hardware_type = "800I_A3"
     node, instance_manager = _seed_linkdown_node(fault_manager)
+    instance = instance_manager.get_instance(1)
     with patch(_CORE_IM, return_value=instance_manager), patch(_FAULT_MGR_IM, return_value=instance_manager):
+        instance.get_all_endpoints.return_value = []
         fault_manager._handle_fault_info_update([FAULT_A2_LINKDOWN_CHIP6.model_copy()], node.node_name)
         fault_manager.report_software_fault(
             FaultInfo.from_exception(RuntimeError("engine died"), engine_id=1, engine_status=1),

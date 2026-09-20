@@ -73,6 +73,16 @@ class ConnectionMode(Enum):
     LONG = "long"
 
 
+class HttpStatusError(RuntimeError):
+    """HTTP error response that preserves the status code for callers that
+    need to distinguish failure classes (e.g. optional-API 404 vs server 5xx).
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class SafeHTTPSClient:
     def __init__(
         self,
@@ -234,7 +244,7 @@ class SafeHTTPSClient:
             # e.response may be None when the error was raised without a
             # response (e.g. by a caller); guard both access paths.
             response = e.response
-            status = getattr(response, "status_code", "unknown")
+            status = getattr(response, "status_code", None)
             body_text = getattr(response, "text", "") if response is not None else ""
             # Error bodies may be JSON or MessagePack maps with an "error"
             # key (e.g. kv-conductor's 4xx/5xx responses); surface the
@@ -245,10 +255,14 @@ class SafeHTTPSClient:
                 "Possible causes: 1) peer rejected request "
                 "2) peer service down 3) auth failure.",
                 url,
-                status,
+                status if status is not None else "unknown",
                 error_message or body_text,
             )
-            raise RuntimeError(f"http response error {status}, {error_message or body_text}") from e
+            status_text = status if status is not None else "unknown"
+            message = "http response error %s, %s" % (status_text, error_message or body_text)
+            if isinstance(status, int):
+                raise HttpStatusError(status, message) from e
+            raise RuntimeError(message) from e
         except Exception as e:
             logger.debug(
                 "HTTP request send failed. url=%s, error=%s. "

@@ -411,7 +411,7 @@
       "dp_rpc_port": null
     },
     "fault_tolerance_config": {
-      "enable_fault_tolerance": false,
+      "container_restart_managed": null,
       "poll_interval_sec": 1.0,
       "poll_timeout_sec": 5.0,
       "max_poll_failures": 3,

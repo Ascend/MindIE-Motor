@@ -475,7 +475,7 @@ class Daemon(ThreadSafeSingleton):
                 break
 
     def _handle_engine_deaths(self, deaths: list) -> None:
-        """Handle engine subprocess deaths: report to Controller, freeze on success.
+        """Handle engine subprocess deaths: report to Controller, freeze on acceptance.
 
         The engine-relaunch flow is a base capability — it must work without
         fault-tolerance reporting enabled, so the Daemon (the process
@@ -483,11 +483,11 @@ class Daemon(ThreadSafeSingleton):
         and reports them itself. Dedup by pid: a relaunched engine gets a
         fresh PID, so the next death is reported again.
 
-        The suicide freeze is only applied after a successful report AND when
-        the in-place relaunch is enabled: a failed report (Controller
-        unreachable) or a disabled relaunch switch means no relaunch is
-        coming, so the arbitration must keep counting and the
-        container-restart fallback (k8s) stays live instead of being frozen.
+        The suicide freeze is only applied after the Controller ACCEPTED the
+        report AND when the in-place relaunch is enabled: a rejected or
+        undeliverable report means no relaunch is coming, so the arbitration
+        must keep counting and the container-restart fallback (k8s) stays
+        live instead of being frozen.
         """
         if not deaths:
             return
@@ -498,11 +498,10 @@ class Daemon(ThreadSafeSingleton):
             if pid in self._reported_dead_pids:
                 continue
             try:
-                with self.config_lock:
-                    pod_ip = self._config.api_config.pod_ip
-                    enable_relaunch = self._config.fault_tolerance_config.enable_engine_relaunch
-                    freeze_sec = self._config.fault_tolerance_config.engine_restart_wait_timeout_sec
-                if self._report_engine_death(endpoint_id, pod_ip, self._instance_id):
+                if self._report_engine_death(endpoint_id, "Engine process died"):
+                    with self.config_lock:
+                        enable_relaunch = self._config.fault_tolerance_config.enable_engine_relaunch
+                        freeze_sec = self._config.fault_tolerance_config.engine_restart_wait_timeout_sec
                     if enable_relaunch:
                         self.freeze_suicide(freeze_sec)
                     self._reported_dead_pids.add(pid)
@@ -514,23 +513,34 @@ class Daemon(ThreadSafeSingleton):
             except Exception as e:
                 logger.error("Failed to handle engine death pid=%s: %s", pid, e)
 
-    @staticmethod
-    def _report_engine_death(endpoint_id: int, pod_ip: str, instance_id: int | None = None) -> bool:
+    def _report_engine_death(self, endpoint_id: int, exception_message: str) -> bool:
         """Report a dead engine to the Controller via the shared software-fault channel."""
-        fault_data = {
-            "exception_type": "EngineDeadError",
-            "exception_message": "Engine process died",
-            "engine_id": endpoint_id,
-            "engine_status": 1,
-            "pod_ip": pod_ip,
-        }
-        if instance_id is not None:
-            fault_data["instance_id"] = instance_id
+        fault_data = self._build_software_fault_payload(endpoint_id, exception_message)
+        if fault_data is None:
+            return False
         try:
             return ControllerApiClient.report_software_fault(fault_data)
         except Exception as e:
             logger.error("Failed to report engine death to Controller: %s", e)
             return False
+
+    def _build_software_fault_payload(self, endpoint_id: int, exception_message: str) -> dict | None:
+        """Build a software-fault payload with full reporter identity for Controller validation."""
+        with self.config_lock:
+            pod_ip = self._config.api_config.pod_ip
+            node_manager_port = str(self._config.api_config.node_manager_port)
+        if self._instance_id is None:
+            logger.error("Cannot report software fault before instance start command")
+            return None
+        return {
+            "exception_type": "EngineDeadError",
+            "exception_message": exception_message,
+            "engine_id": endpoint_id,
+            "engine_status": 1,
+            "pod_ip": pod_ip,
+            "node_manager_port": node_manager_port,
+            "instance_id": self._instance_id,
+        }
 
     def start_suicide_arbitration(self) -> None:
         """Public entry: start suicide arbitration after HeartbeatManager is bound."""
@@ -595,6 +605,17 @@ class Daemon(ThreadSafeSingleton):
             with self._suicide_lock:
                 self._suicide_abnormal_count += 1
                 if self._suicide_abnormal_count >= self._suicide_threshold:
+                    with self.config_lock:
+                        restart_managed = self._config.fault_tolerance_config.effective_container_restart_managed()
+                    if not restart_managed:
+                        logger.error(
+                            "Reached %d consecutive abnormal endpoint observations but "
+                            "container_restart_managed=false; keeping NodeManager alive "
+                            "(no external container supervisor, e.g. docker-only)",
+                            self._suicide_threshold,
+                        )
+                        self._suicide_abnormal_count = 0
+                        return
                     logger.error(
                         "Reached %d consecutive abnormal endpoint observations, "
                         "setting suicide flag for main to handle (k8s pod restart)",
@@ -626,11 +647,10 @@ class Daemon(ThreadSafeSingleton):
                 # Never NORMAL yet = cold start (model loading) — not a death.
                 continue
             try:
-                with self.config_lock:
-                    pod_ip = self._config.api_config.pod_ip
-                    enable_relaunch = self._config.fault_tolerance_config.enable_engine_relaunch
-                    freeze_sec = self._config.fault_tolerance_config.engine_restart_wait_timeout_sec
-                if self._report_engine_death(ep_id, pod_ip, self._instance_id):
+                if self._report_engine_death(ep_id, "Engine process died"):
+                    with self.config_lock:
+                        enable_relaunch = self._config.fault_tolerance_config.enable_engine_relaunch
+                        freeze_sec = self._config.fault_tolerance_config.engine_restart_wait_timeout_sec
                     if enable_relaunch:
                         self.freeze_suicide(freeze_sec)
                     self._reported_abnormal_ep_ids.add(ep_id)

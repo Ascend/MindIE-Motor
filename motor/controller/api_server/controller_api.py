@@ -31,6 +31,7 @@ from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger, ApiAccessFilter
 from motor.common.http.http_response import (
     format_success_response,
+    raise_bad_request,
     raise_internal_error,
 )
 from motor.common.utils.net import format_address
@@ -596,27 +597,62 @@ class ControllerAPI:
             pod_ip = body.get("pod_ip", "")
             additional_info = body.get("additional_info")
             instance_id = body.get("instance_id")
+            node_manager_port = body.get("node_manager_port", "")
 
             if engine_id is None or engine_status is None:
-                return raise_internal_error("Missing required fields: engine_id, engine_status")
+                return raise_bad_request(
+                    "Missing required fields: engine_id, engine_status",
+                    data={"accepted": False, "reason": "missing engine_id or engine_status"},
+                )
             if not pod_ip:
-                return raise_internal_error("Missing required field: pod_ip")
+                return raise_bad_request(
+                    "Missing required field: pod_ip",
+                    data={"accepted": False, "reason": "missing pod_ip"},
+                )
+
+            try:
+                parsed_engine_id = int(engine_id)
+                parsed_engine_status = int(engine_status)
+            except (TypeError, ValueError):
+                return raise_bad_request(
+                    "invalid engine_id or engine_status",
+                    data={"accepted": False, "reason": "invalid engine_id or engine_status"},
+                )
+
+            parsed_instance_id = None
+            if instance_id is not None:
+                try:
+                    parsed_instance_id = int(instance_id)
+                except (TypeError, ValueError):
+                    return raise_bad_request(
+                        "invalid instance_id",
+                        data={"accepted": False, "reason": "invalid instance_id"},
+                    )
 
             exc = RuntimeError(exception_message or "")
             fault_info = FaultInfo.from_exception(
                 exception=exc,
-                engine_id=int(engine_id),
-                engine_status=int(engine_status),
+                engine_id=parsed_engine_id,
+                engine_status=parsed_engine_status,
                 additional_info=additional_info,
-                instance_id=int(instance_id) if instance_id is not None else None,
+                instance_id=parsed_instance_id,
             )
 
-            FaultManager().report_software_fault(
+            result = FaultManager().report_software_fault(
                 fault_info,
                 pod_ip=pod_ip,
-                instance_id=int(instance_id) if instance_id is not None else None,
+                instance_id=parsed_instance_id,
+                node_manager_port=str(node_manager_port) if node_manager_port is not None else "",
             )
-            return format_success_response(message="Software fault reported successfully")
+            if not result.accepted:
+                return raise_bad_request(
+                    result.reason or "software fault rejected",
+                    data={"accepted": False, "reason": result.reason},
+                )
+            return format_success_response(
+                data={"accepted": True},
+                message="Software fault reported successfully",
+            )
         except HTTPException:
             raise
         except Exception as e:

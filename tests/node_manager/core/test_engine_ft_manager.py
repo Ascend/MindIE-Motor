@@ -28,43 +28,42 @@ from motor.common.resources.endpoint import Endpoint
 
 
 @pytest.mark.parametrize(
-    "explicit_enabled,local_engine_enabled,expected",
+    "local_engine_enabled,expected",
     [
-        (True, False, True),
-        (False, True, True),
-        (False, False, False),
+        (True, True),
+        (False, False),
     ],
 )
-def test_start_uses_explicit_or_local_engine_capability(
-    explicit_enabled,
+def test_start_uses_engine_capability_only(
     local_engine_enabled,
     expected,
     endpoints,
-    tmp_path,
     no_background_polling,
 ):
-    """Another role FT switch in a shared PD config must not enable this reporter."""
+    """Engine FT capability is the only switch — no separate NodeManager flag."""
     cfg = NodeManagerConfig()
     cfg.api_config.pod_ip = "192.168.1.1"
-    cfg.fault_tolerance_config.enable_fault_tolerance = explicit_enabled
     cfg.basic_config.ft_capability.enabled = local_engine_enabled
-    config_path = tmp_path / "user_config.json"
-    config_path.write_text(
-        '{"motor_engine_prefill_config":{"engine_config":{"enable_fault_tolerance":true}}}',
-        encoding="utf-8",
-    )
-    cfg.config_path = str(config_path)
     r = EngineFtManager(cfg)
     r.start(endpoints)
     assert (r._thread is not None) is expected
     r.stop()
 
 
+def test_node_manager_ft_switch_removed():
+    """The NodeManager-side FT polling switch must not exist: the engine
+    capability (normalized into basic_config.ft_capability) is the single
+    source of truth.
+    """
+    cfg = NodeManagerConfig()
+    assert not hasattr(cfg.fault_tolerance_config, "enable_fault_tolerance")
+
+
 @pytest.fixture
 def config():
     cfg = NodeManagerConfig()
     cfg.api_config.pod_ip = "192.168.1.1"
-    cfg.fault_tolerance_config.enable_fault_tolerance = True
+    cfg.basic_config.ft_capability.enabled = True
     cfg.fault_tolerance_config.poll_timeout_sec = 0.1
     return cfg
 
@@ -79,7 +78,10 @@ def endpoints():
 
 @pytest.fixture
 def reporter(config):
-    return EngineFtManager(config)
+    manager = EngineFtManager(config)
+    # Simulate a started instance so reports carry a valid instance_id.
+    manager._instance_id = 7
+    return manager
 
 
 @pytest.fixture
@@ -109,9 +111,9 @@ def test_start_idempotent(reporter, endpoints, no_background_polling):
 
 
 def test_update_config_enables(config, endpoints, no_background_polling):
-    config.fault_tolerance_config.enable_fault_tolerance = False
+    config.basic_config.ft_capability.enabled = False
     r = EngineFtManager(config)
-    config.fault_tolerance_config.enable_fault_tolerance = True
+    config.basic_config.ft_capability.enabled = True
     r.update_config(config, endpoints)
     assert r._enabled is True
     assert r._thread is not None
@@ -121,7 +123,7 @@ def test_update_config_enables(config, endpoints, no_background_polling):
 def test_update_config_disables(reporter, endpoints, no_background_polling):
     reporter.start(endpoints)
     cfg = reporter._config
-    cfg.fault_tolerance_config.enable_fault_tolerance = False
+    cfg.basic_config.ft_capability.enabled = False
     reporter.update_config(cfg, endpoints)
     assert reporter._enabled is False
     assert reporter._thread is None
@@ -186,7 +188,7 @@ def test_update_config_restart_on_endpoints_change(config, endpoints, no_backgro
     r.start()
 
     new_config = NodeManagerConfig()
-    new_config.fault_tolerance_config.enable_fault_tolerance = True
+    new_config.basic_config.ft_capability.enabled = True
     new_config.api_config.pod_ip = "192.168.1.1"
     new_endpoints = endpoints + [Endpoint(id=2, ip="192.168.1.1", business_port="8002")]
 
@@ -298,6 +300,27 @@ def test_report_delivery_controls_status_dedup(delivered, reporter):
 
     report.assert_called_once()
     assert (0 in reporter._known_statuses) is delivered
+
+
+def test_rejected_status_uses_signature_scoped_backoff(reporter):
+    """A rejected unchanged status retries after cooldown, while a changed
+    status is still sent immediately instead of being treated as delivered.
+    """
+    dead = {"id": 0, "status": "dead"}
+    unhealthy = {"id": 0, "status": "unhealthy"}
+    with (
+        patch(
+            "motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault",
+            return_value=False,
+        ) as report,
+        patch("motor.node_manager.core.engine_ft_manager.time.monotonic", side_effect=[100.0, 101.0, 101.0, 101.0]),
+    ):
+        reporter._process_engine_status(0, dead)
+        reporter._process_engine_status(0, dead)
+        reporter._process_engine_status(0, unhealthy)
+
+    assert report.call_count == 2
+    assert {call.args[0]["engine_status"] for call in report.call_args_list} == {1, 2}
 
 
 @patch("motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault")
@@ -460,6 +483,7 @@ def test_main_loop_reports_via_sentinel(mock_report, config, endpoints):
     """End-to-end loop: one engine unhealthy -> reported once, then deduped."""
     config.fault_tolerance_config.poll_interval_sec = 0.01
     r = EngineFtManager(config)
+    r._instance_id = 7
     r._endpoints = endpoints
 
     poll_count = [0]
@@ -510,3 +534,132 @@ def test_pause_suspends_and_resume_resets_state(reporter, endpoints):
     assert not reporter._pause_event.is_set()
     assert reporter._consecutive_failures == {}
     assert reporter._known_statuses == {}
+
+
+# -- HTTP 404 = optional API unsupported ---------------------------------------
+
+
+def test_poll_engine_404_marks_endpoint_unsupported_without_failure(reporter, endpoints):
+    """Sustained HTTP 404 on the optional FT API is not a connectivity
+    failure: no failure counting, no DEAD report, and the endpoint stops
+    being polled after the configured consecutive-404 threshold.
+    """
+    from motor.common.http.engine_ft_client import EngineFtEndpointUnsupported
+
+    ep = endpoints[0]
+    reporter._known_statuses = {}
+    reporter._consecutive_failures = {0: 1}
+
+    with (
+        patch.object(reporter, "_query_engine_status", side_effect=EngineFtEndpointUnsupported("no ft api")),
+        patch("motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault") as mock_report,
+    ):
+        for _ in range(5):
+            reporter._poll_engine(ep)
+
+    assert 0 in reporter._unsupported_endpoint_ids
+    assert 0 not in reporter._consecutive_failures
+    mock_report.assert_not_called()
+
+
+def test_poll_engine_single_404_does_not_disable_polling(reporter, endpoints):
+    """A transient 404 (startup routing, proxy glitch) must not permanently
+    disable FT polling: below the consecutive threshold the endpoint keeps
+    being polled, and a successful answer clears the 404 counter.
+    """
+    from motor.common.http.engine_ft_client import EngineFtEndpointUnsupported
+
+    ep = endpoints[0]
+
+    with patch.object(reporter, "_query_engine_status", side_effect=EngineFtEndpointUnsupported("no ft api")):
+        for _ in range(2):  # one below the max_consecutive_404 threshold of 3
+            reporter._poll_engine(ep)
+    assert 0 not in reporter._unsupported_endpoint_ids
+    assert reporter._consecutive_404[0] == 2
+
+    healthy_engine = {"id": 0, "status": "healthy"}
+    with patch.object(reporter, "_query_engine_status", return_value=healthy_engine):
+        reporter._poll_engine(ep)
+    assert reporter._consecutive_404 == {}
+    assert 0 not in reporter._unsupported_endpoint_ids
+
+
+def test_unsupported_endpoint_is_reprobed_after_interval(reporter, endpoints):
+    """An FT-API-unsupported endpoint is re-probed on a long period so a
+    recovered engine image regains polling without a relaunch or config
+    refresh; a successful re-probe removes the classification.
+    """
+    from motor.common.http.engine_ft_client import EngineFtEndpointUnsupported
+
+    ep = endpoints[0]
+    reporter._unsupported_endpoint_ids.add(0)
+    reporter._unsupported_since[0] = 100.0
+
+    # Within the re-probe interval the endpoint is skipped entirely.
+    with (
+        patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=100.0 + 10),
+        patch.object(reporter, "_query_engine_status") as mock_query,
+    ):
+        reporter._poll_engine(ep)
+    mock_query.assert_not_called()
+
+    # After the interval the endpoint is re-probed; still-404 refreshes the timer.
+    with (
+        patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=100.0 + 120),
+        patch.object(reporter, "_query_engine_status", side_effect=EngineFtEndpointUnsupported("no ft api")),
+    ):
+        reporter._poll_engine(ep)
+    assert 0 in reporter._unsupported_endpoint_ids
+    assert reporter._unsupported_since[0] == 220.0
+
+    # A successful re-probe removes the classification immediately.
+    with (
+        patch("motor.node_manager.core.engine_ft_manager.time.monotonic", return_value=100.0 + 300),
+        patch.object(reporter, "_query_engine_status", return_value={"id": 0, "status": "healthy"}),
+    ):
+        reporter._poll_engine(ep)
+    assert 0 not in reporter._unsupported_endpoint_ids
+    assert reporter._unsupported_since == {}
+    assert reporter._consecutive_404 == {}
+
+
+def test_update_config_retries_unsupported_endpoints(reporter, endpoints, no_background_polling):
+    """A refreshed endpoint set clears the unsupported marker so the FT API
+    is retried (engine image may have changed).
+    """
+    reporter._unsupported_endpoint_ids.add(0)
+    reporter._endpoints = endpoints
+    reporter.start()
+    reporter.update_config(reporter._config, endpoints + [Endpoint(id=2, ip="192.168.1.1", business_port="8002")])
+    assert reporter._unsupported_endpoint_ids == set()
+    reporter.stop()
+
+
+def test_resume_retries_unsupported_endpoints(reporter, endpoints):
+    """After an engine relaunch the new image is probed again for FT support."""
+    reporter._unsupported_endpoint_ids.add(0)
+    reporter.resume()
+    assert reporter._unsupported_endpoint_ids == set()
+
+
+@patch("motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault")
+def test_send_fault_requires_instance_id(mock_report, config, endpoints):
+    """Without an instance start command no report may be sent — the
+    Controller cannot attribute the fault, so it must not count as delivered.
+    """
+    manager = EngineFtManager(config)  # _instance_id stays None
+    assert manager._send_fault_to_controller({"engine_id": 0, "engine_status": 1}) is False
+    mock_report.assert_not_called()
+
+
+@patch("motor.node_manager.core.engine_ft_manager.ControllerApiClient.report_software_fault")
+def test_send_fault_carries_reporter_identity(mock_report, reporter):
+    """Reports must carry instance_id, pod_ip and node_manager_port so the
+    Controller can attribute them at instance granularity.
+    """
+    mock_report.return_value = True
+    assert reporter._send_fault_to_controller({"engine_id": 0, "engine_status": 1}) is True
+    payload = mock_report.call_args.args[0]
+    assert payload["instance_id"] == 7
+    assert payload["pod_ip"] == "192.168.1.1"
+    assert payload["node_manager_port"] == str(reporter._config.api_config.node_manager_port)

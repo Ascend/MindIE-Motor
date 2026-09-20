@@ -40,6 +40,7 @@ def build_recovery_plan(
     from motor.controller.fault_tolerance.strategy import (
         DpScaleDownStrategy,
         EngineFastRecoveryStrategy,
+        EngineRelaunchStrategy,
         InstanceReconfigurationStrategy,
     )
     from motor.controller.fault_tolerance.strategy.fast_recovery import FastRecoveryContext
@@ -80,6 +81,19 @@ def build_recovery_plan(
         strategy = fallback if context.collection_timed_out else None
         return RecoveryPlan(source, strategy, context, fallback, evidence)
 
+    # Losing every DP rank normally means the instance needs reconfiguration.
+    # A pure software ENGINE_DEAD report is different: while the instance is
+    # still ACTIVE, the generated relaunch strategy can restore those ranks in
+    # place. This is especially important for a single-DP docker-only instance,
+    # where all_dp_removed is true as soon as its only engine dies.
+    if (
+        context.all_dp_removed
+        and source == RecoverySource.SOFTWARE
+        and context.engine_fault_observed
+        and not context.hardware_fault_observed
+        and generated_strategy is EngineRelaunchStrategy
+    ):
+        return RecoveryPlan(source, generated_strategy, context, fallback, evidence)
     if context.all_dp_removed:
         return RecoveryPlan(source, fallback, context, fallback, evidence)
     if context.collection_complete:

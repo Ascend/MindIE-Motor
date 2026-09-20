@@ -286,10 +286,25 @@ class SingleContainerNodemanagerConfig:
 class NodeManagerFaultToleranceConfig:
     """Fault tolerance configuration for NodeManager"""
 
-    enable_fault_tolerance: bool = False
     # Internal execution gate derived from the Controller-level switches in
     # the shared user_config. It is not a NodeManager user-facing switch.
     enable_dp_scale_down_proxy: bool = False
+    #: Whether an external supervisor (Kubernetes, Docker restart policy, etc.)
+    #: restarts this NodeManager container after exit. When false, suicide and
+    #: container-restart escalation are suppressed so the management plane
+    #: stays up (required for docker-only: there is no pod rebuild mechanism).
+    #: ``None`` (default / unset): auto-detect — true in Kubernetes Pods,
+    #: false in docker-only deployments.
+    container_restart_managed: bool | None = None
+
+    def effective_container_restart_managed(self) -> bool:
+        """Resolve the configured value, auto-detecting Kubernetes when unset."""
+        if self.container_restart_managed is True:
+            return True
+        if self.container_restart_managed is False:
+            return False
+        return bool(os.getenv("KUBERNETES_SERVICE_HOST") or os.getenv("POD_NAMESPACE"))
+
     #: Polling interval for engine FT status (vLLM /v1/fault_tolerance/status).
     poll_interval_sec: float = 1.0
     #: HTTP timeout for a single status poll.
@@ -297,6 +312,15 @@ class NodeManagerFaultToleranceConfig:
     # Consecutive transport failures must reach this threshold before the
     # runtime engine is reported DEAD.
     max_poll_failures: int = 3
+    #: Consecutive HTTP 404 responses required before an endpoint is treated
+    #: as not implementing the optional FT status API. A single 404 may be a
+    #: transient routing/startup artifact, so one response never disables
+    #: polling permanently.
+    max_consecutive_404: int = 3
+    #: Re-probe interval (seconds) for endpoints currently classified as
+    #: FT-API-unsupported; a recovered engine image regains polling without
+    #: waiting for a relaunch or config refresh.
+    unsupported_reprobe_interval_sec: float = 60.0
     #: In-place engine relaunch (container keeps running). Mirrors the
     #: Controller-side switch of the same name — the NodeManager holds its
     #: own copy because the two run in separate processes with separate

@@ -23,7 +23,7 @@ from motor.common.constants import (
     FT_APPLY_PATH,
     FT_STATUS_PATH,
 )
-from motor.common.http.http_client import SafeHTTPSClient
+from motor.common.http.http_client import HttpStatusError, SafeHTTPSClient
 from motor.common.resources.endpoint import Endpoint
 from motor.common.utils.net import format_address
 
@@ -39,6 +39,10 @@ def _run_engine_requests(endpoints: list[Endpoint], request: Callable[[Endpoint]
         return {endpoint.id: future.result() for endpoint, future in zip(endpoints, futures)}
 
 
+class EngineFtEndpointUnsupported(RuntimeError):
+    """The engine image does not implement the optional FT status API (HTTP 404)."""
+
+
 class EngineFtApplyError(RuntimeError):
     """HTTP rejection from the versioned engine FT apply endpoint."""
 
@@ -50,10 +54,23 @@ class EngineFtApplyError(RuntimeError):
 
 
 def query_engine_ft_status(ep: Endpoint, timeout: float = ENGINE_FT_TIMEOUT) -> dict:
-    """GET one engine's FT status payload; raises ValueError on a non-dict body."""
+    """GET one engine's FT status payload; raises ValueError on a non-dict body.
+
+    Raises:
+        EngineFtEndpointUnsupported: the engine image answered HTTP 404, i.e.
+            it does not implement this optional API — callers must not treat
+            it as a connectivity failure.
+    """
     address = format_address(ep.ip, ep.business_port)
-    with SafeHTTPSClient(address=address, tls_config=None, timeout=timeout) as client:
-        payload = client.get(FT_STATUS_PATH)
+    try:
+        with SafeHTTPSClient(address=address, tls_config=None, timeout=timeout) as client:
+            payload = client.get(FT_STATUS_PATH)
+    except HttpStatusError as e:
+        if e.status_code == 404:
+            raise EngineFtEndpointUnsupported(
+                "engine %d does not implement the FT status API (HTTP 404)" % ep.id
+            ) from e
+        raise
     if not isinstance(payload, dict):
         raise ValueError("unexpected FT status payload type for engine %d: %s" % (ep.id, type(payload).__name__))
     return payload

@@ -33,10 +33,11 @@ from motor.controller.fault_tolerance.fault_types import (
     FaultLevel,
     hardware_fault_identity,
     InstanceMetadata,
+    instance_software_fault_key,
     NodeMetadata,
     OriginFaultLevel,
     pre_separate_fault_affects_instance,
-    software_fault_storage_key,
+    SoftwareFaultReportResult,
 )
 from motor.controller.fault_tolerance.mixin.persistence import _PersistenceMixin
 from motor.controller.fault_tolerance.mixin.resource_manager import (
@@ -339,96 +340,159 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     ),
                     default=FaultLevel.HEALTHY,
                 )
+                instance_metadata = self.instances.get(instance_id)
+                if instance_metadata is not None and instance_metadata.software_fault_infos:
+                    sw_max = max(
+                        sw_max,
+                        max(f.fault_level for f in instance_metadata.software_fault_infos.values()),
+                    )
                 result[node_name] = max(hw_max, sw_max)
 
             return result
 
-    def report_software_fault(self, fault_info: FaultInfo, pod_ip: str = "", instance_id: int | None = None) -> None:
-        """Report a software fault reported by a NodeManager at node granularity.
+    def _resolve_software_fault_target(
+        self,
+        fault_info: FaultInfo,
+        pod_ip: str,
+        instance_id: int | None,
+        node_manager_port: str,
+    ) -> tuple[int, str] | SoftwareFaultReportResult:
+        """Resolve and validate the instance that owns a software fault report.
 
-        Stores the fault on the NodeMetadata identified by pod_ip.
+        Attribution is instance-based so docker-only deployments (no K8s
+        NodeMetadata) work identically to Kubernetes ones. ``pod_ip`` and
+        ``node_manager_port`` only verify the reporter belongs to the
+        instance; they never locate a physical node.
+        """
+        instance_manager = InstanceManager()
+        resolved_instance_id = instance_id
+        resolved_nm_port = node_manager_port or ""
 
-        Args:
-            fault_info: Software FaultInfo with fault_category=SOFTWARE.
-            pod_ip: Pod IP of the reporting NodeManager.
+        if resolved_instance_id is None:
+            # Legacy fallback for old NodeManagers that only send pod_ip.
+            # Ambiguous when multiple instances share the pod IP.
+            if not pod_ip:
+                return SoftwareFaultReportResult(False, "missing instance_id and pod_ip")
+            with self.lock:
+                matches = {
+                    ins_id
+                    for node in self.nodes.values()
+                    for ins_id, ip in node.instance_pod_ips.items()
+                    if ip == pod_ip
+                }
+            if not matches:
+                return SoftwareFaultReportResult(False, "no instance matches pod_ip")
+            if len(matches) > 1:
+                return SoftwareFaultReportResult(False, "pod_ip matches multiple instances; instance_id required")
+            resolved_instance_id = next(iter(matches))
+
+        with self.lock:
+            instance_metadata = self.instances.get(resolved_instance_id)
+        if instance_metadata is None:
+            return SoftwareFaultReportResult(False, "instance not registered for fault tolerance")
+
+        instance = instance_manager.get_instance(resolved_instance_id)
+        if instance is None:
+            return SoftwareFaultReportResult(False, "instance not found")
+
+        if pod_ip and resolved_nm_port:
+            reporter_known = any(
+                nm.pod_ip == pod_ip and nm.port == resolved_nm_port for nm in instance.get_node_managers()
+            )
+            if not reporter_known:
+                return SoftwareFaultReportResult(
+                    False,
+                    "reporter pod_ip/node_manager_port not registered on instance",
+                )
+        elif pod_ip:
+            if not instance.has_node_mgr(pod_ip):
+                return SoftwareFaultReportResult(False, "reporter pod_ip not registered on instance")
+
+        engine_id = int(fault_info.engine_id or 0)
+        if fault_info.engine_id is not None:
+            endpoint_ids = {ep.id for ep in instance.get_all_endpoints(include_headless=True)}
+            if endpoint_ids and engine_id not in endpoint_ids:
+                return SoftwareFaultReportResult(False, "engine_id not registered on instance")
+
+        fault_key = instance_software_fault_key(
+            pod_ip or "",
+            resolved_nm_port,
+            engine_id,
+        )
+        return resolved_instance_id, fault_key
+
+    def report_software_fault(
+        self,
+        fault_info: FaultInfo,
+        pod_ip: str = "",
+        instance_id: int | None = None,
+        node_manager_port: str = "",
+    ) -> SoftwareFaultReportResult:
+        """Report a software fault at instance granularity.
+
+        Stores the fault on the owning InstanceMetadata after validating the
+        reporter identity. Returns whether the report was accepted so the
+        NodeManager only treats accepted reports as delivered.
         """
         if fault_info.fault_category != FaultCategory.SOFTWARE:
             logger.warning(
                 "report_software_fault called with non-software fault: %s",
                 fault_info.fault_category,
             )
-            return
+            return SoftwareFaultReportResult(False, "fault_category is not SOFTWARE")
 
-        affected_instance_ids: list[int] = []
+        target = self._resolve_software_fault_target(fault_info, pod_ip, instance_id, node_manager_port)
+        if isinstance(target, SoftwareFaultReportResult):
+            logger.warning(
+                "Rejected software fault report (pod_ip=%s, instance_id=%s): %s",
+                pod_ip,
+                instance_id,
+                target.reason,
+            )
+            return target
+
+        resolved_instance_id, fault_key = target
         collection_started = False
         with self.lock:
-            node_metadata = None
-            if pod_ip:
-                for n in self.nodes.values():
-                    if instance_id is not None:
-                        matches = n.instance_pod_ips.get(instance_id) == pod_ip
+            instance_metadata = self.instances.get(resolved_instance_id)
+            if instance_metadata is None:
+                return SoftwareFaultReportResult(False, "instance not registered for fault tolerance")
+            fault_info.instance_id = resolved_instance_id
+            instance_metadata.software_fault_infos[fault_key] = fault_info
+            if fault_info.engine_status in (1, 2):
+                now = time.time()
+                if instance_metadata.fault_collection_started_at is None:
+                    instance_metadata.fault_collection_started_at = now
+                    collection_started = True
+                if isinstance(fault_info.engine_id, int):
+                    # A newer status supersedes the older one for the same
+                    # engine (the storage key no longer carries fault_code),
+                    # so the opposite observation timestamp must not survive
+                    # the transition.
+                    if fault_info.engine_status == 1:
+                        instance_metadata.software_dead_observed_at.setdefault(fault_info.engine_id, now)
+                        instance_metadata.software_unhealthy_observed_at.pop(fault_info.engine_id, None)
                     else:
-                        matches = pod_ip in n.instance_pod_ips.values()
-                    if matches:
-                        node_metadata = n
-                        break
+                        instance_metadata.software_unhealthy_observed_at.setdefault(fault_info.engine_id, now)
+                        instance_metadata.software_dead_observed_at.pop(fault_info.engine_id, None)
+            engine_status_name = {
+                0: "HEALTHY",
+                1: "DEAD",
+                2: "UNHEALTHY",
+            }.get(fault_info.engine_status, "UNKNOWN")
+            logger.info(
+                "Reported software fault for instance %d (key=%s): "
+                "dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
+                resolved_instance_id,
+                fault_key,
+                fault_info.engine_id,
+                fault_info.exception_type,
+                fault_info.engine_status,
+                engine_status_name,
+                fault_info.fault_level.name,
+            )
 
-            if node_metadata is not None:
-                if instance_id is not None:
-                    if instance_id not in node_metadata.instance_ids:
-                        logger.warning(
-                            "Software fault instance %d is not registered on node %s",
-                            instance_id,
-                            node_metadata.node_name,
-                        )
-                        return
-                    fault_info.instance_id = instance_id
-                    affected_instance_ids.append(instance_id)
-                    instance_metadata = self.instances.get(instance_id)
-                    if instance_metadata is not None and fault_info.engine_status in (1, 2):
-                        now = time.time()
-                        if instance_metadata.fault_collection_started_at is None:
-                            instance_metadata.fault_collection_started_at = now
-                            collection_started = True
-                        if isinstance(fault_info.engine_id, int):
-                            observed_at = (
-                                instance_metadata.software_dead_observed_at
-                                if fault_info.engine_status == 1
-                                else instance_metadata.software_unhealthy_observed_at
-                            )
-                            observed_at.setdefault(fault_info.engine_id, now)
-                else:
-                    # Backward compatibility for old NodeManagers. This is
-                    # ambiguous when multiple instances share a pod IP.
-                    for ins_id, ip in node_metadata.instance_pod_ips.items():
-                        if ip == pod_ip:
-                            affected_instance_ids.append(ins_id)
-                node_metadata.software_fault_infos[software_fault_storage_key(fault_info)] = fault_info
-                engine_status_name = {
-                    0: "HEALTHY",
-                    1: "DEAD",
-                    2: "UNHEALTHY",
-                }.get(fault_info.engine_status, "UNKNOWN")
-                logger.info(
-                    "Reported software fault for node %s (instances %s): "
-                    "dp_rank=%s, type=%s, engine_status=%s(%s), fault_level=%s",
-                    node_metadata.node_name,
-                    affected_instance_ids,
-                    fault_info.engine_id,
-                    fault_info.exception_type,
-                    fault_info.engine_status,
-                    engine_status_name,
-                    fault_info.fault_level.name,
-                )
-            else:
-                logger.warning(
-                    "Node not found for software fault (pod_ip=%s), cannot report",
-                    pod_ip,
-                )
-                return
-
-        for affected_instance_id in affected_instance_ids:
-            self._refresh_instance_fault_level(affected_instance_id)
+        self._refresh_instance_fault_level(resolved_instance_id)
 
         if collection_started:
             with self.config_lock:
@@ -440,6 +504,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         # Wake the strategy center — fault data changed
         with self.work_condition:
             self.work_condition.notify_all()
+        return SoftwareFaultReportResult(True)
 
     def _on_fault_collection_deadline(self) -> None:
         """Wake strategy evaluation when an incomplete FT status round expires."""
@@ -513,6 +578,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 ]
                 for key in stale_keys:
                     del node.software_fault_infos[key]
+            metadata.software_fault_infos.clear()
         with metadata.lock:
             metadata.ignored_pre_ready_hardware_faults.update(baseline)
             metadata.fault_collection_started_at = None
@@ -571,7 +637,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                     fault,
                 )
             )
-            software_faults = tuple(
+            software_faults = tuple(metadata.software_fault_infos.values()) + tuple(
+                # Legacy node-level software faults written by older NodeManagers.
                 fault
                 for node in nodes
                 for fault in node.software_fault_infos.values()
@@ -1135,7 +1202,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             self.work_condition.notify_all()
 
     def _clear_software_faults(self, instance_id: int) -> None:
-        """Clear all software faults from nodes of an instance after strategy completion."""
+        """Clear instance-level and legacy node-level software faults after strategy completion."""
         cleared = 0
         with self.lock:
             metadata = self.instances.get(instance_id)
@@ -1144,6 +1211,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 metadata.hardware_fault_observed_at = None
                 metadata.software_dead_observed_at.clear()
                 metadata.software_unhealthy_observed_at.clear()
+                cleared += len(metadata.software_fault_infos)
+                metadata.software_fault_infos.clear()
             for node_metadata in self.nodes.values():
                 if instance_id in node_metadata.instance_ids and node_metadata.software_fault_infos:
                     keys = [

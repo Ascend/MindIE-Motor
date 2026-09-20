@@ -512,10 +512,11 @@ def test_restart_engine_rejects_invalid_requests(daemon, prepare, error):
 
 
 def test_suicide_after_threshold_abnormal_observations(daemon):
-    """Continuous abnormal endpoint observations reach the threshold."""
+    """Continuous abnormal endpoint observations reach the threshold (k8s-managed container)."""
     with (
         patch("motor.node_manager.core.daemon.HeartbeatManager") as mock_hb_cls,
         patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0),
+        patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "10.0.0.1"}, clear=False),
     ):
         mock_hb = mock_hb_cls.return_value
         mock_hb.endpoints_generation.return_value = 0
@@ -527,6 +528,57 @@ def test_suicide_after_threshold_abnormal_observations(daemon):
             daemon._check_suicide_condition()
 
     assert daemon.should_suicide() is True
+
+
+def test_no_suicide_when_container_restart_unmanaged(daemon):
+    """docker-only (no external container supervisor): the NodeManager must
+    never suicide on abnormal engines — there is no pod rebuild mechanism,
+    so killing the management plane would lose the service entirely.
+    """
+    with (
+        patch("motor.node_manager.core.daemon.HeartbeatManager") as mock_hb_cls,
+        patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0),
+        patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "", "POD_NAMESPACE": ""}, clear=False),
+    ):
+        mock_hb = mock_hb_cls.return_value
+        mock_hb.endpoints_generation.return_value = 0
+        mock_hb.is_within_grace_period.return_value = False
+        mock_hb.has_abnormal_endpoints.return_value = True
+
+        daemon._last_endpoints_generation = 0
+        for _ in range(daemon._suicide_threshold * 2):
+            daemon._check_suicide_condition()
+        assert daemon.should_suicide() is False
+        assert daemon._suicide_abnormal_count == 0
+
+
+def test_container_restart_managed_explicit_override(daemon):
+    """An explicit container_restart_managed=true forces the suicide fallback
+    even outside Kubernetes; explicit false keeps the manager alive inside it.
+    """
+    with (
+        patch("motor.node_manager.core.daemon.HeartbeatManager") as mock_hb_cls,
+        patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0),
+        patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "", "POD_NAMESPACE": ""}, clear=False),
+    ):
+        mock_hb = mock_hb_cls.return_value
+        mock_hb.endpoints_generation.return_value = 0
+        mock_hb.is_within_grace_period.return_value = False
+        mock_hb.has_abnormal_endpoints.return_value = True
+        daemon._last_endpoints_generation = 0
+
+        daemon._config.fault_tolerance_config.container_restart_managed = True
+        for _ in range(daemon._suicide_threshold):
+            daemon._check_suicide_condition()
+        assert daemon.should_suicide() is True
+
+        daemon._should_suicide = False
+        daemon._suicide_abnormal_count = 0
+        daemon._config.fault_tolerance_config.container_restart_managed = False
+        with patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "10.0.0.1"}, clear=False):
+            for _ in range(daemon._suicide_threshold):
+                daemon._check_suicide_condition()
+        assert daemon.should_suicide() is False
 
 
 def test_suicide_counter_reset_conditions(daemon):
@@ -615,7 +667,7 @@ def test_commit_retired_endpoint_updates_monitors_and_filters_pid_death(daemon):
     heartbeat_cls.return_value.validate_retire_endpoints.assert_called_once_with([1])
     reporter.validate_retire_endpoints.assert_called_once_with([1])
     reporter.retire_endpoints.assert_called_once_with([1])
-    report_death.assert_called_once_with(0, daemon._config.api_config.pod_ip, 7)
+    report_death.assert_called_once_with(0, "Engine process died")
 
 
 def test_commit_retired_endpoint_validates_all_monitors_before_mutation(daemon):
@@ -684,6 +736,7 @@ def test_engine_death_report_failure_retried_without_freeze(daemon):
         patch("motor.node_manager.core.daemon.ControllerApiClient") as mock_client_cls,
         patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0),
     ):
+        daemon._instance_id = 7
         mock_client_cls.report_software_fault.side_effect = RuntimeError("controller down")
         daemon._handle_engine_deaths([(12345, 0)])
         assert 12345 not in daemon._reported_dead_pids
@@ -695,6 +748,36 @@ def test_engine_death_report_failure_retried_without_freeze(daemon):
         assert 12345 in daemon._reported_dead_pids
         assert daemon.is_suicide_frozen()
         assert mock_client_cls.report_software_fault.call_count == 2
+
+
+def test_engine_death_report_rejected_not_deduped_not_frozen(daemon):
+    """A report the Controller did not accept (accepted=false) must not be
+    deduplicated and must not freeze suicide — no relaunch is coming.
+    """
+    with (
+        patch("motor.node_manager.core.daemon.ControllerApiClient") as mock_client_cls,
+        patch("motor.node_manager.core.daemon.time.monotonic", return_value=1000.0),
+    ):
+        daemon._instance_id = 7
+        mock_client_cls.report_software_fault.return_value = False
+        daemon._handle_engine_deaths([(12345, 0)])
+        assert 12345 not in daemon._reported_dead_pids
+        assert not daemon.is_suicide_frozen()
+
+        mock_client_cls.report_software_fault.return_value = True
+        daemon._handle_engine_deaths([(12345, 0)])
+        assert 12345 in daemon._reported_dead_pids
+        assert daemon.is_suicide_frozen()
+
+
+def test_engine_death_not_reported_before_instance_start(daemon):
+    """Without an instance id the Controller cannot attribute the fault, so
+    nothing is sent and nothing is deduplicated.
+    """
+    with patch("motor.node_manager.core.daemon.ControllerApiClient") as mock_client_cls:
+        daemon._handle_engine_deaths([(12345, 0)])
+        mock_client_cls.report_software_fault.assert_not_called()
+        assert 12345 not in daemon._reported_dead_pids
 
 
 def test_engine_death_reported_without_freeze_when_relaunch_disabled(daemon):
@@ -709,6 +792,7 @@ def test_engine_death_reported_without_freeze_when_relaunch_disabled(daemon):
         mock_client_cls.report_software_fault.return_value = True
         daemon._config.fault_tolerance_config.enable_engine_relaunch = False
         daemon._config.api_config.pod_ip = "10.0.0.1"
+        daemon._instance_id = 7
 
         daemon._handle_engine_deaths([(12345, 0)])
 
@@ -754,6 +838,7 @@ def test_abnormal_after_normal_reported_until_recovery(daemon):
         mock_hb.has_abnormal_endpoints.return_value = False
         mock_hb.normal_endpoint_ids.return_value = [0]
         daemon._last_endpoints_generation = 0
+        daemon._instance_id = 7
         daemon._check_suicide_condition()
 
         mock_hb.has_abnormal_endpoints.return_value = True

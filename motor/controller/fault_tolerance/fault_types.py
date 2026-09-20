@@ -18,6 +18,7 @@ fault tolerance management subsystem.
 import re
 import threading
 import time
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -177,6 +178,29 @@ def software_fault_storage_key(fault: FaultInfo) -> str:
     """Return a per-instance DP key so a newer status replaces the prior one."""
     engine_id = fault.engine_id if fault.engine_id is not None else "unknown"
     return "%s:%s" % (fault.instance_id, engine_id) if fault.instance_id is not None else str(engine_id)
+
+
+def instance_software_fault_key(
+    pod_ip: str,
+    node_manager_port: str,
+    engine_id: int,
+) -> str:
+    """Reporter-scoped key so endpoints of different NodeManagers do not collide.
+
+    The fault code is deliberately excluded: one reporter/engine pair holds a
+    single software-fault slot, so a newer status (e.g. DEAD -> UNHEALTHY)
+    replaces the prior one instead of coexisting with it and keeping the rank
+    in pending_removed_ranks.
+    """
+    return "%s:%s:%s" % (pod_ip or "", node_manager_port or "", engine_id)
+
+
+@dataclass(frozen=True)
+class SoftwareFaultReportResult:
+    """Whether the Controller accepted a software fault report."""
+
+    accepted: bool
+    reason: str = ""
 
 
 def map_fault_type(fault_type_str: str) -> HardwareFaultType:
@@ -421,6 +445,10 @@ class InstanceMetadata(BaseModel):
     """
 
     instance_id: int = Field(..., description="Instance ID")
+    software_fault_infos: dict[int | str, FaultInfo] = Field(
+        default_factory=dict,
+        description="Instance-scoped software faults keyed by reporter/engine identity",
+    )
     fault_level: FaultLevel = Field(default=FaultLevel.HEALTHY, description="Current instance fault level")
     fault_code: int = Field(default=0x0, description="Fault code that trigger the current strategy")
     strategy_fault_level: FaultLevel = Field(

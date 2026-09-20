@@ -168,20 +168,36 @@ class ControllerApiClient:
         raise last_error  # type: ignore[misc]
 
     @staticmethod
-    def report_software_fault(fault_data: dict):
+    def report_software_fault(fault_data: dict) -> bool:
         """Report a software fault to the Controller.
 
         Args:
             fault_data: dict with keys: exception_type, exception_message,
-                        engine_id, engine_status, pod_ip, additional_info
+                        engine_id, engine_status, pod_ip, node_manager_port,
+                        instance_id, additional_info
+
+        Returns:
+            True only when the Controller response explicitly carries
+            ``data.accepted is True`` — an HTTP 200 without acceptance (or a
+            4xx rejection) means the fault was NOT delivered and must not be
+            deduplicated by the caller.
         """
         client_args = {}
         try:
             client_args = ControllerApiClient._generate_client_args()
             with SafeHTTPSClient(timeout=15, **client_args) as client:
                 response = client.post("/controller/report_software_fault", fault_data)
-                logger.debug("Software fault reported successfully, response: %s", response)
-                return True
+                payload = response if isinstance(response, dict) else {}
+                accepted = payload.get("data", {}).get("accepted")
+                if accepted is True:
+                    logger.debug("Software fault accepted by controller: %s", payload)
+                    return True
+                logger.warning(
+                    "Software fault not accepted by controller (accepted=%s): %s",
+                    accepted,
+                    payload,
+                )
+                return False
         except Exception as e:
             logger.error(
                 "Exception occurred while reporting software fault to controller at %s: %s",
