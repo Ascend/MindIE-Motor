@@ -2,15 +2,11 @@
 
 ## 特性介绍
 
-**依据原文上下文内容重组，请进行人工校验。**
-
-Mooncake 后端通过分布式共享内存池化机制实现跨引擎 KV 缓存共享，由 vLLM Ascend 天然集成，**无需额外安装任何组件**。该特性允许 Prefill 引擎将 KV Cache 存入共享池，Decode 引擎从池中读取，实现 P/D 分离场景下的 KV 缓存复用，减少重复计算，显著降低显存占用。
+Mooncake 后端通过分布式共享内存池化机制实现跨引擎 KV 缓存共享，由 vLLM Ascend 天然集成，**无需额外安装任何组件**。该特性允许 Prefill 引擎将 KV Cache 存入共享池，Decode 引擎从池中读取，实现 P/D 分离场景下的 KV 缓存复用，减少重复计算。
 
 ### 工作原理
 
-**依据原文上下文内容重组，请进行人工校验。**
-
-Mooncake 后端采用分布式共享内存池架构，通过 `mooncake_master` 进程管理全局池化元数据，各引擎节点通过 `mooncake_store` 进程贡献或消费池化内存。其核心工作流程如下：
+Mooncake 后端采用分布式共享内存池架构，通过 `mooncake_master` 进程管理全局池化元数据，各引擎节点通过 `mooncake_store_service` 进程贡献或消费池化内存。其核心工作流程如下：
 
 1. **池化内存注册**：各节点通过 mooncake_master 注册自身存储节点信息，形成全局可见的分布式 KV 池。
 2. **KV 入池**：Prefill 引擎通过 AscendStoreConnector 将计算完成的 KV Cache 按 128 token 分块写入共享池。
@@ -32,7 +28,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
 ### 约束与限制
 
-**表 1** <a id="teble001"></a>硬件约束
+**表 1** <a id="table001"></a>硬件约束
 
 | 硬件 | 依赖 | 说明 |
 |------|------|------|
@@ -76,7 +72,7 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 |------|-------|------|
 | Atlas 850 超节点服务器 | <ul><li>使用 UBOE 协议时：ASCEND_GLOBAL_RESOURCE_CONFIG={"comm_resource_config.protocol_desc":["uboe:device"]}</li><li>使用 UB 协议时：ASCEND_LOCAL_COMM_RES={"version":"1.3"}</li></ul> | UBOE / UB 二选一，按实际使用的通信协议配置。 |
 | Atlas 800I A3 超节点服务器 | ASCEND_ENABLE_USE_FABRIC_MEM=1 | **推荐方案**。<br>启用统一内存地址直传方案。若开启 SSD offload，相关内存大小需按 1GB 对齐,详见 vLLM Ascend 文档 [Fabric memory size alignment](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/kv_pool.html#fabric-memory-size-alignment-a3-ascend-enable-use-fabric-mem-1)。 |
-| Atlas 800I A3 超节点服务器 | ASCEND_BUFFER_POOL=4:8 | **推荐方案**，当[表 1](#teble001)依赖列软件版本不满足时，使用该方案。<br>配置 NPU Device 上用于聚合与 KV 传输的 buffer 个数与大小（例如 `4:8` 表示 4 个 8MB buffer）。 |
+| Atlas 800I A3 超节点服务器 | ASCEND_BUFFER_POOL=4:8 | 当[表 1](#table001)依赖列软件版本不满足时，使用该方案。<br>配置 NPU Device 上用于聚合与 KV 传输的 buffer 个数与大小（例如 `4:8` 表示 4 个 8MB buffer）。 |
 | Atlas 800I A2 推理服务器 | — | 无需额外环境变量，通用必配项即可。 |
 
 ### 使用场景
@@ -94,8 +90,6 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 - 收益：store 进程独立申请大内存，避免与引擎权重/KV 内存竞争；store 进程故障可由 NodeManager 自动恢复。
 
 ### 使用样例
-
-**依据原文上下文内容重组，请进行人工校验。**
 
 #### 场景一：embedded 模式配置
 
@@ -118,18 +112,29 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
     | enable | false | 是 | 池化总开关，需配置为：true。 |
     | backend | memcache | 是 | 需配置为： "mooncake"。 |
     | global_segment_size | 无 | 是 | 引擎进程贡献的池化内存大小，如： "2GB"。 |
-    |`eviction_high_watermark_ratio | 无 | 是 | 驱逐水位阈值，建议值为： 0.9；`deploy.py` 强制校验，缺失报错。 |
+    | eviction_high_watermark_ratio | 无 | 是 | 驱逐水位阈值，建议值为： 0.9；`deploy.py` 强制校验，缺失报错。 |
     | eviction_ratio | 无 | 是 | 单次驱逐比例，建议值为：0.1；`deploy.py` 强制校验，缺失报错。 |
+
+    >[!NOTE] 说明
+    >可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），行为说明见 [KV 池化 README — 多套服务共享 kv_store](../../../features/kv_cache_store/README.md#step3)。
 
 2. 参考[环境准备](#环境准备)章节在 `env.json` 中配置通用环境变量，确保 Prefill 和 Decode 配置一致。
 
-3. 使用部署脚本启动服务。（**缺少命令，需要补充**）
+3. 使用部署脚本启动服务。
+
+    ```bash
+    cd examples/deployer
+    python deploy.py --config_dir <配置目录>
+    ```
+
+    >[!NOTE] 说明
+    >`<配置目录>` 为已按上文完成 Mooncake 配置的 `user_config.json`、`env.json` 所在目录，请替换为实际路径。
 
     部署后日志应出现 `mooncake master` 连接成功的标志，则表示 kv_cache_store 初始化完成。
 
 #### 场景二：standalone 模式配置
 
-下方示例 `connectors[0]` 为标准 attention 配置，混合 attention 须换为 `MooncakeHybridConnector`，详情请参见 [选型说明](../../../features/kv_cache_store/README.md)。
+下方示例 `connectors[0]` 为标准 attention 配置，混合 attention 须换为 `MooncakeHybridConnector`，详情请参见 [选型说明](../../../features/kv_cache_store/README.md#table_Connector)。
 
 1. 在 user_config.json 配置文件中配置 kv_cache_store_config 字段。
 
@@ -243,12 +248,22 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
 
 3. 参考[环境准备](#环境准备)章节在 `env.json` 中配置通用环境变量，确保 Prefill 和 Decode 配置一致。
 
-4. 使用部署脚本启动服务。（**缺少命令，需要补充**）
-  NodeManager 会自动拉起 mooncake_store_service 进程，自动生成 store 配置文件。
-  部署完成后：
-   - 日志应出现 mooncake master 连接成功标志。
-   - store 进程配置文件自动生成在引擎配置同目录（mooncake_store_config.json）。
-   - Prefill 和 Decode 引擎均成功注册到 mooncake_master。
+4. 使用部署脚本启动服务。
+
+    ```bash
+    cd examples/deployer
+    python deploy.py --config_dir <配置目录>
+    ```
+
+    >[!NOTE] 说明
+    >`<配置目录>` 为已按上文完成 Mooncake 配置的 `user_config.json`、`env.json` 所在目录，请替换为实际路径。
+
+    NodeManager 会自动拉起 mooncake_store_service 进程，自动生成 store 配置文件。
+    部署完成后：
+
+    - 日志应出现 mooncake master 连接成功标志。
+    - store 进程配置文件自动生成在引擎配置同目录（mooncake_store_config.json）。
+    - Prefill 和 Decode 引擎均成功注册到 mooncake_master。
 
     >[!NOTE] 说明
     >
@@ -313,7 +328,15 @@ Mooncake 池化有两种部署方式（store_mode 取值），区别在于池化
    >[!NOTE] 说明
    >上述脚本从 /proc/net/route 选取默认路由的第一张网卡作为 `GLOO`/`TP`/`HCCL` 通信网卡，请确保该网卡为服务器的主网卡。
 
-3. 重新部署服务。（**缺少命令，需要补充**）
+3. 重新部署服务。
+
+    ```bash
+    cd examples/deployer
+    python deploy.py --config_dir <配置目录>
+    ```
+
+    >[!NOTE] 说明
+    >`<配置目录>` 为已按上文完成 Mooncake 配置的 `user_config.json`、`env.json` 所在目录，请替换为实际路径。
 
 **方式二：将宿主机 ipourma 网卡挂入 Pod**
 
@@ -449,8 +472,6 @@ ip -br link | grep ipourma
 
 ### 验证特性
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 **验证前提：** 使用长 prompt（≥ 128 token，建议 500+ token）发起请求。短请求（prompt < 128 token）不会入池，也不会产生 put 流量，而非故障。
 
 **验证步骤：**
@@ -473,8 +494,6 @@ ip -br link | grep ipourma
 
 ## 调优建议
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 | 参数 | 场景 | 推荐配置 | 说明 |
 |------|------|----------|------|
 | global_segment_size | 通用 | 模型 KV Cache 预估大小的 1.5~2 倍 | 根据模型大小和并发量调整，过小会导致频繁驱逐，过大则浪费显存。 |
@@ -489,8 +508,6 @@ ip -br link | grep ipourma
 - `default_kv_lease_ttl` 需与传输超时配合设置，确保租约存活时间大于最慢的传输完成时间，避免 KV 传输中途被回收。
 
 ## 常见问题
-
-**依据原文上下文内容重组，请进行人工校验。**
 
 ### 部署后报 EI0014: IP is used repeatedly
 
@@ -563,7 +580,7 @@ deploy.py 对 Mooncake 后端强制校验这两个参数，必须显式配置，
 
 **原因分析：**
 
-`AscendStoreConnector` 按 128 token 的 chunk 粒度做入池判定（`can_save`），只有 token 数达到一个完整 chunk 时才真正触发存池 put。短请求（prompt < 128 token）不会入池，也不会产生 put 流量，这是 vllm-ascend 的设计行为，而非故障。
+`AscendStoreConnector` 按 128 token 的 chunk 粒度做入池判定（`can_save`），只有 token 数达到一个完整 chunk 时才真正触发存池 put。短请求（prompt < 128 token）不会入池，也不会产生 put 流量，这是 vLLM Ascend 的设计行为，而非故障。
 
 **解决步骤：**
 
