@@ -142,7 +142,7 @@ motor_controller_config字段配置样例如下所示：
   "standby_config": {
     "enable_master_standby": false,
     "master_standby_check_interval": 5,
-    "master_lock_ttl": 10,
+    "master_lock_ttl": 15,
     "master_lock_retry_interval": 5,
     "master_lock_max_failures": 3,
     "master_lock_key": "/controller/master_lock"
@@ -224,7 +224,7 @@ motor_controller_config字段配置样例如下所示：
 | **standby_config字段**|-|-|
 | enable_master_standby | bool | 是否开启 Controller 主备。可选：`true` / `false`。默认值：`false` |
 | master_standby_check_interval | int | 主备角色探测间隔（秒）。默认值：`5` |
-| master_lock_ttl | int | 主节点在 ETCD 上占锁的租约时长（秒）。默认值：`10` |
+| master_lock_ttl | int | 主节点在 ETCD 上占锁的租约时长（秒）。默认值：`15` |
 | master_lock_retry_interval | int | 抢主时获取锁的重试间隔（秒）。默认值：`5` |
 | master_lock_max_failures | int | 连续抢主失败超过此次数则放弃并切换。默认值：`3` |
 | master_lock_key | string | 主节点在 ETCD 中的锁路径；运行时会自动加前缀 `/controller/`。默认值：`/master_lock`（实际为 `/controller/master_lock`） |
@@ -392,7 +392,7 @@ motor_coordinator_config字段配置样例如下所示：
   "standby_config": {
     "enable_master_standby": false,
     "master_standby_check_interval": 5,
-    "master_lock_ttl": 10,
+    "master_lock_ttl": 15,
     "master_lock_retry_interval": 5,
     "master_lock_max_failures": 3,
     "master_lock_key": "/coordinator/master_lock"
@@ -561,15 +561,15 @@ motor_coordinator_config字段配置样例如下所示：
 | olc_config_path |string|OLC规则配置目录的绝对路径或相对于服务启动目录的相对路径。目录下需包含overload-config.properties和olc.json。|
 | **standby_config字段** |-|-|
 | enable_master_standby | bool | 是否开启 Coordinator 主备。可选：`true` / `false`。默认值：`false` |
-| master_standby_check_interval | int | 主备角色探测间隔（秒）。默认值：`5` |
-| master_lock_ttl | int | 主节点在 ETCD 上占锁的租约时长（秒）。默认值：`10` |
+| master_standby_check_interval | int | 主备角色探测间隔（秒）。默认值：`5`；Coordinator 运行时会自动限制为不超过 `2` |
+| master_lock_ttl | int | 主节点在 ETCD 上占锁的租约时长（秒）。默认值：`15`；Coordinator 运行时会自动限制为不超过 `8`，以保证主备倒换能在 30 秒内完成 |
 | master_lock_retry_interval | int | 抢主时获取锁的重试间隔（秒）。默认值：`5` |
 | master_lock_max_failures | int | 连续抢主失败超过此次数则放弃并切换。默认值：`3` |
 | master_lock_key | string | 主节点在 ETCD 中的锁路径；运行时会自动加前缀 `/coordinator/`。默认值：`/master_lock`（实际为 `/coordinator/master_lock`） |
 | **etcd_config字段** |-|-|
 | etcd_host | string |ETCD 服务地址（主机名或 IP）。默认值：`etcd.default.svc.cluster.local` |
 | etcd_port | int | ETCD 端口。默认值：2379。 |
-| etcd_timeout | int | ETCD 操作超时时间（秒）。默认值：5`。 |
+| etcd_timeout | int | ETCD 操作超时时间（秒）。默认值：`5`。 |
 | etcd_lb_policy | string| ETCD负载均衡策略，默认值：round_robin。|
 | enable_etcd_persistence | bool | 是否启用 ETCD 持久化。可选：`true` / `false`。默认值：false。 |
 | **aigw_model字段** |-|该参数是AIGW模型元数据的集中配置，用于/v1/models等接口返回的模型信息。在user_config.json中对应motor_coordinator_config下的aigw对象；未使用时为null，其内部可配置项如下所示。启动时若存在完整 Prefill/Decode 配置，或 PD 混部的 `motor_engine_union_config`，会**仅填充未显式配置的字段**（P+D 优先于 union）；混部场景下缺失的 `p_max_seqlen` 与 `d_max_seqlen` 均取自 union 的 `max_model_len`。|
@@ -758,7 +758,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md#kv_cache_store_config全局配置)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
@@ -990,7 +990,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md#kv_cache_store_config全局配置)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
 
 PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用代码默认值。
 

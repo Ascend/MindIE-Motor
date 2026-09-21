@@ -4,15 +4,18 @@
 
 主备倒换特性主要通过ETCD分布式锁实现，确保系统高可用性，包括Controller主备和Coordinator主备。开启主备倒换特性开关后，系统会在初始化阶段拉起两个实例，通过ETCD分布式锁竞争来实现主备身份选举，当主节点发生故障时，备用节点能在设定时间间隔后自动接管工作。
 
-### 约束与限制
+开启主备倒换特性后，Controller和Coordinator会各拉起2个Pod，主节点对外提供服务，备节点不承接业务流量，仅参与选主。Controller和Coordinator使用相互独立的ETCD锁键，两组件的选举互不影响，可以只开启其中一个，也可以同时开启。
 
-**依据原文上下文内容重组，请进行人工校验。**
+### 约束与限制
 
 | 约束维度 | 要求 |
 |----------|------|
-| 部署场景 | 主、备节点（Controller/Coordinator）不建议部署在同一台节点上。 |
+| 硬件 | 不依赖特定硬件型号。配合故障感知等能力使用时，建议在`motor_deploy_config`中显式配置`hardware_type`。 |
+| 部署场景 | <ul><li>主、备节点（Controller/Coordinator）不建议部署在同一台节点上；部署模板已默认配置强制反亲和调度（`podAntiAffinity`，`topologyKey: kubernetes.io/hostname`），主备Pod会自动分散到不同节点。</li><li>开启主备后，部署工具会自动将Controller/Coordinator的Pod副本数（`replicas`）置为2，无需手工扩副本。</li></ul> |
+| 引擎 | 不涉及，特性本身不依赖特定推理引擎，vLLM、SGLang等引擎均可使用。 |
+| 特性互斥 | 无显式互斥说明，可与其他特性共存。 |
 | 软件依赖 | ETCD服务端需要使用v3.6版本。 |
-| 其他限制 | <ul><li>特性生效依赖ETCD服务端正确部署，服务端至少需要3个副本，以保证ETCD集群的可靠性；</li><li>Coordinator、Controller主备倒换特性可以共用一套ETCD；多套大EP集群可以共用一套ETCD，通过命名空间区分。</li></ul> |
+| 其他限制 | <ul><li>特性生效依赖ETCD服务端正确部署，服务端至少需要3个副本，以保证ETCD集群的可靠性；</li><li>Coordinator、Controller主备倒换特性可以共用一套ETCD；多套大EP集群可以共用一套ETCD，通过命名空间区分；</li><li>开启主备后系统会自动开启ETCD持久化（`etcd_config.enable_etcd_persistence`），备节点依赖ETCD中的持久化数据在倒换后恢复业务状态；</li><li>主备倒换需要等待ETCD租约超时，倒换期间存在秒级的服务不可用窗口，业务侧需具备重试能力。</li></ul> |
 
 ## 特性使用
 
@@ -60,6 +63,9 @@
     DNS.9 = etcd-2.etcd
     DNS.10 = etcd-2.etcd.default.svc.cluster.local
     ```
+
+    >[!NOTE]说明
+    >`alt_names`中的域名必须覆盖Controller/Coordinator配置的`etcd_config.etcd_host`与ETCD集群各节点域名，否则开启TLS后客户端会因证书校验失败而无法连接ETCD。
 
     **client.cnf**
 
@@ -471,9 +477,6 @@
                     - name: etcd-ca
                       mountPath: /etc/ssl/certs/etcdca # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
               volumes:
-                - name: crt
-                  hostPath:
-                    path: /usr/local/Ascend/driver
                 - name: etcd-ca
                   hostPath:
                     path: /home/{用户名}/auto_gen_ms_cert # 物理机创建文件及生成文件路径
@@ -499,6 +502,9 @@
         - `spec.template.spec.containers.args.--peer-trusted-ca-file`：指定信任的CA根证书（用于peer）
         - `spec.template.spec.containers.args.--peer-cert-file`：指定本节点作为peer的证书
         - `spec.template.spec.containers.args.--peer-key-file`：指定本节点作为peer的私钥
+
+        >[!NOTE]说明
+        >样例中`--client-cert-auth`、`--peer-client-cert-auth`等TLS参数仅在[生成ETCD安全证书](#生成etcd安全证书可选)已执行时需要保留；若不使用CA证书，请删除上述TLS相关参数与`etcd-ca`卷，否则ETCD会因找不到证书文件而启动失败。
 
     5. 在K8s集群master节点执行如下命令部署ETCD服务端。
 
@@ -548,7 +554,7 @@
         >      kubectl -n <namespace> delete pv etcd-data-0 etcd-data-1 etcd-data-2
         >      ```
         >
-        >- 请勿使用 kubectl delete pvc --all 命令，该命令会删除当前命名空间下所有PVC（例如业务权重卷 mindie-motor-store），可能造成不可恢复的数据丢失。
+        >- 请勿使用 `kubectl delete pvc --all` 命令，该命令会删除当前命名空间下所有PVC，可能误删其他业务使用的存储卷（例如KV池化等特性使用的 `mindie-motor-store-*`），造成不可恢复的数据丢失。
         >- 如需备份数据，可在删除前执行以下命令（TLS参数请按实际证书路径调整）：
         >
         >   ```bash
@@ -605,7 +611,7 @@
 
     >[!NOTE] 说明
     >- 修改前建议先备份原文件： cp /etc/kubernetes/manifests/kube-controller-manager.yaml /root/kube-controller-manager.yaml.bak。
-    >- 该文件有kubelet监听并据此重建Pod,，etadata、name、namespace、spec的缩进层级错误会导致kube-controller-manager无法启动。
+    >- 该文件由kubelet监听并据此重建Pod，metadata、name、namespace、spec的缩进层级错误会导致kube-controller-manager无法启动。
 
 3. 按 Esc 键，输入`:wq!`，按 Enter 保存并退出编辑。
 
@@ -629,55 +635,54 @@
 
 ### 使用场景
 
-**内容缺失，需要补充。以下内容基于原文上下文推断，请人工确认：**
+主备倒换特性适用于对控制面可用性有要求的场景，Controller主备和Coordinator主备相互独立，可以只开启其中一个，也可以同时开启：
 
-该特性适用于以下场景：
-
-- 场景一：Controller主备倒换。适用于需要保障Controller高可用的场景，当主Controller发生故障时，备用Controller能在设定时间间隔后自动接管工作。
-- 场景二：Coordinator主备倒换。适用于需要保障Coordinator高可用的场景，当主Coordinator发生故障时，备用Coordinator能在一定时间间隔后自动接管工作。
+- 场景一：Controller主备倒换。Controller负责实例管理、故障感知与实例分发，单实例故障会导致无法感知推理实例状态、无法向Coordinator分发实例，进而使推理服务不可用。开启主备后，主Controller故障时备用Controller在设定时间间隔后自动接管。
+- 场景二：Coordinator主备倒换。Coordinator承载推理入口，单实例故障会直接导致推理请求失败。开启主备后，主Coordinator故障时备用Coordinator在设定时间间隔后自动接管，推理流量随之切换到新的主节点。
 
 ### 使用样例
 
-**依据原文上下文内容重组，请进行人工校验。**
-
 #### 场景一：Controller主备倒换
 
-1. 配置Controller侧证书挂载。（**如果不开启CA证书，请跳过此步骤。**）
+1. 配置Controller侧证书挂载。（如果不开启CA证书，请跳过此步骤。）
+
     如果需要开启证书CA认证，根据[生成ETCD安全证书](#生成etcd安全证书可选)生成的相关证书文件，将证书文件的生成路径挂载至Controller容器内。请先根据 motor_deploy_config.deploy_mode 确认待修改的模板文件（默认模式为 infer_service_set，与本文档示例命令一致）：
 
     | deploy_mode | 待修改文件 | 修改位置 |
     |---|---|---|
-    |infer_service_set（默认）|examples/deployer/yaml_template/infer_service_template.yaml（CRD 场景）|roles下name: controller中的spec.template.spec|
-    |multi_deployment|examples/deployer/yaml_template/coordinator_template.yaml（multi_deployment 场景）|Deployment中的spec.template.spec|
+    |infer_service_set（默认）|examples/deployer/yaml_template/infer_service_template.yaml（CRD 场景）|roles下name: controller的spec.template.spec|
+    |multi_deployment|examples/deployer/yaml_template/controller_template.yaml（multi_deployment 场景）|Deployment中的spec.template.spec|
 
     以deploy_mode为infer_service_set模式为例，在examples/deployer/yaml_template/infer_service_template.yaml文件中的volumeMounts和volumes中添加以下内容（controller-ca为挂载的证书目录）：
 
     ```yaml
     ...
-          volumeMounts:
-          ...
-          - name: controller-ca
-            mountPath: /usr/local/Ascend/pyMotor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
-      volumes:
-      ...
-      - name: controller-ca
-        hostPath:
-          path: /home/{用户名}/auto_gen_ms_cert # 物理机创建文件及生成文件路径
-          type: Directory
+              volumeMounts:
+              ...
+              - name: controller-ca
+                mountPath: /usr/local/Ascend/pyMotor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
+            volumes:
+            ...
+            - name: controller-ca
+              hostPath:
+                path: /home/{用户名}/auto_gen_ms_cert # 物理机创建文件及生成文件路径
+                type: Directory
     ...
     ```
 
     >[!NOTE] 说明
-    >deploy完成后，可通过以下命令确认证书目录已挂载至生成的yaml中（multi_deployment 模式对应文件路径为：examples/deployer/output_yamls/mindie_motor_controller.yaml，避免模板文件改错导致证书未挂载）
+    >- 挂载点`/usr/local/Ascend/pyMotor/conf/security/etcd`是本文档约定的路径，代码中并无该默认值，必须与第2步`etcd_tls_config`中配置的证书路径保持一致。
+    >- deploy完成后，可通过以下命令确认证书目录已挂载至生成的yaml中（infer_service_set 模式对应文件路径为：examples/deployer/output_yamls/infer_service.yaml；multi_deployment 模式对应文件路径为：examples/deployer/output_yamls/mindie_motor_controller.yaml，避免模板文件改错导致证书未挂载）
     >
-    >```bash
-    >grep -A3 controller-ca examples/deployer/output_yamls/infer_service.yaml
-    >```
+    >   ```bash
+    >   grep -A3 controller-ca examples/deployer/output_yamls/infer_service.yaml
+    >   ```
 
 2. 配置user_config.json配置文件，开启TLS认证。（如果不开启CA证书，请跳过此步骤。）
+
     开启CA证书认证：
     - 设置tls_config/etcd_tls_config的`enable_tls`为true；
-    - 设置`ca_file`/`cert_file`/`key_file`/`passwd_file`/`tls_crl`为对应的文件路径。
+    - 设置`ca_file`/`cert_file`/`key_file`为对应的文件路径。
 
     ```json
     ...
@@ -687,14 +692,15 @@
           "enable_tls": true,
           "ca_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/ca.pem",
           "cert_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.pem",
-          "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.key",
-          "passwd_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/key_pwd.txt",
-          "tls_crl": ""
+          "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.key"
         },
         ...
       }
    ...
    ```
+
+    >[!NOTE]说明
+    >Controller/Coordinator与ETCD之间使用gRPC双向认证，实际生效的字段只有`enable_tls`、`ca_file`、`cert_file`、`key_file`四个；`passwd_file`与`crl_file`为预留字段，ETCD场景下不生效，可保持默认值。
 
 3. 在user_config.json配置文件中开启Controller主备倒换特性，配置参数如下所示。`enable_master_standby`修改为true。
 
@@ -710,10 +716,10 @@
 
     - false：关闭主备；
     - true：开启主备。
-    >[!NOTE] 说明
-    > 默认使用default工作空间下的ETCD服务端，端口号默认为2379。如果需要修改，在motor_controller_config中修改ETCD信息。域名通常为etcd.{namespace}.svc.cluster.local。
+    >[!NOTE]说明
+    >默认使用default工作空间下的ETCD服务端，端口号默认为2379。如果需要修改，在motor_controller_config中修改ETCD信息。域名通常为etcd.{namespace}.svc.cluster.local。
     >
-    >```json
+    > ```json
     > ...
     >   "motor_controller_config": {
     >      "standby_config": {
@@ -726,8 +732,11 @@
     >   }
     > ...
     > ```
+    >
+    >- 开启主备后系统会自动开启ETCD持久化（`etcd_config.enable_etcd_persistence`置为`true`），用户无需手动配置。
+    >- `standby_config`的其余参数（`master_standby_check_interval`默认5秒、`master_lock_ttl`默认15秒等）一般保持默认即可，增大`master_lock_ttl`会延长倒换耗时。
 
-4. 在 examples/deployer 目录下执行以下命令启动。支持指定配置目录或单独指定配置文件：
+4. 在 examples/deployer 目录下执行以下命令启动，支持指定配置目录或单独指定配置文件。
 
     ```bash
     cd examples/deployer
@@ -738,10 +747,12 @@
     python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
     ```
 
+    部署完成后Controller的Pod副本数为2。
+
 5. 发送请求验证服务是否启动成功。
 
     >[!NOTE] 说明
-    > Controller仅提供管理面接口（Controller_api_port，默认为：1026），不提供/v1/chat/completions 等推理接口，推理请求需发送至Coordinator主节点。Controller的主备状态请通过[验证特性](#验证特性)中的日志和Pod READY状态确认。
+    > Controller仅提供管理面接口（`motor_controller_config.api_config.controller_api_port`，默认为：1026），不提供/v1/chat/completions 等推理接口，推理请求需发送至Coordinator主节点。Controller的主备状态请通过[验证特性](#验证特性)中的日志和Pod READY状态确认。
 
     有以下两种方式发送请求：
 
@@ -776,11 +787,12 @@
 #### 场景二：Coordinator主备倒换
 
 1. 配置Coordinator侧证书挂载。（如果不开启CA证书，请跳过此步骤。）
+
     如果需要开启证书CA认证，根据[生成ETCD安全证书](#生成etcd安全证书可选)生成的相关证书文件，将证书文件的生成路径挂载至Coordinator容器内。请先根据 motor_deploy_config.deploy_mode 确认待修改的模板文件（默认模式为 infer_service_set，与本文档示例命令一致）：
 
     | deploy_mode | 待修改文件 | 修改位置 |
     |---|---|---|
-    |infer_service_set（默认）|examples/deployer/yaml_template/infer_service_template.yaml（CRD 场景）|roles下name: controller中的spec.template.spec|
+    |infer_service_set（默认）|examples/deployer/yaml_template/infer_service_template.yaml（CRD 场景）|roles下name: coordinator的spec.template.spec|
     |multi_deployment|examples/deployer/yaml_template/coordinator_template.yaml（multi_deployment 场景）|Deployment中的spec.template.spec|
 
     以deploy_mode为multi_deployment模式为例，在examples/deployer/yaml_template/coordinator_template.yaml文件中的volumeMounts和volumes中添加以下内容（coordinator-ca为挂载的证书目录）：
@@ -794,6 +806,8 @@
             mountPath: /var/coredump
           - name: mnt
             mountPath: /mnt
+          - name: plog-path
+            mountPath: /root/ascend/log
           - name: coordinator-ca
             mountPath: /usr/local/Ascend/pyMotor/conf/security/etcd # 物理机/home/{用户名}/auto_gen_ms_cert目录在容器中的挂载路径
       volumes:
@@ -808,6 +822,10 @@
       - name: mnt
         hostPath:
           path: /mnt
+      - name: plog-path
+        hostPath:
+          path: /root/ascend/log
+          type: DirectoryOrCreate
       - name: coordinator-ca
         hostPath:
           path: /home/{用户名}/auto_gen_ms_cert # 物理机创建文件及生成文件路径
@@ -816,16 +834,18 @@
     ```
 
     >[!NOTE] 说明
-    >deploy完成后，可通过以下命令确认证书目录已挂载至生成的yaml中（infer_service_set 模式对应文件路径为：examples/deployer/output_yamls/infer_service.yaml，避免模板文件改错导致证书未挂载）
+    >- 挂载点`/usr/local/Ascend/pyMotor/conf/security/etcd`是本文档约定的路径，代码中并无该默认值，必须与第2步`etcd_tls_config`中配置的证书路径保持一致。
+    >- deploy完成后，可通过以下命令确认证书目录已挂载至生成的yaml中（multi_deployment 模式对应文件路径为：examples/deployer/output_yamls/mindie_motor_coordinator.yaml；infer_service_set 模式对应文件路径为：examples/deployer/output_yamls/infer_service.yaml，避免模板文件改错导致证书未挂载）
     >
-    >```bash
-    >grep -A3 coordinator-ca examples/deployer/output_yamls/mindie_motor_coordinator.yaml
-    >```
+    >   ```bash
+    >   grep -A3 coordinator-ca examples/deployer/output_yamls/mindie_motor_coordinator.yaml
+    >   ```
 
 2. 配置user_config.json配置文件，开启TLS认证。（如果不开启CA证书，请跳过此步骤。）
+
     开启CA证书认证：
     - 设置tls_config/etcd_tls_config的`enable_tls`为true；
-    - 设置`ca_file`/`cert_file`/`key_file`/`passwd_file`/`tls_crl`为对应的文件路径。
+    - 设置`ca_file`/`cert_file`/`key_file`为对应的文件路径。
 
     ```json
     ...
@@ -835,14 +855,15 @@
           "enable_tls": true,
           "ca_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/ca.pem",
           "cert_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.pem",
-          "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.key",
-          "passwd_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/key_pwd.txt",
-          "tls_crl": ""
+          "key_file": "/usr/local/Ascend/pyMotor/conf/security/etcd/client.key"
         },
         ...
       }
    ...
    ```
+
+    >[!NOTE]说明
+    >Controller/Coordinator与ETCD之间使用gRPC双向认证，实际生效的字段只有`enable_tls`、`ca_file`、`cert_file`、`key_file`四个；`passwd_file`与`crl_file`为预留字段，ETCD场景下不生效，可保持默认值。
 
 3. 在user_config.json配置文件中开启Coordinator主备倒换特性，配置参数如下所示。`enable_master_standby`修改为true。
 
@@ -858,8 +879,8 @@
 
     - false：关闭主备；
     - true：开启主备。
-    >[!NOTE] 说明
-    > 默认使用default工作空间下的ETCD服务端，端口号默认为2379。如果需要修改，在motor_coordinator_config中修改ETCD信息。域名通常为etcd.{namespace}.svc.cluster.local。
+    >[!NOTE]说明
+    >默认使用default工作空间下的ETCD服务端，端口号默认为2379。如果需要修改，在motor_coordinator_config中修改ETCD信息。域名通常为etcd.{namespace}.svc.cluster.local。
     >
     > ```json
     > ...
@@ -874,8 +895,11 @@
     >    }
     > ...
     > ```
+    >
+    >- 开启主备后系统会自动开启ETCD持久化（`etcd_config.enable_etcd_persistence`置为`true`），用户无需手动配置。
+    >- Coordinator运行时会自动将`master_lock_ttl`限制为不大于8秒、`master_standby_check_interval`限制为不大于2秒，以保证倒换能够在30秒内完成，配置更大值不会生效。
 
-4. 在 examples/deployer 目录下执行以下命令启动。支持指定配置目录或单独指定配置文件：
+4. 在 examples/deployer 目录下执行以下命令启动，支持指定配置目录或单独指定配置文件。
 
     ```bash
     cd examples/deployer
@@ -885,6 +909,8 @@
     # 方式二：单独指定配置文件
     python deploy.py --user_config_path ../infer_engines/vllm/user_config.json --env_config_path ../infer_engines/vllm/env.json
     ```
+
+    部署完成后Coordinator的Pod副本数为2。
 
 5. 发送请求验证服务是否启动成功。
 
@@ -919,22 +945,116 @@
 
 ### 验证特性
 
-**依据原文上下文内容重组，请进行人工校验。**
+服务启动后，可通过以下方式验证主备倒换特性是否生效。开启主备后，Controller、Coordinator各自有2个Pod，其中**有且仅有一个Pod的READY为1/1**（主节点），另一个为0/1（备节点）。
 
-服务启动后，可通过以下方式验证主备倒换特性是否生效：
+**方式一：检查主备角色（日志方式）**
 
-1. 检查主备节点身份（日志方式）。
+查询对应节点日志，如果日志中出现"Role changed from standby to master"，表明当前节点抢到ETCD分布式锁，为主节点。
 
-   查询对应节点日志，如果日志中出现"Role changed from standby to master"，表明当前节点抢到ETCD分布式锁，为主节点。
+```bash
+kubectl -n <namespace> logs <pod名> | grep "Role changed"
+```
 
-2. 检查主备节点身份（K8s命令方式）。
+**方式二：检查主备角色（K8s命令方式）**
 
-   ```bash
-   kubectl get pod -A -owide
-   ```
+```bash
+kubectl -n <namespace> get pod -owide
+```
 
-   有且仅有一个Controller/Coordinator pod READY状态为1/1，表示该节点为主节点。
+有且仅有一个Controller/Coordinator pod READY状态为1/1，表示该节点为主节点；READY为0/1的为备节点，属预期现象。
+
+**方式三：检查主备角色（接口方式，可选）**
+
+Controller使用管理面端口（`motor_controller_config.api_config.controller_api_port`，默认1026），Coordinator使用管控面端口（`motor_coordinator_config.api_config.coordinator_api_mgmt_port`，默认1026），访问`/readiness`：
+
+```bash
+# Controller
+curl http://{Controller PodIP}:1026/readiness
+# Coordinator
+curl http://{Coordinator PodIP}:1026/readiness
+```
+
+- Controller主节点返回200：`{"message": "Controller is ready"}`；备节点返回503：`{"detail": {"message": "Controller is not ready", "reason": "Not master"}}`。
+- Coordinator主节点返回200：`{"status": "ok", "message": "Coordinator is master", "ready": true}`；备节点返回503：`{"detail": "Coordinator is not master"}`。
+
+**方式四：倒换演练（可选）**
+
+删除主节点Pod，模拟主节点故障：
+
+```bash
+kubectl -n <namespace> delete pod <主节点Pod名>
+```
+
+预期结果：备节点在ETCD租约超时后抢锁成功，日志出现"Role changed from standby to master"，READY变为1/1，推理请求由新的主节点承接。Coordinator升主约需10秒（租约TTL 8秒 + 探测间隔2秒），Controller约需20秒（租约TTL 15秒 + 探测间隔5秒），期间推理请求可能短暂失败，请确认业务侧已配置重试。
 
 ## 常见问题
 
-**内容缺失，需要人工补齐。**
+### 备节点的READY一直为0/1，是否正常
+
+**现象**：开启主备后，Controller/Coordinator各有2个Pod，其中一个长期READY为0/1。
+
+**原因**：主备模式下只有主节点对外提供服务。备节点的`/readiness`返回503（Coordinator返回`Coordinator is not master`，Controller返回`Not master`），K8s据此将备节点标记为未就绪并移出Service Endpoint。备节点进程本身是正常运行的，其`/liveness`仍返回200。
+
+**处理措施**：属预期行为，无需处理。若两个Pod的READY均为0/1，说明没有节点抢到ETCD分布式锁，请参考下一条排查。
+
+### 两个Pod的READY均为0/1，一直选不出主节点
+
+**现象**：Controller/Coordinator的两个Pod长期都是0/1，服务不可用。
+
+**原因**：备节点无法抢到ETCD分布式锁，常见原因包括：
+
+- ETCD服务端未部署或不可用；
+- `etcd_config.etcd_host`/`etcd_port`配置错误，或域名无法解析；
+- 开启了TLS但证书路径、证书内容不正确；
+- ETCD集群失去多数派（3副本中超过1个副本故障）。
+
+**处理措施**：
+
+1. 确认ETCD集群状态正常：
+
+    ```bash
+    kubectl -n <namespace> get pod | grep etcd
+    ```
+
+2. 确认`user_config.json`中的`etcd_config`与ETCD实际部署一致（域名通常为`etcd.{namespace}.svc.cluster.local`，端口2379）。
+3. 在Controller/Coordinator容器内确认能够访问ETCD，并检查容器日志中是否有连接ETCD失败或选主失败的记录。
+
+### 开启TLS后Controller/Coordinator无法连接ETCD
+
+**现象**：关闭TLS时主备倒换正常，开启TLS后两个Pod都无法升主，容器日志出现证书相关报错。
+
+**原因**：
+
+- 容器内证书路径与`etcd_tls_config`中配置的路径不一致（部署模板默认不挂载证书目录，需手工添加挂载）；
+- `server.cnf`中`alt_names`未包含`etcd_config.etcd_host`使用的域名，证书校验失败；
+- 客户端证书`cert_file`/`key_file`不是由同一CA签发。
+
+**处理措施**：
+
+1. 核对`etcd_tls_config`中的`ca_file`/`cert_file`/`key_file`与Pod内实际挂载路径一致。
+2. 确认`server.cnf`的`subjectAltName`覆盖了`etcd_config.etcd_host`及ETCD各节点域名。
+3. 确认ETCD服务端已启用`--client-cert-auth`，否则客户端证书不会生效。
+
+### 备节点Pod一直Pending，或主备Pod未调度到不同节点
+
+**现象**：开启主备后只起来一个Pod，另一个长期Pending。
+
+**原因**：部署模板默认开启了强制反亲和调度（`podAntiAffinity`，`topologyKey: kubernetes.io/hostname`），同一组件的两个Pod必须调度到不同节点。集群内可调度节点不足、节点资源不足或节点带有污点时，第2个Pod会因无法满足反亲和约束而Pending。
+
+**处理措施**：确认集群内至少有2个满足资源与调度约束的节点，或根据实际容灾诉求调整模板中的反亲和配置。
+
+### 主备倒换期间推理请求返回503或连接失败
+
+**现象**：主节点故障后，推理请求短时间（数秒到数十秒）返回503或连接失败，之后自动恢复。
+
+**原因**：倒换过程包含"原主节点失去ETCD租约→备节点抢锁升主→新主节点恢复READY并被加入Service Endpoint"几个阶段，期间Service可能没有可用的就绪端点。Coordinator约需10秒，Controller约需20秒。
+
+**处理措施**：属预期行为，业务侧需配置请求重试。请勿长期依赖"服务零中断"，如需缩短倒换时间可适当减小`master_lock_ttl`（Coordinator侧会被自动限制为不大于8秒）。
+
+### 修改enable_master_standby后不生效
+
+**现象**：在`user_config.json`中修改`enable_master_standby`后，运行中的服务主备模式没有变化。
+
+**原因**：主备开关在进程启动时读取，运行期不支持动态切换；此外Pod副本数（`replicas`）是在部署时根据该开关生成的，运行期修改配置不会改变副本数。
+
+**处理措施**：修改配置后重新执行部署（重新生成并应用yaml，使Pod重建），不要期望运行期动态生效。
