@@ -80,10 +80,12 @@ def build_vllm_startup_environment(
     base_environment: Mapping[str, str],
 ) -> dict[str, str]:
     """Translate Motor startup acceleration settings into vLLM environment variables."""
-    environment = {
-        VLLM_CACHE_ROOT_ENV: resolve_vllm_cache_root(config, base_environment),
-        VLLM_ENABLE_STARTUP_PLAN_ENV: "1" if config.enable_startup_plan else "0",
-    }
+    if not config.enable_startup_plan and not config.enable_graph_reuse:
+        return {}
+
+    environment = {VLLM_CACHE_ROOT_ENV: resolve_vllm_cache_root(config, base_environment)}
+    if config.enable_startup_plan:
+        environment[VLLM_ENABLE_STARTUP_PLAN_ENV] = "1"
     if config.enable_graph_reuse:
         environment[VLLM_DISABLE_COMPILE_CACHE_ENV] = "0"
     for name, value in environment.items():
@@ -97,18 +99,15 @@ def build_vllm_graph_reuse_engine_overrides(
     role: PDRole,
 ) -> dict[str, Any]:
     """Build vLLM/vLLM-Ascend engine overrides required for reusable full graphs."""
-    ascend_overrides = {"enable_npugraph_ex": config.enable_graph_reuse}
-    overrides: dict[str, Any] = {
-        "additional_config": {"ascend_compilation_config": ascend_overrides},
-    }
     if not config.enable_graph_reuse:
-        # vLLM-Ascend requires static kernels to be disabled when npugraph_ex is disabled.
-        ascend_overrides["enable_static_kernel"] = False
-        return overrides
+        return {}
 
     cudagraph_mode = VLLM_CUDAGRAPH_MODE_FULL_DECODE_ONLY if role == PDRole.ROLE_D else VLLM_CUDAGRAPH_MODE_FULL
-    overrides.update({"enforce_eager": False, "compilation_config": {"cudagraph_mode": cudagraph_mode}})
-    return overrides
+    return {
+        "enforce_eager": False,
+        "compilation_config": {"cudagraph_mode": cudagraph_mode},
+        "additional_config": {"ascend_compilation_config": {"enable_npugraph_ex": True}},
+    }
 
 
 def inspect_graph_reuse_cache_root(cache_root: str) -> None:

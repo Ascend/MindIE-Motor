@@ -63,3 +63,4 @@
 | 2026-09-15 | node_manager | NodeManager FT 代理契约漂移导致请求失败或退役状态不一致 | [ft-proxy-contract-drift.md](node_manager/ft-proxy-contract-drift.md) | NodeManager, FT proxy, retry, retired endpoint, HTTP 400 |
 | 2026-09-09 | coordinator | PD 分离请求在 Decode 才因 Prefill 改写字段被拒绝 | [pd-stream-options-late-rejection.md](coordinator/pd-stream-options-late-rejection.md) | coordinator, PD separation, stream_options, min_tokens, Decode HTTP-400, KV cache expiry |
 | 2026-09-17 | deployer | 容器快照部署进度条停在 90% | [snapshot-progress-wait2start.md](deployer/snapshot-progress-wait2start.md) | deployer, container snapshot, progress, WAIT2START, 90% |
+| 2026-09-21 | node_manager | 关闭 vLLM 启动加速仍覆盖原生引擎配置 | [disabled-startup-acceleration-overrides.md](node_manager/disabled-startup-acceleration-overrides.md) | NodeManager, vLLM startup acceleration, disabled feature, engine override |

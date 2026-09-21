@@ -29,15 +29,31 @@ from motor.node_manager.core.services.native_engine.startup_acceleration import 
 
 
 @pytest.mark.parametrize(
-    ("startup_plan", "graph_reuse"),
-    [(False, False), (True, False), (False, True)],
+    ("startup_plan", "graph_reuse", "expected"),
+    [
+        (False, False, {}),
+        (
+            True,
+            False,
+            {
+                VLLM_CACHE_ROOT_ENV: "/mnt/cache",
+                VLLM_ENABLE_STARTUP_PLAN_ENV: "1",
+            },
+        ),
+        (
+            False,
+            True,
+            {
+                VLLM_CACHE_ROOT_ENV: "/mnt/cache",
+                VLLM_DISABLE_COMPILE_CACHE_ENV: "0",
+            },
+        ),
+    ],
 )
-def test_build_vllm_startup_environment(startup_plan, graph_reuse):
+def test_build_vllm_startup_environment(startup_plan, graph_reuse, expected):
     config = VLLMStartupAccelerationConfig(startup_plan, graph_reuse, "/mnt/cache")
     environment = build_vllm_startup_environment(config, {})
-    assert environment[VLLM_CACHE_ROOT_ENV] == "/mnt/cache"
-    assert environment[VLLM_ENABLE_STARTUP_PLAN_ENV] == str(int(startup_plan))
-    assert (VLLM_DISABLE_COMPILE_CACHE_ENV in environment) is graph_reuse
+    assert environment == expected
     assert "VLLM_USE_AOT_COMPILE" not in environment
     assert "VLLM_FORCE_AOT_LOAD" not in environment
 
@@ -50,7 +66,7 @@ def test_build_vllm_startup_environment_warns_only_for_conflicting_values(caplog
         VLLM_DISABLE_COMPILE_CACHE_ENV: "1",
     }
     build_vllm_startup_environment(config, inherited)
-    assert caplog.text.count("Motor overrides environment") == 3
+    assert caplog.text.count("Motor overrides environment") == 2
 
     caplog.clear()
     build_vllm_startup_environment(config, {VLLM_ENABLE_STARTUP_PLAN_ENV: "0"})
@@ -81,14 +97,13 @@ def test_resolve_vllm_cache_root_priority(configured, environment, expected):
 )
 def test_graph_reuse_engine_overrides(enabled, role, expected_mode):
     overrides = build_vllm_graph_reuse_engine_overrides(VLLMStartupAccelerationConfig(enable_graph_reuse=enabled), role)
-    ascend = overrides["additional_config"]["ascend_compilation_config"]
-    assert ascend["enable_npugraph_ex"] is enabled
     if enabled:
+        ascend = overrides["additional_config"]["ascend_compilation_config"]
+        assert ascend["enable_npugraph_ex"] is True
         assert overrides["enforce_eager"] is False
         assert overrides["compilation_config"]["cudagraph_mode"] == expected_mode
     else:
-        assert ascend["enable_static_kernel"] is False
-        assert "enforce_eager" not in overrides
+        assert overrides == {}
 
 
 def test_inspect_graph_reuse_cache_root_accepts_a_creatable_path(tmp_path):

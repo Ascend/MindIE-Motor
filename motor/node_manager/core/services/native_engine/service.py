@@ -145,17 +145,18 @@ class NativeEngineService:
                     pd_role_info,
                 )
                 base_env.update(startup_environment)
-                cache_root = startup_environment[VLLM_CACHE_ROOT_ENV]
-                logger.info(
-                    "vLLM startup acceleration configured: startup_plan=%s, graph_reuse=%s, cache_root=%s",
-                    self.startup_acceleration_config.enable_startup_plan,
-                    self.startup_acceleration_config.enable_graph_reuse,
-                    cache_root,
-                )
-                if self.startup_acceleration_config.enable_startup_plan:
-                    inspect_startup_plan_profiles(cache_root)
-                if self.startup_acceleration_config.enable_graph_reuse:
-                    inspect_graph_reuse_cache_root(cache_root)
+                if startup_environment:
+                    cache_root = startup_environment[VLLM_CACHE_ROOT_ENV]
+                    logger.info(
+                        "vLLM startup acceleration configured: startup_plan=%s, graph_reuse=%s, cache_root=%s",
+                        self.startup_acceleration_config.enable_startup_plan,
+                        self.startup_acceleration_config.enable_graph_reuse,
+                        cache_root,
+                    )
+                    if self.startup_acceleration_config.enable_startup_plan:
+                        inspect_startup_plan_profiles(cache_root)
+                    if self.startup_acceleration_config.enable_graph_reuse:
+                        inspect_graph_reuse_cache_root(cache_root)
             pod_ip = base_env.get("POD_IP")
             if pod_ip and not base_env.get("VLLM_HOST_IP"):
                 base_env["VLLM_HOST_IP"] = pod_ip

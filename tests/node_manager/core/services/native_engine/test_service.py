@@ -171,6 +171,30 @@ def test_pull_applies_vllm_startup_acceleration_and_runs_preflights_once():
     inspect_graph_cache.assert_called_once_with("/mnt/vllm-cache")
 
 
+def test_pull_preserves_vllm_configuration_when_startup_acceleration_is_disabled():
+    service = _native_engine_service(engine_type="vllm")
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config(enable_virtual_inference=False))
+    service.supervisor.start.return_value = True
+    inherited = {
+        "VLLM_CACHE_ROOT": "/engine/cache",
+        "VLLM_ENABLE_STARTUP_PLAN": "engine-value",
+        "VLLM_DISABLE_COMPILE_CACHE": "engine-value",
+    }
+
+    with (
+        patch.dict(service_module.os.environ, inherited, clear=True),
+        patch.object(service_module, "inspect_startup_plan_profiles") as inspect_profiles,
+        patch.object(service_module, "inspect_graph_reuse_cache_root") as inspect_graph_cache,
+    ):
+        service.pull(PDRole.ROLE_U, [_make_endpoint(0)], instance_id=1, master_dp_ip="127.0.0.1")
+
+    context = service.backend.prepare.call_args.args[0]
+    assert {name: context.environment[name] for name in inherited} == inherited
+    assert context.engine_config_overrides == {}
+    inspect_profiles.assert_not_called()
+    inspect_graph_cache.assert_not_called()
+
+
 def test_health_check_returns_dead_pids():
     service = _native_engine_service()
     service.supervisor.dead_pids.return_value = [(101, 0)]

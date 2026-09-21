@@ -116,6 +116,15 @@ does not by itself authenticate a client. Engine query transport failures return
 `dead` status is an irreversible removal candidate. Periodic polling requires `max_poll_failures` consecutive transport
 failures before reporting DEAD, and in-place relaunch keeps polling paused until native readiness succeeds.
 
+### vLLM Startup Acceleration
+
+`vllm_startup_acceleration_config` independently enables StartPlan and graph reuse for vLLM. NodeManager applies only
+the settings required by an enabled feature: StartPlan sets `VLLM_ENABLE_STARTUP_PLAN=1`, graph reuse sets
+`VLLM_DISABLE_COMPILE_CACHE=0` and the reusable full-graph engine overrides, and either enabled feature resolves
+`VLLM_CACHE_ROOT`. A disabled feature never writes a negative/default value over the inherited environment or native
+engine configuration. When both switches are disabled, the launch environment and engine configuration pass through
+unchanged and no cache preflight runs.
+
 ### Virtual Inference (虚推)
 
 Virtual inference probes engine liveness beyond `/health` (which can pass while the engine is unable to infer, e.g. NPU hang or driver fault). It is implemented under `motor/node_manager/core/services/native_engine/virtual_inference/` and runs inside the NodeManager process — it never depends on `motor.engine_server`.
@@ -437,6 +446,7 @@ barriers heartbeat until the container checkpoint is done. During container snap
 | `motor/node_manager/api_server/node_manager_api.py` | FastAPI start/stop/pause/resume/status/readiness APIs |
 | `motor/node_manager/core/daemon.py` | Service discovery, preparable-service ordering and process monitor |
 | `motor/node_manager/core/services/native_engine/service.py` | LaunchContext creation, device pinning, native launch and recovery request |
+| `motor/node_manager/core/services/native_engine/startup_acceleration.py` | Feature-gated vLLM StartPlan/graph-reuse environment, engine overrides and cache preflight |
 | `motor/node_manager/core/services/native_engine/models.py` | LaunchContext, CommandSpec, ProbeSpec, LaunchSpec and RuntimeState |
 | `motor/node_manager/core/services/native_engine/factory.py` | Selects the stateless vLLM/SGLang backend by engine type |
 | `motor/node_manager/core/services/native_engine/config_factory.py` | Lazily loads engine-specific CLI configuration adapters |
