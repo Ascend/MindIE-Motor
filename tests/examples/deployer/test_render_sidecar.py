@@ -111,22 +111,48 @@ def test_cpu_render_uses_dedicated_image_without_ascend_runtime():
     assert ASCEND_DRIVER_VOLUME_NAME not in {item[C.NAME] for item in pod_spec[C.VOLUMES]}
 
 
-def test_render_workers_use_render_config_override():
+def test_render_launch_args_are_serialized():
     config = _user_config()
-    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["renderer_num_workers"] = 7
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = {
+        "renderer_num_workers": 7,
+        "enable_auto_tool_choice": True,
+        "tool_call_parser": "hermes",
+        "default_chat_template_kwargs": {"enable_thinking": False},
+        "allowed_media_domains": ["images.example.com", "media.example.com"],
+        "reasoning_parser": None,
+        "unused_flag": False,
+    }
     pod_spec = _pod_spec()
 
     configure_render_sidecar(pod_spec, config)
 
+    args = _render_container(pod_spec)["args"]
     assert _render_arg(_render_container(pod_spec), "--renderer-num-workers") == "7"
+    assert "--enable-auto-tool-choice" in args
+    assert _render_arg(_render_container(pod_spec), "--tool-call-parser") == "hermes"
+    assert _render_arg(_render_container(pod_spec), "--default-chat-template-kwargs") == ('{"enable_thinking":false}')
+    domains_index = args.index("--allowed-media-domains")
+    assert args[domains_index + 1 : domains_index + 3] == ["images.example.com", "media.example.com"]
+    assert "--reasoning-parser" not in args
+    assert "--unused-flag" not in args
 
 
-@pytest.mark.parametrize("num_workers", [0, True, "4"])
-def test_render_rejects_invalid_renderer_worker_count(num_workers):
+@pytest.mark.parametrize(
+    ("launch_args", "error"),
+    [
+        ([], "must be an object"),
+        ({"port": 8200}, "managed by Motor"),
+        ({"Port": 8200}, "managed by Motor"),
+        ({"served-model-name": "other"}, "managed by Motor"),
+        ({"custom": object()}, "must be null, bool, string, number, object, or array"),
+        ({"custom": [object()]}, "contains an unsupported value"),
+    ],
+)
+def test_render_rejects_invalid_launch_args(launch_args, error):
     config = _user_config()
-    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["renderer_num_workers"] = num_workers
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = launch_args
 
-    with pytest.raises(ValueError, match="renderer_num_workers"):
+    with pytest.raises(ValueError, match=error):
         configure_render_sidecar(_pod_spec(), config)
 
 

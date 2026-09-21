@@ -61,7 +61,7 @@ flowchart LR
 - **部署场景**：需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署；`render_config.enable=true` 是本特性的硬前提。
 - **引擎**：仅支持 **vLLM**（依赖其 Render token-only 接口）。SGLang 当前为 POC 支持，未覆盖本特性的 Render 链路，暂不支持。
 - **特性互斥**：
-  - **流式请求**：支持流式 Token In、token-only Generate 和 Derender；流式 Derender 要求 vLLM >= 0.27.0。
+  - **流式请求**：设置 `render_config.enable_streaming=true` 后支持流式 Token In、token-only Generate 和 Derender；要求 vLLM >= 0.27.0，性能及 reasoning/tool call 等高级场景需按具体版本验证。
   - **仅支持 `/v1/chat/completions` 与 `/v1/completions`**：Render 没有为其他 API 登记契约，
     任一混淆开关开启时 `/v1/responses`、`/v1/messages` 等路径直接返回 HTTP 501，不会退回本地 tokenizer
     把明文 prompt 发给混淆权重引擎。
@@ -190,14 +190,13 @@ EOF
        "weight_mount_path": "/data/weights/"
      },
      "motor_coordinator_config": {
-       "inference_workers_config": {
-         "num_workers": 1
-       },
        "render_config": {
          "enable": true,
-         "endpoint": { "host": "127.0.0.1", "port": 8100 },
+         "enable_streaming": true,
          "timeout_ms": 30000,
-         "image_name": ""
+         "launch_args": {
+           "renderer_num_workers": 4
+         }
        },
        "token_obfuscation_config": {
          "enable": true,
@@ -219,6 +218,8 @@ EOF
    | 参数 | 说明 |
    |------|------|
    | `render_config.enable` | 必须为 `true`；本特性的 token 与图像置换都发生在 Render 返回的载荷上 |
+   | `render_config.enable_streaming` | 流式混淆请求必须为 `true`；关闭时流式请求 fail closed，不回退明文原生链路 |
+   | `render_config.launch_args.renderer_num_workers` | Render 处理线程数，未配置时默认传 `4` |
    | `render_config.timeout_ms` | Render 处理超时。多模态首图需要加载图像处理器，实测冷启动约 22 s，建议不小于 30000 |
    | `token_obfuscation_config.enable` | 开启 token 置换；必须显式配置非空 `seed_content` |
    | `token_obfuscation_config.model_path` | 可选，显式指定权重目录（用于读取 `vocab_size`）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
@@ -229,8 +230,6 @@ EOF
    | `image_config.patch_size` / `merge_size` / `temporal_patch_size` | **可不配置**：未设置时从被服务权重目录的 `preprocessor_config.json` 自动读取，显式配置优先。必须与权重混淆及图像处理器一致（Qwen3-VL 为 16 / 2 / 2，Qwen2-VL 为 14 / 2 / 2） |
    | `image_config.longest_edge` / `shortest_edge` | **可不配置**：同上，对应 `size.longest_edge` / `size.shortest_edge`（旧版处理器为 `max_pixels` / `min_pixels`）。Qwen3-VL 为 16777216 / 65536 |
    | `image_config.model_path` | 可选，显式指定权重目录（用于读取几何）。留空时使用引擎配置里的 `engine_config.model`；多模型共存时必须显式指定 |
-   | `render_config.image_name` | 可选，指定 Render sidecar 的容器镜像；留空时使用部署器默认镜像 |
-   | `inference_workers_config.num_workers` | Render sidecar 的处理 worker 数（部署器以 `--renderer-num-workers` 传入），多模态实测取 `1` |
 
    模型路径指向混淆权重目录（`motor_engine_prefill_config` / `motor_engine_decode_config`，混部场景为
    `motor_engine_union_config`）：

@@ -75,8 +75,9 @@ def render_client():
 
 @pytest.fixture
 def service_factory(render_client, local):
-    def make(enabled=True, **kwargs):
-        return TokenizationService(RenderConfig(enable=enabled), render_client, local, **kwargs)
+    def make(enabled=True, enable_streaming=False, **kwargs):
+        config = RenderConfig(enable=enabled, enable_streaming=enable_streaming)
+        return TokenizationService(config, render_client, local, **kwargs)
 
     return make
 
@@ -89,6 +90,43 @@ async def test_render_success_does_not_call_local_tokenizer(service_factory, ren
     )
     render_client.render.assert_awaited_once_with("v1/completions", request)
     assert render_client.render.await_args.args[1] is request
+    local.encode.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("enable_streaming", "expected_source"),
+    [(False, TokenizerSource.LOCAL), (True, TokenizerSource.RENDER)],
+)
+async def test_streaming_render_requires_explicit_enable(
+    service_factory, render_client, local, enable_streaming, expected_source
+):
+    request = {"model": "model", "prompt": "hello", "max_tokens": 10, "stream": True}
+
+    result = await service_factory(enable_streaming=enable_streaming).tokenize(
+        "request-stream", "v1/completions", request
+    )
+
+    assert result[0].tokenizer_source is expected_source
+    assert render_client.render.await_count == int(enable_streaming)
+    assert local.encode.call_count == int(not enable_streaming)
+
+
+@pytest.mark.parametrize(
+    ("service_kwargs", "error_type"),
+    [
+        ({"obfuscation_service": MagicMock()}, RuntimeError),
+        ({"image_obfuscation_service": MagicMock()}, ImageObfuscationError),
+    ],
+)
+async def test_streaming_render_disabled_is_fail_closed_for_obfuscation(
+    service_factory, render_client, local, service_kwargs, error_type
+):
+    request = {"model": "model", "prompt": "hello", "stream": True}
+
+    with pytest.raises(error_type, match="Streaming Render is required"):
+        await service_factory(**service_kwargs).tokenize("request-stream", "v1/completions", request)
+
+    render_client.render.assert_not_awaited()
     local.encode.assert_not_called()
 
 

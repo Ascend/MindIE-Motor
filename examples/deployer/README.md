@@ -204,25 +204,42 @@ vLLM Render 通过 `user_config.json` 中的 `motor_coordinator_config.render_co
   "motor_coordinator_config": {
     "render_config": {
       "enable": true,
+      "enable_streaming": false,
       "endpoint": {
         "host": "127.0.0.1",
         "port": 8100
       },
       "timeout_ms": 5000,
-      "renderer_num_workers": 4,
       "image_name": "vllm-render-cpu:v0.25.0-arm64"
     }
   }
 }
 ```
 
-Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`renderer_num_workers`
-控制 Render worker 数量，默认值为 `4`；`image_name` 指定独立 CPU 镜像，为空时复用服务镜像、只读挂载 Ascend
-驱动库且不申请 NPU。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
+Deployer 会将 Render Sidecar 添加到 Coordinator Pod，并从当前 vLLM Engine 配置读取模型信息。`image_name`
+指定独立 CPU 镜像；省略时复用服务镜像、只读挂载 Ascend 驱动库且不申请 NPU。`enable_streaming` 默认为
+`false`，此时流式请求沿用原生链路；设置为 `true` 后才启用流式 Render。`endpoint` 和 `timeout_ms`
+有默认值，无特殊需求无需配置。启用 `kv_cache_affinity` 调度时建议同时开启 Render，以复用同一份 prompt token ID。
+
+vLLM Render 支持配置 `launch_args`，如启用多个 render worker thread 以及 Hermes Tool Call parser 时：
+
+```json
+{
+  "launch_args": {
+    "renderer_num_workers": 4,
+    "enable_auto_tool_choice": true,
+    "tool_call_parser": "hermes"
+  }
+}
+```
+
+`renderer_num_workers` 未配置时，Deployer 默认传 `4`。`tool_call_parser`、`reasoning_parser` 等解析参数还要求
+Render 镜像具备匹配的 Derender 能力：非流式解析要求 vLLM >= 0.25.0；流式解析要求包含 vLLM PR #50550
+（该功能未包含在 v0.29.0 及更早正式版本中）。其他高阶参数及对应取值可参考 vLLM 官方社区，按需配置。
 
 使用限制：
 
-- Render 镜像需同时提供 Render 和 Derender 接口。非流式请求要求 vLLM >= 0.24.0，流式请求要求 vLLM >= 0.27.0。
+- `enable_streaming` 是实验性开关，默认为 `false`，此时流式请求沿用原生链路。上游 vLLM 的流式 Derender 仍在演进，高并发性能及 reasoning/tool call 等高级场景暂不作为稳定能力保证；可在验证具体 vLLM 版本后按需开启尝鲜。流式请求要求 vLLM >= 0.27.0，非流式请求要求 vLLM >= 0.24.0。
 - 非流式 Chat Completions 和 Completions 支持完整 Token In/Token Out；流式 Chat Completions 及 Handoff、Union 下的单/多 prompt Completions 支持完整链路。
 - 单 prompt 重调度继续使用 token-only replay；多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 沿用原有边界。
 - Render 不可用、超时或接口不支持时回退本地 tokenizer；请求校验错误（400/422，以及带结构化错误响应的 404）和 Derender 失败直接返回客户端。

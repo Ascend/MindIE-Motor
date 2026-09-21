@@ -37,7 +37,8 @@ With `render_config.enable=true`, each inference worker prefers the local vLLM R
 adaptation and routing. Normalized token IDs are stored in `RequestInfo`, so scheduling and P/D routing remain
 independent of the tokenizer source. Render health does not gate Coordinator startup; sidecar availability is
 reported after Coordinator becomes ready. When using `scheduler_type=kv_cache_affinity`, enabling Render is
-recommended so routing and inference reuse the same prompt IDs.
+recommended so routing and inference reuse the same prompt IDs. Streaming requests use Render only when
+`render_config.enable_streaming=true`; it defaults to `false`, preserving the native streaming path.
 
 Render unavailability, timeout, or unsupported endpoints fall back to `TokenizerManager`; request-validation errors
 (400/422, or 404 with a structured error response) are returned directly. Transient failures open a five-second
@@ -97,7 +98,8 @@ Prefill/Decode or count against an engine circuit breaker.
 
 The deployer adds the sidecar to Coordinator Pods in all supported deployment modes. `render_config.image_name`
 selects a CPU image; otherwise the service image and read-only Ascend driver libraries are reused without requesting
-NPU resources.
+NPU resources. Optional `render_config.launch_args` entries are converted from snake_case JSON keys to
+`vllm launch render` CLI arguments; Motor keeps ownership of model identity, endpoint and access-log arguments.
 
 ### HA: Master/Standby
 
@@ -270,8 +272,6 @@ SGLang stays on native bootstrap (`CoordinationMode.BOOTSTRAP`); that path is un
 
 - `RequestInfo` is process-local. Infer workers share `coordinator_api_infer_port` via `SO_REUSEPORT`, so Decode's metaserver callback cannot land on the infer socket.
 - `inference_workers_config.worker_metaserver_base_port` default **12000**. Worker `i` listens on `base+i`; set to `0` to disable.
-- The deployer passes `inference_workers_config.num_workers` to the Render sidecar as
-  `--renderer-num-workers` (default **4**) so frontend preprocessing capacity tracks Coordinator workers.
 - Dedicated uvicorn app (`InferenceServer.create_metaserver_app()`) exposes only `POST /v1/metaserver` — no API key, no infer TLS (`lifespan=off`). Default API-key / rate-limit skip sets include `/v1/metaserver`. Decode engine callbacks have no API key; do not require one on this socket. Infer is the primary uvicorn; metaserver is a sidecar. Bind/init/`serve()` failure logs ERROR, clears this process's `worker_metaserver_port`, and leaves the infer port running. Trigger requests then 503 via `_ensure_trigger_metaserver`. Infer exit sets `should_exit` and cancels the sidecar.
 - The metaserver listen host prefers `POD_IP` when set, otherwise `api_config.coordinator_api_host` (same fallback as the advertised callback URL). Do not bind loopback: Decode may run on another node. Infer uvicorn still listens on `coordinator_api_host`.
 - The callback URL advertises `POD_IP` when available, otherwise `api_config.coordinator_api_host`; IPv6 literals are RFC 3986 bracketed. `0.0.0.0`/`::` remain valid listen hosts at startup (including default `worker_metaserver_base_port=12000`). Trigger rejects them as advertised callback addresses when `POD_IP` is absent (HTTP 503 + error log), because wildcard listen addresses are not routable Decode callback destinations.

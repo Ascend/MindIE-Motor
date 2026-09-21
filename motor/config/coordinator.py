@@ -696,10 +696,11 @@ class RenderConfig:
     """Coordinator frontend tokenization through a vLLM Render sidecar."""
 
     enable: bool = False
+    enable_streaming: bool = False
     endpoint: RenderEndpointConfig = field(default_factory=RenderEndpointConfig)
     timeout_ms: int = 5000
-    renderer_num_workers: int = 4
     image_name: str = ""
+    launch_args: dict[str, Any] = field(default_factory=lambda: {"renderer_num_workers": 4})
 
 
 IMAGE_OBFUSCATION_GEOMETRY_FIELDS = (
@@ -1039,16 +1040,12 @@ class CoordinatorConfig:
         self._validate_ip_or_hostname(self.render_config.endpoint.host, "render_config.endpoint.host")
         self._validate_port_range(self.render_config.endpoint.port, "render_config.endpoint.port")
         self._validate_positive_number(self.render_config.timeout_ms, "render_config.timeout_ms")
-        if not isinstance(self.render_config.renderer_num_workers, int) or isinstance(
-            self.render_config.renderer_num_workers, bool
-        ):
-            self._errors.append("render_config.renderer_num_workers must be an integer")
-        elif self.render_config.renderer_num_workers <= 0:
-            self._errors.append("render_config.renderer_num_workers must be greater than 0")
         if not isinstance(self.render_config.image_name, str):
             self._errors.append("render_config.image_name must be a string")
         elif self.render_config.image_name and not self.render_config.image_name.strip():
             self._errors.append("render_config.image_name cannot contain only whitespace")
+        if not isinstance(self.render_config.launch_args, dict):
+            self._errors.append("render_config.launch_args must be an object")
 
         obfuscation = self.token_obfuscation_config
         if not isinstance(obfuscation.enable, bool):

@@ -292,12 +292,16 @@ motor_coordinator_config字段配置样例如下所示：
   "context_budget_mode": "off",
   "render_config": {
     "enable": false,
+    "enable_streaming": false,
     "endpoint": {
       "host": "127.0.0.1",
       "port": 8100
     },
     "timeout_ms": 5000,
-    "image_name": ""
+    "image_name": "",
+    "launch_args": {
+      "renderer_num_workers": 4
+    }
   },
   "token_obfuscation_config": {
     "enable": false,
@@ -465,9 +469,11 @@ motor_coordinator_config字段配置样例如下所示：
 | context_budget_mode | string | 请求路由前使用模型 tokenizer 计算 prompt token 数，并将实际生效的 `max_tokens` / `max_completion_tokens` 裁剪到模型剩余上下文。适用于 `load_balance`、`round_robin`、`kv_cache_affinity`。可选值：`off`（默认）或 `on`；开启 `on` 时，P/D 引擎配置必须提供 `model` 与 `max_model_len`。 |
 | **render_config字段** |-|-|
 | enable | bool | 是否启用 vLLM Render Sidecar。默认值：`false`。启用后，Coordinator 优先调用 Render；Render 不可用、超时或接口不支持时回退本地 tokenizer，请求校验错误（400/422，以及带结构化错误响应的 404）直接返回客户端。启用 KV Cache 亲和性调度时建议同时开启。 |
+| enable_streaming | bool | 是否让流式请求使用 Render Token In/Token Out。实验性开关，默认值：`false`；关闭时流式请求沿用原生链路，不调用 Render。基础流式 Derender 要求 vLLM >= 0.27.0；流式 reasoning/tool call 解析要求包含 vLLM PR #50550（该功能未包含在 v0.29.0 及更早正式版本中）。高并发性能及高级场景需按具体版本验证后按需开启。 |
 | endpoint | object | Render Sidecar 地址。`host` 默认值为 `127.0.0.1`，Sidecar 部署仅支持本机地址；`port` 默认值为 `8100`。 |
 | timeout_ms | int | Render、Derender 与健康检查的 HTTP 超时时间，单位：毫秒。默认值：`5000`。 |
 | image_name | string | Render Sidecar 镜像。配置后使用该独立镜像；为空时复用 `motor_deploy_config.image_name`。默认值为空。 |
+| launch_args | object | 可选的 `vllm launch render` 参数；无额外启动参数时无需配置。`renderer_num_workers` 未配置时默认传 `4`。对象会序列化为单个 JSON 参数值，数组会展开为多个参数值。配置 `tool_call_parser`、`reasoning_parser` 等解析参数时，非流式 Derender 要求 vLLM >= 0.25.0，流式 Derender 要求包含 vLLM PR #50550。模型、监听地址、端口、served model name 和访问日志过滤由 Motor 管理，不能在此覆盖。可用参数以 [vLLM Render CLI](https://docs.vllm.ai/en/latest/api/vllm/entrypoints/cli/launch/) 为准。 |
 | **token_obfuscation_config字段** |-|-|
 | enable | bool | 是否启用与数据混淆权重配套的 token 混淆。默认值：`false`。开启后支持流式和非流式 vLLM Render token-only 请求，任何混淆或 Render 失败都会拒绝请求，不回退原生 OpenAI 推理。 |
 | model_path | string | 可选，显式指定被服务的权重目录（用于从其中读取 `vocab_size`）。默认值为空，此时使用 `motor_engine_{prefill,decode,encode,union}_config.engine_config.model`（多模型共存时必须显式指定）。 |

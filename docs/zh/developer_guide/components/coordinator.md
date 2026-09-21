@@ -34,7 +34,7 @@ Mgmt 与 Obs 在主备两侧都运行。并可配合共享内存 `RoleShmHolder`
 
 设置 `render_config.enable=true` 后，Coordinator 在路由前优先使用本 Pod 的 vLLM Render Sidecar 处理 Chat Completions 和 Completions，并将 token ID 复用于 context budget、KV Cache 亲和调度和 P/D 路由。启用 `kv_cache_affinity` 调度时建议同时开启 Render。即使同时启用 context budget，本地 tokenizer 也延迟到 Render fallback 时加载；Render 不可用或响应无效时自动回退，不影响 Coordinator 启动。
 
-Render 支持 Chat Completions 和 Completions 的完整非流式 Token In/Token Out。流式请求逐 chunk Derender；Handoff 和 Union 支持单/多 prompt，单 prompt 重调度继续使用 token-only replay。多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 仍沿用原有边界。流式 Derender 要求 vLLM >= 0.27.0。
+Render 支持 Chat Completions 和 Completions 的完整非流式 Token In/Token Out。`enable_streaming` 默认为 `false`；设置为 `true` 后，流式请求逐 chunk Derender，但上游 vLLM 的流式 Derender 仍在演进，高并发性能及 reasoning/tool call 等高级场景暂不作为稳定能力保证；可在验证具体 vLLM 版本后按需开启尝鲜。Handoff 和 Union 支持单/多 prompt，单 prompt 重调度继续使用 token-only replay。多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 仍沿用原有边界。流式 Derender 要求 vLLM >= 0.27.0。
 
 `context_budget_mode=on` 时，最终输出预算会同步到 Render 参数。配置与边界说明见
 [配置参考](../../user_guide/configuration/config_reference.md)、

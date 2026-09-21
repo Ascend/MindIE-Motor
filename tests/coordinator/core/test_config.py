@@ -1471,10 +1471,11 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
         "motor_coordinator_config": {
             "render_config": {
                 "enable": True,
+                "enable_streaming": True,
                 "endpoint": {"host": "127.0.0.1", "port": 8200},
                 "timeout_ms": 1500,
-                "renderer_num_workers": 7,
                 "image_name": "vllm-render-cpu:test",
+                "launch_args": {"renderer_num_workers": 7, "tool_call_parser": "hermes"},
             },
         },
         "motor_engine_union_config": {
@@ -1492,7 +1493,8 @@ def test_render_config_reuses_engine_model_metadata_without_kv_events(_temp_json
     config = CoordinatorConfig.from_json(_temp_json_file)
 
     assert config.render_config.enable is True
-    assert config.render_config.renderer_num_workers == 7
+    assert config.render_config.enable_streaming is True
+    assert config.render_config.launch_args == {"renderer_num_workers": 7, "tool_call_parser": "hermes"}
     assert config.scheduler_config.kv_conductor_config.model_path == "/mnt/weight/qwen"
 
 
@@ -1504,12 +1506,11 @@ def test_invalid_render_timeout_is_rejected():
         config.validate_config()
 
 
-@pytest.mark.parametrize("num_workers", [0, True, "4"])
-def test_invalid_render_worker_count_is_rejected(num_workers):
+def test_invalid_render_launch_args_are_rejected():
     config = CoordinatorConfig()
-    config.render_config.renderer_num_workers = num_workers
+    config.render_config.launch_args = []
 
-    with pytest.raises(ValueError, match="render_config.renderer_num_workers"):
+    with pytest.raises(ValueError, match="render_config.launch_args"):
         config.validate_config()
 
 

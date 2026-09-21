@@ -8,6 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import json
 from typing import Any
 
 import lib.constant as C
@@ -19,6 +20,14 @@ ASCEND_DRIVER_VOLUME_NAME = "ascend-driver-lib64"
 ASCEND_DRIVER_PATH = "/usr/local/Ascend/driver/lib64"
 LOCAL_RENDER_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DEFAULT_RENDERER_NUM_WORKERS = 4
+MANAGED_RENDER_LAUNCH_ARGS = {
+    "disable_access_log_for_endpoints",
+    "host",
+    "model",
+    "model_tag",
+    "port",
+    "served_model_name",
+}
 RENDER_CACHE_ROOT = "/tmp/vllm-render-cache"  # nosec B108 - container-local cache
 CPU_RENDER_LAUNCHER = "from vllm.entrypoints.cli.main import main; main()"
 CPU_RENDER_SITECUSTOMIZE = """\
@@ -98,12 +107,50 @@ def _ensure_ascend_driver_mount(pod_spec: dict[str, Any], container: dict[str, A
         )
 
 
+def _serialize_launch_args(launch_args: dict[str, Any]) -> list[str]:
+    if not isinstance(launch_args, dict):
+        raise ValueError("render_config.launch_args must be an object")
+
+    args: list[str] = []
+    normalized_names: set[str] = set()
+    for name, value in launch_args.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("render_config.launch_args keys must be non-empty strings")
+        normalized_name = name.strip().lstrip("-").replace("-", "_").lower()
+        if not normalized_name or normalized_name in MANAGED_RENDER_LAUNCH_ARGS:
+            raise ValueError(f"render_config.launch_args.{name} is managed by Motor")
+        if normalized_name in normalized_names:
+            raise ValueError(f"render_config.launch_args contains duplicate argument: {name}")
+        normalized_names.add(normalized_name)
+
+        if value is None or value is False:
+            continue
+        args.append(f"--{normalized_name.replace('_', '-')}")
+        if value is True:
+            continue
+        if isinstance(value, dict):
+            args.append(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    args.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+                elif isinstance(item, (str, int, float)) and not isinstance(item, bool):
+                    args.append(str(item))
+                else:
+                    raise ValueError(f"render_config.launch_args.{name} contains an unsupported value")
+        elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            args.append(str(value))
+        else:
+            raise ValueError(f"render_config.launch_args.{name} must be null, bool, string, number, object, or array")
+    return args
+
+
 def _build_render_command(
     use_cpu_image: bool,
     model: str,
     served_model_names: list[str],
     port: int,
-    renderer_num_workers: int,
+    launch_args: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     render_args = [
         "vllm",
@@ -116,11 +163,10 @@ def _build_render_command(
         "0.0.0.0",
         "--port",
         str(port),
-        "--renderer-num-workers",
-        str(renderer_num_workers),
         "--disable-access-log-for-endpoints",
         "/health,/v1/chat/completions/derender,/v1/completions/derender",
     ]
+    render_args.extend(_serialize_launch_args(launch_args))
     if use_cpu_image:
         return ["vllm"], render_args[1:]
 
@@ -149,9 +195,9 @@ def _build_render_container(
     model: str,
     served_model_names: list[str],
     port: int,
-    renderer_num_workers: int,
+    launch_args: dict[str, Any],
 ) -> dict[str, Any]:
-    command, args = _build_render_command(use_cpu_image, model, served_model_names, port, renderer_num_workers)
+    command, args = _build_render_command(use_cpu_image, model, served_model_names, port, launch_args)
     env = [
         {C.NAME: "HF_HUB_OFFLINE", C.VALUE: "1"},
         {C.NAME: "TRANSFORMERS_OFFLINE", C.VALUE: "1"},
@@ -235,9 +281,10 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
     use_cpu_image = bool(image_name)
     image = image_name if use_cpu_image else deploy_config[C.IMAGE_NAME]
 
-    renderer_num_workers = render_config.get("renderer_num_workers", DEFAULT_RENDERER_NUM_WORKERS)
-    if not isinstance(renderer_num_workers, int) or isinstance(renderer_num_workers, bool) or renderer_num_workers <= 0:
-        raise ValueError("render_config.renderer_num_workers must be a positive integer")
+    configured_launch_args = render_config.get("launch_args", {})
+    if not isinstance(configured_launch_args, dict):
+        raise ValueError("render_config.launch_args must be an object")
+    launch_args = {"renderer_num_workers": DEFAULT_RENDERER_NUM_WORKERS, **configured_launch_args}
 
     model, served_model_names = resolve_render_model(user_config)
     container = _build_render_container(
@@ -246,7 +293,7 @@ def configure_render_sidecar(pod_spec: dict[str, Any], user_config: dict[str, An
         model,
         served_model_names,
         port,
-        renderer_num_workers,
+        launch_args,
     )
     weight_mount_path = deploy_config.get(C.WEIGHT_MOUNT_PATH, C.DEFAULT_WEIGHT_MOUNT_PATH)
     set_weight_mount(pod_spec, container, weight_mount_path)

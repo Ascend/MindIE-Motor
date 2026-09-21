@@ -201,13 +201,16 @@
     },
     "render_config": {
       "enable": false,
+      "enable_streaming": false,
       "endpoint": {
         "host": "127.0.0.1",
         "port": 8100
       },
       "timeout_ms": 5000,
-      "renderer_num_workers": 4,
-      "image_name": ""
+      "image_name": "",
+      "launch_args": {
+        "renderer_num_workers": 4
+      }
     },
     "token_obfuscation_config": {
       "enable": false,
