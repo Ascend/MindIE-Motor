@@ -9,7 +9,7 @@ Mooncake 池化有两种部署方式（`store_mode` 取值），区别在池化�
 - **embedded 模式（默认，`store_mode` 为空或 `"embedded"`）**：引擎进程自身贡献 `global_segment_size` 的池化内存，配置最简，适合小规模验证；引擎进程挂掉则其贡献的池化内存随之失效。本节介绍该模式，standalone 模式见[下节](#standalone-模式独立-store-进程)。
 - **standalone 模式（`store_mode="standalone"`）**：由独立 `mooncake_store_service` 进程贡献池化内存，与引擎生命周期解耦，适合生产部署。
 
-`kv_cache_store_config` 中配置 `"backend": "mooncake"`。可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），行为说明见 [KV 池化 README — 多套服务共享 kv_store](../README.md#多套服务共享-kv_store)。
+`kv_cache_store_config` 中配置 `"backend": "mooncake"`。可选配置 `target_job_id` 复用其他推理服务的 kv_store（值为目标服务的 `job_id`），行为说明见 [KV 池化 README — 多套服务共享 kv_store](../README.md#table_Connector)。
 
 ```json
 "kv_cache_store_config": {
@@ -37,7 +37,7 @@ Mooncake 池化有两种部署方式（`store_mode` 取值），区别在池化�
 
 ### 配置
 
-> 下方示例 `connectors[0]` 为标准 attention 配置；混合 attention 须换为 `MooncakeHybridConnector`，见 [选型说明](../README.md#pd-传输-connector-选型)。
+> 下方示例 `connectors[0]` 为标准 attention 配置；混合 attention 须换为 `MooncakeHybridConnector`，见 [P/D传输Connector选型](../README.md#table_Connector)。
 
 以下为 P/D 分离 + standalone 部署在 `user_config.json` 中的关键配置：
 

@@ -199,7 +199,7 @@ P/D传输Connector选型如下表所示：
     > [!NOTE] 说明
     > 所有 MemCache 内部配置项（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。请参见 [MemCache 后端文档](./backend/memcache.md)。
 
-3. （可选）<a id="step3"></a>配置多套服务共享 kv_store。
+3. （可选）<a id="step3"></a>配置多套服务共享kv_store。
 
     当集群中存在多套 K8s 推理服务（各自对应独立的 `job_id` / namespace）时，可通过 `target_job_id` 让后续服务复用第一套已部署的 kv_store，而无需重复拉起 MetaService / mooncake_master Pod。
 
@@ -274,7 +274,7 @@ P/D传输Connector选型如下表所示：
 
 2. 当前 Motor UCM 样例仍配置了 `kv_cache_store_config.backend: "mooncake"`，用于当前 deployer 生成 Mooncake kv_store/master 资源；这是部署适配配置，不表示 UCM 变成了 Mooncake Backend。UCM 的实际 Store 由 `UCMConnector` 中的 `store_pipeline` 决定。
    > [!NOTE] 说明
-   > 完整配置、存储挂载、部署及验证步骤请参见 [在 MindIE Motor 中部署 UCM](./backend/ucm.md)。
+   > 完整配置、存储挂载、部署及验证步骤请参见 [MindIE Motor 中部署 UCM](./backend/ucm.md)。
 3. 使用以下命令在 `examples/deployer` 目录下通过 `deploy.py` 脚本部署服务。
 
     ```bash

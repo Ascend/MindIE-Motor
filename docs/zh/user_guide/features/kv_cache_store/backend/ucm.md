@@ -1,4 +1,4 @@
-# 在 MindIE Motor 中部署 UCM
+# MindIE Motor 中部署 UCM
 
 [Unified Cache Manager（UCM）](https://github.com/ModelEngine-Group/unified-cache-management) 通过持久化和复用 KVCache，减少相同前缀的重复 Prefill 计算。MindIE Motor 当前接入的是 **UCM Prefix Cache**。
 
@@ -166,7 +166,7 @@ Prefill 的 `kv_transfer_config` 使用 `MultiConnector`，并将 UCM 配置内�
 
 `connectors[0]` 也可以按 PD 方案使用 MindIE Motor 当前已识别的其他 Mooncake 传输 Connector，例如 `MooncakeHybridConnector` 或 `MooncakeLayerwiseConnector`。不同 Connector 的执行模式和参数并不相同，应按 [PD 分离特性说明](../../../../design/pd_disaggregation.md#connector-驱动执行计划) 配置，并保证 Prefill 与 Decode 使用相互匹配的传输配置；`UCMConnector` 仍保持在 `connectors[1]`。
 
-> 混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`，见 [选型说明](../README.md#pd-传输-connector-选型)。
+> 混合 attention 模型（V4 系列）须用 `MooncakeHybridConnector`，见 [P/D传输Connector选型](../README.md#table_Connector)。
 
 ### 配置 Decode
 
@@ -234,5 +234,5 @@ kubectl -n mindie-motor logs "$PREFILL_POD" --since=10m | \
 
 ## 相关资料
 
-- [UCM vLLM-Ascend 快速开始](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm_ascend.html)
-- [UCM PipelineStore](https://ucm.readthedocs.io/en/latest/user-guide/prefix-cache/pipeline_store.html)
+- [UCM 首页](https://ucm.readthedocs.io/en/latest/)
+- [UCM 快速开始](https://ucm.readthedocs.io/en/latest/user-guide/quick_start)
