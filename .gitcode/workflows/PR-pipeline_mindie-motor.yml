@@ -24,7 +24,7 @@ stages:
 
       CodeCheck_pre_commit:
         name: CodeCheck_pre_commit
-        runs-on: [ self-hosted, default, x86, cpu=30 ]
+        runs-on: [ self-hosted, default, x86, cpu=32 ]
         container:
           image: swr.cn-north-4.myhuaweicloud.com/inference/ascend_mindie_ubuntu_x86:20260908_ubuntu24_3.2.0_cann9.1.0_torch2.1.0_py311
         steps:
@@ -44,7 +44,7 @@ stages:
 
       Detect_file_changes:
         name: Detect_file_changes
-        runs-on: [ self-hosted, default, x86, cpu=30 ]
+        runs-on: [ self-hosted, default, x86, cpu=32 ]
         container:
           image: swr.cn-north-4.myhuaweicloud.com/inference/ascend_mindie_ubuntu_x86:20260908_ubuntu24_3.2.0_cann9.1.0_torch2.1.0_py311
         outputs:
@@ -91,7 +91,7 @@ stages:
 
       sca-pr:
         name: sca-pr
-        runs-on: [ self-hosted, default, x86, cpu=30 ]
+        runs-on: [ self-hosted, default, x86, cpu=32 ]
         container:
           image: swr.cn-north-4.myhuaweicloud.com/inference/ascend_mindie_ubuntu_x86:20260704_ubuntu24_3.1.0_cann9.0.1_torch2.9.0_py311
           options: --user root
@@ -104,7 +104,7 @@ stages:
               project-name: MindIE
       malicious-scan:
         name: antipoison
-        runs-on: [ self-hosted, default, x86, cpu=30 ]
+        runs-on: [ self-hosted, default, x86, cpu=32 ]
         container:
           image: swr.cn-north-4.myhuaweicloud.com/inference/ascend_mindie_ubuntu_x86:20260704_ubuntu24_3.1.0_cann9.0.1_torch2.9.0_py311
           options: --user root
