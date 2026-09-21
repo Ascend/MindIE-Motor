@@ -94,8 +94,8 @@ Coordinator、Controller、KV Store、KV Conductor 和 MF Store 需要运行在�
 - `KV_CONDUCTOR_NODE`
 - `MF_STORE_NODE`
 
-`COORDINATOR_INFER_SERVICE` 和 `COORDINATOR_OBS_SERVICE` 自动使用
-`COORDINATOR_SERVICE`，不需要单独配置。
+Motor 在未设置 `COORDINATOR_INFER_SERVICE` 和 `COORDINATOR_OBS_SERVICE` 时会自动使用
+`COORDINATOR_SERVICE`，Slurm 不再重复传入这两个变量。
 
 ## 启动流程
 
@@ -150,8 +150,9 @@ ConfigMap 数据写入作业脚本后，脚本大小不能超过 Slurm 的 `MaxS
 Job ID 和 Task ID 用于隔离不同作业和不同节点上的运行目录。ConfigMap 以只读方式挂载到
 Apptainer 容器中的相同绝对路径。标准输出和标准错误写入独立日志目录下的 `.log` 文件。
 
-任务退出时会删除本 task 的 ConfigMap 和分发脚本，日志文件保留。日志目录位于每个计算节点，
-查看日志时需要登录对应节点。如需长期保留日志，应将日志路径放在可靠的本地存储上。
+任务退出时会删除本 task 的目录和当前作业的分发脚本；节点上最后一个任务退出后，还会删除已经
+为空的 deployment 目录。日志文件保留，查看日志时需要登录对应节点。如需长期保留日志，应将
+日志路径放在可靠的本地存储上。
 
 ## Engine 作业
 
@@ -221,5 +222,5 @@ python3 slurm_deploy.py stop
 ```
 
 `stop` 对 `slurm_deployment.json` 中的 Job ID 执行 `scancel --quiet`。重复执行不会因为作业已经结束
-而报错。`stop` 不修改提交节点上的 workspace。计算节点上的任务退出时会清理自己的 ConfigMap
-和分发脚本，并保留 `.log` 文件。
+而报错。`stop` 不修改提交节点上的 workspace。计算节点上的任务退出时会清理自己的任务目录
+和分发脚本；最后一个任务负责删除空的 deployment 目录，并保留 `.log` 文件。

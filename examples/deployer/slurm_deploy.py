@@ -379,6 +379,7 @@ def _management_nodes(args: argparse.Namespace) -> dict[str, str]:
 def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namespace, deployment_id: str) -> dict:
     """Set the environment variables used by Slurm jobs and containers."""
     deploy = user_config[C.MOTOR_DEPLOY_CONFIG]
+    kv_service_enabled = k8s_utils.g_kv_store_enabled or k8s_utils.g_kv_conductor_enabled
     hardware_type = _as_str(deploy.get(C.HARDWARE_TYPE))
     kv_backend = _as_str(kv_store.get(C.KV_STORE_BACKEND), C.DEFAULT_KV_STORE_BACKEND)
     kv_port = _as_str(kv_store.get(C.KV_CACHE_STORE_PORT), str(C.DEFAULT_KV_CACHE_STORE_PORT))
@@ -392,15 +393,11 @@ def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namesp
 
     values = {
         "COORDINATOR_SERVICE": args.coordinator_service,
-        "COORDINATOR_INFER_SERVICE": args.coordinator_service,
-        "COORDINATOR_OBS_SERVICE": args.coordinator_service,
         "CONTROLLER_SERVICE": args.controller_service,
-        "KVS_MASTER_SERVICE": args.kvs_master_service,
-        "KV_CONDUCTOR_SERVICE": args.kv_conductor_service,
-        "MF_STORE_SERVICE": args.mf_store_service,
+        "KVS_MASTER_SERVICE": args.kvs_master_service if kv_service_enabled else "",
+        "KV_CONDUCTOR_SERVICE": args.kv_conductor_service if k8s_utils.g_kv_conductor_enabled else "",
         "IMAGE_NAME": _as_str(deploy.get(C.IMAGE_NAME)),
         "MODEL_PATH": _as_str(deploy.get(C.WEIGHT_MOUNT_PATH)),
-        "HARDWARE_TYPE": hardware_type,
         "ENGINE_TYPE": k8s_utils.g_engine_type,
         "KV_STORE_ENABLED": str(int(k8s_utils.g_kv_store_enabled)),
         "KV_CONDUCTOR_ENABLED": str(int(k8s_utils.g_kv_conductor_enabled)),
@@ -417,6 +414,7 @@ def _export_runtime_env(user_config: dict, kv_store: dict, args: argparse.Namesp
         "MMC_LOCAL_SERVICE_MODE": _as_str(kv_store.get(C.MMC_LOCAL_SERVICE_CONFIG_KEY)),
         "KV_CONDUCTOR_PORT": _as_str(user_config.get(C.KV_CONDUCTOR_CONFIG, {}).get(C.KV_CONDUCTOR_PORT, 0)),
         "ASCEND_MF_STORE_PORT": args.ascend_mf_store_port,
+        "ASCEND_MF_STORE_URL": "",
         "ASCEND_MF_TRANSFER_PROTOCOL": "device_rdma" if hardware_type in C.HARDWARE_TYPE_A2 else "sdma",
         "CONFIG_PATH": CONTAINER_CONFIG_PATH,
         "SLURM_DEPLOYMENT_ID": deployment_id,

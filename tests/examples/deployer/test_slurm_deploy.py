@@ -139,20 +139,77 @@ def test_slurm_job_broadcasts_configmap_to_configurable_node_local_workspace():
         'srun --ntasks-per-node=1 mkdir -m 700 -p "$SLURM_DEPLOYMENT_PATH" "$SLURM_DEPLOYMENT_LOG_PATH"' in job_script
     )
     assert '${SLURM_DEPLOYMENT_PATH}/mindie_motor_${SLURM_JOB_ID}.sh' in job_script
-    assert '${SLURM_DEPLOYMENT_PATH}/mindie_motor_${SLURM_JOB_ID}_${SLURM_PROCID:-0}' in job_script
-    assert 'export CONFIGMAP_PATH="$LOCAL_WORKSPACE_PATH/configmap"' in job_script
+    assert '${SLURM_DEPLOYMENT_PATH}/mindie_motor_${SLURM_JOB_ID}_${SLURM_PROCID:-0}/configmap' in job_script
+    assert "LOCAL_WORKSPACE_PATH" not in job_script
+    assert 'rm -rf "${CONFIGMAP_PATH%/configmap}"' in job_script
+    assert 'rmdir "$SLURM_DEPLOYMENT_PATH"' in job_script
     assert '--bind "$CONFIGMAP_PATH:$CONFIGMAP_PATH:ro"' in job_script
     assert 'LOCAL_LOG_FILE="$SLURM_DEPLOYMENT_LOG_PATH/${ROLE}_${SLURM_JOB_ID}_task' in job_script
     assert 'LOCAL_LOG_DIR=' not in job_script
     assert 'exec >>"$LOCAL_LOG_FILE" 2>&1' in job_script
-    assert 'rm -rf "$LOCAL_WORKSPACE_PATH/configmap"' in job_script
     assert "LOG_RUN_DIR" not in job_script
     assert "srun -o" not in job_script
     assert "--no-mount tmp" not in job_script
     assert "set_env_docker.py" not in job_script
-    assert '${SERVICE_RUNTIME_ENV[@]+"${SERVICE_RUNTIME_ENV[@]}"}' in job_script
-    assert '${KV_RUNTIME_ENV[@]+"${KV_RUNTIME_ENV[@]}"}' in job_script
-    assert '${MF_RUNTIME_ENV[@]+"${MF_RUNTIME_ENV[@]}"}' in job_script
+    assert '"${RUNTIME_ENV[@]}"' in job_script
+    assert "SERVICE_RUNTIME_ENV" not in job_script
+    assert "KV_RUNTIME_ENV" not in job_script
+    assert "MF_RUNTIME_ENV" not in job_script
+    assert "NETWORK_RUNTIME_ENV" not in job_script
+    assert "ENABLE_IPC_HOST" not in job_script
+    assert "CONTAINER_NAME" not in job_script
+    assert '--env "ENGINE_TYPE=$ENGINE_TYPE"' in job_script
+    assert "apptainer exec \\\n  --cleanenv \\" in job_script
+
+
+def test_runtime_env_clears_disabled_optional_service_addresses(monkeypatch):
+    user_config = _user_config()
+    args = argparse.Namespace(
+        coordinator_service="10.0.0.1",
+        controller_service="10.0.0.2",
+        kvs_master_service=slurm_deploy.KVS_MASTER_SERVICE,
+        kv_conductor_service=slurm_deploy.KV_CONDUCTOR_SERVICE,
+        mf_store_service=slurm_deploy.MF_STORE_SERVICE,
+        ascend_mf_store_port="50089",
+        distribution_path="/data/slurm",
+        log_path="/data/slurm-logs",
+    )
+    monkeypatch.setattr(slurm_deploy.k8s_utils, "g_kv_store_enabled", False)
+    monkeypatch.setattr(slurm_deploy.k8s_utils, "g_kv_conductor_enabled", False)
+    monkeypatch.setattr(slurm_deploy.k8s_utils, "g_mf_store_enabled", False)
+    monkeypatch.setenv("ASCEND_MF_STORE_URL", "tcp://stale-mf-store:50089")
+
+    runtime_env = slurm_deploy._export_runtime_env(user_config, {}, args, "test-deployment")
+
+    assert runtime_env["KVS_MASTER_SERVICE"] == ""
+    assert runtime_env["KV_CONDUCTOR_SERVICE"] == ""
+    assert "MF_STORE_SERVICE" not in runtime_env
+    assert runtime_env["ASCEND_MF_STORE_URL"] == ""
+
+
+def test_runtime_env_preserves_enabled_optional_service_addresses(monkeypatch):
+    user_config = _user_config()
+    user_config["kv_conductor_config"] = {"http_server_port": 14444}
+    args = argparse.Namespace(
+        coordinator_service="10.0.0.1",
+        controller_service="10.0.0.2",
+        kvs_master_service="10.0.0.3",
+        kv_conductor_service="10.0.0.4",
+        mf_store_service="10.0.0.5",
+        ascend_mf_store_port="50089",
+        distribution_path="/data/slurm",
+        log_path="/data/slurm-logs",
+    )
+    monkeypatch.setattr(slurm_deploy.k8s_utils, "g_kv_store_enabled", True)
+    monkeypatch.setattr(slurm_deploy.k8s_utils, "g_kv_conductor_enabled", True)
+    monkeypatch.setattr(slurm_deploy.k8s_utils, "g_mf_store_enabled", True)
+
+    runtime_env = slurm_deploy._export_runtime_env(user_config, {"backend": "memcache"}, args, "test-deployment")
+
+    assert runtime_env["KVS_MASTER_SERVICE"] == "10.0.0.3"
+    assert runtime_env["KV_CONDUCTOR_SERVICE"] == "10.0.0.4"
+    assert "MF_STORE_SERVICE" not in runtime_env
+    assert runtime_env["ASCEND_MF_STORE_URL"] == "tcp://10.0.0.5:50089"
 
 
 def test_generated_job_script_contains_complete_configmap(tmp_path, monkeypatch):
@@ -304,8 +361,7 @@ def test_start_without_k8s_deploy_mode_prepares_once_and_submits_roles(tmp_path,
     assert os.environ["SLURM_DEPLOYMENT_ID"].startswith("slurm-test_")
     assert os.environ["SLURM_DISTRIBUTION_PATH"] == "/data/slurm"
     assert os.environ["SLURM_LOG_PATH"] == "/data/slurm-logs"
-    assert os.environ["COORDINATOR_INFER_SERVICE"] == args.coordinator_service
-    assert os.environ["COORDINATOR_OBS_SERVICE"] == args.coordinator_service
+    assert os.environ["COORDINATOR_SERVICE"] == args.coordinator_service
     assert [label for label, _args in submitted] == [
         "coordinator",
         "controller",
@@ -330,6 +386,11 @@ def test_start_without_k8s_deploy_mode_prepares_once_and_submits_roles(tmp_path,
         "union": 40,
     }
     assert state["service_jobs"] == {"coordinator": "101", "controller": "102"}
+    assert "COORDINATOR_INFER_SERVICE" not in state["runtime_env"]
+    assert "COORDINATOR_OBS_SERVICE" not in state["runtime_env"]
+    assert "MF_STORE_SERVICE" not in state["runtime_env"]
+    assert "HARDWARE_TYPE" not in state["runtime_env"]
+    assert state["runtime_env"]["ENGINE_TYPE"] == "vllm"
     assert state["engine_jobs"]["prefill"] == {"0": "103"}
     assert state["engine_jobs"]["decode"] == {"0": "104"}
 
