@@ -36,6 +36,7 @@ set_coordinator_env
 # not necessary if no ccae
 python3 -m ccae_reporter.run Coordinator &
 motor_track_helper $!
+
 ROLE=coordinator python3 -m motor.coordinator.main &
 motor_track_child $!
 

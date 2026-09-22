@@ -242,7 +242,7 @@ Render 镜像具备匹配的 Derender 能力：非流式解析要求 vLLM >= 0.2
 - `enable_streaming` 是实验性开关，默认为 `false`，此时流式请求沿用原生链路。上游 vLLM 的流式 Derender 仍在演进，高并发性能及 reasoning/tool call 等高级场景暂不作为稳定能力保证；可在验证具体 vLLM 版本后按需开启尝鲜。流式请求要求 vLLM >= 0.27.0，非流式请求要求 vLLM >= 0.24.0。
 - 非流式 Chat Completions 和 Completions 支持完整 Token In/Token Out；流式 Chat Completions 及 Handoff、Union 下的单/多 prompt Completions 支持完整链路。
 - 单 prompt 重调度继续使用 token-only replay；多 prompt 已输出后的逐 prompt replay、Trigger 多 prompt、SGLang 和本地 tokenizer 沿用原有边界。
-- Render 不可用、超时或接口不支持时回退本地 tokenizer；请求校验错误（400/422，以及带结构化错误响应的 404）和 Derender 失败直接返回客户端。
+- 请求级 Render 超时或接口不支持时回退本地 tokenizer；请求校验错误（400/422，以及带结构化错误响应的 404）和 Derender 失败直接返回客户端。Docker 场景下 Coordinator 与 Render 同生共死：Render 创建失败则不建主容器，主容器创建失败则删除 Render；`--start` 重启 Render 兄弟容器，Coordinator 退出则停止 Render；Render 首次就绪后若持续心跳失败，Coordinator 也退出。
 - 流式 Derender 按 chunk 无状态调用；长 prompt 或高并发场景需评估 Sidecar 的 CPU 与通信开销。
 
 数据混淆权重可通过 `motor_coordinator_config.token_obfuscation_config.enable=true` 开启 token 混淆。

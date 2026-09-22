@@ -15,8 +15,10 @@ Using FastAPI TestClient for testing
 
 # pylint: disable=attribute-defined-outside-init,reimported
 
+import asyncio
 import json
 import os
+import signal
 import tempfile
 import pytest
 from fastapi.testclient import TestClient
@@ -2209,6 +2211,7 @@ async def test_render_health_observer_retries_until_ready():
     server = object.__new__(ManagementServer)
     server.coordinator_config = config
     server._render_health_task = None
+    server._daemon_pid = 12345
 
     render_client = MagicMock()
     render_client.health = AsyncMock(side_effect=[False, True])
@@ -2217,6 +2220,8 @@ async def test_render_health_observer_retries_until_ready():
     with (
         patch("motor.coordinator.api_server.management_server.VLLMRenderClient", return_value=render_client),
         patch("motor.coordinator.api_server.management_server._RENDER_HEALTH_RETRY_SECONDS", 0),
+        patch("motor.coordinator.api_server.management_server._in_kubernetes", return_value=True),
+        patch("motor.coordinator.api_server.management_server.os.kill") as kill,
     ):
         server._start_render_health_observer()
         task = server._render_health_task
@@ -2227,6 +2232,72 @@ async def test_render_health_observer_retries_until_ready():
     assert server._render_health_task is task
     assert render_client.health.await_count == 2
     render_client.aclose.assert_awaited_once()
+    kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+async def test_render_health_observer_docker_fail_closed_after_ready():
+    config = CoordinatorConfig()
+    config.render_config.enable = True
+    server = object.__new__(ManagementServer)
+    server.coordinator_config = config
+    server._render_health_task = None
+    server._daemon_pid = 12345
+
+    render_client = MagicMock()
+    render_client.health = AsyncMock(side_effect=[True, False, False, False])
+    render_client.aclose = AsyncMock()
+
+    with (
+        patch("motor.coordinator.api_server.management_server.VLLMRenderClient", return_value=render_client),
+        patch("motor.coordinator.api_server.management_server._RENDER_HEALTH_RETRY_SECONDS", 0),
+        patch("motor.coordinator.api_server.management_server._in_kubernetes", return_value=False),
+        patch("motor.coordinator.api_server.management_server.os.kill") as kill,
+    ):
+        server._start_render_health_observer()
+        await server._render_health_task
+
+    assert render_client.health.await_count == 4
+    kill.assert_called_once_with(12345, signal.SIGTERM)
+    render_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+async def test_render_health_observer_does_not_kill_before_ready():
+    config = CoordinatorConfig()
+    config.render_config.enable = True
+    server = object.__new__(ManagementServer)
+    server.coordinator_config = config
+    server._render_health_task = None
+    server._daemon_pid = 12345
+
+    render_client = MagicMock()
+    render_client.health = AsyncMock(return_value=False)
+    render_client.aclose = AsyncMock()
+
+    with (
+        patch("motor.coordinator.api_server.management_server.VLLMRenderClient", return_value=render_client),
+        patch("motor.coordinator.api_server.management_server._RENDER_HEALTH_RETRY_SECONDS", 0),
+        patch("motor.coordinator.api_server.management_server._in_kubernetes", return_value=False),
+        patch("motor.coordinator.api_server.management_server.os.kill") as kill,
+    ):
+        server._start_render_health_observer()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task = server._render_health_task
+        assert task is not None
+        assert not task.done()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    kill.assert_not_called()
+    assert render_client.health.await_count >= 1
 
 
 @pytest.mark.asyncio

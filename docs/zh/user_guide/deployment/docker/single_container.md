@@ -92,6 +92,26 @@
 
     将准备好的配置文件（user_config.json、env.json）存放于启动脚本的examples/infer_engines/vllm目录下。
 
+## 启用 Render 特性（可选）
+
+修改以下配置可以开启render特性。特性开启后，部署单容器服务时，`docker_deploy.py` 会在宿主机额外创建名为 `{NAME}-vllm-render` 的新容器（`{NAME}` 即 `--container-name`），并在其中运行 vLLM Render 服务。当用户终止服务时，请注意回收该容器。Render 创建失败则不再创建主容器；主容器创建失败会删掉本次拉起的 Render。Docker 场景下 Coordinator 与 Render 同生共死：容器内 `--start` 会 `docker restart` Render 兄弟容器；Coordinator 退出时 `docker stop` Render。Render 首次就绪后持续心跳，连续失败则 Coordinator 跟随退出。为此会把宿主机 `/var/run/docker.sock` 挂进单容器；已创建的旧容器需重建后才具备该挂载。
+
+若该容器已经存在，部署脚本不会覆盖它。进入容器后执行：
+
+```bash
+python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/examples/infer_engines/vllm --start --role render
+```
+
+```json
+{
+  "motor_coordinator_config": {
+    "render_config": {
+      "enable": true
+    }
+  }
+}
+```
+
 ## 启动服务
 
 在本机 `examples/deployer` 目录下执行以下命令：

@@ -17,6 +17,7 @@ import re
 import shlex
 import stat
 import sys
+from collections.abc import Callable
 from datetime import datetime
 
 import lib.constant as C
@@ -47,8 +48,15 @@ def _examples_root(deployer_dir: str) -> str:
 def _in_place_workspace_slot(role: str | None, job_name: str | None) -> str:
     if not role:
         return "single"
-    if D.engine_role_of(role) or role == "kv_store":
-        return (job_name or "").strip() or ("kvs" if role == "kv_store" else D.engine_role_of(role))
+    if D.engine_role_of(role) or role in ("kv_store", D.ROLE_RENDER):
+        named = (job_name or "").strip()
+        if named:
+            return named
+        if role == "kv_store":
+            return "kvs"
+        if role == D.ROLE_RENDER:
+            return "render"
+        return D.engine_role_of(role)
     return "ctrl"
 
 
@@ -183,12 +191,13 @@ def preflight(
             )
             ok = False
     elif params.deploy_mode == C.DEPLOY_MODE_SINGLE_CONTAINER:
-        logger.error(
-            "motor_deploy_config.deploy_mode is '%s'; omit --role for single-container, "
-            "or set deploy_mode to a multi-container value (for example infer_service_set).",
-            params.deploy_mode,
-        )
-        ok = False
+        if identity.role != D.ROLE_RENDER:
+            logger.error(
+                "motor_deploy_config.deploy_mode is '%s'; omit --role for single-container, "
+                "or set deploy_mode to a multi-container value (for example infer_service_set).",
+                params.deploy_mode,
+            )
+            ok = False
 
     config_for_ports = user_config
     if identity is not None and engine_ports and engine_ports.specified():
@@ -304,6 +313,7 @@ def _prepare_and_render(args, deployer_dir: str):
             identity=identity,
             nic_name=getattr(args, "nic_name", None),
             pod_ip=getattr(args, "pod_ip", None),
+            deployer_dir=deployer_dir,
         ),
         executable=True,
     )
@@ -355,9 +365,53 @@ def _new_run_log_path(workspace: str, identity: D.DockerRuntimeIdentity | None =
         return path
 
 
+def _docker_render_stop_hook(args) -> Callable[[], None] | None:
+    from lib.generator.render import is_render_enabled, role_needs_docker_render
+
+    if not role_needs_docker_render(getattr(args, "role", None)):
+        return None
+    user_config_path, _env_config_path = resolve_config_paths(
+        args.config_dir, args.user_config_path, args.env_config_path
+    )
+    if not is_render_enabled(read_json(user_config_path)):
+        return None
+    main_name = _container_name_from_args_or_env(args)
+    if not main_name:
+        logger.warning("Render lifecycle skipped: --container-name / NAME is empty")
+        return None
+
+    def stop() -> None:
+        D.stop_docker_render_sidecar(main_name)
+
+    return stop
+
+
+def _restart_docker_render_with_coordinator(args) -> int:
+    from lib.generator.render import is_render_enabled, role_needs_docker_render
+
+    if not role_needs_docker_render(getattr(args, "role", None)):
+        return 0
+    user_config_path, _env_config_path = resolve_config_paths(
+        args.config_dir, args.user_config_path, args.env_config_path
+    )
+    if not is_render_enabled(read_json(user_config_path)):
+        return 0
+    main_name = _container_name_from_args_or_env(args)
+    if not main_name:
+        logger.error("Render is enabled but --container-name / NAME is empty")
+        return 1
+    try:
+        D.restart_docker_render_sidecar(main_name)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+    return 0
+
+
 def _start_in_place(
     workspace: str,
     identity: D.DockerRuntimeIdentity | None = None,
+    on_stop: Callable[[], None] | None = None,
 ) -> int:
     start_motor_path = os.path.join(workspace, "start_motor.sh")
     if not os.path.isfile(start_motor_path):
@@ -367,7 +421,7 @@ def _start_in_place(
     if log_path is None:
         return 1
     logger.info("starting Motor in this environment via %s", start_motor_path)
-    return run_in_place(start_motor_path, log_path, format_restart_command())
+    return run_in_place(start_motor_path, log_path, format_restart_command(), on_stop=on_stop)
 
 
 def _print_in_place_banner(
@@ -393,7 +447,9 @@ def run(args, deployer_dir: str) -> int:
         return 1
     params, workspace, identity = _prepare_and_render(args, deployer_dir)
     _print_in_place_banner(workspace, identity, params)
-    return _start_in_place(workspace, identity=identity)
+    if _restart_docker_render_with_coordinator(args) != 0:
+        return 1
+    return _start_in_place(workspace, identity=identity, on_stop=_docker_render_stop_hook(args))
 
 
 def _parse_role(value: str) -> str:
@@ -426,6 +482,11 @@ def resolve_enter_env(args, deployer_dir: str) -> dict[str, str]:
     )
     env = D.create_env_from_config(user_config_path, deployer_dir)
     env["NAME"] = name
+    if getattr(args, "role", None) == D.ROLE_RENDER:
+        from lib.generator.render import resolve_render_image
+
+        image, _use_cpu = resolve_render_image(read_json(user_config_path))
+        env["IMAGE"] = image
     return env
 
 
@@ -521,6 +582,9 @@ def enter_docker_run_template(role: str | None, hardware_type: str | None = None
     if engine == "kv_store":
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_KVS
+    if engine == D.ROLE_RENDER:
+        D.npu_docker_card_count(hardware_type)
+        return C.ENTER_DOCKER_RUN_CTRL
     if D.npu_docker_card_count(hardware_type) == 16:
         return C.ENTER_DOCKER_RUN_A3
     if hardware_type in C.HARDWARE_TYPE_A5:
@@ -608,6 +672,8 @@ def _dshm_size_from_args(args) -> str | None:
 
 
 def extra_create_bind_paths(args, examples_dir: str) -> list[str]:
+    from lib.generator.render import role_needs_docker_render
+
     paths: list[str] = []
     config_dir = _config_dir_from_args(args)
     if config_dir:
@@ -616,6 +682,8 @@ def extra_create_bind_paths(args, examples_dir: str) -> list[str]:
         value = (getattr(args, attr, None) or "").strip()
         if value:
             paths.append(os.path.dirname(os.path.abspath(value)))
+    if role_needs_docker_render(getattr(args, "role", None)):
+        paths.append(D.DOCKER_SOCK)
     extra: list[str] = []
     seen: set[str] = set()
     for path in paths:
@@ -698,6 +766,22 @@ def attach_one_click_command(template: str, inner: str) -> str:
     return body[: -len(_IMAGE_BASH)] + f'"$IMAGE" bash -c {shlex.quote(script)}\n'
 
 
+def attach_render_create_rollback(command: str, main_name: str, render_name: str) -> str:
+    """Remove Render if ``docker run`` fails before the main container exists."""
+    main_q = shlex.quote(main_name)
+    render_q = shlex.quote(render_name)
+    return (
+        f"{command.rstrip()}\n"
+        "docker_run_status=$?\n"
+        'if [ "$docker_run_status" -ne 0 ]; then\n'
+        f"  if ! docker inspect {main_q} >/dev/null 2>&1; then\n"
+        f"    docker rm -f {render_q} >/dev/null 2>&1 || true\n"
+        "  fi\n"
+        '  exit "$docker_run_status"\n'
+        "fi\n"
+    )
+
+
 def _validate_one_click_identity(args, deployer_dir: str) -> None:
     user_config_path, _env_config_path = resolve_config_paths(
         args.config_dir, args.user_config_path, args.env_config_path
@@ -750,6 +834,40 @@ def _validate_host_create(name: str, image: str) -> None:
         raise ValueError(f"Image not found locally: {image} (docker image inspect failed).")
 
 
+def _ensure_render_sidecar_on_host(args, deployer_dir: str, main_name: str) -> tuple[int, str | None]:
+    """Create Docker Render sibling after main-container checks pass.
+
+    Failure aborts main-container create. Returns ``(0, name)`` when a sibling
+    exists, ``(0, None)`` when Render is not needed, or ``(1, None)`` on error.
+    """
+    from lib.generator.render import is_render_enabled, role_needs_docker_render
+
+    try:
+        user_config_path, _env_config_path = resolve_config_paths(
+            args.config_dir, args.user_config_path, args.env_config_path
+        )
+        user_config = read_json(user_config_path)
+        render_name = D.ensure_docker_render_sidecar(
+            main_name,
+            user_config,
+            getattr(args, "role", None),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.error("%s", exc)
+        return 1, None
+    if render_name:
+        logger.info(
+            "Docker Render sidecar ready as %s (host network; Coordinator uses 127.0.0.1).",
+            render_name,
+        )
+        return 0, render_name
+    role = getattr(args, "role", None)
+    if role_needs_docker_render(role) and is_render_enabled(user_config):
+        logger.error("Render sidecar was not created; skip main container %s", main_name)
+        return 1, None
+    return 0, None
+
+
 def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
     try:
         env = resolve_enter_env(args, deployer_dir)
@@ -758,7 +876,8 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
         return 1
     if start_service:
         try:
-            D.require_pod_ip_and_nic(getattr(args, "pod_ip", None), getattr(args, "nic_name", None))
+            if getattr(args, "role", None) != D.ROLE_RENDER:
+                D.require_pod_ip_and_nic(getattr(args, "pod_ip", None), getattr(args, "nic_name", None))
             _validate_one_click_identity(args, deployer_dir)
         except (KeyError, TypeError, ValueError) as exc:
             logger.error("%s", exc)
@@ -812,10 +931,22 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
             "This docker-run template must not contain --device. Edit ENTER_DOCKER_RUN_CTRL or ENTER_DOCKER_RUN_KVS."
         )
         return 1
+    render_rc, render_name = _ensure_render_sidecar_on_host(args, deployer_dir, env["NAME"])
+    if render_rc != 0:
+        return 1
+    if render_name:
+        command = attach_render_create_rollback(command, env["NAME"], render_name)
     print(command, end="", flush=True)
     merged = os.environ.copy()
     merged.update(env)
-    os.execvpe("/bin/bash", ["bash", "-c", command], merged)
+    try:
+        os.execvpe("/bin/bash", ["bash", "-c", command], merged)
+    except OSError:
+        if render_name:
+            D.remove_docker_render_sidecar(env["NAME"])
+        return 1
+    if render_name:
+        D.remove_docker_render_sidecar(env["NAME"])
     return 1
 
 
@@ -853,6 +984,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Start one role. Omit for single-container. "
         "Dedicated management container: --role coordinator,controller "
         "(no NPU devices). Engine create attaches NPUs. "
+        "--role render creates/starts the vLLM Render sibling (no NPU). "
         "Control-plane and engine cannot share a container. "
         "One-click (no --create) needs the same identity flags as --start. "
         "Valid: " + ", ".join(D.DOCKER_MULTI_ROLES) + ".",
@@ -905,7 +1037,7 @@ def parse_arguments() -> argparse.Namespace:
         dest="start",
         help="Prepare the workspace and start Motor in this environment. "
         "Does not create a container. Pass this after you are inside a container. "
-        "Requires --pod-ip and --nic-name.",
+        "Requires --pod-ip and --nic-name except --role render.",
     )
     parser.add_argument(
         "--create",

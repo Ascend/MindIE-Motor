@@ -90,6 +90,7 @@ class DockerDeployTests(unittest.TestCase):
         self.assertEqual(
             _parse("--config_dir", "/mnt/motor", "--role", "coordinator,controller").role, "coordinator_controller"
         )
+        self.assertEqual(_parse("--config_dir", "/mnt/motor", "--role", "render").role, "render")
 
         with patch.object(sys, "stderr"):
             with self.assertRaises(SystemExit):
@@ -101,6 +102,7 @@ class DockerDeployTests(unittest.TestCase):
         self.assertNotIn("--device", ctrl)
         self.assertIs(docker_deploy.enter_docker_run_template("prefill", "800I_A2"), a2)
         self.assertIs(docker_deploy.enter_docker_run_template("coordinator_controller", "800I_A2"), ctrl)
+        self.assertIs(docker_deploy.enter_docker_run_template("render", "800I_A2"), ctrl)
         filtered = docker_deploy.apply_enter_devices(a2, "0,3", attach_npu=True)
         self.assertIn("--device /dev/davinci0", filtered)
         self.assertNotIn("--device /dev/davinci1", filtered)
@@ -120,6 +122,21 @@ class DockerDeployTests(unittest.TestCase):
             )
         self.assertEqual(ctrl.role, "coordinator_controller")
         self.assertFalse(ctrl.attach_npu)
+        render = D.resolve_runtime_identity(
+            _pd_config(),
+            role="render",
+            job_name=None,
+            pod_ip=None,
+            coordinator_ip=None,
+            controller_ip=None,
+            kv_store_ip=None,
+            kv_store_enabled=False,
+            nic_name=None,
+        )
+        self.assertEqual(render.role, "render")
+        self.assertFalse(render.attach_npu)
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            D.normalize_docker_role("render,coordinator")
         with self.assertRaisesRegex(ValueError, "cannot share a container"):
             D.normalize_docker_role("coordinator_controller+prefill")
         self.assertEqual(
@@ -154,9 +171,11 @@ class DockerDeployTests(unittest.TestCase):
             patch.object(D, "docker_available", return_value=True),
             patch.object(D, "container_exists", return_value=True),
             patch.object(os, "execvpe") as execvpe,
+            patch.object(docker_deploy, "_ensure_render_sidecar_on_host") as ensure_render,
         ):
             self.assertEqual(docker_deploy._run_enter(args, "/tmp/deployer"), 1)
         execvpe.assert_not_called()
+        ensure_render.assert_not_called()
 
     def test_signal_services_only_kills_mocked_pids(self):
         leftover = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "vllm serve leftover"])
@@ -230,6 +249,194 @@ def _multi_pod_pd_config():
             },
         },
     }
+
+
+class DockerRenderLifecycleTests(unittest.TestCase):
+    def test_coordinator_create_binds_docker_sock(self):
+        args = type(
+            "A",
+            (),
+            {
+                "config_dir": "",
+                "user_config_path": "",
+                "env_config_path": "",
+                "role": "coordinator",
+            },
+        )()
+        paths = docker_deploy.extra_create_bind_paths(args, "/examples")
+        self.assertIn(D.DOCKER_SOCK, paths)
+
+    def test_prefill_create_binds_skips_docker_sock(self):
+        args = type(
+            "A",
+            (),
+            {
+                "config_dir": "",
+                "user_config_path": "",
+                "env_config_path": "",
+                "role": "prefill",
+            },
+        )()
+        paths = docker_deploy.extra_create_bind_paths(args, "/examples")
+        self.assertNotIn(D.DOCKER_SOCK, paths)
+
+    def test_restart_docker_render_sidecar_uses_cli(self):
+        with (
+            patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "container_exists", return_value=True),
+            patch.object(D, "_docker") as docker,
+        ):
+            docker.return_value = subprocess.CompletedProcess(["docker"], 0, "", "")
+            self.assertEqual(D.restart_docker_render_sidecar("motor-cc"), "motor-cc-vllm-render")
+        docker.assert_called_once_with("restart", "-t", "5", "motor-cc-vllm-render")
+
+    def test_stop_docker_render_sidecar_uses_cli(self):
+        with (
+            patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "container_exists", return_value=True),
+            patch.object(D, "_docker") as docker,
+        ):
+            docker.return_value = subprocess.CompletedProcess(["docker"], 0, "", "")
+            D.stop_docker_render_sidecar("motor-cc")
+        docker.assert_called_once_with("stop", "-t", "5", "motor-cc-vllm-render")
+
+    def test_restart_docker_render_sidecar_missing_container(self):
+        with (
+            patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "container_exists", return_value=False),
+        ):
+            with self.assertRaisesRegex(ValueError, "not found"):
+                D.restart_docker_render_sidecar("motor-cc")
+
+    def test_restart_docker_render_sidecar_uses_unix_api(self):
+        with (
+            patch.object(D, "docker_available", return_value=False),
+            patch.object(D, "_render_container_present", return_value=True),
+            patch.object(os.path, "exists", return_value=True),
+            patch.object(D, "_docker_http", return_value=(204, b"")) as http,
+        ):
+            D.restart_docker_render_sidecar("motor-cc")
+        method, path = http.call_args.args[:2]
+        self.assertEqual(method, "POST")
+        self.assertIn("motor-cc-vllm-render", path)
+        self.assertIn("/restart", path)
+
+    def test_remove_docker_render_sidecar_uses_cli(self):
+        with (
+            patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "container_exists", return_value=True),
+            patch.object(D, "_docker") as docker,
+        ):
+            docker.return_value = subprocess.CompletedProcess(["docker"], 0, "", "")
+            D.remove_docker_render_sidecar("motor-cc")
+        docker.assert_called_once_with("rm", "-f", "motor-cc-vllm-render")
+
+    def test_attach_render_create_rollback_only_if_main_missing(self):
+        wrapped = docker_deploy.attach_render_create_rollback(
+            'docker run -it --name "$NAME" "$IMAGE" bash\n',
+            "motor-cc",
+            "motor-cc-vllm-render",
+        )
+        self.assertIn("docker inspect motor-cc", wrapped)
+        self.assertIn("docker rm -f motor-cc-vllm-render", wrapped)
+        self.assertIn("docker_run_status", wrapped)
+
+    def test_run_enter_skips_main_when_render_create_fails(self):
+        args = type(
+            "A",
+            (),
+            {
+                "config_dir": "/mnt/motor",
+                "container_name": "motor-cc",
+                "role": "coordinator",
+                "devices": None,
+                "pod_ip": "10.0.0.8",
+                "nic_name": "eth0",
+            },
+        )()
+        with (
+            patch.object(
+                docker_deploy,
+                "resolve_enter_env",
+                return_value={"NAME": "motor-cc", "IMAGE": "img", "WEIGHT": "/w", "EXAMPLES": "/e"},
+            ),
+            patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "container_exists", return_value=False),
+            patch.object(D, "image_exists", return_value=True),
+            patch.object(docker_deploy, "_hardware_type_from_args", return_value="800I_A2"),
+            patch.object(docker_deploy, "enter_docker_run_template", return_value=C.ENTER_DOCKER_RUN_CTRL),
+            patch.object(docker_deploy, "_dshm_size_from_args", return_value=None),
+            patch.object(docker_deploy, "apply_enter_devices", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "insert_create_binds", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "apply_enter_weight", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "apply_enter_shm", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "_require_host_binds"),
+            patch.object(docker_deploy, "_ensure_render_sidecar_on_host", return_value=(1, None)),
+            patch.object(os, "execvpe") as execvpe,
+            patch.object(D, "remove_docker_render_sidecar") as remove_render,
+        ):
+            self.assertEqual(docker_deploy._run_enter(args, "/tmp/deployer", start_service=False), 1)
+        execvpe.assert_not_called()
+        remove_render.assert_not_called()
+
+    def test_run_enter_removes_render_if_exec_fails(self):
+        args = type(
+            "A",
+            (),
+            {
+                "config_dir": "/mnt/motor",
+                "container_name": "motor-cc",
+                "role": "coordinator",
+                "devices": None,
+                "pod_ip": "10.0.0.8",
+                "nic_name": "eth0",
+            },
+        )()
+        with (
+            patch.object(
+                docker_deploy,
+                "resolve_enter_env",
+                return_value={"NAME": "motor-cc", "IMAGE": "img", "WEIGHT": "/w", "EXAMPLES": "/e"},
+            ),
+            patch.object(D, "docker_available", return_value=True),
+            patch.object(D, "container_exists", return_value=False),
+            patch.object(D, "image_exists", return_value=True),
+            patch.object(docker_deploy, "_hardware_type_from_args", return_value="800I_A2"),
+            patch.object(docker_deploy, "enter_docker_run_template", return_value=C.ENTER_DOCKER_RUN_CTRL),
+            patch.object(docker_deploy, "_dshm_size_from_args", return_value=None),
+            patch.object(docker_deploy, "apply_enter_devices", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "insert_create_binds", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "apply_enter_weight", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "apply_enter_shm", side_effect=lambda t, *_a, **_k: t),
+            patch.object(docker_deploy, "_require_host_binds"),
+            patch.object(
+                docker_deploy,
+                "_ensure_render_sidecar_on_host",
+                return_value=(0, "motor-cc-vllm-render"),
+            ),
+            patch.object(docker_deploy, "attach_render_create_rollback", side_effect=lambda cmd, *_a: cmd),
+            patch.object(os, "execvpe", side_effect=OSError("exec failed")),
+            patch.object(D, "remove_docker_render_sidecar") as remove_render,
+        ):
+            self.assertEqual(docker_deploy._run_enter(args, "/tmp/deployer", start_service=False), 1)
+        remove_render.assert_called_once_with("motor-cc")
+
+    def test_run_in_place_calls_on_stop(self):
+        called: list[int] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            start = os.path.join(tmp, "start_motor.sh")
+            log_path = os.path.join(tmp, "run.log")
+            Path(start).write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+            os.chmod(start, 0o755)
+            with patch.object(in_place_run, "_in_docker", return_value=False):
+                rc = in_place_run.run_in_place(
+                    start,
+                    log_path,
+                    "restart-cmd",
+                    on_stop=lambda: called.append(1),
+                )
+            self.assertEqual(rc, 0)
+        self.assertEqual(called, [1])
 
 
 class DockerPreflightLayoutTests(unittest.TestCase):

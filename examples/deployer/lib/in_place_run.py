@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -59,6 +60,7 @@ def _cmdline(pid: int) -> bytes:
 
 _SERVICE_MARKERS = (
     b"vllm serve",
+    b"vllm launch",
     b"VLLM::EngineCore",
     b"-m motor.",
     b"start_motor.sh",
@@ -214,9 +216,28 @@ def _signal_container_others(sig: int, protected: set[int]) -> None:
     _signal_services(sig, protected)
 
 
-def run_in_place(start_motor: str, log_path: str, restart_cmd: str, *, grace: float | None = None) -> int:
+def run_in_place(
+    start_motor: str,
+    log_path: str,
+    restart_cmd: str,
+    *,
+    grace: float | None = None,
+    on_stop: Callable[[], None] | None = None,
+) -> int:
     grace_s = _grace_sec() if grace is None else max(0.1, float(grace))
     protected = {os.getpid(), os.getppid(), 1}
+    stop_notified = False
+
+    def notify_stop() -> None:
+        nonlocal stop_notified
+        if stop_notified or on_stop is None:
+            return
+        stop_notified = True
+        try:
+            on_stop()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"on_stop failed: {exc}", flush=True)
+
     # Next --start after exec bash must clear last run's orphan vLLM first.
     _signal_services(signal.SIGKILL, protected)
     _reap_pid1_orphans(protected)
@@ -249,6 +270,7 @@ def run_in_place(start_motor: str, log_path: str, restart_cmd: str, *, grace: fl
                 return set(known)
 
         def graceful() -> None:
+            notify_stop()
             if proc.poll() is None:
                 try:
                     proc.send_signal(signal.SIGTERM)
@@ -315,7 +337,7 @@ def run_in_place(start_motor: str, log_path: str, restart_cmd: str, *, grace: fl
                 except OSError:
                     pass
 
-        def on_stop(_signum=None, _frame=None) -> None:
+        def handle_stop_signal(_signum=None, _frame=None) -> None:
             nonlocal interrupted
             interrupted += 1
             if interrupted == 1:
@@ -333,8 +355,8 @@ def run_in_place(start_motor: str, log_path: str, restart_cmd: str, *, grace: fl
         threading.Thread(target=track, daemon=True).start()
         pump_t = threading.Thread(target=pump, daemon=True)
         pump_t.start()
-        old_int = signal.signal(signal.SIGINT, on_stop)
-        old_term = signal.signal(signal.SIGTERM, on_stop)
+        old_int = signal.signal(signal.SIGINT, handle_stop_signal)
+        old_term = signal.signal(signal.SIGTERM, handle_stop_signal)
         try:
             while proc.poll() is None and _proc_exists(proc.pid):
                 try:
@@ -343,6 +365,7 @@ def run_in_place(start_motor: str, log_path: str, restart_cmd: str, *, grace: fl
                     continue
             rc = proc.returncode if proc.returncode is not None else 0
             hard_kill()
+            notify_stop()
             pump_t.join(timeout=1.0)
         finally:
             signal.signal(signal.SIGINT, old_int)

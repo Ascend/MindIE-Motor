@@ -23,7 +23,10 @@ from lib.generator.infer_service import (
 from lib.generator.render import (
     ASCEND_DRIVER_VOLUME_NAME,
     RENDER_CONTAINER_NAME,
+    build_docker_render_run_argv,
+    build_render_exec_argv,
     configure_render_sidecar,
+    role_needs_docker_render,
 )
 from lib.generator.single_container import generate_yaml_single_container
 from lib.utils import load_yaml
@@ -137,6 +140,15 @@ def test_render_launch_args_are_serialized():
     assert "--unused-flag" not in args
 
 
+@pytest.mark.parametrize("num_workers", [0, True, "4"])
+def test_render_rejects_invalid_renderer_worker_count(num_workers):
+    config = _user_config()
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = {"renderer_num_workers": num_workers}
+
+    with pytest.raises(ValueError, match="renderer_num_workers"):
+        configure_render_sidecar(_pod_spec(), config)
+
+
 @pytest.mark.parametrize(
     ("launch_args", "error"),
     [
@@ -154,6 +166,42 @@ def test_render_rejects_invalid_launch_args(launch_args, error):
 
     with pytest.raises(ValueError, match=error):
         configure_render_sidecar(_pod_spec(), config)
+
+
+def test_docker_render_run_argv_uses_launch_args():
+    config = _user_config()
+    config[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["launch_args"] = {
+        "renderer_num_workers": 3,
+        "enable_auto_tool_choice": True,
+        "allowed_media_domains": ["images.example.com", "media.example.com"],
+    }
+
+    argv = build_docker_render_run_argv("motor-cc-vllm-render", config)
+
+    assert argv is not None
+    assert argv[:3] == ["docker", "run", "-d"]
+    assert "--renderer-num-workers" in argv
+    assert argv[argv.index("--renderer-num-workers") + 1] == "3"
+    assert "--enable-auto-tool-choice" in argv
+    domains_index = argv.index("--allowed-media-domains")
+    assert argv[domains_index + 1 : domains_index + 3] == ["images.example.com", "media.example.com"]
+    assert "--host" in argv
+    assert argv[argv.index("--port") + 1] == "8110"
+
+
+def test_docker_render_exec_argv_matches_run_command():
+    config = _user_config()
+    argv = build_docker_render_run_argv("motor-cc-vllm-render", config)
+    exec_argv = build_render_exec_argv(config)
+    assert argv is not None
+    assert argv[-len(exec_argv) :] == exec_argv
+    assert role_needs_docker_render("render") is False
+    assert role_needs_docker_render("prefill") is False
+    assert role_needs_docker_render("coordinator") is True
+    disabled = _user_config()
+    disabled[C.MOTOR_COORDINATOR_CONFIG][C.RENDER_CONFIG]["enable"] = False
+    with pytest.raises(ValueError, match="enable is false"):
+        build_render_exec_argv(disabled)
 
 
 def test_disabled_render_removes_stale_sidecar_and_driver_mount():

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import re
 import socket
 import subprocess
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 import lib.constant as C
 from lib.prepare_utils import prepare_rendered_local_configmap
@@ -569,10 +571,13 @@ DOCKER_MULTI_ROLES = (
     "decode",
     "union",
     "kv_store",
+    "render",
 )
 ENGINE_ROLES = ("prefill", "decode", "union")
 CONTROL_ROLES = ("coordinator", "controller", "coordinator_controller")
 ROLE_COORDINATOR_CONTROLLER = "coordinator_controller"
+ROLE_RENDER = "render"
+_SINGLETON_ROLES = ("kv_store", ROLE_RENDER)
 _ENGINE_SECTION = {
     "prefill": C.MOTOR_ENGINE_PREFILL_CONFIG,
     "decode": C.MOTOR_ENGINE_DECODE_CONFIG,
@@ -622,7 +627,7 @@ def _compose_role_from_tokens(tokens: list[str]) -> str:
             control.extend(["coordinator", "controller"])
         elif mapped in ("coordinator", "controller"):
             control.append(mapped)
-        elif mapped in ENGINE_ROLES or mapped == "kv_store":
+        elif mapped in ENGINE_ROLES or mapped in _SINGLETON_ROLES:
             others.append(mapped)
         else:
             raise ValueError(
@@ -631,8 +636,9 @@ def _compose_role_from_tokens(tokens: list[str]) -> str:
             )
     control = list(dict.fromkeys(control))
     others = list(dict.fromkeys(others))
-    if "kv_store" in others and (control or len(others) > 1):
-        raise ValueError("kv_store cannot be combined with other --role values.")
+    for singleton in _SINGLETON_ROLES:
+        if singleton in others and (control or len(others) > 1):
+            raise ValueError(f"{singleton} cannot be combined with other --role values.")
     if len(others) > 1:
         raise ValueError("Use one of prefill, decode, union, or kv_store per container.")
     control_role = None
@@ -766,6 +772,23 @@ def resolve_runtime_identity(
     kv_store_enabled: bool,
     nic_name: str | None = None,
 ) -> DockerRuntimeIdentity | None:
+    if role is not None:
+        role = normalize_docker_role(role)
+    if role == ROLE_RENDER:
+        if (job_name or "").strip():
+            raise ValueError("--instance-name is not used for --role render.")
+        return DockerRuntimeIdentity(
+            role=ROLE_RENDER,
+            job_name="",
+            pod_ip=(pod_ip or "").strip(),
+            coordinator_ip="",
+            controller_ip="",
+            kv_store_ip="",
+            host_network=True,
+            attach_npu=False,
+            nic_name=(nic_name or "").strip(),
+        )
+
     resolved_pod_ip, resolved_nic = require_pod_ip_and_nic(pod_ip, nic_name)
     if not role:
         extra = [
@@ -779,7 +802,6 @@ def resolve_runtime_identity(
             raise ValueError(f"{', '.join(unexpected)} is only valid together with --role.")
         return None
 
-    role = normalize_docker_role(role)
     if not is_supported_docker_role(role):
         raise ValueError(f"Unknown --role '{role}'. Valid: {', '.join(DOCKER_MULTI_ROLES)}.")
     resolved_job = (job_name or "").strip()
@@ -1222,17 +1244,88 @@ def prepare_configmap(
     logger.info("ConfigMap prepared at %s", configmap_path)
 
 
+def ensure_docker_render_sidecar(main_container_name: str, user_config: dict, role: str | None) -> str | None:
+    """Create a host-network Render sibling container when Docker-only needs it.
+
+    Mirrors K8s ``configure_render_sidecar``: a second container named
+    ``{main}-vllm-render``, sharing host network so Coordinator still uses
+    ``127.0.0.1:<port>``. Returns the Render container name, or ``None``.
+    """
+    from lib.generator.render import (
+        build_docker_render_run_argv,
+        docker_render_container_name,
+        is_render_enabled,
+        resolve_render_image,
+        role_needs_docker_render,
+    )
+
+    if not role_needs_docker_render(role) or not is_render_enabled(user_config):
+        return None
+    if not docker_available():
+        raise ValueError("docker is not available on this host; cannot create Render sidecar container.")
+
+    name = docker_render_container_name(main_container_name)
+    if container_exists(name):
+        logger.info(
+            "Render container %s already exists; leaving it as-is. "
+            "If Render is not running, docker exec -it %s bash and "
+            "python3 docker_deploy.py --start --role render --config_dir <dir>.",
+            name,
+            name,
+        )
+        return name
+
+    image, _use_cpu = resolve_render_image(user_config)
+    if not image_exists(image):
+        raise ValueError(f"Render image not found locally: {image} (docker image inspect failed).")
+
+    argv = build_docker_render_run_argv(name, user_config)
+    if not argv:
+        return None
+
+    logger.info("Creating Docker Render sidecar container %s (image=%s)", name, image)
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)  # nosec B603
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ValueError(f"Failed to create Render container '{name}': {detail}")
+    cid = (result.stdout or "").strip()
+    logger.info("Render sidecar created: %s (%s)", name, cid[:12] if cid else "ok")
+    return name
+
+
 def render_start_motor_sh(
     params: DockerDeployParams,
     configmap_path: str,
     identity: DockerRuntimeIdentity | None = None,
     nic_name: str | None = None,
     pod_ip: str | None = None,
+    deployer_dir: str | None = None,
 ) -> str:
     role = identity.role if identity else C.ROLE_SINGLE_CONTAINER
     kv_env = dict(params.kv_store_env)
     if identity is not None and params.kv_store_enabled:
         kv_env[C.ENV_KVS_MASTER_SERVICE] = identity.kv_store_ip
+    lines = [
+        "#!/bin/bash",
+        "set -e",
+        "",
+        f'export CONFIGMAP_PATH="{configmap_path}"',
+        f'export CONFIG_PATH="{CONTAINER_CONFIG_PATH}"',
+        f"export ROLE={role}",
+    ]
+    if role == ROLE_RENDER:
+        if deployer_dir:
+            lines.append(f'export MOTOR_DEPLOYER_DIR="{os.path.abspath(deployer_dir)}"')
+        lines.extend(
+            [
+                "",
+                'mkdir -p "$CONFIG_PATH"',
+                'source "$CONFIGMAP_PATH/boot.sh"',
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
     ip, nic = require_pod_ip_and_nic(
         identity.pod_ip if identity is not None else pod_ip,
         nic_name or (identity.nic_name if identity is not None else None),
@@ -1329,3 +1422,114 @@ def image_exists(image: str) -> bool:
 
 def container_exists(name: str) -> bool:
     return _docker("inspect", name).returncode == 0
+
+
+DOCKER_SOCK = "/var/run/docker.sock"
+_DOCKER_API = "/v1.41"
+_RENDER_STOP_TIMEOUT_SEC = 5
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, unix_path: str, timeout: float = 60.0):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = unix_path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.unix_path)
+        self.sock = sock
+
+
+def _docker_http(method: str, path: str, timeout: float = 60.0) -> tuple[int, bytes]:
+    conn = _UnixHTTPConnection(DOCKER_SOCK, timeout=timeout)
+    try:
+        conn.request(method, path)
+        resp = conn.getresponse()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+def _render_container_present(name: str) -> bool:
+    if docker_available():
+        return container_exists(name)
+    if not os.path.exists(DOCKER_SOCK):
+        return False
+    status, _body = _docker_http("GET", f"{_DOCKER_API}/containers/{quote(name)}/json")
+    return status == 200
+
+
+def _render_container_op(name: str, op: str) -> None:
+    timeout = _RENDER_STOP_TIMEOUT_SEC
+    if docker_available():
+        result = _docker(op, "-t", str(timeout), name)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise ValueError(f"docker {op} {name} failed: {detail}")
+        return
+    if not os.path.exists(DOCKER_SOCK):
+        raise ValueError("docker is not available; cannot control Render sidecar")
+    status, body = _docker_http(
+        "POST",
+        f"{_DOCKER_API}/containers/{quote(name)}/{op}?t={timeout}",
+        timeout=float(timeout) + 15,
+    )
+    if status in (204, 304):
+        return
+    raise ValueError(f"docker {op} {name} failed: HTTP {status} {body[:200]!r}")
+
+
+def restart_docker_render_sidecar(main_container_name: str) -> str:
+    """Restart the Docker Render sibling with Coordinator --start."""
+    from lib.generator.render import docker_render_container_name
+
+    name = docker_render_container_name(main_container_name)
+    if not _render_container_present(name):
+        raise ValueError(f"Render container '{name}' not found; create it before starting Coordinator.")
+    _render_container_op(name, "restart")
+    logger.info("Restarted Render sidecar %s with Coordinator", name)
+    return name
+
+
+def stop_docker_render_sidecar(main_container_name: str) -> None:
+    """Stop the Docker Render sibling when Coordinator exits."""
+    from lib.generator.render import docker_render_container_name
+
+    name = docker_render_container_name(main_container_name)
+    if not _render_container_present(name):
+        return
+    try:
+        _render_container_op(name, "stop")
+    except ValueError as exc:
+        logger.warning("Failed to stop Render sidecar %s: %s", name, exc)
+        return
+    logger.info("Stopped Render sidecar %s with Coordinator", name)
+
+
+def remove_docker_render_sidecar(main_container_name: str) -> None:
+    """Remove the Docker Render sibling when main-container create fails."""
+    from lib.generator.render import docker_render_container_name
+
+    name = docker_render_container_name(main_container_name)
+    if not _render_container_present(name):
+        return
+    try:
+        if docker_available():
+            result = _docker("rm", "-f", name)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise ValueError(detail)
+        elif os.path.exists(DOCKER_SOCK):
+            status, body = _docker_http(
+                "DELETE",
+                f"{_DOCKER_API}/containers/{quote(name)}?force=true",
+            )
+            if status not in (204, 404):
+                raise ValueError(f"HTTP {status} {body[:200]!r}")
+        else:
+            raise ValueError("docker is not available; cannot remove Render sidecar")
+    except ValueError as exc:
+        logger.warning("Failed to remove Render sidecar %s: %s", name, exc)
+        return
+    logger.info("Removed Render sidecar %s after main container create failed", name)
