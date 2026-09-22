@@ -27,6 +27,7 @@ from motor.common.resources.instance import (
 from motor.common.resources import EventType
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.controller import ControllerConfig
+from motor.controller.core import ObserverEvent
 from motor.controller.core.event_pusher import EventPusher
 from motor.controller.fault_tolerance.dp_scale_down import FtPhase, FtRuntime, get_ft_runtime_store
 
@@ -265,14 +266,14 @@ def test_persist_data_failure():
 
 
 def test_restore_data_success():
-    """Test successful data restoration"""
+    """Restored ACTIVE instances are visible before observers run outside the instance lock."""
     instance_data = {
         "id": 1,
         "job_name": "test_job",
         "model_name": "test_model",
         "role": "prefill",
         "endpoints": {},
-        "status": "initial",
+        "status": "active",
         "parallel_config": None,
         "node_managers": [],
         "gathered_workload": {"active_tokens": 0},
@@ -290,12 +291,22 @@ def test_restore_data_success():
         manager = create_instance_manager_with_config(enable_etcd=True)
 
         mock_event_pusher = MagicMock(spec=EventPusher)
+        visible_instance_ids = []
+
+        def observe_ready(_instance, event):
+            if event != ObserverEvent.INSTANCE_READY:
+                return
+            assert not manager.ins_lock.locked()
+            visible_instance_ids.append({instance.id for instance in manager.get_instances()})
+
+        mock_event_pusher.update.side_effect = observe_ready
         manager.attach(mock_event_pusher)
 
         result = manager.restore_data()
         assert result is True
         assert 1 in manager.instances
         mock_event_pusher.push_event.assert_called_once_with(EventType.SET)
+        assert visible_instance_ids == [{1}]
 
 
 def test_restore_data_no_data():
@@ -786,7 +797,7 @@ def test_recover_nonexistent_instance(instance_manager):
 
 def test_observer_pattern(instance_manager):
     """Test observer pattern functionality"""
-    from motor.controller.core import Observer, ObserverEvent
+    from motor.controller.core import Observer
 
     class MockObserver(Observer):
         def __init__(self):

@@ -278,7 +278,10 @@ class InstanceManager(ThreadSafeSingleton):
             with self._version_lock:
                 self._data_version = max(self._data_version, persistent_state.version)
 
-            # Restore instances
+            # Restore all state under the lock, then notify observers after the
+            # complete snapshot is visible. Observer callbacks may query this
+            # manager and must never run while ``ins_lock`` is held.
+            restored_active_instances = []
             with self.ins_lock:
                 self.instances.clear()
                 current_time = time.time()
@@ -289,27 +292,37 @@ class InstanceManager(ThreadSafeSingleton):
                     try:
                         instance = Instance(**instance_data)
                         # Maybe refresh heartbeat for restored instance
-                        self._maybe_refresh_heartbeat(instance, current_time, persistent_state.version)
+                        self._maybe_refresh_heartbeat(
+                            instance,
+                            current_time,
+                            persistent_state.version,
+                            should_notify=False,
+                        )
                         self.instances[instance.id] = instance
+                        if instance.status == InsStatus.ACTIVE:
+                            restored_active_instances.append(instance)
                         valid_instances += 1
                     except Exception as e:
                         logger.error("Error reconstructing instance %s: %s", ins_id_str, e)
                         invalid_instances += 1
                         continue
 
-                # Notify Coordinator that Controller just restarted,
-                # it should refresh all instance status.
-                for observer in self.observers:
-                    if isinstance(observer, EventPusher):
-                        observer.push_event(EventType.SET)
-                        break
+            for instance in restored_active_instances:
+                self.notify(instance, ObserverEvent.INSTANCE_READY)
 
-                logger.info(
-                    "Successfully restored %d valid instances, %d invalid instances skipped",
-                    valid_instances,
-                    invalid_instances,
-                )
-                return True
+            # Notify Coordinator that Controller just restarted,
+            # it should refresh all instance status.
+            for observer in self.observers:
+                if isinstance(observer, EventPusher):
+                    observer.push_event(EventType.SET)
+                    break
+
+            logger.info(
+                "Successfully restored %d valid instances, %d invalid instances skipped",
+                valid_instances,
+                invalid_instances,
+            )
+            return True
         except Exception as e:
             logger.error("Error restoring instance manager data: %s", e)
             return False
