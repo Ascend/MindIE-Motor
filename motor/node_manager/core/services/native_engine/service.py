@@ -103,6 +103,7 @@ class NativeEngineService:
         # Monitor slot only; worker.start()/stop() run outside this lock (may block).
         self._monitor_lock = threading.Lock()
         self._virtual_monitor: VirtualInferenceWorker | None = None
+        self._virtual_specs: dict[int, VirtualInferenceSpec] = {}
 
         # Number of engine relaunches performed in this container's lifetime;
         # used to label the log separators between successive engine launches.
@@ -132,6 +133,7 @@ class NativeEngineService:
     ) -> None:
         started_endpoint_ids: list[int] = []
         desired_spec: VirtualInferenceSpec | None = None
+        virtual_specs: dict[int, VirtualInferenceSpec] = {}
         try:
             base_env = os.environ.copy()
             engine_config_overrides = {}
@@ -201,7 +203,7 @@ class NativeEngineService:
 
                 # Spec build is optional; failure disables virtual inference but keeps the engine.
                 try:
-                    spec = self._build_virtual_spec(endpoint, context, launch_spec)
+                    spec = self._build_virtual_spec(endpoint, context, launch_spec, active_dp_master_rank=endpoint.id)
                 except Exception:  # pylint: disable=broad-except
                     logger.exception(
                         "Failed to build virtual inference spec for endpoint %s; "
@@ -210,12 +212,9 @@ class NativeEngineService:
                     )
                     spec = None
                 if spec is not None:
-                    if desired_spec is not None:
-                        raise RuntimeError(
-                            "Multiple eligible virtual inference DP0 targets in one pull: "
-                            f"endpoints {desired_spec.endpoint_id} and {spec.endpoint_id}"
-                        )
-                    desired_spec = spec
+                    virtual_specs[endpoint.id] = spec
+                    if endpoint.id == 0:
+                        desired_spec = spec
 
         except Exception as e:
             rolled_back_endpoint_ids: list[int] = []
@@ -229,7 +228,18 @@ class NativeEngineService:
             self._clear_virtual_monitor_if_target_stopped(rolled_back_endpoint_ids)
             raise RuntimeError("Failed to pull engine: %s" % e) from e
 
+        self._virtual_specs = virtual_specs
         self._reconcile_virtual_monitor(desired_spec)
+
+    def promote_virtual_inference_target(self, dp_master_rank: int) -> None:
+        """Move virtual inference to the committed DP master, if it is local."""
+        with self._pull_lock:
+            desired_spec = self._virtual_specs.get(dp_master_rank)
+            self._reconcile_virtual_monitor(desired_spec)
+            if desired_spec is None:
+                logger.info("DP master rank %d is not a local virtual inference target", dp_master_rank)
+                return
+            logger.info("Virtual inference target promoted to DP master rank %d", dp_master_rank)
 
     def stop(self) -> list[int]:
         """Stop virtual inference monitor, then all native process groups (serialized with pull via _pull_lock)."""
@@ -361,8 +371,9 @@ class NativeEngineService:
         endpoint: Endpoint,
         context: LaunchContext,
         launch_spec: LaunchSpec,
+        active_dp_master_rank: int = 0,
     ) -> VirtualInferenceSpec | None:
-        """Build virtual inference spec for vLLM DP0, or None when disabled (SGLang uses native /health)."""
+        """Build a vLLM virtual inference spec, including standby candidates used after DP scale-down."""
         if self.engine_type != "vllm":
             return None
         deploy_config = launch_spec.deploy_config
@@ -375,6 +386,7 @@ class NativeEngineService:
             dp_rank=context.dp_rank,
             headless=context.headless,
             npu_usage_threshold=health_config.npu_usage_threshold,
+            active_dp_master_rank=active_dp_master_rank,
         ):
             return None
 

@@ -1011,6 +1011,15 @@ class NodeManagerConfig:
 
         # Validate fault tolerance configuration
         ft_config = self.fault_tolerance_config
+        parallel_config = self.basic_config.parallel_config
+        if (
+            ft_config.enable_dp_scale_down_proxy
+            and parallel_config.dp_master_port + parallel_config.dp_size - 1 > 65535
+        ):
+            errors.append(
+                "data_parallel_master_port must reserve dp_size consecutive ports within 1-65535 "
+                "when DP scale-down is enabled"
+            )
         if not (60 <= ft_config.engine_restart_wait_timeout_sec <= 3600):
             errors.append("engine_restart_wait_timeout_sec must be in range 60-3600")
 

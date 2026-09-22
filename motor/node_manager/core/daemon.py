@@ -343,6 +343,7 @@ class Daemon(ThreadSafeSingleton):
         request_id: str,
         retired_endpoint_ids: list[int],
         commit: bool,
+        dp_master_rank: int | None = None,
     ) -> None:
         """Commit or abort only the transaction that currently owns the guard."""
         with self._engine_ft_transaction_lock:
@@ -351,6 +352,9 @@ class Daemon(ThreadSafeSingleton):
             try:
                 if commit:
                     self.commit_retired_endpoints(retired_endpoint_ids)
+                    engine = self._services.get(SERVICE_ENGINE)
+                    if engine is not None and dp_master_rank is not None:
+                        engine.promote_virtual_inference_target(dp_master_rank)  # type: ignore[attr-defined]
             finally:
                 self._engine_ft_transaction_id = None
                 self.unfreeze_suicide()

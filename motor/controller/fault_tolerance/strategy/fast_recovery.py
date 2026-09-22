@@ -89,7 +89,7 @@ class EngineFastRecoveryStrategy(StrategyBase):
                     self.event.wait(scale_down_config.poll_interval_sec)
                 raise RuntimeError("engine retry recovery deadline exceeded")
             finally:
-                DpScaleDownStrategy._finalize_node_managers(groups, set(), request_id, False, timeout)
+                DpScaleDownStrategy._finalize_node_managers(groups, set(), request_id, False, None, timeout)
         except Exception as error:
             logger.error("Engine retry failed for instance %d: %s", instance_id, error)
             self.mark_failed()

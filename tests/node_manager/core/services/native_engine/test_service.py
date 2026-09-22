@@ -241,6 +241,37 @@ def test_pull_registers_single_virtual_worker_when_enabled():
     assert worker.spec.endpoint_id == 0
 
 
+def test_promote_virtual_inference_target_moves_monitor_to_new_dp_master():
+    service = _native_engine_service(engine_type="vllm")
+    service.backend.prepare.return_value = _make_launch_spec(_fake_deploy_config())
+    service.supervisor.start.return_value = True
+    service.pull(
+        PDRole.ROLE_U,
+        [_make_endpoint(0), _make_endpoint(1)],
+        instance_id=1,
+        master_dp_ip="127.0.0.1",
+    )
+    first_worker = service._virtual_monitor
+
+    with patch.object(first_worker, "stop") as stop_first:
+        service.promote_virtual_inference_target(1)
+
+    assert service._virtual_monitor is not None
+    assert service._virtual_monitor.spec.endpoint_id == 1
+    stop_first.assert_called_once()
+
+
+def test_promote_remote_dp_master_clears_local_monitor():
+    service = _native_engine_service(engine_type="vllm")
+    first_worker = _arrange_successful_pull(service)
+
+    with patch.object(first_worker, "stop") as stop_first:
+        service.promote_virtual_inference_target(2)
+
+    assert service._virtual_monitor is None
+    stop_first.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "engine_type, endpoint_ids, config_kwargs, expect_monitor",
     [

@@ -139,7 +139,9 @@ becomes `RECONFIGURING` and resumes its original fallback; Controller never repe
 - Priority is token reinference, all-UNHEALTHY fast recovery, complete UNHEALTHY+DEAD scale-down, then original
   whole-instance recovery. All-UNHEALTHY is necessary but not sufficient for `is_applicable()`. Failed fast recovery
   goes directly to reconfiguration; a running strategy is reaped before a replacement is submitted.
-- Software FT evidence starts collection immediately. A complete snapshot with at least one DEAD and one UNHEALTHY
+- Software FT evidence starts collection immediately and withdraws the instance from Coordinator on the first DEAD or
+  UNHEALTHY report. The Controller-level `fault_collection_timeout_seconds` controls this collection window and defaults
+  to 60 seconds; it is not derived from engine collective timeouts. A complete snapshot with at least one DEAD and one UNHEALTHY
   starts scale-down; incomplete evidence waits until its deadline and all-DEAD reconfigures. A mappable L4-L6
   hardware-first event waits `hardware_ft_correlation_window_sec` for matching engine evidence; a complete engine
   snapshot remains authoritative after that short window. Already committed
@@ -156,16 +158,21 @@ becomes `RECONFIGURING` and resumes its original fallback; Controller never repe
   HEALTHY or `unhealthy+recovering` waits; failed, missing, or malformed status aborts. A newly DEAD survivor joins
   the same removal set; no survivors means reconfiguration. One transaction-level executor is reused for all
   NodeManager fan-out phases and closed when the attempt exits.
-- Controller withdraws the current surviving view, sends exactly one `scale_down` apply, and polls. All survivors
+- Controller withdraws the current surviving view, selects the minimum surviving global DP rank as the new master,
+  and sends exactly one `scale_down` apply only after a second successful withdrawal confirmation, carrying
+  `dp_master_ip` and the internal `dp_master_rank`. A failed confirmation enters fallback without applying. All survivors
   returning clean HEALTHY commits; terminal status, request/query failure, or deadline aborts without retry. Every
-  guarded exit finalizes once using the same request id.
+  guarded exit finalizes once using the same request id; commit finalize also carries the new `dp_master_rank` so
+  NodeManager can migrate virtual inference from a retired DP0 to the committed master.
 - NodeManager grouping includes headless participants for guard/finalize but sends status/apply only to explicit
   routable survivors. Missing or inconsistent topology fails closed. vLLM status identity uses global DP rank and
   only `healthy/unhealthy/dead`; other state names are invalid.
 - Successful commit updates `dead_committed` and publishes an ADD containing only survivors. `ServingOverlay`
   applies that immutable projection to later READY/RESUME/SET events; `serving_published` keeps `can_serve=false`
-  until publication converges. If evidence self-clears while waiting, the runtime returns to the last committed
-  topology and republishes it instead of leaving the instance withdrawn.
+  until publication converges. A fully published scale-down emits an info success log with its request and rank
+  summary; a committed transaction whose publication is pending emits a warning instead. If evidence self-clears
+  while waiting, the runtime returns to the last committed topology and republishes it instead of leaving the
+  instance withdrawn.
 - `enable_fault_tolerance && enable_dp_scale_down` gates all scale-down side paths. `enable_dp_scale_down` and the
   provisional `enable_dp_scale_up` are Controller-level, role-independent switches; engine-native FT/EPLB settings
   remain independent. Scale-up alone controls one-shot stop of a fully drained Pod, after which MindCluster owns

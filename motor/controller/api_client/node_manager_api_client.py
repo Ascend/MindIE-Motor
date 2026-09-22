@@ -196,6 +196,7 @@ class NodeManagerApiClient:
         request_id: str,
         retired_endpoint_ids: list[int],
         commit: bool,
+        dp_master_rank: int | None,
         timeout: float,
     ) -> dict:
         return cls._post_ft(
@@ -205,6 +206,7 @@ class NodeManagerApiClient:
                 "request_id": request_id,
                 "retired_endpoint_ids": retired_endpoint_ids,
                 "commit": commit,
+                "dp_master_rank": dp_master_rank,
             },
             timeout,
         )

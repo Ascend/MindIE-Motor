@@ -177,12 +177,19 @@ async def fault_tolerance_finalize(request: Request):
     payload, manager, _ = await _ft_request_context(request, "finalize")
     commit = payload.get("commit") is True
     retired_endpoint_ids = _require_int_list(payload, "retired_endpoint_ids", allow_empty=not commit)
+    dp_master_rank = payload.get("dp_master_rank")
+    if commit and (not isinstance(dp_master_rank, int) or isinstance(dp_master_rank, bool) or dp_master_rank < 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'dp_master_rank' must be a non-negative integer when committing",
+        )
     await _run_ft_operation(
         "finalize",
         manager.finalize,
         payload.get("request_id"),
         retired_endpoint_ids,
         commit,
+        dp_master_rank,
     )
     return {"status": "committed" if commit else "aborted"}
 

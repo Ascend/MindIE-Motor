@@ -496,7 +496,25 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
 
         if collection_started:
             with self.config_lock:
-                timeout = self.config.fault_tolerance_config.cpu_distributed_timeout_seconds
+                enable_dp_scale_down = (
+                    self.config.fault_tolerance_config.enable_fault_tolerance
+                    and self.config.fault_tolerance_config.enable_dp_scale_down
+                )
+            if enable_dp_scale_down:
+                store = get_ft_runtime_store()
+                store.transition(
+                    resolved_instance_id,
+                    phase=FtPhase.WAITING_ENGINE_FAULT,
+                    serving_published=False,
+                )
+                instance = InstanceManager().get_instance(resolved_instance_id)
+                if instance is None or not ServingOverlay.withdraw(instance):
+                    logger.error(
+                        "Failed to withdraw instance %d after the first engine fault report",
+                        resolved_instance_id,
+                    )
+            with self.config_lock:
+                timeout = self.config.fault_tolerance_config.fault_collection_timeout_seconds
             timer = threading.Timer(timeout, self._on_fault_collection_deadline)
             timer.daemon = True
             timer.start()
@@ -902,7 +920,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             if fault.engine_status == 2 and isinstance(fault.engine_id, int)
         } & active_ranks
         collection_timed_out = started_at is not None and (
-            time.time() - started_at >= self.config.fault_tolerance_config.cpu_distributed_timeout_seconds
+            time.time() - started_at >= self.config.fault_tolerance_config.fault_collection_timeout_seconds
         )
         # L2 hardware evidence remains observational. Actionable hardware
         # evidence is correlated per fault so a card already removed by a

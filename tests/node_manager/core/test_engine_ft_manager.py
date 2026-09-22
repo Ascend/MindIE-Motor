@@ -161,6 +161,55 @@ def test_apply_retry_uses_same_ft_manager_without_scale_down_port(reporter, endp
     assert "dp_store_port" not in apply.call_args.args[2]
 
 
+def test_apply_scale_down_offsets_store_port_by_new_master_rank(reporter, endpoints):
+    reporter._endpoints = endpoints
+    with patch("motor.node_manager.core.engine_ft_manager.apply_engine_ft_instructions") as apply:
+        reporter.apply(
+            [0, 1],
+            "scale_down",
+            {"removed_dp_ranks": [0], "dp_master_ip": "192.168.1.1", "dp_master_rank": 1},
+            "request",
+            3,
+            29500,
+        )
+
+    params = apply.call_args.args[2]
+    assert params == {
+        "removed_dp_ranks": [0],
+        "dp_master_ip": "192.168.1.1",
+        "dp_store_port": 29501,
+    }
+
+
+@pytest.mark.parametrize("dp_master_rank", [-1, True, "1"])
+def test_apply_scale_down_rejects_invalid_master_rank(reporter, endpoints, dp_master_rank):
+    reporter._endpoints = endpoints
+
+    with pytest.raises(ValueError, match="dp_master_rank"):
+        reporter.apply(
+            [0, 1],
+            "scale_down",
+            {"dp_master_rank": dp_master_rank},
+            "request",
+            3,
+            29500,
+        )
+
+
+def test_apply_scale_down_rejects_store_port_overflow(reporter, endpoints):
+    reporter._endpoints = endpoints
+
+    with pytest.raises(ValueError, match="exceeds 65535"):
+        reporter.apply(
+            [0, 1],
+            "scale_down",
+            {"dp_master_rank": 1},
+            "request",
+            3,
+            65535,
+        )
+
+
 def test_guard_rejects_lease_longer_than_bounded_recovery_window(reporter):
     with pytest.raises(ValueError, match=r"\(0, 300\]"):
         reporter.guard("request", 301)
@@ -172,10 +221,10 @@ def test_guard_and_finalize_delegate_lifecycle_to_owner(config):
     manager = EngineFtManager(config, guard_callback, finalize_callback)
 
     manager.guard("request", 30)
-    manager.finalize("request", [2], True)
+    manager.finalize("request", [2], True, 3)
 
     guard_callback.assert_called_once_with("request", 30)
-    finalize_callback.assert_called_once_with("request", [2], True)
+    finalize_callback.assert_called_once_with("request", [2], True, 3)
 
 
 # -- update_config restart conditions ------------------------------------------

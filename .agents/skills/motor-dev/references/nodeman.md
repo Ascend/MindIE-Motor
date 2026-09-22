@@ -54,14 +54,14 @@ NodeManager (Application)
 │
 ├── NativeEngineService
 │     builds LaunchContext, selects Native Engine Backend, delegates lifecycle to ProcessSupervisor
-│     owns a single per-instance VirtualInferenceWorker bound to the eligible vLLM DP0 target
+│     owns a single per-instance VirtualInferenceWorker bound to the committed vLLM DP master
 │     (worker started after the target's first /health READY)
 │
 ├── ProcessSupervisor
 │     subprocess.Popen(start_new_session=True)
 │     owns RuntimeProcess records, process groups and native health probes
 │
-├── VirtualInferenceWorker (single, per-instance vLLM DP0 target)
+├── VirtualInferenceWorker (single, per-instance vLLM DP master target)
 │     POST /v1/completions virtual requests + npu-smi AI Cube usage sampling + failure counting
 │     reaching max_failure_count only marks the endpoint abnormal — never kills the process
 │
@@ -104,9 +104,14 @@ One scale-down attempt uses this NodeManager contract:
    the lease (maximum 300 seconds); the same id renews it and another id is rejected until finalize or expiry.
 2. `status` and one `apply` target explicit local routable survivors. Missing, duplicate, unmanaged, retired, or
    response-id-mismatched endpoints fail closed; `engines[].id` must equal Motor's global `Endpoint.id`. There is no
-   direct Controller-to-engine fallback.
-3. Owner-matched `finalize {request_id, commit}` prevents an old request releasing a new guard. Commit retires local
-   ids from heartbeat, status, fault and PID-death reporting; abort only releases the guard.
+   direct Controller-to-engine fallback. For `scale_down`, NodeManager consumes the internal `dp_master_rank` and
+   forwards `dp_store_port = configured data-parallel-master-port + dp_master_rank`; the internal rank is not sent to
+   the engine. The engine consumes this port only when the current master is removed; stable-master rounds do not
+   recreate TCPStore. When the proxy is enabled, config validation reserves the full base-port through
+   `base-port + dp_size - 1` interval. This keeps consecutive masters from reusing a still-bound store port.
+3. Owner-matched `finalize {request_id, commit, dp_master_rank}` prevents an old request releasing a new guard. Commit
+   retires local ids from heartbeat, status, fault and PID-death reporting, then moves virtual inference to the local
+   endpoint matching the committed master rank; abort only releases the guard.
 4. Lease expiry restores local suicide arbitration if finalize is lost. A fully drained committed Pod may keep
    reporting an empty heartbeat when Pod recycling is disabled.
 
@@ -133,12 +138,12 @@ Virtual inference probes engine liveness beyond `/health` (which can pass while 
 
 | Engine | Motor role | Health path |
 |--------|------------|-------------|
-| vLLM | DP0 instance-level `VirtualInferenceWorker` (completions + AI Cube) | Motor probes `POST /v1/completions`; `ProcessSupervisor` still uses `GET /health` |
+| vLLM | Current-DP-master `VirtualInferenceWorker` (completions + AI Cube) | Motor probes `POST /v1/completions`; `ProcessSupervisor` still uses `GET /health` |
 | SGLang | **Never** creates a Motor monitor/worker/requester | SGLang runs its own generative check inside `GET /health`; Motor only heartbeats `/health` |
 
 | File | Role |
 |------|------|
-| `capabilities.py` | `should_enable_vllm_virtual_inference(...)` — vLLM-only feature gate; `is_error_ascend_global_log_level(raw)` — ERROR-level gate on final engine env (no IntFlag / Protocol / policy registry) |
+| `capabilities.py` | `should_enable_vllm_virtual_inference(...)` — vLLM feature gate against the selected active master rank (default DP0); `is_error_ascend_global_log_level(raw)` — ERROR-level gate on final engine env |
 | `spec.py` | Immutable `TargetIdentity` (instance id / endpoint id / host / port / engine type) + immutable `VirtualInferenceSpec` (identity + role, model, dispatch profile, TLS, thresholds, timeout) — the only inputs the worker consumes |
 | `requesters.py` | `VllmCompletionsRequester` (POST /v1/completions, PD-aware) plus request-id helpers; no requester Protocol / factory / SGLang requester |
 | `worker.py` | `VirtualInferenceWorker`: constructs `VllmCompletionsRequester(spec)` directly; warmup + periodic loop, AI Cube sampling thread, consecutive failure counting, thread/HTTP-client cleanup |
@@ -163,8 +168,8 @@ The backend loads and validates the deploy config in `prepare()` and returns it 
 
 Lifecycle:
 
-- The service holds **at most one** monitor (`_virtual_monitor: VirtualInferenceWorker | None`), bound to the eligible vLLM DP0 target. Identity/spec are read from the same `worker.spec` snapshot; CAS install/detach compares worker object identity with `is`.
-- On pull, an immutable `VirtualInferenceSpec` is built for the vLLM DP0 endpoint only (non-vLLM → `None`); the monitor is reconciled (`_reconcile_virtual_monitor`) after the whole pull succeeds — never half-installed. Candidate CAS failure must stop the candidate and must not overwrite or stop the newer current.
+- The service holds **at most one** monitor (`_virtual_monitor: VirtualInferenceWorker | None`), initially bound to vLLM DP0 and moved to the committed DP master after scale-down. Identity/spec are read from the same `worker.spec` snapshot; CAS install/detach compares worker object identity with `is`.
+- On pull, immutable candidate `VirtualInferenceSpec` objects are retained for eligible local vLLM endpoints, while only DP0 is initially reconciled. A committed FT finalize calls `promote_virtual_inference_target(dp_master_rank)` on every NodeManager: the owner installs the matching candidate and other nodes clear stale monitors. Candidate CAS failure must stop the candidate and must not overwrite or stop the newer current.
 - Reconciliation is idempotent on the full spec (identity + role/model/profile/TLS/timeout/threshold): an identical re-pull keeps the worker; an identity or config change replaces it (stop old, install new). Installation uses compare-and-swap so a stale reconcile cannot overwrite a newer monitor.
 - The virtual loop is **not** started at pull time. `NativeEngineService.runtime_state(endpoint, instance_id)` matches the probe against the monitor's `TargetIdentity` (from `worker.spec`); on the first `READY` observation it calls `worker.start()` (idempotent — a `_started` latch prevents duplicate threads), then re-checks identity under the lock so a replaced monitor cannot leak stale abnormal state.
 - `worker.start()` verifies once (cached) that the HDK supports `npu-smi info watch -s u` (AI Cube Usage); unsupported HDK disables the worker.
@@ -452,7 +457,7 @@ barriers heartbeat until the container checkpoint is done. During container snap
 | `motor/node_manager/core/services/native_engine/config_factory.py` | Lazily loads engine-specific CLI configuration adapters |
 | `motor/node_manager/core/services/native_engine/backends/` | vLLM/SGLang command construction, configuration conversion and validation |
 | `motor/node_manager/core/services/native_engine/supervisor.py` | Process groups, bounded native health probes and runtime state ownership |
-| `motor/node_manager/core/services/native_engine/virtual_inference/` | vLLM-only DP0 virtual inference: enablement gate, immutable spec and worker (completions + AI Cube sampling + failure counting); SGLang uses generative GET /health instead |
+| `motor/node_manager/core/services/native_engine/virtual_inference/` | vLLM DP-master virtual inference: candidate specs, active worker and scale-down target migration; SGLang uses generative GET /health instead |
 | `motor/common/utils/ai_cube.py` | `npu-smi info watch -s u` AI Cube usage sampling (shared, no engine_server dependency) |
 | `motor/node_manager/core/services/registry.py` | Service registration and backend discovery |
 | `motor/node_manager/core/services/memcache/` | Optional KV-store service implementation |

@@ -150,21 +150,22 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             if ready_plan is None:
                 return
             runtime, groups, survivor_groups, survivors = ready_plan
-            runtime = store.transition(instance_id, phase=FtPhase.SCALING_DOWN, serving_published=False)
             try:
                 withdrawn = ServingOverlay.withdraw(instance)
             except Exception as e:
-                self._fail(runtime, "failed to withdraw instance from Coordinator: %s" % e)
+                self._fail(runtime, "failed to confirm serving withdrawal before scale-down: %s" % e)
                 return
             if not withdrawn:
-                self._fail(runtime, "failed to withdraw instance from Coordinator")
+                self._fail(runtime, "failed to confirm serving withdrawal before scale-down")
                 return
+            runtime = store.transition(instance_id, phase=FtPhase.SCALING_DOWN, serving_published=False)
             # vLLM elects the minimum surviving rank as the new DP master. The
             # DP store port remains a NodeManager-local engine detail.
             new_master = min(survivors, key=lambda ep: ep.id)
             params = {
                 "removed_dp_ranks": sorted(dead_ranks),
                 "dp_master_ip": new_master.ip,
+                "dp_master_rank": new_master.id,
             }
             try:
                 self._apply_via_node_managers(survivor_groups, params, request_id, timeout, executor=executor)
@@ -189,7 +190,9 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                     return
                 if outcome == "succeeded":
                     try:
-                        self._finalize_node_managers(groups, dead_ranks, request_id, True, timeout, executor)
+                        self._finalize_node_managers(
+                            groups, dead_ranks, request_id, True, new_master.id, timeout, executor
+                        )
                     except Exception as e:
                         self._fail(runtime, "failed to commit NodeManager FT transaction: %s" % e)
                         return
@@ -218,6 +221,26 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                         serving_published=published,
                         last_error=publication_error,
                     )
+                    log_args = (
+                        self.name,
+                        instance_id,
+                        request_id,
+                        sorted(dead_ranks),
+                        sorted(endpoint.id for endpoint in survivors),
+                        new_master.id,
+                    )
+                    if published:
+                        logger.info(
+                            "%s succeeded: instance_id=%d, request_id=%s, removed_dp_ranks=%s, "
+                            "surviving_dp_ranks=%s, new_master_rank=%d",
+                            *log_args,
+                        )
+                    else:
+                        logger.warning(
+                            "%s committed but serving publication is pending: instance_id=%d, request_id=%s, "
+                            "removed_dp_ranks=%s, surviving_dp_ranks=%s, new_master_rank=%d",
+                            *log_args,
+                        )
                     self._finish(False)
                     return
                 self.event.wait(scale_down_config.poll_interval_sec)
@@ -225,7 +248,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         finally:
             try:
                 if not committed:
-                    self._finalize_node_managers(groups, dead_ranks, request_id, False, timeout, executor)
+                    self._finalize_node_managers(groups, dead_ranks, request_id, False, None, timeout, executor)
             finally:
                 executor.shutdown(wait=True)
 
@@ -391,7 +414,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
             future.result()
 
     @staticmethod
-    def _finalize_node_managers(groups, dead_ranks, request_id, commit, timeout, executor=None):
+    def _finalize_node_managers(groups, dead_ranks, request_id, commit, dp_master_rank, timeout, executor=None):
         first_error = None
         requests = DpScaleDownStrategy._fanout_node_managers(
             groups,
@@ -400,6 +423,7 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
                 request_id,
                 [endpoint_id for endpoint_id in group.local_endpoint_ids if endpoint_id in dead_ranks],
                 commit,
+                dp_master_rank,
                 timeout,
             ),
             executor,

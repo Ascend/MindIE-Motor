@@ -215,11 +215,11 @@ def test_from_json_validates_effective_dp_scale_down_config(_temp_json_file, fie
         ControllerConfig.from_json(_temp_json_file)
 
 
-def test_from_json_uses_max_engine_cpu_distributed_timeout(_temp_json_file):
-    """The collection window covers P, D, and mixed-deployment Union."""
+def test_from_json_uses_controller_fault_collection_timeout(_temp_json_file):
+    """The Controller collection window is independent from engine collective timeouts."""
     test_config = {
         "motor_controller_config": {
-            "fault_tolerance_config": {"cpu_distributed_timeout_seconds": 1},
+            "fault_tolerance_config": {"fault_collection_timeout_seconds": 45},
         },
         "motor_engine_prefill_config": {
             "engine_config": {"cpu-distributed-timeout-seconds": 30},
@@ -228,7 +228,7 @@ def test_from_json_uses_max_engine_cpu_distributed_timeout(_temp_json_file):
             "engine_config": {"cpu-distributed-timeout-seconds": 15},
         },
         "motor_engine_union_config": {
-            "engine_config": {"cpu-distributed-timeout-seconds": 45},
+            "engine_config": {"cpu-distributed-timeout-seconds": 50},
         },
     }
 
@@ -237,16 +237,16 @@ def test_from_json_uses_max_engine_cpu_distributed_timeout(_temp_json_file):
 
     config = ControllerConfig.from_json(_temp_json_file)
 
-    assert config.fault_tolerance_config.cpu_distributed_timeout_seconds == 45
+    assert config.fault_tolerance_config.fault_collection_timeout_seconds == 45
 
 
-def test_from_json_defaults_cpu_distributed_timeout_to_sixty_seconds(_temp_json_file):
+def test_from_json_defaults_fault_collection_timeout_to_sixty_seconds(_temp_json_file):
     with open(_temp_json_file, "w", encoding="utf-8") as f:
         json.dump({"motor_controller_config": {}}, f)
 
     config = ControllerConfig.from_json(_temp_json_file)
 
-    assert config.fault_tolerance_config.cpu_distributed_timeout_seconds == 60
+    assert config.fault_tolerance_config.fault_collection_timeout_seconds == 60
 
 
 def test_from_json_file_not_exists(_temp_dir):

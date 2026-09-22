@@ -78,17 +78,19 @@ def test_engine_ft_proxy_contract_carries_explicit_endpoint_ids(node_mgr, mock_h
         (
             True,
             "/node-manager/fault-tolerance/finalize",
-            {"request_id": "request", "retired_endpoint_ids": [1], "commit": True},
+            {"request_id": "request", "retired_endpoint_ids": [1], "commit": True, "dp_master_rank": 2},
         ),
         (
             False,
             "/node-manager/fault-tolerance/finalize",
-            {"request_id": "request", "retired_endpoint_ids": [], "commit": False},
+            {"request_id": "request", "retired_endpoint_ids": [], "commit": False, "dp_master_rank": None},
         ),
     ],
 )
 def test_finalize_engine_ft_contract(node_mgr, mock_http_client, commit, path, payload):
-    NodeManagerApiClient.finalize_engine_ft(node_mgr, "request", payload["retired_endpoint_ids"], commit, 3)
+    NodeManagerApiClient.finalize_engine_ft(
+        node_mgr, "request", payload["retired_endpoint_ids"], commit, 2 if commit else None, 3
+    )
     assert mock_http_client.post.call_args.args[0] == path
     assert mock_http_client.post.call_args.kwargs["data"] == payload
 

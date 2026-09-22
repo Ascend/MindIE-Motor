@@ -148,9 +148,9 @@ class FaultToleranceConfig:
     # the capacity. DP ranks may still be masked when this switch is disabled.
     enable_dp_scale_up: bool = False
     dp_scale_down_config: DpScaleDownConfig = field(default_factory=DpScaleDownConfig)
-    # Derived as the maximum cpu-distributed-timeout-seconds configured for
-    # prefill, decode, or union. If no engine role configures it, use 60s.
-    cpu_distributed_timeout_seconds: float = 60.0
+    # Controller-owned window for collecting one DP domain's engine fault
+    # statuses after the first UNHEALTHY or DEAD report.
+    fault_collection_timeout_seconds: float = 60.0
     # Correlate a hardware ConfigMap event with engine FT reports. If no FT
     # report arrives in this window, engine-native recovery is unsafe.
     hardware_ft_correlation_window_sec: float = 5.0
@@ -241,26 +241,6 @@ class ControllerConfig:
         try:
             config = cls()
 
-            # A Controller may manage separate P/D and mixed-deployment Union
-            # instances at the same time. Use the largest configured Gloo
-            # timeout so no role is classified before its collective expires.
-            cpu_timeouts: list[float] = []
-            if isinstance(raw, dict):
-                for engine_key in (
-                    "motor_engine_prefill_config",
-                    "motor_engine_decode_config",
-                    "motor_engine_union_config",
-                ):
-                    engine_section = raw.get(engine_key)
-                    if not isinstance(engine_section, dict):
-                        continue
-                    engine_config = engine_section.get("engine_config")
-                    if not isinstance(engine_config, dict):
-                        continue
-                    cpu_timeout = engine_config.get("cpu-distributed-timeout-seconds")
-                    if cpu_timeout is not None:
-                        cpu_timeouts.append(float(cpu_timeout))
-
             # Helper function to update config object from dict
             def update_config_from_dict(config_obj, config_dict):
                 """Update configuration object fields from dictionary, only for existing keys"""
@@ -304,11 +284,6 @@ class ControllerConfig:
                         config.fault_tolerance_config.dp_scale_down_config,
                         dp_scale_down_config,
                     )
-
-            # This is an engine-derived internal value, not an independent
-            # Controller tuning knob. Apply it after Controller config parsing
-            # so the three role configs remain the single source of truth.
-            config.fault_tolerance_config.cpu_distributed_timeout_seconds = max(cpu_timeouts) if cpu_timeouts else 60.0
 
             if "standby_config" in cfg:
                 update_config_from_dict(config.standby_config, cfg["standby_config"])
@@ -420,8 +395,8 @@ class ControllerConfig:
             errors.append("dp_scale_down_config.poll_interval_sec must be in range (0, 60]")
         if not (1 <= scale_down_config.execution_deadline_sec <= 600):
             errors.append("dp_scale_down_config.execution_deadline_sec must be in range 1-600")
-        if not (0 < ft_config.cpu_distributed_timeout_seconds <= 600):
-            errors.append("cpu_distributed_timeout_seconds must be in range (0, 600]")
+        if not (0 < ft_config.fault_collection_timeout_seconds <= 600):
+            errors.append("fault_collection_timeout_seconds must be in range (0, 600]")
         if not (0 < ft_config.hardware_ft_correlation_window_sec <= 60):
             errors.append("hardware_ft_correlation_window_sec must be in range (0, 60]")
         # Validate standby configuration

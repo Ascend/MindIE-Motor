@@ -427,6 +427,23 @@ def test_validate_config_errors(param, value, expected_error):
         config.validate_config()
 
 
+def test_dp_scale_down_rejects_master_port_range_overflow():
+    config = create_config_object()
+    config.fault_tolerance_config.enable_dp_scale_down_proxy = True
+    config.basic_config.parallel_config = ParallelConfig(dp_size=4, dp_master_port=65533)
+
+    with pytest.raises(ValueError, match="reserve dp_size consecutive ports"):
+        config.validate_config()
+
+
+def test_master_port_range_is_not_reserved_when_dp_scale_down_is_disabled():
+    config = create_config_object()
+    config.fault_tolerance_config.enable_dp_scale_down_proxy = False
+    config.basic_config.parallel_config = ParallelConfig(dp_size=4, dp_master_port=65533)
+
+    config.validate_config()
+
+
 def test_to_dict():
     """Test conversion to dictionary"""
     config = create_config_object()

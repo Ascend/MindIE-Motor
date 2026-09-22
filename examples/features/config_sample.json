@@ -103,6 +103,7 @@
       "scale_p2d_d_instance_reinit_wait_timeout": 60,
       "enable_dp_scale_down": false,
       "enable_dp_scale_up": false,
+      "fault_collection_timeout_seconds": 60.0,
       "dp_scale_down_config": {
         "request_timeout_sec": 11.0,
         "poll_interval_sec": 1.0,

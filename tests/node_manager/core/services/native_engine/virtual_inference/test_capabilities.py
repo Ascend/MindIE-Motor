@@ -42,6 +42,16 @@ def test_vllm_virtual_inference_enablement(enabled, dp_rank, headless, threshold
     )
 
 
+def test_vllm_virtual_inference_accepts_promoted_dp_master():
+    assert should_enable_vllm_virtual_inference(
+        enable_virtual_inference=True,
+        dp_rank=2,
+        headless=False,
+        npu_usage_threshold=3,
+        active_dp_master_rank=2,
+    )
+
+
 @pytest.mark.parametrize(
     "raw_value",
     [None, "", "   ", "\t", "3", 3, " 3 "],

@@ -73,12 +73,12 @@ def _execute(
     candidates=(1,),
     statuses=None,
     config=None,
-    withdraw=True,
     publish=True,
     pod_stop=True,
     initial_runtime=None,
     guard_error=None,
     apply_error=None,
+    withdraw=True,
 ):
     endpoints = endpoints or _endpoints()
     survivor_ids = [endpoint.id for endpoint in endpoints if endpoint.id not in candidates]
@@ -110,7 +110,7 @@ def _execute(
         patch(
             "motor.controller.fault_tolerance.strategy.dp_scale_down.ServingOverlay.withdraw",
             return_value=withdraw,
-        ) as withdraw_mock,
+        ) as withdraw_call,
         patch(
             "motor.controller.fault_tolerance.strategy.dp_scale_down.ServingOverlay.publish",
             return_value=publish,
@@ -128,7 +128,7 @@ def _execute(
         apply=apply,
         guard=guard,
         finalize=finalize,
-        withdraw=withdraw_mock,
+        withdraw=withdraw_call,
         stop=stop,
         instance=instance,
     )
@@ -196,7 +196,7 @@ def test_non_ready_survivor_is_polled_before_single_apply(initial_status):
     assert result.runtime["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
 
 
-def test_healthy_survivor_wait_timeout_falls_back_before_withdraw_and_apply():
+def test_healthy_survivor_wait_timeout_falls_back_before_apply():
     with patch(
         "motor.controller.fault_tolerance.strategy.dp_scale_down.time.monotonic",
         side_effect=[0, 0, 2],
@@ -210,7 +210,6 @@ def test_healthy_survivor_wait_timeout_falls_back_before_withdraw_and_apply():
     assert result.runtime["last_error"] == "surviving engine did not become apply-ready before deadline"
     result.guard.assert_called_once()
     assert result.finalize.call_args.args[3] is False
-    result.withdraw.assert_not_called()
     result.apply.assert_not_called()
 
 
@@ -221,11 +220,10 @@ def test_healthy_survivor_wait_timeout_falls_back_before_withdraw_and_apply():
         {"id": 0, "status": "unknown"},
     ],
 )
-def test_ineligible_survivor_fails_before_withdraw_and_apply(status):
+def test_ineligible_survivor_fails_before_apply(status):
     result = _execute(statuses=[{0: status}])
 
     assert result.runtime["phase"] == FtPhase.RECONFIGURING.value
-    result.withdraw.assert_not_called()
     result.apply.assert_not_called()
 
 
@@ -256,7 +254,6 @@ def test_late_dead_survivors_join_removal_set_or_fallback(late_dead_ranks, expec
 
     if expected_removed is None:
         assert result.runtime["phase"] == FtPhase.RECONFIGURING.value
-        result.withdraw.assert_not_called()
         result.apply.assert_not_called()
         assert result.finalize.call_args.args[1] == {0, 1, 2, 3}
         assert result.finalize.call_args.args[3] is False
@@ -268,20 +265,78 @@ def test_late_dead_survivors_join_removal_set_or_fallback(late_dead_ranks, expec
 
 
 def test_success_uses_fault_candidates_not_observational_mask():
-    result = _execute(
-        statuses=[
-            {0: {"id": 0, "status": "unhealthy", "mask": [False, True]}},
-            {0: {"id": 0, "status": "healthy", "mask": [False, True]}},
-        ]
-    )
+    with patch("motor.controller.fault_tolerance.strategy.dp_scale_down.logger.info") as log_info:
+        result = _execute(
+            statuses=[
+                {0: {"id": 0, "status": "unhealthy", "mask": [False, True]}},
+                {0: {"id": 0, "status": "healthy", "mask": [False, True]}},
+            ]
+        )
 
     params = result.apply.call_args.args[1]
-    assert params == {"removed_dp_ranks": [1], "dp_master_ip": "192.0.2.1"}
+    assert params == {"removed_dp_ranks": [1], "dp_master_ip": "192.0.2.1", "dp_master_rank": 0}
     assert result.runtime["dead_committed"] == [1]
     result.guard.assert_called_once()
     result.finalize.assert_called_once()
     assert result.finalize.call_args.args[3] is True
     assert result.finalize.call_args.args[2] == result.runtime["request_id"]
+    assert result.finalize.call_args.args[4] == 0
+    log_info.assert_called_once_with(
+        "%s succeeded: instance_id=%d, request_id=%s, removed_dp_ranks=%s, surviving_dp_ranks=%s, new_master_rank=%d",
+        "DpScaleDownStrategy",
+        1,
+        result.runtime["request_id"],
+        [1],
+        [0],
+        0,
+    )
+
+
+def test_withdraw_failure_falls_back_without_applying_scale_down():
+    result = _execute(withdraw=False)
+
+    result.withdraw.assert_called_once_with(result.instance)
+    result.apply.assert_not_called()
+    assert result.runtime["phase"] == FtPhase.RECONFIGURING.value
+    assert result.strategy.is_failed()
+
+
+@pytest.mark.parametrize(
+    ("committed_ranks", "candidate", "expected_master_rank", "expected_master_ip"),
+    [
+        ([], 0, 1, "192.0.2.2"),
+        ([0], 1, 2, "192.0.2.3"),
+    ],
+    ids=["dp0-to-dp1", "dp1-to-dp2"],
+)
+def test_consecutive_master_scale_down_selects_rank_specific_store_port_input(
+    committed_ranks,
+    candidate,
+    expected_master_rank,
+    expected_master_ip,
+):
+    endpoints = _endpoints(3)
+    survivors = [endpoint.id for endpoint in endpoints if endpoint.id not in {*committed_ranks, candidate}]
+    initial_runtime = FtRuntime(
+        instance_id=1,
+        phase=FtPhase.SCALED_DOWN_RUNNING if committed_ranks else FtPhase.NORMAL,
+        original_dp_ranks=[0, 1, 2],
+        dead_committed=committed_ranks,
+    )
+    result = _execute(
+        endpoints=endpoints,
+        candidates=(candidate,),
+        initial_runtime=initial_runtime,
+        statuses=[
+            {rank: {"id": rank, "status": "unhealthy"} for rank in survivors},
+            {rank: {"id": rank, "status": "healthy"} for rank in survivors},
+        ],
+    )
+
+    params = result.apply.call_args.args[1]
+    assert params["dp_master_rank"] == expected_master_rank
+    assert params["dp_master_ip"] == expected_master_ip
+    assert result.finalize.call_args.args[4] == expected_master_rank
 
 
 @pytest.mark.parametrize(
@@ -371,20 +426,18 @@ def test_gate_leaves_mc2_validation_to_engine():
 
 
 @pytest.mark.parametrize(
-    ("execute_kwargs", "expected_withdraws", "expected_applies"),
+    ("execute_kwargs", "expected_applies"),
     [
-        ({"guard_error": RuntimeError("guard failed")}, 0, 0),
-        ({"withdraw": False}, 1, 0),
-        ({"apply_error": RuntimeError("apply unavailable")}, 1, 1),
+        ({"guard_error": RuntimeError("guard failed")}, 0),
+        ({"apply_error": RuntimeError("apply unavailable")}, 1),
     ],
-    ids=["guard", "withdraw", "apply"],
+    ids=["guard", "apply"],
 )
-def test_transaction_stage_failure_aborts_without_retry(execute_kwargs, expected_withdraws, expected_applies):
+def test_transaction_stage_failure_aborts_without_retry(execute_kwargs, expected_applies):
     result = _execute(**execute_kwargs)
 
     assert result.runtime["phase"] == FtPhase.RECONFIGURING.value
     assert result.finalize.call_args.args[3] is False
-    assert result.withdraw.call_count == expected_withdraws
     assert result.apply.call_count == expected_applies
 
 
@@ -400,11 +453,22 @@ def test_pod_recycle_is_controlled_by_scale_up(enable_dp_scale_up, expected_stop
 
 
 def test_publication_failure_keeps_committed_runtime_hidden():
-    result = _execute(publish=False)
+    with patch("motor.controller.fault_tolerance.strategy.dp_scale_down.logger.warning") as log_warning:
+        result = _execute(publish=False)
 
     assert result.runtime["phase"] == FtPhase.SCALED_DOWN_RUNNING.value
     assert result.runtime["last_error"] == "ServingOverlay publication pending"
     assert result.runtime["can_serve"] is False
+    log_warning.assert_called_once_with(
+        "%s committed but serving publication is pending: instance_id=%d, request_id=%s, "
+        "removed_dp_ranks=%s, surviving_dp_ranks=%s, new_master_rank=%d",
+        "DpScaleDownStrategy",
+        1,
+        result.runtime["request_id"],
+        [1],
+        [0],
+        0,
+    )
 
 
 def test_node_manager_grouping_and_status_set_validation():
@@ -438,7 +502,7 @@ def test_node_manager_grouping_and_status_set_validation():
     with patch(
         "motor.controller.fault_tolerance.strategy.dp_scale_down.NodeManagerApiClient.finalize_engine_ft"
     ) as finalize:
-        DpScaleDownStrategy._finalize_node_managers(groups, {1}, "request", True, 1)
+        DpScaleDownStrategy._finalize_node_managers(groups, {1}, "request", True, 2, 1)
     retired_by_pod = sorted((call.args[0].pod_ip, call.args[2]) for call in finalize.call_args_list)
     assert retired_by_pod == [
         ("192.0.2.1", []),

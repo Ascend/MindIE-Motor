@@ -652,6 +652,16 @@ def test_stale_engine_ft_finalize_cannot_release_new_transaction(daemon):
     assert not daemon.is_suicide_frozen()
 
 
+def test_engine_ft_commit_promotes_virtual_inference_to_new_master(daemon):
+    engine = daemon._services[SERVICE_ENGINE]
+    engine.promote_virtual_inference_target = MagicMock()
+    daemon.guard_engine_ft_transaction("request", 60)
+
+    daemon.finalize_engine_ft_transaction("request", [], True, 1)
+
+    engine.promote_virtual_inference_target.assert_called_once_with(1)
+
+
 def test_commit_retired_endpoint_updates_monitors_and_filters_pid_death(daemon):
     reporter = MagicMock()
     daemon._engine_ft_manager = reporter

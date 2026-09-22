@@ -6,7 +6,7 @@
 
 原生拉起（Native Launch）路径下，虚推由 Node Manager 直接执行（motor/node_manager/core/services/native_engine/virtual_inference/），不再依赖 Engine Server 的 mgmt 面：
 
-- Node Manager 每个实例维护单个虚推 monitor，仅绑定有效的 DP0 target（仅 vLLM）；周期性探测原生引擎 GET /health，首次观察到该 target READY 后幂等启动虚推循环。
+- Node Manager 每个实例维护单个虚推 monitor（仅 vLLM），初始绑定 DP0，DP 缩容提交后自动迁移到新的 DP Master；周期性探测原生引擎 GET /health，首次观察到当前 target READY 后幂等启动虚推循环。
 - 虚推请求直接发往 vLLM 引擎推理面 POST /v1/completions。
 - 虚推达到失败阈值时，仅使 endpoint 呈现 UNHEALTHY/ABNORMAL，不终止进程、不重启引擎。
 - HeartbeatManager 将运行时 `UNHEALTHY` 映射为心跳 `ABNORMAL`；Daemon 连续 5 次观察到 abnormal 后触发 Pod 自杀重调度（k8s 重启容器）。虚推本身不直接杀进程；若开启引擎 relaunch，Controller 还可能收到 abnormal 上报并触发引擎原地重启。

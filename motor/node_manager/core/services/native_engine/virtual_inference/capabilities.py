@@ -32,14 +32,16 @@ def should_enable_vllm_virtual_inference(
     dp_rank: int,
     headless: bool,
     npu_usage_threshold: int,
+    active_dp_master_rank: int = 0,
 ) -> bool:
-    """Return True when Motor should run virtual inference for this vLLM endpoint (DP0, non-headless)."""
+    """Return True when Motor should run virtual inference for the selected vLLM DP master."""
     if not enable_virtual_inference:
         return False
-    if dp_rank != 0:
+    if dp_rank != active_dp_master_rank:
         logger.info(
-            "Virtual inference is disabled on DP rank %s (only DP rank 0 performs virtual inference)",
+            "Virtual inference is disabled on DP rank %s (active DP master rank is %s)",
             dp_rank,
+            active_dp_master_rank,
         )
         return False
     if headless:

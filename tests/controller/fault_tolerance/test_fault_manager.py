@@ -28,6 +28,7 @@ from motor.controller.core import ObserverEvent
 from motor.controller.fault_tolerance.dp_scale_down import FtPhase, ScaleDownContext, get_ft_runtime_store
 from motor.controller.fault_tolerance.fault_manager import FaultManager
 from motor.controller.fault_tolerance.recovery_planner import build_recovery_plan
+from motor.controller.fault_tolerance.serving_overlay import ServingOverlay
 from motor.controller.fault_tolerance.fault_types import (
     FaultCategory,
     FaultInfo,
@@ -1328,6 +1329,43 @@ def test_report_software_fault_logs_dp_rank_and_status(fault_manager_with_instan
     )
 
 
+@pytest.mark.parametrize("engine_status", [1, 2])
+def test_first_engine_fault_immediately_withdraws_instance(fault_manager_with_instances, engine_status):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    fault = FaultInfo.from_exception(RuntimeError("engine fault"), engine_id=0, engine_status=engine_status)
+    instance = _reportable_instance("192.168.1.1", engine_ids=(0,))
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(ServingOverlay, "withdraw", return_value=True) as withdraw,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        assert manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1).accepted
+        assert manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1).accepted
+
+    withdraw.assert_called_once_with(instance)
+    runtime = get_ft_runtime_store().get(1)
+    assert runtime["phase"] == FtPhase.WAITING_ENGINE_FAULT.value
+    assert runtime["serving_published"] is False
+
+
+def test_engine_fault_does_not_withdraw_when_dp_scale_down_is_disabled(fault_manager_with_instances):
+    manager = fault_manager_with_instances
+    fault = FaultInfo.from_exception(RuntimeError("engine fault"), engine_id=0, engine_status=1)
+    instance = _reportable_instance("192.168.1.1", engine_ids=(0,))
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager") as instance_manager_cls,
+        patch.object(ServingOverlay, "withdraw") as withdraw,
+    ):
+        instance_manager_cls.return_value.get_instance.return_value = instance
+        assert manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1).accepted
+
+    withdraw.assert_not_called()
+    assert get_ft_runtime_store().get(1) is None
+
+
 def test_new_dp_status_replaces_previous_status_in_collection_round(fault_manager_with_instances):
     """A newer status for the same reporter+engine replaces the prior one,
     regardless of fault code: DEAD and UNHEALTHY must never coexist.
@@ -2222,7 +2260,7 @@ def test_incomplete_ft_status_round_times_out_to_fallback(fault_manager_with_ins
     manager = fault_manager_with_instances
     manager.config.fault_tolerance_config.enable_dp_scale_down = True
     manager.config.fault_tolerance_config.enable_engine_relaunch = enable_relaunch
-    manager.config.fault_tolerance_config.cpu_distributed_timeout_seconds = 5
+    manager.config.fault_tolerance_config.fault_collection_timeout_seconds = 5
     metadata = manager.instances[1]
     metadata.fault_level = FaultLevel.L2
     metadata.fault_code = int(SpecialFaultCode.ENGINE_UNHEALTHY)

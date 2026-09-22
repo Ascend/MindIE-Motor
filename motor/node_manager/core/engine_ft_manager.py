@@ -66,7 +66,7 @@ class EngineFtManager:
         self,
         config: NodeManagerConfig,
         guard_callback: Callable[[str, float], None] | None = None,
-        finalize_callback: Callable[[str, list[int], bool], None] | None = None,
+        finalize_callback: Callable[[str, list[int], bool, int | None], None] | None = None,
     ):
         self._config = config
         self._config_lock = threading.RLock()
@@ -249,7 +249,23 @@ class EngineFtManager:
         endpoints = self._select_endpoints(endpoint_ids)
         engine_params = dict(params)
         if instruction == "scale_down":
-            engine_params.setdefault("dp_store_port", dp_store_port)
+            # The engine consumes this port only when the current DP master is
+            # removed. Stable-master scale-down rounds do not recreate TCPStore.
+            dp_master_rank = engine_params.pop("dp_master_rank", 0)
+            if not isinstance(dp_master_rank, int) or isinstance(dp_master_rank, bool) or dp_master_rank < 0:
+                raise ValueError("dp_master_rank must be a non-negative integer")
+            resolved_dp_store_port = dp_store_port + dp_master_rank
+            if resolved_dp_store_port > 65535:
+                raise ValueError(
+                    "resolved dp_store_port exceeds 65535: base=%d, dp_master_rank=%d" % (dp_store_port, dp_master_rank)
+                )
+            engine_params["dp_store_port"] = resolved_dp_store_port
+            logger.info(
+                "Resolved DP scale-down store endpoint: master_rank=%d, address=%s:%d",
+                dp_master_rank,
+                engine_params.get("dp_master_ip", ""),
+                resolved_dp_store_port,
+            )
         apply_engine_ft_instructions(endpoints, instruction, engine_params, request_id, timeout)
 
     def guard(self, request_id: str, freeze_seconds: float) -> None:
@@ -265,12 +281,14 @@ class EngineFtManager:
             raise RuntimeError("engine FT guard callback is not configured")
         self._guard_callback(request_id, freeze_seconds)
 
-    def finalize(self, request_id: str, retired_endpoint_ids: list[int], commit: bool) -> None:
+    def finalize(
+        self, request_id: str, retired_endpoint_ids: list[int], commit: bool, dp_master_rank: int | None = None
+    ) -> None:
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("finalize request_id must be a non-empty string")
         if self._finalize_callback is None:
             raise RuntimeError("engine FT finalize callback is not configured")
-        self._finalize_callback(request_id, retired_endpoint_ids, commit)
+        self._finalize_callback(request_id, retired_endpoint_ids, commit, dp_master_rank)
 
     def reset_retired_endpoints(self) -> None:
         """Clear retirement state when a new engine topology is pulled."""
