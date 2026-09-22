@@ -37,7 +37,12 @@ from lib.generator.k8s_utils import (
 )
 from lib.generator.controller import generate_yaml_controller
 from lib.generator.coordinator import generate_yaml_coordinator
-from lib.generator.engine import generate_yaml_engine, update_engine_base_name, validate_instance_nums
+from lib.generator.engine import (
+    generate_yaml_engine,
+    update_engine_base_name,
+    validate_instance_nums,
+    update_a5_host_nic_overlay_from_env,
+)
 from lib.generator.kv_cache_store import generate_yaml_kv_store, normalize_kv_cache_store_config
 from lib.generator.storage import generate_yaml_storage_pvc, get_storage_entries
 from lib.generator.kv_conductor import generate_yaml_kv_conductor, normalize_kv_conductor_config
@@ -116,6 +121,7 @@ def handle_update_instance_num(user_config, env_config_path=None):
 
     update_kv_store_enabled_flag(user_config)
     update_engine_base_name(user_config)
+    update_a5_host_nic_overlay_from_env(env_config_path)
     set_env_to_shell(user_config, env_config_path, deploy_mode_arg)
 
     k8s_utils.g_generate_yaml_list = []
@@ -222,6 +228,7 @@ def deploy_services(user_config, env_config_path, dry_run=False, auto_log_collec
     update_engine_type_flag(user_config)
 
     update_engine_base_name(user_config)
+    update_a5_host_nic_overlay_from_env(env_config_path)
 
     deploy_mode_arg = resolve_deploy_mode_for_services(deploy_config)
     if not dry_run:

@@ -347,9 +347,9 @@ def _is_a5(hardware_type: str) -> bool:
 
 
 def npu_docker_card_count(hardware_type: str) -> int:
-    """Host davinci nodes for a pure-docker create: A3=16, A2/A5=8."""
+    """Host davinci nodes for a pure-docker create: A3/A5-Pod16=16, A2/A5=8."""
     _is_a5(hardware_type)
-    if hardware_type in C.HARDWARE_TYPE_A3:
+    if hardware_type in C.HARDWARE_TYPE_A3 or hardware_type in C.HARDWARE_TYPE_A5_POD16:
         return 16
     return 8
 
@@ -1201,7 +1201,9 @@ def validate_attached_npu_count(
         return
     expected = container_npu_count(user_config, role)
     got = attached_npu_count(devices_arg, hardware_type, template_fallback=template_fallback)
-    if got is None or got == expected:
+    # Allow attaching more NPUs than *_pod_npu_num (e.g. same-host UBG/ub_rtp needs
+    # all cards mounted while ASCEND_RT_VISIBLE_DEVICES limits compute to pod size).
+    if got is None or got == expected or (isinstance(got, int) and got >= expected):
         return
     if (devices_arg or "").strip():
         source = "--devices"
@@ -1210,8 +1212,8 @@ def validate_attached_npu_count(
     else:
         source = "docker-run NPU template"
     raise ValueError(
-        f"{source} attaches {got} NPU(s), but this container needs {expected} "
-        f"(*_pod_npu_num). Pass --devices with exactly {expected} card(s)."
+        f"{source} attaches {got} NPU(s), but this container needs at least {expected} "
+        f"(*_pod_npu_num). Pass --devices with >= {expected} card(s)."
     )
 
 

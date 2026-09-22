@@ -26,6 +26,7 @@ from lib.utils import (
 from lib.generator import k8s_utils
 from lib.generator.k8s_utils import set_engine_base_name, modify_sp_block_num, apply_additional_labels_annotations
 from lib.generator.storage import apply_storage_volumes, apply_dshm_size
+from lib.a5_host_nic import env_file_requests_a5_host_nic_overlay
 
 
 def _pop_ring_controller_atlas_from_labels(labels):
@@ -44,9 +45,14 @@ def _apply_a5_schedule_policy_annotation(template_metadata, hardware_type):
 
 
 def _append_a5_host_path_volumes(pod_spec, container):
+    """Mount A5 base hostPaths; optionally append host-nic extras when overlay is on."""
     existing_volume_names = {volume[C.NAME] for volume in pod_spec.get(C.VOLUMES, []) if C.NAME in volume}
     existing_mount_names = {mount[C.NAME] for mount in container.get(C.VOLUME_MOUNTS, []) if C.NAME in mount}
-    for volume_def in C.A5_HOST_PATH_VOLUMES:
+    volume_defs = list(C.A5_HOST_PATH_VOLUMES)
+    # Opt-in only: 1825/UBOE/UBG (AGRC protocol_desc). Default A5 path unchanged.
+    if k8s_utils.g_a5_host_nic_overlay:
+        volume_defs.extend(C.A5_HOST_PATH_VOLUMES_HOST_NIC)
+    for volume_def in volume_defs:
         volume_name = volume_def[C.NAME]
         if volume_name not in existing_volume_names:
             host_path_source = {C.PATH: volume_def[C.PATH]}
@@ -60,6 +66,17 @@ def _append_a5_host_path_volumes(pod_spec, container):
                 {C.NAME: volume_name, C.MOUNT_PATH: volume_def.get("mountPath", volume_def[C.PATH])}
             )
             existing_mount_names.add(volume_name)
+
+
+def update_a5_host_nic_overlay_from_env(env_config_path):
+    """Read env.json and set k8s_utils.g_a5_host_nic_overlay for YAML generation."""
+    enabled = env_file_requests_a5_host_nic_overlay(env_config_path)
+    k8s_utils.g_a5_host_nic_overlay = enabled
+    logger.info(
+        "A5 host-nic overlay (AGRC protocol_desc uboe/roce/ub_rtp:device): %s",
+        enabled,
+    )
+    return enabled
 
 
 def apply_a5_dns_config(pod_spec, deploy_config):
@@ -77,14 +94,53 @@ def apply_a5_dns_config(pod_spec, deploy_config):
 
 
 def apply_a5_engine_pod_config(pod_spec, container, deploy_config):
-    """Apply A5-specific pod network and hostPath settings to engine pods."""
+    """Apply A5-specific pod network and hostPath settings to engine pods.
+
+    Main path (default): base hostPath + dns ndots only — same as before.
+    Opt-in overlay when env.json AGRC protocol_desc is uboe/roce/ub_rtp:device:
+    extra mounts (inside _append via if), hostNetwork, privileged, HCCL_IF_IP.
+    """
     hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
     if hardware_type not in C.HARDWARE_TYPE_A5 and hardware_type not in C.HARDWARE_TYPE_A3:
         return
     if hardware_type in C.HARDWARE_TYPE_A5:
         _append_a5_host_path_volumes(pod_spec, container)
+        if k8s_utils.g_a5_host_nic_overlay:
+            # Required for Ascend950 TsdOpen/set_device (same as verified Docker --privileged).
+            sec = container.setdefault(C.SECURITY_CONTEXT, {})
+            sec[C.PRIVILEGED] = True
+            sec["allowPrivilegeEscalation"] = True
+            # UB/URMA only visible in host netns; align with Docker --net=host.
+            pod_spec[C.HOST_NETWORK] = True
+            pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
+            _ensure_a5_host_nic_env(container)
+            logger.info("Applied A5 host-nic overlay (AGRC protocol_desc)")
     apply_a5_dns_config(pod_spec, deploy_config)
     logger.info("Applied engine pod config for hardware_type=%s", hardware_type)
+
+
+def _ensure_a5_host_nic_env(container):
+    """Inject HCCL_IF_IP from hostIP; keep socket IFNAME from env.json / ConfigMap.
+
+    Do not hardcode IFNAME — 1825 uses eth0, UBOE may use eth2/eth4 per role.
+    """
+    env_list = container.setdefault(C.ENV, [])
+    by_name = {item.get(C.NAME): item for item in env_list if isinstance(item, dict)}
+
+    def upsert(name, value=None, field_path=None):
+        item = {C.NAME: name}
+        if field_path is not None:
+            item["valueFrom"] = {"fieldRef": {"fieldPath": field_path}}
+        else:
+            item[C.VALUE] = value
+        if name in by_name:
+            idx = env_list.index(by_name[name])
+            env_list[idx] = item
+        else:
+            env_list.append(item)
+        by_name[name] = item
+
+    upsert("HCCL_IF_IP", field_path="status.hostIP")
 
 
 def apply_a5_workload(workload, deploy_config):

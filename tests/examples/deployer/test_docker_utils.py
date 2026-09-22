@@ -98,11 +98,16 @@ class DockerDeployTests(unittest.TestCase):
 
     def test_templates_and_devices(self):
         a2, ctrl = C.ENTER_DOCKER_RUN_A2, C.ENTER_DOCKER_RUN_CTRL
+        a3, a5_pod16 = C.ENTER_DOCKER_RUN_A3, C.ENTER_DOCKER_RUN_A5_POD16
         self.assertIn("--device /dev/davinci7", a2)
         self.assertNotIn("--device", ctrl)
         self.assertIs(docker_deploy.enter_docker_run_template("prefill", "800I_A2"), a2)
         self.assertIs(docker_deploy.enter_docker_run_template("coordinator_controller", "800I_A2"), ctrl)
         self.assertIs(docker_deploy.enter_docker_run_template("render", "800I_A2"), ctrl)
+        # Render is no-NPU even on 16-card A5-Pod16; engine roles must not fall through to A3.
+        self.assertIs(docker_deploy.enter_docker_run_template("render", "Ascend950-Pod16"), ctrl)
+        self.assertIs(docker_deploy.enter_docker_run_template("prefill", "Ascend950-Pod16"), a5_pod16)
+        self.assertIs(docker_deploy.enter_docker_run_template("prefill", "800I_A3"), a3)
         filtered = docker_deploy.apply_enter_devices(a2, "0,3", attach_npu=True)
         self.assertIn("--device /dev/davinci0", filtered)
         self.assertNotIn("--device /dev/davinci1", filtered)

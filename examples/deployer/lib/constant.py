@@ -34,12 +34,41 @@ POD_RESCHEDULING_LABEL = "pod-rescheduling"
 POD_RESCHEDULING_ON = "on"
 HUAWEI_SCHEDULE_POLICY_ANNOTATION = "huawei.com/schedule_policy"
 A5_SCHEDULE_POLICY = "chip8-node8"
+# Align with ENTER_DOCKER_RUN_A5 host mounts (engine template already has driver / hccn.conf).
 A5_HOST_PATH_VOLUMES = [
     {"name": "host-lib64", "path": "/usr/lib64"},
     {"name": "hixlep", "path": "/etc/hixlep"},
     {"name": "route-conf", "path": "/lib/route.conf"},
     {"name": "urma-admin", "path": "/usr/bin/urma_admin", "type": "File"},
+    {"name": "hccl-rootinfo", "path": "/etc/hccl_rootinfo.json", "type": "File"},
 ]
+# Extra mounts for opt-in A5 hostNetwork path (UBOE / 1825 / UBG).
+# Align ENTER_DOCKER_RUN_A5 tooling mounts (dcmi / npu-smi / sbin).
+# Topo comes from ascend-driver/.../topo/950 (or AGRC topo_file_path), not /etc/atlas_topo_*.
+A5_HOST_PATH_VOLUMES_HOST_NIC = [
+    {"name": "host-sbin", "path": "/usr/local/sbin"},
+    {"name": "npu-smi-bin", "path": "/usr/local/bin/npu-smi", "type": "File"},
+    {"name": "dcmi", "path": "/usr/local/dcmi"},
+    {"name": "ascend-firmware", "path": "/usr/local/Ascend/firmware"},
+]
+# Opt-in markers under motor_common_env / motor_engine_*_env:
+# ASCEND_GLOBAL_RESOURCE_CONFIG.comm_resource_config.protocol_desc selects the path.
+#   UBOE  → uboe:device
+#   1825  → roce:device  (HIXL kProtocolRoce; 1825 is the NIC, not a protocol name)
+#   UBG   → ub_rtp:device (optional; same hostNetwork needs as ScaleOut UB paths)
+A5_UBOE_RESOURCE_CONFIG_KEY = "ASCEND_GLOBAL_RESOURCE_CONFIG"
+A5_HOST_NIC_PROTOCOL_TOKENS = (
+    "uboe:device",
+    "roce:device",
+    "ub_rtp:device",
+)
+A5_HOST_NIC_ENV_SECTIONS = (
+    "motor_common_env",
+    "motor_engine_prefill_env",
+    "motor_engine_decode_env",
+    "motor_engine_encode_env",
+    "motor_engine_union_env",
+)
 HOST_NETWORK = "hostNetwork"
 DNS_POLICY = "dnsPolicy"
 DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET = "ClusterFirstWithHostNet"
@@ -154,7 +183,10 @@ HARDWARE_TYPE_800T_A3 = "800T_A3"
 HARDWARE_TYPE_A2 = {HARDWARE_TYPE_800I_A2, HARDWARE_TYPE_800T_A2}
 HARDWARE_TYPE_A3 = {HARDWARE_TYPE_800I_A3, HARDWARE_TYPE_800T_A3}
 HARDWARE_TYPE_ASCEND950 = "Ascend950"
-HARDWARE_TYPE_A5 = {HARDWARE_TYPE_ASCEND950}
+# Same-host / bare-metal pod: mount all 16 NPUs (ub_rtp), compute still via VISIBLE.
+HARDWARE_TYPE_ASCEND950_POD16 = "Ascend950-Pod16"
+HARDWARE_TYPE_A5 = {HARDWARE_TYPE_ASCEND950, HARDWARE_TYPE_ASCEND950_POD16}
+HARDWARE_TYPE_A5_POD16 = {HARDWARE_TYPE_ASCEND950_POD16}
 ACCELERATOR_A5 = "huawei-npu"
 ACCELERATOR_910 = "huawei-Ascend910"
 ACCELERATOR_TYPE = "accelerator-type"
@@ -515,6 +547,55 @@ ENTER_DOCKER_RUN_A5 = """docker run -it --name "$NAME" -u root \\
   -v /root/.cache:/root/.cache \\
   -v /var/coredump:/var/coredump \\
   -v /data:/data \\
+  -v "$EXAMPLES:$EXAMPLES" \\
+  -v "$WEIGHT:$WEIGHT:ro" \\
+  "$IMAGE" bash
+"""
+
+ENTER_DOCKER_RUN_A5_POD16 = """docker run -it --name "$NAME" -u root \\
+  --net=host \\
+  --shm-size=4g \\
+  -e ASCEND_RUNTIME_OPTIONS=NODRV \\
+  -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver \\
+  -e NAME="$NAME" \\
+  -e WEIGHT="$WEIGHT" \\
+  --device /dev/davinci0 \\
+  --device /dev/davinci1 \\
+  --device /dev/davinci2 \\
+  --device /dev/davinci3 \\
+  --device /dev/davinci4 \\
+  --device /dev/davinci5 \\
+  --device /dev/davinci6 \\
+  --device /dev/davinci7 \\
+  --device /dev/davinci8 \\
+  --device /dev/davinci9 \\
+  --device /dev/davinci10 \\
+  --device /dev/davinci11 \\
+  --device /dev/davinci12 \\
+  --device /dev/davinci13 \\
+  --device /dev/davinci14 \\
+  --device /dev/davinci15 \\
+  --device /dev/davinci_manager \\
+  --device /dev/hisi_hdc \\
+  --device /dev/ummu \\
+  --device /dev/uburma \\
+  -v /usr/local/dcmi:/usr/local/dcmi \\
+  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
+  -v /usr/local/sbin:/usr/local/sbin \\
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
+  -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool \\
+  -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \\
+  -v /etc/hccn.conf:/etc/hccn.conf \\
+  -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \\
+  -v /usr/lib64:/usr/lib64 \\
+  -v /etc/hixlep:/etc/hixlep \\
+  -v /lib/route.conf:/lib/route.conf \\
+  -v /usr/bin/urma_admin:/usr/bin/urma_admin \\
+  -v /root/ascend/log:/root/ascend/log \\
+  -v /root/.cache:/root/.cache \\
+  -v /var/coredump:/var/coredump \\
+  -v /data:/data \\
+  -v /home:/home \\
   -v "$EXAMPLES:$EXAMPLES" \\
   -v "$WEIGHT:$WEIGHT:ro" \\
   "$IMAGE" bash

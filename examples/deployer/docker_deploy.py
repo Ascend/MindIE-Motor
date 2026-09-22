@@ -22,6 +22,7 @@ from datetime import datetime
 
 import lib.constant as C
 import lib.docker_utils as D
+from lib.a5_host_nic import apply_a5_host_nic_privileged
 from lib.docker_utils import (
     logger,
     read_json,
@@ -585,6 +586,10 @@ def enter_docker_run_template(role: str | None, hardware_type: str | None = None
     if engine == D.ROLE_RENDER:
         D.npu_docker_card_count(hardware_type)
         return C.ENTER_DOCKER_RUN_CTRL
+    # Must check A5-Pod16 before the generic "16 cards => A3" branch.
+    # Ascend950-Pod16: same-host UBG (davinci0-15). UBOE/1825 use Ascend950 (8 cards).
+    if hardware_type in C.HARDWARE_TYPE_A5_POD16:
+        return C.ENTER_DOCKER_RUN_A5_POD16
     if D.npu_docker_card_count(hardware_type) == 16:
         return C.ENTER_DOCKER_RUN_A3
     if hardware_type in C.HARDWARE_TYPE_A5:
@@ -892,10 +897,11 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
         return 1
     attach_npu = _enter_template_attaches_npu(template)
     devices_arg = getattr(args, "devices", None)
+    env_config_path = None
     try:
         command = apply_enter_devices(template, devices_arg, attach_npu=attach_npu)
         if attach_npu:
-            user_config_path, _env_config_path = resolve_config_paths(
+            user_config_path, env_config_path = resolve_config_paths(
                 args.config_dir, args.user_config_path, args.env_config_path
             )
             D.validate_attached_npu_count(
@@ -905,6 +911,18 @@ def _run_enter(args, deployer_dir: str, *, start_service: bool = False) -> int:
                 hardware_type=hardware_type,
                 template_fallback=True,
             )
+            before = command
+            command = apply_a5_host_nic_privileged(
+                command,
+                hardware_type,
+                env_config_path,
+                attach_npu=attach_npu,
+            )
+            if command != before:
+                logger.info(
+                    "A5 host-nic overlay: --privileged enabled "
+                    "(AGRC uboe/roce/ub_rtp; UBOE/1825=Ascend950, same-host UBG=Ascend950-Pod16)"
+                )
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
@@ -1053,8 +1071,11 @@ def parse_arguments() -> argparse.Namespace:
         "with no /dev/davinci* nodes. --role kv_store uses ENTER_DOCKER_RUN_KVS "
         "(no NPU devices; binds driver, /driver, /var/log). Otherwise uses "
         "ENTER_DOCKER_RUN_A2 (davinci0-7), ENTER_DOCKER_RUN_A3 (davinci0-15), "
-        "or ENTER_DOCKER_RUN_A5 (davinci0-7 plus A5 UB paths) from hardware_type "
+        "ENTER_DOCKER_RUN_A5 (davinci0-7 plus A5 UB paths), or ENTER_DOCKER_RUN_A5_POD16 (davinci0-15) from hardware_type "
         "(every card in that template, or only --devices if passed). "
+        "UBOE/1825: hardware_type=Ascend950 and env.json AGRC uboe:device or roce:device "
+        "(adds --privileged; pass --nic-name on --start). "
+        "Same-host UBG: Ascend950-Pod16 and ub_rtp:device. "
         "Does not write EXAMPLES or CONFIG_DIR into the container; "
         "--start must pass --config_dir again. "
         "Passes NAME into the container so --start workspaces split by container name.",

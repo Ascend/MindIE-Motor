@@ -45,6 +45,8 @@ g_user_config_path = None
 g_mf_store_service = "mf_store"
 g_mf_store_enabled = False
 g_engine_type = "vllm"
+# Opt-in: env.json AGRC protocol_desc uboe/roce/ub_rtp:device → A5 hostNetwork overlay.
+g_a5_host_nic_overlay = False
 _DEPLOYER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
