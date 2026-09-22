@@ -993,13 +993,23 @@ class AsyncSchedulerClient:
                 # response; repicked=True means the scheduler moved the request off the worker's
                 # top-1 to spread load.
                 affinity_debug = getattr(req_info, "kv_affinity_debug", None)
+                is_affinity_policy = candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY
                 matched_load = (
                     affinity_debug.get((out_instance.id, out_endpoint.id))
-                    if (candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY and isinstance(affinity_debug, dict))
+                    if (is_affinity_policy and isinstance(affinity_debug, dict))
                     else None
                 )
-                matched = matched_load[0] if matched_load else None
-                sel_load = matched_load[1] if matched_load else None
+                # matched/load are affinity-only: under load_balance or round_robin they are
+                # always None and would read as a lost KV-reuse discount, so emit them only
+                # for kv_cache_affinity (where a None value is itself meaningful).
+                affinity_fields = ""
+                affinity_args: tuple = ()
+                if is_affinity_policy:
+                    affinity_fields = "matched=%s load=%s "
+                    affinity_args = (
+                        matched_load[0] if matched_load else None,
+                        matched_load[1] if matched_load else None,
+                    )
                 repicked = (out_instance.id, out_endpoint.id) != (
                     instance.id,
                     endpoint.id,
@@ -1013,15 +1023,15 @@ class AsyncSchedulerClient:
                 else:
                     committed_workload = workload
                 logger.info(
-                    "scheduled role=%s req_id=%s instance=%s endpoint=%s policy=%s matched=%s "
-                    "load=%s committed=%s score=%s fast_path=%s repicked=%s proposed=%s-%s",
+                    "scheduled role=%s req_id=%s instance=%s endpoint=%s policy=%s "
+                    + affinity_fields
+                    + "committed=%s score=%s fast_path=%s repicked=%s proposed=%s-%s",
                     role_str,
                     req_info.req_id,
                     out_instance.id,
                     out_endpoint.id,
                     candidate_policy,
-                    matched,
-                    sel_load,
+                    *affinity_args,
                     committed_workload.active_tokens,
                     data.get("selected_score"),
                     data.get("fast_path"),

@@ -29,6 +29,7 @@ from motor.common.logger import get_logger
 from motor.common.http.security_utils import filter_sensitive_headers, build_safe_body_structure
 from motor.common.utils.net import format_address
 import motor.common.utils.error as cancel_error
+from motor.common.utils.error import format_exception_reason
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.models.constants import (
     DEFAULT_REQUEST_ID,
@@ -684,9 +685,14 @@ class BaseRouter(ABC):
                     self.req_info.cancel_scope()
                     raise
                 except Exception as e:
-                    self.logger.error(f"Post Decode error: {e}")
+                    reason = format_exception_reason(e)
+                    self.logger.error(
+                        "Post Decode error: %s",
+                        reason,
+                        exc_info=(type(e), e, e.__traceback__),
+                    )
                     self.req_info.cancel_scope()
-                    trace_obj.set_trace_error_message(f"Post Decode error: {e}", is_meta=self.is_meta)
+                    trace_obj.set_trace_error_message(f"Post Decode error: {reason}", is_meta=self.is_meta)
                     trace_obj.set_trace_exception(e)
 
                     if attempt < max_retry - 1:

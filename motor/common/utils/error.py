@@ -21,3 +21,8 @@ class RequestCancelledError(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(f"Request cancelled because of {reason}")
+
+
+def format_exception_reason(error: BaseException) -> str:
+    """Format an exception for operator-facing logs when str(error) may be empty."""
+    return f"{type(error).__module__}.{type(error).__qualname__}: {error!r}"

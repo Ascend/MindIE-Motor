@@ -21,6 +21,7 @@ from starlette import status
 
 from motor.common.http.http_client import HTTPClientPool
 from motor.common.http.security_utils import sanitize_error_message
+from motor.common.utils.error import format_exception_reason
 from motor.coordinator.domain import ScheduledResource
 from motor.coordinator.models.request import ReqState
 from motor.coordinator.router.strategies.base import BaseRouter, check_cancel_error
@@ -389,7 +390,11 @@ class PDHybridRouter(BaseRouter):
                         and transport_retryable
                     )
                     self.logger.error(
-                        "Error in streaming (attempt %d/%d): %s", attempt + 1, max_retry, str(e), exc_info=True
+                        "Error in streaming (attempt %d/%d): %s",
+                        attempt + 1,
+                        max_retry,
+                        format_exception_reason(e),
+                        exc_info=True,
                     )
                     if not retry:
                         trace_obj.set_trace_error_message(f"Streaming request failed: {e}")
@@ -498,7 +503,8 @@ class PDHybridRouter(BaseRouter):
                         "Error in post (attempt %d/%d): %s",
                         attempt + 1,
                         max_retries,
-                        str(e),
+                        format_exception_reason(e),
+                        exc_info=True,
                     )
 
                     trace_obj.set_trace_exception(e)

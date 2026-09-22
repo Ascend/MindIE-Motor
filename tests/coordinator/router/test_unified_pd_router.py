@@ -454,6 +454,49 @@ async def test_unified_pd_process_response_error_wraps_cancelled_as_request_canc
     assert cancel_error.CLIENT_DISCONNECT in caplog.text
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "expected_type"),
+    [
+        (ClientDisconnect(), "ClientDisconnect"),
+        (asyncio.TimeoutError(), "TimeoutError"),
+    ],
+)
+async def test_unified_pd_process_response_error_includes_exception_type_for_empty_message(
+    monkeypatch,
+    caplog,
+    exc,
+    expected_type,
+):
+    caplog.set_level(
+        logging.WARNING,
+        logger=_resolve_logger_name("motor.coordinator.router.strategies.unified_pd"),
+    )
+
+    req_info = RequestInfo(
+        req_id="empty-exception-reason",
+        req_data={"model": "m", "prompt": "hi"},
+        api="v1/completions",
+        entry_api="v1/completions",
+        req_len=3,
+    )
+    config = _config()
+    router = UnifiedPDRouter(
+        req_info,
+        config,
+        scheduler=_Scheduler(),
+        request_manager=RequestManager(config),
+    )
+    monkeypatch.setattr(router, "_stop_attempt", AsyncMock(return_value=None))
+
+    attempt = await router._create_attempt(PDDispatchSession(req_info.req_id))
+    error, _retry = await router._process_response_error(attempt, 0, exc)
+
+    assert expected_type in caplog.text
+    assert "because of ;" not in caplog.text
+    assert isinstance(error, type(exc))
+
+
 def test_dispatch_plan_prefers_explicit_capability_over_engine_fallback():
     scheduler = _Scheduler(
         prefill_engine_type="vllm",

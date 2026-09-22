@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, Response
 
 import motor.common.utils.error as cancel_error
-from motor.common.utils.error import RequestCancelledError
+from motor.common.utils.error import RequestCancelledError, format_exception_reason
 from motor.common.resources.dispatch import (
     DispatchPlan,
     DispatchStopReason,
@@ -513,6 +513,7 @@ class UnifiedPDRouter(BaseRouter):
         trace_obj.set_trace_prompt(self.req_info.req_data)
         trace_obj.set_trace_exception(error)
         max_retry = max(self.config.exception_config.transport_retry_limit, 1)
+        logged_error = error
 
         if isinstance(error, asyncio.CancelledError):
             reason_str, retry = check_cancel_error(error)
@@ -522,7 +523,7 @@ class UnifiedPDRouter(BaseRouter):
             label = f"Unified PD cancelled {attempt_index}/{max_retry}"
         else:
             reason = DispatchStopReason.PEER_FAILED
-            reason_str = str(error)
+            reason_str = format_exception_reason(error)
             retry = allow_retry and attempt_index < max_retry - 1
             if isinstance(error, HTTPException):
                 retry = False
@@ -537,12 +538,20 @@ class UnifiedPDRouter(BaseRouter):
                 f"{reason_str}, {retry=}"
             )
             trace_obj.set_trace_error_message(error_msg)
-            self.logger.warning("%s", error_msg)
+            self.logger.warning(
+                "%s",
+                error_msg,
+                exc_info=(type(logged_error), logged_error, logged_error.__traceback__),
+            )
             await self._stop_attempt(attempt, reason)
         else:
             error_msg = str(f"{label}, because of {reason_str}, {retry=}")
             trace_obj.set_trace_error_message(error_msg)
-            self.logger.warning("%s", error_msg)
+            self.logger.warning(
+                "%s",
+                error_msg,
+                exc_info=(type(logged_error), logged_error, logged_error.__traceback__),
+            )
 
         if retry:
             await asyncio.sleep(self.config.exception_config.retry_delay * (2**attempt_index))

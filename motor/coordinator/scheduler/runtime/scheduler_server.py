@@ -750,22 +750,25 @@ class _SchedulerRequestDispatcher:
             )
         instance, endpoint, selected_score = selected
         selected_matched = matched_tokens_map.get((instance.id, endpoint.id), 0.0)
-        if (instance.id, endpoint.id) not in matched_tokens_map:
-            # Selected endpoint missed the affinity scoring pass (e.g. candidate re-selection):
-            # 0.0 commits the full ISL, which is the conservative direction (never under-counts),
-            # but log it so a silently lost KV-reuse discount is diagnosable.
-            logger.warning(
-                "matched_tokens missing for selected endpoint req_id=%s instance_id=%s "
-                "endpoint_id=%s, committing full ISL",
-                req_id,
-                instance.id,
-                endpoint.id,
-            )
-        if (
+        is_affinity_commit = (
             candidate_policy == CANDIDATE_POLICY_KV_CACHE_AFFINITY
             and isl is not None
             and role in (PDRole.ROLE_P, PDRole.ROLE_U)
-        ):
+        )
+        if is_affinity_commit:
+            if (instance.id, endpoint.id) not in matched_tokens_map:
+                # Selected endpoint missed this affinity scoring pass (e.g. candidate
+                # re-selection, or the worker reported no matched_tokens): 0.0 commits the
+                # full ISL, which is the conservative direction (never under-counts), but
+                # log it so a silently lost KV-reuse discount is diagnosable. Only reachable
+                # on the affinity commit branch -- matched_tokens is not consulted elsewhere.
+                logger.warning(
+                    "matched_tokens missing for selected endpoint req_id=%s instance_id=%s "
+                    "endpoint_id=%s, committing full ISL",
+                    req_id,
+                    instance.id,
+                    endpoint.id,
+                )
             workload = calculate_committed_workload(
                 role,
                 isl,
@@ -796,14 +799,22 @@ class _SchedulerRequestDispatcher:
         instance_data = _serialize_instance_minimal(instance) if instance else None
         endpoint_data = _serialize_endpoint_minimal(endpoint) if endpoint else None
         if _should_log_scheduling_sample(req_id or request.request_id):
+            # matched/load are affinity-only: on the non-affinity path matched_tokens is never
+            # consulted and this value is always 0.0, which would read as a lost KV-reuse
+            # discount. Emit it only when the affinity commit branch actually ran.
+            affinity_fields = ""
+            affinity_args: tuple = ()
+            if is_affinity_commit:
+                affinity_fields = "matched=%.2f "
+                affinity_args = (selected_matched,)
             logger.info(
-                "ALLOCATE_ONLY req_id=%s ins=%s ep=%s score=%.4f committed=%.2f matched=%.2f fast_path=%s",
+                "ALLOCATE_ONLY req_id=%s ins=%s ep=%s score=%.4f committed=%.2f " + affinity_fields + "fast_path=%s",
                 req_id,
                 instance.id,
                 endpoint.id,
                 selected_score,
                 workload.active_tokens,
-                selected_matched,
+                *affinity_args,
                 fast_path,
             )
         return SchedulerResponse(
