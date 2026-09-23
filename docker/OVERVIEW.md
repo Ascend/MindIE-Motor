@@ -31,8 +31,8 @@ Current published image tags follow this format:
 
 | Field | Example Value | Description |
 |---|---|---|
-| `MotorVersion` | `3.2.0b1`, `3.1.0` | MindIE-Motor version number |
-| `EngineVersion` | `0.26.0rc1`, `0.23.0` | Matching vllm-ascend version |
+| `MotorVersion` | `3.1.1`, `3.2.0b3` | MindIE-Motor version number |
+| `EngineVersion` | `0.23.0.post1`, `0.26.0rc2` | Matching vllm-ascend version |
 | `ChipSeries` | `a2`, `a3`, `a5` | Target Atlas chip series |
 | `OperatingSystem` | `ubuntu22.04`, `openeuler24.03` | Base OS |
 | `PythonVersion` | `py3.12` | Python version |
@@ -50,18 +50,31 @@ The following table lists the latest DeepSeek V4.1 Flash dedicated images on Asc
 | `vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
 | `vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/vllm_ascend_deepseek_v4.1_flash-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0+deepseek.v4.1.flash / vllm-ascend deepseek-v4.1-flash |
 
-### Latest Version MindIE-Motor 3.2.0b1
+### Latest Version MindIE-Motor 3.1.1
 
-The following table lists all images for the latest MindIE-Motor 3.2.0b1 release on AscendHub. These images are released to pair with the vllm-ascend v0.26.0rc images. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
+The following table lists all images for the latest MindIE-Motor 3.1.1 release on AscendHub. These images are released to pair with the vllm-ascend v0.23.0.post1 images. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
 
 | Tag | Dockerfile | Architecture | Image Contents |
 |---|---|---|---|
-| `3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
-| `3.2.0b1-vllm_ascend0.26.0rc1-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
-| `3.2.0b1-vllm_ascend0.26.0rc1-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
-| `3.2.0b1-vllm_ascend0.26.0rc1-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
-| `3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
-| `3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b1-vllm_ascend0.26.0rc1-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor / vllm-ascend 0.26.0rc1 |
+| `3.1.1-vllm_ascend0.23.0.post1-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.1-vllm_ascend0.23.0.post1-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.1.1 / vllm-ascend 0.23.0.post1 |
+| `3.1.1-vllm_ascend0.23.0.post1-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.1-vllm_ascend0.23.0.post1-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.1.1 / vllm-ascend 0.23.0.post1 |
+| `3.1.1-vllm_ascend0.23.0.post1-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.1-vllm_ascend0.23.0.post1-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.1.1 / vllm-ascend 0.23.0.post1 |
+| `3.1.1-vllm_ascend0.23.0.post1-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.1-vllm_ascend0.23.0.post1-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.1.1 / vllm-ascend 0.23.0.post1 |
+| `3.1.1-vllm_ascend0.23.0.post1-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.1-vllm_ascend0.23.0.post1-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.1.1 / vllm-ascend 0.23.0.post1 |
+| `3.1.1-vllm_ascend0.23.0.post1-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.1.1-vllm_ascend0.23.0.post1-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.1.1 / vllm-ascend 0.23.0.post1 |
+
+### Latest Beta Version MindIE-Motor 3.2.0b3
+
+The following table lists all images for the MindIE-Motor 3.2.0b3 release on AscendHub. These images are released to pair with the vllm-ascend v0.26.0rc2 images, in which vllm-ascend fixes several critical issues. For historical tags, see [Supported Tags](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/supported_tags.md).
+
+| Tag | Dockerfile | Architecture | Image Contents |
+|---|---|---|---|
+| `3.2.0b3-vllm_ascend0.26.0rc2-a2-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b3-vllm_ascend0.26.0rc2-a2-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0b3 / vllm-ascend 0.26.0rc2 |
+| `3.2.0b3-vllm_ascend0.26.0rc2-a2-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b3-vllm_ascend0.26.0rc2-a2-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0b3 / vllm-ascend 0.26.0rc2 |
+| `3.2.0b3-vllm_ascend0.26.0rc2-a3-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b3-vllm_ascend0.26.0rc2-a3-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0b3 / vllm-ascend 0.26.0rc2 |
+| `3.2.0b3-vllm_ascend0.26.0rc2-a3-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b3-vllm_ascend0.26.0rc2-a3-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0b3 / vllm-ascend 0.26.0rc2 |
+| `3.2.0b3-vllm_ascend0.26.0rc2-a5-ubuntu22.04-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b3-vllm_ascend0.26.0rc2-a5-ubuntu22.04-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0b3 / vllm-ascend 0.26.0rc2 |
+| `3.2.0b3-vllm_ascend0.26.0rc2-a5-openeuler24.03-py3.12` | [Dockerfile](https://gitcode.com/Ascend/MindIE-Motor/blob/master/docker/mindie-motor-vllm/3.2.0b3-vllm_ascend0.26.0rc2-a5-openeuler24.03-py3.12/Dockerfile) | arm64 / x86_64 | motor 3.2.0b3 / vllm-ascend 0.26.0rc2 |
 
 ## Quick Start
 
@@ -79,7 +92,7 @@ See the [quick start guide](https://gitcode.com/Ascend/MindIE-Motor/blob/master/
 Each Dockerfile clones the pinned branch and commit during the build, then runs `build.sh` to install `motor` and `ccae_reporter`. **No local source tree or build context is required.** Replace `<tag>` with the desired combination and run from the repository root:
 
 ```bash
-TAG="3.2.0b1-vllm_ascend0.26.0rc1-a2-ubuntu22.04-py3.12"
+TAG="3.1.1-vllm_ascend0.23.0.post1-a2-ubuntu22.04-py3.12"
 
 docker build --network=host \
     --platform=linux/arm64 \
