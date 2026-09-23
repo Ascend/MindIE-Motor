@@ -459,7 +459,8 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 return SoftwareFaultReportResult(False, "instance not registered for fault tolerance")
             fault_info.instance_id = resolved_instance_id
             instance_metadata.software_fault_infos[fault_key] = fault_info
-            if fault_info.engine_status in (1, 2):
+            runtime_collection_eligible = instance_metadata.recovery_ready
+            if fault_info.engine_status in (1, 2) and runtime_collection_eligible:
                 now = time.time()
                 if instance_metadata.fault_collection_started_at is None:
                     instance_metadata.fault_collection_started_at = now
@@ -688,9 +689,18 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
                 logger.warning("Instance %d not found, skipping fault level refresh", instance_id)
                 return
         with instance_metadata.lock:
-            if not instance_metadata.recovery_ready:
+            recovery_ready = instance_metadata.recovery_ready
+            has_pre_ready_engine_dead = any(
+                fault.engine_status == 1 for fault in instance_metadata.software_fault_infos.values()
+            )
+            if not recovery_ready and not has_pre_ready_engine_dead:
                 logger.debug("Instance %d is not ready; fault recovery remains disarmed", instance_id)
                 return
+        if not recovery_ready:
+            logger.info(
+                "Instance %d is not ready; handling pre-ready ENGINE_DEAD through baseline recovery",
+                instance_id,
+            )
 
         snapshot = self._collect_instance_faults(instance_id)
         if snapshot is None:
@@ -707,7 +717,7 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
         with self.config_lock:
             enable_dp_scale_down = self.config.fault_tolerance_config.enable_dp_scale_down
         hardware_scale_down_candidate = False
-        if enable_dp_scale_down:
+        if enable_dp_scale_down and recovery_ready:
             if instance is not None:
                 hardware_context = [
                     (fault_key, pod_ip, fault)
@@ -781,13 +791,17 @@ class FaultManager(_PersistenceMixin, _ResourceManagerMixin, ThreadSafeSingleton
             # A2 linkdown is further filtered to instances that own the named NPU.
             hardware_type = self._hardware_type()
 
-            all_hw_faults = [
-                fault
-                for fault_key, _, node, fault in snapshot.hardware_faults
-                if pre_separate_fault_affects_instance(fault, node, instance, hardware_type)
-                and fault_key not in handled_hardware_faults
-                and fault_key not in ignored_hardware_faults
-            ]
+            all_hw_faults = (
+                [
+                    fault
+                    for fault_key, _, node, fault in snapshot.hardware_faults
+                    if pre_separate_fault_affects_instance(fault, node, instance, hardware_type)
+                    and fault_key not in handled_hardware_faults
+                    and fault_key not in ignored_hardware_faults
+                ]
+                if recovery_ready
+                else []
+            )
             all_sw_faults = list(snapshot.software_faults)
 
             highest_hw_fault = max(all_hw_faults, key=lambda f: f.fault_level, default=None)

@@ -543,5 +543,10 @@ class DpScaleDownStrategy(_EngineFtStrategyBase):
         return GateSnapshot(allowed=not reasons, reason_codes=reasons)
 
     def _fail(self, runtime: FtRuntime, error: str) -> None:
-        get_ft_runtime_store().transition(runtime.instance_id, phase=FtPhase.RECONFIGURING, last_error=error)
+        get_ft_runtime_store().transition(
+            runtime.instance_id,
+            phase=FtPhase.RECONFIGURING,
+            reconfiguration_dispatched=False,
+            last_error=error,
+        )
         self._finish(True, error)

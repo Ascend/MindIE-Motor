@@ -8,7 +8,8 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,18 +48,35 @@ def test_get_fault_tolerance_status_is_disabled_when_scale_down_is_disabled():
 
 def test_get_fault_tolerance_status_all(client):
     get_ft_runtime_store().put(FtRuntime(instance_id=42, phase=FtPhase.SCALING_DOWN, request_id='ft-42'))
+    active = SimpleNamespace(
+        id=7,
+        get_all_endpoints=lambda **_kwargs: [SimpleNamespace(id=0), SimpleNamespace(id=1)],
+    )
+    instance_manager = MagicMock()
+    instance_manager.get_active_instances.return_value = [active]
 
-    response = client.get('/controller/fault_tolerance/status')
+    with patch("motor.controller.api_server.controller_api.InstanceManager", return_value=instance_manager):
+        response = client.get('/controller/fault_tolerance/status')
 
     assert response.status_code == 200
-    assert response.json()['data']['instances'][0]['instance_id'] == 42
+    statuses = {status["instance_id"]: status for status in response.json()["data"]["instances"]}
+    assert statuses[7]["phase"] == FtPhase.NORMAL.value
+    assert statuses[7]["original_dp_ranks"] == [0, 1]
+    assert statuses[7]["can_serve"] is True
+    assert statuses[42]["phase"] == FtPhase.SCALING_DOWN.value
 
 
 def test_get_fault_tolerance_status_one_and_not_found(client):
     get_ft_runtime_store().put(FtRuntime(instance_id=9, phase=FtPhase.SCALED_DOWN_RUNNING, dead_committed=[1]))
+    active = SimpleNamespace(id=10, get_all_endpoints=lambda **_kwargs: [SimpleNamespace(id=0)])
+    instance_manager = MagicMock()
+    instance_manager.get_active_instances.return_value = [active]
 
-    response = client.get('/controller/fault_tolerance/status?instance_id=9')
-    missing = client.get('/controller/fault_tolerance/status?instance_id=10')
+    with patch("motor.controller.api_server.controller_api.InstanceManager", return_value=instance_manager):
+        response = client.get('/controller/fault_tolerance/status?instance_id=9')
+        normal = client.get('/controller/fault_tolerance/status?instance_id=10')
+        missing = client.get('/controller/fault_tolerance/status?instance_id=11')
 
     assert response.json()['data']['dead_committed'] == [1]
+    assert normal.json()["data"]["phase"] == FtPhase.NORMAL.value
     assert missing.status_code == 404

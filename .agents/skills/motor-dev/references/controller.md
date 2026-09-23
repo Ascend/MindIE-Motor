@@ -110,9 +110,11 @@ When persistence is enabled (`etcd_config.enable_etcd_persistence`):
 - `_data_version` is a monotonic counter (incremented on every write) to prevent stale writes from overwriting newer data
 - `forced_separated_instances` is **memory-only and not persisted to or restored from ETCD** — after a controller restart the set starts empty, so force-isolation protection does not survive a restart
 
-DP runtime persistence stores only `phase`, `original_dp_ranks`, `dead_committed`, and `fallback_strategy`;
-observation-only updates do not write ETCD. Restored committed topology is republished. An interrupted transaction
-becomes `RECONFIGURING` and resumes its original fallback; Controller never repeats engine apply after restart.
+DP runtime persistence stores only `phase`, `original_dp_ranks`, `dead_committed`, `fallback_strategy`, and
+`reconfiguration_dispatched`; observation-only updates do not write ETCD. Interrupted transactions resume their
+original fallback as `RECONFIGURING` without repeating engine apply. After whole-instance reconfiguration is
+successfully dispatched, the old instance remains `RECONFIGURING`; Controller restart restores the dispatch marker
+and does not submit the same reconfiguration again.
 
 ### FaultManager Internals
 
@@ -178,8 +180,8 @@ becomes `RECONFIGURING` and resumes its original fallback; Controller never repe
   remain independent. Scale-up alone controls one-shot stop of a fully drained Pod, after which MindCluster owns
   recycling. Transaction tuning lives under `dp_scale_down_config`.
 - Runtime records follow the logical instance lifecycle. Relaunch preserves committed ranks; whole-instance
-  reconfiguration clears them. A successful round clears stale software evidence before replanning, preventing
-  `WAITING_ENGINE_FAULT` from overwriting `SCALED_DOWN_RUNNING`.
+  reconfiguration clears scale-down rank history. A successful scale-down round clears stale software evidence before
+  replanning, preventing `WAITING_ENGINE_FAULT` from overwriting `SCALED_DOWN_RUNNING`.
 
 **A2 PD-disagg isolation** (`A2_PD_ISOLATION_FAULT_CODES` in `fault_types.py`; currently `0x81078603` / `CardNetworkUnhealthy` → `PreSeparateNPU`):
 

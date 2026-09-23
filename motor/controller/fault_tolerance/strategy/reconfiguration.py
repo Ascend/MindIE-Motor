@@ -27,6 +27,7 @@ class InstanceReconfigurationStrategy(StrategyBase):
             instance_id,
             phase=FtPhase.RECONFIGURING,
             serving_published=False,
+            reconfiguration_dispatched=False,
         )
 
         try:
@@ -50,7 +51,7 @@ class InstanceReconfigurationStrategy(StrategyBase):
             )
             return
 
-        get_ft_runtime_store().prepare_after_instance_reconfiguration(instance_id)
+        get_ft_runtime_store().mark_instance_reconfiguration_dispatched(instance_id)
         self._finish(instance_id, failed=False)
 
     def stop(self) -> None:

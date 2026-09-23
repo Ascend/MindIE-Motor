@@ -2459,6 +2459,58 @@ def test_active_single_dp_engine_dead_prefers_relaunch_over_reconfiguration(faul
     assert isinstance(metadata.strategy, EngineRelaunchStrategy)
 
 
+@pytest.mark.parametrize(
+    ("enable_engine_relaunch", "expected_strategy"),
+    [
+        (True, EngineRelaunchStrategy),
+        (False, InstanceReconfigurationStrategy),
+    ],
+)
+def test_pre_ready_engine_dead_uses_baseline_recovery_without_dp_collection(
+    fault_manager_with_instances,
+    enable_engine_relaunch,
+    expected_strategy,
+):
+    manager = fault_manager_with_instances
+    manager.config.fault_tolerance_config.enable_dp_scale_down = True
+    manager.config.fault_tolerance_config.enable_engine_relaunch = enable_engine_relaunch
+    metadata = manager.instances[1]
+    metadata.recovery_ready = False
+    manager.nodes["node_0"].hardware_fault_infos = {
+        "startup-card": FI(
+            fault_type=HardwareFaultType.CARD_UNHEALTHY,
+            npu_name="Ascend910-0",
+            fault_code=0x9001,
+            fault_level=FaultLevel.L5,
+        )
+    }
+    instance = _reportable_instance("192.168.1.1", engine_ids=(0,))
+    instance.id = 1
+    instance.job_name = "job1"
+    instance.status = InsStatus.INITIAL
+    instance_manager = MagicMock()
+    instance_manager.get_instance.return_value = instance
+    instance_manager.get_instance_by_job_name.return_value = instance
+    instance_manager.is_instance_separated.return_value = False
+    fault = FaultInfo.from_exception(RuntimeError("engine died during startup"), 0, 1, instance_id=1)
+
+    with (
+        patch("motor.controller.fault_tolerance.fault_manager.InstanceManager", return_value=instance_manager),
+        patch.object(ServingOverlay, "withdraw") as withdraw,
+        patch.object(manager.executor, "submit") as submit,
+    ):
+        result = manager.report_software_fault(fault, pod_ip="192.168.1.1", instance_id=1)
+        manager._process_instance_strategy(1)
+
+    assert result.accepted
+    assert metadata.fault_level == FaultLevel.L2
+    assert metadata.fault_collection_started_at is None
+    assert get_ft_runtime_store().get(1) is None
+    withdraw.assert_not_called()
+    submit.assert_called_once()
+    assert isinstance(metadata.strategy, expected_strategy)
+
+
 def test_higher_hardware_fault_uses_scale_down_despite_engine_unhealthy(fault_manager_with_instances):
     manager = fault_manager_with_instances
     manager.config.fault_tolerance_config.enable_dp_scale_down = True

@@ -163,6 +163,7 @@ class FtRuntime:
     gate: GateSnapshot = field(default_factory=GateSnapshot)
     engine_statuses: dict[int, dict[str, Any]] = field(default_factory=dict)
     serving_published: bool = True
+    reconfiguration_dispatched: bool = False
     last_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -188,6 +189,7 @@ class FtRuntimeStore:
         "original_dp_ranks",
         "dead_committed",
         "fallback_strategy",
+        "reconfiguration_dispatched",
     }
     _COMMITTED_PHASES = {FtPhase.POST_SCALE_CLEANUP, FtPhase.SCALED_DOWN_RUNNING}
     _INCOMPLETE_PHASES = {
@@ -262,6 +264,7 @@ class FtRuntimeStore:
                     "original_dp_ranks": list(runtime.original_dp_ranks),
                     "dead_committed": list(runtime.dead_committed),
                     "fallback_strategy": runtime.fallback_strategy,
+                    "reconfiguration_dispatched": runtime.reconfiguration_dispatched,
                 }
                 for instance_id, runtime in self._instances.items()
                 if runtime.phase not in {FtPhase.DISABLED, FtPhase.NORMAL} or runtime.dead_committed
@@ -282,8 +285,12 @@ class FtRuntimeStore:
                 original_dp_ranks = self._restore_ranks(raw.get("original_dp_ranks", []))
                 dead_committed = self._restore_ranks(raw.get("dead_committed", []))
                 fallback = str(raw.get("fallback_strategy", ""))
+                reconfiguration_dispatched = raw.get("reconfiguration_dispatched") is True
                 if phase in self._COMMITTED_PHASES:
                     restored_phase = FtPhase.SCALED_DOWN_RUNNING
+                    error = None
+                elif phase == FtPhase.RECONFIGURING and reconfiguration_dispatched:
+                    restored_phase = FtPhase.RECONFIGURING
                     error = None
                 elif phase in self._INCOMPLETE_PHASES:
                     restored_phase = FtPhase.RECONFIGURING
@@ -299,6 +306,7 @@ class FtRuntimeStore:
                     original_dp_ranks=original_dp_ranks,
                     dead_committed=dead_committed,
                     fallback_strategy=fallback,
+                    reconfiguration_dispatched=reconfiguration_dispatched,
                     serving_published=not dead_committed and restored_phase == FtPhase.NORMAL,
                     last_error=error,
                 )
@@ -359,21 +367,21 @@ class FtRuntimeStore:
             runtime.last_error = None
             return copy.deepcopy(runtime)
 
-    def prepare_after_instance_reconfiguration(self, instance_id: int) -> None:
-        """Reset scale-down history after the original whole-instance recovery is dispatched."""
-        with self._lock:
-            runtime = self._instances.get(instance_id)
-            if runtime is None:
-                return
-            runtime.phase = FtPhase.NORMAL
-            runtime.original_dp_ranks = []
-            runtime.request_id = ""
-            runtime.dead_committed = []
-            runtime.pending_removed_ranks = []
-            runtime.gate = GateSnapshot()
-            runtime.engine_statuses = {}
-            runtime.serving_published = False
-            runtime.last_error = None
+    def mark_instance_reconfiguration_dispatched(self, instance_id: int) -> None:
+        """Close scale-down history after recovery dispatch without declaring the old instance healthy."""
+        self.transition(
+            instance_id,
+            phase=FtPhase.RECONFIGURING,
+            original_dp_ranks=[],
+            request_id="",
+            dead_committed=[],
+            pending_removed_ranks=[],
+            gate=GateSnapshot(),
+            engine_statuses={},
+            serving_published=False,
+            reconfiguration_dispatched=True,
+            last_error=None,
+        )
 
     def clear(self) -> None:
         with self._lock:

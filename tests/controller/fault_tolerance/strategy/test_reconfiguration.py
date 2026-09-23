@@ -21,7 +21,7 @@ from motor.controller.fault_tolerance.strategy.reconfiguration import (
 )
 
 
-def test_success_reuses_original_recovery_and_resets_scale_down_history():
+def test_success_reuses_original_recovery_and_marks_dispatch_without_declaring_normal():
     store = get_ft_runtime_store()
     store.clear()
     store.put(
@@ -50,7 +50,8 @@ def test_success_reuses_original_recovery_and_resets_scale_down_history():
     assert strategy.is_failed() is False
     assert runtime["original_dp_ranks"] == []
     assert runtime["gate"] == {"allowed": False, "reason_codes": []}
-    assert runtime["phase"] == FtPhase.NORMAL.value
+    assert runtime["phase"] == FtPhase.RECONFIGURING.value
+    assert runtime["reconfiguration_dispatched"] is True
     assert runtime["dead_committed"] == []
     assert runtime["pending_removed_ranks"] == []
     assert runtime["serving_published"] is False

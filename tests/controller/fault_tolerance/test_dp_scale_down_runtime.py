@@ -94,6 +94,7 @@ def test_runtime_persistence_contains_only_durable_fields_and_skips_observations
         "original_dp_ranks": [0, 1],
         "dead_committed": [],
         "fallback_strategy": "EngineRelaunchStrategy",
+        "reconfiguration_dispatched": False,
     }
     assert store.remove(7) is True
     assert store.get(7) is None
@@ -115,6 +116,11 @@ def test_runtime_restore_resumes_committed_view_and_fails_interrupted_attempt():
                 "phase": FtPhase.SCALING_DOWN.value,
                 "fallback_strategy": "ScaleP2DStrategy",
             },
+            "9": {
+                "phase": FtPhase.RECONFIGURING.value,
+                "fallback_strategy": "InstanceReconfigurationStrategy",
+                "reconfiguration_dispatched": True,
+            },
             "bad": {"phase": "not-a-phase"},
         }
     )
@@ -124,6 +130,8 @@ def test_runtime_restore_resumes_committed_view_and_fails_interrupted_attempt():
     assert store.get(7)["serving_published"] is False
     assert store.get(8)["phase"] == FtPhase.RECONFIGURING.value
     assert store.get(8)["pending_removed_ranks"] == []
+    assert store.get(9)["phase"] == FtPhase.RECONFIGURING.value
+    assert store.get(9)["reconfiguration_dispatched"] is True
     assert store.get("bad") is None
     assert interrupted == {8: "ScaleP2DStrategy"}
 

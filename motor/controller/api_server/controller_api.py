@@ -43,7 +43,7 @@ from motor.controller.observability.observability import Observability
 from motor.controller.core.instance_assembler import InstanceAssembler
 from motor.controller.core.instance_manager import InstanceManager
 from motor.controller.fault_tolerance.fault_manager import FaultManager
-from motor.controller.fault_tolerance.dp_scale_down import FtPhase, get_ft_runtime_store
+from motor.controller.fault_tolerance.dp_scale_down import FtPhase, FtRuntime, get_ft_runtime_store
 from motor.controller.fault_tolerance.fault_types import FaultInfo
 from motor.controller.core.recovery_service import (
     complete_precision_pd_group_recovery,
@@ -294,7 +294,17 @@ class ControllerAPI:
 
         store = get_ft_runtime_store()
         if raw_instance_id is None:
-            return format_success_response(data={"instances": store.list()})
+            statuses = {status["instance_id"]: status for status in store.list()}
+            for instance in InstanceManager().get_active_instances():
+                if instance.id in statuses:
+                    continue
+                statuses[instance.id] = FtRuntime(
+                    instance_id=instance.id,
+                    original_dp_ranks=sorted(
+                        endpoint.id for endpoint in instance.get_all_endpoints(include_headless=False)
+                    ),
+                ).to_dict()
+            return format_success_response(data={"instances": [statuses[key] for key in sorted(statuses)]})
         try:
             instance_id = int(raw_instance_id)
         except (TypeError, ValueError) as e:
@@ -302,7 +312,18 @@ class ControllerAPI:
 
         runtime = store.get(instance_id)
         if runtime is None:
-            raise HTTPException(status_code=404, detail="fault-tolerance runtime not found")
+            instance = next(
+                (candidate for candidate in InstanceManager().get_active_instances() if candidate.id == instance_id),
+                None,
+            )
+            if instance is None:
+                raise HTTPException(status_code=404, detail="fault-tolerance runtime not found")
+            runtime = FtRuntime(
+                instance_id=instance.id,
+                original_dp_ranks=sorted(
+                    endpoint.id for endpoint in instance.get_all_endpoints(include_headless=False)
+                ),
+            ).to_dict()
         return format_success_response(data=runtime)
 
     async def _heartbeat(self, request: Request):

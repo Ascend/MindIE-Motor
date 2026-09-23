@@ -485,7 +485,7 @@ class InstanceMetadata(BaseModel):
     )
     recovery_ready: bool = Field(
         default=True,
-        description="Whether the instance completed readiness baseline collection",
+        description="Whether hardware recovery completed readiness baseline collection",
     )
     ignored_pre_ready_hardware_faults: set[str] = Field(
         default_factory=set,
