@@ -26,6 +26,7 @@ from motor.config.coordinator import (
     CONTEXT_BUDGET_ON,
     KV_AFFINITY_MODE_LOAD_GATED,
     KV_AFFINITY_MODE_UNIFIED,
+    SchedulerConfig,
 )
 from motor.common.logger import get_logger
 from motor.coordinator.models.constants import OpenAIField
@@ -709,12 +710,11 @@ class TokenizerManager(ThreadSafeSingleton):
         kv_config = getattr(scheduler_config, "kv_conductor_config", None) if scheduler_config else None
         if kv_config is None:
             kv_config = getattr(config, "prefill_kv_event_config", None)
-        scheduler_type = getattr(scheduler_config, "scheduler_type", None) if scheduler_config else None
-        scheduler_value = getattr(scheduler_type, "value", scheduler_type)
         render_enabled = bool(getattr(getattr(config, "render_config", None), "enable", False))
+        affinity_enabled = isinstance(scheduler_config, SchedulerConfig) and scheduler_config.uses_kv_cache_affinity()
         eager_load = bool(
             (kv_config and getattr(kv_config, "conductor_service", ""))
-            or scheduler_value == "kv_cache_affinity"
+            or affinity_enabled
             or (config.context_budget_mode == CONTEXT_BUDGET_ON and not render_enabled)
         )
         needs_tokenizer = eager_load or render_enabled

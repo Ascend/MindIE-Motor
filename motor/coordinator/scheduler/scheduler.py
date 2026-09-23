@@ -40,26 +40,36 @@ class Scheduler:
         Args:
             instance_provider: Required. Instance source (e.g. InstanceManager); injected by AsyncSchedulerServer or tests.
             config: Can be:
-                   - CoordinatorConfig object
-                   - SchedulerType enum value
+                   - CoordinatorConfig object (uses prefill_scheduler_type / decode_scheduler_type)
+                   - SchedulerType enum value (applied to both prefill and decode; tests)
                    - None (uses default config)
         """
         if config is None:
             config = CoordinatorConfig()
 
         if isinstance(config, SchedulerType):
-            self._policy_type = config
+            self._prefill_policy_type = config
+            self._decode_policy_type = config
             self._config: CoordinatorConfig | None = None
         else:
-            self._policy_type = config.scheduler_config.scheduler_type
+            self._prefill_policy_type = config.scheduler_config.prefill_scheduler_type
+            self._decode_policy_type = config.scheduler_config.decode_scheduler_type
             self._config = config
 
         self._instance_provider = instance_provider
-        self._scheduling_policy = SchedulingPolicyFactory.create(self._policy_type, self._instance_provider)
-        if self._config and hasattr(self._scheduling_policy, "set_endpoint_instance_score_weight"):
-            self._scheduling_policy.set_endpoint_instance_score_weight(
-                self._config.scheduler_config.endpoint_instance_score_weight
-            )
+        self._prefill_policy = SchedulingPolicyFactory.create(self._prefill_policy_type, self._instance_provider)
+        if self._decode_policy_type == self._prefill_policy_type:
+            self._decode_policy = self._prefill_policy
+        else:
+            self._decode_policy = SchedulingPolicyFactory.create(self._decode_policy_type, self._instance_provider)
+        for policy in (self._prefill_policy, self._decode_policy):
+            if self._config and hasattr(policy, "set_endpoint_instance_score_weight"):
+                policy.set_endpoint_instance_score_weight(self._config.scheduler_config.endpoint_instance_score_weight)
+        logger.info(
+            "Scheduler started. prefill=%s decode=%s",
+            getattr(self._prefill_policy_type, "value", self._prefill_policy_type),
+            getattr(self._decode_policy_type, "value", self._decode_policy_type),
+        )
         # Global per-PD-group precision state (shared across inference workers).
         self._sample_admission_last_time: dict[int, float] = {}
         self._precision_streak_counts: dict[tuple[int | None, int], int] = {}
@@ -71,16 +81,20 @@ class Scheduler:
         self._precision_alarm_moi: dict[tuple[int | None, int], str] = {}
         self._precision_normal_streak_counts: dict[tuple[int | None, int], int] = {}
         self._precision_state_locks: dict[tuple[int | None, int], asyncio.Lock] = {}
-        logger.info("Scheduler started.")
 
-    def get_scheduling_policy(self) -> BaseSchedulingPolicy:
-        """
-        Get the current scheduling policy.
+    def _policy_for_role(self, role: PDRole | None = None) -> BaseSchedulingPolicy:
+        if role == PDRole.ROLE_D:
+            return self._decode_policy
+        return self._prefill_policy
 
-        Returns:
-            Current scheduling policy
-        """
-        return self._scheduling_policy
+    def _policy_type_for_role(self, role: PDRole | None = None) -> SchedulerType:
+        if role == PDRole.ROLE_D:
+            return self._decode_policy_type
+        return self._prefill_policy_type
+
+    def get_scheduling_policy(self, role: PDRole | None = None) -> BaseSchedulingPolicy:
+        """Return the scheduling policy for the given role (prefill policy when role is omitted)."""
+        return self._policy_for_role(role)
 
     async def get_available_instances(self, role: PDRole | None = None) -> dict[int, Instance]:
         """

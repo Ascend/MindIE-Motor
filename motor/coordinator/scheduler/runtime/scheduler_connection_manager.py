@@ -58,7 +58,6 @@ class SchedulerConnectionManager:
         """
         scheduler_config = DEFAULT_SCHEDULER_PROCESS_CONFIG
         inference_workers_config = coordinator_config.inference_workers_config
-        scheduler_type = coordinator_config.scheduler_config.scheduler_type.value
 
         if coordinator_config.worker_index is not None:
             client_index = coordinator_config.worker_index
@@ -72,7 +71,8 @@ class SchedulerConnectionManager:
             instance_pub_address=scheduler_config.instance_pub_address,
             timeout=scheduler_config.timeout,
             reconnect_interval=scheduler_config.reconnect_interval,
-            scheduler_type=scheduler_type,
+            prefill_scheduler_type=coordinator_config.scheduler_config.prefill_scheduler_type.value,
+            decode_scheduler_type=coordinator_config.scheduler_config.decode_scheduler_type.value,
             client_index=client_index,
             client_count=client_count,
             endpoint_instance_score_weight=(coordinator_config.scheduler_config.endpoint_instance_score_weight),

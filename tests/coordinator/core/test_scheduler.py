@@ -148,7 +148,7 @@ async def scheduler_setup(prefill_instances, decode_instances, mix_instances, en
 
 def _select(scheduler: Scheduler, role: PDRole):
     """Select via the policy (Scheduler no longer wraps the scheduling hot path)."""
-    return scheduler.get_scheduling_policy().select_instance_and_endpoint(role=role)
+    return scheduler.get_scheduling_policy(role).select_instance_and_endpoint(role=role)
 
 
 @pytest.mark.asyncio
@@ -562,3 +562,18 @@ async def test_round_robin_edge_cases():
     assert result is None
     result = _select(empty_scheduler, PDRole.ROLE_E)
     assert result is None
+
+
+def test_scheduler_uses_distinct_policies_per_role():
+    config = CoordinatorConfig()
+    config.scheduler_config.prefill_scheduler_type = SchedulerType.KV_CACHE_AFFINITY
+    config.scheduler_config.decode_scheduler_type = SchedulerType.ROUND_ROBIN
+    scheduler = Scheduler(instance_provider=InstanceManager(config), config=config)
+
+    from motor.coordinator.scheduler.policy.kv_cache_affinity import KvCacheAffinityPolicy
+    from motor.coordinator.scheduler.policy.round_robin import RoundRobinPolicy
+
+    assert isinstance(scheduler.get_scheduling_policy(PDRole.ROLE_P), KvCacheAffinityPolicy)
+    assert isinstance(scheduler.get_scheduling_policy(PDRole.ROLE_U), KvCacheAffinityPolicy)
+    assert isinstance(scheduler.get_scheduling_policy(PDRole.ROLE_D), RoundRobinPolicy)
+    assert scheduler.get_scheduling_policy(PDRole.ROLE_P) is not scheduler.get_scheduling_policy(PDRole.ROLE_D)

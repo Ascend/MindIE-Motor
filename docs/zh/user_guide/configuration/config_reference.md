@@ -326,7 +326,8 @@ motor_coordinator_config字段配置样例如下所示：
     }
   },
   "scheduler_config": {
-    "scheduler_type": "load_balance",
+    "prefill_scheduler_type": "load_balance",
+    "decode_scheduler_type": "load_balance",
     "enable_pd_separation_fallback_to_hybrid": true,
     "endpoint_instance_score_weight": 0.05,
     "dp_stats_window": 60,
@@ -526,13 +527,15 @@ motor_coordinator_config字段配置样例如下所示：
 | base_timeout_s | float | 首次熔断时长（秒），也是熔断时长指数退避的基数；每次重新熔断/探活失败按 `2^(熔断次数-1)` 倍增长。默认值：`30.0`。 |
 | max_timeout_s | float | 熔断时长上限（秒）。默认值：`300.0`。 |
 | **scheduler_config字段** |-|-|
-| scheduler_type | string | 调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
+| prefill_scheduler_type | string | Prefill / encode / union 实例的调度类型，默认值：load_balance<ul><li>load_balance：负载均衡；</li><li>round_robin：轮询；</li><li>kv_cache_affinity：KV Cache 亲和调度。</li></ul> |
+| decode_scheduler_type | string | Decode 实例的调度类型，默认值：load_balance。可选 `load_balance` / `round_robin`。枚举也接受 `kv_cache_affinity`（旧 `scheduler_type` 会写到该字段），但选 Decode 实例时不走亲和，仍按 load_balance，启动打 warning。 |
+| scheduler_type | string | **已废弃**。存量配置仍可使用，读取时同时赋给 `prefill_scheduler_type` 与 `decode_scheduler_type` 并打 warning。新配置请分别填写上述两个字段。 |
 | enable_pd_separation_fallback_to_hybrid | bool | PD 分离场景下，当不存在兼容且未熔断的 P/D pair 时，是否允许降级使用混部路由，默认值为 `true`。候选优先级为 Union → Prefill → Decode；Decode 兜底仅适用于上报 `decode_colocation` capability 的 vLLM 实例，关闭后无兼容 pair 时返回 503。 |
 | endpoint_instance_score_weight | float | endpoint 优先负载均衡时实例平均负载权重。默认值：`0.05` |
 | dp_stats_window | int | worker 0 周期性打印 per-DP 成功提交请求数与 SHM `active_tokens` 的窗口（秒），同一行输出（`dp_stats` 日志）。独立于 KV 亲和命中统计，所有部署与调度类型下均生效；默认 `60`；`0` 禁用 |
 | kv_affinity | object | KV Cache 亲和性调度参数（见下表） |
 | **kv_affinity 字段** |-|-|
-| mode | string | `scheduler_type=kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
+| mode | string | 任一 role 使用 `kv_cache_affinity` 时的子策略：`unified`（默认）或 `load_gated` |
 | load_weight | float | unified 模式下 endpoint 实时负载权重。默认值：`1.0` |
 | overlap_credit | float | 缓存前缀对 prefill 成本的折扣系数。默认值：`1.0` |
 | prefill_load_scale | float | unified 模式下（经亲和折扣后的）prefill 成本权重。默认值：`1.0` |

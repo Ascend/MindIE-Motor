@@ -59,7 +59,8 @@ kv-conductor 已集成在 motor wheel 包内，随 `build.sh` 打包，按以下
 
 在 `examples/infer_engines/vllm/user_config.json` 中修改以下配置项（详见[典型配置](#典型配置)）：
 
-- `motor_coordinator_config.scheduler_config.scheduler_type` → `"kv_cache_affinity"`
+- `motor_coordinator_config.scheduler_config.prefill_scheduler_type` → `"kv_cache_affinity"`
+- `motor_coordinator_config.scheduler_config.decode_scheduler_type` → `"load_balance"`（Decode 通常不走亲和）
 - `motor_engine_prefill_config.engine_config` → 增加 `kv-events-config`
 - 新增顶层 `kv_conductor_config`
 
@@ -86,7 +87,8 @@ kubectl get pod -A -o wide
 
 KV Cache 亲和性只需在已有 PD 分离配置的基础上增加三项：
 
-- `scheduler_type: "kv_cache_affinity"` — 启用亲和性调度器
+- `prefill_scheduler_type: "kv_cache_affinity"` — Prefill 启用亲和性调度
+- `decode_scheduler_type: "load_balance"` — Decode 使用负载均衡（可改成 `round_robin`）
 - `kv-events-config` — P 实例发布 KV Cache 事件
 - `kv_conductor_config` — kv-conductor 服务参数
 
@@ -106,7 +108,8 @@ KV Cache Store 池化功能单独通过 `kv_cache_store_config` 开启，详见
   },
   "motor_coordinator_config": {
     "scheduler_config": {
-      "scheduler_type": "kv_cache_affinity"
+      "prefill_scheduler_type": "kv_cache_affinity",
+      "decode_scheduler_type": "load_balance"
     }
   },
   "motor_engine_prefill_config": {
@@ -148,7 +151,8 @@ PD 混部使用 `motor_engine_union_config`，将 `kv-events-config` 配置在 u
   "motor_coordinator_config": {
     "scheduler_config": {
       "deploy_mode": "single_node",
-      "scheduler_type": "kv_cache_affinity"
+      "prefill_scheduler_type": "kv_cache_affinity",
+      "decode_scheduler_type": "load_balance"
     }
   },
   "motor_engine_union_config": {
@@ -222,7 +226,8 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 | 配置项 | 类型 | 取值范围 | 说明 |
 |--------|------|----------|------|
-| **scheduler_type** | string | `kv_cache_affinity` | 启用 KV Cache 亲和性调度 |
+| **prefill_scheduler_type** | string | `load_balance` / `round_robin` / `kv_cache_affinity` | Prefill（及 encode / union）调度策略。启用 KV 亲和时配 `kv_cache_affinity` |
+| **decode_scheduler_type** | string | `load_balance` / `round_robin` | Decode 调度策略，默认 `load_balance`。不要为 Decode 配 `kv_cache_affinity`：选 D 实例时不走亲和（与拆字段前全局 kva 行为一致），启动会 warning |
 | **kv_affinity.mode** | string | `unified` / `load_gated` | 评分子策略，默认 `unified` |
 | **kv_affinity.load_weight** | float | `[0, +∞)` | `unified` 下 endpoint 实时负载权重。`1.0`（默认）与亲和折扣后的 prefill 成本同等重要；`0` 表示纯亲和性 |
 | **kv_affinity.overlap_credit** | float | `[0, +∞)` | 缓存前缀对 prefill 成本的折扣系数。值越大，已缓存前缀折扣越高。默认 `1.0` |
@@ -274,7 +279,7 @@ PD 混部部署详细说明请参考 [PD 混部服务部署](../deployment/k8s/p
 
 1. **KV Cache 事件发布**：P 实例完成 prefill 计算后，通过 `kv-events-config` 中配置的 ZMQ 端点发布 KV Cache 事件（包含 block hashes、token IDs、parent hash 等）。
 2. **Conductor 索引**：kv-conductor 作为 ZMQ SUB **主动 connect 到各 P 节点绑定的事件端点**（连接方向 conductor → P，事件数据流 P → conductor），根据 token IDs 重算 XXH3 内容哈希，构建 HBM RadixTree + CPU/Disk continuation-edge 索引。
-3. **亲和性调度决策**：Coordinator（`scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度。若配置了 `hit_rate_threshold > 0` 且最大命中率未超过该阈值，则回退负载均衡；否则再按评分策略选择最优 Worker。
+3. **亲和性调度决策**：Coordinator（`prefill_scheduler_type: kv_cache_affinity`）将 token IDs 发给 kv-conductor，按各 endpoint 的互斥 `*_blocks` 与 `kv_affinity` 介质权重加权得到亲和匹配长度。若配置了 `hit_rate_threshold > 0` 且最大命中率未超过该阈值，则回退负载均衡；否则再按评分策略选择最优 Worker。
 
 ### Conductor 查询结果
 

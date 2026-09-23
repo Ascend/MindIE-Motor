@@ -208,7 +208,7 @@ class SchedulerType(Enum):
             return None
 
 
-# Sub-strategy selected by SchedulerConfig.kv_affinity.mode when scheduler_type=kv_cache_affinity.
+# Sub-strategy selected by SchedulerConfig.kv_affinity.mode when a role uses kv_cache_affinity.
 #   "unified"    - single score fusing affinity and live load (default).
 #   "load_gated" - keep the N least-loaded endpoints, then pick the longest cached prefix.
 KV_AFFINITY_MODE_UNIFIED = "unified"
@@ -234,6 +234,18 @@ _LEGACY_KV_AFFINITY_FLAT_KEYS = {
     "kv_affinity_w_cpu": "w_cpu",
     "kv_affinity_w_disk": "w_disk",
 }
+
+
+def _migrate_legacy_scheduler_type(scheduler_dict: dict[str, Any]) -> None:
+    """Map deprecated ``scheduler_type`` onto both P/D fields when they are omitted."""
+    if "scheduler_type" not in scheduler_dict:
+        return
+    legacy = scheduler_dict.pop("scheduler_type")
+    scheduler_dict.setdefault("prefill_scheduler_type", legacy)
+    scheduler_dict.setdefault("decode_scheduler_type", legacy)
+    logger.warning(
+        "scheduler_config.scheduler_type is deprecated; set prefill_scheduler_type and decode_scheduler_type instead"
+    )
 
 
 def _migrate_legacy_kv_affinity_flat_keys(scheduler_dict: dict[str, Any]) -> None:
@@ -349,7 +361,7 @@ class KvConductorConfig:
 
 @dataclass
 class KvAffinityConfig:
-    """Tunables for ``scheduler_type=kv_cache_affinity``.
+    """Tunables for ``kv_cache_affinity`` (used when a role selects that policy).
 
     Nested under ``scheduler_config.kv_affinity`` in user JSON.
     """
@@ -382,7 +394,8 @@ class KvAffinityConfig:
 
 @dataclass
 class SchedulerConfig:
-    scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
+    prefill_scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
+    decode_scheduler_type: SchedulerType = field(default=SchedulerType.LOAD_BALANCE)
     enable_pd_separation_fallback_to_hybrid: bool = True
     # Weight of the instance average workload in endpoint-first load balancing.
     # 0 means pure global endpoint minimum; small values preserve instance pressure awareness.
@@ -395,6 +408,36 @@ class SchedulerConfig:
     kv_affinity: KvAffinityConfig = field(default_factory=KvAffinityConfig)
     # KV event registration config for kv-conductor.
     kv_conductor_config: KvConductorConfig = field(default_factory=KvConductorConfig)
+
+    def type_for_role(self, role: object | None = None) -> SchedulerType:
+        """Return the scheduling policy for a PD role.
+
+        Prefill / encode / union use ``prefill_scheduler_type``. Decode uses
+        ``decode_scheduler_type``.
+        """
+        role_value = getattr(role, "value", role)
+        if role_value == "decode":
+            return self.decode_scheduler_type
+        return self.prefill_scheduler_type
+
+    def uses_kv_cache_affinity(self) -> bool:
+        """Prefill / encode / union affinity only; decode never takes the KVA path."""
+        return self.prefill_scheduler_type == SchedulerType.KV_CACHE_AFFINITY
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        """Deprecated alias of ``prefill_scheduler_type`` for in-process callers."""
+        return self.prefill_scheduler_type
+
+    @scheduler_type.setter
+    def scheduler_type(self, value: SchedulerType | str) -> None:
+        if isinstance(value, str):
+            parsed = SchedulerType.from_string(value)
+            if parsed is None:
+                return
+            value = parsed
+        self.prefill_scheduler_type = value
+        self.decode_scheduler_type = value
 
 
 @dataclass
@@ -858,7 +901,8 @@ class CoordinatorConfig:
                         setattr(obj, key, enum_value)
 
             scheduler_handlers = {
-                "scheduler_type": lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
+                "prefill_scheduler_type": lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
+                "decode_scheduler_type": lambda obj, key, value: set_enum_field(obj, key, value, SchedulerType),
             }
 
             exception_config_data = cfg.get("exception_config", {})
@@ -924,6 +968,7 @@ class CoordinatorConfig:
             ]
 
             if "scheduler_config" in cfg and isinstance(cfg["scheduler_config"], dict):
+                _migrate_legacy_scheduler_type(cfg["scheduler_config"])
                 _migrate_legacy_kv_affinity_flat_keys(cfg["scheduler_config"])
 
             for section_name, config_obj, special_handlers in config_mappings:
@@ -1002,6 +1047,17 @@ class CoordinatorConfig:
             self.timeout_config.engine_client_keepalive_expiry,
             "engine_client_keepalive_expiry",
         )
+
+        allowed_scheduler_types = ", ".join(item.value for item in SchedulerType)
+        if not isinstance(self.scheduler_config.prefill_scheduler_type, SchedulerType):
+            self._errors.append(f"prefill_scheduler_type must be one of: {allowed_scheduler_types}")
+        if not isinstance(self.scheduler_config.decode_scheduler_type, SchedulerType):
+            self._errors.append(f"decode_scheduler_type must be one of: {allowed_scheduler_types}")
+        if self.scheduler_config.decode_scheduler_type == SchedulerType.KV_CACHE_AFFINITY:
+            logger.warning(
+                "decode_scheduler_type=kv_cache_affinity is ignored for decode instance selection; "
+                "decode still uses load_balance"
+            )
 
         # Validate exception configuration
         self._validate_positive_number(self.exception_config.max_retry, "max_retry", allow_zero=True)
@@ -1332,8 +1388,9 @@ class CoordinatorConfig:
         # Convert enums to their string values for JSON serialization
         if "scheduler_config" in config_dict:
             scheduler_config = config_dict["scheduler_config"]
-            if "scheduler_type" in scheduler_config and isinstance(scheduler_config["scheduler_type"], SchedulerType):
-                scheduler_config["scheduler_type"] = scheduler_config["scheduler_type"].value
+            for key in ("prefill_scheduler_type", "decode_scheduler_type"):
+                if key in scheduler_config and isinstance(scheduler_config[key], SchedulerType):
+                    scheduler_config[key] = scheduler_config[key].value
         # Convert sets to lists for JSON serialization
         if "api_key_config" in config_dict:
             api_key_config = config_dict["api_key_config"]
@@ -1396,7 +1453,8 @@ class CoordinatorConfig:
             f"    └─ Observability Port:  {self.api_config.coordinator_obs_port}\n"
             "\n"
             "  Scheduler Configuration:\n"
-            f"    ├─ Scheduler Type:             {self.scheduler_config.scheduler_type.value}\n"
+            f"    ├─ Prefill Scheduler Type:     {self.scheduler_config.prefill_scheduler_type.value}\n"
+            f"    ├─ Decode Scheduler Type:      {self.scheduler_config.decode_scheduler_type.value}\n"
             f"    ├─ Endpoint Instance Weight:   {self.scheduler_config.endpoint_instance_score_weight}\n"
             f"    ├─ KV Affinity Mode:           {self.scheduler_config.kv_affinity.mode}\n"
             f"    ├─ KV Affinity Load Weight:    {self.scheduler_config.kv_affinity.load_weight}\n"

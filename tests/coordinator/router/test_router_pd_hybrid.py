@@ -341,7 +341,8 @@ class TestRouterPDHybrid:
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload, raising=False)
 
         mock_scheduler_config = MagicMock()
-        mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+        mock_scheduler_config.prefill_scheduler_type = SchedulerType.LOAD_BALANCE
+        mock_scheduler_config.decode_scheduler_type = SchedulerType.LOAD_BALANCE
         mock_exception_config = ExceptionConfig(max_retry=5, retry_delay=0.0001)
         mock_api_config = MagicMock()
         mock_api_config.coordinator_api_host = "127.0.0.1"
@@ -790,7 +791,8 @@ class TestRouterPDHybrid:
 
 def _make_tracer_coordinator_config(monkeypatch: MonkeyPatch) -> MagicMock:
     mock_scheduler_config = MagicMock()
-    mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+    mock_scheduler_config.prefill_scheduler_type = SchedulerType.LOAD_BALANCE
+    mock_scheduler_config.decode_scheduler_type = SchedulerType.LOAD_BALANCE
     mock_exception_config = ExceptionConfig(max_retry=5, retry_delay=0.0001, transport_max_retry=1)
     mock_api_config = MagicMock()
     mock_api_config.coordinator_api_host = "127.0.0.1"
@@ -1079,7 +1081,8 @@ def _make_cancel_test_config(
     reschedule_enabled: bool = True,
 ) -> MagicMock:
     mock_scheduler_config = MagicMock()
-    mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+    mock_scheduler_config.prefill_scheduler_type = SchedulerType.LOAD_BALANCE
+    mock_scheduler_config.decode_scheduler_type = SchedulerType.LOAD_BALANCE
     mock_exception_config = ExceptionConfig(
         max_retry=5,
         retry_delay=0.0001,

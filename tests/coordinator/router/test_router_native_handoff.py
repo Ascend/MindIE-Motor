@@ -377,7 +377,8 @@ class TestRouterNativeHandoff:
         monkeypatch.setattr(Scheduler, "update_workload", mock_update_workload, raising=False)
 
         mock_scheduler_config = MagicMock()
-        mock_scheduler_config.scheduler_type = SchedulerType.LOAD_BALANCE
+        mock_scheduler_config.prefill_scheduler_type = SchedulerType.LOAD_BALANCE
+        mock_scheduler_config.decode_scheduler_type = SchedulerType.LOAD_BALANCE
         # Real ExceptionConfig so transport_retry_limit and rescheduling settings work;
         # MagicMock lacks @property implementation and breaks decode transport loops (range / last-attempt check).
         mock_exception_config = ExceptionConfig(max_retry=5, retry_delay=0.0001)

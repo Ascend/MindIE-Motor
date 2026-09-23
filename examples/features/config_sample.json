@@ -186,7 +186,8 @@
       "max_timeout_s": 300.0
     },
     "scheduler_config": {
-      "scheduler_type": "load_balance",
+      "prefill_scheduler_type": "load_balance",
+      "decode_scheduler_type": "load_balance",
       "endpoint_instance_score_weight": 0.05,
       "kv_affinity": {
         "mode": "unified",

@@ -148,7 +148,8 @@ def test_default_config_initialization():
     assert not hasattr(config.exception_config, "recompute_enabled")
     assert config.exception_config.first_token_timeout == 600
     assert not hasattr(config.scheduler_config, "deploy_mode")
-    assert config.scheduler_config.scheduler_type.value == "load_balance"
+    assert config.scheduler_config.prefill_scheduler_type.value == "load_balance"
+    assert config.scheduler_config.decode_scheduler_type.value == "load_balance"
     assert config.timeout_config.request_timeout == 30
     assert config.timeout_config.engine_client_keepalive_expiry == 3.0
     assert config.api_key_config.enable_api_key is False
@@ -1005,7 +1006,9 @@ def test_to_dict():
 
     # Check enum serialization
     assert "deploy_mode" not in config_dict["scheduler_config"]
-    assert config_dict["scheduler_config"]["scheduler_type"] == "load_balance"
+    assert "scheduler_type" not in config_dict["scheduler_config"]
+    assert config_dict["scheduler_config"]["prefill_scheduler_type"] == "load_balance"
+    assert config_dict["scheduler_config"]["decode_scheduler_type"] == "load_balance"
     assert config_dict["exception_config"]["reschedule_config"]["enable"] is False
     assert "recompute_enabled" not in config_dict["exception_config"]
     assert "recompute_max_retry" not in config_dict["exception_config"]
@@ -1533,7 +1536,8 @@ def test_coordinator_config_accepts_nested_scheduler_config_kwargs():
     assert CoordinatorConfig.__dict__.get("__new__") is not object.__new__
     config = CoordinatorConfig(
         scheduler_config=SchedulerConfig(
-            scheduler_type=SchedulerType.LOAD_BALANCE,
+            prefill_scheduler_type=SchedulerType.LOAD_BALANCE,
+            decode_scheduler_type=SchedulerType.LOAD_BALANCE,
             dp_stats_window=30,
         )
     )
@@ -1581,3 +1585,53 @@ def test_capacity_planning_validation_pd_ratio_bounds():
     config.prometheus_metrics_config.capacity_planning.pd_ratio_max = 2.0
     with pytest.raises(ValueError, match="pd_ratio_min <= pd_ratio_max"):
         config.validate_config()
+
+
+def test_from_json_loads_distinct_prefill_and_decode_scheduler_types(_temp_json_file):
+    test_config = {
+        "scheduler_config": {
+            "prefill_scheduler_type": "kv_cache_affinity",
+            "decode_scheduler_type": "round_robin",
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    config = CoordinatorConfig.from_json(_temp_json_file)
+    assert config.scheduler_config.prefill_scheduler_type.value == "kv_cache_affinity"
+    assert config.scheduler_config.decode_scheduler_type.value == "round_robin"
+    assert config.scheduler_config.type_for_role("prefill").value == "kv_cache_affinity"
+    assert config.scheduler_config.type_for_role("decode").value == "round_robin"
+    assert config.scheduler_config.type_for_role("union").value == "kv_cache_affinity"
+    assert config.scheduler_config.uses_kv_cache_affinity() is True
+
+
+def test_from_json_migrates_legacy_scheduler_type(_temp_json_file, caplog):
+    test_config = {"scheduler_config": {"scheduler_type": "round_robin"}}
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    with caplog.at_level("WARNING"):
+        config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.scheduler_config.prefill_scheduler_type.value == "round_robin"
+    assert config.scheduler_config.decode_scheduler_type.value == "round_robin"
+    assert "scheduler_config.scheduler_type is deprecated" in caplog.text
+
+
+def test_from_json_decode_kv_cache_affinity_is_ignored_for_decode(_temp_json_file, caplog):
+    test_config = {
+        "scheduler_config": {
+            "prefill_scheduler_type": "load_balance",
+            "decode_scheduler_type": "kv_cache_affinity",
+        }
+    }
+    with open(_temp_json_file, "w", encoding="utf-8") as f:
+        json.dump(test_config, f)
+
+    with caplog.at_level("WARNING"):
+        config = CoordinatorConfig.from_json(_temp_json_file)
+
+    assert config.scheduler_config.decode_scheduler_type.value == "kv_cache_affinity"
+    assert config.scheduler_config.uses_kv_cache_affinity() is False
+    assert "decode_scheduler_type=kv_cache_affinity" in caplog.text

@@ -617,6 +617,9 @@ class SchedulerClientConfig:
     instance_pub_address: str = ""  # SUB to Scheduler PUB for instance-change push; empty disables
     timeout: float = 5.0
     reconnect_interval: float = 5.0
+    prefill_scheduler_type: str | None = None
+    decode_scheduler_type: str | None = None
+    # Optional default applied to both roles when the per-role fields are unset (tests).
     scheduler_type: str | None = None
     client_index: int = 0
     client_count: int = 1
@@ -679,7 +682,9 @@ class AsyncSchedulerClient:
         self._cache = _SchedulerInstanceCache()
         self._instance_rr_counters: dict[PDRole, int] = {}
         self._endpoint_rr_counters: dict[int, int] = {}
-        self._scheduler_type: str = config.scheduler_type or "round_robin"
+        default_type = config.scheduler_type or "round_robin"
+        self._prefill_scheduler_type: str = config.prefill_scheduler_type or default_type
+        self._decode_scheduler_type: str = config.decode_scheduler_type or default_type
         self._workload_reader = None
         self._last_instance_version: int | None = None
         self._on_instance_refreshed = config.on_instance_refreshed
@@ -800,6 +805,11 @@ class AsyncSchedulerClient:
         self._request_seq += 1
         return f"{self._request_id_prefix}-{self._request_seq}"
 
+    def _scheduler_type_for_role(self, role: PDRole | None = None) -> str:
+        if role == PDRole.ROLE_D:
+            return self._decode_scheduler_type
+        return self._prefill_scheduler_type
+
     async def _select_endpoint_candidates(
         self,
         req_info: RequestInfo,
@@ -832,12 +842,12 @@ class AsyncSchedulerClient:
                     "Selected %d endpoint candidate(s) from cache (role=%s, policy=%s)",
                     len(candidates),
                     role,
-                    self._scheduler_type,
+                    self._scheduler_type_for_role(cache_role),
                 )
                 return candidates, candidate_policy
         instances = await self.get_available_instances(role)
         if not instances:
-            return [], self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
+            return [], self._scheduler_type_for_role(cache_role)
 
         # get_available_instances already wrote sorted list to cache; build sorted list once for this path
         instance_list = self._filter_instances(
@@ -851,7 +861,7 @@ class AsyncSchedulerClient:
                 "Selected %d endpoint candidate(s) from fresh fetch (role=%s, policy=%s)",
                 len(candidates),
                 role,
-                self._scheduler_type,
+                self._scheduler_type_for_role(cache_role),
             )
         return candidates, candidate_policy
 
@@ -900,23 +910,33 @@ class AsyncSchedulerClient:
         self._last_instance_version = current_version
         await self._notify_instance_refreshed()
 
-    def _arbitration_context(self) -> ArbitrationContext:
+    @property
+    def _scheduler_type(self) -> str:
+        """Deprecated alias of prefill type; tests may still assign this to set both roles."""
+        return self._prefill_scheduler_type
+
+    @_scheduler_type.setter
+    def _scheduler_type(self, value: str) -> None:
+        self._prefill_scheduler_type = value
+        self._decode_scheduler_type = value
+
+    def _arbitration_context(self, role: PDRole | None = None) -> ArbitrationContext:
         """Worker-local arbitration view: instance cache + circuit-breaker mirror."""
 
-        def _get_available(role: PDRole | None) -> dict[int, Instance]:
-            if role is None:
+        def _get_available(pool_role: PDRole | None) -> dict[int, Instance]:
+            if pool_role is None:
                 merged: dict[int, Instance] = {}
                 for pdrole in (PDRole.ROLE_E, PDRole.ROLE_P, PDRole.ROLE_D, PDRole.ROLE_U):
                     for inst in self._cache.get_instances(pdrole):
                         merged[inst.id] = inst
                 return merged
-            return {inst.id: inst for inst in self._cache.get_instances(role)}
+            return {inst.id: inst for inst in self._cache.get_instances(pool_role)}
 
         return ArbitrationContext(
             get_available_instances=_get_available,
             is_instance_circuit_open=self.is_instance_blocked,
             endpoint_instance_score_weight=self._endpoint_instance_score_weight,
-            is_load_balance_scheduler=self._scheduler_type == "load_balance",
+            is_load_balance_scheduler=self._scheduler_type_for_role(role) == "load_balance",
         )
 
     def _committed_workload_for(
@@ -1012,7 +1032,7 @@ class AsyncSchedulerClient:
                 return None
             endpoint = select_endpoint_for_instance(
                 instance,
-                scheduler_type=self._scheduler_type or "round_robin",
+                scheduler_type=self._scheduler_type_for_role(role),
                 endpoint_rr_counters=self._endpoint_rr_counters,
                 is_blocked=self.is_instance_blocked,
             )
@@ -1024,7 +1044,7 @@ class AsyncSchedulerClient:
                     req_info.req_id,
                 )
                 return None
-            candidate_policy = self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
+            candidate_policy = self._scheduler_type_for_role(role)
             candidate_endpoints = [{"instance_id": instance.id, "endpoint_id": endpoint.id}]
             proposed_instance, proposed_endpoint = instance, endpoint
         else:
@@ -1032,7 +1052,7 @@ class AsyncSchedulerClient:
                 _AFFINITY_CANDIDATE_TOPK
                 if (
                     role in _KVA_SELECT_ROLES
-                    and (self._scheduler_type or "") == "kv_cache_affinity"
+                    and self._scheduler_type_for_role(role) == "kv_cache_affinity"
                     and self._kv_affinity_mode != KV_AFFINITY_MODE_UNIFIED
                 )
                 else 1
@@ -1088,7 +1108,7 @@ class AsyncSchedulerClient:
 
         demand = (
             Workload()
-            if (self._scheduler_type or "round_robin") == "round_robin"
+            if self._scheduler_type_for_role(role) == "round_robin"
             else calculate_demand_workload(role, req_info)
         )
         token_ids = getattr(req_info, "token_ids", None)
@@ -1115,7 +1135,7 @@ class AsyncSchedulerClient:
             # First attempt reuses the candidate-selection refresh above; later retries re-read.
             if _attempt > 0:
                 await self._refresh_cache_from_workload_reader(role)
-            ctx = self._arbitration_context()
+            ctx = self._arbitration_context(role)
             open_pairs = [pair for pair in candidate_pairs if pair not in excluded] or (
                 [proposed] if proposed not in excluded else []
             )
@@ -1775,8 +1795,8 @@ class AsyncSchedulerClient:
         top_k: int = 1,
     ) -> tuple[list[tuple[Instance, Endpoint, float]], str]:
         if not instances:
-            return [], self._scheduler_type or CANDIDATE_POLICY_ROUND_ROBIN
-        st = self._scheduler_type or "round_robin"
+            return [], self._scheduler_type_for_role(role)
+        st = self._scheduler_type_for_role(role)
         if st == "load_balance":
             candidates = self._select_endpoint_candidates_by_load_balance(instances, role, top_k)
             if candidates:
@@ -1822,19 +1842,21 @@ class AsyncSchedulerClient:
         self._instance_rr_counters[role] = next_counter - start_offset
         if not selected_instance:
             return [], CANDIDATE_POLICY_ROUND_ROBIN
-        selected = self._select_endpoint_for_instance(selected_instance)
+        selected = self._select_endpoint_for_instance(selected_instance, role)
         if not selected:
             return [], CANDIDATE_POLICY_ROUND_ROBIN
         instance, endpoint = selected
         return [(instance, endpoint, 0.0)], CANDIDATE_POLICY_ROUND_ROBIN
 
-    def _select_endpoint_for_instance(self, instance: Instance) -> tuple[Instance, Endpoint] | None:
+    def _select_endpoint_for_instance(
+        self, instance: Instance, role: PDRole | None = None
+    ) -> tuple[Instance, Endpoint] | None:
         if not instance:
             return None
         all_endpoints = instance.get_all_endpoints()
         if not all_endpoints:
             return None
-        st = self._scheduler_type or "round_robin"
+        st = self._scheduler_type_for_role(role)
         if st in ("load_balance", "kv_cache_affinity"):
             ep = LoadBalancePolicy.select_endpoint_from_instance(instance)
             if ep:

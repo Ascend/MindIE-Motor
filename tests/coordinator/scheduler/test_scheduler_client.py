@@ -342,6 +342,12 @@ class TestAsyncSchedulerClient:
         patcher_transport.stop()
         patcher_cache.stop()
 
+    def test_arbitration_context_uses_role_scheduler_type(self):
+        self.client._prefill_scheduler_type = "kv_cache_affinity"
+        self.client._decode_scheduler_type = "load_balance"
+        assert self.client._arbitration_context(PDRole.ROLE_P).is_load_balance_scheduler is False
+        assert self.client._arbitration_context(PDRole.ROLE_D).is_load_balance_scheduler is True
+
     # -- helpers ------------------------------------------------------------
 
     def _setup_default_send_request(self):
