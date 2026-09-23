@@ -8,7 +8,7 @@ MindIE Motor采用控制面（Controller/Coordinator）与数据面（推理引�
 
 | 推理引擎 | 支持状态 | 说明 |
 | --- | --- | --- |
-| **vLLM** | 已支持（推荐） | vLLM为当前MindIE Motor推荐的底层推理引擎，已与控制面深度对接。**缺少对vLLM引擎的描述，需要补充** |
+| **vLLM** | 已支持（推荐） | vLLM是面向大模型在线服务的高吞吐推理引擎，以PagedAttention按页管理KV Cache，并用continuous batching持续合批不同长度的请求，从而在有限显存下提高并发与吞吐。 |
 | **SGLang** | 已支持（POC） | SGLang在多轮对话、Agent搜索、Few-shot等依赖前缀复用的场景中常能较好利用RadixAttention等机制。 |
 
 ## 配置推理引擎
