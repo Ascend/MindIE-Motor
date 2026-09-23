@@ -399,8 +399,15 @@ class InstanceManager:
                 self._unavailable_pool[instance_id] = instance
                 logger.info("Instance ID %s updated to unavailable successfully", instance_id)
 
-    async def refresh_instances(self, event_type: EventType, instances: list[Instance]) -> bool:
-        """Apply instance refresh; return True if pools were modified (for Scheduler notify)."""
+    async def refresh_instances(self, event_type: EventType, instances: list[Instance]) -> tuple[bool, list[int]]:
+        """Apply instance refresh.
+
+        Returns:
+            (changed, set_removed_ids): ``set_removed_ids`` is non-empty only for SET — instance
+            IDs **absent from the SET payload** that were removed from pools (true delete; not
+            same-id structural refresh or unavailable/paused → available moves).
+        """
+        set_removed_ids: list[int] = []
         async with self._lock:
             self._validate_refresh_instances(event_type, instances)
             # Log instance change summary: event type, count, and instance ids
@@ -418,7 +425,7 @@ class InstanceManager:
                 result = self._delete_instances(instances)
                 self._register_kv_instance(instances, False)
             elif event_type == EventType.SET:
-                result = self._apply_set_diff(instances)
+                result, set_removed_ids = self._apply_set_diff(instances)
                 # The _register_kv_instance function is called in _add_instances.
             elif event_type == EventType.PAUSE:
                 result = self._pause_instances(instances)
@@ -434,7 +441,7 @@ class InstanceManager:
                 len(self._decode_pool),
                 len(self._hybrid_pool),
             )
-            return result
+            return result, set_removed_ids
 
     def _find_available_pool(self, instance_id: int) -> dict[int, Instance] | None:
         # This is a private method that should only be called within locked contexts
@@ -718,18 +725,21 @@ class InstanceManager:
 
         return (to_add, to_remove)
 
-    def _apply_set_diff(self, instances: list[Instance]) -> bool:
-        """Apply SET as diff: delete removed, add new; return True if any change."""
+    def _apply_set_diff(self, instances: list[Instance]) -> tuple[bool, list[int]]:
+        """Apply SET as diff: delete removed, add new."""
         to_add, to_remove = self._compute_set_diff(instances)
+        new_ids = {inst.id for inst in instances}
+        # CB cleanup applies only to ids dropped from the Controller snapshot, not in-place refresh.
+        removed_ids = [inst.id for inst in to_remove if inst.id not in new_ids]
         if not to_remove and not to_add:
             logger.debug("SET: no diff, instance set unchanged")
-            return False
+            return False, removed_ids
         if to_remove:
             logger.info("SET: removing %d instance(s), adding %d", len(to_remove), len(to_add))
             self._delete_instances(to_remove)
         if to_add:
             self._add_instances(to_add)
-        return True
+        return True, removed_ids
 
     def _pause_instances(self, instances: list[Instance]) -> bool:
         """Move instances from available pool to paused pool.

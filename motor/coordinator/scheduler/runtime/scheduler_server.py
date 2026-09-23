@@ -157,32 +157,29 @@ class _SchedulerRequestDispatcher:
             data=data,
         )
 
+    def _clear_instance_circuit_breaker(self, instance_id: int, shm_closed_ids: list[int]) -> None:
+        """Drop Mgmt CB state for a removed instance and mirror CLOSED to SHM/workers (same as DEL)."""
+        self._cb_manager.clear_instance(instance_id)
+        self._cancel_recovery(instance_id)
+        # PUB "closed" too — the worker-side prune is absence-based, so a reused id stays blocked.
+        if self._set_blocked(instance_id, False):
+            shm_closed_ids.append(instance_id)
+
     async def apply_refresh(self, event_type: EventType, instances: list[Instance]) -> bool:
         """Apply an instance-list change locally: IM + SHM snapshot + PUB (no ZMQ REFRESH)."""
-        previously_open_ids: list[int] = []
         shm_closed_ids: list[int] = []
         async with self._workload_commit_lock:
-            changed = await self._instance_manager.refresh_instances(event_type, instances)
-            if event_type == EventType.SET and changed:
-                previously_open_ids = self._cb_manager.get_open_instance_ids()
-                self._cb_manager.clear_all()
-                for key, task in list(self._recovery_timers.items()):
-                    if not task.done():
-                        task.cancel()
-                    self._recovery_timers.pop(key, None)
+            changed, set_removed_ids = await self._instance_manager.refresh_instances(event_type, instances)
+            if event_type == EventType.SET:
+                for iid in set_removed_ids:
+                    self._clear_instance_circuit_breaker(iid, shm_closed_ids)
             elif event_type == EventType.DEL:
                 for inst in instances:
-                    self._cb_manager.clear_instance(inst.id)
-                    self._cancel_recovery(inst.id)
-                    self._set_blocked(inst.id, False)
+                    self._clear_instance_circuit_breaker(inst.id, shm_closed_ids)
             if (changed or self._snapshot_dirty) and self._workload_writer:
                 self._snapshot_dirty = True  # cleared only after write_snapshot succeeds below
                 self._workload_writer.write_snapshot()
                 self._snapshot_dirty = False
-            if event_type == EventType.SET:
-                for iid in previously_open_ids:
-                    if self._set_blocked(iid, False):
-                        shm_closed_ids.append(iid)
         if changed:
             if self._on_instance_refresh_done:
                 try:

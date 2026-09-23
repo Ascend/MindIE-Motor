@@ -541,7 +541,7 @@ class TestInstanceManager:
         )
         self.instance_manager._add_instance_to_available_pool(existing)
 
-        changed = await self.instance_manager.refresh_instances(EventType.DEL, [reordered])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.DEL, [reordered])
 
         assert changed is True
         assert 1 not in self.instance_manager._available_pool
@@ -558,7 +558,7 @@ class TestInstanceManager:
         )
 
         instances = [new_prefill_instance, new_decode_instance]
-        changed = await self.instance_manager.refresh_instances(EventType.SET, instances)
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, instances)
         assert changed is True
         # Verify pools were set correctly
         assert len(self.instance_manager._prefill_pool) == 1
@@ -592,7 +592,7 @@ class TestInstanceManager:
         """Test refresh_instances with SET when pools have instances: SET applies diff (remove P, add D)."""
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
         instances = [self.decode_instance]
-        changed = await self.instance_manager.refresh_instances(EventType.SET, instances)
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, instances)
         assert changed is True
         assert "SET: removing" in caplog.text and "adding" in caplog.text
         assert len(self.instance_manager._prefill_pool) == 0
@@ -631,7 +631,7 @@ class TestInstanceManager:
         new_prefill_instance = Instance(
             job_name="new-prefill", model_name="test-model", id=10, role=PDRole.ROLE_P, endpoints={}
         )
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [new_prefill_instance])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [new_prefill_instance])
         assert changed is True
         assert len(self.instance_manager._prefill_pool) == 1
         assert 10 in self.instance_manager._prefill_pool
@@ -642,7 +642,7 @@ class TestInstanceManager:
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
         self.instance_manager._add_instance_to_available_pool(self.decode_instance)
         instances = [self.prefill_instance, self.decode_instance]
-        changed = await self.instance_manager.refresh_instances(EventType.SET, instances)
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, instances)
         assert changed is False
         assert len(self.instance_manager._prefill_pool) == 1 and len(self.instance_manager._decode_pool) == 1
 
@@ -651,7 +651,7 @@ class TestInstanceManager:
         """SET adds one new instance, keeps existing."""
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
         new_decode = Instance(job_name="new-decode", model_name="test-model", id=20, role=PDRole.ROLE_D, endpoints={})
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance, new_decode])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance, new_decode])
         assert changed is True
         assert len(self.instance_manager._prefill_pool) == 1
         assert len(self.instance_manager._decode_pool) == 1
@@ -662,7 +662,7 @@ class TestInstanceManager:
         """SET removes one instance, keeps the other."""
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
         self.instance_manager._add_instance_to_available_pool(self.decode_instance)
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
         assert changed is True
         assert len(self.instance_manager._prefill_pool) == 1
         assert len(self.instance_manager._decode_pool) == 0
@@ -672,7 +672,7 @@ class TestInstanceManager:
         """SET with empty list removes all instances."""
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
         self.instance_manager._add_instance_to_available_pool(self.decode_instance)
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [])
         assert changed is True
         assert len(self.instance_manager._prefill_pool) == 0
         assert len(self.instance_manager._decode_pool) == 0
@@ -943,7 +943,7 @@ class TestInstanceManager:
             role=PDRole.ROLE_P,
             endpoints={"10.0.0.1": {self.endpoint.id: self.endpoint}},
         )
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [updated])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [updated])
         assert changed is True
         assert "1 instance(s) with same ID will be refreshed" in caplog.text
         assert 1 in self.instance_manager._available_pool
@@ -965,7 +965,7 @@ class TestInstanceManager:
             role=PDRole.ROLE_D,
             endpoints={},
         )
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [updated])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [updated])
         assert changed is True
         # Old role pool empty, new role pool has it
         assert 1 not in self.instance_manager._prefill_pool
@@ -978,7 +978,7 @@ class TestInstanceManager:
         (no unnecessary churn).
         """
         self.instance_manager._add_instance_to_available_pool(self.prefill_instance)
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
         assert changed is False
         # Instance should remain in pool unchanged
         assert 1 in self.instance_manager._available_pool
@@ -990,7 +990,7 @@ class TestInstanceManager:
         self.instance_manager._paused_pool[1] = self.prefill_instance
 
         # SET with empty list → paused instance should be removed
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [])
         assert changed is True
         assert 1 not in self.instance_manager._paused_pool
 
@@ -1007,7 +1007,7 @@ class TestInstanceManager:
             role=PDRole.ROLE_P,
             endpoints={},
         )
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [restarted])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [restarted])
         assert changed is True
         # Old instance removed
         assert 1 not in self.instance_manager._available_pool
@@ -1024,7 +1024,7 @@ class TestInstanceManager:
         self.instance_manager._unavailable_pool[1] = self.prefill_instance
 
         # SET includes the same instance → should move to available
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
         assert changed is True
         assert 1 not in self.instance_manager._unavailable_pool
         assert 1 in self.instance_manager._available_pool
@@ -1036,7 +1036,7 @@ class TestInstanceManager:
         """SET moves an instance from paused pool back to available pool."""
         self.instance_manager._paused_pool[1] = self.prefill_instance
 
-        changed = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
+        changed, _ = await self.instance_manager.refresh_instances(EventType.SET, [self.prefill_instance])
         assert changed is True
         assert 1 not in self.instance_manager._paused_pool
         assert 1 in self.instance_manager._available_pool

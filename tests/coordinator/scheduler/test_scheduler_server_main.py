@@ -264,7 +264,7 @@ class TestApplyRefresh:
             workload_writer=writer,
             on_refresh_done=sync_cb,
         )
-        instance_manager.refresh_instances = AsyncMock(return_value=False)
+        instance_manager.refresh_instances = AsyncMock(return_value=(False, []))
         changed = await dispatcher.apply_refresh(EventType.ADD, [])
         assert changed is False
         assert writer.snapshots == 0
@@ -322,6 +322,136 @@ class TestApplyRefresh:
         assert (4, False) in writer.blocked
 
     @pytest.mark.asyncio
+    async def test_del_publishes_circuit_closed(self):
+        """DEL must PUB "closed", not only clear SHM.
+
+        Workers key _cb_blocked_instances by instance id, and the instance-change channel they
+        could otherwise rely on prunes by absence (SchedulerClient._on_instance_change_notify), so
+        an id that is already back in the pool after reuse survives that prune and stays blocked
+        forever. An explicit "closed" is identity-based and immune to that.
+        """
+        writer = _DummyWorkloadWriter()
+        dispatcher, instance_manager, *_ = _make_dispatcher(workload_writer=writer)
+        inst = _make_instance(4, (40,))
+        await instance_manager.refresh_instances(EventType.ADD, [inst])
+
+        published: list[tuple[int, str]] = []
+
+        async def _record(instance_id: int, state: str) -> None:
+            published.append((instance_id, state))
+
+        dispatcher._publish_circuit_breaker = _record
+        changed = await dispatcher.apply_refresh(EventType.DEL, [inst])
+        await asyncio.sleep(0)  # let the create_task'd publish run
+
+        assert changed is True
+        assert published == [(4, "closed")]
+
+    @pytest.mark.asyncio
+    async def test_set_only_clears_circuit_for_removed_instances(self):
+        """SET must not clear_all; removed IDs get DEL-style CB cleanup, survivors keep open state."""
+        writer = _DummyWorkloadWriter()
+        dispatcher, instance_manager, *_ = _make_dispatcher(workload_writer=writer)
+        inst_keep = _make_instance(1, (10,))
+        inst_drop = _make_instance(2, (20,))
+        await instance_manager.refresh_instances(EventType.ADD, [inst_keep, inst_drop])
+        for _ in range(3):
+            dispatcher._cb_manager.process_failure(1)
+            dispatcher._cb_manager.process_failure(2)
+        assert dispatcher._cb_manager.is_open(1)
+        assert dispatcher._cb_manager.is_open(2)
+
+        published: list[tuple[int, str]] = []
+
+        async def _record(instance_id: int, state: str) -> None:
+            published.append((instance_id, state))
+
+        dispatcher._publish_circuit_breaker = _record
+        changed = await dispatcher.apply_refresh(EventType.SET, [inst_keep])
+        await asyncio.sleep(0)
+
+        assert changed is True
+        assert dispatcher._cb_manager.is_open(1)
+        assert not dispatcher._cb_manager.is_open(2)
+        assert published == [(2, "closed")]
+        assert (2, False) in writer.blocked
+        assert (1, False) not in writer.blocked
+
+    @pytest.mark.asyncio
+    async def test_set_noop_does_not_clear_circuit(self):
+        writer = _DummyWorkloadWriter()
+        dispatcher, instance_manager, *_ = _make_dispatcher(workload_writer=writer)
+        inst = _make_instance(3, (30,))
+        await instance_manager.refresh_instances(EventType.ADD, [inst])
+        for _ in range(3):
+            dispatcher._cb_manager.process_failure(3)
+        assert dispatcher._cb_manager.is_open(3)
+
+        published: list[tuple[int, str]] = []
+
+        async def _record(instance_id: int, state: str) -> None:
+            published.append((instance_id, state))
+
+        dispatcher._publish_circuit_breaker = _record
+        changed = await dispatcher.apply_refresh(EventType.SET, [inst])
+        await asyncio.sleep(0)
+
+        assert changed is False
+        assert dispatcher._cb_manager.is_open(3)
+        assert published == []
+
+    @pytest.mark.asyncio
+    async def test_set_structural_refresh_keeps_circuit_open(self):
+        """Same-id SET refresh (remove+add in IM) must not clear CB — only ids absent from payload."""
+        writer = _DummyWorkloadWriter()
+        dispatcher, instance_manager, *_ = _make_dispatcher(workload_writer=writer)
+        inst = _make_instance(5, (50,))
+        inst.endpoints = {}
+        await instance_manager.refresh_instances(EventType.ADD, [inst])
+        for _ in range(3):
+            dispatcher._cb_manager.process_failure(5)
+        assert dispatcher._cb_manager.is_open(5)
+
+        updated = _make_instance(5, (50,))
+        published: list[tuple[int, str]] = []
+
+        async def _record(instance_id: int, state: str) -> None:
+            published.append((instance_id, state))
+
+        dispatcher._publish_circuit_breaker = _record
+        changed = await dispatcher.apply_refresh(EventType.SET, [updated])
+        await asyncio.sleep(0)
+
+        assert changed is True
+        assert dispatcher._cb_manager.is_open(5)
+        assert published == []
+
+    @pytest.mark.asyncio
+    async def test_del_closed_publish_deferred_when_shm_fails(self):
+        """A failed SHM unblock must defer the PUB, never drop it: _pending_blocked re-PUBs from
+        the heartbeat drain once the SHM write lands. Dropping it would re-open the permanent-block
+        window this fix closes.
+        """
+        writer = _DummyWorkloadWriter()
+        writer.set_blocked = MagicMock(side_effect=RuntimeError("shm down"))
+        dispatcher, instance_manager, *_ = _make_dispatcher(workload_writer=writer)
+        inst = _make_instance(4, (40,))
+        await instance_manager.refresh_instances(EventType.ADD, [inst])
+
+        published: list[tuple[int, str]] = []
+
+        async def _record(instance_id: int, state: str) -> None:
+            published.append((instance_id, state))
+
+        dispatcher._publish_circuit_breaker = _record
+        await dispatcher.apply_refresh(EventType.DEL, [inst])
+        await asyncio.sleep(0)
+
+        assert published == []
+        assert dispatcher._pending_blocked[4] is False
+        assert dispatcher._pending_blocked_pub[4] == "closed"
+
+    @pytest.mark.asyncio
     async def test_dirty_snapshot_is_retried_even_when_next_refresh_is_a_noop(self):
         """A write_snapshot failure leaves _snapshot_dirty set; a later apply_refresh whose own IM
         delta is a no-op (idempotent retry) must still force write_snapshot while dirty, so IM/SHM
@@ -337,7 +467,7 @@ class TestApplyRefresh:
         assert dispatcher._snapshot_dirty is True
 
         writer.write_snapshot = MagicMock()  # recovers
-        instance_manager.refresh_instances = AsyncMock(return_value=False)  # idempotent no-op
+        instance_manager.refresh_instances = AsyncMock(return_value=(False, []))  # idempotent no-op
         changed = await dispatcher.apply_refresh(EventType.ADD, [inst])
 
         assert changed is False
