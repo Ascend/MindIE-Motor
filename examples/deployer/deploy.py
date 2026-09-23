@@ -120,6 +120,8 @@ def handle_update_instance_num(user_config, env_config_path=None):
     validate_deploy_mode_value(deploy_mode_arg)
 
     update_kv_store_enabled_flag(user_config)
+    update_kv_conductor_enabled_flag(user_config)
+    update_engine_type_flag(user_config)
     update_engine_base_name(user_config)
     update_a5_host_nic_overlay_from_env(env_config_path)
     set_env_to_shell(user_config, env_config_path, deploy_mode_arg)

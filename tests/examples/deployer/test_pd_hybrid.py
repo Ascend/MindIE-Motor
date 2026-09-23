@@ -660,6 +660,36 @@ def test_handle_update_instance_num_scales_hybrid_via_crd(tmp_path, monkeypatch)
     assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
 
 
+def test_handle_update_instance_num_regenerates_kv_conductor_when_infer_yaml_missing(tmp_path, monkeypatch):
+    """Full InferServiceSet regen on scale must honor kv_conductor_config."""
+    baseline_config = make_pd_hybrid_user_config()
+    baseline_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_INFER_SERVICE_SET
+    baseline_config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444}
+    current_config = make_pd_hybrid_user_config()
+    current_config[C.MOTOR_DEPLOY_CONFIG][C.DEPLOY_MODE_CONFIG_KEY] = C.DEPLOY_MODE_INFER_SERVICE_SET
+    current_config[C.MOTOR_DEPLOY_CONFIG][C.HYBRID_INSTANCES_NUM] = 2
+    current_config[C.KV_CONDUCTOR_CONFIG] = {C.KV_CONDUCTOR_PORT: 14444}
+    paths = make_deploy_paths(tmp_path)
+    monkeypatch.setattr(k8s_utils, "g_kv_conductor_enabled", False)
+    monkeypatch.setattr(deploy_module, "get_baseline_config_from_configmap", lambda _: baseline_config)
+    monkeypatch.setattr(deploy_module, "get_deploy_paths", lambda: paths)
+    monkeypatch.setattr(C, "OUTPUT_ROOT_PATH", str(tmp_path))
+    monkeypatch.setattr(k8s_utils, "create_motor_config_configmap", lambda *_a, **_k: None)
+    monkeypatch.setattr(k8s_utils, "resolve_nodeports_for_yaml_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(k8s_utils, "safe_exec_cmd", lambda *_a, **_k: None)
+
+    deploy_module.handle_update_instance_num(current_config)
+
+    assert k8s_utils.g_kv_conductor_enabled is True
+    infer_doc = _find_infer_service_set_doc(load_yaml(paths["infer_service_output_yaml"], False))
+    assert get_infer_role(infer_doc, C.ROLE_UNION)[C.REPLICAS] == 2
+    conductor_role = get_infer_role(infer_doc, C.ROLE_KV_CONDUCTOR)
+    assert conductor_role[C.REPLICAS] == 1
+    coordinator_container = get_infer_role(infer_doc, C.COORDINATOR)[C.SPEC][C.TEMPLATE][C.SPEC][C.CONTAINERS][0]
+    coordinator_env = {item[C.NAME] for item in coordinator_container.get(C.ENV, [])}
+    assert C.ENV_KV_CONDUCTOR_SERVICE in coordinator_env
+
+
 def test_vllm_pd_hybrid_sample_is_valid():
     sample_path = DEPLOYER_ROOT.parent / "infer_engines" / "vllm" / "pd_hybrid" / "user_config.json"
     with open(sample_path, "r", encoding="utf-8") as f:
