@@ -162,6 +162,7 @@ class TestControlPlaneProtocol:
         assert "UPDATE_WORKLOAD" not in names
         assert "REFRESH_INSTANCES" not in names
         assert "GET_AVAILABLE_INSTANCES" in names
+        assert "GET_INSTANCE_STATUS" in names
         assert "CIRCUIT_BREAKER_REPORT" in names
 
 
@@ -212,6 +213,27 @@ class TestHandleGetAvailableInstances:
         response = await dispatcher.dispatch(request)
         assert response.response_type == SchedulerResponseType.SUCCESS
         assert response.data["workload_shm_name"] == writer.shm_name
+
+
+class TestHandleInstanceQueries:
+    @pytest.mark.asyncio
+    async def test_returns_authoritative_all_pool_health(self):
+        dispatcher, instance_manager, *_ = _make_dispatcher()
+        instance = _make_instance(1, (10,))
+        await instance_manager.refresh_instances(EventType.ADD, [instance])
+
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.GET_INSTANCE_STATUS,
+            request_id="req-status",
+            data={},
+        )
+        response = await dispatcher.dispatch(request)
+
+        assert response.response_type == SchedulerResponseType.SUCCESS
+        assert response.data["count"] == 1
+        assert response.data["instances"][0]["id"] == 1
+        assert response.data["instances"][0]["pool"] == "available"
+        assert response.data["instances"][0]["healthy"] is True
 
     @pytest.mark.asyncio
     async def test_role_filter_limits_returned_instances(self):

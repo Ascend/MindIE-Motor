@@ -19,6 +19,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 # Early mock of the OpenSSL-dependent modules so that ObservabilityServer
 # and other coordinator modules can be imported in this environment.
@@ -120,6 +121,46 @@ class TestObservabilityServerTls:
         # The reference should now point to the new config's TLSConfig
         assert server._obs_ssl_config is new_config.mgmt_tls_config
         assert server._obs_ssl_config is not original_ref
+
+    def test_instances_route_returns_scheduler_status(self):
+        server = self._make_server()
+        server._register_routes()
+        scheduler = MagicMock()
+        scheduler.get_instance_status = AsyncMock(return_value={"count": 1, "instances": [{"id": 7, "healthy": False}]})
+        server._scheduler_connection.get_client = MagicMock(return_value=scheduler)
+
+        response = TestClient(server.observability_app).get("/instances")
+
+        assert response.status_code == 200
+        assert response.json() == {"count": 1, "instances": [{"id": 7, "healthy": False}]}
+        scheduler.get_instance_status.assert_awaited_once()
+
+    def test_instances_route_returns_503_without_control_plane(self):
+        server = self._make_server()
+        server._register_routes()
+        server._scheduler_connection.get_client = MagicMock(return_value=None)
+
+        response = TestClient(server.observability_app).get("/instances")
+
+        assert response.status_code == 503
+
+    def test_instances_route_uses_management_api_key(self, tmp_path):
+        key_file = tmp_path / "management.key"
+        key_file.write_text("test-management-key\n", encoding="utf-8")
+        config = CoordinatorConfig()
+        config.mgmt_api_key_config.enable_api_key = True
+        config.mgmt_api_key_config.api_key_file = str(key_file)
+        with patch.object(ObservabilityServer, "_register_routes", return_value=None):
+            server = ObservabilityServer(config=config)
+        server._register_routes()
+        scheduler = MagicMock()
+        scheduler.get_instance_status = AsyncMock(return_value={"count": 0, "instances": []})
+        server._scheduler_connection.get_client = MagicMock(return_value=scheduler)
+        client = TestClient(server.observability_app)
+
+        assert client.get("/instances").status_code == 401
+        assert client.get("/instances", headers={"X-Motor-Management-Key": "wrong"}).status_code == 403
+        assert client.get("/instances", headers={"X-Motor-Management-Key": "test-management-key"}).status_code == 200
 
     # ------------------------------------------------------------------
     # Mock-based behavior tests for the run() method's TLS branch.

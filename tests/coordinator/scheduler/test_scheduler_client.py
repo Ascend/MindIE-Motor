@@ -583,6 +583,24 @@ class TestAsyncSchedulerClient:
         assert result == {}
 
     @pytest.mark.asyncio
+    async def test_get_instance_status_returns_authoritative_payload(self):
+        payload = {"count": 1, "instances": [{"id": 1, "healthy": False}]}
+        self._mock_send_request(SchedulerResponseType.SUCCESS, payload)
+
+        result = await self.client.get_instance_status()
+
+        assert result == payload
+        request = self.mock_transport.send_request.await_args.args[0]
+        assert request.request_type == SchedulerRequestType.GET_INSTANCE_STATUS
+        assert request.data == {}
+
+    @pytest.mark.asyncio
+    async def test_get_instance_status_returns_none_on_transport_failure(self):
+        self.mock_transport.send_request = AsyncMock(return_value=None)
+
+        assert await self.client.get_instance_status() is None
+
+    @pytest.mark.asyncio
     async def test_get_available_instance_roles_uses_cache_without_transport(self):
         """Topology role reads stay local and do not issue GET_AVAILABLE_INSTANCES."""
         mock_p = Mock(spec=Instance)

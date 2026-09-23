@@ -152,7 +152,10 @@ curl -X GET "http://{IP}:{Port}/health"
 请求类型：**GET**
 > URL：`http(s)://{IP}:{Port}/instances`
 
-IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的ip端口与配置)
+实例查询对外服务位于 Coordinator Observability 端口：容器内或裸机默认使用
+`coordinator_obs_port`（`1027`）；Kubernetes 集群外使用
+`mindie-motor-coordinator-obs` Service 的 NodePort（默认 `31017`）。原管理端口
+`coordinator_api_mgmt_port`（默认 `1026`）继续保留该接口，仅用于集群内兼容调用。
 
 **请求参数**
 无
@@ -160,9 +163,12 @@ IP与端口参见[管理接口的IP/端口与配置](./README.md#管理接口的
 **使用样例**
 
 ```bash
-curl -X GET "http://{IP}:{Port}/instances" \
+curl -X GET "http://{服务器IP}:31017/instances" \
   -H "X-Motor-Management-Key: <key>"
 ```
+
+裸机或端口直通部署可使用 `http(s)://{服务器IP}:1027/instances`。未启用
+`mgmt_api_key_config` 时无需携带上述请求头。
 
 独立部署也可用：
 

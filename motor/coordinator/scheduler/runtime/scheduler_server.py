@@ -33,6 +33,7 @@ from motor.coordinator.domain.circuit_breaker import (
 )
 from motor.coordinator.models.constants import DEFAULT_REQUEST_ID, REQUEST_ID_KEY
 from motor.coordinator.domain.instance_manager import InstanceManager
+from motor.coordinator.domain.instance_status import build_instance_status_response
 from motor.coordinator.scheduler.scheduler import Scheduler
 from motor.coordinator.scheduler.runtime.workload_shm import WorkloadSharedMemoryOwner
 from motor.coordinator.scheduler.runtime.workload_shm.layout import (
@@ -123,6 +124,7 @@ class _SchedulerRequestDispatcher:
         """Dispatch control-plane request to the appropriate handler."""
         handlers = {
             SchedulerRequestType.GET_AVAILABLE_INSTANCES.value: self._handle_get_available_instances,
+            SchedulerRequestType.GET_INSTANCE_STATUS.value: self._handle_get_instance_status,
             SchedulerRequestType.CONFIRM_SAMPLE.value: self._handle_confirm_sample,
             SchedulerRequestType.RECORD_PRECISION_RESULT.value: self._handle_record_precision_result,
             SchedulerRequestType.FINISH_PRECISION_ACTION.value: self._handle_finish_precision_action,
@@ -164,6 +166,14 @@ class _SchedulerRequestDispatcher:
         # PUB "closed" too — the worker-side prune is absence-based, so a reused id stays blocked.
         if self._set_blocked(instance_id, False):
             shm_closed_ids.append(instance_id)
+
+    async def _handle_get_instance_status(self, request: SchedulerRequest) -> SchedulerResponse:
+        data = await build_instance_status_response(self._instance_manager, self._cb_manager)
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS,
+            request_id=request.request_id,
+            data=data,
+        )
 
     async def apply_refresh(self, event_type: EventType, instances: list[Instance]) -> bool:
         """Apply an instance-list change locally: IM + SHM snapshot + PUB (no ZMQ REFRESH)."""

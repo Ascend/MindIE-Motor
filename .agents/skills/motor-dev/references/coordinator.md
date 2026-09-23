@@ -13,7 +13,7 @@ CoordinatorDaemon (parent process, async main loop)
 │     start order: 1st | stop order: last
 │
 ├── ObsServer (1 process)                — Observability API
-│     owns: MetricsCollector, instance provider via SchedulerConnectionManager (DEALER to Mgmt)
+│     owns: MetricsCollector, external GET /instances, SchedulerConnectionManager (DEALER to Mgmt)
 │     start order: 2nd
 │
 └── InferenceWorkers (N processes)        — OpenAI- & Anthropic-compatible API
@@ -122,6 +122,7 @@ NPU resources. Optional `render_config.launch_args` entries are converted from s
 | Request | Direction | Purpose |
 |---------|-----------|---------|
 | `GET_AVAILABLE_INSTANCES` | Worker/Obs → Mgmt | Cold start / PUB loss / stale heartbeat: instance list and workload SHM name |
+| `GET_INSTANCE_STATUS` | Obs → Mgmt | Authoritative available/unavailable/paused instance health and circuit-breaker snapshot for external `GET /instances` |
 | `CONFIRM_SAMPLE` | Worker → Mgmt | Compatibility wire value for cross-worker, per-D entry-side sampling admission |
 | `RECORD_PRECISION_RESULT` | Worker → Mgmt | Records global consecutive failures + probing state |
 | `FINISH_PRECISION_ACTION` | Worker → Mgmt | Clears probing after a probe/alarm cycle |
@@ -416,7 +417,10 @@ unauthenticated so Kubernetes probes continue to work. Controller and standalone
 load the same secret from a mounted/local file. This authentication is independent from inference `api_key_config`
 and from `mgmt_tls_config`; use TLS as well when management traffic crosses an untrusted network.
 
-`GET /instances` is the external query for ras_monitor / customer tools. Each item keeps Controller-pushed `status`,
+`GET /instances` is the external query for ras_monitor / customer tools. It is served on the Obs port
+(`coordinator_obs_port`, default `1027`; Kubernetes NodePort `31017`) and obtains its authoritative snapshot from Mgmt
+through `GET_INSTANCE_STATUS`. The original Mgmt-port route (`coordinator_api_mgmt_port`, default `1026`) remains for
+internal compatibility; the Obs route applies the same management API-key check. Each item keeps Controller-pushed `status`,
 adds Coordinator pool membership (`available` / `unavailable` / `paused`; `unknown` when membership is missing), overlays the circuit-breaker snapshot
 (`state` / `trip_count` / `failure_count` / `current_timeout`), and derives `healthy` (`true` only when
 `pool=available`, `status=active`, and the breaker is `closed`).
@@ -433,7 +437,7 @@ adds Coordinator pool membership (`available` / `unavailable` / `paused`; `unkno
 - **New router strategies**: subclass `BaseRouter`, implement `prepare_resource`/`forward_request`/`release_all`, place in `router/strategies/`, and wire the class into `select_router_class()` in `dispatch.py` (there is no static router map).
 - **New ZMQ request types**: add to `SchedulerRequestType` enum in `zmq_protocol.py`; add handler method in `scheduler_server.py`; add client method in `scheduler_client.py`.
 - **New process types**: subclass `BaseProcessManager`, implement `start()`/`stop()`/`health_check()`; add key to `PROCESS_KEY_*` constants; add to start/stop order in `process/constants.py`.
-- **Observability endpoints**: `/metrics` is served by ObsServer (port `coordinator_obs_port`, default 1027), NOT MgmtServer. Controller and ccae_reporter connect to the obs port.
+- **Observability endpoints**: `/metrics` and the external `GET /instances` are served by ObsServer (port `coordinator_obs_port`, default 1027). The latter uses `GET_INSTANCE_STATUS` to read Mgmt-owned state. Controller and ccae_reporter connect to the obs port.
 - **HA**: StandbyManager is shm-agnostic — role byte is written by Daemon's `on_role_changed` callback, not by StandbyManager itself.
 
 ## Testing

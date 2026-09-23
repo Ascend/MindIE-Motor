@@ -46,7 +46,8 @@ MindIE Motor提供下列管理接口：
 
 >[!NOTE]说明
 >
-> - 管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
+> - 除实例查询外，管理接口仅限Kubernetes集群内使用，不提供给集群外使用。
+> - `/instances` 同时保留在内部管理端口 `1026`，并通过 Coordinator Observability 端口 `1027`（K8s nodePort `31017`）对外提供只读查询。
 > - `/health` 与 `/metrics` 同挂 Coordinator Observability 端口（`coordinator_obs_port`，默认 `1027`），**不在**管理接口端口（`coordinator_api_mgmt_port`，默认 `1026`）上，详见[管理接口](./management_interfaces.md#健康状态查询接口)。
 
 ### 管理接口的IP/端口与配置
@@ -68,6 +69,7 @@ MindIE Motor提供下列管理接口：
 MindIE Motor 的监控指标由 Coordinator 统一汇聚、聚合，通过 Coordinator Observability 端口对外提供。指标接口是**获取指标的唯一推荐途径**：
 
 - [指标查询接口](./metrics_interfaces.md#接口格式)：`/metrics`，支持聚合视图（`full`/`instance`/`role`/`dp`/`node`）与返回格式（Prometheus / OpenTelemetry）
+- [实例查询接口](./management_interfaces.md#实例查询接口)：`/instances`，供 ras_monitor 或外部运维工具获取实例健康状态
 
 >[!NOTE]说明
 >

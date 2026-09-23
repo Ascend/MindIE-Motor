@@ -25,6 +25,9 @@ logging.basicConfig(
 )
 
 TEST_METRIC_NAME = "request_success_total"
+MGMT_API_KEY_HEADER = "X-Motor-Management-Key"
+INSTANCE_STATUS_POLL_INTERVAL = 10
+INSTANCE_STATUS_UNHEALTHY_THRESHOLD = 2
 _DEPLOY_NOSTEP_SUPPORTED = None
 
 
@@ -43,9 +46,10 @@ class CheckParams:
     model_name: str
     input_content: str
     coordinator_port: str
-    coordinator_manage_port: str
+    coordinator_obs_port: str
     namespace: str
     coordinator_ip: str = ""
+    management_api_key: str = ""
 
 
 def is_docker_only(params: CheckParams) -> bool:
@@ -221,6 +225,24 @@ def fetch_user_config(user_config_path: str) -> dict:
         return None
 
 
+def load_management_api_key(user_config: dict, user_config_path: str) -> str:
+    key_config = user_config.get("motor_coordinator_config", {}).get("mgmt_api_key_config", {})
+    if not key_config.get("enable_api_key", False):
+        return ""
+    key_file = key_config.get("api_key_file", "")
+    if not key_file:
+        logging.warning("Management API key authentication is enabled but api_key_file is empty")
+        return ""
+    if not os.path.isabs(key_file):
+        key_file = os.path.join(os.path.dirname(os.path.abspath(user_config_path)), key_file)
+    try:
+        with open(key_file, "r", encoding="utf-8") as file:
+            return file.read().strip()
+    except (OSError, UnicodeError) as e:
+        logging.warning("Failed to load management API key for Coordinator status query: %s", e)
+        return ""
+
+
 def check_service_status(http_pool_manager, params: CheckParams) -> bool:
     try:
         ip = resolve_coordinator_ip(params)
@@ -303,7 +325,7 @@ def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) ->
         coordinator_ip = resolve_coordinator_ip(params)
         if not coordinator_ip:
             return tuple(-1 for _ in metric_names)
-        host_port = format_address(coordinator_ip, params.coordinator_manage_port)
+        host_port = format_address(coordinator_ip, params.coordinator_obs_port)
         logging.info(f"Fetch coordinator ip successfully: {host_port}")
         http_prefix = "https" if params.with_cert else "http"
         response = http_pool_manager.request("GET", f"{http_prefix}://{host_port}/metrics")
@@ -336,6 +358,70 @@ def get_metrics_values(http_pool_manager, params: CheckParams, *metric_names) ->
     return tuple(find_metric_value(metric_name) for metric_name in metric_names)
 
 
+def instances_are_all_unhealthy(payload) -> bool:
+    """Return True only for a non-empty, well-formed list whose healthy values are all false."""
+    if not isinstance(payload, dict):
+        return False
+    instances = payload.get("instances")
+    if not isinstance(instances, list) or not instances:
+        return False
+    for instance in instances:
+        if not isinstance(instance, dict) or not isinstance(instance.get("healthy"), bool):
+            return False
+        if instance["healthy"]:
+            return False
+    return True
+
+
+def query_all_instances_unhealthy(http_pool_manager, params: CheckParams) -> bool:
+    """Query the public Coordinator status endpoint once; failures never imply all-unhealthy."""
+    try:
+        coordinator_ip = resolve_coordinator_ip(params)
+        if not coordinator_ip:
+            return False
+        host_port = format_address(coordinator_ip, params.coordinator_obs_port)
+        http_prefix = "https" if params.with_cert else "http"
+        headers = {}
+        if params.management_api_key:
+            headers[MGMT_API_KEY_HEADER] = params.management_api_key
+        response = http_pool_manager.request(
+            "GET",
+            f"{http_prefix}://{host_port}/instances",
+            headers=headers,
+        )
+        if response.status >= 400:
+            logging.warning("Coordinator instance status query failed with HTTP %s", response.status)
+            return False
+        payload = json.loads(response.data.decode("utf-8"))
+    except Exception:
+        logging.warning("Failed to query or parse Coordinator instance status", exc_info=True)
+        return False
+    return instances_are_all_unhealthy(payload)
+
+
+def wait_for_all_instances_unhealthy(
+    http_pool_manager,
+    params: CheckParams,
+    duration_seconds: int,
+    poll_interval_seconds: int = INSTANCE_STATUS_POLL_INTERVAL,
+    required_consecutive_results: int = INSTANCE_STATUS_UNHEALTHY_THRESHOLD,
+) -> bool:
+    """Require consecutive all-unhealthy results before reporting an instance failure."""
+    deadline = time.monotonic() + duration_seconds
+    consecutive_unhealthy_results = 0
+    while True:
+        if query_all_instances_unhealthy(http_pool_manager, params):
+            consecutive_unhealthy_results += 1
+            if consecutive_unhealthy_results >= required_consecutive_results:
+                return True
+        else:
+            consecutive_unhealthy_results = 0
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(poll_interval_seconds, remaining))
+
+
 def restart_service(namespace: str, boot_args):
     # graceful exit
     logging.info("Start to retain logs and restart service")
@@ -362,7 +448,7 @@ def record_docker_fault_and_exit(params: CheckParams, observation: str) -> None:
         f"observation: {observation}, "
         f"coordinator_ip: {params.coordinator_ip}, "
         f"coordinator_port: {params.coordinator_port}, "
-        f"coordinator_manage_port: {params.coordinator_manage_port}"
+        f"coordinator_obs_port: {params.coordinator_obs_port}"
     )
     sys.exit(1)
 
@@ -416,20 +502,23 @@ def main():
 
     try:
         coordinator_api_config = user_config["motor_coordinator_config"]["api_config"]
-        metric_port = coordinator_api_config["coordinator_api_mgmt_port"]
+        obs_port = coordinator_api_config["coordinator_obs_port"]
         infer_port = coordinator_api_config["coordinator_api_infer_port"]
     except Exception:
-        metric_port = 1027
+        obs_port = 1027
         infer_port = 1025
+
+    management_api_key = load_management_api_key(user_config, user_config_path)
 
     params = CheckParams(
         with_cert=(cert_context is not None),
         model_name=model_name,
         input_content=input_content,
         coordinator_port=str(infer_port),
-        coordinator_manage_port=str(metric_port),
+        coordinator_obs_port=str(obs_port),
         namespace=user_config["motor_deploy_config"]["job_id"],
         coordinator_ip=coordinator_ip,
+        management_api_key=management_api_key,
     )
     docker_only = is_docker_only(params)
 
@@ -451,8 +540,8 @@ def main():
     logging.info(
         f"Starting monitoring service with {where}, "
         f"model_name: {params.model_name}, coordinator_port: "
-        f"{params.coordinator_port}, coordinator_manage_port: "
-        f"{params.coordinator_manage_port}"
+        f"{params.coordinator_port}, coordinator_obs_port: "
+        f"{params.coordinator_obs_port}"
     )
 
     restart_hint = "" if docker_only else ", restart service!"
@@ -468,13 +557,15 @@ def main():
         max_retry_time -= 1
         observation = ""
         while True:
-            time.sleep(10)
             logging.info(f"Start to monitor service, getting metrics with interval {probe_interval}s...")
             last_success_count, last_failed_count, last_running_count = get_metrics_values(
                 http_pool_manager, params, "request_success_total", "request_failed_total", "num_requests_running"
             )
 
-            time.sleep(probe_interval)
+            if wait_for_all_instances_unhealthy(http_pool_manager, params, probe_interval):
+                observation = "All Coordinator instances are unhealthy"
+                logging.error(f"{observation}{restart_hint}")
+                break
 
             logging.info("Start to examine service status...")
             # Check if metrics are available by trying to get one metric value

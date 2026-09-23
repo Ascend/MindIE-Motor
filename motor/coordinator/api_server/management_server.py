@@ -28,8 +28,6 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 
 from motor.common.resources.http_msg_spec import EventType, ExternalInsEventMsg, InsEventMsg
-from motor.common.resources.instance import InsStatus
-
 from motor.common.http.cert_util import CertUtil
 from motor.common.logger import get_logger
 from motor.common.logger.rate_limited_logger import RateLimitedLogger
@@ -42,6 +40,7 @@ from motor.coordinator.scheduler.runtime.scheduler_server import AsyncSchedulerS
 from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
 from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
 from motor.coordinator.domain.instance_manager import InstanceIdConflictError, InstanceManager, TYPE_MGMT
+from motor.coordinator.domain.instance_status import build_instance_status_response
 from motor.coordinator.domain.probe import (
     DaemonLivenessProvider,
     LivenessProbe,
@@ -120,65 +119,6 @@ def _build_ok_response(message: str) -> dict[str, str]:
 
 def _build_readiness_response(message: str, ready: bool) -> dict[str, Any]:
     return {"status": "ok", "message": message, "ready": ready}
-
-
-_CB_CLOSED_VIEW = {
-    "state": "closed",
-    "trip_count": 0,
-    "failure_count": 0,
-    "current_timeout": 0.0,
-}
-
-
-def _controller_status_value(instance: Any) -> str:
-    status = instance.status
-    return status.value if hasattr(status, "value") else str(status)
-
-
-def _circuit_breaker_view(state: Any | None) -> dict[str, Any]:
-    if state is None:
-        return dict(_CB_CLOSED_VIEW)
-    return {
-        "state": state.state,
-        "trip_count": state.trip_count,
-        "failure_count": state.failure_count,
-        "current_timeout": state.current_timeout,
-    }
-
-
-def _summarize_instance(
-    instance: Any,
-    *,
-    pool: str | None = None,
-    circuit_breaker: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    endpoints: list[dict[str, Any]] = []
-    for pod_eps in (instance.endpoints or {}).values():
-        for ep in (pod_eps or {}).values():
-            endpoints.append(
-                {
-                    "id": ep.id,
-                    "ip": ep.ip,
-                    "business_port": str(ep.business_port),
-                    "headless": bool(getattr(ep, "headless", False)),
-                }
-            )
-    pool_name = pool if pool is not None else "unknown"
-    cb_view = circuit_breaker or dict(_CB_CLOSED_VIEW)
-    status = _controller_status_value(instance)
-    role = instance.role.value if hasattr(instance.role, "value") else instance.role
-    healthy = pool_name == "available" and status == InsStatus.ACTIVE.value and cb_view.get("state") == "closed"
-    return {
-        "id": instance.id,
-        "role": role,
-        "job_name": instance.job_name,
-        "model_name": instance.model_name,
-        "status": status,
-        "pool": pool_name,
-        "healthy": healthy,
-        "circuit_breaker": cb_view,
-        "endpoints": endpoints,
-    }
 
 
 INSTANCE_REFRESH = "instance_refresh"
@@ -441,11 +381,6 @@ class ManagementServer(BaseCoordinatorServer):
         if not secrets.compare_digest(api_key.encode("utf-8"), self._mgmt_api_key.encode("utf-8")):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid management API key")
 
-    def _instance_circuit_breaker_view(self, instance_id: int) -> dict[str, Any]:
-        manager = getattr(self._control_plane, "circuit_breaker_manager", None)
-        state = manager.get(instance_id) if manager is not None else None
-        return _circuit_breaker_view(state)
-
     def _log_configuration(self) -> None:
         super()._log_configuration()
         logger.info(
@@ -560,17 +495,10 @@ class ManagementServer(BaseCoordinatorServer):
         @self.management_app.get("/instances")
         async def list_instances(request: Request):
             self._verify_mgmt_api_key(request)
-            tracked = await self._instance_manager.snapshot_instances()
-            summaries = [
-                _summarize_instance(
-                    inst,
-                    pool=self._instance_manager.get_tracked_instance_pool(inst.id),
-                    circuit_breaker=self._instance_circuit_breaker_view(inst.id),
-                )
-                for inst in tracked
-            ]
-            summaries.sort(key=lambda item: (item.get("role") or "", item.get("id") or 0))
-            return {"count": len(summaries), "instances": summaries}
+            return await build_instance_status_response(
+                self._instance_manager,
+                self._control_plane.circuit_breaker_manager,
+            )
 
         @self.management_app.post("/instances/refresh", response_model=RequestResponse)
         @self.timeout_handler()

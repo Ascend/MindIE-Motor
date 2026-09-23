@@ -16,17 +16,18 @@ tooling in the future.
 """
 
 import asyncio
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from motor.common.logger import get_logger
 from motor.common.http.cert_util import CertUtil
 from motor.common.utils.net import format_address
-from motor.config.coordinator import CoordinatorConfig
+from motor.config.coordinator import CoordinatorConfig, MGMT_API_KEY_HEADER
 from motor.coordinator.api_server.base_server import BaseCoordinatorServer
 from motor.coordinator.api_server.app_builder import AppBuilder
 from motor.coordinator.metrics.metrics_collector import MetricsCollector
@@ -71,6 +72,8 @@ class ObservabilityServer(BaseCoordinatorServer):
         super().__init__(config)
         self._daemon_pid = daemon_pid
         self._obs_ssl_config = self.coordinator_config.mgmt_tls_config
+        self._mgmt_api_key_config = self.coordinator_config.mgmt_api_key_config
+        self._mgmt_api_key = self._load_mgmt_api_key()
 
         # Connect to the scheduler the same way Inference/Mgmt servers do, so the
         # client subscribes to the scheduler's instance-change pub and keeps a live view.
@@ -106,6 +109,21 @@ class ObservabilityServer(BaseCoordinatorServer):
             await self._scheduler_connection.disconnect()
 
     def _register_routes(self):
+        @self.observability_app.get("/instances")
+        async def list_instances(request: Request):
+            self._verify_mgmt_api_key(request)
+            client = self._scheduler_connection.get_client()
+            if client is None:
+                raise HTTPException(status_code=503, detail="Coordinator control plane is unavailable")
+            try:
+                instance_status = await client.get_instance_status()
+            except Exception as e:
+                logger.warning("Failed to fetch instance status from management process: %s", e)
+                instance_status = None
+            if instance_status is None:
+                raise HTTPException(status_code=503, detail="Coordinator instance status is unavailable")
+            return instance_status
+
         @self.observability_app.get("/metrics")
         async def get_metrics(request: Request):
             metrics_type = request.query_params.get("type", "full")
@@ -168,3 +186,24 @@ class ObservabilityServer(BaseCoordinatorServer):
 
     def _apply_config_changes(self, new_config: CoordinatorConfig) -> None:
         self._obs_ssl_config = new_config.mgmt_tls_config
+        new_mgmt_api_key_config = new_config.mgmt_api_key_config
+        new_mgmt_api_key = new_mgmt_api_key_config.load_api_key() if new_mgmt_api_key_config.enable_api_key else ""
+        self._mgmt_api_key_config = new_mgmt_api_key_config
+        self._mgmt_api_key = new_mgmt_api_key
+
+    def _load_mgmt_api_key(self) -> str:
+        if not self._mgmt_api_key_config.enable_api_key:
+            return ""
+        return self._mgmt_api_key_config.load_api_key()
+
+    def _verify_mgmt_api_key(self, request: Request) -> None:
+        if not self._mgmt_api_key_config.enable_api_key:
+            return
+        api_key = request.headers.get(MGMT_API_KEY_HEADER)
+        if not api_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Missing {MGMT_API_KEY_HEADER} header",
+            )
+        if not secrets.compare_digest(api_key.encode("utf-8"), self._mgmt_api_key.encode("utf-8")):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid management API key")

@@ -1541,6 +1541,18 @@ class AsyncSchedulerClient:
             logger.error("Failed to get available instances: %s", response.error)
         return {}
 
+    async def get_instance_status(self) -> dict[str, Any] | None:
+        """Fetch the authoritative all-pool instance status from the Mgmt process."""
+        request = SchedulerRequest(
+            request_type=SchedulerRequestType.GET_INSTANCE_STATUS,
+            request_id=self._next_request_id(),
+            data={},
+        )
+        response = await self._transport.send_request(request)
+        if response and response.response_type == SchedulerResponseType.SUCCESS:
+            return response.data
+        return None
+
     def _roles_from_cache(self) -> set[PDRole]:
         return {
             role
