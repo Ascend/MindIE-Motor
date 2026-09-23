@@ -63,9 +63,9 @@ SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用�
 
 | 典型场景 | 目录 | 说明 |
 | --- | --- | --- |
-| GLM 5.1 / A3 1P1D | `examples/infer_engines/sglang/models/glm5.1/A3/` | GLM 5.1 PD 分离参考；更多典配见 [SGLang GLM 5.1 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_1) |
-| GLM 5.2 / A3 1P1D | `examples/infer_engines/sglang/models/glm5.2/A3/` | GLM 5.2 PD 分离参考；更多典配见 [SGLang GLM 5.2 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_2) |
-| Qwen3-8B / A2 | `examples/infer_engines/sglang/models/qwen_8b/A2/` | 资源占用较小，适合打通流程；更多典配见 [SGLang Qwen3-8B Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/qwen3_8b) |
+| GLM 5.1 / Atlas 800I A3超节点服务器 1P1D | `examples/infer_engines/sglang/models/glm5.1/A3/` | GLM 5.1 PD 分离参考；更多典配见 [SGLang GLM 5.1 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_1) |
+| GLM 5.2 / Atlas 800I A3超节点服务器 1P1D | `examples/infer_engines/sglang/models/glm5.2/A3/` | GLM 5.2 PD 分离参考；更多典配见 [SGLang GLM 5.2 Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/glm_5_2) |
+| Qwen3-8B / Atlas 800I A2推理服务器 | `examples/infer_engines/sglang/models/qwen_8b/A2/` | 资源占用较小，适合打通流程；更多典配见 [SGLang Qwen3-8B Best Practice](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/best-practices/qwen3_8b) |
 | 更多模型 | `examples/infer_engines/sglang/` | 根目录及子目录下的 `user_config.json` / `env.json` |
 
 每个典配目录需包含：
@@ -136,7 +136,7 @@ SGLang 目前 **没有** vLLM 侧的脚本自动转换工具，请直接选用�
 
 ## 服务部署与验证
 
-以下操作在 K8s master 节点执行。以 GLM 5.1 A3 典配为例。
+以下操作在 K8s master 节点执行。以 GLM 5.1 Atlas 800I A3超节点服务器 典配为例。
 
 ### 拉起服务
 
@@ -322,9 +322,9 @@ examples/
         ├── user_config.json          # 通用模板
         ├── env.json
         ├── models/
-        │   └── glm5.1/A3/            # GLM 5.1 A3 参考典配
+        │   └── glm5.1/A3/            # GLM 5.1 Atlas 800I A3超节点服务器 参考典配
         └── pd_hybrid/
-            └── deepseek_v4_flash/A3/ # deepseek-v4-flash A3 混部参考典配
+            └── deepseek_v4_flash/A3/ # deepseek-v4-flash Atlas 800I A3超节点服务器 混部参考典配
 ```
 
 - 部署工具说明见 `examples/deployer/README.md`。

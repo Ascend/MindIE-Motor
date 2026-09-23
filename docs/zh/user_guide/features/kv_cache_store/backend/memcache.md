@@ -20,7 +20,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
 
 | 约束维度 | 要求 |
 |----------|------|
-| 硬件 | 支持 Atlas 800I A2 推理服务器、Atlas 850 超节点服务器、Atlas 800I A3 超节点服务器。 |
+| 硬件 | 支持 Atlas 800I A2推理服务器、Ascend 950PR系列产品、Atlas 800I A3超节点服务器。 |
 | 部署场景 | 仅支持 PD 分离部署场景。 |
 | 引擎 | 仅支持 vLLM 推理引擎。 |
 | 特性互斥 | <ul><li>请勿将 `"backend"` 配置为 `"ucm"`，UCM 不通过 `AscendStoreConnector` 的 backend 机制接入。</li><li>`AscendStoreConnector` 与 `kv_cache_store_config` 必须配置一致，且均为 `"memcache"`。</li><li>`MooncakeConnectorV1` / `MooncakeHybridConnector` 等属于 P/D 实时传输层，与 MemCache 池化后端不是同一层配置，切勿混淆。</li></ul> |
@@ -66,7 +66,7 @@ MemCache 在每个 P/D 引擎节点上通过 LocalService 进程管理 DRAM 池�
     | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
     |--------|------|----------|-----------|--------|------|
     | backend | 字符串 | "memcache" | 必填 | — | 指定后端类型为 memcache |
-    | local_service_mode | 字符串 | "inprocess" / "standalone"`| 选填 | <ul><li>Atlas 800I A2推理服务器/Atlas 850超节点服务器：inprocess；</li><li>Atlas 800I A3超节点服务器：standalone</li></ul> | LocalService 部署模式 |
+    | local_service_mode | 字符串 | "inprocess" / "standalone"`| 选填 | <ul><li>Atlas 800I A2推理服务器/Ascend 950PR系列产品：inprocess；</li><li>Atlas 800I A3超节点服务器：standalone</li></ul> | LocalService 部署模式 |
     | target_job_id| 字符串 | 目标服务的 `motor_deploy_config.job_id` | 选填 | — | 复用其他推理服务的 kv_store。未配置、与自身 `job_id` 相同、或目标 kv_store 不可用时，在本 namespace 新建 kv_store。详见 [KV 池化 README — 多套服务共享 kv_store](../README.md#step3) |
 
     >[!NOTE] 说明

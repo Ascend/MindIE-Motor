@@ -107,17 +107,17 @@ examples/deployer/config_tool/
     根据场景，执行以下命令直接生成Motor配置：
 
     ```bash
-    # PD分离、Atlas 800I A2 推理服务器
+    # PD分离、Atlas 800I A2推理服务器
     python3 deploy.py --mode general_config  --deploy-scenario separate --hardware-type A2
-    # PD混部、Atlas 800I A2 推理服务器
+    # PD混部、Atlas 800I A2推理服务器
     python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A2
-    # PD分离、Atlas 800I A3 超节点服务器
+    # PD分离、Atlas 800I A3超节点服务器
     python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A3
-    # PD混部、Atlas 800I A3 超节点服务器
+    # PD混部、Atlas 800I A3超节点服务器
     python3 deploy.py --mode general_config  --deploy-scenario hybrid --hardware-type A3
-    # PD分离、Atlas 850 超节点服务器
+    # PD分离、Ascend 950PR系列产品
     python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A5
-    # PD混部、Atlas 850 超节点服务器
+    # PD混部、Ascend 950PR系列产品
     python3 deploy.py --mode general_config --deploy-scenario hybrid --hardware-type A5
     ```
 

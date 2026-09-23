@@ -20,7 +20,7 @@ ScaleP2D故障恢复工作原理大致分为以下四步：
 | 硬件 |<ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>|
 | 部署场景 | <ul><li>仅支持PD分离服务部署，且故障对象必须是Decode实例。</li><li>不适用于Prefill实例故障、故障级别未达到L4的场景。</li><li>不适用于Ascend950 PR + DT异构组网：停掉P后释放的是PR节点，D无法调度到这些节点上恢复。建议该组网下将`enable_scale_p2d`设为`false`。更多详细信息请参见PD分离服务部署中的[PD异构（PR / DT）调度](../../deployment/k8s/pd_disaggregation_deployment.md#pd-异构pr--dt调度)。</li></ul> |
 | 软件依赖 | 依赖MindCluster的优先级调度与实例强制删除能力，MindCluster版本须为26.1.0及以上。 |
-| 其他限制 | <ul><li>须至少保留1个P实例；可用节点不足时恢复失败。</li><li>默认各P实例节点数相同。</li><li>当前P实例选择按实例状态（优先`initial`）和实例ID排序，后续可能接入负载/优先级模型。</li><li>在Atlas 800I A2上，隔离类故障码（如`CardNetworkUnhealthy`）对Prefill / Decode走NmSuicide整实例停止，不走ScaleP2D。</li></ul> |
+| 其他限制 | <ul><li>须至少保留1个P实例；可用节点不足时恢复失败。</li><li>默认各P实例节点数相同。</li><li>当前P实例选择按实例状态（优先`initial`）和实例ID排序，后续可能接入负载/优先级模型。</li><li>在Atlas 800I A2推理服务器上，隔离类故障码（如`CardNetworkUnhealthy`）对Prefill / Decode走NmSuicide整实例停止，不走ScaleP2D。</li></ul> |
 
 ## 特性使用
 

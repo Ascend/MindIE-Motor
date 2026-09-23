@@ -57,7 +57,7 @@ flowchart LR
 
 ### 约束与限制
 
-- **硬件**：Atlas 800I A2 推理服务器已实测（`hardware_type=800I_A2`）；Atlas 800 A3 等基于 vLLM Render 链路的机型理论上兼容，需按本文档验证。
+- **硬件**：Atlas 800I A2推理服务器已实测（`hardware_type=800I_A2`）；Atlas 800I A3超节点服务器等基于 vLLM Render 链路的机型理论上兼容，需按本文档验证。
 - **部署场景**：需要 **vLLM Render sidecar**（token-only 链路）与 PD 分离部署；`render_config.enable=true` 是本特性的硬前提。
 - **引擎**：仅支持 **vLLM**（依赖其 Render token-only 接口）。SGLang 当前为 POC 支持，未覆盖本特性的 Render 链路，暂不支持。
 - **特性互斥**：

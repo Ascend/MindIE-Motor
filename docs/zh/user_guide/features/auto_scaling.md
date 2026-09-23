@@ -34,8 +34,8 @@
 
 ## 支持的产品型号
 
-- Atlas 800I A2 推理服务器
-- Atlas 800I A3 超节点服务器
+- Atlas 800I A2推理服务器
+- Atlas 800I A3超节点服务器
 
 ## 前置条件
 
@@ -490,6 +490,6 @@ kubectl get hpa -n {namespace} --watch
 
 ## 参考文档
 
-- [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
+- [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
 - [Metrics 可观测性指标设计文档](../../design/metrics.md) — MindIE Motor Metrics 子系统架构与指标说明
 - [监控接口](../api/metrics_interfaces.md) — MindIE Motor `/metrics` 端点使用说明

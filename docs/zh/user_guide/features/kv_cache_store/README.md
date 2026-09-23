@@ -38,7 +38,7 @@ MindIE Motor 使用 `MultiConnector` 组合 P/D 传输 Connector 与 Store Conne
 
 | 约束维度 | 要求 |
 |----------|------|
-| 硬件 | MemCache 后端的 `local_service_mode` 默认值与硬件类型相关。<ul><li>Atlas 800I A2 推理服务器和 Atlas 850 超节点服务器：默认为`inprocess`</li><li>Atlas 800I A3 超节点服务器：默认为 `standalone`</li></ul> |
+| 硬件 | MemCache 后端的 `local_service_mode` 默认值与硬件类型相关。<ul><li>Atlas 800I A2推理服务器和Ascend 950PR系列产品：默认为`inprocess`</li><li>Atlas 800I A3超节点服务器：默认为 `standalone`</li></ul> |
 | 部署场景 | 仅支持 PD 分离部署场景。 |
 | 引擎 | 仅支持 vLLM 推理引擎。 |
 | 特性互斥 | <ul><li>禁止配置 `"backend": "ucm"`，UCM 不通过 `AscendStoreConnector` 的 backend 机制。</li><li>`AscendStoreConnector` 和 `kv_cache_store_config` 中的 `backend` 必须保持一致。</li><li>`MooncakeConnectorV1` 等负责 P/D 实时传输，与 `AscendStoreConnector` 的 Mooncake Backend 不是同一层配置，不可混淆。</li></ul> |
@@ -194,7 +194,7 @@ P/D传输Connector选型如下表所示：
 
     | 配置项 | 类型 | 取值范围 | 必填/选填 | 默认值 | 说明 |
     | --- | --- | --- | --- | --- | --- |
-    | `local_service_mode` | string | `inprocess`、`standalone` | 选填 | Atlas 800I A2/850：`inprocess`；Atlas 800I A3：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
+    | `local_service_mode` | string | `inprocess`、`standalone` | 选填 | Atlas 800I A2推理服务器/Ascend 950PR系列产品：`inprocess`；Atlas 800I A3超节点服务器：`standalone` | LocalService 部署模式：`inprocess`（与 vLLM 同进程）或 `standalone`（独立进程） |
 
     > [!NOTE] 说明
     > 所有 MemCache 内部配置项（DRAM 池大小、通信协议、MetaService 端口、SSD 缓存、UBSIO 参数等）均由用户在对应模式的 `mmc-local-inprocess.conf` 或 `mmc-local-standalone.conf` 中管理，无需在 `user_config.json` 中配置。请参见 [MemCache 后端文档](./backend/memcache.md)。

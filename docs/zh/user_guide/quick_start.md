@@ -1,6 +1,6 @@
 # 快速入门
 
-本文档通过**简单快速**的部署案例（以Atlas 800I A2 推理服务器、Qwen3-8B模型、P/D 实例各一个的场景为例）指导开发者体验基于MindIE Motor的PD分离服务部署流程。
+本文档通过**简单快速**的部署案例（以Atlas 800I A2推理服务器、Qwen3-8B模型、P/D 实例各一个的场景为例）指导开发者体验基于MindIE Motor的PD分离服务部署流程。
 
 如需详细的PD分离部署指导，请参考 [PD 分离部署指导](./deployment/k8s/pd_disaggregation_deployment.md)。
 
@@ -10,7 +10,7 @@
 
 ## 环境要求
 
-- 支持 Atlas 800I A2 推理服务器、Atlas 800I A3 超节点服务器和Atlas 850 超节点服务器。
+- 支持 Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器和Ascend 950PR系列产品。
 - 至少需要 1 台已完成 [环境准备](./environment_preparation.md) 的服务器。
 
 ## 模型下载
@@ -52,9 +52,9 @@ chmod -R 755 /mnt/weight
      examples/infer_engines/vllm/models/<模型名>/<硬件型号>/
      ```
 
-     例如 DeepSeek-V4-Flash 在 Atlas 800I A2 推理服务器 上的典配目录为 `examples/infer_engines/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
+     例如 DeepSeek-V4-Flash 在 Atlas 800I A2推理服务器 上的典配目录为 `examples/infer_engines/vllm/models/deepseek_v4_flash/A2/`（内含 `user_config.json` 与 `env.json`）。选用典配后，按实际场景修改镜像名（`image_name`）、权重路径（`weight_mount_path` / `model`）等少量字段即可部署。当前已提供的模型目录包括 `deepseek_v3.1`、`deepseek_v4_flash`、`deepseek_v4_pro`、`glm_5`、`glm_5.1`、`qwen_235b` 等，硬件子目录为 `A2` / `A3` / `A5`（以实际目录为准）。
 
-   - **自动生成**：可将 vllm-ascend 社区部署脚本一键转换为 Motor 配置。将社区脚本粘贴到 `examples/deployer/config_tool/` 下对应模板后，在 `examples/deployer/` 执行（以 PD 分离、Atlas 800I A2 推理服务器 为例）：
+   - **自动生成**：可将 vllm-ascend 社区部署脚本一键转换为 Motor 配置。将社区脚本粘贴到 `examples/deployer/config_tool/` 下对应模板后，在 `examples/deployer/` 执行（以 PD 分离、Atlas 800I A2推理服务器 为例）：
 
      ```bash
      python3 deploy.py --mode general_config --deploy-scenario separate --hardware-type A2
@@ -90,7 +90,7 @@ chmod -R 755 /mnt/weight
            "d_pod_npu_num": 4,
            "image_name": "xxxxxxx 镜像名称。例如：mindie-motor-vllm:dev-26.1.0.B050-800I-A2-py311-Ubuntu24.04-lts-aarch64",
            "job_id": "mindie-motor",
-           "hardware_type": "xxxxxx 硬件类型。Atlas 800I A2 推理服务器：800I_A2， Atlas 800I A3 超节点服务器：800I_A3",
+           "hardware_type": "xxxxxx 硬件类型。Atlas 800I A2推理服务器：800I_A2， Atlas 800I A3超节点服务器：800I_A3",
            "weight_mount_path": "xxxxxx 权重文件路径。例如：/mnt/weight/qwen3_8B"
          },
          "motor_controller_config": {},

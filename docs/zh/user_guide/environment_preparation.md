@@ -432,7 +432,8 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
    >[!NOTE]说明
    >当前脚本会将k8s集群的master节点也打上worker节点的标签，即默认master节点也可以用于部署推理服务，如需调整，用户可自行修改打标签脚本。
 
-1. Atlas 800I A2 推理服务器。
+    <!-- npu="910b" id1 -->
+1. Atlas 800I A2推理服务器。
 
    ```bash
     master=$(kubectl get nodes  | grep  master| grep -v NAME| awk '{print $1}')
@@ -461,8 +462,10 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
       kubectl label nodes $i  nodeDEnable=on                            --overwrite=true
     done
    ```
+    <!-- end id1 -->
 
-2. Atlas 800I A3 超节点服务器。
+    <!-- npu="A3" id2 -->
+2. Atlas 800I A3超节点服务器。
 
    ```bash
     master=$(kubectl get nodes  | grep  master| grep -v NAME| awk '{print $1}')
@@ -491,11 +494,13 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
       kubectl label nodes $i  nodeDEnable=on                           --overwrite=true
     done
    ```
+    <!-- end id2 -->
 
-3. Atlas 850 Server（普通集群）。
+    <!-- npu="950" id3 -->
+3. Ascend 950PR&DT系列产品（普通集群）。
 
    >[!NOTE]说明
-   >`accelerator-type` 需按实际形态填写。普通集群使用 `850-Atlas-8p-8`；若为 850 超节点请改为 `850-SuperPod-Atlas-8`；950 超节点请改为 `950-SuperPod-Atlas-8`。详细请参考[mindcluster标签设置](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md#%E5%88%9B%E5%BB%BA%E8%8A%82%E7%82%B9%E6%A0%87%E7%AD%BE)。
+   >`accelerator-type` 需按实际形态填写。普通集群使用 `850-Atlas-8p-8`；若为Atlas 850超节点服务器请改为 `850-SuperPod-Atlas-8`；Atlas 950超节点服务器请改为 `950-SuperPod-Atlas-8`。详细请参考[mindcluster标签设置](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.0.0/docs/zh/scheduling/installation_guide/03_installation/manual_installation/01_preparing_for_installation.md#%E5%88%9B%E5%BB%BA%E8%8A%82%E7%82%B9%E6%A0%87%E7%AD%BE)。
 
    ```bash
     master=$(kubectl get nodes  | grep  master| grep -v NAME| awk '{print $1}')
@@ -524,3 +529,4 @@ MindIE Motor 依赖 Kubernetes 提供的容器编排能力，包括 Pod 部署�
       kubectl label nodes $i  nodeDEnable=on                           --overwrite=true
     done
    ```
+    <!-- end id3 -->

@@ -800,7 +800,7 @@ python $EXAMPLES_PATH/deployer/startup/set_env_docker.py --configmap_path $CONFI
 
 模型：GLM5.1
 
-硬件信息：Atlas 800I A2 推理服务器 8机
+硬件信息：Atlas 800I A2推理服务器 8机
 
 user_config.json内容如下
 

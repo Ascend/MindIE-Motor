@@ -36,7 +36,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
 | 约束维度 | 要求 |
 |----------|------|
-| 硬件 | <ul><li>Atlas 800I A2 推理服务器</li><li>Atlas 800I A3 超节点服务器</li></ul> |
+| 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul> |
 | 部署场景 | 自动扩缩容要求 `infer_service_set` 部署模式（由 Infer Operator 创建 HPA）。<ul><li>PD 分离：为 `prefill`、`decode` 角色分别配置 `scalingPolicy`；</li><li>PD 混部：为 `union` 角色配置，且**必须显式指定 `metric`**——该角色没有默认指标，缺失时配置生成直接报错；</li><li>`multi_deployment`、`single_container`：不支持本文自动扩缩容，实例数仅可手动调整。</li></ul>Controller、Coordinator 不在本例的扩缩容范围内。 |
 | 软件依赖 | Infer Operator ≥ 26.1.0，且须支持角色级 `scalingPolicy`；指标接入可选择 External Metrics Adaptor 或 Prometheus + Prometheus Adapter。 |
 | 其他限制 | <ul><li>缩容存在稳定窗口（默认 5 分钟），避免负载短暂波动导致频繁扩缩；</li><li>扩容的新实例没有 KV Cache 缓存，Prefix Cache 特性会逐步重建缓存，因此新实例的推理性能可能出现小幅度劣化并在一段时间后恢复；</li><li>建议 `minReplicas` 至少设为 1，避免缩容到 0 导致服务完全不可用；</li><li>Counter 类型指标（如 token 总数）不会因 /metrics 请求而重置，建议优先使用 Gauge 类型指标或 MindIE Motor 计算的 TPS 指标作为扩缩容依据；</li><li>若使用不带 `type` 参数的 /metrics 端点（默认 `full`），HPA 获取到的是全局聚合值；按 Prefill/Decode 角色独立扩缩容时，External Metrics Adaptor 需分别请求 `type=role` 视图，Prometheus 路径需在抓取或 PromQL 中按角色聚合。</li></ul> |
@@ -74,39 +74,37 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
 2. 部署指标接入（二选一）。
 
-   两条路径最终都向 HPA 提供 Kubernetes External Metrics API。部署完成后按[步骤 2.3](#step-2-3)核对指标可用，再配置[步骤 3](#step-3)的 `scalingPolicy`。
+   两条路径最终都向 HPA 提供 Kubernetes External Metrics API。部署完成后按[步骤 3](#step-2-3)核对指标可用，再配置[步骤 4](#step-3)的 `scalingPolicy`。
 
    <a id="step-2-1"></a>
 
-   #### 2.1 External Metrics Adaptor
+   - **External Metrics Adaptor**
 
-   链路：`Coordinator → External Metrics Adaptor → External Metrics API`
+      链路：`Coordinator → External Metrics Adaptor → External Metrics API`
 
-   External Metrics Adaptor 周期性从 Coordinator 拉取 Prometheus 格式指标并注册为 External 指标。可使用 [mindcluster-deploy 提供的适配器示例](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor) 直接部署，也可按需自行实现。
+      External Metrics Adaptor 周期性从 Coordinator 拉取 Prometheus 格式指标并注册为 External 指标。可使用 [mindcluster-deploy 提供的适配器示例](https://gitcode.com/Ascend/mindcluster-deploy/tree/master/infer-operator-metrics-adaptor) 直接部署，也可按需自行实现。
 
-   配置要点：
+      配置要点：
 
-   - 正确配置 Coordinator metrics 端点地址与抓取间隔。
-   - 按 Prefill/Decode 角色独立扩缩容时，Adaptor 应分别请求 `/metrics?type=role&role=prefill` 与 `/metrics?type=role&role=decode`（Infer Operator 生成的 HPA 会携带角色标签）。
+      - 正确配置 Coordinator metrics 端点地址与抓取间隔。
+      - 按 Prefill/Decode 角色独立扩缩容时，Adaptor 应分别请求 `/metrics?type=role&role=prefill` 与 `/metrics?type=role&role=decode`（Infer Operator 生成的 HPA 会携带角色标签）。
 
    <a id="step-2-2"></a>
 
-   #### 2.2 Prometheus + Prometheus Adapter
+   - **Prometheus + Prometheus Adapter**
 
-   链路：`Coordinator → Prometheus → Prometheus Adapter → External Metrics API`
+      链路：`Coordinator → Prometheus → Prometheus Adapter → External Metrics API`
 
-   1. Prometheus 从 Coordinator 的 `/metrics` 端点采集指标。
-   2. Prometheus Adapter 根据 `externalRules` 中的 `metricsQuery` 查询 Prometheus，并将结果注册到 `external.metrics.k8s.io`。
-   3. HPA 通过 `type: External` 与 `external.metric.name` 消费该指标。
+      1. Prometheus 从 Coordinator 的 `/metrics` 端点采集指标。
+      2. Prometheus Adapter 根据 `externalRules` 中的 `metricsQuery` 查询 Prometheus，并将结果注册到 `external.metrics.k8s.io`。
+      3. HPA 通过 `type: External` 与 `external.metric.name` 消费该指标。
 
-   `metricsQuery` 是组合多个指标或做时间窗口聚合的配置位置；Motor deployer 只透传 HPA 的 `scalingPolicy`，不参与 PromQL 计算。Adapter 暴露的指标名须与[步骤 3](#step-3) `external.metric.name` 一致；若 HPA 配置了 `kubernetes_namespace` 或 `infer_huawei_com_inferservice_name` selector，Prometheus 时序及 Adapter 规则必须保留对应标签。
+      `metricsQuery` 是组合多个指标或做时间窗口聚合的配置位置；Motor deployer 只透传 HPA 的 `scalingPolicy`，不参与 PromQL 计算。Adapter 暴露的指标名须与[步骤 4](#step-3) `external.metric.name` 一致；若 HPA 配置了 `kubernetes_namespace` 或 `infer_huawei_com_inferservice_name` selector，Prometheus 时序及 Adapter 规则必须保留对应标签。
 
-   <a id="step-2-3"></a>
-
-   #### 2.3 验证指标可用
+3. <a id="step-2-3"></a>使用以下方法验证指标是否可用。
 
    1. 用 HPA 实际要使用的指标名查询 External Metrics API。指标名如何选取见[应填哪个外部指标名](#应填哪个外部指标名)。
-   2. 将查询结果与 Coordinator `/metrics` 上的值核对；返回非空且数值合理后再进入[步骤 3](#step-3)。
+   2. 将查询结果与 Coordinator `/metrics` 上的值核对；返回非空且数值合理后再进入[步骤 4](#step-3)。
    3. External Metrics Adaptor 路径：查询须带 `labelSelector`（InferService 名与角色标签），缺省 selector 时 Adaptor 无法判定 InferService：
 
       ```bash
@@ -119,13 +117,11 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
       kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/{metric-name}"
       ```
 
-3. 配置弹性扩缩容策略。
-
-   <a id="step-3"></a>
+4. <a id="step-3"></a>配置弹性扩缩容策略。
 
    在 examples/deployer/yaml_template/infer_service_template.yaml 中，为角色配置块添加 `scalingPolicy` 字段（PD 分离用 `prefill`/`decode`，PD 混部用 `union`）。
 
-   以下示例基于 External Metrics Adaptor 路径：Prefill 按排队请求数扩缩容、Decode 按生成 token 速率扩缩容。Prometheus Adapter 路径需在 `external.metric` 下增加 `selector.matchLabels`（见[步骤 2.2](#step-2-2)），示例如下：
+   以下示例基于 External Metrics Adaptor 路径：Prefill 按排队请求数扩缩容、Decode 按生成 token 速率扩缩容。Prometheus Adapter 路径需在 `external.metric` 下增加 `selector.matchLabels`（见[Prometheus + Prometheus Adapter](#step-2-2)），示例如下：
 
    ```yaml
    metrics:
@@ -207,7 +203,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
    | scalingPolicy.spec.minReplicas | 缩容下限，实例数不会低于此值 | 正整数 |
    | scalingPolicy.spec.maxReplicas | 扩容上限，实例数不会超过此值 | 正整数，且 ≥ `minReplicas` |
    | scalingPolicy.spec.metrics[].type | 指标类型 | External（由 External Metrics Adaptor 或 Prometheus Adapter 提供） |
-   | scalingPolicy.spec.metrics[].external.metric.name | 外部指标名称 | 需与所选指标接入组件暴露的指标名一致；验证方法见[步骤 2.3](#step-2-3) |
+   | scalingPolicy.spec.metrics[].external.metric.name | 外部指标名称 | 需与所选指标接入组件暴露的指标名一致；验证方法见[步骤 3](#step-2-3) |
    | scalingPolicy.spec.metrics[].external.metric.selector | 指标选择器 | 仅 Prometheus Adapter 场景需要；External Metrics Adaptor 场景无需新增 |
    | scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.kubernetes_namespace | 指标所属命名空间 | 仅 Prometheus Adapter 场景配置；模板包含此标签时，deployer 生成 YAML 会将其更新为 `motor_deploy_config.job_id` |
    | scalingPolicy.spec.metrics[].external.metric.selector.matchLabels.infer_huawei_com_inferservice_name | 指标所属 InferService | 仅 Prometheus Adapter 场景配置；模板包含此标签时，deployer 按 `<InferServiceSet 名>-0` 自动更新 |
@@ -216,7 +212,7 @@ Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，
 
    HPA 由 Infer Operator 托管：直接 `kubectl patch` 修改 HPA 会被 Operator 回滚，须通过模板 `scalingPolicy` 或 `user_config.json` 的 `scaling_policy` 修改。
 
-4. 生成并应用扩缩容配置。
+5. 生成并应用扩缩容配置。
 
    <a id="step-4"></a>
 

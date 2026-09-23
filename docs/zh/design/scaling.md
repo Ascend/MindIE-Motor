@@ -15,7 +15,7 @@ MindIE Motor 提供两种实例扩缩容方式，满足不同运维场景的需�
 
 核心机制：Infer Operator 为推理实例创建 HPA（Horizontal Pod Autoscaler）资源，HPA 通过 External Metrics Adaptor 或 Prometheus Adapter 获取 MindIE Motor 汇聚的引擎级负载指标（如排队请求数、TPS、KV Cache 使用率等），按用户配置的扩缩容阈值自动调整实例副本数。
 
-支持 Atlas 800I A2 推理服务器 / Atlas 800I A3 超节点服务器，前置依赖 Infer Operator 部署，以及 External Metrics Adaptor 或 Prometheus Adapter 之一（用于将 Motor 指标转换为 Kubernetes External Metrics）。
+支持 Atlas 800I A2推理服务器 / Atlas 800I A3超节点服务器，前置依赖 Infer Operator 部署，以及 External Metrics Adaptor 或 Prometheus Adapter 之一（用于将 Motor 指标转换为 Kubernetes External Metrics）。
 
 ### 1.2 工作原理
 
@@ -317,7 +317,7 @@ flowchart TD
 
 ## 3. 参考文档
 
-- [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
+- [配置基于负载的弹性扩缩容](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Infer Operator 弹性扩缩容策略配置指南
 - [Metrics 可观测性指标设计文档](./metrics.md) — MindIE Motor Metrics 子系统架构与指标说明
 - [指标接口](../user_guide/api/metrics_interfaces.md) — MindIE Motor `/metrics` 端点使用说明
 - [手动扩缩容用户手册](../user_guide/features/manual_scaling.md) — 手动扩缩容操作步骤与常见问题

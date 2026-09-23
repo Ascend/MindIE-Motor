@@ -6,7 +6,7 @@
 
 适用范围说明：
 
-- 适用机器：Atlas 800I A2 推理服务器、Atlas 800I A3 超节点服务器、Atlas 900I A3 机器、Atlas 850E A2/A3/A5
+- 适用机器：Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器、Ascend 950PR&DT系列产品
 - 适用场景：大EP出现挂死等服务不可用且不可自恢复的场景
 - 部署形态：Kubernetes 或 **Docker-only（无 K8s）**。Docker-only 不能依赖 `kubectl get pods`，需在启动命令中增加 `--coordinator-ip`；端口仍从 `user_config.json` 读取。
 
@@ -14,7 +14,7 @@
 
 ### 前提条件
 
-- **硬件**：Atlas 800I A3 推理服务器
+- **硬件**：Atlas 800I A3推理服务器
 - **软件**:
   - NPU 驱动和固件已安装 (`npu-smi info` 可正常显示)
   - Kubernetes 集群就绪 (`kubectl get Node -A`)

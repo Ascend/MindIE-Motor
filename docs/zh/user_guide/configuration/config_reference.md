@@ -36,13 +36,11 @@ motor_deploy_config字段为部署与资源相关配置，由deploy.py读取并�
 | d_pod_npu_num | int | 单个D实例Pod占用的NPU卡数，每个Pod最大为16卡 |
 | image_name | string | 默认推理镜像（需包含MindIE Motor与vLLM等运行环境）。Controller / Coordinator / Prefill / Decode 未单独配置 `image_name` 时使用此值。 |
 | job_id | string | 部署任务名，同时作为K8s命名空间使用，例如"mindie-motor" |
-| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2 推理服务器：`800I_A2`</li><li>Atlas 800I A3 超节点服务器：`800I_A3`</li><li>A5（Ascend950）：`Ascend950`（PR / DT 机型均填此值）</li></ul> A2/A3 的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（A2、A3 的 accelerator 相同，须用 accelerator-type 区分产品形态）；A5 为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 A2 型号（如 800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策 |
+| hardware_type | string | 硬件类型：<ul><li>Atlas 800I A2推理服务器：`800I_A2`</li><li>Atlas 800I A3超节点服务器：`800I_A3`</li><li>Ascend 950PR&DT系列产品：`Ascend950`</li></ul> Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器 的 `nodeSelector` 含 `accelerator: huawei-Ascend910` 与 `accelerator-type`（Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器 的 accelerator 相同，须用 accelerator-type 区分产品形态）；Ascend 950PR&DT系列产品 为 `accelerator: huawei-npu`，不带 accelerator-type。<br>**主备/容错场景建议必填**：未配置时默认按未知硬件处理，linkdown（CardNetworkUnhealthy）故障会按 legacy 行为存储并可能压制 ENGINE_DEAD 故障、阻塞引擎重启；配置为非 Atlas 800I A2推理服务器（如 800I_A3）后，链路误报将作为噪声被忽略，不再影响容错决策 |
 | weight_mount_path | string | 宿主机上模型权重挂载路径，容器内 `model` 路径需与此挂载路径一致，例如 `"/mnt/weight/"`。使用标准 deployer 时，该路径会同时挂载到 P/D（或 Union）引擎和 Coordinator；开启 `context_budget_mode: "on"` 后，Coordinator 也必须能够读取 `engine_config.model` 中的 tokenizer 文件。该字段使用 `hostPath`，因此 Coordinator 可能调度到的节点均需存在该路径，或通过 `coordinator_node_selector` 限制其调度范围。 |
 | tls_config | object | 可选；TLS相关配置，包含mgmt_tls_config、infer_tls_config、etcd_tls_config、grpc_tls_config和observability_tls_config五类 |
 
----
-
-## <a id="additional-labels-annotations"></a>组件级Kubernetes Labels和Annotations
+## 组件级Kubernetes Labels和Annotations<a id="additional-labels-annotations"></a>
 
 以下组件配置支持在顶层通过 `additional_labels` 和 `additional_annotations` 为生成的Kubernetes资源添加自定义元数据：
 
@@ -773,7 +771,7 @@ motor_engine_union_config字段用于**PD混部场景**，配置同一类 union 
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
 
 ## motor_engine_prefill_config/motor_engine_decode_config
 
@@ -1005,7 +1003,7 @@ Prefill 和 Decode 分别生成能力快照、独立通过 FtGate，不要求两
 | port_allocator_config.remote_check_timeout_seconds |float|远程检测超时时间，默认值：1.0。|
 | port_allocator_config.bind_host |string|绑定主机地址，默认值：0.0.0.0。|
 | **kv_cache_store_config字段** |-|-|
-| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#standalone-模式独立-store-进程)。 |
+| kv_cache_store_config | object | KV 池化配置（`enable`/`backend`/`store_mode`/`global_segment_size`/`local_buffer_size`/`store_http_port` 等），未配置则不启用池化。完整字段与默认值见 [KV 池化 README — kv_cache_store_config](../features/kv_cache_store/README.md)；Mooncake `standalone` 部署模式说明见 [Mooncake 后端文档](../features/kv_cache_store/backend/mooncake.md#场景二standalone-模式配置)。 |
 
 PD模式下P与D**各自独立配置**"health_check_config"，未配置时使用代码默认值。
 

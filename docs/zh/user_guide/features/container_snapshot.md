@@ -15,7 +15,7 @@
 
 | 维度 | 约束内容 |
 |------|----------|
-| 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>Atlas 800I A2 推理服务器容器的快照只能在相同芯片代际的机器间共享。 |
+| 硬件 | <ul><li>Atlas 800I A2推理服务器</li><li>Atlas 800I A3超节点服务器</li></ul>Atlas 800I A2推理服务器容器的快照只能在相同芯片代际的机器间共享。 |
 | 自动管理模式 | 仅支持使用 containerd 容器运行时的默认 K8s + MindCluster CRD 部署模式。 |
 | 推理引擎 | 必须支持 Device 快照保存与恢复，并提供 suspend 和 resume 接口，目前仅支持vLLM。 |
 | 特性互斥 | 启用容器快照后不支持Node Manager配置热更新。 |
@@ -74,7 +74,7 @@
 
       当命令输出的版本号为 `3.19` 时，表示安装成功。
 
-2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见《[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md)》。
+2. 在默认 K8s + MindCluster 部署模式下，确认集群使用 containerd，并已安装支持容器快照的 MindCluster 组件及相关 CRD。MindCluster 侧的环境要求、组件部署和使用流程请参见《[容器快照部署及使用](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/10_infer_operator_best_practice/06_container_snapshot_usage.md)》。
 3. 准备保存容器 Host 快照镜像和运行时模型权重所需的宿主机存储目录。需要跨节点恢复时，请确保目标节点能够访问这些目录。
 4. 使用其他部署模式时，需由部署平台或用户准备 Host 侧 CRIU 工具，例如GRUS、快照元数据文件及相应的容器挂载。
 

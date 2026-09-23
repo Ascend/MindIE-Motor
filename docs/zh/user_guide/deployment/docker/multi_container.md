@@ -333,7 +333,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/exampl
      --controller-ip <controller管理服务所在服务器的 IP地址>
    ```
 
-   `--devices` 为创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，将按硬件类型挂载模板中的全部卡（A2/A5 为 0–7，A3 为 0–15）。
+   `--devices` 为创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，将按硬件类型挂载模板中的全部卡（Atlas 800I A2推理服务器/Ascend 950PR系列产品 为 0–7，Atlas 800I A3超节点服务器 为 0–15）。
 
    **开启池化时**，以上 Prefill / Decode 两条命令同样需要加上 `--kv-store-ip` 参数：
 
@@ -351,7 +351,7 @@ python3 /path/to/examples/deployer/docker_deploy.py --config_dir /path/to/exampl
    | `--container-name` | 容器名，可自定义。 |
    | `--role` | 容器中运行服务的角色。管理服务填 `coordinator,controller`，推理服务填 `prefill` 或 `decode`，池化填 `kv_store`。 |
    | `--instance-name` | 推理实例名，如 `p0`、`d0`。用于标识当前容器启动的服务归属于哪一个实例。同一实例的多个容器使用相同名称，详见上文「容器数量规划」。 |
-   | `--devices` | 创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，按硬件类型挂载模板中的全部卡（A2/A5 为 0–7，A3 为 0–15）。管理面和 kv_store 不要传。 |
+   | `--devices` | 创建服务的容器挂载的 NPU 卡号（例如：0，1，2，3）。不填写时，按硬件类型挂载模板中的全部卡（Atlas 800I A2推理服务器/Ascend 950PR系列产品 为 0–7，Atlas 800I A3超节点服务器 为 0–15）。管理面和 kv_store 不要传。 |
    | `--pod-ip` | **当前服务器**的 IP。 |
    | `--nic-name` | **当前服务器**对应 `--pod-ip` 的网卡名。 |
    | `--coordinator-ip` / `--controller-ip` | Coordinator / Controller 所在服务器的 IP。部署推理服务、kv_store 时填写。分容器部署管理服务时，Controller 填写 `--coordinator-ip`，Coordinator 填写 `--controller-ip`。 |

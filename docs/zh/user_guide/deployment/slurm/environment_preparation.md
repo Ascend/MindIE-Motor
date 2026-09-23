@@ -159,7 +159,7 @@ ls /dev/davinci[0-9]*
 
 ### 4.2 配置 slurm.conf
 
-所有节点同一份 `/etc/slurm/slurm.conf`。以下示例以 **Atlas 800I A2（单机 8 卡）** 为例，其它机型按实际卡数修改 `Gres=npu:` 与 `gres.conf`：
+所有节点同一份 `/etc/slurm/slurm.conf`。以下示例以 **Atlas 800I A2推理服务器（单机 8 卡）** 为例，其它机型按实际卡数修改 `Gres=npu:` 与 `gres.conf`：
 
 ```text
 ClusterName=slurm-cluster

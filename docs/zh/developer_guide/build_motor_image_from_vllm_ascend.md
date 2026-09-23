@@ -19,7 +19,7 @@
 make build-pymotor-image
 ```
 
-该命令默认使用 Atlas 800I A2 推理服务器 Ubuntu 基础镜像，构建 `linux/arm64` 镜像并通过 `type=docker` 加载为 `mindie-motor-vllm:master`。Atlas 800I A3 超节点服务器 开发环境可以执行：
+该命令默认使用 Atlas 800I A2推理服务器 Ubuntu 基础镜像，构建 `linux/arm64` 镜像并通过 `type=docker` 加载为 `mindie-motor-vllm:master`。Atlas 800I A3超节点服务器 开发环境可以执行：
 
 ```bash
 make build-pymotor-image \
@@ -65,10 +65,10 @@ make build-pymotor-image \
 
 | 硬件 | 操作系统 | `BASE_IMAGE` |
 |---|---|---|
-| Atlas 800I A2 推理服务器 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` |
-| Atlas 800I A3 超节点服务器 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3` |
-| Atlas 800I A2 推理服务器 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-openeuler` |
-| Atlas 800I A3 超节点服务器 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler` |
+| Atlas 800I A2推理服务器 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0` |
+| Atlas 800I A3超节点服务器 | Ubuntu | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3` |
+| Atlas 800I A2推理服务器 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-openeuler` |
+| Atlas 800I A3超节点服务器 | openEuler | `quay.nju.edu.cn/ascend/vllm-ascend:v0.18.0-a3-openeuler` |
 
 Dockerfile 的构建过程包括：
 

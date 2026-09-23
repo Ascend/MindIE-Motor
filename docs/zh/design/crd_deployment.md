@@ -45,7 +45,7 @@ deploy.py 的 `generate_yaml_infer_service_set` 根据 user_config 对模板进�
 - **env**：ROLE、JOB_NAME、CONTROLLER_SERVICE、COORDINATOR_SERVICE 等
   - prefill/decode 的 **JOB_NAME**：deploy.py 设置初值为 `{namespace}-{InferServiceSet.metadata.name}`；pod 启动后 CRD 会注入 `INFER_SERVICE_INDEX`、`INSTANCE_INDEX`，boot.sh 中会据此刷新为 `{namespace}-{InferServiceSet_name}-{INFER_SERVICE_INDEX}-p/d{INSTANCE_INDEX}`
 - **NPU 资源**：根据 `p_pod_npu_num`、`d_pod_npu_num` 配置
-- **nodeSelector**：A2/A3 为 `accelerator: huawei-Ascend910` + `accelerator-type`（A2、A3 的 accelerator 相同，须用 accelerator-type 区分，取值由集群节点标签解析）；A5（`Ascend950`）为 `accelerator: huawei-npu`，不带 accelerator-type，可选 `huawei.com/npu.chip.name`
+- **nodeSelector**：Atlas 800I A2推理服务器/Atlas 800I A3超节点服务器 为 `accelerator: huawei-Ascend910` + `accelerator-type`（Atlas 800I A2推理服务器、Atlas 800I A3超节点服务器 的 accelerator 相同，须用 accelerator-type 区分，取值由集群节点标签解析）；Ascend 950PR系列产品（`Ascend950`）为 `accelerator: huawei-npu`，不带 accelerator-type，可选 `huawei.com/npu.chip.name`
 - **RBAC**：ServiceAccount 的 `metadata.namespace`、ClusterRoleBinding 的 `metadata.namespace` 及 `subjects[].namespace` 更新为部署 namespace
 
 ### ConfigMap 策略
