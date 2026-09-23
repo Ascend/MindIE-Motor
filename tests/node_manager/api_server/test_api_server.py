@@ -98,7 +98,7 @@ def test_engine_ft_apply_guard_and_finalize_routes(client):
         )
         finalize_response = client.post(
             "/node-manager/fault-tolerance/finalize",
-            json={"request_id": "request", "retired_endpoint_ids": [1], "commit": True, "dp_master_rank": 2},
+            json={"request_id": "request", "retired_endpoint_ids": [], "commit": True, "dp_master_rank": 2},
         )
 
     assert apply_response.status_code == 200
@@ -106,7 +106,7 @@ def test_engine_ft_apply_guard_and_finalize_routes(client):
     assert guard_response.status_code == 200
     guard.assert_called_once_with("request", 45)
     assert finalize_response.json() == {"status": "committed"}
-    finalize.assert_called_once_with("request", [1], True, 2)
+    finalize.assert_called_once_with("request", [], True, 2)
 
 
 @pytest.mark.parametrize(

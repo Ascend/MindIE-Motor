@@ -176,7 +176,7 @@ async def fault_tolerance_finalize(request: Request):
     """Commit local retired ranks, or abort the local scale-down guard."""
     payload, manager, _ = await _ft_request_context(request, "finalize")
     commit = payload.get("commit") is True
-    retired_endpoint_ids = _require_int_list(payload, "retired_endpoint_ids", allow_empty=not commit)
+    retired_endpoint_ids = _require_int_list(payload, "retired_endpoint_ids", allow_empty=True)
     dp_master_rank = payload.get("dp_master_rank")
     if commit and (not isinstance(dp_master_rank, int) or isinstance(dp_master_rank, bool) or dp_master_rank < 0):
         raise HTTPException(

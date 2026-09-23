@@ -109,9 +109,10 @@ One scale-down attempt uses this NodeManager contract:
    the engine. The engine consumes this port only when the current master is removed; stable-master rounds do not
    recreate TCPStore. When the proxy is enabled, config validation reserves the full base-port through
    `base-port + dp_size - 1` interval. This keeps consecutive masters from reusing a still-bound store port.
-3. Owner-matched `finalize {request_id, commit, dp_master_rank}` prevents an old request releasing a new guard. Commit
-   retires local ids from heartbeat, status, fault and PID-death reporting, then moves virtual inference to the local
-   endpoint matching the committed master rank; abort only releases the guard.
+3. Owner-matched `finalize {request_id, retired_endpoint_ids, commit, dp_master_rank}` prevents an old request releasing
+   a new guard. `retired_endpoint_ids` is Pod-local and may be empty on commit when another Pod owns every retired rank.
+   Commit retires local ids from heartbeat, status, fault and PID-death reporting, then moves virtual inference to the
+   local endpoint matching the committed master rank; abort only releases the guard.
 4. Lease expiry restores local suicide arbitration if finalize is lost. A fully drained committed Pod may keep
    reporting an empty heartbeat when Pod recycling is disabled.
 
