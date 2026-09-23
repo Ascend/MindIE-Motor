@@ -1153,7 +1153,9 @@ class TestCoordinatorServerAdvanced:
             response = self.mgmt_client.post("/instances/refresh", json=body)
 
         assert response.status_code == 200
-        query_model_ids.assert_called_once_with("192.168.1.10:8100", self.coordinator_config.infer_tls_config)
+        assert query_model_ids.call_count == 2
+        query_model_ids.assert_any_call("192.168.1.10:8100", self.coordinator_config.infer_tls_config)
+        query_model_ids.assert_any_call("192.168.1.20:8200", self.coordinator_config.infer_tls_config)
         assert self.refresh_calls
         event, instances = self.refresh_calls[-1]
         assert event.value == "set"
@@ -1210,9 +1212,85 @@ class TestCoordinatorServerAdvanced:
         assert response.status_code == 400
         assert "provide model_name explicitly" in response.json()["detail"]
 
-    def test_refresh_instances_external_model_resolution_skips_unreachable_endpoint(self):
+    @pytest.mark.parametrize("event_name", ["set", "add"])
+    def test_refresh_instances_external_rejects_only_instance_with_unreachable_dp(self, event_name):
+        body = {
+            "event": event_name,
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [
+                        {"id": 0, "address": "127.0.0.1:8100"},
+                        {"id": 1, "address": "127.0.0.2:8100"},
+                    ],
+                },
+                {
+                    "id": 2,
+                    "role": "decode",
+                    "endpoints": [{"id": 0, "address": "127.0.0.3:8200"}],
+                },
+            ],
+        }
+
+        def query_model_ids(address, _tls_config):
+            if address == "127.0.0.2:8100":
+                raise OSError("connection refused")
+            return ["test-model"]
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            side_effect=query_model_ids,
+        ) as query_model_ids:
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 200
+        assert query_model_ids.call_count == 3
+        assert self.refresh_calls
+        _, instances = self.refresh_calls[-1]
+        assert [instance.id for instance in instances] == [2]
+        assert instances[0].model_name == "test-model"
+
+    def test_refresh_instances_external_rejects_mismatched_dp_model_when_omitted(self):
+        """Omitted model_name requires every reachable instance DP to advertise the same model."""
         body = {
             "event": "set",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [
+                        {"id": 0, "address": "127.0.0.1:8100"},
+                        {"id": 1, "address": "127.0.0.2:8100"},
+                    ],
+                },
+                {
+                    "id": 2,
+                    "role": "decode",
+                    "endpoints": [{"id": 0, "address": "127.0.0.3:8200"}],
+                },
+            ],
+        }
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            side_effect=lambda address, _tls_config: {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["Qwen3-8B"],
+                "127.0.0.3:8200": ["wrong-model"],
+            }[address],
+        ):
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 400
+        assert "does not match previously probed" in response.json()["detail"]
+        assert not self.refresh_calls
+
+    def test_refresh_instances_external_rejects_wrong_model_when_provided(self):
+        """Provided model_name must be advertised by every reachable DP, not only the first."""
+        body = {
+            "event": "add",
+            "model_name": "Qwen3-8B",
             "instances": [
                 {
                     "id": 1,
@@ -1227,7 +1305,39 @@ class TestCoordinatorServerAdvanced:
 
         with patch(
             "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
-            side_effect=[OSError("connection refused"), ["test-model"]],
+            side_effect=lambda address, _tls_config: {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["other-model"],
+            }[address],
+        ):
+            response = self.mgmt_client.post("/instances/refresh", json=body)
+
+        assert response.status_code == 400
+        assert "expected 'Qwen3-8B'" in response.json()["detail"]
+        assert not self.refresh_calls
+
+    def test_refresh_instances_external_accepts_provided_model_on_all_dps(self):
+        body = {
+            "event": "set",
+            "model_name": "Qwen3-8B",
+            "instances": [
+                {
+                    "id": 1,
+                    "role": "prefill",
+                    "endpoints": [
+                        {"id": 0, "address": "127.0.0.1:8100"},
+                        {"id": 1, "address": "127.0.0.2:8100"},
+                    ],
+                }
+            ],
+        }
+
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            side_effect=lambda address, _tls_config: {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["qwen3-8b"],
+            }[address],
         ) as query_model_ids:
             response = self.mgmt_client.post("/instances/refresh", json=body)
 
@@ -1235,7 +1345,7 @@ class TestCoordinatorServerAdvanced:
         assert query_model_ids.call_count == 2
         assert self.refresh_calls
         _, instances = self.refresh_calls[-1]
-        assert instances[0].model_name == "test-model"
+        assert instances[0].model_name == "Qwen3-8B"
 
     def test_refresh_instances_rejects_mixed_controller_and_standalone_payload(self):
         body = {
@@ -1287,7 +1397,11 @@ class TestCoordinatorServerAdvanced:
             ],
         }
 
-        response = self.mgmt_client.post("/instances/refresh", json=body)
+        with patch(
+            "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+            return_value=["test-model"],
+        ):
+            response = self.mgmt_client.post("/instances/refresh", json=body)
 
         assert response.status_code == 200
         assert self.refresh_calls

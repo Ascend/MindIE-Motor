@@ -1,11 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # MindIE is licensed under Mulan PSL v2.
 
+from types import SimpleNamespace
+from threading import Barrier
+from unittest.mock import patch
+
 import pytest
 from pydantic import ValidationError
 
 from motor.common.resources.http_msg_spec import ExternalInsEventMsg
-from motor.coordinator.api_server.management_server import _is_standalone_instance_refresh
+from motor.coordinator.api_server.management_server import ManagementServer, _is_standalone_instance_refresh
 
 
 def _external_instance(**overrides):
@@ -328,3 +332,180 @@ def test_is_standalone_rejects_mixed_controller_and_standalone_shapes():
 
     with pytest.raises(ValueError, match="mixed controller and coordinator-standalone"):
         _is_standalone_instance_refresh(body)
+
+
+def _resolver():
+    return SimpleNamespace(coordinator_config=SimpleNamespace(infer_tls_config=None))
+
+
+def _multi_dp_message(**overrides):
+    message = {
+        "event": "set",
+        "instances": [
+            _external_instance(
+                endpoints=[
+                    {"id": 0, "address": "127.0.0.1:8100"},
+                    {"id": 1, "address": "127.0.0.2:8100"},
+                ]
+            ),
+            _external_instance(
+                id=2,
+                role="decode",
+                endpoints=[{"id": 0, "address": "127.0.0.3:8200"}],
+            ),
+        ],
+    }
+    message.update(overrides)
+    return ExternalInsEventMsg.model_validate(message)
+
+
+def _model_ids_by_address(mapping):
+    def query(address, _tls_config):
+        result = mapping[address]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    return query
+
+
+def test_resolve_omitted_model_name_requires_all_dps_to_match():
+    event_msg = _multi_dp_message()
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=_model_ids_by_address(
+            {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["Qwen3-8B"],
+                "127.0.0.3:8200": ["wrong-model"],
+            }
+        ),
+    ):
+        with pytest.raises(ValueError, match="does not match previously probed"):
+            ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+
+def test_resolve_omitted_model_name_uses_shared_single_model():
+    event_msg = _multi_dp_message()
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=_model_ids_by_address(
+            {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["qwen3-8b"],
+                "127.0.0.3:8200": ["Qwen3-8B"],
+            }
+        ),
+    ) as query_model_ids:
+        resolved, rejected_indexes = ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+    assert resolved == "Qwen3-8B"
+    assert rejected_indexes == set()
+    assert query_model_ids.call_count == 3
+
+
+def test_resolve_provided_model_name_rejects_wrong_later_dp():
+    event_msg = _multi_dp_message(event="add", model_name="Qwen3-8B")
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=_model_ids_by_address(
+            {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["other-model"],
+                "127.0.0.3:8200": ["Qwen3-8B"],
+            }
+        ),
+    ):
+        with pytest.raises(ValueError, match="expected 'Qwen3-8B'"):
+            ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+
+def test_resolve_provided_model_name_accepts_all_matching_dps():
+    event_msg = _multi_dp_message(event="add", model_name="Qwen3-8B")
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=_model_ids_by_address(
+            {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": ["qwen3-8b"],
+                "127.0.0.3:8200": ["Qwen3-8B", "extra-model"],
+            }
+        ),
+    ) as query_model_ids:
+        resolved, rejected_indexes = ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+    assert resolved == ""
+    assert rejected_indexes == set()
+    assert query_model_ids.call_count == 3
+
+
+def test_resolve_del_with_provided_model_name_skips_probe():
+    event_msg = _multi_dp_message(event="del", model_name="Qwen3-8B")
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+    ) as query_model_ids:
+        resolved, rejected_indexes = ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+    assert resolved == ""
+    assert rejected_indexes == set()
+    query_model_ids.assert_not_called()
+
+
+def test_resolve_set_probes_dps_concurrently():
+    event_msg = _multi_dp_message()
+    all_workers_started = Barrier(3, timeout=1)
+
+    def query_model_ids(_address, _tls_config):
+        all_workers_started.wait()
+        return ["Qwen3-8B"]
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=query_model_ids,
+    ):
+        resolved, rejected_indexes = ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+    assert resolved == "Qwen3-8B"
+    assert rejected_indexes == set()
+
+
+@pytest.mark.parametrize("event", ["set", "add"])
+def test_resolve_rejects_only_instance_with_unreachable_dp(event):
+    event_msg = _multi_dp_message(event=event)
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=_model_ids_by_address(
+            {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": OSError("connection refused"),
+                "127.0.0.3:8200": ["Qwen3-8B"],
+            }
+        ),
+    ):
+        resolved, rejected_indexes = ManagementServer._resolve_external_model_name(_resolver(), event_msg)
+
+    assert resolved == "Qwen3-8B"
+    assert rejected_indexes == {0}
+
+
+def test_resolve_fails_when_every_instance_has_unreachable_dp():
+    event_msg = _multi_dp_message()
+
+    with patch(
+        "motor.coordinator.api_server.management_server.NativeEngineApiClient.query_model_ids",
+        side_effect=_model_ids_by_address(
+            {
+                "127.0.0.1:8100": ["Qwen3-8B"],
+                "127.0.0.2:8100": OSError("connection refused"),
+                "127.0.0.3:8200": OSError("connection refused"),
+            }
+        ),
+    ):
+        with pytest.raises(ValueError, match="no fully reachable instances remain"):
+            ManagementServer._resolve_external_model_name(_resolver(), event_msg)

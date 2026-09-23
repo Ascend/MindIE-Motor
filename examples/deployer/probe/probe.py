@@ -84,8 +84,10 @@ ROLE_CONFIG_PATHS = {
     "kv_store": ConfigKey.MOTOR_KV_STORE.value,
 }
 
-# HTTP request timeout
+# HTTP request timeout. controller/coordinator/engine keep this value.
 TIMEOUT = 600
+# kv-store MetaService /livez only.
+KV_STORE_HTTP_TIMEOUT = 3
 
 
 def format_address(host, port):
@@ -196,7 +198,7 @@ def get_probe_url(role, probe_type):
     return PROBE_URLS[probe_type]
 
 
-def send_http_request(ip, port, url_path, config):
+def send_http_request(ip, port, url_path, config, timeout=TIMEOUT):
     """
     Send HTTP request to the probe endpoint.
 
@@ -225,12 +227,12 @@ def send_http_request(ip, port, url_path, config):
 
             client = httpx.Client(
                 headers=headers,
-                timeout=TIMEOUT,
+                timeout=timeout,
                 cert=(cert_file, key_file, password if password else None),
                 verify=ca_file,
             )
         else:
-            client = httpx.Client(headers=headers, timeout=TIMEOUT)
+            client = httpx.Client(headers=headers, timeout=timeout)
         response = client.get(url)
         if response.status_code == 200:
             return True
@@ -302,8 +304,16 @@ def main():
             sys.exit(1)
 
     url_path = get_probe_url(role, probe_type)
-    logger.info("Executing %s probe for %s at %s%s", probe_type, role, format_address(pod_ip, port), url_path)
-    success = send_http_request(pod_ip, port, url_path, config)
+    http_timeout = KV_STORE_HTTP_TIMEOUT if role == KV_STORE_ROLE else TIMEOUT
+    logger.info(
+        "Executing %s probe for %s at %s%s timeout=%s",
+        probe_type,
+        role,
+        format_address(pod_ip, port),
+        url_path,
+        http_timeout,
+    )
+    success = send_http_request(pod_ip, port, url_path, config, http_timeout)
 
     if success:
         logger.info("Service is %s", probe_type)

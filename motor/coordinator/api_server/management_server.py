@@ -27,7 +27,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 
-from motor.common.resources.http_msg_spec import ExternalInsEventMsg, InsEventMsg
+from motor.common.resources.http_msg_spec import EventType, ExternalInsEventMsg, InsEventMsg
 from motor.common.resources.instance import InsStatus
 
 from motor.common.http.cert_util import CertUtil
@@ -56,6 +56,7 @@ logger = get_logger(__name__)
 _rl = RateLimitedLogger(logger)
 _READINESS_REMAINS_READY_KEY = "coordinator.readiness.remains_ready"
 _RENDER_HEALTH_RETRY_SECONDS = 5.0
+_EXTERNAL_MODEL_PROBE_WORKERS = 8
 _RENDER_HEALTH_FAIL_THRESHOLD = 3
 
 
@@ -778,7 +779,7 @@ class ManagementServer(BaseCoordinatorServer):
     async def _parse_instance_event(self, body: Any) -> InsEventMsg:
         """Select InsEventMsg (Controller) vs ExternalInsEventMsg (coordinator-standalone).
 
-        Standalone model-name discovery uses blocking HTTP (requests, timeout=2s per endpoint).
+        Standalone model-name discovery/verification uses blocking HTTP (requests, timeout=2s per endpoint).
         That I/O is offloaded so /liveness, /readiness, and /instances stay responsive.
         """
         try:
@@ -803,7 +804,20 @@ class ManagementServer(BaseCoordinatorServer):
             external_msg = ExternalInsEventMsg.model_validate(body)
             aigw_model = self.coordinator_config.get_aigw_models() or {}
             # Segment 2: blocking /v1/models (requests, 2s/endpoint) runs in a worker thread.
-            resolved_model_name = await asyncio.to_thread(self._resolve_external_model_name, external_msg)
+            resolved_model_name, rejected_indexes = await asyncio.to_thread(
+                self._resolve_external_model_name,
+                external_msg,
+            )
+            if rejected_indexes:
+                external_msg = external_msg.model_copy(
+                    update={
+                        "instances": [
+                            instance
+                            for index, instance in enumerate(external_msg.instances)
+                            if index not in rejected_indexes
+                        ]
+                    }
+                )
             return external_msg.to_internal(str(aigw_model.get("id", "")), resolved_model_name)
         except Exception as standalone_error:
             body_keys = list(body.keys()) if isinstance(body, dict) else "not a dict"
@@ -817,30 +831,101 @@ class ManagementServer(BaseCoordinatorServer):
                 detail=f"Invalid request format: {str(standalone_error)}",
             ) from standalone_error
 
-    def _resolve_external_model_name(self, event_msg: ExternalInsEventMsg) -> str:
-        """Resolve an omitted model name from the first reachable native engine."""
-        if event_msg.model_name:
-            return ""
+    def _resolve_external_model_name(self, event_msg: ExternalInsEventMsg) -> tuple[str, set[int]]:
+        """Resolve/verify standalone model_name against every reachable instance DP.
+
+        SET/ADD probe all endpoints concurrently with a bounded worker pool. An omitted
+        model_name requires every reachable DP to advertise the same single model. A
+        provided model_name must appear on every reachable DP. If any DP is unreachable,
+        the whole instance is rejected while other fully reachable instances continue.
+        DEL keeps serial first-reachable discovery and skips probing when model_name is
+        already present.
+        """
+        expected = (event_msg.model_name or "").strip()
+        verify_all = event_msg.event in (EventType.SET, EventType.ADD)
+        if expected and not verify_all:
+            return "", set()
+
+        probe_targets = [
+            (instance_index, endpoint.address.strip())
+            for instance_index, instance in enumerate(event_msg.instances)
+            for endpoint in instance.endpoints
+        ]
+
+        def query_model_ids(target: tuple[int, str]) -> tuple[int, str, list[str], str]:
+            instance_index, address = target
+            try:
+                model_ids = NativeEngineApiClient.query_model_ids(
+                    address,
+                    self.coordinator_config.infer_tls_config,
+                )
+                return instance_index, address, model_ids, ""
+            except (OSError, RuntimeError, ValueError) as exc:
+                return instance_index, address, [], f"{address} ({exc})"
+
+        if verify_all and probe_targets:
+            max_workers = min(_EXTERNAL_MODEL_PROBE_WORKERS, len(probe_targets))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="model-probe") as executor:
+                probe_results = list(executor.map(query_model_ids, probe_targets))
+        else:
+            probe_results = list(map(query_model_ids, probe_targets))
+
+        rejected_indexes: set[int] = set()
+        if verify_all:
+            rejection_reasons: dict[int, list[str]] = {}
+            for instance_index, _address, _model_ids, probe_error in probe_results:
+                if not probe_error:
+                    continue
+                rejected_indexes.add(instance_index)
+                rejection_reasons.setdefault(instance_index, []).append(probe_error)
+            for instance_index, reasons in rejection_reasons.items():
+                instance = event_msg.instances[instance_index]
+                logger.warning(
+                    "Rejecting external instance because at least one DP is unreachable: "
+                    "instance_id=%s role=%s errors=%s",
+                    instance.id,
+                    instance.role.value,
+                    reasons,
+                )
+            if rejected_indexes and len(rejected_indexes) == len(event_msg.instances):
+                raise ValueError("no fully reachable instances remain after probing every DP")
 
         last_error = ""
-        for instance in event_msg.instances:
-            for endpoint in instance.endpoints:
-                address = endpoint.address.strip()
-                try:
-                    model_ids = NativeEngineApiClient.query_model_ids(
-                        address,
-                        self.coordinator_config.infer_tls_config,
-                    )
-                except (OSError, RuntimeError, ValueError) as exc:
-                    last_error = f"{address} ({exc})"
-                    continue
-                if len(model_ids) == 1:
-                    return model_ids[0]
-                if not model_ids:
-                    raise ValueError(f"{address}/v1/models returned no models; provide model_name explicitly")
+        resolved = ""
+        for instance_index, address, model_ids, probe_error in probe_results:
+            if probe_error:
+                last_error = probe_error
+                continue
+            if instance_index in rejected_indexes:
+                continue
+
+            if expected:
+                if not any(model_id.casefold() == expected.casefold() for model_id in model_ids):
+                    raise ValueError(f"{address}/v1/models serves {model_ids}, expected {expected!r}")
+                continue
+
+            if not model_ids:
+                raise ValueError(f"{address}/v1/models returned no models; provide model_name explicitly")
+            if len(model_ids) != 1:
                 raise ValueError(
                     f"{address}/v1/models serves multiple models {model_ids}; provide model_name explicitly"
                 )
+            found = model_ids[0]
+            if not resolved:
+                resolved = found
+                if not verify_all:
+                    return resolved, set()
+                continue
+            if found.casefold() != resolved.casefold():
+                raise ValueError(
+                    f"{address}/v1/models serves {found!r}, "
+                    f"which does not match previously probed {resolved!r}; "
+                    "all instances and DPs must share the same model_name"
+                )
 
+        if expected:
+            return "", rejected_indexes
+        if resolved:
+            return resolved, rejected_indexes
         hint = f"; last error: {last_error}" if last_error else ""
         raise ValueError(f"no reachable native engine /v1/models{hint}; provide model_name explicitly")

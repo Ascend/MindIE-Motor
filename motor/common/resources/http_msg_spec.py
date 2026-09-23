@@ -231,7 +231,9 @@ class ExternalInsEventMsg(BaseModel):
         min_length=1,
         description=(
             "The single served model. Optional in single-model deployments; "
-            "Coordinator resolves it from the first reachable engine /v1/models. "
+            "for set/add, Coordinator probes every instance DP /v1/models. "
+            "When omitted, all reachable DPs must advertise the same single model. "
+            "When provided, every reachable DP must serve this model_name. "
             "Required when any engine advertises multiple models."
         ),
     )
