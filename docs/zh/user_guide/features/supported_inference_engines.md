@@ -1,23 +1,28 @@
 # 支持的推理引擎
 
-## 引擎一览
+## 推理引擎说明
 
-MindIE Motor采用控制面（Controller/Coordinator）与数据面（推理引擎）解耦的架构，可对接多种大模型推理引擎。当前支持的引擎如下：
+MindIE Motor采用控制面（Controller/Coordinator）与数据面（推理引擎）解耦的架构，可对接多种大模型推理引擎，当前支持的推理引擎如下所示。
+
+**表 1** 支持的推理引擎
 
 | 推理引擎 | 支持状态 | 说明 |
 | --- | --- | --- |
-| **vLLM** | 已支持（推荐） | 配合 `vllm-ascend` 使用；文档与示例最完整，为当前主推引擎。 |
-| **SGLang** | 已支持（POC） | 可通过 `engine_type: sglang` 部署。部分高级能力与 vLLM 的覆盖范围可能不同，以对应特性文档与示例为准。 |
+| **vLLM** | 已支持（推荐） | vLLM是面向大模型在线服务的高吞吐推理引擎，以PagedAttention按页管理KV Cache，并用continuous batching持续合批不同长度的请求，从而在有限显存下提高并发与吞吐。 |
+| **SGLang** | 已支持（POC） | SGLang在多轮对话、Agent搜索、Few-shot等依赖前缀复用的场景中常能较好利用RadixAttention等机制。 |
 
-在 `user_config.json` 的 `motor_engine_prefill_config` / `motor_engine_decode_config`（或混部场景的 `motor_engine_union_config`）中设置 `engine_type`，即可选择底层引擎。`engine_config` 与引擎启动命令参数对应，转换方法见 [user_config 全量参数说明](../configuration/config_reference.md)。
+## 配置推理引擎
 
-## vLLM
+### 配置方法
 
-vLLM 是当前 MindIE Motor 推荐的底层推理引擎，已与控制面深度对接。
+修改user_config.json配置文件中`engine_type`参数，以及engine_config字段下的参数与对应引擎命令参数保持一致。
 
-### 配置 vLLM
+- PD分离服务部署：修改配置文件中motor_engine_prefill_config/motor_engine_decode_config字段中的`engine_type`参数，以及engine_config字段。
+- PD混部服务部署：修改配置文件中motor_engine_union_config字段中的`engine_type`参数，以及engine_config字段。
 
-通过 `engine_type` 指定 vLLM：
+### 配置vLLM推理引擎
+
+以motor_engine_prefill_config字段为例，通过"engine_type"参数指定"vllm"，"engine_config"字段下的参数与vLLM引擎命令保持一致，配置示例如下：
 
 ```json
 "motor_engine_prefill_config": {
@@ -25,19 +30,16 @@ vLLM 是当前 MindIE Motor 推荐的底层推理引擎，已与控制面深度�
   "engine_config": {
     "served_model_name": "qwen3-8B",
     "model": "/mnt/weight/qwen3_8B",
-    "tensor_parallel_size": 2,
-    ...
+    "tensor_parallel_size": 2
   }
 }
 ```
 
-## SGLang
+配置完成后，启动MindIE Motor服务，日志中应出现类似`engine_type: vllm`、`vLLM engine initialized successfully`等关键字，表示vLLM引擎对接成功。
 
-SGLang 在多轮对话、Agent 搜索、Few-shot 等依赖前缀复用的场景中，常能较好利用 RadixAttention 等机制。
+### 配置SGLang推理引擎
 
-**部署步骤**：K8s PD 分离请直接参考 [SGLang PD 分离服务部署指导](../deployment/k8s/pd_disaggregation_sglang.md)。示例典配见 `examples/infer_engines/sglang/`（如 `models/glm5.1/A3/`、`models/qwen_8b/A2/`）。
-
-### 配置 SGLang
+以motor_engine_prefill_config字段为例，通过"engine_type"参数指定"sglang"，"engine_config"字段下的参数与SGLang引擎命令保持一致，配置示例如下：
 
 ```json
 "motor_engine_prefill_config": {
@@ -45,14 +47,14 @@ SGLang 在多轮对话、Agent 搜索、Few-shot 等依赖前缀复用的场景�
   "engine_config": {
     "served-model-name": "qwen3-8B",
     "model-path": "/mnt/weight/Qwen3-8B",
-    "tp-size": 2,
-    ...
+    "tp-size": 2
   }
 }
 ```
 
-SGLang PD 分离时，bootstrap 端口按 Pod/NodeManager 维度配置在
-`engine_config.disaggregation_bootstrap_port`（也兼容原生 CLI 风格的
-`disaggregation-bootstrap-port`）。NodeManager 将该端口作为 `bootstrap_port` 注册元数据，
-并由 Coordinator 的 SGLang Adapter 用于 Prefill/Decode 对接；它与推理业务端口
-`endpoint_config.service_ports` 是不同端口。未配置该字段时不生成 bootstrap 元数据。
+>[!NOTE] 说明
+>
+>- 基于SGLang引擎框架的PD分离部署详情请参考[SGLang PD 分离服务部署指导](../deployment/k8s/pd_disaggregation_sglang.md)。典型示例配置请参见 `examples/infer_engines/sglang/` 目录（如 `models/glm5.1/A3/`、`models/qwen_8b/A2/`）。
+>- PD分离服务部署中使用SGLang引擎时，bootstrap端口按Pod/NodeManager维度配置在`engine_config.disaggregation_bootstrap_port`（也兼容原生CLI风格的`disaggregation-bootstrap-port`）。NodeManager将该端口作为`bootstrap_port`注册元数据，并由Coordinator的SGLang Adapter用于Prefill/Decode对接；它与推理业务端口`endpoint_config.service_ports`是不同端口。未配置该字段时不生成bootstrap元数据。
+
+配置完成后，启动MindIE Motor服务，日志中应出现类似`engine_type: sglang`、`SGLang engine initialized successfully`等关键字，表示SGLang引擎对接成功。
