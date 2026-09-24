@@ -8,17 +8,28 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import json
+import os
 import socket
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from motor.common.logger import get_logger
+from motor.common.utils.env import Env
 from motor.common.utils.net import detect_family, format_address, split_address
+from motor.common.utils.patch_check import safe_open
 from motor.config.coordinator import CoordinatorConfig
 from motor.config.controller import ControllerConfig
-from motor.config.node_manager import NodeManagerConfig
+from motor.config.node_manager import (
+    MOTOR_ENGINE_DECODE_CONFIG_KEY,
+    MOTOR_ENGINE_ENCODE_CONFIG_KEY,
+    MOTOR_ENGINE_PREFILL_CONFIG_KEY,
+    MOTOR_ENGINE_UNION_CONFIG_KEY,
+    NodeManagerConfig,
+)
 from motor.config.port_allocator_config import PortAllocatorConfig
+from motor.config.resolver import ConfigResolver, normalize_keys
 
 logger = get_logger(__name__)
 
@@ -175,46 +186,231 @@ def _parse_host_port(address: str, default_port: int) -> tuple[str, int]:
         return address, default_port
 
 
-def apply_coordinator_ports(config: CoordinatorConfig) -> None:
-    pac = config.port_allocator_config
+def _strip_endpoint_host(endpoint: str) -> str:
+    rest = endpoint.split("://", 1)[-1]
+    return rest.split("/", 1)[0]
+
+
+def _alloc_strategy(pac: PortAllocatorConfig, kind: str) -> str:
+    return kind if pac.enable else "config"
+
+
+def _maybe_strict(pac: PortAllocatorConfig, host: str, port: int, name: str, timeout: float) -> int:
     if not pac.enable:
+        return port
+    return PortAllocator.allocate_strict(host, port, name, timeout=timeout)
+
+
+def _maybe_auto(
+    pac: PortAllocatorConfig,
+    host: str,
+    port: int,
+    name: str,
+    scan_range: int,
+    timeout: float,
+    skip_ports: set[int] | None = None,
+) -> int:
+    if not pac.enable:
+        return port
+    return PortAllocator.allocate_auto(host, port, name, scan_range=scan_range, timeout=timeout, skip_ports=skip_ports)
+
+
+def _append_etcd(rows: list[PortRow], etcd) -> None:
+    if not etcd.enable_etcd_persistence:
+        return
+    rows.append(_row("etcd", etcd.etcd_host, etcd.etcd_port, "remote", "etcd persistence"))
+
+
+_ENGINE_SECTION_BY_ROLE = {
+    "encode": MOTOR_ENGINE_ENCODE_CONFIG_KEY,
+    "prefill": MOTOR_ENGINE_PREFILL_CONFIG_KEY,
+    "decode": MOTOR_ENGINE_DECODE_CONFIG_KEY,
+    "union": MOTOR_ENGINE_UNION_CONFIG_KEY,
+    "both": MOTOR_ENGINE_UNION_CONFIG_KEY,
+}
+
+
+def _pod_role(role) -> str:
+    """Role key used to pick this pod's engine section.
+
+    ``str(PDRole.ROLE_P)`` is ``PDRole.ROLE_P`` on the runtime that printed the
+    2026-09-24 logs, so the enum value is read first.
+    """
+    if role is not None:
+        value = getattr(role, "value", None)
+        if isinstance(value, str) and value:
+            return value.lower()
+        text = str(role)
+        suffix = text.rsplit(".", 1)[-1].lower()
+        aliases = {
+            "role_p": "prefill",
+            "role_d": "decode",
+            "role_e": "encode",
+            "role_u": "union",
+            "both": "union",
+        }
+        return aliases.get(suffix, text.lower())
+    return (Env.role or "").lower()
+
+
+def _role_name(role: str | None) -> str:
+    mapping = {
+        "encode": "Encode",
+        "prefill": "Prefill",
+        "decode": "Decode",
+        "union": "Union",
+        "both": "Union",
+    }
+    return mapping.get((role or "").lower(), "Engine")
+
+
+def _as_port(value) -> int | None:
+    if value in (None, "", False):
+        return None
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _load_user_config(path: str | None) -> dict:
+    if not path or not os.path.exists(path):
+        return {}
+    with safe_open(path, "r") as handle:
+        raw = json.load(handle)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _kv_transfer_listen_ports(engine_cfg: dict) -> list[tuple[int, str]]:
+    kv = engine_cfg.get("kv_transfer_config")
+    if not isinstance(kv, dict) or not kv:
+        return []
+    ports: list[tuple[int, str]] = []
+    extra = kv.get("kv_connector_extra_config")
+    extra = extra if isinstance(extra, dict) else {}
+    connector = kv.get("kv_connector")
+    if connector == "MultiConnector":
+        connectors = extra.get("connectors")
+        if isinstance(connectors, list) and connectors:
+            first = connectors[0] if isinstance(connectors[0], dict) else {}
+            kv_port = _as_port(first.get("kv_port"))
+            if kv_port:
+                ports.append((kv_port, "KV transfer"))
+            if len(connectors) > 1 and isinstance(connectors[1], dict):
+                store = connectors[1]
+                if store.get("kv_connector") != "UCMConnector":
+                    lookup = store.get("lookup_rpc_port")
+                    store_extra = store.get("kv_connector_extra_config")
+                    if lookup is None and isinstance(store_extra, dict):
+                        lookup = store_extra.get("lookup_rpc_port")
+                    lookup_port = _as_port(lookup)
+                    if lookup_port:
+                        ports.append((lookup_port, "KV lookup RPC"))
+        return ports
+    kv_port = _as_port(kv.get("kv_port"))
+    if kv_port:
+        ports.append((kv_port, "KV transfer"))
+    lookup_port = _as_port(extra.get("lookup_rpc_port"))
+    if lookup_port:
+        ports.append((lookup_port, "KV lookup RPC"))
+    return ports
+
+
+def _append_pd_engine_ports(
+    rows: list[PortRow],
+    config: NodeManagerConfig,
+    host: str,
+    seen: set[tuple[int, str]],
+) -> None:
+    role = _pod_role(config.basic_config.role) or (Env.role or "").lower()
+    component = _role_name(role)
+    section_key = _ENGINE_SECTION_BY_ROLE.get(role)
+    raw = _load_user_config(config.config_path)
+    section = raw.get(section_key) if section_key else None
+    if not isinstance(section, dict):
         return
 
+    def _emit(port, purpose: str) -> None:
+        parsed = _as_port(port)
+        if parsed is None or (parsed, purpose) in seen:
+            return
+        seen.add((parsed, purpose))
+        rows.append(_row(component, host, parsed, "config", purpose))
+
+    resolver = ConfigResolver(section)
+    _emit(resolver.get_parallel_config().get("dp_rpc_port"), "DP RPC")
+    engine_cfg = normalize_keys(section.get("engine_config") or {})
+    if isinstance(engine_cfg, dict):
+        for port, purpose in _kv_transfer_listen_ports(engine_cfg):
+            _emit(port, purpose)
+        _emit(engine_cfg.get("master_port") or engine_cfg.get("master-port"), "PCP master")
+        _emit(
+            engine_cfg.get("disaggregation_bootstrap_port") or engine_cfg.get("disaggregation-bootstrap-port"),
+            "PD bootstrap",
+        )
+        ml_extra = engine_cfg.get("model_loader_extra_config")
+        if isinstance(ml_extra, str):
+            try:
+                ml_extra = json.loads(ml_extra)
+            except json.JSONDecodeError:
+                ml_extra = None
+        if isinstance(ml_extra, dict):
+            _emit(ml_extra.get("listen_port") or ml_extra.get("LISTEN_PORT"), "D2D listen")
+
+
+def apply_coordinator_ports(config: CoordinatorConfig) -> None:
+    pac = config.port_allocator_config
     host, scan_range, probe_timeout, remote_timeout = _allocator(pac)
     rows: list[PortRow] = []
     api = config.api_config
+    kind = _alloc_strategy(pac, "strict")
 
-    api.coordinator_api_infer_port = PortAllocator.allocate_strict(
+    api.coordinator_api_infer_port = _maybe_strict(
+        pac,
         host,
         api.coordinator_api_infer_port,
         "coordinator_api_infer_port",
-        timeout=probe_timeout,
+        probe_timeout,
     )
-    rows.append(_row("Coordinator", host, api.coordinator_api_infer_port, "strict", "infer API (external)"))
+    rows.append(_row("Coordinator", host, api.coordinator_api_infer_port, kind, "infer API (external)"))
 
-    api.coordinator_api_mgmt_port = PortAllocator.allocate_auto(
+    kind_auto = _alloc_strategy(pac, "auto")
+    api.coordinator_api_mgmt_port = _maybe_auto(
+        pac,
         host,
         api.coordinator_api_mgmt_port,
         "coordinator_api_mgmt_port",
-        scan_range=scan_range,
-        timeout=probe_timeout,
+        scan_range,
+        probe_timeout,
     )
-    rows.append(_row("Coordinator", host, api.coordinator_api_mgmt_port, "auto", "mgmt API"))
+    rows.append(_row("Coordinator", host, api.coordinator_api_mgmt_port, kind_auto, "mgmt API"))
 
-    api.coordinator_obs_port = PortAllocator.allocate_auto(
+    api.coordinator_obs_port = _maybe_auto(
+        pac,
         host,
         api.coordinator_obs_port,
         "coordinator_obs_port",
-        scan_range=scan_range,
-        timeout=probe_timeout,
+        scan_range,
+        probe_timeout,
     )
-    rows.append(_row("Coordinator", host, api.coordinator_obs_port, "auto", "observability API"))
+    rows.append(_row("Coordinator", host, api.coordinator_obs_port, kind_auto, "observability API"))
+
+    iwc = config.inference_workers_config
+    if iwc.worker_metaserver_base_port > 0:
+        base_port = iwc.worker_metaserver_base_port
+        for idx in range(iwc.num_workers):
+            rows.append(_row("Coordinator", host, base_port + idx, "config", f"worker metaserver #{idx}"))
 
     kv_cfg = config.scheduler_config.kv_conductor_config
     if kv_cfg.conductor_service:
         cond_host, cond_port = _parse_host_port(kv_cfg.conductor_service, kv_cfg.http_server_port)
         if cond_host:
-            reachable = PortAllocator.check_remote_reachable(cond_host, cond_port, timeout=remote_timeout)
+            reachable = True
+            if pac.enable:
+                reachable = PortAllocator.check_remote_reachable(cond_host, cond_port, timeout=remote_timeout)
             rows.append(
                 _row(
                     "Conductor",
@@ -230,56 +426,88 @@ def apply_coordinator_ports(config: CoordinatorConfig) -> None:
                     format_address(cond_host, cond_port),
                 )
 
-        kv_cfg.http_server_port = PortAllocator.allocate_auto(
+        kv_cfg.http_server_port = _maybe_auto(
+            pac,
             host,
             kv_cfg.http_server_port,
             "http_server_port",
-            scan_range=scan_range,
-            timeout=probe_timeout,
+            scan_range,
+            probe_timeout,
         )
-        rows.append(_row("Coordinator", host, kv_cfg.http_server_port, "auto", "Conductor callback HTTP"))
+        rows.append(_row("Coordinator", host, kv_cfg.http_server_port, kind_auto, "Conductor callback HTTP"))
 
+    render = config.render_config
+    if render.enabled:
+        rows.append(
+            _row(
+                "Render",
+                render.endpoint.host,
+                render.endpoint.port,
+                "config",
+                "vLLM Render sidecar",
+            )
+        )
+
+    pmc = config.prometheus_metrics_config
+    if pmc.enable_kv_store_metrics:
+        metrics_port = pmc.kv_store_metrics_port
+        if not metrics_port:
+            metrics_port = 50088 if (pmc.kv_store_backend or "").lower() == "mooncake" else 50090
+        metrics_host = pmc.kv_store_service or "remote"
+        endpoint = pmc.kv_store_metrics_endpoint
+        if endpoint:
+            parsed_host, parsed_port = _parse_host_port(_strip_endpoint_host(endpoint), metrics_port)
+            if parsed_host:
+                metrics_host = parsed_host
+            if parsed_port:
+                metrics_port = parsed_port
+        rows.append(_row("KVMetrics", metrics_host, metrics_port, "remote", "KV store Prometheus scrape"))
+
+    _append_etcd(rows, config.etcd_config)
     PortAllocator.print_matrix(rows)
 
 
 def apply_controller_ports(config: ControllerConfig) -> None:
     pac = config.port_allocator_config
-    if not pac.enable:
-        return
-
     host, scan_range, probe_timeout, _ = _allocator(pac)
     rows: list[PortRow] = []
     api = config.api_config
 
-    api.controller_api_port = PortAllocator.allocate_strict(
+    api.controller_api_port = _maybe_strict(
+        pac,
         host,
         api.controller_api_port,
         "controller_api_port",
-        timeout=probe_timeout,
+        probe_timeout,
     )
-    rows.append(_row("Controller", host, api.controller_api_port, "strict", "mgmt API (external)"))
+    rows.append(
+        _row("Controller", host, api.controller_api_port, _alloc_strategy(pac, "strict"), "mgmt API (external)")
+    )
 
-    api.observability_api_port = PortAllocator.allocate_auto(
+    api.observability_api_port = _maybe_auto(
+        pac,
         host,
         api.observability_api_port,
         "observability_api_port",
-        scan_range=scan_range,
-        timeout=probe_timeout,
+        scan_range,
+        probe_timeout,
     )
-    rows.append(_row("Controller", host, api.observability_api_port, "auto", "observability API"))
+    rows.append(_row("Controller", host, api.observability_api_port, _alloc_strategy(pac, "auto"), "observability API"))
 
+    _append_etcd(rows, config.etcd_config)
     PortAllocator.print_matrix(rows)
 
 
 def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     pac = config.port_allocator_config
-    if not pac.enable:
-        return
-
     host, scan_range, probe_timeout, _ = _allocator(pac)
     rows: list[PortRow] = []
     api = config.api_config
     ep = config.endpoint_config
+    kind_auto = _alloc_strategy(pac, "auto")
+    role = _pod_role(config.basic_config.role) or (Env.role or "").lower()
+    engine = _role_name(role)
+    seen: set[tuple[int, str]] = set()
 
     reserved = {api.node_manager_port} | {int(p) for p in ep.service_ports}
     sc = config.single_container_config
@@ -288,34 +516,60 @@ def apply_node_manager_ports(config: NodeManagerConfig) -> None:
     allocated: set[int] = set()
 
     def _auto(pref: int, name: str) -> int:
-        p = PortAllocator.allocate_auto(
-            host, pref, name, scan_range=scan_range, timeout=probe_timeout, skip_ports=(reserved - {pref}) | allocated
+        p = _maybe_auto(
+            pac,
+            host,
+            pref,
+            name,
+            scan_range,
+            probe_timeout,
+            skip_ports=(reserved - {pref}) | allocated,
         )
         allocated.add(p)
         return p
 
+    def _emit(component: str, port: int, strategy: str, purpose: str) -> None:
+        parsed = _as_port(port)
+        if parsed is None or (parsed, purpose) in seen:
+            return
+        seen.add((parsed, purpose))
+        rows.append(_row(component, host, parsed, strategy, purpose))
+
     api.node_manager_port = _auto(api.node_manager_port, "node_manager_port")
-    rows.append(_row("NodeManager", host, api.node_manager_port, "auto", "NM API"))
+    _emit("NodeManager", api.node_manager_port, kind_auto, "NM API")
 
-    new_service_ports: list[str] = []
-    for idx, svc_pref in enumerate(ep.service_ports):
-        svc_port = _auto(int(svc_pref), f"service_ports[{idx}]")
-        new_service_ports.append(str(svc_port))
-        rows.append(_row("NativeEngine", host, svc_port, "auto", f"DP{idx} business"))
+    if ep.service_ports:
+        new_service_ports: list[str] = []
+        for idx, svc_pref in enumerate(ep.service_ports):
+            svc_port = _auto(int(svc_pref), f"service_ports[{idx}]")
+            new_service_ports.append(str(svc_port))
+            _emit(engine, svc_port, kind_auto, f"DP{idx} business")
+        ep.service_ports = new_service_ports
+    else:
+        _emit(engine, ep.base_port, "config", "business base")
 
-    ep.service_ports = new_service_ports
+    if ep.bootstrap_port:
+        _emit(engine, ep.bootstrap_port, "config", "PD bootstrap")
 
     if sc.single_container_flag:
         if sc.kv_port is not None:
             sc.kv_port = _auto(sc.kv_port, "kv_port")
-            rows.append(_row("NativeEngine", host, sc.kv_port, "auto", "KV transfer"))
+            _emit(engine, sc.kv_port, kind_auto, "KV transfer")
         if sc.lookup_rpc_port is not None:
             sc.lookup_rpc_port = _auto(sc.lookup_rpc_port, "lookup_rpc_port")
-            rows.append(_row("NativeEngine", host, sc.lookup_rpc_port, "auto", "KV lookup RPC"))
+            _emit(engine, sc.lookup_rpc_port, kind_auto, "KV lookup RPC")
         if sc.dp_rpc_port is not None:
             sc.dp_rpc_port = _auto(sc.dp_rpc_port, "dp_rpc_port")
-            rows.append(_row("NativeEngine", host, sc.dp_rpc_port, "auto", "DP RPC"))
+            _emit(engine, sc.dp_rpc_port, kind_auto, "DP RPC")
 
+    kcfg = config.kv_cache_store_config
+    if kcfg.enable:
+        _emit("KVStore", kcfg.port, "config", "KV MetaService RPC")
+        if kcfg.store_http_port > 0:
+            _emit("KVStore", kcfg.store_http_port, "config", "Mooncake store HTTP")
+
+    if not sc.single_container_flag:
+        _append_pd_engine_ports(rows, config, host, seen)
     PortAllocator.print_matrix(rows)
 
 
