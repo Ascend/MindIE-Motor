@@ -53,6 +53,20 @@ def test_conductor_instance_id_role_p() -> None:
     assert conductor_instance_id(instance) == "vllm-prefill-3"
 
 
+def test_conductor_instance_id_sglang_role_p() -> None:
+    instance = _build_instance(PDRole.ROLE_P)
+    instance.id = 3
+    instance.engine_type = "sglang"
+    assert conductor_instance_id(instance) == "sglang-prefill-3"
+
+
+def test_conductor_instance_id_sglang_role_u() -> None:
+    instance = _build_instance(PDRole.ROLE_U)
+    instance.id = 7
+    instance.engine_type = "sglang"
+    assert conductor_instance_id(instance) == "sglang-union-7"
+
+
 def test_register_post_uses_union_conductor_id_for_role_u() -> None:
     instance = _build_instance(PDRole.ROLE_U)
     instance.id = 2

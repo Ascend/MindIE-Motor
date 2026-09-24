@@ -51,11 +51,24 @@ def decode_query_response_msgpack(payload: bytes) -> dict[str, Any]:
     return msgspec.msgpack.decode(payload)
 
 
+def _conductor_engine_label(instance: Instance) -> str:
+    """Return the conductor instance-id engine prefix.
+
+    Only SGLang uses a distinct label. vLLM, missing, and unknown types keep
+    the historical ``vllm`` prefix so existing registrations stay unchanged.
+    """
+    raw = getattr(instance, "engine_type", None)
+    if isinstance(raw, str) and raw.strip().lower() == "sglang":
+        return "sglang"
+    return "vllm"
+
+
 def conductor_instance_id(instance: Instance) -> str:
     """Return the Conductor tenant key for a KVA-eligible instance."""
+    engine = _conductor_engine_label(instance)
     if instance.role == PDRole.ROLE_U:
-        return f"vllm-union-{instance.id}"
-    return f"vllm-prefill-{instance.id}"
+        return f"{engine}-union-{instance.id}"
+    return f"{engine}-prefill-{instance.id}"
 
 
 class ConductorApiClient:
@@ -114,10 +127,10 @@ class ConductorApiClient:
         for instance in instances:
             if instance.role not in _KVA_ROLES:
                 continue
-            for ep in instance.get_all_endpoints():
-                cls._register_hbm_dp(reg, sb, instance, ep)
+            for ep, dp_rank in cls._hbm_event_targets(instance):
+                cls._register_hbm_dp(reg, sb, instance, ep, dp_rank)
                 if mode == "per_node":
-                    cls._register_yuanrong_node(reg, sb, instance, ep)
+                    cls._register_yuanrong_node(reg, sb, instance, ep, dp_rank)
 
     @classmethod
     def unregister_kv_instance(cls, instances: list[Instance]) -> None:
@@ -132,10 +145,10 @@ class ConductorApiClient:
         for instance in instances:
             if instance.role not in _KVA_ROLES:
                 continue
-            for ep in instance.get_all_endpoints():
-                cls.unregister_post(instance, ep)
+            for ep, dp_rank in cls._hbm_event_targets(instance):
+                cls.unregister_post(instance, ep, dp_rank)
                 if mode == "per_node":
-                    cls._unregister_yuanrong_node(cls._kv_reg(), sb, instance, ep)
+                    cls._unregister_yuanrong_node(cls._kv_reg(), sb, instance, ep, dp_rank)
 
     # ── Pool registration (Mooncake / Memcache) ──────────────────────
 
@@ -195,23 +208,31 @@ class ConductorApiClient:
     # ── HBM per-DP (Mooncake / Memcache / YuanRong) ─────────────────────────────
 
     @classmethod
-    def _register_hbm_dp(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+    def _register_hbm_dp(
+        cls,
+        reg,
+        store_backend: str,
+        instance: "Instance",
+        endpoint: "Endpoint",
+        dp_rank: int | None = None,
+    ) -> None:
         """Register a single DP's NPU/HBM endpoint (all backends)."""
+        rank = endpoint.id if dp_rank is None else dp_rank
         instance_id = conductor_instance_id(instance)
         npu_url = cls._resolve_endpoint_url(
             reg.npu_endpoint or reg.xpu_endpoint or reg.endpoint,
             endpoint.ip,
-            endpoint.id,
+            rank,
         )
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
+        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
         register_data: dict = {
             "instance_id": instance_id,
             "type": reg.engine_type,
             "store_backend": store_backend,
             "modelname": instance.model_name,
             "block_size": reg.block_size,
-            "dp_rank": endpoint.id,
+            "dp_rank": rank,
         }
         if npu_url:
             register_data["medium_endpoints"] = {"npu": npu_url}
@@ -230,11 +251,11 @@ class ConductorApiClient:
                     mode,
                     store_backend,
                     instance_id,
-                    endpoint.id,
+                    rank,
                     replay_url or "none",
                 )
         except Exception as e:
-            logger.error("HBM DP registration failed for %s dp=%d: %s", instance_id, endpoint.id, e)
+            logger.error("HBM DP registration failed for %s dp=%d: %s", instance_id, rank, e)
 
     # ── YuanRong: CPU/Disk per-node ───────────────────────────────────
 
@@ -261,7 +282,14 @@ class ConductorApiClient:
         return ip, model_name
 
     @classmethod
-    def _register_yuanrong_node(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+    def _register_yuanrong_node(
+        cls,
+        reg,
+        store_backend: str,
+        instance: "Instance",
+        endpoint: "Endpoint",
+        dp_rank: int | None = None,
+    ) -> None:
         """Register YuanRong CPU/Disk PUB once per (node IP, model).
 
         Shared by every DP on the node; the node pool is registered by whichever
@@ -269,10 +297,11 @@ class ConductorApiClient:
         registration is tracked by :attr:`_yuanrong_nodes_registered`, which
         :meth:`re_register_kv_instances` re-syncs against ``GET /workers``.
         """
+        rank = endpoint.id if dp_rank is None else dp_rank
         node_key = cls._node_pool_key(endpoint.ip, instance.model_name)
         # Record the reference before the dedup check so that every DP on the
         # node is accounted for, including the ones that skip the POST below.
-        cls._yuanrong_node_refs.setdefault(node_key, set()).add((conductor_instance_id(instance), endpoint.id))
+        cls._yuanrong_node_refs.setdefault(node_key, set()).add((conductor_instance_id(instance), rank))
         if node_key in cls._yuanrong_nodes_registered:
             return
 
@@ -318,7 +347,14 @@ class ConductorApiClient:
             logger.error("YuanRong node pool registration failed for ip=%s: %s", endpoint.ip, e)
 
     @classmethod
-    def _unregister_yuanrong_node(cls, reg, store_backend: str, instance: "Instance", endpoint: "Endpoint") -> None:
+    def _unregister_yuanrong_node(
+        cls,
+        reg,
+        store_backend: str,
+        instance: "Instance",
+        endpoint: "Endpoint",
+        dp_rank: int | None = None,
+    ) -> None:
         """Drop one DP's reference to the node pool, unregistering it when it is the last.
 
         The CPU/Disk PUB serves the whole node, so a single DP leaving must not
@@ -326,11 +362,12 @@ class ConductorApiClient:
         instance and its ZMQ SUB forever (reconnecting against a PUB that no
         longer exists), and ``GET /workers`` keeps advertising a dead pool.
         """
+        rank = endpoint.id if dp_rank is None else dp_rank
         node_key = cls._node_pool_key(endpoint.ip, instance.model_name)
         refs = cls._yuanrong_node_refs.get(node_key)
         if refs is None:
             return
-        refs.discard((conductor_instance_id(instance), endpoint.id))
+        refs.discard((conductor_instance_id(instance), rank))
         if refs:
             return
         cls._yuanrong_node_refs.pop(node_key, None)
@@ -368,6 +405,43 @@ class ConductorApiClient:
     # ── Shared helpers ────────────────────────────────────────────────
 
     @staticmethod
+    def _instance_dp_size(instance: "Instance") -> int:
+        """Return engine ``dp_size`` for KV-event expansion; 1 when unknown.
+
+        ``parallel_config`` on mocks may be a MagicMock; reject non-ints so
+        existing tests stay on a single HTTP endpoint mapping.
+        """
+        pc = getattr(instance, "parallel_config", None)
+        if pc is None:
+            return 1
+        raw = getattr(pc, "dp_size", 1)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            try:
+                raw = int(raw)
+            except (TypeError, ValueError):
+                return 1
+        return raw if raw > 1 else 1
+
+    @classmethod
+    def _hbm_event_targets(cls, instance: "Instance") -> list[tuple["Endpoint", int]]:
+        """Return ``(endpoint, dp_rank)`` pairs the conductor should subscribe.
+
+        HTTP routing endpoints and engine KV-event DPs are not always 1:1.
+        SGLang with ``enable_multi_endpoints=false`` exposes one HTTP port but
+        publishes one ZMQ port per ``dp-size`` (base + rank). Expand only
+        when there is a single HTTP so it matches affinity fold
+        (``len(endpoints) == 1``). Mixed instances (1 < HTTP < dp_size)
+        stay 1:1 on the existing endpoints and do not invent extra ranks.
+        """
+        endpoints = list(instance.get_all_endpoints())
+        if not endpoints:
+            return []
+        dp_size = cls._instance_dp_size(instance)
+        if len(endpoints) == 1 and dp_size > 1:
+            return [(endpoints[0], rank) for rank in range(dp_size)]
+        return [(ep, ep.id) for ep in endpoints]
+
+    @staticmethod
     def _resolve_endpoint_url(pattern: str, ip: str, dp_rank: int) -> str | None:
         """Resolve an endpoint pattern like 'tcp://*:5557' with the given IP and dp_rank offset."""
         if not pattern:
@@ -380,35 +454,45 @@ class ConductorApiClient:
 
     @classmethod
     def _build_medium_endpoints(cls, config, ip: str, dp_rank: int) -> dict[str, str]:
-        """Build the medium_endpoints map from per-medium endpoint patterns."""
+        """Build the medium_endpoints map from per-medium endpoint patterns.
+
+        The generic ``endpoint`` / ``npu_endpoint`` pattern is the engine ZMQ
+        publisher (vLLM/SGLang). Copying it onto cpu/disk makes kv-conductor
+        treat the stream as a pool source and drop engine BlockStored events.
+        CPU/Disk are included only when those patterns are set explicitly.
+        """
         npu_url = cls._resolve_endpoint_url(config.npu_endpoint or config.xpu_endpoint, ip, dp_rank)
         cpu_url = cls._resolve_endpoint_url(config.cpu_endpoint, ip, dp_rank)
         disk_url = cls._resolve_endpoint_url(config.disk_endpoint, ip, dp_rank)
         fallback = cls._resolve_endpoint_url(config.endpoint, ip, dp_rank)
-        return {
-            "npu": npu_url or fallback or "",
-            "cpu": cpu_url or fallback or "",
-            "disk": disk_url or fallback or "",
-        }
+        endpoints: dict[str, str] = {}
+        if npu_url or fallback:
+            endpoints["npu"] = npu_url or fallback or ""
+        if cpu_url:
+            endpoints["cpu"] = cpu_url
+        if disk_url:
+            endpoints["disk"] = disk_url
+        return endpoints
 
     @classmethod
-    def register_post(cls, instance: "Instance", endpoint: "Endpoint") -> None:
+    def register_post(cls, instance: "Instance", endpoint: "Endpoint", dp_rank: int | None = None) -> None:
         """Legacy single-DP registration (used by re-registration path)."""
+        rank = endpoint.id if dp_rank is None else dp_rank
         reg = cls._kv_reg()
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 
         if cls._resolve_backend_mode() == "per_node":
-            cls._register_hbm_dp(reg, sb, instance, endpoint)
-            cls._register_yuanrong_node(reg, sb, instance, endpoint)
+            cls._register_hbm_dp(reg, sb, instance, endpoint, rank)
+            cls._register_yuanrong_node(reg, sb, instance, endpoint, rank)
             return
 
-        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
+        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank)
         if all(v == "" for v in medium_endpoints.values()):
             logger.debug("no endpoint configured for kv events, skipping registration")
             return
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
+        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
         register_data: dict = {
             "medium_endpoints": medium_endpoints,
             "type": reg.engine_type,
@@ -416,7 +500,7 @@ class ConductorApiClient:
             "modelname": instance.model_name,
             "block_size": reg.block_size,
             "instance_id": instance_id,
-            "dp_rank": endpoint.id,
+            "dp_rank": rank,
         }
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
@@ -435,12 +519,13 @@ class ConductorApiClient:
         logger.info("register_data : %s", register_data)
 
     @classmethod
-    def unregister_post(cls, instance: Instance, endpoint: Endpoint) -> None:
+    def unregister_post(cls, instance: Instance, endpoint: Endpoint, dp_rank: int | None = None) -> None:
         """
         unregister_kv_instance.
 
         :returns:
         """
+        rank = endpoint.id if dp_rank is None else dp_rank
         reg = cls._kv_reg()
         instance_id = conductor_instance_id(instance)
         register_data: dict = {
@@ -448,7 +533,7 @@ class ConductorApiClient:
             "modelname": instance.model_name,
             "block_size": reg.block_size,
             "instance_id": instance_id,
-            "dp_rank": endpoint.id,
+            "dp_rank": rank,
         }
         if TENANT_ID != "default":
             register_data["tenant_id"] = TENANT_ID
@@ -587,17 +672,20 @@ class ConductorApiClient:
         return {}
 
     @classmethod
-    def _build_register_payload(cls, instance: Instance, endpoint: Endpoint) -> dict[str, Any]:
+    def _build_register_payload(
+        cls, instance: Instance, endpoint: Endpoint, dp_rank: int | None = None
+    ) -> dict[str, Any]:
         """Build registration payload using the unified kv_conductor_config config.
 
         Produces the same payload format as :meth:`register_post` so the
         re-registration comparison is consistent.
         """
+        rank = endpoint.id if dp_rank is None else dp_rank
         reg = cls._kv_reg()
         instance_id = conductor_instance_id(instance)
         sb = cls._resolve_store_backend()
 
-        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, endpoint.id)
+        medium_endpoints = cls._build_medium_endpoints(reg, endpoint.ip, rank)
         # Keep only non-empty endpoints. YuanRong CPU/Disk are per-node, not per-DP.
         filtered = {k: v for k, v in medium_endpoints.items() if v}
         if cls._resolve_backend_mode() == "per_node":
@@ -605,7 +693,7 @@ class ConductorApiClient:
         if not filtered:
             return {}
 
-        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, endpoint.id)
+        replay_url = cls._resolve_endpoint_url(reg.replay_endpoint, endpoint.ip, rank)
         payload: dict[str, Any] = {
             "medium_endpoints": filtered,
             "type": reg.engine_type,
@@ -613,7 +701,7 @@ class ConductorApiClient:
             "modelname": instance.model_name,
             "block_size": reg.block_size,
             "instance_id": instance_id,
-            "dp_rank": endpoint.id,
+            "dp_rank": rank,
         }
         if TENANT_ID != "default":
             payload["tenant_id"] = TENANT_ID
@@ -752,18 +840,19 @@ class ConductorApiClient:
         for instance in instances:
             if instance.role not in _KVA_ROLES:
                 continue
-            for ep in instance.get_all_endpoints():
-                payload = cls._build_register_payload(instance, ep)
+            for ep, dp_rank in cls._hbm_event_targets(instance):
+                payload = cls._build_register_payload(instance, ep, dp_rank)
                 if not payload:
                     logger.debug(
-                        "skip re-register because payload build failed for instance=%s endpoint=%s",
+                        "skip re-register because payload build failed for instance=%s endpoint=%s dp=%s",
                         instance.id,
                         ep.id,
+                        dp_rank,
                     )
                     continue
 
                 instance_id = conductor_instance_id(instance)
-                dp_registered = (instance_id, ep.id) in registered_dps
+                dp_registered = (instance_id, dp_rank) in registered_dps
                 # The cache was just reconciled with the conductor, so a missing
                 # key here really means the pool is gone.
                 node_key = cls._node_pool_key(ep.ip, instance.model_name)
@@ -780,12 +869,12 @@ class ConductorApiClient:
                         ep.ip,
                         instance.model_name,
                     )
-                    cls._register_yuanrong_node(cls._kv_reg(), sb, instance, ep)
+                    cls._register_yuanrong_node(cls._kv_reg(), sb, instance, ep, dp_rank)
                     continue
 
                 logger.info(
                     "service missing in conductor, re-registering instance=%s dp_rank=%s",
                     instance_id,
-                    ep.id,
+                    dp_rank,
                 )
-                cls.register_post(instance, ep)
+                cls.register_post(instance, ep, dp_rank)

@@ -113,6 +113,26 @@ class TestConductorInstanceId:
         inst = _make_instance(inst_id=9, role=PDRole.ROLE_D)
         assert conductor_instance_id(inst) == "vllm-prefill-9"
 
+    def test_sglang_prefill_uses_sglang_prefix(self):
+        inst = _make_instance(inst_id=3, role=PDRole.ROLE_P)
+        inst.engine_type = "sglang"
+        assert conductor_instance_id(inst) == "sglang-prefill-3"
+
+    def test_sglang_union_uses_sglang_prefix(self):
+        inst = _make_instance(inst_id=7, role=PDRole.ROLE_U)
+        inst.engine_type = "SGLang"
+        assert conductor_instance_id(inst) == "sglang-union-7"
+
+    def test_unknown_engine_keeps_vllm_prefix(self):
+        inst = _make_instance(inst_id=4, role=PDRole.ROLE_P)
+        inst.engine_type = "trtllm"
+        assert conductor_instance_id(inst) == "vllm-prefill-4"
+
+    def test_explicit_vllm_keeps_vllm_prefix(self):
+        inst = _make_instance(inst_id=1, role=PDRole.ROLE_P)
+        inst.engine_type = "vllm"
+        assert conductor_instance_id(inst) == "vllm-prefill-1"
+
 
 # ------------------------------------------------------------------
 # _build_register_payload
@@ -186,9 +206,9 @@ class TestBuildRegisterPayload:
         with patch.object(ConductorApiClient, "coordinator_config", cfg):
             payload = ConductorApiClient._build_register_payload(inst, ep)
 
-        # Fallback endpoint fills gpu, cpu, disk
-        meps = payload["medium_endpoints"]
-        assert "npu" in meps
+        # Engine ZMQ fallback is NPU-only. Copying it onto cpu/disk would make
+        # kv-conductor parse the stream as a pool and drop SGLang/vLLM events.
+        assert payload["medium_endpoints"] == {"npu": "tcp://10.0.0.4:15557"}
 
     def test_yuanrong_payload_is_npu_only(self):
         """YuanRong DP payload omits CPU/Disk (those are registered per node)."""
@@ -467,7 +487,7 @@ class TestReRegisterKvInstances:
         ):
             ConductorApiClient.re_register_kv_instances([inst])
 
-        mock_register.assert_called_once_with(inst, ep)
+        mock_register.assert_called_once_with(inst, ep, 0)
 
     def test_skips_when_already_registered(self):
         """Instance already in Conductor → register_post NOT called."""
@@ -555,7 +575,7 @@ class TestReRegisterKvInstances:
         ):
             ConductorApiClient.re_register_kv_instances([inst])
 
-        mock_register.assert_called_once_with(inst, ep)
+        mock_register.assert_called_once_with(inst, ep, 0)
 
 
 # ── Registration dispatch tests ──────────────────────────────────────
@@ -1142,3 +1162,99 @@ def test_re_register_node_pool_only_leaves_live_dps_alone(mock_http):
     payloads = [c[0][1] for c in mock_client.post.call_args_list]
     assert len(payloads) == 1
     assert payloads[0]["instance_id"] == "yuanrong-pool-10.0.0.1-test-model"
+
+
+# ── SGLang single-HTTP / multi-DP event expansion ────────────────────
+
+
+def _make_single_http_dp_instance(instance_id: int, dp_size: int, ip: str = "10.0.0.1"):
+    """One HTTP endpoint, engine dp_size > 1 (SGLang dp-attention)."""
+    endpoint = Mock()
+    endpoint.id = 0
+    endpoint.ip = ip
+    instance = Mock()
+    instance.id = instance_id
+    instance.model_name = "test-model"
+    instance.role = "prefill"
+    instance.engine_type = "sglang"
+    instance.endpoints = {"pod-0": {0: endpoint}}
+    instance.get_all_endpoints.return_value = (endpoint,)
+    instance.parallel_config = Mock()
+    instance.parallel_config.dp_size = dp_size
+    return instance
+
+
+def test_hbm_event_targets_expands_single_http_to_dp_size():
+    instance = _make_single_http_dp_instance(1, dp_size=16)
+    targets = ConductorApiClient._hbm_event_targets(instance)
+    assert [rank for _ep, rank in targets] == list(range(16))
+    assert {ep.ip for ep, _rank in targets} == {"10.0.0.1"}
+
+
+def test_hbm_event_targets_keeps_one_to_one_when_endpoints_cover_dp():
+    instance = _make_node_instance(1, "10.0.0.1", [0, 1, 2])
+    instance.parallel_config = Mock()
+    instance.parallel_config.dp_size = 3
+    targets = ConductorApiClient._hbm_event_targets(instance)
+    assert [(ep.id, rank) for ep, rank in targets] == [(0, 0), (1, 1), (2, 2)]
+
+
+def test_hbm_event_targets_does_not_pad_mixed_http_less_than_dp():
+    """1 < HTTP < dp_size: do not invent ranks that scoring cannot fold."""
+    instance = _make_node_instance(1, "10.0.0.1", [0, 1])
+    instance.parallel_config = Mock()
+    instance.parallel_config.dp_size = 4
+    targets = ConductorApiClient._hbm_event_targets(instance)
+    assert [(ep.id, rank) for ep, rank in targets] == [(0, 0), (1, 1)]
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_register_kv_instance_subscribes_all_sglang_dp_ranks(mock_http):
+    """One HTTP port + dp_size=16 must register ZMQ 5557-5572 (ranks 0-15)."""
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    instance = _make_single_http_dp_instance(1, dp_size=16)
+    with _setup_reg_config("YuanRong", npu_endpoint="tcp://*:5557", replay_endpoint="tcp://*:6667"):
+        ConductorApiClient.register_kv_instance([instance])
+
+    payloads = [c[0][1] for c in mock_client.post.call_args_list if "npu" in c[0][1].get("medium_endpoints", {})]
+    assert {p["dp_rank"] for p in payloads} == set(range(16))
+    assert {p["instance_id"] for p in payloads} == {"sglang-prefill-1"}
+    assert {p["medium_endpoints"]["npu"] for p in payloads} == {f"tcp://10.0.0.1:{5557 + rank}" for rank in range(16)}
+    assert {p["replay_endpoint"] for p in payloads} == {f"tcp://10.0.0.1:{6667 + rank}" for rank in range(16)}
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_unregister_kv_instance_drops_all_expanded_dp_ranks(mock_http):
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    instance = _make_single_http_dp_instance(1, dp_size=4)
+    with _setup_reg_config("YuanRong", npu_endpoint="tcp://*:5557"):
+        ConductorApiClient.unregister_kv_instance([instance])
+
+    payloads = [c[0][1] for c in mock_client.post.call_args_list if c[0][0] == "/unregister"]
+    assert {p["dp_rank"] for p in payloads} == {0, 1, 2, 3}
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_re_register_missing_expanded_sglang_dp_rank(mock_http):
+    mock_client = Mock()
+    mock_client.post.return_value = {"status": "ok"}
+    mock_http.return_value.__enter__.return_value = mock_client
+
+    instance = _make_single_http_dp_instance(1, dp_size=4)
+    cfg = _mock_config(npu_endpoint="tcp://*:5557")
+    # Only dp 0 is known to conductor; ranks 1-3 must be rebuilt.
+    registered = [{"instance_id": "sglang-prefill-1", "endpoints": {"0": {}}}]
+    with (
+        patch.object(ConductorApiClient, "coordinator_config", cfg),
+        patch.object(ConductorApiClient, "get_registered_services", return_value=registered),
+        patch.object(ConductorApiClient, "register_post") as mock_register,
+    ):
+        ConductorApiClient.re_register_kv_instances([instance])
+
+    assert {call.args[2] for call in mock_register.call_args_list} == {1, 2, 3}

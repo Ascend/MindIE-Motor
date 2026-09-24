@@ -364,6 +364,52 @@ class TestKvCacheAffinityPolicy(unittest.TestCase):
         # Both have equal load; ep 0 has longer cached prefix (800 > 100 tokens) → lower prefill cost → chosen.
         self.assertEqual(result[1].id, 0)
 
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor')
+    @patch('motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager')
+    def test_single_http_endpoint_uses_best_engine_dp_match(self, mock_tokenizer_manager, mock_query_conductor):
+        """SGLang: one HTTP port, conductor hit on DP>0 still picks that instance."""
+        ep_hit = _make_endpoint(0, active_tokens=50.0)
+        inst_hit = Mock()
+        inst_hit.id = "hit"
+        inst_hit.engine_type = "sglang"
+        inst_hit.endpoints = {"group": {0: ep_hit}}
+        inst_hit.get_all_endpoints.return_value = (ep_hit,)
+
+        ep_miss = _make_endpoint(0, active_tokens=50.0)
+        inst_miss = Mock()
+        inst_miss.id = "miss"
+        inst_miss.engine_type = "sglang"
+        inst_miss.endpoints = {"group": {0: ep_miss}}
+        inst_miss.get_all_endpoints.return_value = (ep_miss,)
+
+        mock_req_info = Mock()
+        mock_req_info.req_data = {"prompt": "hello"}
+        mock_tokenizer = Mock()
+        mock_tokenizer.encode.return_value = list(range(1000))
+        mock_tokenizer_manager.return_value = mock_tokenizer
+
+        mock_query_conductor.return_value = {
+            TENANT_ID: {
+                "sglang-prefill-hit": {
+                    "DP": {
+                        "0": {"npu_blocks": 0, "cpu_blocks": 0, "disk_blocks": 0, "matched_tokens": 0},
+                        "5": {"npu_blocks": 6, "cpu_blocks": 0, "disk_blocks": 0, "matched_tokens": 800},
+                    }
+                },
+                "sglang-prefill-miss": {
+                    "DP": {
+                        "0": {"npu_blocks": 0, "cpu_blocks": 0, "disk_blocks": 0, "matched_tokens": 0},
+                    }
+                },
+            }
+        }
+
+        result = KvCacheAffinityPolicy.select_endpoint_from_list([inst_miss, inst_hit], mock_req_info, load_weight=0.0)
+
+        self.assertIsNotNone(result)
+        self.assertIs(result[0], inst_hit)
+        self.assertEqual(result[1].id, 0)
+
     @patch.object(KvCacheAffinityPolicy, "_conductor_block_size", return_value=4)
     @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.ConductorApiClient.query_conductor")
     @patch("motor.coordinator.scheduler.policy.kv_cache_affinity.TokenizerManager")
@@ -1001,6 +1047,19 @@ class TestTokenizerManagerDsv4(unittest.TestCase):
         self.assertEqual(out, [])
         self.assertEqual(tokenizer.apply_chat_template.call_count, 1)
 
+    def test_apply_chat_template_dsv4_encodes_markers_without_chat_template(self):
+        tokenizer = Mock()
+        tokenizer.chat_template = None
+        tokenizer.encode.return_value = [11, 22, 33]
+        manager = self._make_manager(tokenizer, is_dsv4=True)
+
+        out = manager._apply_chat_template_dsv4([{"role": "user", "content": "hi"}], None, None)
+        self.assertEqual(out, [11, 22, 33])
+        tokenizer.apply_chat_template.assert_not_called()
+        encoded = tokenizer.encode.call_args[0][0]
+        self.assertIn("<｜User｜>hi", encoded)
+        self.assertTrue(encoded.endswith("<｜Assistant｜>"))
+
     def test_is_deepseek_v4_model_detects_from_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1589,27 +1648,80 @@ class TestTokenizerManagerFunction(unittest.TestCase):
         # verification result
         self.assertEqual(result, [])
 
-    @patch('motor.config.coordinator.CoordinatorConfig')
-    def test_dsv4_tokenizer_only_for_vllm_engine(self, mock_config_class):
-        """DeepSeek V4 vLLM tokenizer must only be used when engine_type=vllm."""
+    def _mock_tokenizer_config(self, engine_type: str):
         mock_config = Mock()
         mock_config.scheduler_config.kv_conductor_config.conductor_service = "test_service"
         mock_config.scheduler_config.kv_conductor_config.model_path = "/path/to/model"
-        mock_config.scheduler_config.kv_conductor_config.engine_type = "sglang"
+        mock_config.scheduler_config.kv_conductor_config.engine_type = engine_type
         mock_config.tracer_config.endpoint = ""
-        mock_config_class.return_value = mock_config
+        return mock_config
 
-        # If the code accidentally tries to import vllm.tokenizers.deepseek_v4 on sglang,
-        # environments without vllm installed would crash. We assert we fall back to transformers.
+    def _install_dsv4_module(self, mock_tokenizer):
+        import types
+
+        mock_cls = Mock()
+        mock_cls.from_pretrained.return_value = mock_tokenizer
+        vllm_mod = types.ModuleType("vllm")
+        tokenizers_mod = types.ModuleType("vllm.tokenizers")
+        dsv4_mod = types.ModuleType("vllm.tokenizers.deepseek_v4")
+        dsv4_mod.DeepseekV4Tokenizer = mock_cls
+        return mock_cls, {
+            "vllm": vllm_mod,
+            "vllm.tokenizers": tokenizers_mod,
+            "vllm.tokenizers.deepseek_v4": dsv4_mod,
+        }
+
+    @patch('motor.config.coordinator.CoordinatorConfig')
+    def test_dsv4_tokenizer_used_for_sglang_engine(self, mock_config_class):
+        """DeepSeek V4 chat template is engine-agnostic; SGLang must use it too."""
+        mock_config = self._mock_tokenizer_config("sglang")
+        mock_config_class.return_value = mock_config
         mock_tokenizer = Mock()
-        transformers_mod = Mock()
-        transformers_mod.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
-        with patch.dict("sys.modules", {"transformers": transformers_mod}):
+        mock_cls, modules = self._install_dsv4_module(mock_tokenizer)
+        with patch.dict("sys.modules", modules):
             with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
                 manager = TokenizerManager(mock_config)
 
         self.assertIs(manager.tokenizer, mock_tokenizer)
-        self.assertFalse(manager._is_dsv4)
+        self.assertTrue(manager._is_dsv4)
+        mock_cls.from_pretrained.assert_called_once()
+
+    @patch('motor.config.coordinator.CoordinatorConfig')
+    def test_dsv4_tokenizer_used_for_vllm_engine(self, mock_config_class):
+        mock_config = self._mock_tokenizer_config("vllm")
+        mock_config_class.return_value = mock_config
+        mock_tokenizer = Mock()
+        mock_cls, modules = self._install_dsv4_module(mock_tokenizer)
+        with patch.dict("sys.modules", modules):
+            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+                manager = TokenizerManager(mock_config)
+
+        self.assertIs(manager.tokenizer, mock_tokenizer)
+        self.assertTrue(manager._is_dsv4)
+        mock_cls.from_pretrained.assert_called_once()
+
+    @patch('motor.config.coordinator.CoordinatorConfig')
+    def test_dsv4_tokenizer_falls_back_without_vllm(self, mock_config_class):
+        """Missing vllm DeepseekV4Tokenizer must not crash SGLang coordinators."""
+        mock_config = self._mock_tokenizer_config("sglang")
+        mock_config_class.return_value = mock_config
+        mock_tokenizer = Mock()
+        transformers_mod = Mock()
+        transformers_mod.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
+        with patch.dict(
+            "sys.modules",
+            {
+                "vllm": None,
+                "vllm.tokenizers": None,
+                "vllm.tokenizers.deepseek_v4": None,
+                "transformers": transformers_mod,
+            },
+        ):
+            with patch.object(TokenizerManager, "_is_deepseek_v4_model", return_value=True):
+                manager = TokenizerManager(mock_config)
+
+        self.assertIs(manager.tokenizer, mock_tokenizer)
+        self.assertTrue(manager._is_dsv4)
         transformers_mod.AutoTokenizer.from_pretrained.assert_called_once()
 
 

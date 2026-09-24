@@ -16,7 +16,12 @@ from motor.common.resources.instance import Instance, PDRole
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.common.resources.endpoint import Endpoint
 from motor.coordinator.domain import InstanceProvider
-from motor.coordinator.domain.block_offset_translator import attach_block_offsets
+from motor.coordinator.domain.block_offset_translator import (
+    _DSV4_ASSISTANT_MARKER,
+    _DSV4_EOS_MARKER,
+    _DSV4_USER_MARKER,
+    attach_block_offsets,
+)
 from motor.coordinator.domain.responses_input import responses_scheduling_messages
 from motor.coordinator.scheduler.policy.base import BaseSchedulingPolicy
 from motor.config.coordinator import (
@@ -355,6 +360,25 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             return 0
 
     @staticmethod
+    def _matched_raw_for_endpoint(dp_map: dict, endpoint: Endpoint, fold_engine_dps: bool) -> object:
+        """Return the conductor DP payload used to score one HTTP endpoint.
+
+        When the instance exposes a single HTTP port, take the best match
+        across every engine DP the conductor reported. Multi-endpoint
+        instances keep the 1:1 ``endpoint.id`` mapping.
+        """
+        if not fold_engine_dps:
+            return dp_map.get(f"{endpoint.id}", 0)
+        best_raw: object = dp_map.get(f"{endpoint.id}", 0)
+        best_tokens = KvCacheAffinityPolicy._weighted_matched_tokens(best_raw, 1, 1.0, 1.0, 1.0)
+        for raw in dp_map.values():
+            tokens = KvCacheAffinityPolicy._weighted_matched_tokens(raw, 1, 1.0, 1.0, 1.0)
+            if tokens > best_tokens:
+                best_tokens = tokens
+                best_raw = raw
+        return best_raw
+
+    @staticmethod
     def _weighted_matched_tokens(
         matched_raw: object,
         block_size: int,
@@ -437,8 +461,13 @@ class KvCacheAffinityPolicy(BaseSchedulingPolicy):
             dp_map = instance_data.get("DP", {})
             # get_all_endpoints() is the canonical accessor: it flattens the per-DP map and
             # already excludes headless endpoints / respects enable_multi_endpoints.
-            for ep in instance.get_all_endpoints():
-                matched_raw = dp_map.get(f"{ep.id}", 0)
+            endpoints = list(instance.get_all_endpoints())
+            # SGLang (and any single-HTTP / multi-DP engine) publishes one ZMQ
+            # stream per engine DP. Fold those ranks onto the only routable
+            # HTTP endpoint so instance pick can see hits on DP>0.
+            fold_engine_dps = len(endpoints) == 1
+            for ep in endpoints:
+                matched_raw = KvCacheAffinityPolicy._matched_raw_for_endpoint(dp_map, ep, fold_engine_dps)
                 matched = KvCacheAffinityPolicy._weighted_matched_tokens(matched_raw, block_size, w_npu, w_cpu, w_disk)
                 # Cap at the prompt length as a safety bound, since a matched prefix
                 # cannot be longer than the prompt itself.
@@ -749,11 +778,22 @@ class TokenizerManager(ThreadSafeSingleton):
             if not getattr(self, "model_path", ""):
                 return None
             try:
-                if self.engine_type == "vllm" and self._is_deepseek_v4_model(self.model_path):
-                    from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer  # pylint: disable=import-error,no-name-in-module
+                if self._is_deepseek_v4_model(self.model_path):
+                    try:
+                        from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer  # pylint: disable=import-error,no-name-in-module
+                    except ImportError as exc:
+                        logger.warning(
+                            "DeepseekV4Tokenizer unavailable for engine_type=%s (%s); falling back to AutoTokenizer",
+                            self.engine_type,
+                            exc,
+                        )
+                        from transformers import AutoTokenizer
 
-                    self.tokenizer = DeepseekV4Tokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-                    self._is_dsv4 = True
+                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        self._is_dsv4 = True
+                    else:
+                        self.tokenizer = DeepseekV4Tokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        self._is_dsv4 = True
                 else:
                     from transformers import AutoTokenizer
 
@@ -862,10 +902,32 @@ class TokenizerManager(ThreadSafeSingleton):
 
     def _apply_chat_template_dsv4(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         messages, tools = preprocess_messages_for_dsv4(messages, tools)
+        if not getattr(self.tokenizer, "chat_template", None):
+            return self._encode_dsv4_messages(messages)
         result = self.tokenizer.apply_chat_template(
             messages, tools=tools, **self._build_dsv4_chat_template_kwargs(req_data)
         )
         return result if isinstance(result, list) else self.tokenizer.encode(result, add_special_tokens=False)
+
+    def _encode_dsv4_messages(self, messages: list) -> list[int]:
+        """DeepSeek V4 chat markers when vLLM tokenizer / chat_template is absent."""
+        parts: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = message.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            if role in ("user", "system", "developer"):
+                parts.append(f"{_DSV4_USER_MARKER}{content}")
+            elif role == "assistant":
+                parts.append(f"{_DSV4_ASSISTANT_MARKER}{content}{_DSV4_EOS_MARKER}")
+            elif role == "tool":
+                parts.append(f"{_DSV4_USER_MARKER}{content}")
+        if not messages or (isinstance(messages[-1], dict) and messages[-1].get("role") != "assistant"):
+            parts.append(_DSV4_ASSISTANT_MARKER)
+        return self.tokenizer.encode("".join(parts), add_special_tokens=False)
 
     def _apply_chat_template_standard(self, messages: list, tools: list | None, req_data: dict | None) -> list[int]:
         return self.tokenizer.apply_chat_template(
