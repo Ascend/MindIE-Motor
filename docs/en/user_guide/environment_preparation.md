@@ -416,24 +416,24 @@ Connect compute nodes to the management node by following the steps below to for
 
 The cluster management components depend on the Ascend Docker Runtime, Ascend Device Plugin, ClusterD, Volcano, and Infer Operator components in MindCluster. Among them, **the management node needs all components, while the compute node only needs the image of the Ascend Device Plugin**. It is recommended to install version 26.0.0 or later.
 
-1. Refer to the [Preparing for Installation](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/01_preparing_for_installation.md) section in the *MindCluster Cluster Scheduling User Guide* to create users, create log directories, build images, and create namespaces.
+1. Refer to the [Preparing for Installation](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/01_preparing_for_installation.md) section in the *MindCluster Cluster Scheduling User Guide* to create users, create log directories, build images, and create namespaces.
 
-2. Refer to the [Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/02_ascend_docker_runtime.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Ascend Docker Runtime.
+2. Refer to the [Ascend Docker Runtime](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/02_ascend_docker_runtime.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Ascend Docker Runtime.
 
-3. Refer to the [Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/04_ascend_device_plugin.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Ascend Device Plugin, using the `device-plugin-_xxx_-v{version}.yaml` file for installation.
+3. Refer to the [Ascend Device Plugin](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/04_ascend_device_plugin.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Ascend Device Plugin, using the `device-plugin-_xxx_-v{version}.yaml` file for installation.
 
     >[!NOTE]NOTE
     >When the Ascend Device Plugin starts, if the `useAscendDocker` parameter in the `xxx.yaml` configuration file is set to `true` and the user has installed the Ascend Docker Runtime and it has taken effect, the driver-related directories under `/usr/local/Ascend` are automatically mounted.
 
-4. Refer to the [Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md) section in the *MindCluster Cluster Scheduling User Guide* to install Volcano.
+4. Refer to the [Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md) section in the *MindCluster Cluster Scheduling User Guide* to install Volcano.
 
     >[!NOTE]NOTE
-    >In the single-machine scenario, when installing Volcano by referring to the [Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md) section in the *MindCluster Cluster Scheduling User Guide*, before executing step 9 in the "Volcano" section, you need to modify the `volcano-v1.7.0.yaml` file in the `volcano-v1.7.0` directory generated after Volcano decompression, search for the `useClusterInfoManager` field and change its value to `false`, as shown in the following figure. After the modification is complete, execute step 9 in the "Volcano" section.
+    >In the single-machine scenario, when installing Volcano by referring to the [Volcano](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/05_volcano.md) section in the *MindCluster Cluster Scheduling User Guide*, before executing step 9 in the "Volcano" section, you need to modify the `volcano-v1.7.0.yaml` file in the `volcano-v1.7.0` directory generated after Volcano decompression, search for the `useClusterInfoManager` field and change its value to `false`, as shown in the following figure. After the modification is complete, execute step 9 in the "Volcano" section.
     >![](../imgs/volcano.png)
 
-5. Refer to the [infer_Operator](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Infer Operator.
+5. Refer to the [infer_Operator](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/07_infer_operator.md) section in the *MindCluster Cluster Scheduling User Guide* to install the Infer Operator.
 
-6. Refer to the [ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/06_clusterd.md) section in the *MindCluster Cluster Scheduling User Guide* to install ClusterD.
+6. Refer to the [ClusterD](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/05_developer_guide/00_installation_deployment/00_manual_installation/06_clusterd.md) section in the *MindCluster Cluster Scheduling User Guide* to install ClusterD.
 
 ## Setting Node Labels
 

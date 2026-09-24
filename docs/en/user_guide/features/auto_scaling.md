@@ -287,6 +287,6 @@ kubectl get hpa -n {namespace} --watch
 
 ## Reference Documents
 
-- [Configuring Load-Based Elastic Scaling](https://gitcode.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Guide to configuring the Infer Operator elastic scaling policy
+- [Configuring Load-Based Elastic Scaling](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/04_usage/09_infer_operator_best_practice/05_configuring_elastic_scaling.md) — Guide to configuring the Infer Operator elastic scaling policy
 
 - [Metrics Interface](../api/metrics_interfaces.md) — Usage instructions for the MindIE Motor `/metrics` endpoint

@@ -98,7 +98,7 @@ The container snapshot feature works with MindCluster instance rescheduling by d
 
 The Motor service framework must configure a Kubernetes Readiness Probe for the instance node Pod so that MindCluster can query whether the instance node has reached steady state. After the instance node reaches steady state, MindCluster performs a checkpoint and saves the container Host snapshot image.
 
-For the environment requirements, component deployment, and usage process on the MindCluster side, see [Container Snapshot Deployment and Usage](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/zh/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md).
+For the environment requirements, component deployment, and usage process on the MindCluster side, see [Container Snapshot Deployment and Usage](https://gitcode.com/Ascend/mind-cluster/blob/branch_v26.1.0/docs/en/scheduling/04_usage/09_infer_operator_best_practice/06_container_snapshot_usage.md).
 
 **Constraints of the container snapshot feature in the instance rescheduling application scenario**:
 
