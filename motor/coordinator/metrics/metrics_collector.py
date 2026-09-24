@@ -24,6 +24,7 @@ from motor.common.utils.net import format_address
 from motor.common.utils.singleton import ThreadSafeSingleton
 from motor.config.coordinator import CoordinatorConfig
 from motor.coordinator.api_client.native_engine_api_client import NativeEngineApiClient
+from motor.coordinator.domain.probe import is_master_from_role_shm
 from motor.coordinator.metrics.metric_types import (
     AggregationContext,
     AggregationScope,
@@ -39,6 +40,7 @@ logger = get_logger(__name__)
 
 _METRICS_FORMAT_PROMETHEUS = "prometheus"
 _METRICS_FORMAT_OPENTELEMETRY = "opentelemetry"
+_STANDBY_METRICS_TEXT = "# coordinator standby; metrics are served by the master\n"
 
 # Mooncake Master -> a few kv_store_* families with labels (cpu/ssd/all, usage/total/rate).
 _BYTES_PER_GB = 1024**3
@@ -244,6 +246,7 @@ class MetricsCollector(ThreadSafeSingleton):
         self._prometheus_metrics_config = config.prometheus_metrics_config
         self._deploy_config = config.deploy_config
         self._infer_tls_config = config.infer_tls_config
+        self._enable_master_standby = config.standby_config.enable_master_standby
 
         # Initial metrics state
         self._inactive_instance_metrics_aggregate: dict[str, list[Metric]] = {}
@@ -303,6 +306,7 @@ class MetricsCollector(ThreadSafeSingleton):
             self._prometheus_metrics_config = config.prometheus_metrics_config
             self._deploy_config = config.deploy_config
             self._infer_tls_config = config.infer_tls_config
+            self._enable_master_standby = config.standby_config.enable_master_standby
         logger.info("MetricsCollector configuration updated")
 
     def get_metrics(
@@ -320,6 +324,10 @@ class MetricsCollector(ThreadSafeSingleton):
         :returns: Prometheus text or OpenTelemetry JSON-compatible dict
         """
         normalized_format = self._normalize_metrics_format(metrics_format)
+        if not self._should_serve_metrics():
+            if normalized_format == _METRICS_FORMAT_OPENTELEMETRY:
+                return self._format_opentelemetry("")
+            return _STANDBY_METRICS_TEXT
         metrics = self._get_prometheus_metrics(metrics_type, role)
         if normalized_format == _METRICS_FORMAT_OPENTELEMETRY:
             return self._format_opentelemetry(metrics)
@@ -517,9 +525,32 @@ class MetricsCollector(ThreadSafeSingleton):
                 result[role] += self._format_prometheus(labeled)
         return result
 
+    def _should_serve_metrics(self) -> bool:
+        """Standby coordinators must not republish the same engine metrics as the master."""
+        with self._config_lock:
+            enabled = self._enable_master_standby
+        if not enabled:
+            return True
+        return is_master_from_role_shm()
+
+    def _clear_collected_metrics(self) -> None:
+        with self._lock:
+            if self._last_collects or self._kv_store_metrics_text or self._instance_metrics_cached:
+                self._last_collects = {}
+                self._kv_store_metrics_text = ""
+                self._instance_metrics_cached = {}
+                self._inactive_instance_metrics_aggregate = {}
+                self._collects_version += 1
+
     def _update_metrics_thread(self) -> None:
         logger.info("Metrics update thread started")
         while not self._stop_event.is_set():
+            if not self._should_serve_metrics():
+                self._clear_collected_metrics()
+                with self._config_lock:
+                    reuse_time = self._prometheus_metrics_config.reuse_time
+                time.sleep(reuse_time)
+                continue
             collects = self._collect_metrics()
             if collects is not None:
                 with self._lock:
