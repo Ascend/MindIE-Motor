@@ -218,6 +218,24 @@ sync_mmc_local_config() {
         local _backend_id="${POD_IP:-}"
         sed -E -i.bak "s|^(ock\.mmc\.local_service\.backend_id)\s*=.*|\1 = ${_backend_id}|" "$_dst"
         rm -f "${_dst}.bak"
+
+        # Template default is device_sdma (A3). A5 rejects SDMA
+        # ("A5 or x86 not support batch extend copy") and offload never lands.
+        # A2/A3 keep the file default so IPv4 deployments are unchanged.
+        # Inprocess template ships dram.size=0GB (standalone owns DRAM). On A5
+        # each vLLM worker is the LocalService, so a 0GB quota builds hbm{0},dram{0}
+        # and prefix blocks have nowhere to land. Override only the inprocess file.
+        if is_a5_hardware; then
+            sed -E -i.bak "s|^(ock\\.mmc\\.local_service\\.protocol)[[:space:]]*=.*|\\1 = device_urma|" "$_dst"
+            rm -f "${_dst}.bak"
+            if [ "$_template" = "local-inprocess" ]; then
+                # 32GB/worker is counted against NPU free memory on A5 and leaves
+                # KV cache negative (weights ~33GiB, budget 0.9 * 84GiB).
+                local _dram="${MMC_A5_INPROCESS_DRAM_SIZE:-16GB}"
+                sed -E -i.bak "s|^(ock\\.mmc\\.local_service\\.dram\\.size)[[:space:]]*=[[:space:]]*0GB|\\1 = ${_dram}|" "$_dst"
+                rm -f "${_dst}.bak"
+            fi
+        fi
     }
 
     _sync_one_mmc_conf "local-inprocess" || return
@@ -313,7 +331,23 @@ set_a5_engine_env() {
 
     export PATH="$PATH:/usr/local/go/bin"
     export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/lib64:${LD_LIBRARY_PATH:-}"
-    export ASCEND_LOCAL_COMM_RES_PATH="${ASCEND_LOCAL_COMM_RES_PATH:-/etc/hixlep}"
+    # UBOE uses ASCEND_GLOBAL_RESOURCE_CONFIG. UB uses ASCEND_LOCAL_COMM_RES.
+    # Neither may fall through to hixlep. Legacy A5 that still uses hixlep keeps it.
+    if [ -z "${ASCEND_LOCAL_COMM_RES_PATH:-}" ] && [ -z "${ASCEND_LOCAL_COMM_RES:-}" ]; then
+        case "${ASCEND_GLOBAL_RESOURCE_CONFIG:-}" in
+            *uboe:device*|*ub_ctp:device*|*ub_rtp:device*|*roce:device*)
+                ;;
+            *)
+                export ASCEND_LOCAL_COMM_RES_PATH="/etc/hixlep"
+                ;;
+        esac
+    fi
+    # Physical IDs from the device plugin. HIXL loads ub_endpoint_npu_<id>.json
+    # from ASCEND_RT_VISIBLE_DEVICES; if that is unset it uses logical IDs 0,1
+    # and creates endpoints for the wrong cards.
+    if [ -n "${ASCEND_VISIBLE_DEVICES:-}" ] && [ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]; then
+        export ASCEND_RT_VISIBLE_DEVICES="$ASCEND_VISIBLE_DEVICES"
+    fi
 }
 
 gen_ranktable_config() {

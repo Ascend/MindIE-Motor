@@ -50,6 +50,11 @@ A5_HOST_PATH_VOLUMES_HOST_NIC = [
     {"name": "npu-smi-bin", "path": "/usr/local/bin/npu-smi", "type": "File"},
     {"name": "dcmi", "path": "/usr/local/dcmi"},
     {"name": "ascend-firmware", "path": "/usr/local/Ascend/firmware"},
+    # UBOE/UB needs the URMA device directories. On A5 these paths are directories
+    # of character devices (/dev/ummu/tid, /dev/uburma/udma*), not single nodes.
+    # hostPath type CharDevice makes kubelet reject the mount.
+    {"name": "dev-ummu", "path": "/dev/ummu", "type": "Directory"},
+    {"name": "dev-uburma", "path": "/dev/uburma", "type": "Directory"},
 ]
 # Opt-in markers under motor_common_env / motor_engine_*_env:
 # ASCEND_GLOBAL_RESOURCE_CONFIG.comm_resource_config.protocol_desc selects the path.
@@ -59,6 +64,7 @@ A5_HOST_PATH_VOLUMES_HOST_NIC = [
 A5_UBOE_RESOURCE_CONFIG_KEY = "ASCEND_GLOBAL_RESOURCE_CONFIG"
 A5_HOST_NIC_PROTOCOL_TOKENS = (
     "uboe:device",
+    "ub_ctp:device",
     "roce:device",
     "ub_rtp:device",
 )

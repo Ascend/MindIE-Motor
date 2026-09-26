@@ -50,7 +50,9 @@ def _append_a5_host_path_volumes(pod_spec, container):
     existing_mount_names = {mount[C.NAME] for mount in container.get(C.VOLUME_MOUNTS, []) if C.NAME in mount}
     volume_defs = list(C.A5_HOST_PATH_VOLUMES)
     # Opt-in only: 1825/UBOE/UBG (AGRC protocol_desc). Default A5 path unchanged.
+    # UBOE/UB must not mount hixlep; that path builds endpoints for the wrong cards.
     if k8s_utils.g_a5_host_nic_overlay:
+        volume_defs = [item for item in volume_defs if item.get(C.NAME) != "hixlep"]
         volume_defs.extend(C.A5_HOST_PATH_VOLUMES_HOST_NIC)
     for volume_def in volume_defs:
         volume_name = volume_def[C.NAME]
@@ -91,6 +93,23 @@ def apply_a5_dns_config(pod_spec, deploy_config):
         C.A5_DNS_NDOTS_VALUE,
         hardware_type,
     )
+
+
+def apply_a5_controller_host_network(pod_spec, deploy_config):
+    """Put the controller in the host netns only for the A5 host-nic overlay.
+
+    IPv4 pod-network deploys do not set the overlay, so their controller stays
+    on the pod network. UBOE/UB IPv6 needs the controller on the node EID,
+    same as the engines, or registration targets an unreachable ClusterIP.
+    """
+    if not k8s_utils.g_a5_host_nic_overlay:
+        return
+    hardware_type = deploy_config.get(C.HARDWARE_TYPE) if deploy_config else None
+    if hardware_type not in C.HARDWARE_TYPE_A5:
+        return
+    pod_spec[C.HOST_NETWORK] = True
+    pod_spec[C.DNS_POLICY] = C.DNS_POLICY_CLUSTER_FIRST_WITH_HOST_NET
+    logger.info("Applied A5 hostNetwork for controller (host-nic overlay)")
 
 
 def apply_a5_engine_pod_config(pod_spec, container, deploy_config):

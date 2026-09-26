@@ -16,6 +16,7 @@ import shutil
 import subprocess
 
 import lib.constant as C
+from lib.generator.service_hosts import wait_motor_service_endpoints, write_service_hosts_file
 from lib.prepare_utils import kubectl_from_file_args
 from lib.utils import (
     get_coordinator_service_name,
@@ -538,13 +539,25 @@ def create_motor_config_configmap(job_id, user_config=None, effective_deploy_mod
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("")
+    from_file_args = list(kubectl_from_file_args(_DEPLOYER_DIR))
+    # Only the A5 host-nic / IPv6 path needs Endpoint IPs in /etc/hosts.
+    # IPv4 pod-network deploys keep the previous ConfigMap contents.
+    if g_a5_host_nic_overlay:
+        service_hosts_path = os.path.join(C.OUTPUT_ROOT_PATH, "service-hosts")
+        try:
+            write_service_hosts_file(job_id, service_hosts_path)
+        except Exception as exc:
+            logger.warning("Failed to generate service-hosts: %s", exc)
+            with open(service_hosts_path, "w", encoding="utf-8") as fh:
+                fh.write("")
+        from_file_args.append(f"--from-file=service-hosts={service_hosts_path}")
     apply_configmap(
         [
             "kubectl",
             "create",
             "configmap",
             C.MOTOR_CONFIG_CONFIGMAP_NAME,
-            *kubectl_from_file_args(_DEPLOYER_DIR),
+            *from_file_args,
             f"--from-file=user_config.json={config_path}",
             f"--from-file={C.NODEPORT_CONFLICT_COORDINATOR_FILE}={coordinator_conflict}",
             f"--from-file={C.NODEPORT_CONFLICT_CONTROLLER_FILE}={controller_conflict}",
@@ -579,6 +592,10 @@ def exec_all_kubectl_multi(
     else:
         baseline_deploy_config = baseline_config.get(C.MOTOR_DEPLOY_CONFIG, {})
         elastic_distributed_engine_deploy(deploy_config, baseline_deploy_config, out_deploy_yaml_path)
+
+    if g_a5_host_nic_overlay:
+        wait_motor_service_endpoints(job_id, timeout_s=180)
+        create_motor_config_configmap(job_id, user_config=user_config, effective_deploy_mode=deploy_mode_arg)
 
 
 def exec_all_kubectl_singer(deploy_config, yaml_file):

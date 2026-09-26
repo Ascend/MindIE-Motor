@@ -70,9 +70,9 @@ ENGINE_ROLES = ("union", "prefill", "decode")
 KV_STORE_ROLE = "kv_store"
 
 KV_STORE_PROBE_URLS = {
-    'startup': '/livez',
-    'readiness': '/livez',
-    'liveness': '/livez',
+    'startup': '/health',
+    'readiness': '/health',
+    'liveness': '/health',
 }
 
 ROLE_CONFIG_PATHS = {
@@ -86,7 +86,7 @@ ROLE_CONFIG_PATHS = {
 
 # HTTP request timeout. controller/coordinator/engine keep this value.
 TIMEOUT = 600
-# kv-store MetaService /livez only.
+# kv-store metrics port. /livez is 404; the process answers /health.
 KV_STORE_HTTP_TIMEOUT = 3
 
 

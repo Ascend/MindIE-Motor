@@ -47,6 +47,7 @@
 
 | 日期 | 模块 | 案例 | 文件 | 关键词 |
 |------|------|------|------|--------|
+| 2026-09-25 | deployer | A5 IPv6 host-nic 无法注册且 memcache 入池容量为 0 | [a5-ipv6-host-nic-pool.md](deployer/a5-ipv6-host-nic-pool.md) | A5, UBOE, hostNetwork, device_urma, service-hosts |
 | 2026-09-20 | deployer | Slurm 禁用服务泄漏占位环境变量 | [slurm-disabled-service-env-leak.md](deployer/slurm-disabled-service-env-leak.md) | Slurm, Apptainer, cleanenv, KV_CONDUCTOR_SERVICE, placeholder |
 | 2026-09-16 | kv_conductor | 节点 pool replay 身份和格式分流不一致导致事件丢失 | [node-pool-replay-identity.md](kv_conductor/node-pool-replay-identity.md) | YuanRong, replay, backend_id, IpOnly, EventSource |
 | 2026-09-08 | deployer | Slurm 各容器生成不同 service_id | [slurm-service-id-per-task.md](deployer/slurm-service-id-per-task.md) | Slurm, service_id, set_env_docker, tzdata, Apptainer |

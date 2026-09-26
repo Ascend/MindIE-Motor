@@ -47,6 +47,7 @@ from lib.generator.engine import (
     apply_pd_heterogeneous_node_selector,
     apply_a5_workload,
     apply_a5_engine_pod_config,
+    apply_a5_controller_host_network,
     apply_a5_dns_config,
     apply_engine_node_selector_overrides,
     apply_engine_ft_labels,
@@ -108,6 +109,8 @@ def _configure_control_role(infer_doc, user_config, role_name, config_key):
     }.get(role_name)
     if selector_key:
         apply_node_selector_override(pod_spec, deploy_config, selector_key)
+    if role_name == C.CONTROLLER:
+        apply_a5_controller_host_network(pod_spec, deploy_config)
     containers = pod_spec.get(C.CONTAINERS, [])
     if not containers:
         return None
